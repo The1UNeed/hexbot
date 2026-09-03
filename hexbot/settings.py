@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from ruamel.yaml import YAML
@@ -11,28 +12,42 @@ from hexbot import db
 from hexbot.errors import HexbotError
 from hexbot.home import DEFAULT_WORKSPACE, hexbot_home
 
+logger = logging.getLogger(__name__)
+
 DEFAULTS = {"approval_mode": "manual", "auto_approver_model": None,
             "lan_enabled": False, "service_installed": False,
             "workspace_dir": str(DEFAULT_WORKSPACE), "billing_notice_ack": False}
+
+#: Hermes calls the auto-approval mode ``smart``; the Hexbot UI labels it "Auto".
+APPROVAL_MODES = ("manual", "smart", "off")
 
 
 def get_settings() -> dict:
     db.migrate()
     result = dict(DEFAULTS)
-    with db.connect() as conn:
+    with db.transaction() as conn:
         for row in conn.execute("SELECT key, value FROM settings"):
             if row["key"] in result:
-                result[row["key"]] = json.loads(row["value"])
+                try:
+                    result[row["key"]] = json.loads(row["value"])
+                except json.JSONDecodeError:
+                    logger.warning("dropping unreadable setting %s", row["key"])
     return result
 
 
 def update_settings(patch: dict) -> dict:
+    if not isinstance(patch, dict):
+        raise HexbotError(4201, "patch must be an object")
     unknown = set(patch) - set(DEFAULTS)
     if unknown:
         raise HexbotError(4201, f"unknown setting: {sorted(unknown)[0]}")
-    if "approval_mode" in patch and patch["approval_mode"] not in {"manual", "smart", "off"}:
+    if "approval_mode" in patch and patch["approval_mode"] not in APPROVAL_MODES:
         raise HexbotError(4202, "approval_mode must be manual, smart, or off")
-    with db.connect() as conn:
+    if "auto_approver_model" in patch and patch["auto_approver_model"] is not None:
+        if "/" not in str(patch["auto_approver_model"]):
+            raise HexbotError(4202, "auto_approver_model must be 'provider/model'")
+    db.migrate()
+    with db.transaction() as conn:
         for key, value in patch.items():
             conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES (?,?)",
                          (key, json.dumps(value)))
@@ -41,27 +56,38 @@ def update_settings(patch: dict) -> dict:
 
 
 def mirror_deployment_config(profile_dir: Path) -> None:
+    """Write the deployment settings into one profile's ``config.yaml``.
+
+    Round-trips with ruamel so unrelated keys, comments and ordering survive.
+    """
     settings = get_settings()
-    path = profile_dir / "config.yaml"
+    path = Path(profile_dir) / "config.yaml"
     yaml = YAML(typ="rt")
-    data = yaml.load(path.read_text() if path.exists() else "") or {}
+    try:
+        data = yaml.load(path.read_text()) if path.exists() else None
+    except Exception:
+        logger.warning("could not parse %s; rewriting the managed keys only", path)
+        data = None
+    data = data if isinstance(data, dict) else {}
     data.setdefault("approvals", {})["mode"] = settings["approval_mode"]
     data.setdefault("terminal", {})["cwd"] = str(Path(settings["workspace_dir"]).expanduser())
-    auxiliary = data.setdefault("auxiliary", {}).setdefault("approval", {})
     choice = settings["auto_approver_model"]
     if choice:
-        provider, _, model = choice.partition("/")
-        auxiliary["provider"], auxiliary["model"] = provider, model
+        provider, _, model = str(choice).partition("/")
+        approval = data.setdefault("auxiliary", {}).setdefault("approval", {})
+        approval["provider"], approval["model"] = provider, model
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as stream:
         yaml.dump(data, stream)
 
 
 def apply_settings_everywhere() -> None:
+    """Mirror settings into the root config and every bot profile."""
     home = hexbot_home()
     mirror_deployment_config(home)
     profiles = home / "profiles"
-    if profiles.exists():
-        for path in profiles.iterdir():
-            if path.is_dir():
-                mirror_deployment_config(path)
+    if not profiles.exists():
+        return
+    for path in sorted(profiles.iterdir()):
+        if path.is_dir():
+            mirror_deployment_config(path)

@@ -20,7 +20,11 @@ def hexbot_home() -> Path:
 def ensure_layout() -> Path:
     home = hexbot_home()
     (home / "profiles").mkdir(mode=0o700, exist_ok=True)
-    Path(os.environ.get("HEXBOT_WORKSPACE", str(DEFAULT_WORKSPACE))).expanduser().mkdir(
-        parents=True, exist_ok=True
-    )
+    workspace = Path(os.environ.get("HEXBOT_WORKSPACE", str(DEFAULT_WORKSPACE))).expanduser()
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        # Read-only service accounts can still serve an existing deployment;
+        # terminal use will report the inaccessible configured cwd itself.
+        pass
     return home

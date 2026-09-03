@@ -62,12 +62,16 @@ owner_id, sections_total, sections_recent: [Section]}`
 - `hexbot.bots.create {name, display_name?, title?, description?, persona?,
   provider, model, avatar?}` → `{bot: Bot, section: Section}` (creates the
   profile with `mirror_credentials: true`, applies persona and model, stores
-  the avatar, creates the first section titled "General").
+  the avatar, mirrors the deployment settings into the new profile's
+  `config.yaml`, creates the first section titled "General").
+  `display_name` defaults to the bot name in title case — never to `title`,
+  which is free-form caller text stored verbatim.
 - `hexbot.bots.update {name, display_name?, title?, description?, persona?,
   provider?, model?, avatar?}` → `{bot: Bot}`
 - `hexbot.bots.delete {name}` → `{deleted: true}` (deletes the profile
-  directory and all rows; refuses if any of its sections is live and
-  streaming).
+  directory and all rows; refuses with 4211 if any of its sections is live
+  and mid-turn — `session.active_list` status `working` or `waiting` —
+  with `data.sections: [{id, status}]`).
 
 ### Sections
 
@@ -84,14 +88,20 @@ preview, message_count, live_session_id | null}`
 - `hexbot.sections.archive {id}` / `hexbot.sections.unarchive {id}` → `{section}`
 - `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true}`
   (closes the live session, `session.delete` on the stored row, removes
-  memory entries tagged with the section id).
+  memory entries tagged with the section id). With `purge_memory: false`
+  only the Hexbot row goes and the Hermes transcript is left in place.
 - `hexbot.sections.touch {id}` is internal; activity is stamped by the plugin
   on `message.complete`.
 
 ### Memory
 
 - `hexbot.memory.core.get {}` → `{sections: {user, household, workspace,
-  rules}, caps: {per_section: 4000}, updated_at}`
+  rules}, caps: {per_section: 4000, prompt_total: 8000}, updated_at}`.
+  Each section is injected as its own Hermes plugin prompt section
+  (`hexbot.core-memory.<section>`), so each gets the registrar's full
+  4000-char allowance; `prompt_total` is Hermes'
+  `MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS` budget shared by every plugin
+  section, and sections past it are dropped in sorted-id order.
 - `hexbot.memory.core.set {section, text}` → same as get.
 - `hexbot.memory.bot.get {bot}` → `{memory_md, user_md, caps}`
 - `hexbot.memory.bot.set {bot, memory_md?, user_md?}` → same as get.
@@ -99,12 +109,24 @@ preview, message_count, live_session_id | null}`
 ### Providers and models
 
 - `hexbot.providers.list {}` → `{providers: [{id, label, configured,
-  auth_type, models_source}]}` (all Hermes providers, configured flag from
-  the deployment `.env`).
+  auth_type, models_source}]}` (all Hermes providers). `configured` is
+  always a boolean: key providers are checked against the deployment
+  `.env` and the process env, OAuth providers against the Hermes auth
+  store (`openai-codex` via `hermes_cli.auth._read_codex_tokens`, the rest
+  via their stored provider state). `label` is the provider's display
+  name, never the raw slug.
 - `hexbot.providers.set_key {provider, key}` / `hexbot.providers.clear_key {provider}`.
-- `hexbot.models.list {provider?}` → `{curated: [Model], all: [Model]}` with
+- `hexbot.models.list {provider?, include_unconfigured?, refresh?}` →
+  `{curated: [Model], all: [Model], all_source, error?}` with
   `Model = {provider, id, label, context?, input_cost?, output_cost?}`,
-  built from `model.options`.
+  built from `model.options`. `provider` accepts the friendly aliases
+  `openai` (→ `openai-api`), `chatgpt` (→ `openai-codex`), `claude`,
+  `grok`, `glm`. `include_unconfigured` defaults to true when the named
+  provider has no credentials; `model.options` returns empty skeleton rows
+  for those, so `all` then falls back to Hermes' offline curated catalog
+  and `all_source` reports `model.options | catalog | mixed | none`.
+  `context` is in tokens; `input_cost` / `output_cost` are the $/Mtok
+  strings Hermes formats for its own picker (e.g. `"$3.00"`, `"free"`).
 
 ### Network and pairing
 

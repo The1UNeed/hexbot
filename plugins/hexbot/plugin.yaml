@@ -1,0 +1,5 @@
+name: hexbot
+version: 0.1.0
+description: Hexbot daemon data model and RPC API
+author: Hexbot
+kind: backend
