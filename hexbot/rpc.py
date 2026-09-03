@@ -16,7 +16,7 @@ import platform
 import socket
 import sys
 
-from hexbot import activity, bots, connect, memory, network, pairing, providers, sections, settings
+from hexbot import activity, bots, connect, dreaming, memory, network, pairing, providers, sections, settings
 from hexbot.rooms import get_engine
 from hexbot.rooms import store as rooms
 from hexbot.errors import HexbotError
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 _BOT_CREATE_FIELDS = ("display_name", "title", "description", "persona",
                       "provider", "model", "avatar")
-_BOT_UPDATE_FIELDS = _BOT_CREATE_FIELDS
+_BOT_UPDATE_FIELDS = _BOT_CREATE_FIELDS + ("dream_enabled", "may_write_core", "tools", "skills")
 
 
 def _required(params, key):
@@ -226,6 +226,10 @@ METHODS = {
     "hexbot.rooms.mark_read": lambda p: {"room": rooms.mark_read(_required(p, "id"), _required(p, "seq"))},
     "hexbot.activity.pairs": lambda p: {"pairs": activity.pairs()},
     "hexbot.activity.list": lambda p: {"messages": activity.list_messages(p.get("from"), p.get("to"), p.get("limit", 200))},
+    "hexbot.dreaming.status": lambda p: dreaming.status(_required(p, "bot")),
+    "hexbot.dreaming.run_now": lambda p: dreaming.run_now(_required(p, "bot")),
+    "hexbot.dreaming.list": lambda p: dreaming.list_dreams(
+        _required(p, "bot"), p.get("limit", 20)),
 }
 
 #: method -> broadcast event emitted after a successful mutation.
@@ -249,6 +253,7 @@ MUTATION_EVENTS = {
     "hexbot.rooms.remove_member": "hexbot.rooms.changed",
     "hexbot.rooms.archive": "hexbot.rooms.changed",
     "hexbot.rooms.delete": "hexbot.rooms.changed",
+    "hexbot.dreaming.run_now": "hexbot.dreaming.changed",
 }
 
 

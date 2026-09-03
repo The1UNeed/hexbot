@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 from hexbot import db
@@ -147,3 +149,78 @@ def set_bot_memory(bot: str, memory_md=None, user_md=None) -> dict:
                 4221, f"{key} is {len(value)} characters; the cap is {cap}")
         _atomic_write(_memory_dir(bot) / filename, value)
     return get_bot_memory(bot)
+
+
+def _written_texts(args: dict) -> list[tuple[str, str]]:
+    """Return the target/text pairs added by a successful memory tool call."""
+    action = args.get("action")
+    target = str(args.get("target") or "memory")
+    if action == "add" and args.get("content"):
+        return [(target, str(args["content"]))]
+    if action == "replace" and args.get("new_text"):
+        return [(target, str(args["new_text"]))]
+    if action == "batch":
+        pairs = []
+        for operation in args.get("operations") or []:
+            if operation.get("action") == "add" and operation.get("content"):
+                pairs.append((target, str(operation["content"])))
+            elif operation.get("action") == "replace" and operation.get("new_text"):
+                pairs.append((target, str(operation["new_text"])))
+        return pairs
+    return []
+
+
+def tag_memory_write(*, tool_name="", args=None, result=None, status=None,
+                     session_id="", task_id="", **_kwargs) -> None:
+    """Record successful builtin memory writes with their Hexbot provenance."""
+    if tool_name != "memory" or status not in (None, "success"):
+        return
+    if isinstance(result, str):
+        try:
+            if json.loads(result).get("success") is False:
+                return
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    from hexbot.dreaming import current_dream
+    from hexbot.sections import section_for_session
+    dream = current_dream(session_id=session_id, task_id=task_id)
+    section = section_for_session(str(session_id)) if session_id else None
+    bot = dream.get("bot") if dream else (section["bot"] if section else None)
+    room_id = dream.get("room_id") if dream else None
+    if not room_id and session_id:
+        with db.transaction() as conn:
+            row = conn.execute("SELECT room_id,bot FROM room_sessions WHERE stored_session_id=? "
+                               "OR live_session_id=? LIMIT 1", (session_id, session_id)).fetchone()
+        if row:
+            room_id, bot = row["room_id"], bot or row["bot"]
+    if not bot:
+        return
+    entries = _written_texts(args or {})
+    with db.transaction() as conn:
+        for target, text in entries:
+            conn.execute("INSERT INTO memory_entries VALUES (?,?,?,?,?,?,?,?)",
+                         (uuid.uuid4().hex, bot, section["id"] if section else None,
+                          room_id, dream.get("id") if dream else None,
+                          target, text, time.time()))
+
+
+def purge_entries(*, section_id: str | None = None, room_id: str | None = None) -> int:
+    """Remove tagged entries from profile memory and delete their tag rows."""
+    if not section_id and not room_id:
+        return 0
+    clause, value = ("section_id", section_id) if section_id else ("room_id", room_id)
+    with db.transaction() as conn:
+        rows = conn.execute(f"SELECT * FROM memory_entries WHERE {clause}=?", (value,)).fetchall()
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.memory_tool import load_on_disk_store
+    removed = 0
+    for row in rows:
+        token = set_hermes_home_override(str(_memory_dir(row["bot"]).parent))
+        try:
+            answer = load_on_disk_store().remove(row["target"], row["text"])
+            removed += int(bool(answer.get("success")))
+        finally:
+            reset_hermes_home_override(token)
+    with db.transaction() as conn:
+        conn.execute(f"DELETE FROM memory_entries WHERE {clause}=?", (value,))
+    return removed

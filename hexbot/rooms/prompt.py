@@ -48,4 +48,7 @@ def render(room, bot, events, collecting_replies=None):
         lines.append("Replies to collect:")
         lines.extend(f"@{name}: {text}" for name, text in collecting_replies)
     transcript = "\n".join(lines) or "(no messages)"
-    return f"Room: {room['name']}\nYou are @{bot}. Members: {members}\n\nTranscript since your last turn:\n{transcript}\n\n{RULES}"
+    from hexbot.rooms.store import get_memory
+    memory = get_memory(room["id"])[:3000] if room.get("id") else ""
+    memory_block = f"\n\nRoom memory:\n{memory}" if memory else ""
+    return f"Room: {room['name']}\nYou are @{bot}. Members: {members}{memory_block}\n\nTranscript since your last turn:\n{transcript}\n\n{RULES}"

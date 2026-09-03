@@ -19,7 +19,8 @@ DEFAULTS = {"approval_mode": "manual", "auto_approver_model": None,
             "workspace_dir": str(DEFAULT_WORKSPACE), "billing_notice_ack": False,
             "room_bot_turns_per_human_turn": 8,
             "room_budget_tokens_per_human_turn": None,
-            "bot_daily_token_budget": None}
+            "bot_daily_token_budget": None,
+            "dream_time": "03:00", "dream_enabled": True}
 
 #: Hermes calls the auto-approval mode ``smart``; the Hexbot UI labels it "Auto".
 APPROVAL_MODES = ("manual", "smart", "off")
@@ -49,6 +50,13 @@ def update_settings(patch: dict) -> dict:
     if "auto_approver_model" in patch and patch["auto_approver_model"] is not None:
         if "/" not in str(patch["auto_approver_model"]):
             raise HexbotError(4202, "auto_approver_model must be 'provider/model'")
+    if "dream_enabled" in patch and not isinstance(patch["dream_enabled"], bool):
+        raise HexbotError(4202, "dream_enabled must be a boolean")
+    if "dream_time" in patch:
+        import re
+        if not isinstance(patch["dream_time"], str) or not re.fullmatch(
+                r"(?:[01]\d|2[0-3]):[0-5]\d", patch["dream_time"]):
+            raise HexbotError(4202, "dream_time must be HH:MM in local time")
     for key in ("room_bot_turns_per_human_turn",
                 "room_budget_tokens_per_human_turn", "bot_daily_token_budget"):
         if key in patch and (patch[key] is not None) and (
@@ -60,6 +68,18 @@ def update_settings(patch: dict) -> dict:
             conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES (?,?)",
                          (key, json.dumps(value)))
     apply_settings_everywhere()
+    if "dream_time" in patch or "dream_enabled" in patch:
+        try:
+            from hexbot.bots import list_bots
+            from hexbot.dreaming import ensure_dream_job, ensure_room_dream_job
+            for bot in list_bots():
+                ensure_dream_job(bot)
+            from hexbot.rooms.store import list_rooms
+            for room in list_rooms(include_archived=False):
+                if room.get("main_bot"):
+                    ensure_room_dream_job(room)
+        except Exception:
+            logger.warning("could not update dream jobs", exc_info=True)
     return get_settings()
 
 

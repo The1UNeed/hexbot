@@ -48,7 +48,7 @@ codes in the 4200–4299 (client) and 5200–5299 (server) ranges.
 - `hexbot.info {}` → `{version, hermes_version, daemon_name, install_id,
   auth_required, lan_enabled, addresses: [string], platform, home}`
 - `hexbot.settings.get {}` → `{approval_mode, auto_approver_model, lan_enabled,
-  service_installed, workspace_dir, billing_notice_ack}`
+  service_installed, workspace_dir, billing_notice_ack, dream_time, dream_enabled}`
 - `hexbot.settings.set {patch}` → same shape; only whitelisted keys.
   Room settings are `room_bot_turns_per_human_turn` (default 8),
   `room_budget_tokens_per_human_turn` (default null), and
@@ -56,9 +56,9 @@ codes in the 4200–4299 (client) and 5200–5299 (server) ranges.
 
 ### Bots
 
-Bot shape: `{name, display_name, title, description, persona, skills: [string],
+Bot shape: `{name, display_name, title, description, persona, tools: [string], skills: [string],
 provider, model, avatar: {mime, data} | null, created_at, updated_at, last_activity_at,
-owner_id, sections_total, sections_recent: [Section]}`
+owner_id, dream_enabled, may_write_core, sections_total, sections_recent: [Section]}`
 
 - `hexbot.bots.list {}` → `{bots: [Bot]}` ordered by `last_activity_at` desc.
 - `hexbot.bots.get {name}` → `{bot: Bot}`
@@ -70,7 +70,9 @@ owner_id, sections_total, sections_recent: [Section]}`
   `display_name` defaults to the bot name in title case — never to `title`,
   which is free-form caller text stored verbatim.
 - `hexbot.bots.update {name, display_name?, title?, description?, persona?,
-  provider?, model?, avatar?}` → `{bot: Bot}`
+  provider?, model?, avatar?, dream_enabled?, may_write_core?, tools?, skills?}` →
+  `{bot: Bot}`. `tools` accepts `terminal`, `files`, `browser`, `web_search`, and
+  `computer_use`. Both capability lists use replace semantics.
 - `hexbot.bots.delete {name}` → `{deleted: true}` (deletes the profile
   directory and all rows; refuses with 4211 if any of its sections is live
   and mid-turn — `session.active_list` status `working` or `waiting` —
@@ -108,6 +110,15 @@ preview, message_count, live_session_id | null}`
 - `hexbot.memory.core.set {section, text}` → same as get.
 - `hexbot.memory.bot.get {bot}` → `{memory_md, user_md, caps}`
 - `hexbot.memory.bot.set {bot, memory_md?, user_md?}` → same as get.
+
+### Dreaming
+
+- `hexbot.dreaming.status {bot}` → `{enabled, last_run_at, next_run_at,
+  last_status, last_error}`.
+- `hexbot.dreaming.run_now {bot}` → `{job}`. The profile's `hexbot-dream` job
+  runs on the next cron tick.
+- `hexbot.dreaming.list {bot, limit?}` → `{dreams: [...]}`. `limit` defaults to
+  20 and is capped at 200.
 
 ### Rooms
 
@@ -198,6 +209,7 @@ Connect registration and disconnection emit `hexbot.connect.changed {}`.
 Room mutations emit `hexbot.rooms.changed {id}`. Every persisted room event
 emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit
 `hexbot.rooms.turn {room_id, bot, live_session_id, status}`.
+Dream triggers emit `hexbot.dreaming.changed {bot}`.
 
 ## Pairing and auth over HTTP
 

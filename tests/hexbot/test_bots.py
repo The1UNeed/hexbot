@@ -114,6 +114,22 @@ def test_update_bot_routes_fields_to_the_right_place(gw, profiles):
     assert configure == {"name": "scout", "model": "gpt-5.6", "soul": "Terse"}
 
 
+def test_bot_tools_and_skills_map_to_profile_config(gw, profiles):
+    from hexbot.bots import create_bot, update_bot
+    create_bot("scout")
+    gw.responses["profiles.describe"] = {"skills": [
+        {"name": "alpha", "enabled": True}, {"name": "beta", "enabled": True}]}
+    gw.calls.clear()
+    bot = update_bot("scout", tools=["files", "web_search"], skills=["beta"],
+                     dream_enabled=False, may_write_core=True)
+    configured = gw.params_for("profiles.configure")[0]
+    assert configured["enabled_toolsets"] == ["file", "search"]
+    assert configured["disabled_skills"] == ["alpha"]
+    assert bot["tools"] == ["files", "web_search"]
+    assert bot["skills"] == ["beta"]
+    assert bot["dream_enabled"] is False and bot["may_write_core"] is True
+
+
 def test_update_bot_rejects_unknown_fields(gw, profiles):
     from hexbot.bots import create_bot, update_bot
 

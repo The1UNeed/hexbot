@@ -280,6 +280,8 @@ def delete_section(section_id: str, purge_memory=True) -> bool:
     close_section(section_id)
     if purge_memory:
         gateway.call("session.delete", {"session_id": section_id, "profile": row["bot"]})
+        from hexbot.memory import purge_entries
+        purge_entries(section_id=section_id)
     with db.transaction() as conn:
         conn.execute("DELETE FROM sections WHERE id=?", (section_id,))
     _touch_bot(row["bot"])

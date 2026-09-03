@@ -54,6 +54,24 @@ def _register_activity_hook(ctx) -> None:
     ctx.register_hook("on_stream_end", touch_completed_section)
 
 
+def _register_dream_hooks(ctx) -> None:
+    from hexbot.dreaming import current_dream, finish_turn
+    from hexbot.memory import tag_memory_write
+
+    ctx.register_hook("post_tool_call", tag_memory_write)
+
+    def finish_dream(*, assistant_response="", **kwargs):
+        finish_turn(assistant_response or "", **kwargs)
+
+    def fail_unfinished_dream(**kwargs):
+        dream = current_dream(**kwargs)
+        if dream:
+            finish_turn("Dream turn did not complete.", status="failed", **kwargs)
+
+    ctx.register_hook("post_llm_call", finish_dream)
+    ctx.register_hook("on_session_end", fail_unfinished_dream)
+
+
 def register(ctx):
     if hasattr(ctx, "register_dashboard_auth_provider"):
         from hexbot.auth_provider import HexbotAuthProvider
@@ -68,10 +86,14 @@ def register(ctx):
     _register_core_memory(ctx)
     if hasattr(ctx, "register_hook"):
         _register_activity_hook(ctx)
+        _register_dream_hooks(ctx)
     if hasattr(ctx, "register_tool"):
         from hexbot.activity import SCHEMA, message_bot
         ctx.register_tool(name="message_bot", toolset="hexbot", schema=SCHEMA,
                           handler=message_bot)
+        from hexbot.dreaming import DIGEST_SCHEMA, dream_digest
+        ctx.register_tool(name="hexbot_dream_digest", toolset="hexbot",
+                          schema=DIGEST_SCHEMA, handler=dream_digest)
     # Constructing the singleton performs restart reconciliation, then starts
     # the room supervisor. No Hermes lifecycle code needs to know about it.
     from hexbot.rooms import get_engine

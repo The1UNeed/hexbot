@@ -68,7 +68,14 @@ def create(name: str, members=(), main_bot=None, limits=None, approval_mode=None
                          (room_id, "bot", bot, owner_id, now))
     for bot in bots:
         append_event(room_id, "member.added", "human", owner_id, {"bot": bot})
-    return get(room_id)
+    result = get(room_id)
+    if main_bot:
+        try:
+            from hexbot.dreaming import ensure_room_dream_job
+            ensure_room_dream_job(result)
+        except Exception:
+            pass
+    return result
 
 
 def update(room_id: str, **patch) -> dict:
@@ -88,7 +95,14 @@ def update(room_id: str, **patch) -> dict:
         values += [time.time(), room_id]
         with db.transaction() as conn:
             conn.execute(f"UPDATE rooms SET {','.join(columns)},updated_at=? WHERE id=?", values)
-    return get(room_id)
+    result = get(room_id)
+    if "main_bot" in patch and result.get("main_bot"):
+        try:
+            from hexbot.dreaming import ensure_room_dream_job
+            ensure_room_dream_job(result)
+        except Exception:
+            pass
+    return result
 
 
 def add_member(room_id: str, bot: str, added_by="local") -> dict:
@@ -166,4 +180,12 @@ def delete(room_id):
             pass
     with db.transaction() as conn:
         conn.execute("DELETE FROM rooms WHERE id=?", (room_id,))
+    from hexbot.memory import purge_entries
+    purge_entries(room_id=room_id)
     return True
+
+
+def get_memory(room_id: str) -> str:
+    with db.transaction() as conn:
+        row = conn.execute("SELECT text FROM room_memory WHERE room_id=?", (room_id,)).fetchone()
+    return row[0] if row else ""

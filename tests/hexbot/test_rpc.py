@@ -10,6 +10,7 @@ class RecordingCtx:
         self.methods = {}
         self.prompt_sections = []
         self.hooks = []
+        self.tools = []
 
     def register_rpc_method(self, name, fn):
         assert name.startswith("hexbot."), name
@@ -22,6 +23,9 @@ class RecordingCtx:
 
     def register_hook(self, name, callback):
         self.hooks.append((name, callback))
+
+    def register_tool(self, **kwargs):
+        self.tools.append(kwargs)
 
 
 @pytest.fixture
@@ -57,7 +61,8 @@ def test_every_documented_method_is_registered(ctx):
         "hexbot.rooms.update", "hexbot.rooms.add_member",
         "hexbot.rooms.remove_member", "hexbot.rooms.send", "hexbot.rooms.log",
         "hexbot.rooms.stop", "hexbot.rooms.archive", "hexbot.rooms.delete",
-        "hexbot.rooms.mark_read", "hexbot.activity.pairs", "hexbot.activity.list",
+            "hexbot.rooms.mark_read", "hexbot.activity.pairs", "hexbot.activity.list",
+            "hexbot.dreaming.status", "hexbot.dreaming.run_now", "hexbot.dreaming.list",
     }
     assert set(ctx.methods) == expected
 
@@ -80,6 +85,13 @@ def test_core_memory_is_registered_as_four_prompt_sections(ctx):
     renderer = dict((entry[0], entry[1]) for entry in ctx.prompt_sections)
     assert "Repo: /srv/hexbot" in renderer["hexbot.core-memory.workspace"]({})
     assert renderer["hexbot.core-memory.rules"]({}) == ""
+
+
+def test_dream_digest_tool_is_registered(ctx):
+    assert [tool["name"] for tool in ctx.tools] == ["message_bot", "hexbot_dream_digest"]
+    dream = ctx.tools[1]
+    assert dream["toolset"] == "hexbot"
+    assert dream["schema"]["function"]["parameters"]["required"] == ["bot"]
 
 
 def test_info_frame(ctx):
@@ -133,6 +145,18 @@ def test_settings_validation_frames(ctx):
                 {"patch": {"approval_mode": "loud"}})["error"]["code"] == 4202
     ok = call(ctx, "hexbot.settings.set", {"patch": {"approval_mode": "smart"}})
     assert ok["result"]["approval_mode"] == "smart"
+
+
+def test_dreaming_rpc_frames(ctx, monkeypatch):
+    monkeypatch.setattr("hexbot.dreaming.status", lambda bot: {
+        "enabled": True, "last_run_at": 1, "next_run_at": 2,
+        "last_status": "success", "last_error": None})
+    monkeypatch.setattr("hexbot.dreaming.run_now", lambda bot: {"job": {"id": "j1"}})
+    monkeypatch.setattr("hexbot.dreaming.list_dreams",
+                        lambda bot, limit=20: {"dreams": [{"id": "d1"}]})
+    assert call(ctx, "hexbot.dreaming.status", {"bot": "scout"})["result"]["enabled"]
+    assert call(ctx, "hexbot.dreaming.run_now", {"bot": "scout"})["result"]["job"]["id"] == "j1"
+    assert call(ctx, "hexbot.dreaming.list", {"bot": "scout", "limit": 1})["result"]["dreams"][0]["id"] == "d1"
 
 
 def test_unexpected_failures_become_5200(ctx, monkeypatch):
@@ -201,7 +225,8 @@ def test_activity_hook_resolves_the_stored_session_id(ctx, fake_gateway):
     with db.transaction() as conn:
         conn.execute("UPDATE sections SET updated_at=0 WHERE id='stored1'")
 
-    assert [name for name, _ in ctx.hooks] == ["on_stream_end"]
+    assert [name for name, _ in ctx.hooks] == [
+        "on_stream_end", "post_tool_call", "post_llm_call", "on_session_end"]
     hook = ctx.hooks[0][1]
 
     hook(session_id="stored1", finished=False)

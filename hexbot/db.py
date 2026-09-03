@@ -11,7 +11,7 @@ from hexbot.home import DATABASE_NAME, ensure_layout
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);
@@ -39,6 +39,12 @@ CREATE INDEX IF NOT EXISTS idx_sections_bot ON sections(bot);
 _ADDED_COLUMNS: dict[int, list[tuple[str, str, str]]] = {
     # (table, column, definition)
     2: [("sections", "title_dirty", "INTEGER NOT NULL DEFAULT 0")],
+    4: [
+        ("bots", "dream_enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("bots", "may_write_core", "INTEGER NOT NULL DEFAULT 0"),
+        ("bots", "tools_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("bots", "skills_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ],
 }
 
 _MIGRATION_DDL: dict[int, str] = {
@@ -73,6 +79,21 @@ CREATE TABLE IF NOT EXISTS bot_messages(
 CREATE INDEX IF NOT EXISTS idx_room_events_room_seq ON room_events(room_id,seq);
 CREATE INDEX IF NOT EXISTS idx_room_turns_room_trigger ON room_turns(room_id,trigger_seq);
 CREATE INDEX IF NOT EXISTS idx_bot_messages_pair ON bot_messages(from_bot,to_bot,created_at);
+""",
+    4: """
+CREATE TABLE IF NOT EXISTS dreams(
+ id TEXT PRIMARY KEY, bot TEXT NOT NULL, room_id TEXT, started_at REAL NOT NULL,
+ finished_at REAL, status TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS memory_entries(
+ id TEXT PRIMARY KEY, bot TEXT NOT NULL, section_id TEXT, room_id TEXT,
+ dream_id TEXT, target TEXT NOT NULL, text TEXT NOT NULL, created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS room_memory(
+ room_id TEXT PRIMARY KEY, text TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL,
+ FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);
+CREATE INDEX IF NOT EXISTS idx_dreams_bot_started ON dreams(bot,started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_entries_section ON memory_entries(section_id);
+CREATE INDEX IF NOT EXISTS idx_memory_entries_room ON memory_entries(room_id);
+CREATE INDEX IF NOT EXISTS idx_memory_entries_dream ON memory_entries(dream_id);
 """,
 }
 

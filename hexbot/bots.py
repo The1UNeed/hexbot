@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import time
 
 from hexbot import db, gateway, sections
@@ -12,8 +13,12 @@ from hexbot.settings import mirror_deployment_config
 logger = logging.getLogger(__name__)
 
 _UPDATABLE = frozenset(
-    {"display_name", "title", "description", "persona", "provider", "model", "avatar"}
+    {"display_name", "title", "description", "persona", "provider", "model", "avatar",
+     "dream_enabled", "may_write_core", "tools", "skills"}
 )
+
+TOOL_TOOLSETS = {"terminal": "terminal", "files": "file", "browser": "browser",
+                 "web_search": "search", "computer_use": "computer_use"}
 
 
 def default_display_name(name: str) -> str:
@@ -70,7 +75,10 @@ def _shape(row) -> dict:
         "title": row["title"] or "",
         "description": row["description"] or detail.get("description", ""),
         "persona": detail.get("soul", ""),
-        "skills": _skill_names(detail.get("skills")),
+        "skills": json.loads(row["skills_json"] or "[]"),
+        "tools": json.loads(row["tools_json"] or "[]"),
+        "dream_enabled": bool(row["dream_enabled"]),
+        "may_write_core": bool(row["may_write_core"]),
         "provider": model.get("provider"),
         "model": model.get("default"),
         "avatar": _avatar(row["name"]),
@@ -139,6 +147,11 @@ def create_bot(name: str, *, display_name=None, title=None, description=None,
             "last_activity_at) VALUES (?,?,?,?,?,?,?)",
             (name, display_name, title or "", description or "", now, now, now))
     section = sections.create_section(name, "General")
+    try:
+        from hexbot.dreaming import ensure_dream_job
+        ensure_dream_job(get_bot(name))
+    except Exception:
+        logger.warning("could not create dream job for %s", name, exc_info=True)
     return get_bot(name), section
 
 
@@ -152,6 +165,22 @@ def update_bot(name: str, **patch) -> dict:
                       if k in {"description", "provider", "model"} and v is not None})
     if patch.get("persona") is not None:
         configure["soul"] = patch["persona"]
+    if "tools" in patch:
+        tools = patch["tools"]
+        if not isinstance(tools, list) or any(item not in TOOL_TOOLSETS for item in tools):
+            raise HexbotError(4202, "tools must contain terminal, files, browser, web_search, or computer_use")
+        configure["enabled_toolsets"] = [TOOL_TOOLSETS[item] for item in dict.fromkeys(tools)]
+    if "skills" in patch:
+        skills = patch["skills"]
+        if not isinstance(skills, list) or any(not isinstance(item, str) for item in skills):
+            raise HexbotError(4202, "skills must be a list of skill names")
+        detail = _profile_details(name)
+        installed = set(_skill_names(detail.get("skills")))
+        chosen = set(skills)
+        unknown_skills = chosen - installed
+        if unknown_skills:
+            raise HexbotError(4202, f"unknown skill: {sorted(unknown_skills)[0]}")
+        configure["disabled_skills"] = sorted(installed - chosen)
     if len(configure) > 1:
         gateway.call("profiles.configure", configure)
     if "avatar" in patch:
@@ -167,13 +196,22 @@ def update_bot(name: str, **patch) -> dict:
                 display_name=patch.get("display_name"))
         except (OSError, FileNotFoundError):
             logger.warning("could not update profile.yaml for %s", name, exc_info=True)
-    columns = [key for key in ("display_name", "title", "description") if key in patch]
+    values = dict(patch)
+    values["tools_json"] = json.dumps(list(dict.fromkeys(patch.get("tools", [])))) if "tools" in patch else None
+    values["skills_json"] = json.dumps(list(dict.fromkeys(patch.get("skills", [])))) if "skills" in patch else None
+    columns = [key for key in ("display_name", "title", "description", "dream_enabled",
+                               "may_write_core", "tools_json", "skills_json")
+               if key in patch or key.removesuffix("_json") in patch]
     if columns:
         with db.transaction() as conn:
             assignments = ",".join(f"{key}=?" for key in columns)
             conn.execute(f"UPDATE bots SET {assignments},updated_at=? WHERE name=?",
-                         [patch[key] for key in columns] + [time.time(), name])
-    return get_bot(name)
+                         [values[key] for key in columns] + [time.time(), name])
+    result = get_bot(name)
+    if "dream_enabled" in patch:
+        from hexbot.dreaming import ensure_dream_job
+        ensure_dream_job(result)
+    return result
 
 
 def busy_sections(name: str) -> list[tuple[str, str]]:

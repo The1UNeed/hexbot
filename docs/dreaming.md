@@ -49,3 +49,21 @@ Default-off bundled Hermes memory plugin (`plugins/memory/<choice>`), chosen
 per deployment in settings; the embedding model is a provider model from the
 configured providers or a local one. Enabled per bot. Not needed for the
 two-tier model to work; it improves recall over long histories.
+
+## Milestone 4 implementation decisions
+
+- Dream schedules are stored as local five-field cron expressions. `03:00`
+  becomes `0 3 * * *`. Deployment-level and bot-level enablement must both be
+  true for the job to stay enabled.
+- `post_tool_call` records builtin memory writes. The optional memory-provider
+  callback does not fire for every builtin write, so it cannot provide complete
+  provenance.
+- The digest tool starts the dream row and associates its id with the cron
+  turn. The stream-end hook records the final summary, updates room memory for
+  room dreams, and clears the association.
+- Hermes currently accepts `display_kind: "hidden"` on `prompt.submit`. If an
+  older daemon rejects it, Hexbot appends an assistant row to the Dreams
+  section's profile `state.db`; it never resubmits the summary as user input.
+- Transcript caps keep the newest 12,000 characters and prepend
+  `[earlier messages omitted]`. Room prompt memory keeps its first 3,000
+  characters.
