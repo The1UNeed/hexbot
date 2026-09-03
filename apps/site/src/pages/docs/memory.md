@@ -22,7 +22,7 @@ Archiving a section hides it from the active list but keeps it in memory. Deleti
 
 ## Dreaming
 
-Dreaming is a planned daily pass that summarizes a bot's conversations into its section memory. Until it ships, bots still use their notes and stored conversation search.
+Dreaming is a daily pass that summarizes a bot's recent conversations into its section memory. Read [Dreaming](/docs/dreaming/) for scheduling, permissions, and room memory.
 
 ## Backups
 
