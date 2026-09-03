@@ -2,14 +2,16 @@ import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { BrowserWindow, app, dialog, ipcMain, shell, type Rectangle } from 'electron'
+import { BrowserWindow, Menu, app, dialog, ipcMain, shell, type Rectangle } from 'electron'
+import { applicationMenuTemplate } from './application-menu'
 import { APP_ORIGIN, installAppProtocol, registerAppScheme } from './app-protocol'
 import { bootstrap, type BootstrapProgress } from './backend/bootstrap'
 import { DaemonManager } from './backend/manager'
 import { hexbotHome } from './backend/paths'
 import { resolveWebDevUrl } from './dev-url'
+import { parseDeepLink } from './deep-link'
 import { notify } from './notify'
-import { pair, type PairOptions } from './pair'
+import { pair, pairWithGrant, type GrantPairOptions, type PairOptions } from './pair'
 import { installService, serviceStatus, uninstallService } from './service'
 import { createTray } from './tray'
 import { checkForUpdates, installUpdate, updaterEvents } from './updater'
@@ -22,9 +24,7 @@ app.setPath('userData', join(hexbotHome(), 'desktop-data'))
 registerAppScheme()
 const stateFile = (): string => join(hexbotHome(), 'desktop-state.json')
 let mainWindow: BrowserWindow | null = null
-let pendingLink = app.isPackaged
-  ? process.argv.find(arg => arg.startsWith('hexbot://pair?'))
-  : undefined
+let pendingLink = app.isPackaged ? process.argv.find(arg => parseDeepLink(arg) !== null) : undefined
 let daemon: DaemonManager
 let quitting = false
 
@@ -45,6 +45,20 @@ function validatePair(value: unknown): PairOptions {
     port: Number(item.port),
     code: validString(item.code, 'code', 64),
     deviceName: validString(item.deviceName, 'device name', 128)
+  }
+}
+function validateGrantPair(value: unknown): GrantPairOptions {
+  if (!value || typeof value !== 'object') throw new TypeError('Invalid grant pair options')
+  const item = value as Record<string, unknown>
+  const host = validString(item.host, 'host', 253)
+  if (!/^(?:\[[0-9a-f:]+\](?::\d+)?|[a-z0-9.-]+(?::\d+)?)$/i.test(host))
+    throw new TypeError('Invalid host')
+  if (item.tls !== undefined && typeof item.tls !== 'boolean') throw new TypeError('Invalid TLS')
+  return {
+    host,
+    grant: validString(item.grant, 'grant', 4_096),
+    deviceName: validString(item.deviceName, 'device name', 128),
+    tls: item.tls as boolean | undefined
   }
 }
 async function loadBounds(): Promise<Partial<Rectangle>> {
@@ -111,7 +125,11 @@ async function createWindow(): Promise<BrowserWindow> {
   return window
 }
 function navigate(url: string): void {
-  if (!url.startsWith('hexbot://pair?')) return
+  if (url !== '/settings/providers' && !parseDeepLink(url)) return
+  if (!app.isReady()) {
+    pendingLink = url
+    return
+  }
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.show()
     mainWindow.webContents.send('hexbot:navigate', url)
@@ -172,6 +190,9 @@ function registerIpc(): void {
     }
   })
   ipcMain.handle('hexbot:pair', (_event, value: unknown) => pair(validatePair(value)))
+  ipcMain.handle('hexbot:pair-with-grant', (_event, value: unknown) =>
+    pairWithGrant(validateGrantPair(value))
+  )
   ipcMain.handle('hexbot:notify', (_event, value: unknown) => {
     if (!value || typeof value !== 'object') throw new TypeError('Invalid notification')
     const item = value as Record<string, unknown>
@@ -217,6 +238,16 @@ else {
     installAppProtocol(rendererDirectory, existsSync)
     daemon = new DaemonManager(undefined, async () => (await serviceStatus()).installed)
     registerIpc()
+    if (process.platform === 'darwin')
+      Menu.setApplicationMenu(
+        Menu.buildFromTemplate(
+          applicationMenuTemplate({
+            openSettings: () => navigate('/settings/providers'),
+            checkForUpdates: () => void checkForUpdates(),
+            quit: () => app.quit()
+          })
+        )
+      )
     updaterEvents.on('status', status => {
       for (const window of BrowserWindow.getAllWindows())
         window.webContents.send('hexbot:updater:status', status)

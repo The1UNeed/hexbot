@@ -47,6 +47,8 @@ const hexbot = Object.freeze({
   }),
   pair: (host: string, port: number, code: string, deviceName: string) =>
     ipcRenderer.invoke('hexbot:pair', { host, port, code, deviceName }),
+  pairWithGrant: (host: string, grant: string, deviceName: string, tls = true) =>
+    ipcRenderer.invoke('hexbot:pair-with-grant', { host, grant, deviceName, tls }),
   httpFetch: (
     url: string,
     init?: { method?: string; headers?: Record<string, string>; body?: string }
