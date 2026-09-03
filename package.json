@@ -20,6 +20,8 @@
     "web:test": "npm run test --workspace @hexbot/web",
     "desktop:dev": "npm run dev --workspace @hexbot/desktop",
     "desktop:build": "npm run build --workspace @hexbot/desktop",
+    "site:dev": "npm run dev --workspace @hexbot/site",
+    "site:build": "npm run build --workspace @hexbot/site",
     "check": "npm run --ws check",
     "fix": "npm run --ws fix"
   },

@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #171714;
+  --color-paper: #f4f0e7;
+  --color-acid: #d6ff4b;
+  --color-coral: #ff785a;
+  --font-sans: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+html { background: var(--color-paper); color: var(--color-ink); }
+body { min-height: 100vh; margin: 0; font-family: var(--font-sans); }
+a { text-underline-offset: 0.2em; }
+.prose { max-width: 46rem; font-size: 1.05rem; line-height: 1.75; }
+.prose h1 { margin: 0 0 1.25rem; font-size: clamp(2.25rem, 8vw, 4.5rem); line-height: .95; letter-spacing: -.055em; }
+.prose h2 { margin-top: 2.5rem; font-size: 1.45rem; letter-spacing: -.025em; }
+.prose h3 { margin-top: 2rem; font-size: 1.1rem; }
+.prose p, .prose ul, .prose ol, .prose pre { margin: 1rem 0; }
+.prose ul, .prose ol { padding-left: 1.4rem; }
+.prose ul { list-style: square; }
+.prose ol { list-style: decimal; }
+.prose code { border-radius: .25rem; background: #e6e0d4; padding: .1rem .3rem; font-size: .9em; }
+.prose pre { overflow-x: auto; border: 2px solid var(--color-ink); background: var(--color-ink); color: white; padding: 1rem; }
+.prose pre code { background: transparent; padding: 0; }

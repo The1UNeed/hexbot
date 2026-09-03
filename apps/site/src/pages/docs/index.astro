@@ -1,0 +1,27 @@
+---
+import Base from '../../layouts/Base.astro'
+
+const docs = [
+  ['Install', 'Set up the desktop app and its local daemon.', '/docs/install/'],
+  ['Pairing and LAN', 'Connect another computer on your local network.', '/docs/pairing-and-lan/'],
+  ['Tailscale', 'Reach your daemon away from home without opening a public port.', '/docs/tailscale/'],
+  ['Providers and billing', 'Add model credentials and understand who charges you.', '/docs/providers/'],
+  ['Approvals and Auto mode', 'Control when bots may run tools.', '/docs/approvals/'],
+  ['Memory', 'Understand core memory and each bot’s private memory.', '/docs/memory/'],
+  ['CLI', 'Run and manage Hexbot from a terminal.', '/docs/cli/'],
+]
+---
+<Base title="Documentation">
+  <section class="mx-auto max-w-6xl px-5 py-14 sm:px-8">
+    <p class="text-sm font-black uppercase tracking-[.22em]">Documentation</p>
+    <h1 class="mt-3 text-6xl font-black tracking-[-.06em] sm:text-8xl">Start here.</h1>
+    <div class="mt-10 grid border-l-2 border-t-2 border-ink sm:grid-cols-2 lg:grid-cols-3">
+      {docs.map(([title, summary, href]) => (
+        <a class="min-h-44 border-b-2 border-r-2 border-ink bg-white p-6 no-underline transition hover:bg-acid" href={href}>
+          <h2 class="text-xl font-black">{title}</h2>
+          <p class="mt-3 text-sm leading-6">{summary}</p>
+        </a>
+      ))}
+    </div>
+  </section>
+</Base>

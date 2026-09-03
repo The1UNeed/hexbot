@@ -1,0 +1,29 @@
+---
+import Base from '../layouts/Base.astro'
+import manifest from '../../public/downloads/manifest.json'
+
+const downloads = [
+  ['macOS', 'Apple Silicon', manifest.mac.arm64],
+  ['macOS', 'Intel', manifest.mac.x64],
+  ['Linux', 'AppImage', manifest.linux.AppImage],
+  ['Linux', 'deb', manifest.linux.deb],
+]
+---
+<Base>
+  <section class="mx-auto flex min-h-[calc(100vh-13rem)] max-w-6xl flex-col justify-center px-5 py-10 sm:px-8">
+    <p class="mb-5 text-sm font-black uppercase tracking-[.24em]">Your bots. Your machine.</p>
+    <h1 class="max-w-5xl text-[clamp(3.7rem,11vw,9.5rem)] font-black leading-[.8] tracking-[-.075em]">Bots that<br />remember.</h1>
+    <div class="mt-10 grid gap-4 border-y-2 border-ink py-5 text-lg font-semibold md:grid-cols-3">
+      <p>Run the daemon on your Mac, Linux box, or home server.</p>
+      <p>Choose any supported model provider and pay that provider directly.</p>
+      <p>Give each bot its own memory and skills, then bring them into rooms.</p>
+    </div>
+    <div class="mt-8 flex flex-wrap gap-3">
+      {downloads.map(([os, detail, artifact], index) => (
+        <a class:list={['border-2 border-ink px-5 py-3 text-sm font-black no-underline transition hover:-translate-y-1', index === 0 ? 'bg-acid' : 'bg-white']} href={`/downloads/${artifact}`}>
+          {os} <span class="font-medium">{detail}</span>
+        </a>
+      ))}
+    </div>
+  </section>
+</Base>

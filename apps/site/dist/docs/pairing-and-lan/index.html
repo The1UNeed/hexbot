@@ -1,0 +1,21 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width"><meta name="description" content="Pair a Hexbot desktop app with a daemon on your local network."><link rel="icon" href="data:image/svg+xml,&lt;svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22&gt;&lt;text y=%22.9em%22 font-size=%2290%22&gt;⬡&lt;/text&gt;&lt;/svg&gt;"><title>Pairing and LAN | Hexbot</title><link rel="stylesheet" href="/_astro/Base.imKMk9xb.css"></head><body><header class="mx-auto flex max-w-6xl items-center justify-between px-5 py-6 sm:px-8"><a class="text-xl font-black tracking-[-.05em] no-underline" href="/">HEXBOT</a><nav aria-label="Main navigation" class="flex gap-5 text-sm font-semibold"><a href="/docs/">Docs</a><a href="/privacy/">Privacy</a></nav></header><main><div class="mx-auto grid max-w-6xl gap-10 px-5 py-10 sm:px-8 lg:grid-cols-[13rem_1fr]"><aside><p class="mb-3 text-xs font-black uppercase tracking-[.2em]">Documentation</p><nav aria-label="Documentation" class="flex flex-col items-start gap-2 text-sm"><a href="/docs/install/">Install</a><a href="/docs/pairing-and-lan/">Pairing and LAN</a><a href="/docs/tailscale/">Tailscale</a><a href="/docs/providers/">Providers and billing</a><a href="/docs/approvals/">Approvals and Auto mode</a><a href="/docs/memory/">Memory</a><a href="/docs/cli/">CLI</a></nav></aside><article class="prose"><h1 id="pairing-and-lan">Pairing and LAN</h1>
+<p>A fresh daemon listens only on its own computer. Turn on “Allow other devices” before pairing over your local network.</p>
+<h2 id="on-the-daemon-computer">On the daemon computer</h2>
+<p>Open network settings and enable LAN access, or run:</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="sh"><code><span class="line"><span style="color:#B392F0">hexbot</span><span style="color:#9ECBFF"> pair</span></span></code></pre>
+<p>Hexbot shows the daemon’s local addresses, a short code, and a QR or pairing link. The code expires after ten minutes and works once.</p>
+<p>Enabling LAN access makes the daemon listen on all network interfaces. Your router still decides whether devices can reach one another. Guest Wi-Fi networks often block local device traffic.</p>
+<h2 id="on-the-other-computer">On the other computer</h2>
+<p>Open the pairing link in a browser, then choose “Open in Hexbot.” You can also open Hexbot, choose “Connect to a daemon,” and enter the host, port, and code by hand.</p>
+<p>The app exchanges the one-time code for a device token. It stores that token locally and presents it on later connections. The pairing code itself is not reused.</p>
+<h2 id="revoke-a-device">Revoke a device</h2>
+<p>The daemon owner can view paired devices in settings and revoke any device. Revocation invalidates its token. Pair that device again if you want to restore access.</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<ul>
+<li>Confirm both computers are on the same network.</li>
+<li>Use the numeric LAN address if a <code>.local</code> hostname does not resolve.</li>
+<li>Check the daemon port and local firewall.</li>
+<li>Generate a new code if ten minutes have passed.</li>
+<li>Do not forward the daemon port on your router. Use <a href="/docs/tailscale/">Tailscale</a> for remote access.</li>
+</ul>
+</article></div></main><footer class="mx-auto mt-16 flex max-w-6xl flex-wrap justify-between gap-4 border-t-2 border-ink px-5 py-8 text-sm sm:px-8"><span>Hexbot is AGPL-3.0 software.</span><a href="/privacy/">No tracking. No cookies.</a></footer></body></html>

@@ -1,0 +1,11 @@
+{
+  "version": "0.1.0",
+  "mac": {
+    "arm64": "Hexbot-0.1.0-mac-arm64.dmg",
+    "x64": "Hexbot-0.1.0-mac-x64.dmg"
+  },
+  "linux": {
+    "AppImage": "Hexbot-0.1.0-linux-x64.AppImage",
+    "deb": "Hexbot-0.1.0-linux-x64.deb"
+  }
+}

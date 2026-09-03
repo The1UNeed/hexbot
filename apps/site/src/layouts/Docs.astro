@@ -1,0 +1,25 @@
+---
+import Base from './Base.astro'
+
+const { frontmatter } = Astro.props
+const docs = [
+  ['Install', '/docs/install/'],
+  ['Pairing and LAN', '/docs/pairing-and-lan/'],
+  ['Tailscale', '/docs/tailscale/'],
+  ['Providers and billing', '/docs/providers/'],
+  ['Approvals and Auto mode', '/docs/approvals/'],
+  ['Memory', '/docs/memory/'],
+  ['CLI', '/docs/cli/'],
+]
+---
+<Base title={frontmatter.title} description={frontmatter.description}>
+  <div class="mx-auto grid max-w-6xl gap-10 px-5 py-10 sm:px-8 lg:grid-cols-[13rem_1fr]">
+    <aside>
+      <p class="mb-3 text-xs font-black uppercase tracking-[.2em]">Documentation</p>
+      <nav aria-label="Documentation" class="flex flex-col items-start gap-2 text-sm">
+        {docs.map(([label, href]) => <a href={href}>{label}</a>)}
+      </nav>
+    </aside>
+    <article class="prose"><slot /></article>
+  </div>
+</Base>

@@ -1,0 +1,38 @@
+---
+import '../styles/global.css'
+
+interface Props {
+  title?: string
+  description?: string
+}
+
+const {
+  title = 'Hexbot',
+  description = 'Self-hosted bots with memory, tools, and your choice of model.',
+} = Astro.props
+const pageTitle = title === 'Hexbot' ? title : `${title} | Hexbot`
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="description" content={description} />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⬡</text></svg>" />
+    <title>{pageTitle}</title>
+  </head>
+  <body>
+    <header class="mx-auto flex max-w-6xl items-center justify-between px-5 py-6 sm:px-8">
+      <a class="text-xl font-black tracking-[-.05em] no-underline" href="/">HEXBOT</a>
+      <nav aria-label="Main navigation" class="flex gap-5 text-sm font-semibold">
+        <a href="/docs/">Docs</a>
+        <a href="/privacy/">Privacy</a>
+      </nav>
+    </header>
+    <main><slot /></main>
+    <footer class="mx-auto mt-16 flex max-w-6xl flex-wrap justify-between gap-4 border-t-2 border-ink px-5 py-8 text-sm sm:px-8">
+      <span>Hexbot is AGPL-3.0 software.</span>
+      <a href="/privacy/">No tracking. No cookies.</a>
+    </footer>
+  </body>
+</html>

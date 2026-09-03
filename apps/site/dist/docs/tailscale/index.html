@@ -1,0 +1,17 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width"><meta name="description" content="Connect to a Hexbot daemon over Tailscale."><link rel="icon" href="data:image/svg+xml,&lt;svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22&gt;&lt;text y=%22.9em%22 font-size=%2290%22&gt;⬡&lt;/text&gt;&lt;/svg&gt;"><title>Tailscale | Hexbot</title><link rel="stylesheet" href="/_astro/Base.imKMk9xb.css"></head><body><header class="mx-auto flex max-w-6xl items-center justify-between px-5 py-6 sm:px-8"><a class="text-xl font-black tracking-[-.05em] no-underline" href="/">HEXBOT</a><nav aria-label="Main navigation" class="flex gap-5 text-sm font-semibold"><a href="/docs/">Docs</a><a href="/privacy/">Privacy</a></nav></header><main><div class="mx-auto grid max-w-6xl gap-10 px-5 py-10 sm:px-8 lg:grid-cols-[13rem_1fr]"><aside><p class="mb-3 text-xs font-black uppercase tracking-[.2em]">Documentation</p><nav aria-label="Documentation" class="flex flex-col items-start gap-2 text-sm"><a href="/docs/install/">Install</a><a href="/docs/pairing-and-lan/">Pairing and LAN</a><a href="/docs/tailscale/">Tailscale</a><a href="/docs/providers/">Providers and billing</a><a href="/docs/approvals/">Approvals and Auto mode</a><a href="/docs/memory/">Memory</a><a href="/docs/cli/">CLI</a></nav></aside><article class="prose"><h1 id="use-hexbot-over-tailscale">Use Hexbot over Tailscale</h1>
+<p>Tailscale is the recommended first way to reach your daemon outside your LAN. It creates a private network between your devices, so you do not need to expose a router port.</p>
+<h2 id="set-it-up">Set it up</h2>
+<ol>
+<li>Install Tailscale on the daemon computer and the client computer.</li>
+<li>Sign both devices into the same tailnet, or share the daemon device through Tailscale.</li>
+<li>Enable “Allow other devices” in Hexbot’s network settings.</li>
+<li>On the daemon computer, run <code>hexbot pair</code> to create a fresh code.</li>
+<li>Pair using the daemon’s Tailscale IP address or MagicDNS name and its Hexbot port.</li>
+</ol>
+<p>The daemon uses plain WebSocket traffic. Tailscale encrypts traffic between tailnet devices. Do not use the same setup over the public internet without a private network or secure proxy.</p>
+<h2 id="access-rules">Access rules</h2>
+<p>Tailscale access control lists can restrict who reaches the daemon. Allow only the people and devices that need the Hexbot port. Hexbot pairing still applies after the network connection succeeds, so each desktop app needs its own device token.</p>
+<h2 id="if-it-does-not-connect">If it does not connect</h2>
+<p>Run <code>tailscale status</code> on both computers. Confirm that the daemon’s Tailscale address responds and that your tailnet policy permits the port. Then check Hexbot’s LAN setting and generate a new pairing code.</p>
+<p>Hexbot Connect will offer a managed remote path later. Tailscale works without Hexbot Connect and keeps the route under your control.</p>
+</article></div></main><footer class="mx-auto mt-16 flex max-w-6xl flex-wrap justify-between gap-4 border-t-2 border-ink px-5 py-8 text-sm sm:px-8"><span>Hexbot is AGPL-3.0 software.</span><a href="/privacy/">No tracking. No cookies.</a></footer></body></html>
