@@ -12,7 +12,7 @@ import { Select } from '../../components/ui/select'
 import { Textarea } from '../../components/ui/textarea'
 import { BOT_TEMPLATES } from '../../lib/bot-templates'
 import { toMillis } from '../../lib/time'
-import type { Bot, Room, Section } from '../../lib/types'
+import type { Bot, Room, RoomEvent, Section } from '../../lib/types'
 import { useBotList, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { roomUnread, useRoomList, useRooms } from '../../stores/rooms'
@@ -20,6 +20,8 @@ import { sectionsActions, useSections } from '../../stores/sections'
 import { useSettings } from '../../stores/settings'
 
 const DAY = 86_400_000
+// Stable empty array: a fresh [] per render would re-render forever.
+const NO_EVENTS: RoomEvent[] = []
 
 const avatarData = (bot?: Bot) =>
   bot?.avatar ? `data:${bot.avatar.mime};base64,${bot.avatar.data}` : null
@@ -77,7 +79,7 @@ function RoomRow({
   room: Room
 }) {
   const bots = useBots(state => state.byName)
-  const events = useRooms(state => state.eventsByRoom[room.id] ?? [])
+  const events = useRooms(state => state.eventsByRoom[room.id] ?? NO_EVENTS)
 
   if (query && !room.name.toLowerCase().includes(query)) {
     return null

@@ -8,10 +8,14 @@ import { Menu } from '../../components/ui/menu'
 import { Textarea } from '../../components/ui/textarea'
 import { roomsSend, roomsStop } from '../../lib/api'
 import { toMillis } from '../../lib/time'
-import type { Bot, RoomEvent, RoomMember } from '../../lib/types'
+import type { Bot, RoomEvent, RoomMember, RoomTurn } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useRooms } from '../../stores/rooms'
 import { useTranscripts } from '../../stores/transcripts'
+
+// Stable empty values: a fresh [] or {} per render re-renders forever.
+const NO_EVENTS: RoomEvent[] = []
+const NO_TURNS: Record<string, RoomTurn> = {}
 
 const avatarData = (bot?: Bot) =>
   bot?.avatar ? `data:${bot.avatar.mime};base64,${bot.avatar.data}` : null
@@ -127,8 +131,8 @@ export function RoomMentionPopover({
 export function RoomConversation() {
   const { room: roomId } = useParams({ strict: false }) as { room: string }
   const room = useRooms(state => state.byId[roomId])
-  const events = useRooms(state => state.eventsByRoom[roomId] ?? [])
-  const turns = useRooms(state => state.liveTurnsByRoom[roomId] ?? {})
+  const events = useRooms(state => state.eventsByRoom[roomId] ?? NO_EVENTS)
+  const turns = useRooms(state => state.liveTurnsByRoom[roomId] ?? NO_TURNS)
   const transcripts = useTranscripts(state => state.bySession)
   const bots = useBots(state => state.byName)
   const [text, setText] = useState('')
@@ -141,9 +145,13 @@ export function RoomConversation() {
   useEffect(() => {
     const seq = events.at(-1)?.seq
 
-    if (seq) {void useRooms.getState().markRead(roomId, seq)}
+    if (seq) {
+      void useRooms.getState().markRead(roomId, seq)
+    }
   }, [events, roomId])
-  useEffect(() => bottom.current?.scrollIntoView({ block: 'end' }), [events, transcripts])
+  useEffect(() => {
+    void bottom.current?.scrollIntoView({ block: 'end' })
+  }, [events, transcripts])
 
   const members = useMemo(
     () => room?.members.filter(member => member.member_kind === 'bot' && !member.left_at) ?? [],
