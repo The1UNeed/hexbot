@@ -5,6 +5,7 @@ import type { ReactNode } from 'react'
 import { cn } from '../../lib/cn'
 
 export interface MenuItem {
+  'data-testid'?: string
   disabled?: boolean
   label: ReactNode
   onSelect?: () => void
@@ -32,6 +33,7 @@ export function Menu({ items, trigger }: MenuProps) {
                     'flex cursor-default items-center rounded-control px-2.5 py-2 text-[length:var(--text-secondary)] outline-none data-[highlighted]:bg-surface-2 data-[disabled]:opacity-50'
                   )}
                   disabled={item.disabled}
+                  data-testid={item['data-testid']}
                   key={index}
                   onClick={item.onSelect}
                 >

@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 const metadata = ipcRenderer.sendSync('hexbot:metadata') as {
+  e2eTarget?: string
   platform: NodeJS.Platform
   version: string
   isPackaged: boolean

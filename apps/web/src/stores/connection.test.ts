@@ -28,4 +28,11 @@ describe('initial connection target', () => {
 
     expect(readStoredTarget()).toBeNull()
   })
+
+  it('adopts an Electron E2E target when no target is stored', () => {
+    window.hexbot = { e2eTarget: 'http://127.0.0.1:43123' } as Window['hexbot']
+
+    expect(readStoredTarget()).toEqual({ kind: 'local', origin: 'http://127.0.0.1:43123' })
+    expect(localStorage.getItem('hexbot.target')).toBeNull()
+  })
 })

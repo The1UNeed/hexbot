@@ -278,6 +278,7 @@ export function RosterColumn() {
             items={[
               { label: 'New bot', onSelect: () => setBotDialog(true) },
               {
+                'data-testid': 'roster-new-section',
                 disabled: !ordered.length,
                 label: 'New section',
                 onSelect: () => void createSection()

@@ -75,6 +75,10 @@ export function targetOrigin(target: ConnectionTarget): string {
     return `http://${target.host}:${target.port}`
   }
 
+  if (target.origin) {
+    return target.origin.replace(/\/+$/, '')
+  }
+
   const override = import.meta.env?.VITE_HEXBOT_ORIGIN
 
   if (typeof override === 'string' && override) {

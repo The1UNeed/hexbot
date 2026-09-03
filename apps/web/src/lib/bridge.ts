@@ -37,6 +37,8 @@ export interface HexbotBridge {
     status(): Promise<DaemonStatus>
     stop(): Promise<void>
   }
+  /** Test-only daemon origin supplied by the Electron main process. */
+  e2eTarget?: string
   isPackaged: boolean
   notify(input: { body: string; sectionId?: string; title: string }): void
   openExternal(url: string): Promise<void> | void

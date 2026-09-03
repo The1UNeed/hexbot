@@ -35,7 +35,7 @@ function isTarget(value: unknown): value is ConnectionTarget {
   const candidate = value as Record<string, unknown>
 
   if (candidate.kind === 'local') {
-    return true
+    return candidate.origin === undefined || typeof candidate.origin === 'string'
   }
 
   return (
@@ -69,6 +69,12 @@ export function readStoredTarget(): ConnectionTarget | null {
 
 /** Adopt a daemon-served web bundle without persisting its origin-bound target. */
 function resolveOriginTarget(): ConnectionTarget | null {
+  const e2eTarget = typeof window !== 'undefined' ? window.hexbot?.e2eTarget : undefined
+
+  if (e2eTarget) {
+    return { kind: 'local', origin: e2eTarget }
+  }
+
   if (
     typeof window !== 'undefined' &&
     !window.hexbot &&

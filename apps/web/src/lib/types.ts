@@ -80,7 +80,8 @@ export type ConnectionStatus =
   'connected' | 'connecting' | 'idle' | 'offline' | 'reconnecting' | 'unauthorized'
 
 export type ConnectionTarget =
-  { deviceToken: string; host: string; kind: 'remote'; port: number } | { kind: 'local' }
+  | { deviceToken: string; host: string; kind: 'remote'; port: number }
+  | { kind: 'local'; origin?: string }
 
 export interface CoreMemory {
   caps: { per_section: number }

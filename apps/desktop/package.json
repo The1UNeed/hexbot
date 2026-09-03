@@ -9,6 +9,7 @@
     "build": "npm run build --workspace @hexbot/web && node ../../scripts/desktop/stage-python-src.mjs && electron-vite build && node scripts/copy-web.mjs",
     "dist:mac": "node ../../scripts/desktop/dist.mjs --mac",
     "dist:linux": "node ../../scripts/desktop/dist.mjs --linux",
+    "e2e": "playwright test",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

@@ -38,3 +38,18 @@ HERMES_HOME=$HEXBOT_HOME ./venv/bin/python -c \
   "from hermes_cli import auth; auth._save_codex_tokens(auth._import_codex_cli_tokens())"
 ./venv/bin/hexbot serve --port 9131
 ```
+
+## Desktop end-to-end smoke test
+
+Build the Electron app, then run its Playwright test against a temporary daemon:
+
+```bash
+npm run desktop:build
+npm run desktop:e2e
+```
+
+The test imports Codex CLI OAuth tokens into a temporary daemon home, creates the `scout`
+bot with `openai-codex` and `gpt-5.6-sol`, sends a real prompt, and creates a second section.
+It requires a working Codex CLI login. `HEXBOT_E2E_TARGET` is exposed by
+`apps/desktop/src/preload/index.ts`; `apps/web/src/stores/connection.ts` adopts it only when no
+connection target is stored.

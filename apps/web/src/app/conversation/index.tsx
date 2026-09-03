@@ -206,7 +206,10 @@ function MessageRow({
   const assistant = message.role === 'assistant'
 
   return (
-    <article className={`flex gap-2 py-2 ${assistant ? 'justify-start' : 'justify-end'}`}>
+    <article
+      className={`flex gap-2 py-2 ${assistant ? 'justify-start' : 'justify-end'}`}
+      data-testid={assistant ? 'bot-message' : 'user-message'}
+    >
       {assistant ? (
         <div className="w-8 shrink-0">
           {firstInRun ? <Avatar image={avatarData(bot)} name={bot?.display_name ?? 'Bot'} /> : null}

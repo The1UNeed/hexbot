@@ -124,6 +124,7 @@ function sendProgress(progress: BootstrapProgress): void {
 function registerIpc(): void {
   ipcMain.on('hexbot:metadata', event => {
     event.returnValue = {
+      e2eTarget: process.env.HEXBOT_E2E_TARGET,
       platform: process.platform,
       version: app.getVersion(),
       isPackaged: app.isPackaged
