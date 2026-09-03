@@ -16,7 +16,9 @@ export const srcDir = (version: string): string => join(runtimeDir(), 'src', ver
 
 export function repoRoot(): string {
   const appPath = app?.getAppPath?.()
-  return appPath ? resolve(appPath, '../..') : resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..')
+  return appPath
+    ? resolve(appPath, '../..')
+    : resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..')
 }
 
 export function activeSourceDir(version = app.getVersion()): string {

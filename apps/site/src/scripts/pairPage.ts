@@ -14,5 +14,6 @@ if (details && status && panel && code && address && open) {
   address.textContent = `${details.host}:${details.port}`
   open.href = details.deepLink
 } else if (status) {
-  status.textContent = 'This pairing link is incomplete or has expired. Ask the daemon owner to run hexbot pair again.'
+  status.textContent =
+    'This pairing link is incomplete or has expired. Ask the daemon owner to run hexbot pair again.'
 }

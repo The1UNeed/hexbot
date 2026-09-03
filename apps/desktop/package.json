@@ -16,6 +16,7 @@
     "electron-updater": "6.8.9"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@types/node": "22.20.1",
     "electron": "40.10.2",
     "electron-builder": "26.15.3",

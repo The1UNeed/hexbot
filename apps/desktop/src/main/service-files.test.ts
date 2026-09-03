@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { launchdPlist, systemdUnit } from './service-files'
 
-const options = { executable: '/home/me/.hexbot/runtime/venv/bin/hexbot', home: '/home/me/.hexbot', path: '/home/me/.hexbot/bin:/usr/bin', logDir: '/home/me/.hexbot/logs' }
+const options = {
+  executable: '/home/me/.hexbot/runtime/venv/bin/hexbot',
+  home: '/home/me/.hexbot',
+  path: '/home/me/.hexbot/bin:/usr/bin',
+  logDir: '/home/me/.hexbot/logs'
+}
 describe('service files', () => {
-  it('renders launchd configuration', () => { expect(launchdPlist(options)).toMatchInlineSnapshot(`
+  it('renders launchd configuration', () => {
+    expect(launchdPlist(options)).toMatchInlineSnapshot(`
 "<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -15,8 +21,10 @@ describe('service files', () => {
   <key>StandardErrorPath</key><string>/home/me/.hexbot/logs/service-error.log</string>
 </dict></plist>
 "
-`) })
-  it('renders systemd configuration', () => { expect(systemdUnit(options)).toMatchInlineSnapshot(`
+`)
+  })
+  it('renders systemd configuration', () => {
+    expect(systemdUnit(options)).toMatchInlineSnapshot(`
 "[Unit]
 Description=Hexbot daemon
 After=network.target
@@ -33,5 +41,6 @@ StandardError=append:/home/me/.hexbot/logs/service-error.log
 [Install]
 WantedBy=default.target
 "
-`) })
+`)
+  })
 })

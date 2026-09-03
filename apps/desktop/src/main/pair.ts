@@ -1,29 +1,52 @@
 export class PairingError extends Error {
-  constructor(public readonly code: 'invalid_code' | 'missing_token' | 'verification_failed') { super(code); this.name = 'PairingError' }
+  constructor(public readonly code: 'invalid_code' | 'missing_token' | 'verification_failed') {
+    super(code)
+    this.name = 'PairingError'
+  }
 }
 
-export function cookieValue(headers: Pick<Headers, 'getSetCookie'>, name: string): string | undefined {
+export function cookieValue(
+  headers: Pick<Headers, 'getSetCookie'>,
+  name: string
+): string | undefined {
   for (const cookie of headers.getSetCookie()) {
     const first = cookie.split(';', 1)[0]!
     const separator = first.indexOf('=')
-    if (separator > 0 && first.slice(0, separator).trim() === name) return first.slice(separator + 1).trim()
+    if (separator > 0 && first.slice(0, separator).trim() === name)
+      return first.slice(separator + 1).trim()
   }
   return undefined
 }
 
-export interface PairOptions { host: string; port: number; code: string; deviceName: string }
-export async function pair({ host, port, code, deviceName }: PairOptions): Promise<{ deviceToken: string; daemonName: string }> {
+export interface PairOptions {
+  host: string
+  port: number
+  code: string
+  deviceName: string
+}
+export async function pair({
+  host,
+  port,
+  code,
+  deviceName
+}: PairOptions): Promise<{ deviceToken: string; daemonName: string }> {
   const base = `http://${host}:${port}`
   const response = await fetch(`${base}/auth/password-login`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ provider: 'hexbot', username: deviceName, password: code }), signal: AbortSignal.timeout(30_000)
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ provider: 'hexbot', username: deviceName, password: code }),
+    signal: AbortSignal.timeout(30_000)
   })
   if (response.status === 401) throw new PairingError('invalid_code')
   if (!response.ok) throw new PairingError('verification_failed')
-  const result = await response.json() as { daemon_name?: string }
+  const result = (await response.json()) as { daemon_name?: string }
   const deviceToken = cookieValue(response.headers, 'hermes_session_at')
   if (!deviceToken) throw new PairingError('missing_token')
-  const verify = await fetch(`${base}/api/auth/ws-ticket`, { method: 'POST', headers: { authorization: `Bearer ${deviceToken}` }, signal: AbortSignal.timeout(30_000) })
+  const verify = await fetch(`${base}/api/auth/ws-ticket`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${deviceToken}` },
+    signal: AbortSignal.timeout(30_000)
+  })
   if (!verify.ok) throw new PairingError('verification_failed')
   return { deviceToken, daemonName: result.daemon_name ?? host }
 }

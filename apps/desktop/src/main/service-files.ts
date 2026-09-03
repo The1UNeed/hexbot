@@ -1,6 +1,16 @@
-export interface ServiceFileOptions { executable: string; home: string; path: string; logDir: string }
+export interface ServiceFileOptions {
+  executable: string
+  home: string
+  path: string
+  logDir: string
+}
 
-const xml = (value: string): string => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
+const xml = (value: string): string =>
+  value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
 
 export function launchdPlist(options: ServiceFileOptions): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -17,6 +27,7 @@ export function launchdPlist(options: ServiceFileOptions): string {
 }
 
 export function systemdUnit(options: ServiceFileOptions): string {
-  const quote = (value: string): string => `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`
+  const quote = (value: string): string =>
+    `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`
   return `[Unit]\nDescription=Hexbot daemon\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=${quote(options.executable)} serve\nEnvironment=HEXBOT_HOME=${quote(options.home)}\nEnvironment=PATH=${quote(options.path)}\nRestart=always\nStandardOutput=append:${options.logDir}/service.log\nStandardError=append:${options.logDir}/service-error.log\n\n[Install]\nWantedBy=default.target\n`
 }
