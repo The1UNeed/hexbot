@@ -2,5 +2,7 @@ import { defineConfig } from 'electron-vite'
 
 export default defineConfig({
   main: {},
-  preload: {}
+  preload: {
+    build: { rollupOptions: { output: { format: 'cjs', entryFileNames: '[name].js' } } }
+  }
 })

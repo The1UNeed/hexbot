@@ -69,7 +69,19 @@ export function installAppProtocol(rootDir: string, exists: (file: string) => bo
     const { file, mime } = resolveAppRequest(url.pathname, rootDir, exists)
     try {
       const body = await readFile(file)
-      return new Response(body, { headers: { 'content-type': mime, 'cache-control': 'no-cache' } })
+      const headers: Record<string, string> = { 'content-type': mime, 'cache-control': 'no-cache' }
+      if (mime.startsWith('text/html')) {
+        headers['content-security-policy'] = [
+          "default-src 'self'",
+          "script-src 'self'",
+          "style-src 'self' 'unsafe-inline'",
+          "img-src 'self' data: blob: http: https:",
+          "font-src 'self' data:",
+          "connect-src 'self' http: https: ws: wss:",
+          "media-src 'self' blob:"
+        ].join('; ')
+      }
+      return new Response(body, { headers })
     } catch {
       return net
         .fetch('data:text/plain,Not found', { method: 'GET' })

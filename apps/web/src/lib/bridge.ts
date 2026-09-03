@@ -29,6 +29,13 @@ export interface DaemonStatus {
   version?: null | string
 }
 
+export interface BridgeHttpResponse {
+  status: number
+  statusText: string
+  headers: Record<string, string>
+  text: string
+}
+
 export interface HexbotBridge {
   daemon: {
     localToken(): Promise<null | string>
@@ -43,6 +50,10 @@ export interface HexbotBridge {
   notify(input: { body: string; sectionId?: string; title: string }): void
   openExternal(url: string): Promise<void> | void
   pair(host: string, port: number, code: string, deviceName: string): Promise<PairResult>
+  httpFetch(
+    url: string,
+    init?: { method?: string; headers?: Record<string, string>; body?: string }
+  ): Promise<BridgeHttpResponse>
   pickFiles(): Promise<PickedFile[]>
   platform: string
   service: {

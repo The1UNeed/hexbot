@@ -47,6 +47,10 @@ const hexbot = Object.freeze({
   }),
   pair: (host: string, port: number, code: string, deviceName: string) =>
     ipcRenderer.invoke('hexbot:pair', { host, port, code, deviceName }),
+  httpFetch: (
+    url: string,
+    init?: { method?: string; headers?: Record<string, string>; body?: string }
+  ) => ipcRenderer.invoke('hexbot:http-fetch', url, init ?? {}),
   notify: (options: unknown) => ipcRenderer.invoke('hexbot:notify', options),
   openExternal: (url: string) => ipcRenderer.invoke('hexbot:open-external', url),
   pickFiles: () => ipcRenderer.invoke('hexbot:pick-files'),

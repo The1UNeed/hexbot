@@ -122,6 +122,31 @@ function sendProgress(progress: BootstrapProgress): void {
     window.webContents.send('hexbot:daemon:progress', progress)
 }
 function registerIpc(): void {
+  ipcMain.handle('hexbot:http-fetch', async (_event, rawUrl: unknown, rawInit: unknown) => {
+    // The renderer runs on hexbot-app://, which the daemon's CORS policy does
+    // not admit; the main process performs its HTTP calls instead.
+    const url = validString(rawUrl, 'url', 4_096)
+    if (!/^https?:\/\//.test(url)) throw new TypeError('Only http(s) URLs are allowed')
+    const init = (rawInit ?? {}) as { method?: unknown; headers?: unknown; body?: unknown }
+    const method = typeof init.method === 'string' ? init.method.toUpperCase() : 'GET'
+    const headers: Record<string, string> = {}
+    if (init.headers && typeof init.headers === 'object')
+      for (const [key, value] of Object.entries(init.headers as Record<string, unknown>))
+        if (typeof value === 'string' && key.length < 200) headers[key] = value
+    const body = typeof init.body === 'string' ? init.body : undefined
+    const response = await fetch(url, {
+      method,
+      headers,
+      body,
+      signal: AbortSignal.timeout(30_000)
+    })
+    return {
+      status: response.status,
+      statusText: response.statusText,
+      headers: Object.fromEntries(response.headers.entries()),
+      text: await response.text()
+    }
+  })
   ipcMain.on('hexbot:metadata', event => {
     event.returnValue = {
       e2eTarget: process.env.HEXBOT_E2E_TARGET,

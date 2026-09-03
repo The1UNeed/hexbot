@@ -69,6 +69,42 @@ interface ReadyPayload {
   replay_epoch?: string
 }
 
+/**
+ * Inside Electron the renderer origin is `hexbot-app://app`, which the daemon's
+ * CORS policy rejects, so HTTP goes through the main process. Browsers use
+ * `fetch` directly.
+ */
+function defaultFetch(deps: ConnectionDeps): typeof fetch {
+  const bridge = (deps.bridge ?? getBridge)()
+
+  if (!bridge?.httpFetch) {
+    return globalThis.fetch
+  }
+
+  return async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    const headers: Record<string, string> = {}
+
+    if (init?.headers) {
+      new Headers(init.headers).forEach((value, key) => {
+        headers[key] = value
+      })
+    }
+
+    const result = await bridge.httpFetch(url, {
+      body: typeof init?.body === 'string' ? init.body : undefined,
+      headers,
+      method: init?.method
+    })
+
+    return new Response(result.text, {
+      headers: result.headers,
+      status: result.status,
+      statusText: result.statusText
+    })
+  }
+}
+
 /** HTTP origin for a target, e.g. `http://192.168.1.10:9119`. */
 export function targetOrigin(target: ConnectionTarget): string {
   if (target.kind === 'remote') {
@@ -105,7 +141,7 @@ function readGlobalToken(origin: string): string | undefined {
  * so they are matched out of the HTML rather than evaluated.
  */
 export async function probeDaemon(origin: string, deps: ConnectionDeps = {}): Promise<ProbeResult> {
-  const doFetch = deps.fetch ?? globalThis.fetch
+  const doFetch = deps.fetch ?? defaultFetch(deps)
   let body = ''
 
   try {
@@ -145,7 +181,7 @@ async function bearerToken(target: ConnectionTarget, deps: ConnectionDeps): Prom
 }
 
 async function mintTicket(origin: string, bearer: string, deps: ConnectionDeps): Promise<string> {
-  const doFetch = deps.fetch ?? globalThis.fetch
+  const doFetch = deps.fetch ?? defaultFetch(deps)
   let response: Response
 
   try {
@@ -219,7 +255,7 @@ export async function pairWithDaemon(
     }
   }
 
-  const doFetch = deps.fetch ?? globalThis.fetch
+  const doFetch = deps.fetch ?? defaultFetch(deps)
   let response: Response
 
   try {
