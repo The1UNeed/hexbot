@@ -1,60 +1,135 @@
 @import "tailwindcss";
 
+/*
+ * Hexbot design tokens. Every colour, radius, shadow and motion value the UI
+ * uses lives here (docs/ui-design.md). Components reference the Tailwind
+ * theme names below, never raw hex.
+ */
+
 :root {
   color-scheme: light dark;
-  --hex-background: #f7f7f6;
+
+  --hex-background: #fafaf9;
   --hex-surface: #ffffff;
-  --hex-text: #171717;
-  --hex-muted-text: #6b6b6b;
-  --hex-accent: #525252;
-  --hex-border: #dededb;
-  --hex-danger: #b42318;
+  --hex-surface-2: #f3f3f1;
+  --hex-text: #17171a;
+  --hex-muted-text: #6b6b72;
+  --hex-border: #e6e6e2;
+  --hex-accent: #4f46e5;
+  --hex-accent-fg: #ffffff;
+  --hex-danger: #d92d20;
+  --hex-success: #12805c;
+  --hex-warning: #b54708;
+
+  --hex-radius-control: 6px;
+  --hex-radius-panel: 10px;
+  --hex-radius-bubble: 16px;
+
+  --hex-font-sans: system-ui, -apple-system, "SF Pro Text", Inter, Cantarell, "Segoe UI", sans-serif;
+  --hex-font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+
+  --hex-shadow-popup: 0 8px 24px -8px rgb(0 0 0 / 0.24);
+
+  --hex-motion-fast: 120ms;
+  --hex-motion-panel: 200ms;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --hex-background: #111111;
-    --hex-surface: #1b1b1b;
-    --hex-text: #f2f2f2;
-    --hex-muted-text: #a3a3a3;
-    --hex-accent: #d4d4d4;
-    --hex-border: #343434;
+    --hex-background: #121214;
+    --hex-surface: #1a1a1e;
+    --hex-surface-2: #232328;
+    --hex-text: #f2f2f4;
+    --hex-muted-text: #9a9aa3;
+    --hex-border: #2c2c33;
+    --hex-accent: #8b85ff;
+    --hex-accent-fg: #121214;
     --hex-danger: #f97066;
+    --hex-success: #3ccb7f;
+    --hex-warning: #f7b24a;
+
+    --hex-shadow-popup: 0 8px 24px -8px rgb(0 0 0 / 0.6);
   }
 }
 
 [data-theme='light'] {
   color-scheme: light;
-  --hex-background: #f7f7f6;
+
+  --hex-background: #fafaf9;
   --hex-surface: #ffffff;
-  --hex-text: #171717;
-  --hex-muted-text: #6b6b6b;
-  --hex-accent: #525252;
-  --hex-border: #dededb;
-  --hex-danger: #b42318;
+  --hex-surface-2: #f3f3f1;
+  --hex-text: #17171a;
+  --hex-muted-text: #6b6b72;
+  --hex-border: #e6e6e2;
+  --hex-accent: #4f46e5;
+  --hex-accent-fg: #ffffff;
+  --hex-danger: #d92d20;
+  --hex-success: #12805c;
+  --hex-warning: #b54708;
+
+  --hex-shadow-popup: 0 8px 24px -8px rgb(0 0 0 / 0.24);
 }
 
 [data-theme='dark'] {
   color-scheme: dark;
-  --hex-background: #111111;
-  --hex-surface: #1b1b1b;
-  --hex-text: #f2f2f2;
-  --hex-muted-text: #a3a3a3;
-  --hex-accent: #d4d4d4;
-  --hex-border: #343434;
+
+  --hex-background: #121214;
+  --hex-surface: #1a1a1e;
+  --hex-surface-2: #232328;
+  --hex-text: #f2f2f4;
+  --hex-muted-text: #9a9aa3;
+  --hex-border: #2c2c33;
+  --hex-accent: #8b85ff;
+  --hex-accent-fg: #121214;
   --hex-danger: #f97066;
+  --hex-success: #3ccb7f;
+  --hex-warning: #f7b24a;
+
+  --hex-shadow-popup: 0 8px 24px -8px rgb(0 0 0 / 0.6);
 }
 
 @theme inline {
   --color-background: var(--hex-background);
   --color-surface: var(--hex-surface);
+  --color-surface-2: var(--hex-surface-2);
   --color-foreground: var(--hex-text);
   --color-muted: var(--hex-muted-text);
-  --color-accent: var(--hex-accent);
   --color-border: var(--hex-border);
+  --color-accent: var(--hex-accent);
+  --color-accent-fg: var(--hex-accent-fg);
   --color-danger: var(--hex-danger);
+  --color-success: var(--hex-success);
+  --color-warning: var(--hex-warning);
+
+  --radius-control: var(--hex-radius-control);
+  --radius-panel: var(--hex-radius-panel);
+  --radius-bubble: var(--hex-radius-bubble);
+
+  --font-sans: var(--hex-font-sans);
+  --font-mono: var(--hex-font-mono);
+
+  --text-meta: 12px;
+  --text-secondary: 13px;
+  --text-body: 14px;
+  --text-title: 20px;
+
+  --shadow-popup: var(--hex-shadow-popup);
 }
 
+html,
 body {
   margin: 0;
+  background: var(--hex-background);
+  color: var(--hex-text);
+  font-family: var(--hex-font-sans);
+  font-size: var(--text-body, 14px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

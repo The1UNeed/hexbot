@@ -1,0 +1,171 @@
+/**
+ * Routes gateway notifications to store actions. The mapping table in
+ * docs/client-architecture.md is the spec:
+ *
+ *   message.start          begin assistant message (streaming)
+ *   message.delta          append text
+ *   message.interim        append commentary when `already_streamed` is false
+ *   message.complete       finalize, attach usage, `hexbot.sections.touch`
+ *   thinking.delta         append to the collapsed thinking block
+ *   tool.start/complete    add or resolve a tool call in the current message
+ *   approval.request       push an approval card (session scoped) and notify
+ *   status.update          header status line
+ *   session.info           section model and provider chips
+ *   session.usage          usage badge
+ *   error                  inline error row
+ *
+ * Session-less `hexbot.*.changed` events refresh the cold stores.
+ */
+
+import type { GatewayEvent } from '@hermes/shared'
+
+import { useBots } from '../stores/bots'
+import { useSections } from '../stores/sections'
+import { useSettings } from '../stores/settings'
+import type { ApprovalRequestPayload, ToolCompletePayload, ToolStartPayload } from '../stores/transcripts'
+import { useTranscripts } from '../stores/transcripts'
+
+import type { HexbotRpcClient } from './rpc'
+import type { SessionInfo, Usage } from './types'
+
+export interface EventRouterDeps {
+  refreshBots?: () => void
+  refreshNetwork?: () => void
+  refreshSections?: () => void
+}
+
+const defaultDeps: Required<EventRouterDeps> = {
+  refreshBots: () => {
+    void useBots.getState().refresh()
+  },
+  refreshNetwork: () => {
+    void useSettings.getState().refreshNetwork()
+  },
+  refreshSections: () => {
+    void useSections.getState().refresh()
+  }
+}
+
+function payloadOf(event: GatewayEvent): Record<string, unknown> {
+  return (event.payload ?? {}) as Record<string, unknown>
+}
+
+function text(payload: Record<string, unknown>): string {
+  return typeof payload.text === 'string' ? payload.text : ''
+}
+
+/** Dispatch one gateway event. Unknown types are ignored on purpose. */
+export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): void {
+  const effects = { ...defaultDeps, ...deps }
+  const payload = payloadOf(event)
+  const sessionId = event.session_id ?? ''
+  const transcripts = useTranscripts.getState()
+
+  switch (event.type) {
+    case 'hexbot.bots.changed':
+      effects.refreshBots()
+
+      return
+
+    case 'hexbot.memory.core.changed':
+      return
+
+    case 'hexbot.network.changed':
+      effects.refreshNetwork()
+
+      return
+
+    case 'hexbot.sections.changed':
+      effects.refreshSections()
+
+      return
+
+    default:
+      break
+  }
+
+  if (!sessionId) {
+    return
+  }
+
+  switch (event.type) {
+    case 'approval.request':
+      transcripts.approvalRequest(sessionId, payload as ApprovalRequestPayload)
+
+      return
+
+    case 'error':
+      transcripts.errorEvent(sessionId, typeof payload.message === 'string' ? payload.message : 'Unknown error')
+
+      return
+
+    case 'message.complete':
+      transcripts.messageComplete(sessionId, {
+        error: typeof payload.error === 'string' ? payload.error : undefined,
+        partial: payload.partial === true,
+        status: typeof payload.status === 'string' ? payload.status : undefined,
+        text: text(payload),
+        usage: (payload.usage as undefined | Usage) ?? undefined
+      })
+
+      return
+
+    case 'message.delta':
+      transcripts.messageDelta(sessionId, text(payload))
+
+      return
+
+    case 'message.interim':
+      transcripts.messageInterim(sessionId, text(payload), payload.already_streamed === true)
+
+      return
+
+    case 'message.start':
+      transcripts.messageStart(sessionId)
+
+      return
+
+    case 'session.info':
+      transcripts.sessionInfo(sessionId, payload as SessionInfo)
+
+      return
+
+    case 'session.usage':
+      transcripts.sessionUsage(sessionId, ((payload.usage as Usage) ?? payload) as Usage)
+
+      return
+
+    case 'status.update':
+      transcripts.statusUpdate(sessionId, {
+        kind: typeof payload.kind === 'string' ? payload.kind : 'status',
+        text: text(payload)
+      })
+
+      return
+
+    case 'thinking.delta':
+      transcripts.thinkingDelta(sessionId, text(payload))
+
+      return
+
+    case 'tool.complete':
+      transcripts.toolComplete(sessionId, payload as ToolCompletePayload)
+
+      return
+
+    case 'tool.start':
+      transcripts.toolStart(sessionId, payload as ToolStartPayload)
+
+      return
+
+    default:
+      break
+  }
+}
+
+/** Subscribe the router to a connected client; returns the unsubscribe. */
+export function attachEventRouting(client: HexbotRpcClient, deps: EventRouterDeps = {}): () => void {
+  return client.onEvent(event => {
+    routeEvent(event, deps)
+  })
+}
