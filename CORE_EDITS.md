@@ -6,5 +6,5 @@ plugins, and is not listed.
 
 | # | File(s) | Reason |
 |---|---------|--------|
-| 1 | `gateway/hosted_room_discussion.py`, `gateway/hosted_rooms.py`, `tui_gateway/methods_groups.py` | Remove the six-member room cap (Hexbot rooms have no member cap). |
+| 1 | (withdrawn) | Hexbot rooms run on their own engine over Hermes sessions (see `docs/rooms.md`), so Hosted Rooms and its member cap stay untouched. |
 | 2 | `hermes_cli/plugins.py`, `tui_gateway/server.py` | Add `PluginContext.register_rpc_method` and a fallback lookup in `handle_request` so the hexbot plugin can expose `hexbot.*` JSON-RPC methods without editing the gateway. |
