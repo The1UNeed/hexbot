@@ -18,17 +18,21 @@
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "lucide-react": "0.577.0",
+    "qrcode": "1.5.4",
     "react": "19.2.7",
     "react-dom": "19.2.7",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
     "tailwind-merge": "3.6.0",
     "tailwindcss": "4.3.3",
-    "zustand": "^5.0.15"
+    "zustand": "5.0.15"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.3.3",
     "@tanstack/router-plugin": "1.131.35",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "16.3.2",
+    "@types/qrcode": "1.5.6",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.3",

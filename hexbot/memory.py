@@ -20,7 +20,7 @@ CORE_CAP = 4000
 #: Registering one section per core-memory section buys each of them its own
 #: 4000-char allowance instead of sharing one; the 8000-char aggregate is a core
 #: constant Hexbot cannot raise from a plugin, so it is reported to clients.
-PROMPT_TOTAL_CAP = 8000
+PROMPT_TOTAL_CAP = 16000  # four sections of CORE_CAP each
 
 _HEADINGS = {"user": "User", "household": "Household",
              "workspace": "Workspace", "rules": "Rules"}
