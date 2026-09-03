@@ -58,3 +58,12 @@ device immediately. Future session checks and WebSocket-ticket requests using
 that token return 401. A ticket minted before revocation remains usable until
 it is consumed or its 30-second lifetime ends. Revocation does not close an
 already-open WebSocket.
+
+## Hex Connect grants
+
+A Connect client requests a short-lived ES256 grant from hexbot.app, then uses
+`cg_<jwt>` as the password in the existing `/auth/password-login` request. The
+daemon verifies the grant against Connect's cached JWKS, checks that its
+`daemon_id` claim names this daemon, and creates a normal revocable device with
+platform `connect`. The grant never becomes a session token. The returned
+`hxb_` device token follows the same cookie or bearer flow as LAN pairing.

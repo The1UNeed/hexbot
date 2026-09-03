@@ -49,12 +49,15 @@ def run(host=None, port=None, lan=None):
         command = "dashboard"
         extra = ["--skip-build", "--no-open"]
     from hermes_cli.main import main
+    from hexbot import connect
+    connect.start_daemon(port)
     old = sys.argv
     try:
         sys.argv = ["hermes", command, *extra, *_serve_args]
         return main()
     finally:
         sys.argv = old
+        connect.stop_daemon()
 
 
 def request_restart():

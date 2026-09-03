@@ -98,6 +98,12 @@ def _mint_device(name: str, platform: str, *, conn=None) -> Device:
     return device
 
 
+def mint_device(name: str, platform: str) -> Device:
+    """Create a revocable device credential outside the pairing-code flow."""
+    db.migrate()
+    return _mint_device(name, platform)
+
+
 def _record_failure(now: float) -> None:
     with _FAILED_ATTEMPTS_LOCK:
         while _FAILED_ATTEMPTS and _FAILED_ATTEMPTS[0] <= now - 60:

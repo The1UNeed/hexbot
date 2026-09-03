@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +27,10 @@ def parser() -> argparse.ArgumentParser:
     lan.add_argument("--no-lan", action="store_false", dest="lan")
     serve.set_defaults(lan=None)
     sub.add_parser("pair")
+    connect = sub.add_parser("connect")
+    connect_sub = connect.add_subparsers(dest="connect_command")
+    connect_sub.add_parser("status")
+    connect_sub.add_parser("disconnect")
     devices = sub.add_parser("devices").add_subparsers(dest="devices_command", required=True)
     devices.add_parser("list")
     revoke = devices.add_parser("revoke"); revoke.add_argument("id")
@@ -66,6 +71,15 @@ def main(argv=None):
             segno.make(link).terminal(compact=True)
         except ImportError:
             print("QR unavailable: install segno 1.6.6")
+        return 0
+    if args.command == "connect":
+        from hexbot import connect
+        if args.connect_command == "status":
+            print(json.dumps(connect.status(), indent=2)); return 0
+        if args.connect_command == "disconnect":
+            print(json.dumps(connect.disconnect(), indent=2)); return 0
+        config = connect.register(socket.gethostname(), client=connect.ConnectClient())
+        print(f"Connected: https://{config.tunnel_hostname}")
         return 0
     if args.command == "devices":
         from hexbot import pairing

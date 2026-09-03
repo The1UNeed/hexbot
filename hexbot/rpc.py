@@ -16,7 +16,7 @@ import platform
 import socket
 import sys
 
-from hexbot import bots, memory, network, pairing, providers, sections, settings
+from hexbot import bots, connect, memory, network, pairing, providers, sections, settings
 from hexbot.errors import HexbotError
 
 logger = logging.getLogger(__name__)
@@ -131,6 +131,22 @@ def _devices_list(_params) -> dict:
     ]}
 
 
+def _connect_register_start(params) -> dict:
+    client = connect.ConnectClient()
+    return client.register_start(params.get("daemon_name") or socket.gethostname(),
+                                 platform.system().lower())
+
+
+def _connect_register_poll(params) -> dict:
+    client = connect.ConnectClient()
+    result = client.register_poll(_required(params, "device_code"))
+    state = result.get("status", "approved" if result.get("daemon_token") else "pending")
+    result["status"] = state
+    if state == "approved":
+        connect.save_registration(result, client.api_base)
+    return result
+
+
 METHODS = {
     "hexbot.info": info,
     "hexbot.settings.get": lambda p: settings.get_settings(),
@@ -171,6 +187,10 @@ METHODS = {
     "hexbot.pairing.code": _pairing_code,
     "hexbot.devices.list": _devices_list,
     "hexbot.devices.revoke": lambda p: {"revoked": pairing.revoke_device(_required(p, "id"))},
+    "hexbot.connect.status": lambda p: connect.status(),
+    "hexbot.connect.disconnect": lambda p: connect.disconnect(),
+    "hexbot.connect.register_start": _connect_register_start,
+    "hexbot.connect.register_poll": _connect_register_poll,
 }
 
 #: method -> broadcast event emitted after a successful mutation.
@@ -186,6 +206,8 @@ MUTATION_EVENTS = {
     "hexbot.sections.touch": "hexbot.sections.changed",
     "hexbot.memory.core.set": "hexbot.memory.core.changed",
     "hexbot.network.set": "hexbot.network.changed",
+    "hexbot.connect.disconnect": "hexbot.connect.changed",
+    "hexbot.connect.register_poll": "hexbot.connect.changed",
 }
 
 

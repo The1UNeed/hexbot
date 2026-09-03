@@ -51,6 +51,8 @@ def test_every_documented_method_is_registered(ctx):
         "hexbot.providers.clear_key", "hexbot.models.list",
         "hexbot.network.get", "hexbot.network.set",
         "hexbot.pairing.code", "hexbot.devices.list", "hexbot.devices.revoke",
+        "hexbot.connect.status", "hexbot.connect.disconnect",
+        "hexbot.connect.register_start", "hexbot.connect.register_poll",
     }
     assert set(ctx.methods) == expected
 

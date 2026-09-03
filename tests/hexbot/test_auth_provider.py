@@ -1,6 +1,58 @@
 from types import SimpleNamespace
+import json
+import time
 
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
+
+
+def _grant(*, daemon_id="daemon-1", kid="key-1", expires=300, malformed=False):
+    key = ec.generate_private_key(ec.SECP256R1())
+    jwk = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(key.public_key()))
+    jwk.update({"kid": "key-1", "use": "sig", "alg": "ES256"})
+    now = int(time.time())
+    claims = {"sub": "user-1", "daemon_id": daemon_id, "device_name": "MacBook",
+              "iat": now, "exp": now + expires}
+    if malformed:
+        claims.pop("device_name")
+    token = jwt.encode(claims, key, algorithm="ES256", headers={"kid": kid})
+    return token, {"keys": [jwk]}
+
+
+def test_connect_grant_mints_connect_device():
+    from hexbot.auth_provider import HexbotAuthProvider
+    from hexbot.connect import ConnectConfig
+
+    token, jwks = _grant()
+    ConnectConfig(daemon_id="daemon-1").save()
+    provider = HexbotAuthProvider(jwks_fetcher=lambda _url: jwks)
+    session = provider.complete_password_login(username="ignored", password="cg_" + token)
+    assert session.display_name == "MacBook" and session.access_token.startswith("hxb_")
+    assert provider.verify_session(access_token=session.access_token).display_name == "MacBook"
+    from hexbot.pairing import list_devices
+    assert list_devices()[0].platform == "connect"
+
+
+@pytest.mark.parametrize("kind", ["expired", "wrong_daemon", "wrong_kid", "malformed"])
+def test_invalid_connect_grants(kind):
+    from hermes_cli.dashboard_auth import InvalidCredentialsError
+    from hexbot.auth_provider import HexbotAuthProvider
+    from hexbot.connect import ConnectConfig
+
+    kwargs = {
+        "expired": {"expires": -1},
+        "wrong_daemon": {"daemon_id": "other"},
+        "wrong_kid": {"kid": "missing"},
+        "malformed": {"malformed": True},
+    }[kind]
+    token, jwks = _grant(**kwargs)
+    ConnectConfig(daemon_id="daemon-1").save()
+    fetches = []
+    provider = HexbotAuthProvider(jwks_fetcher=lambda url: fetches.append(url) or jwks)
+    with pytest.raises(InvalidCredentialsError):
+        provider.complete_password_login(username="ignored", password="cg_" + token)
+    assert len(fetches) == (2 if kind == "wrong_kid" else 1)
 
 
 def test_provider_login_session_and_bad_credentials():

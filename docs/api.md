@@ -138,11 +138,23 @@ preview, message_count, live_session_id | null}`
   last_seen_at, current: bool}]}`
 - `hexbot.devices.revoke {id}` → `{revoked: true}`
 
+### Hex Connect
+
+- `hexbot.connect.status {}` → `{registered, daemon_id, slug,
+  tunnel_hostname, tunnel_running, last_heartbeat_at, last_error}`
+- `hexbot.connect.register_start {daemon_name?}` → `{device_code, user_code,
+  verify_url, interval}`
+- `hexbot.connect.register_poll {device_code}` → `{status}`. An approved result
+  also stores the daemon and tunnel credentials and mirrors `dashboard.public_url`.
+- `hexbot.connect.disconnect {}` stops Connect, deletes `connect.json`, and
+  removes the mirrored public URL.
+
 ### Events emitted by the plugin
 
 `hexbot.bots.changed {name}`, `hexbot.sections.changed {id, bot}`,
 `hexbot.memory.core.changed {}`, `hexbot.network.changed {}`. Session-less,
 broadcast to every connection.
+Connect registration and disconnection emit `hexbot.connect.changed {}`.
 
 ## Pairing and auth over HTTP
 
@@ -159,6 +171,8 @@ broadcast to every connection.
 - `hexbot serve [--host] [--port] [--lan]`: starts the daemon (wraps
   `hermes serve`, loads the hexbot plugin, applies `~/.hexbot` as home).
 - `hexbot pair`: prints the pairing code, addresses, and a QR.
+- `hexbot connect [status|disconnect]`: registers, inspects, or disconnects
+  this daemon from Hex Connect.
 - `hexbot bots list|create|delete`, `hexbot rooms list` (milestone 3),
   `hexbot send <bot> <text>`.
 - Every Hermes command remains reachable as `hexbot hermes <args>`.
