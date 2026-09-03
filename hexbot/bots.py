@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 _UPDATABLE = frozenset(
     {"display_name", "title", "description", "persona", "provider", "model", "avatar",
-     "dream_enabled", "may_write_core", "tools", "skills"}
+     "dream_enabled", "may_write_core", "shareable", "tools", "skills"}
 )
 
 TOOL_TOOLSETS = {"terminal": "terminal", "files": "file", "browser": "browser",
@@ -64,10 +64,11 @@ def _skill_names(skills) -> list[str]:
     return sorted(set(names))
 
 
-def _shape(row) -> dict:
+def _shape(row, *, all_users=False) -> dict:
     detail = _profile_details(row["name"])
     model = detail.get("model") or {}
-    all_sections = sections.list_sections(row["name"], include_archived=True)
+    all_sections = sections.list_sections(
+        row["name"], include_archived=True, all_users=all_users)
     recent = [item for item in all_sections if item["archived_at"] is None][:2]
     return {
         "name": row["name"],
@@ -79,6 +80,7 @@ def _shape(row) -> dict:
         "tools": json.loads(row["tools_json"] or "[]"),
         "dream_enabled": bool(row["dream_enabled"]),
         "may_write_core": bool(row["may_write_core"]),
+        "shareable": bool(row["shareable"]),
         "provider": model.get("provider"),
         "model": model.get("default"),
         "avatar": _avatar(row["name"]),
@@ -91,27 +93,36 @@ def _shape(row) -> dict:
     }
 
 
-def _row(name: str):
+def _row(name: str, *, enforce_owner=True):
+    from hexbot.identity import current_user_id
     db.migrate()
     with db.transaction() as conn:
         row = conn.execute("SELECT * FROM bots WHERE name=?", (name,)).fetchone()
     if row is None:
         raise HexbotError(4205, f"bot not found: {name}")
+    if enforce_owner and row["owner_id"] != current_user_id():
+        raise HexbotError(4302, "not the owner")
     return row
 
 
-def list_bots() -> list[dict]:
+def list_bots(*, all_users=False) -> list[dict]:
+    from hexbot.identity import owner_filter
+    owner = owner_filter(all_users)
     db.migrate()
     with db.transaction() as conn:
-        rows = conn.execute(
-            "SELECT * FROM bots ORDER BY last_activity_at DESC, name ASC"
-        ).fetchall()
-    return [_shape(row) for row in rows]
+        sql = "SELECT * FROM bots"; args = []
+        if owner is not None:
+            sql += " WHERE owner_id=?"; args.append(owner)
+        rows = conn.execute(sql + " ORDER BY last_activity_at DESC, name ASC", args).fetchall()
+    return [_shape(row, all_users=all_users) for row in rows]
 
 
-def get_bot(name: str) -> dict:
+def get_bot(name: str, *, all_users=False) -> dict:
+    if all_users:
+        from hexbot.identity import require_admin
+        require_admin()
     db.migrate()
-    return _shape(_row(name))
+    return _shape(_row(name, enforce_owner=not all_users), all_users=all_users)
 
 
 def create_bot(name: str, *, display_name=None, title=None, description=None,
@@ -140,12 +151,14 @@ def create_bot(name: str, *, display_name=None, title=None, description=None,
     # into the fresh profile's config.yaml so a new bot inherits them without
     # waiting for the next hexbot.settings.set.
     mirror_deployment_config(profile_dir)
+    from hexbot.identity import current_user_id
+    owner_id = current_user_id()
     now = time.time()
     with db.transaction() as conn:
         conn.execute(
             "INSERT INTO bots(name,display_name,title,description,created_at,updated_at,"
-            "last_activity_at) VALUES (?,?,?,?,?,?,?)",
-            (name, display_name, title or "", description or "", now, now, now))
+            "last_activity_at,owner_id) VALUES (?,?,?,?,?,?,?,?)",
+            (name, display_name, title or "", description or "", now, now, now, owner_id))
     section = sections.create_section(name, "General")
     try:
         from hexbot.dreaming import ensure_dream_job
@@ -200,6 +213,7 @@ def update_bot(name: str, **patch) -> dict:
     values["tools_json"] = json.dumps(list(dict.fromkeys(patch.get("tools", [])))) if "tools" in patch else None
     values["skills_json"] = json.dumps(list(dict.fromkeys(patch.get("skills", [])))) if "skills" in patch else None
     columns = [key for key in ("display_name", "title", "description", "dream_enabled",
+                               "shareable",
                                "may_write_core", "tools_json", "skills_json")
                if key in patch or key.removesuffix("_json") in patch]
     if columns:

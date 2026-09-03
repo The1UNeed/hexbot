@@ -43,12 +43,15 @@ def _row_shape(row, session=None) -> dict:
             "live_session_id": _LIVE.get(row["id"])}
 
 
-def _get(section_id):
+def _get(section_id, *, enforce_owner=True):
+    from hexbot.identity import current_user_id
     db.migrate()
     with db.transaction() as conn:
         row = conn.execute("SELECT * FROM sections WHERE id=?", (section_id,)).fetchone()
     if row is None:
         raise HexbotError(4204, f"section not found: {section_id}")
+    if enforce_owner and row["owner_id"] != current_user_id():
+        raise HexbotError(4302, "not the owner")
     return row
 
 
@@ -111,12 +114,16 @@ def live_statuses() -> dict[str, str]:
     return result
 
 
-def list_sections(bot=None, include_archived=False) -> list[dict]:
+def list_sections(bot=None, include_archived=False, *, all_users=False) -> list[dict]:
+    from hexbot.identity import owner_filter
+    owner = owner_filter(all_users)
     db.migrate()
     sql, args = "SELECT * FROM sections WHERE 1=1", []
     if bot:
         sql += " AND bot=?"
         args.append(bot)
+    if owner is not None:
+        sql += " AND owner_id=?"; args.append(owner)
     if not include_archived:
         sql += " AND archived_at IS NULL"
     sql += " ORDER BY updated_at DESC"
@@ -134,6 +141,12 @@ def list_sections(bot=None, include_archived=False) -> list[dict]:
 
 def create_section(bot: str, title=None) -> dict:
     db.migrate()
+    from hexbot.identity import current_user_id
+    with db.transaction() as conn:
+        found_bot = conn.execute("SELECT owner_id FROM bots WHERE name=?", (bot,)).fetchone()
+    if found_bot is not None and found_bot["owner_id"] != current_user_id():
+        raise HexbotError(4302, "not the owner")
+    owner_id = found_bot["owner_id"] if found_bot is not None else current_user_id()
     title = (title or "New section").strip() or "New section"
     result = gateway.call("session.create", {"profile": bot, "title": title,
         "close_on_disconnect": False, "follow_profile_config": True})
@@ -153,8 +166,8 @@ def create_section(bot: str, title=None) -> dict:
     now = time.time()
     with db.transaction() as conn:
         conn.execute(
-            "INSERT INTO sections(id,bot,title,created_at,updated_at,last_live_session_id)"
-            " VALUES (?,?,?,?,?,?)", (stored, bot, title, now, now, live))
+            "INSERT INTO sections(id,bot,title,created_at,updated_at,last_live_session_id,owner_id)"
+            " VALUES (?,?,?,?,?,?,?)", (stored, bot, title, now, now, live, owner_id))
     if live:
         _LIVE[stored] = live
     _touch_bot(bot, now)
@@ -164,6 +177,8 @@ def create_section(bot: str, title=None) -> dict:
 def open_section(section_id: str) -> dict:
     """Return the section and its messages, resuming the stored session if needed."""
     row = _get(section_id)
+    from hexbot.usage import require_budget
+    require_budget(row["owner_id"])
     live = _LIVE.get(section_id)
     if live:
         try:

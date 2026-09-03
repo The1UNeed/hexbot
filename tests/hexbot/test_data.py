@@ -39,7 +39,7 @@ def test_migration_upgrades_a_v1_database(isolated_home):
     db.migrate()
     db.migrate()
     with db.transaction() as conn:
-        assert conn.execute("select version from schema_version").fetchone()[0] == 4
+        assert conn.execute("select version from schema_version").fetchone()[0] == 5
         row = conn.execute("select title, title_dirty from sections where id='s1'").fetchone()
     assert row["title"] == "Kept"
     assert row["title_dirty"] == 0

@@ -11,7 +11,7 @@ from hexbot.home import DATABASE_NAME, ensure_layout
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);
@@ -44,6 +44,11 @@ _ADDED_COLUMNS: dict[int, list[tuple[str, str, str]]] = {
         ("bots", "may_write_core", "INTEGER NOT NULL DEFAULT 0"),
         ("bots", "tools_json", "TEXT NOT NULL DEFAULT '[]'"),
         ("bots", "skills_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ],
+    5: [
+        ("bots", "shareable", "INTEGER NOT NULL DEFAULT 0"),
+        ("pairing_codes", "user_id", "TEXT NOT NULL DEFAULT 'local'"),
+        ("dreams", "owner_id", "TEXT NOT NULL DEFAULT 'local'"),
     ],
 }
 
@@ -94,6 +99,16 @@ CREATE INDEX IF NOT EXISTS idx_dreams_bot_started ON dreams(bot,started_at DESC)
 CREATE INDEX IF NOT EXISTS idx_memory_entries_section ON memory_entries(section_id);
 CREATE INDEX IF NOT EXISTS idx_memory_entries_room ON memory_entries(room_id);
 CREATE INDEX IF NOT EXISTS idx_memory_entries_dream ON memory_entries(dream_id);
+""",
+    5: """
+CREATE TABLE IF NOT EXISTS users(
+ id TEXT PRIMARY KEY, display_name TEXT NOT NULL, role TEXT NOT NULL
+ CHECK(role IN ('admin','member')), limits_json TEXT NOT NULL DEFAULT '{}',
+ created_at REAL NOT NULL, disabled_at REAL);
+CREATE INDEX IF NOT EXISTS idx_devices_owner ON devices(owner_id);
+CREATE INDEX IF NOT EXISTS idx_bots_owner ON bots(owner_id);
+CREATE INDEX IF NOT EXISTS idx_sections_owner ON sections(owner_id);
+CREATE INDEX IF NOT EXISTS idx_rooms_owner ON rooms(owner_id);
 """,
 }
 
@@ -149,6 +164,24 @@ def migrate() -> None:
         # physical schema still receive every idempotent table migration.
         for ddl in _MIGRATION_DDL.values():
             conn.executescript(ddl)
+        # v5 changes core_memory's key from section to (owner_id, section).
+        # Rebuild once because SQLite cannot alter a primary key in place.
+        core_columns = _columns(conn, "core_memory")
+        if "owner_id" not in core_columns:
+            conn.executescript("""
+CREATE TABLE core_memory_v5(
+ owner_id TEXT NOT NULL DEFAULT 'local', section TEXT NOT NULL,
+ text TEXT NOT NULL DEFAULT '', updated_at REAL,
+ PRIMARY KEY(owner_id, section));
+INSERT INTO core_memory_v5(owner_id,section,text,updated_at)
+ SELECT 'local',section,text,updated_at FROM core_memory;
+DROP TABLE core_memory;
+ALTER TABLE core_memory_v5 RENAME TO core_memory;
+""")
+        import time
+        conn.execute(
+            "INSERT OR IGNORE INTO users(id,display_name,role,limits_json,created_at) "
+            "VALUES ('local','Admin','admin','{}',?)", (time.time(),))
         if row is None:
             conn.execute("INSERT INTO schema_version(version) VALUES (?)", (SCHEMA_VERSION,))
         elif current != SCHEMA_VERSION:

@@ -24,7 +24,12 @@ def _event(row) -> dict:
                      row["created_at"]).dict()
 
 
-def get(room_id: str) -> dict:
+def get(room_id: str, *, enforce_owner=True, all_users=False) -> dict:
+    from hexbot.identity import current_user_id
+    if all_users:
+        from hexbot.identity import require_admin
+        require_admin()
+        enforce_owner = False
     db.migrate()
     with db.transaction() as conn:
         row = conn.execute("SELECT * FROM rooms WHERE id=?", (room_id,)).fetchone()
@@ -33,22 +38,31 @@ def get(room_id: str) -> dict:
             (room_id,)).fetchall() if row else []
     if row is None:
         raise HexbotError(4230, f"room not found: {room_id}")
+    if enforce_owner and row["owner_id"] != current_user_id():
+        raise HexbotError(4302, "not the owner")
     result = _room(row)
     result["members"] = [dict(item) for item in members]
     return result
 
 
-def list_rooms(include_archived=False) -> list[dict]:
+def list_rooms(include_archived=False, *, all_users=False) -> list[dict]:
+    from hexbot.identity import owner_filter
+    owner = owner_filter(all_users)
     db.migrate()
-    sql = "SELECT id FROM rooms" + ("" if include_archived else " WHERE archived_at IS NULL")
+    clauses, args = [], []
+    if not include_archived: clauses.append("archived_at IS NULL")
+    if owner is not None: clauses.append("owner_id=?"); args.append(owner)
+    sql = "SELECT id FROM rooms" + (" WHERE " + " AND ".join(clauses) if clauses else "")
     sql += " ORDER BY last_activity_at DESC,name"
     with db.transaction() as conn:
-        ids = [row[0] for row in conn.execute(sql)]
-    return [get(room_id) for room_id in ids]
+        ids = [row[0] for row in conn.execute(sql, args)]
+    return [get(room_id, enforce_owner=False) for room_id in ids]
 
 
 def create(name: str, members=(), main_bot=None, limits=None, approval_mode=None,
-           owner_id="local") -> dict:
+           owner_id=None) -> dict:
+    from hexbot.identity import current_user_id
+    owner_id = owner_id or current_user_id()
     db.migrate()
     name = str(name or "").strip()
     if not name:
@@ -57,6 +71,11 @@ def create(name: str, members=(), main_bot=None, limits=None, approval_mode=None
     bots = list(dict.fromkeys(str(x) for x in members))
     if main_bot and main_bot not in bots:
         raise HexbotError(4231, "main_bot must be a room member")
+    with db.transaction() as conn:
+        for bot in bots:
+            row = conn.execute("SELECT owner_id,shareable FROM bots WHERE name=?", (bot,)).fetchone()
+            if row is not None and row["owner_id"] != owner_id and not row["shareable"]:
+                raise HexbotError(4302, "not the owner")
     with db.transaction() as conn:
         conn.execute("INSERT INTO rooms VALUES (?,?,?,?,?,?,?,?,?,NULL)",
                      (room_id, name, owner_id, main_bot, approval_mode,
@@ -68,7 +87,7 @@ def create(name: str, members=(), main_bot=None, limits=None, approval_mode=None
                          (room_id, "bot", bot, owner_id, now))
     for bot in bots:
         append_event(room_id, "member.added", "human", owner_id, {"bot": bot})
-    result = get(room_id)
+    result = get(room_id, enforce_owner=False)
     if main_bot:
         try:
             from hexbot.dreaming import ensure_room_dream_job
@@ -105,8 +124,14 @@ def update(room_id: str, **patch) -> dict:
     return result
 
 
-def add_member(room_id: str, bot: str, added_by="local") -> dict:
+def add_member(room_id: str, bot: str, added_by=None) -> dict:
+    from hexbot.identity import current_user_id
+    added_by = added_by or current_user_id()
     get(room_id); now = time.time()
+    with db.transaction() as conn:
+        bot_row = conn.execute("SELECT owner_id,shareable FROM bots WHERE name=?", (bot,)).fetchone()
+    if bot_row is not None and bot_row["owner_id"] != added_by and not bot_row["shareable"]:
+        raise HexbotError(4302, "not the owner")
     with db.transaction() as conn:
         conn.execute("INSERT INTO room_members(room_id,member_kind,member_id,added_by,added_at,left_at,last_read_seq) VALUES (?,?,?,?,?,NULL,0) ON CONFLICT(room_id,member_kind,member_id) DO UPDATE SET left_at=NULL,added_by=excluded.added_by,added_at=excluded.added_at,last_read_seq=0",
                      (room_id, "bot", bot, added_by, now))
@@ -114,7 +139,10 @@ def add_member(room_id: str, bot: str, added_by="local") -> dict:
     return get(room_id)
 
 
-def remove_member(room_id: str, bot: str, removed_by="local") -> dict:
+def remove_member(room_id: str, bot: str, removed_by=None) -> dict:
+    from hexbot.identity import current_user_id
+    removed_by = removed_by or current_user_id()
+    get(room_id)
     with db.transaction() as conn:
         cur = conn.execute("UPDATE room_members SET left_at=? WHERE room_id=? AND member_kind='bot' AND member_id=? AND left_at IS NULL", (time.time(), room_id, bot))
     if not cur.rowcount:
@@ -125,14 +153,15 @@ def remove_member(room_id: str, bot: str, removed_by="local") -> dict:
     return get(room_id)
 
 
-def append_event(room_id, kind, actor_kind=None, actor_id=None, payload=None) -> dict:
-    get(room_id); now = time.time()
+def append_event(room_id, kind, actor_kind=None, actor_id=None, payload=None, *,
+                 enforce_owner=True) -> dict:
+    get(room_id, enforce_owner=enforce_owner); now = time.time()
     with db.transaction() as conn:
         conn.execute("INSERT INTO room_events(room_id,seq,kind,actor_kind,actor_id,payload_json,created_at) SELECT ?,COALESCE(MAX(seq),0)+1,?,?,?,?,? FROM room_events WHERE room_id=?",
                      (room_id, kind, actor_kind, actor_id, json.dumps(payload or {}), now, room_id))
         seq = conn.execute("SELECT MAX(seq) FROM room_events WHERE room_id=?", (room_id,)).fetchone()[0]
         conn.execute("UPDATE rooms SET updated_at=?,last_activity_at=? WHERE id=?", (now, now, room_id))
-    event = log(room_id, seq - 1, 1)[0]
+    event = log(room_id, seq - 1, 1, enforce_owner=False)[0]
     from hexbot.gateway import broadcast
     try:
         broadcast("hexbot.rooms.event", {"room_id": room_id, "event": event})
@@ -143,8 +172,8 @@ def append_event(room_id, kind, actor_kind=None, actor_id=None, payload=None) ->
     return event
 
 
-def log(room_id: str, after_seq=0, limit=200) -> list[dict]:
-    get(room_id)
+def log(room_id: str, after_seq=0, limit=200, *, enforce_owner=True) -> list[dict]:
+    get(room_id, enforce_owner=enforce_owner)
     limit = max(1, min(int(limit or 200), 1000))
     with db.transaction() as conn:
         rows = conn.execute("SELECT * FROM room_events WHERE room_id=? AND seq>? ORDER BY seq LIMIT ?", (room_id, int(after_seq or 0), limit)).fetchall()
@@ -159,6 +188,7 @@ def mark_read(room_id: str, seq: int, member_kind="human", member_id="local") ->
 
 
 def archive(room_id):
+    get(room_id)
     with db.transaction() as conn: conn.execute("UPDATE rooms SET archived_at=?,updated_at=? WHERE id=?", (time.time(), time.time(), room_id))
     return get(room_id)
 

@@ -17,17 +17,32 @@ _DELIVERY_LOCKS: dict[tuple[str, str], threading.RLock] = {}
 _DELIVERY_LOCKS_GUARD = threading.Lock()
 
 
-def pairs():
+def pairs(*, all_users=False):
+    from hexbot.identity import owner_filter
+    owner = owner_filter(all_users)
     db.migrate()
     with db.transaction() as conn:
-        rows = conn.execute("SELECT from_bot,to_bot,COUNT(*) count,MAX(created_at) last_at FROM bot_messages GROUP BY from_bot,to_bot ORDER BY last_at DESC").fetchall()
+        where, args = "", []
+        if owner is not None:
+            where = (" WHERE (from_bot IN (SELECT name FROM bots WHERE owner_id=?) OR "
+                     "to_bot IN (SELECT name FROM bots WHERE owner_id=?))")
+            args.extend((owner, owner))
+        rows = conn.execute("SELECT from_bot,to_bot,COUNT(*) count,MAX(created_at) last_at "
+                            "FROM bot_messages" + where +
+                            " GROUP BY from_bot,to_bot ORDER BY last_at DESC", args).fetchall()
     return [dict(row) for row in rows]
 
 
-def list_messages(from_bot=None, to_bot=None, limit=200):
+def list_messages(from_bot=None, to_bot=None, limit=200, *, all_users=False):
+    from hexbot.identity import owner_filter
+    owner = owner_filter(all_users)
     db.migrate(); clauses, args = [], []
     if from_bot is not None: clauses.append("from_bot=?"); args.append(from_bot)
     if to_bot is not None: clauses.append("to_bot=?"); args.append(to_bot)
+    if owner is not None:
+        clauses.append("(from_bot IN (SELECT name FROM bots WHERE owner_id=?) OR "
+                       "to_bot IN (SELECT name FROM bots WHERE owner_id=?))")
+        args.extend((owner, owner))
     sql = "SELECT * FROM bot_messages" + (" WHERE " + " AND ".join(clauses) if clauses else "")
     sql += " ORDER BY created_at DESC LIMIT ?"; args.append(max(1, min(int(limit or 200), 1000)))
     with db.transaction() as conn: rows = conn.execute(sql, args).fetchall()

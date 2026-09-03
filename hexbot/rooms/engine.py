@@ -156,11 +156,11 @@ class RoomEngine:
 
     def _drain(self, room_id):
         while room_id not in self._stopped:
-            room = store.get(room_id)
+            room = store.get(room_id, enforce_owner=False)
             with db.transaction() as conn:
                 room["member_titles"] = {row["name"]: row["title"] or row["display_name"] or ""
                                          for row in conn.execute("SELECT name,title,display_name FROM bots")}
-            events = store.log(room_id, 0, 1000)
+            events = store.log(room_id, 0, 1000, enforce_owner=False)
             candidate = None
             for event in events:
                 if event["kind"] not in {"message.user", "message.bot"}: continue
@@ -169,7 +169,7 @@ class RoomEngine:
                     waited = conn.execute("SELECT 1 FROM room_events WHERE room_id=? AND kind='waiting.human' AND json_extract(payload_json,'$.trigger_seq')=?", (room_id, event["seq"])).fetchone()
                 selected, waiting = select_responders(room, event, done)
                 if waiting and not waited:
-                    store.append_event(room_id, "waiting.human", "bot", event["actor_id"], {"trigger_seq": event["seq"]})
+                    store.append_event(room_id, "waiting.human", "bot", event["actor_id"], {"trigger_seq": event["seq"]}, enforce_owner=False)
                     return
                 if waiting:
                     continue
@@ -181,17 +181,19 @@ class RoomEngine:
                 self._run_turn(room, room["main_bot"], event, replies)
 
     def _limits(self, room, bot, trigger_seq):
+        from hexbot.usage import daily_limit
         values = settings.get_settings(); values.update(room.get("limits") or {})
         with db.transaction() as conn:
             last_human = conn.execute("SELECT COALESCE(MAX(seq),0) FROM room_events WHERE room_id=? AND kind='message.user' AND seq<=?", (room["id"], trigger_seq)).fetchone()[0]
             turns = conn.execute("SELECT COUNT(*),COALESCE(SUM(input_tokens+output_tokens),0) FROM room_turns WHERE room_id=? AND trigger_seq>=? AND status IN ('running','complete')", (room["id"], last_human)).fetchone()
         checks = [
+            (daily_limit(room["owner_id"])[0], daily_limit(room["owner_id"])[1], "daily_tokens"),
             (values.get("room_bot_turns_per_human_turn"), turns[0], "room_bot_turns_per_human_turn"),
             (values.get("room_budget_tokens_per_human_turn"), turns[1], "room_budget_tokens_per_human_turn"),
             (values.get("bot_daily_token_budget"), _usage(bot, since=time.time()-time.time()%86400)["input"] + _usage(bot, since=time.time()-time.time()%86400)["output"], "bot_daily_token_budget")]
         for cap, used, name in checks:
             if cap is not None and used >= int(cap):
-                store.append_event(room["id"], "limit.tripped", "system", None, {"limit": name, "used": used, "cap": cap})
+                store.append_event(room["id"], "limit.tripped", "system", None, {"limit": name, "used": used, "cap": cap}, enforce_owner=False)
                 with db.transaction() as conn:
                     conn.execute("INSERT INTO room_turns(id,room_id,bot,trigger_seq,started_at,finished_at,status,input_tokens,output_tokens,cost_usd) VALUES (?,?,?,?,?,?,'limit',0,0,0)", (uuid.uuid4().hex, room["id"], bot, trigger_seq, time.time(), time.time()))
                 self._stopped.add(room["id"])
@@ -248,7 +250,7 @@ class RoomEngine:
         stored, live = self._session(room, bot)
         with db.transaction() as conn:
             member = conn.execute("SELECT last_read_seq FROM room_members WHERE room_id=? AND member_kind='bot' AND member_id=?", (room["id"], bot)).fetchone()
-        delta = store.log(room["id"], member[0] if member else 0, 1000)
+        delta = store.log(room["id"], member[0] if member else 0, 1000, enforce_owner=False)
         text = prompt.render(room, bot, delta, collecting)
         turn_id, now = uuid.uuid4().hex, time.time()
         before = _usage(bot, stored)
@@ -256,7 +258,7 @@ class RoomEngine:
             conn.execute("INSERT INTO room_turns VALUES (?,?,?,?,?,NULL,'running',0,0,0)", (turn_id, room["id"], bot, event["seq"], now))
         store.append_event(room["id"], "turn.started", "bot", bot,
                            {"turn_id": turn_id, "trigger_seq": event["seq"],
-                            "live_session_id": live})
+                            "live_session_id": live}, enforce_owner=False)
         gateway.broadcast("hexbot.rooms.turn", {"room_id": room["id"], "bot": bot, "live_session_id": live, "status": "running"})
         try:
             baseline = self.watcher.baseline(live)
@@ -268,13 +270,13 @@ class RoomEngine:
                 conn.execute("UPDATE room_turns SET finished_at=?,status='complete',input_tokens=?,output_tokens=?,cost_usd=? WHERE id=?", (time.time(), usage["input"], usage["output"], usage["cost"], turn_id))
                 conn.execute("UPDATE room_members SET last_read_seq=? WHERE room_id=? AND member_kind='bot' AND member_id=?", (max((x["seq"] for x in delta), default=event["seq"]), room["id"], bot))
             if answer and answer.lower() != "(pass)":
-                store.append_event(room["id"], "message.bot", "bot", bot, {"text": answer, "trigger_seq": event["seq"]})
+                store.append_event(room["id"], "message.bot", "bot", bot, {"text": answer, "trigger_seq": event["seq"]}, enforce_owner=False)
             gateway.broadcast("hexbot.rooms.turn", {"room_id": room["id"], "bot": bot, "live_session_id": live, "status": "complete"})
             return answer if answer.lower() != "(pass)" else None
         except Exception as exc:
             with db.transaction() as conn:
                 conn.execute("UPDATE room_turns SET finished_at=?,status='failed' WHERE id=?", (time.time(), turn_id))
-            store.append_event(room["id"], "turn.failed", "bot", bot, {"error": str(exc), "trigger_seq": event["seq"]})
+            store.append_event(room["id"], "turn.failed", "bot", bot, {"error": str(exc), "trigger_seq": event["seq"]}, enforce_owner=False)
             gateway.broadcast("hexbot.rooms.turn", {"room_id": room["id"], "bot": bot, "live_session_id": live, "status": "failed"})
             return None
 

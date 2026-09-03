@@ -35,12 +35,17 @@ def section_prompt_id(section: str) -> str:
     return f"hexbot.core-memory.{section}"
 
 
-def get_core_memory() -> dict:
+def get_core_memory(*, owner_id=None, _trusted=False) -> dict:
+    from hexbot.identity import current_user_id, require_owner
+    owner_id = owner_id or current_user_id()
+    if not _trusted:
+        require_owner(owner_id)
     db.migrate()
     sections = {key: "" for key in CORE_SECTIONS}
     updated = None
     with db.transaction() as conn:
-        for row in conn.execute("SELECT section,text,updated_at FROM core_memory"):
+        for row in conn.execute("SELECT section,text,updated_at FROM core_memory WHERE owner_id=?",
+                                (owner_id,)):
             if row["section"] in sections:
                 sections[row["section"]] = row["text"]
                 updated = max(updated or 0, row["updated_at"] or 0)
@@ -49,7 +54,10 @@ def get_core_memory() -> dict:
             "updated_at": updated}
 
 
-def set_core_memory(section: str, text: str) -> dict:
+def set_core_memory(section: str, text: str, *, owner_id=None) -> dict:
+    from hexbot.identity import current_user_id, require_owner
+    owner_id = owner_id or current_user_id()
+    require_owner(owner_id)
     db.migrate()
     if section not in CORE_SECTIONS:
         raise HexbotError(4203, f"unknown core memory section: {section}")
@@ -60,9 +68,9 @@ def set_core_memory(section: str, text: str) -> dict:
             f"core memory section '{section}' is {len(text)} characters; "
             f"the cap is {CORE_CAP}")
     with db.transaction() as conn:
-        conn.execute("INSERT OR REPLACE INTO core_memory(section,text,updated_at) VALUES (?,?,?)",
-                     (section, text, time.time()))
-    return get_core_memory()
+        conn.execute("INSERT OR REPLACE INTO core_memory(owner_id,section,text,updated_at) VALUES (?,?,?,?)",
+                     (owner_id, section, text, time.time()))
+    return get_core_memory(owner_id=owner_id)
 
 
 def render_core_section(section: str, _session_info=None) -> str:
@@ -72,7 +80,23 @@ def render_core_section(section: str, _session_info=None) -> str:
     shared title: Hermes renders blocks in ``sorted()`` id order, and a reader
     must be able to tell what a lone ``## Rules`` block belongs to.
     """
-    text = get_core_memory()["sections"].get(section, "").strip()
+    owner_id = None
+    session_id = (_session_info or {}).get("session_id") if isinstance(_session_info, dict) else None
+    if session_id:
+        from hexbot.sections import section_for_session
+        row = section_for_session(str(session_id))
+        if row is not None:
+            with db.transaction() as conn:
+                bot = conn.execute("SELECT owner_id FROM bots WHERE name=?", (row["bot"],)).fetchone()
+            owner_id = bot[0] if bot else None
+        if owner_id is None:
+            with db.transaction() as conn:
+                bot = conn.execute(
+                    "SELECT b.owner_id FROM room_sessions rs JOIN bots b ON b.name=rs.bot "
+                    "WHERE rs.stored_session_id=? OR rs.live_session_id=? LIMIT 1",
+                    (session_id, session_id)).fetchone()
+            owner_id = bot[0] if bot else None
+    text = get_core_memory(owner_id=owner_id, _trusted=True)["sections"].get(section, "").strip()
     if not text:
         return ""
     return f"{CORE_MEMORY_TITLE}\n\n## {_HEADINGS.get(section, section.title())}\n{text}"
@@ -129,6 +153,12 @@ def _caps() -> dict:
 
 
 def get_bot_memory(bot: str) -> dict:
+    from hexbot.bots import _row
+    try:
+        _row(bot)
+    except HexbotError as exc:
+        if exc.code != 4205:
+            raise
     base = _memory_dir(bot)
     return {
         "memory_md": (base / "MEMORY.md").read_text() if (base / "MEMORY.md").exists() else "",
@@ -138,6 +168,12 @@ def get_bot_memory(bot: str) -> dict:
 
 
 def set_bot_memory(bot: str, memory_md=None, user_md=None) -> dict:
+    from hexbot.bots import _row
+    try:
+        _row(bot)
+    except HexbotError as exc:
+        if exc.code != 4205:
+            raise
     caps = _caps()
     for value, key, filename in ((memory_md, "memory_md", "MEMORY.md"),
                                  (user_md, "user_md", "USER.md")):

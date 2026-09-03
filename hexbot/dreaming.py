@@ -316,9 +316,9 @@ def _tick_soon(home: Path) -> None:
     threading.Thread(target=_run, name="hexbot-dream-now", daemon=True).start()
 
 
-def list_dreams(bot: str, limit: int = 20) -> dict:
+def list_dreams(bot: str, limit: int = 20, *, all_users=False) -> dict:
     from hexbot.bots import get_bot
-    get_bot(bot)
+    get_bot(bot, all_users=all_users)
     limit = max(1, min(int(limit or 20), 200))
     with db.transaction() as conn:
         rows = conn.execute("SELECT * FROM dreams WHERE bot=? ORDER BY started_at DESC LIMIT ?",

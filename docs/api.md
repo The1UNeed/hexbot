@@ -19,7 +19,7 @@ data model. Reference for the Hermes subset: `/tmp/hexbot-notes/ws-api.md`
 | avatar | profile asset `avatar` |
 | bot notes (section memory, notes part) | profile `memories/MEMORY.md` and `USER.md` |
 | section memory search | profile `state.db` FTS over its sessions |
-| core memory | `~/.hexbot/core_memory.json`, injected every turn by the hexbot plugin |
+| core memory | per-user rows in `~/.hexbot/hexbot.db`, injected every turn by the hexbot plugin |
 
 ## Hermes methods the client calls directly
 
@@ -41,7 +41,12 @@ Events the client renders: `message.start`, `message.delta`, `message.interim`,
 ## `hexbot.*` methods
 
 All results are objects. Errors use JSON-RPC error objects with Hermes-style
-codes in the 4200–4299 (client) and 5200–5299 (server) ranges.
+codes. Code `4301` means `admin only`, `4302` means `not the owner`, and `4303`
+means the user's daily token budget is exhausted.
+
+List methods accept `all: true` only for admins. Without it, bots, sections,
+rooms, devices, dreams, activity, and memory are scoped to the authenticated
+user. Get and mutation methods always check ownership.
 
 ### Daemon
 
@@ -56,11 +61,11 @@ codes in the 4200–4299 (client) and 5200–5299 (server) ranges.
 
 ### Bots
 
-Bot shape: `{name, display_name, title, description, persona, tools: [string], skills: [string],
+Bot shape: `{name, display_name, title, description, persona, tools: [string], skills: [string], shareable,
 provider, model, avatar: {mime, data} | null, created_at, updated_at, last_activity_at,
 owner_id, dream_enabled, may_write_core, sections_total, sections_recent: [Section]}`
 
-- `hexbot.bots.list {}` → `{bots: [Bot]}` ordered by `last_activity_at` desc.
+- `hexbot.bots.list {all?}` → `{bots: [Bot]}` ordered by `last_activity_at` desc.
 - `hexbot.bots.get {name}` → `{bot: Bot}`
 - `hexbot.bots.create {name, display_name?, title?, description?, persona?,
   provider, model, avatar?}` → `{bot: Bot, section: Section}` (creates the
@@ -70,7 +75,7 @@ owner_id, dream_enabled, may_write_core, sections_total, sections_recent: [Secti
   `display_name` defaults to the bot name in title case — never to `title`,
   which is free-form caller text stored verbatim.
 - `hexbot.bots.update {name, display_name?, title?, description?, persona?,
-  provider?, model?, avatar?, dream_enabled?, may_write_core?, tools?, skills?}` →
+  provider?, model?, avatar?, dream_enabled?, may_write_core?, shareable?, tools?, skills?}` →
   `{bot: Bot}`. `tools` accepts `terminal`, `files`, `browser`, `web_search`, and
   `computer_use`. Both capability lists use replace semantics.
 - `hexbot.bots.delete {name}` → `{deleted: true}` (deletes the profile
@@ -188,6 +193,23 @@ hidden note and preserves it in the section context.
 - `hexbot.devices.list {}` → `{devices: [{id, name, platform, created_at,
   last_seen_at, current: bool}]}`
 - `hexbot.devices.revoke {id}` → `{revoked: true}`
+
+### Users and usage
+
+- `hexbot.users.me {}` → `{id, display_name, role}`.
+- `hexbot.users.list {}` → `{users}`. Admin only.
+- `hexbot.users.invite {display_name, role?}` → `{user, code, expires_at}`.
+  Admin only. The code is bound to the new user, and its redeemed device keeps
+  that ownership.
+- `hexbot.users.update {id, display_name?, role?, disabled?, limits?}` →
+  `{user}`. Admin only. `limits.daily_tokens` is a non-negative integer or null.
+- `hexbot.usage.summary {user?, since?}` → `{input_tokens, output_tokens,
+  estimated_cost_usd, by_bot}`. Members may request only their own usage.
+
+The room engine and `hexbot.sections.open` refuse a new turn after the owning
+user reaches `daily_tokens`, and emit `hexbot.usage.limit {user}`. Hermes's
+`pre_llm_call` plugin hook cannot refuse a request, so it is not used as a
+budget gate.
 
 ### Hex Connect
 

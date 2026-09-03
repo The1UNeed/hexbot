@@ -3,6 +3,12 @@
 Hexbot uses Hermes's dashboard authentication gate. A daemon bound to a LAN
 address requires authentication. A loopback-only daemon does not.
 
+Every WebSocket RPC resolves its Hexbot user from the server-authenticated
+transport identity, never from request parameters. Hermes supplies
+`user_id = "device:<id>"`; Hexbot looks up that device and uses its `owner_id`.
+An ungated loopback connection resolves to the seeded `local` admin. Revoked
+devices, disabled users, and ownership mismatches are rejected.
+
 ## Loopback daemon
 
 When the daemon binds to `127.0.0.1`, Hermes injects its process session token

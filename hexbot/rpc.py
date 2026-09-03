@@ -16,7 +16,7 @@ import platform
 import socket
 import sys
 
-from hexbot import activity, bots, connect, dreaming, memory, network, pairing, providers, sections, settings
+from hexbot import activity, bots, connect, dreaming, memory, network, pairing, providers, sections, settings, usage, users
 from hexbot.rooms import get_engine
 from hexbot.rooms import store as rooms
 from hexbot.errors import HexbotError
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 _BOT_CREATE_FIELDS = ("display_name", "title", "description", "persona",
                       "provider", "model", "avatar")
-_BOT_UPDATE_FIELDS = _BOT_CREATE_FIELDS + ("dream_enabled", "may_write_core", "tools", "skills")
+_BOT_UPDATE_FIELDS = _BOT_CREATE_FIELDS + ("dream_enabled", "may_write_core", "shareable", "tools", "skills")
 
 
 def _required(params, key):
@@ -54,6 +54,15 @@ def _handler(fn):
             logger.exception("hexbot RPC handler failed")
             return _err(rid, 5200, str(exc))
 
+    return wrapped
+
+
+def _admin(fn):
+    @functools.wraps(fn)
+    def wrapped(params):
+        from hexbot.identity import require_admin
+        require_admin()
+        return fn(params)
     return wrapped
 
 
@@ -124,13 +133,20 @@ def _current_device_id() -> str | None:
 
 
 def _devices_list(_params) -> dict:
+    from hexbot.identity import current_user_id, owner_filter
     current = _current_device_id()
     return {"devices": [
         {"id": row.id, "name": row.name, "platform": row.platform,
          "created_at": row.created_at, "last_seen_at": row.last_seen_at,
          "current": row.id == current}
-        for row in pairing.list_devices()
+        for row in pairing.list_devices(owner_id=owner_filter(bool(_params.get("all"))))
     ]}
+
+
+def _device_revoke(params) -> dict:
+    from hexbot.identity import current_user_id
+    return {"revoked": pairing.revoke_device(
+        _required(params, "id"), owner_id=current_user_id())}
 
 
 def _connect_register_start(params) -> dict:
@@ -161,25 +177,34 @@ def _rooms_update(p):
 
 
 def _rooms_send(p):
+    from hexbot.identity import current_user_id
     room_id = _required(p, "id")
-    event = rooms.append_event(room_id, "message.user", "human", "local",
+    event = rooms.append_event(room_id, "message.user", "human", current_user_id(),
                                {"text": _required(p, "text"), "attachments": p.get("attachments", [])})
     get_engine().notify(room_id)
     return {"event": event}
 
 
+def _dreams_list(params):
+    args = (_required(params, "bot"), params.get("limit", 20))
+    if params.get("all"):
+        return dreaming.list_dreams(*args, all_users=True)
+    return dreaming.list_dreams(*args)
+
+
 METHODS = {
     "hexbot.info": info,
-    "hexbot.settings.get": lambda p: settings.get_settings(),
-    "hexbot.settings.set": lambda p: settings.update_settings(_required(p, "patch")),
-    "hexbot.bots.list": lambda p: {"bots": bots.list_bots()},
-    "hexbot.bots.get": lambda p: {"bot": bots.get_bot(_required(p, "name"))},
+    "hexbot.settings.get": _admin(lambda p: settings.get_settings()),
+    "hexbot.settings.set": _admin(lambda p: settings.update_settings(_required(p, "patch"))),
+    "hexbot.bots.list": lambda p: {"bots": bots.list_bots(all_users=bool(p.get("all")))},
+    "hexbot.bots.get": lambda p: {"bot": bots.get_bot(
+        _required(p, "name"), all_users=bool(p.get("all")))},
     "hexbot.bots.create": _create_bot,
     "hexbot.bots.update": lambda p: {"bot": bots.update_bot(
         _required(p, "name"), **_fields(p, _BOT_UPDATE_FIELDS))},
     "hexbot.bots.delete": lambda p: {"deleted": bots.delete_bot(_required(p, "name"))},
     "hexbot.sections.list": lambda p: {"sections": sections.list_sections(
-        p.get("bot"), bool(p.get("include_archived")))},
+        p.get("bot"), bool(p.get("include_archived")), all_users=bool(p.get("all")))},
     "hexbot.sections.create": lambda p: {"section": sections.create_section(
         _required(p, "bot"), p.get("title"))},
     "hexbot.sections.open": lambda p: sections.open_section(_required(p, "id")),
@@ -199,21 +224,23 @@ METHODS = {
     "hexbot.memory.bot.set": lambda p: memory.set_bot_memory(
         _required(p, "bot"), p.get("memory_md"), p.get("user_md")),
     "hexbot.providers.list": lambda p: {"providers": providers.list_providers()},
-    "hexbot.providers.set_key": lambda p: providers.set_key(
-        _required(p, "provider"), _required(p, "key")),
-    "hexbot.providers.clear_key": lambda p: providers.clear_key(_required(p, "provider")),
+    "hexbot.providers.set_key": _admin(lambda p: providers.set_key(
+        _required(p, "provider"), _required(p, "key"))),
+    "hexbot.providers.clear_key": _admin(lambda p: providers.clear_key(_required(p, "provider"))),
     "hexbot.models.list": _list_models,
-    "hexbot.network.get": lambda p: network.get_network(),
-    "hexbot.network.set": lambda p: network.set_network(_required(p, "lan_enabled")),
-    "hexbot.pairing.code": _pairing_code,
+    "hexbot.network.get": _admin(lambda p: network.get_network()),
+    "hexbot.network.set": _admin(lambda p: network.set_network(_required(p, "lan_enabled"))),
+    "hexbot.pairing.code": _admin(_pairing_code),
     "hexbot.devices.list": _devices_list,
-    "hexbot.devices.revoke": lambda p: {"revoked": pairing.revoke_device(_required(p, "id"))},
-    "hexbot.connect.status": lambda p: connect.status(),
-    "hexbot.connect.disconnect": lambda p: connect.disconnect(),
-    "hexbot.connect.register_start": _connect_register_start,
-    "hexbot.connect.register_poll": _connect_register_poll,
-    "hexbot.rooms.list": lambda p: {"rooms": rooms.list_rooms(bool(p.get("include_archived")))},
-    "hexbot.rooms.get": lambda p: {"room": rooms.get(_required(p, "id"))},
+    "hexbot.devices.revoke": _device_revoke,
+    "hexbot.connect.status": _admin(lambda p: connect.status()),
+    "hexbot.connect.disconnect": _admin(lambda p: connect.disconnect()),
+    "hexbot.connect.register_start": _admin(_connect_register_start),
+    "hexbot.connect.register_poll": _admin(_connect_register_poll),
+    "hexbot.rooms.list": lambda p: {"rooms": rooms.list_rooms(
+        bool(p.get("include_archived")), all_users=bool(p.get("all")))},
+    "hexbot.rooms.get": lambda p: {"room": rooms.get(
+        _required(p, "id"), all_users=bool(p.get("all")))},
     "hexbot.rooms.create": _rooms_create,
     "hexbot.rooms.update": _rooms_update,
     "hexbot.rooms.add_member": lambda p: {"room": rooms.add_member(_required(p, "id"), _required(p, "bot"))},
@@ -224,12 +251,19 @@ METHODS = {
     "hexbot.rooms.archive": lambda p: {"room": rooms.archive(_required(p, "id"))},
     "hexbot.rooms.delete": lambda p: {"deleted": rooms.delete(_required(p, "id"))},
     "hexbot.rooms.mark_read": lambda p: {"room": rooms.mark_read(_required(p, "id"), _required(p, "seq"))},
-    "hexbot.activity.pairs": lambda p: {"pairs": activity.pairs()},
-    "hexbot.activity.list": lambda p: {"messages": activity.list_messages(p.get("from"), p.get("to"), p.get("limit", 200))},
+    "hexbot.activity.pairs": lambda p: {"pairs": activity.pairs(all_users=bool(p.get("all")))},
+    "hexbot.activity.list": lambda p: {"messages": activity.list_messages(
+        p.get("from"), p.get("to"), p.get("limit", 200), all_users=bool(p.get("all")))},
     "hexbot.dreaming.status": lambda p: dreaming.status(_required(p, "bot")),
     "hexbot.dreaming.run_now": lambda p: dreaming.run_now(_required(p, "bot")),
-    "hexbot.dreaming.list": lambda p: dreaming.list_dreams(
-        _required(p, "bot"), p.get("limit", 20)),
+    "hexbot.dreaming.list": _dreams_list,
+    "hexbot.users.me": lambda p: users.me(),
+    "hexbot.users.list": _admin(lambda p: {"users": users.list_users()}),
+    "hexbot.users.invite": _admin(lambda p: users.invite(
+        _required(p, "display_name"), p.get("role", "member"))),
+    "hexbot.users.update": _admin(lambda p: {"user": users.update_user(
+        _required(p, "id"), **_fields(p, ("display_name", "role", "disabled", "limits"), skip=("id",))) }),
+    "hexbot.usage.summary": lambda p: usage.summary(user_id=p.get("user"), since=p.get("since", 0)),
 }
 
 #: method -> broadcast event emitted after a successful mutation.

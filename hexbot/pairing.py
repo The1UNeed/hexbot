@@ -31,6 +31,7 @@ class Device:
     token: str
     created_at: float
     last_seen_at: float
+    owner_id: str = "local"
 
 
 @dataclass(frozen=True)
@@ -52,15 +53,17 @@ def normalize_code(text: str) -> str:
     return str(text or "").strip().upper().replace("-", "").replace(" ", "")
 
 
-def new_code() -> str:
+def new_code(*, user_id: str = "local") -> str:
     db.migrate()
     raw = "".join(secrets.choice(CODE_ALPHABET) for _ in range(8))
     now = time.time()
     with db.transaction() as conn:
-        conn.execute("UPDATE pairing_codes SET used_at=? WHERE used_at IS NULL", (now,))
+        conn.execute("UPDATE pairing_codes SET used_at=? WHERE used_at IS NULL AND user_id=?",
+                     (now, user_id))
         conn.execute(
-            "INSERT INTO pairing_codes(code_hash,created_at,expires_at,used_at) VALUES (?,?,?,NULL)",
-            (_digest(raw), now, now + CODE_TTL_SECONDS),
+            "INSERT INTO pairing_codes(code_hash,created_at,expires_at,used_at,user_id) "
+            "VALUES (?,?,?,NULL,?)",
+            (_digest(raw), now, now + CODE_TTL_SECONDS, user_id),
         )
     return f"{raw[:4]}-{raw[4:]}"
 
@@ -83,11 +86,11 @@ def _row(row) -> DeviceRow:
     )
 
 
-def _mint_device(name: str, platform: str, *, conn=None) -> Device:
+def _mint_device(name: str, platform: str, *, owner_id="local", conn=None) -> Device:
     token = "hxb_" + secrets.token_urlsafe(32)
     now = time.time()
-    device = Device(str(uuid.uuid4()), name, platform, token, now, now)
-    values = (device.id, device.name, device.platform, _digest(token), "local", now, now)
+    device = Device(str(uuid.uuid4()), name, platform, token, now, now, owner_id)
+    values = (device.id, device.name, device.platform, _digest(token), owner_id, now, now)
     sql = ("INSERT INTO devices(id,name,platform,token_hash,owner_id,created_at,last_seen_at) "
            "VALUES (?,?,?,?,?,?,?)")
     if conn is not None:
@@ -98,10 +101,10 @@ def _mint_device(name: str, platform: str, *, conn=None) -> Device:
     return device
 
 
-def mint_device(name: str, platform: str) -> Device:
+def mint_device(name: str, platform: str, *, owner_id="local") -> Device:
     """Create a revocable device credential outside the pairing-code flow."""
     db.migrate()
-    return _mint_device(name, platform)
+    return _mint_device(name, platform, owner_id=owner_id)
 
 
 def _record_failure(now: float) -> None:
@@ -119,10 +122,15 @@ def redeem_code(code: str, *, device_name: str, platform: str) -> Device:
     with db.transaction() as conn:
         digest = _digest(normalize_code(code))
         row = conn.execute(
-            "SELECT code_hash FROM pairing_codes WHERE code_hash=? "
+            "SELECT code_hash,user_id FROM pairing_codes WHERE code_hash=? "
             "AND used_at IS NULL AND expires_at>?", (digest, now),
         ).fetchone()
         if row is None:
+            _record_failure(now)
+            raise HexbotError(4231, "invalid or expired pairing code")
+        active = conn.execute("SELECT 1 FROM users WHERE id=? AND disabled_at IS NULL",
+                              (row["user_id"],)).fetchone()
+        if active is None:
             _record_failure(now)
             raise HexbotError(4231, "invalid or expired pairing code")
         changed = conn.execute(
@@ -132,7 +140,7 @@ def redeem_code(code: str, *, device_name: str, platform: str) -> Device:
         if changed != 1:
             _record_failure(now)
             raise HexbotError(4231, "invalid or expired pairing code")
-        return _mint_device(device_name, platform, conn=conn)
+        return _mint_device(device_name, platform, owner_id=row["user_id"], conn=conn)
 
 
 def verify_token(token: str) -> DeviceRow | None:
@@ -153,21 +161,30 @@ def verify_token(token: str) -> DeviceRow | None:
     return _row(row)
 
 
-def list_devices() -> list[DeviceRow]:
+def list_devices(*, owner_id: str | None = "local") -> list[DeviceRow]:
     db.migrate()
     with db.transaction() as conn:
-        rows = conn.execute(
-            "SELECT * FROM devices WHERE revoked_at IS NULL ORDER BY created_at DESC"
-        ).fetchall()
+        sql = "SELECT * FROM devices WHERE revoked_at IS NULL"
+        args = []
+        if owner_id is not None:
+            sql += " AND owner_id=?"; args.append(owner_id)
+        rows = conn.execute(sql + " ORDER BY created_at DESC", args).fetchall()
     return [_row(row) for row in rows]
 
 
-def revoke_device(device_id: str) -> bool:
+def revoke_device(device_id: str, *, owner_id: str | None = "local") -> bool:
     db.migrate()
     with db.transaction() as conn:
+        existing = conn.execute("SELECT owner_id FROM devices WHERE id=? AND revoked_at IS NULL",
+                                (device_id,)).fetchone()
+        if existing is not None and owner_id is not None and existing["owner_id"] != owner_id:
+            raise HexbotError(4302, "not the owner")
+        sql = "UPDATE devices SET revoked_at=? WHERE id=? AND revoked_at IS NULL"
+        args = [time.time(), device_id]
+        if owner_id is not None:
+            sql += " AND owner_id=?"; args.append(owner_id)
         changed = conn.execute(
-            "UPDATE devices SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
-            (time.time(), device_id),
+            sql, args,
         ).rowcount
     if not changed:
         raise HexbotError(4204, f"device not found: {device_id}")
