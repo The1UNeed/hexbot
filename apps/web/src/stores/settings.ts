@@ -116,7 +116,9 @@ export function settingsActions(): SettingsState {
 }
 
 export function useConfiguredProviders(): Provider[] {
-  return useSettings(useShallow((state: SettingsState) => state.providers.filter(item => item.configured === true)))
+  return useSettings(
+    useShallow((state: SettingsState) => state.providers.filter(item => item.configured === true))
+  )
 }
 
 export function useHasProviderKey(): boolean {

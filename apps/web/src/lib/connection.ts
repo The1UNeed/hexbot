@@ -239,7 +239,11 @@ export async function pairWithDaemon(
     throw new UnreachableError(`Pairing failed (HTTP ${response.status}).`)
   }
 
-  const body = (await response.json()) as { daemon_name?: string; device_id?: string; device_token?: string }
+  const body = (await response.json()) as {
+    daemon_name?: string
+    device_id?: string
+    device_token?: string
+  }
 
   return {
     daemonName: body.daemon_name ?? host,
@@ -439,7 +443,9 @@ export class ConnectionSupervisor {
 
       store.setDaemon(info)
     } catch (error) {
-      store.setStatus('connected', { error: error instanceof Error ? error.message : String(error) })
+      store.setStatus('connected', {
+        error: error instanceof Error ? error.message : String(error)
+      })
     }
   }
 

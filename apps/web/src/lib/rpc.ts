@@ -32,7 +32,10 @@ export class HexbotRpcClient {
     return this.client.request<T>(method, params)
   }
 
-  subscribe<P = unknown>(type: GatewayEventName, handler: (event: GatewayEvent<P>) => void): () => void {
+  subscribe<P = unknown>(
+    type: GatewayEventName,
+    handler: (event: GatewayEvent<P>) => void
+  ): () => void {
     return this.client.on(type, handler)
   }
 

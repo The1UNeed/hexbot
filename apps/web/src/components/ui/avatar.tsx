@@ -3,16 +3,19 @@ import { cva, type VariantProps } from 'class-variance-authority'
 
 import { cn, hueFromString, initialsFromName } from '../../lib/cn'
 
-const avatarVariants = cva('inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full', {
-  defaultVariants: { size: 'md' },
-  variants: {
-    size: {
-      lg: 'size-16 text-[length:var(--text-title)]',
-      md: 'size-8 text-[length:var(--text-secondary)]',
-      sm: 'size-6 text-[length:var(--text-meta)]'
+const avatarVariants = cva(
+  'inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full',
+  {
+    defaultVariants: { size: 'md' },
+    variants: {
+      size: {
+        lg: 'size-16 text-[length:var(--text-title)]',
+        md: 'size-8 text-[length:var(--text-secondary)]',
+        sm: 'size-6 text-[length:var(--text-meta)]'
+      }
     }
   }
-})
+)
 
 export interface AvatarProps extends VariantProps<typeof avatarVariants> {
   className?: string
@@ -32,9 +35,13 @@ export function Avatar({ className, image, name, size }: AvatarProps) {
     <BaseAvatar.Root
       aria-label={name}
       className={cn(avatarVariants({ size }), 'font-semibold', className)}
-      style={image ? undefined : { backgroundColor: `hsl(${hue} 45% 42%)`, color: 'hsl(0 0% 100%)' }}
+      style={
+        image ? undefined : { backgroundColor: `hsl(${hue} 45% 42%)`, color: 'hsl(0 0% 100%)' }
+      }
     >
-      {image ? <BaseAvatar.Image alt={name} className="size-full object-cover" src={image} /> : null}
+      {image ? (
+        <BaseAvatar.Image alt={name} className="size-full object-cover" src={image} />
+      ) : null}
       <BaseAvatar.Fallback className="select-none">{initialsFromName(name)}</BaseAvatar.Fallback>
     </BaseAvatar.Root>
   )

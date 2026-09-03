@@ -10,7 +10,16 @@ export interface DaemonProgress {
   /** 0..1 when known. */
   fraction?: number
   message: string
-  stage: 'dependencies' | 'done' | 'error' | 'git' | 'python' | 'ripgrep' | 'starting' | 'uv' | (string & {})
+  stage:
+    | 'dependencies'
+    | 'done'
+    | 'error'
+    | 'git'
+    | 'python'
+    | 'ripgrep'
+    | 'starting'
+    | 'uv'
+    | (string & {})
 }
 
 export interface DaemonStatus {

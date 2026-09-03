@@ -18,7 +18,10 @@ export interface ConnectionState {
   epoch: null | string
   setDaemon: (daemon: DaemonInfo | null) => void
   setEpoch: (epoch: null | string) => void
-  setStatus: (status: ConnectionStatus, options?: { attempt?: number; error?: null | string }) => void
+  setStatus: (
+    status: ConnectionStatus,
+    options?: { attempt?: number; error?: null | string }
+  ) => void
   setTarget: (target: ConnectionTarget | null) => void
   status: ConnectionStatus
   target: ConnectionTarget | null
@@ -91,7 +94,8 @@ export const useConnection = create<ConnectionState>(set => ({
   setStatus(status, options = {}) {
     set(state => ({
       attempt: options.attempt ?? state.attempt,
-      error: options.error === undefined ? (status === 'connected' ? null : state.error) : options.error,
+      error:
+        options.error === undefined ? (status === 'connected' ? null : state.error) : options.error,
       status
     }))
   },

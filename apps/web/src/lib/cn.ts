@@ -21,7 +21,10 @@ export function hueFromString(value: string): number {
 }
 
 export function initialsFromName(value: string): string {
-  const words = value.trim().split(/[\s_-]+/).filter(Boolean)
+  const words = value
+    .trim()
+    .split(/[\s_-]+/)
+    .filter(Boolean)
 
   if (words.length === 0) {
     return '?'

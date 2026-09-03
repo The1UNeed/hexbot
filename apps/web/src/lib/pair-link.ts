@@ -71,7 +71,10 @@ export function parseAddress(input: string): AddressParts | null {
 
     const port = url.port ? Number.parseInt(url.port, 10) : DEFAULT_DAEMON_PORT
 
-    return { host: url.hostname, port: Number.isFinite(port) && port > 0 ? port : DEFAULT_DAEMON_PORT }
+    return {
+      host: url.hostname,
+      port: Number.isFinite(port) && port > 0 ? port : DEFAULT_DAEMON_PORT
+    }
   } catch {
     return null
   }

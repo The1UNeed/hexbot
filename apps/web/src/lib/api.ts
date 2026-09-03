@@ -100,7 +100,10 @@ export function sectionsList(options: { bot?: string; include_archived?: boolean
 }
 
 export function sectionsCreate(bot: string, title?: string): Promise<{ section: Section }> {
-  return rpcCall<{ section: Section }>('hexbot.sections.create', title === undefined ? { bot } : { bot, title })
+  return rpcCall<{ section: Section }>(
+    'hexbot.sections.create',
+    title === undefined ? { bot } : { bot, title }
+  )
 }
 
 export function sectionsOpen(id: string): Promise<{ messages: HistoryRow[]; section: Section }> {
@@ -158,12 +161,22 @@ export function providersList(): Promise<{ providers: Provider[] }> {
   return rpcCall<{ providers: Provider[] }>('hexbot.providers.list')
 }
 
-export function providersSetKey(provider: string, key: string): Promise<{ configured: boolean; provider: string }> {
-  return rpcCall<{ configured: boolean; provider: string }>('hexbot.providers.set_key', { key, provider })
+export function providersSetKey(
+  provider: string,
+  key: string
+): Promise<{ configured: boolean; provider: string }> {
+  return rpcCall<{ configured: boolean; provider: string }>('hexbot.providers.set_key', {
+    key,
+    provider
+  })
 }
 
-export function providersClearKey(provider: string): Promise<{ configured: boolean; provider: string }> {
-  return rpcCall<{ configured: boolean; provider: string }>('hexbot.providers.clear_key', { provider })
+export function providersClearKey(
+  provider: string
+): Promise<{ configured: boolean; provider: string }> {
+  return rpcCall<{ configured: boolean; provider: string }>('hexbot.providers.clear_key', {
+    provider
+  })
 }
 
 export function modelsList(provider?: string): Promise<ModelList> {
@@ -221,18 +234,31 @@ export function sessionInterrupt(sessionId: string): Promise<{ status: string }>
   return rpcCall<{ status: string }>('session.interrupt', { session_id: sessionId })
 }
 
-export function sessionSteer(sessionId: string, text: string): Promise<{ status: string; text: string }> {
+export function sessionSteer(
+  sessionId: string,
+  text: string
+): Promise<{ status: string; text: string }> {
   return rpcCall<{ status: string; text: string }>('session.steer', { session_id: sessionId, text })
 }
 
-export function sessionHistory(sessionId: string): Promise<{ count: number; messages: HistoryRow[] }> {
-  return rpcCall<{ count: number; messages: HistoryRow[] }>('session.history', { session_id: sessionId })
+export function sessionHistory(
+  sessionId: string
+): Promise<{ count: number; messages: HistoryRow[] }> {
+  return rpcCall<{ count: number; messages: HistoryRow[] }>('session.history', {
+    session_id: sessionId
+  })
 }
 
 export function sessionEventsSince(
   sessionId: string,
   lastSeen: number
-): Promise<{ count: number; epoch?: string; events: unknown[]; latest_seq: number; truncated: boolean }> {
+): Promise<{
+  count: number
+  epoch?: string
+  events: unknown[]
+  latest_seq: number
+  truncated: boolean
+}> {
   return rpcCall('session.events.since', { last_seen: lastSeen, session_id: sessionId })
 }
 
@@ -283,7 +309,10 @@ export function approvalRespond(
 }
 
 /** Delivery acknowledgement; sent as soon as an approval card is shown. */
-export function approvalReceived(sessionId: string, requestId: string): Promise<{ acknowledged: boolean }> {
+export function approvalReceived(
+  sessionId: string,
+  requestId: string
+): Promise<{ acknowledged: boolean }> {
   return rpcCall<{ acknowledged: boolean }>('approval.received', {
     request_id: requestId,
     session_id: sessionId
@@ -323,10 +352,17 @@ export function imageDetach(sessionId: string, index?: number): Promise<AttachRe
 }
 
 export function pdfAttach(sessionId: string, contentBase64: string): Promise<AttachResult> {
-  return rpcCall<AttachResult>('pdf.attach', { content_base64: contentBase64, session_id: sessionId })
+  return rpcCall<AttachResult>('pdf.attach', {
+    content_base64: contentBase64,
+    session_id: sessionId
+  })
 }
 
-export function fileAttach(sessionId: string, dataUrl: string, name: string): Promise<AttachResult> {
+export function fileAttach(
+  sessionId: string,
+  dataUrl: string,
+  name: string
+): Promise<AttachResult> {
   return rpcCall<AttachResult>('file.attach', { data_url: dataUrl, name, session_id: sessionId })
 }
 
@@ -446,7 +482,9 @@ export function messagesFromHistory(rows: HistoryRow[]): Message[] {
     }
 
     const role: Message['role'] =
-      row.role === 'user' || row.role === 'assistant' || row.role === 'system' ? row.role : 'assistant'
+      row.role === 'user' || row.role === 'assistant' || row.role === 'system'
+        ? row.role
+        : 'assistant'
 
     messages.push({
       attachments: [],

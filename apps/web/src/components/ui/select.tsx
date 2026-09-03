@@ -15,15 +15,32 @@ export interface SelectProps {
   value?: string
 }
 
-export function Select({ disabled, label, onValueChange, options, placeholder, value }: SelectProps) {
+export function Select({
+  disabled,
+  label,
+  onValueChange,
+  options,
+  placeholder,
+  value
+}: SelectProps) {
   return (
-    <BaseSelect.Root disabled={disabled} onValueChange={next => next && onValueChange(next)} value={value}>
+    <BaseSelect.Root
+      disabled={disabled}
+      onValueChange={next => next && onValueChange(next)}
+      value={value}
+    >
       <BaseSelect.Trigger
         aria-label={label}
         className="flex h-9 w-full items-center justify-between rounded-control border border-border bg-surface px-3 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50"
       >
-        <BaseSelect.Value>{selected => selected ? options.find(item => item.value === selected)?.label : placeholder}</BaseSelect.Value>
-        <BaseSelect.Icon><ChevronDown aria-hidden size={15} /></BaseSelect.Icon>
+        <BaseSelect.Value>
+          {selected =>
+            selected ? options.find(item => item.value === selected)?.label : placeholder
+          }
+        </BaseSelect.Value>
+        <BaseSelect.Icon>
+          <ChevronDown aria-hidden size={15} />
+        </BaseSelect.Icon>
       </BaseSelect.Trigger>
       <BaseSelect.Portal>
         <BaseSelect.Positioner className="z-50 outline-none" sideOffset={6}>
@@ -35,7 +52,9 @@ export function Select({ disabled, label, onValueChange, options, placeholder, v
                   key={option.value}
                   value={option.value}
                 >
-                  <BaseSelect.ItemIndicator><Check aria-hidden size={14} /></BaseSelect.ItemIndicator>
+                  <BaseSelect.ItemIndicator>
+                    <Check aria-hidden size={14} />
+                  </BaseSelect.ItemIndicator>
                   <BaseSelect.ItemText>{option.label}</BaseSelect.ItemText>
                 </BaseSelect.Item>
               ))}

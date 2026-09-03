@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
 /*
  * Hexbot design tokens. Every colour, radius, shadow and motion value the UI
@@ -25,8 +25,9 @@
   --hex-radius-panel: 10px;
   --hex-radius-bubble: 16px;
 
-  --hex-font-sans: system-ui, -apple-system, "SF Pro Text", Inter, Cantarell, "Segoe UI", sans-serif;
-  --hex-font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --hex-font-sans:
+    system-ui, -apple-system, 'SF Pro Text', Inter, Cantarell, 'Segoe UI', sans-serif;
+  --hex-font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
 
   --hex-shadow-popup: 0 8px 24px -8px rgb(0 0 0 / 0.24);
 

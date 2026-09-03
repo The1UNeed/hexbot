@@ -18,7 +18,9 @@ function RootLayout() {
 
   useEffect(() => applyTheme(theme), [theme])
   useEffect(() => {
-    if (target) {void getSupervisor().start(target)}
+    if (target) {
+      void getSupervisor().start(target)
+    }
 
     return () => getSupervisor().stop()
   }, [target])
@@ -26,7 +28,8 @@ function RootLayout() {
   return (
     <>
       <div className="sr-only" data-testid="root-connection-status" role="status">
-        {daemon?.daemon_name ?? status}{attempt > 0 ? `, attempt ${attempt}` : ''}
+        {daemon?.daemon_name ?? status}
+        {attempt > 0 ? `, attempt ${attempt}` : ''}
       </div>
       <Outlet />
     </>

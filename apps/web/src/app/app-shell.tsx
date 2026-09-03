@@ -17,8 +17,11 @@ export function AppShell() {
     const move = (next: PointerEvent) => {
       const delta = next.clientX - start
 
-      if (side === 'left') {setSidebarWidth(initial + delta)}
-      else {setPanelWidth(Math.max(300, Math.min(520, initial - delta)))}
+      if (side === 'left') {
+        setSidebarWidth(initial + delta)
+      } else {
+        setPanelWidth(Math.max(300, Math.min(520, initial - delta)))
+      }
     }
 
     const up = () => {
@@ -31,11 +34,37 @@ export function AppShell() {
   }
 
   return (
-    <main className="grid min-h-screen bg-background text-foreground" style={{ gridTemplateColumns: `${sidebarWidth}px 4px minmax(480px,1fr)${panelOpen ? ` 4px ${panelWidth}px` : ''}` }}>
-      <aside className="min-w-0 overflow-auto border-r border-border"><RosterColumn /></aside>
-      <div aria-label="Resize roster" className="cursor-col-resize" onPointerDown={event => resize('left', event.clientX)(event)} role="separator" />
-      <section className="min-w-0 overflow-auto"><ConversationColumn /></section>
-      {panelOpen ? <><div aria-label="Resize profile" className="cursor-col-resize" onPointerDown={event => resize('right', event.clientX)(event)} role="separator" /><aside className="min-w-0 overflow-auto border-l border-border"><ProfilePanel /></aside></> : null}
+    <main
+      className="grid min-h-screen bg-background text-foreground"
+      style={{
+        gridTemplateColumns: `${sidebarWidth}px 4px minmax(480px,1fr)${panelOpen ? ` 4px ${panelWidth}px` : ''}`
+      }}
+    >
+      <aside className="min-w-0 overflow-auto border-r border-border">
+        <RosterColumn />
+      </aside>
+      <div
+        aria-label="Resize roster"
+        className="cursor-col-resize"
+        onPointerDown={event => resize('left', event.clientX)(event)}
+        role="separator"
+      />
+      <section className="min-w-0 overflow-auto">
+        <ConversationColumn />
+      </section>
+      {panelOpen ? (
+        <>
+          <div
+            aria-label="Resize profile"
+            className="cursor-col-resize"
+            onPointerDown={event => resize('right', event.clientX)(event)}
+            role="separator"
+          />
+          <aside className="min-w-0 overflow-auto border-l border-border">
+            <ProfilePanel />
+          </aside>
+        </>
+      ) : null}
     </main>
   )
 }

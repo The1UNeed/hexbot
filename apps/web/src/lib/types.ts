@@ -77,16 +77,10 @@ export interface BotCreateInput {
 export type BotUpdatePatch = Partial<Omit<BotCreateInput, 'name'>> & { avatar?: null | string }
 
 export type ConnectionStatus =
-  | 'connected'
-  | 'connecting'
-  | 'idle'
-  | 'offline'
-  | 'reconnecting'
-  | 'unauthorized'
+  'connected' | 'connecting' | 'idle' | 'offline' | 'reconnecting' | 'unauthorized'
 
 export type ConnectionTarget =
-  | { deviceToken: string; host: string; kind: 'remote'; port: number }
-  | { kind: 'local' }
+  { deviceToken: string; host: string; kind: 'remote'; port: number } | { kind: 'local' }
 
 export interface CoreMemory {
   caps: { per_section: number }

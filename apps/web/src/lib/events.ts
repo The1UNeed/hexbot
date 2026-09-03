@@ -22,7 +22,11 @@ import type { GatewayEvent } from '@hermes/shared'
 import { useBots } from '../stores/bots'
 import { useSections } from '../stores/sections'
 import { useSettings } from '../stores/settings'
-import type { ApprovalRequestPayload, ToolCompletePayload, ToolStartPayload } from '../stores/transcripts'
+import type {
+  ApprovalRequestPayload,
+  ToolCompletePayload,
+  ToolStartPayload
+} from '../stores/transcripts'
 import { useTranscripts } from '../stores/transcripts'
 
 import type { HexbotRpcClient } from './rpc'
@@ -95,7 +99,10 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       return
 
     case 'error':
-      transcripts.errorEvent(sessionId, typeof payload.message === 'string' ? payload.message : 'Unknown error')
+      transcripts.errorEvent(
+        sessionId,
+        typeof payload.message === 'string' ? payload.message : 'Unknown error'
+      )
 
       return
 
@@ -164,7 +171,10 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 }
 
 /** Subscribe the router to a connected client; returns the unsubscribe. */
-export function attachEventRouting(client: HexbotRpcClient, deps: EventRouterDeps = {}): () => void {
+export function attachEventRouting(
+  client: HexbotRpcClient,
+  deps: EventRouterDeps = {}
+): () => void {
   return client.onEvent(event => {
     routeEvent(event, deps)
   })

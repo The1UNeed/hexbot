@@ -159,7 +159,10 @@ export const useSections = create<SectionsState>((set, get) => ({
       return {
         byId,
         idsByBot: section
-          ? { ...state.idsByBot, [section.bot]: (state.idsByBot[section.bot] ?? []).filter(item => item !== id) }
+          ? {
+              ...state.idsByBot,
+              [section.bot]: (state.idsByBot[section.bot] ?? []).filter(item => item !== id)
+            }
           : state.idsByBot,
         liveSessionId
       }
@@ -179,7 +182,9 @@ export function sectionsActions(): SectionsState {
 export function selectSectionsForBot(bot: null | string) {
   return (state: SectionsState): Section[] =>
     bot
-      ? (state.idsByBot[bot] ?? []).map(id => state.byId[id]).filter((item): item is Section => Boolean(item))
+      ? (state.idsByBot[bot] ?? [])
+          .map(id => state.byId[id])
+          .filter((item): item is Section => Boolean(item))
       : []
 }
 

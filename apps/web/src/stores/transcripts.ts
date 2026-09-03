@@ -151,7 +151,11 @@ function newAssistantMessage(): Message {
   }
 }
 
-function replaceMessage(transcript: Transcript, id: string, patch: (message: Message) => Message): Transcript {
+function replaceMessage(
+  transcript: Transcript,
+  id: string,
+  patch: (message: Message) => Message
+): Transcript {
   return {
     ...transcript,
     messages: transcript.messages.map(message => (message.id === id ? patch(message) : message))
@@ -168,7 +172,10 @@ function withCurrentAssistant(
   patch: (message: Message) => Message
 ): Transcript {
   const currentId = transcript.streamingMessageId
-  const current = currentId ? transcript.messages.find(message => message.id === currentId) : undefined
+
+  const current = currentId
+    ? transcript.messages.find(message => message.id === currentId)
+    : undefined
 
   if (current) {
     return replaceMessage(transcript, current.id, patch)
@@ -176,7 +183,11 @@ function withCurrentAssistant(
 
   const created = patch(newAssistantMessage())
 
-  return { ...transcript, messages: [...transcript.messages, created], streamingMessageId: created.id }
+  return {
+    ...transcript,
+    messages: [...transcript.messages, created],
+    streamingMessageId: created.id
+  }
 }
 
 export const useTranscripts = create<TranscriptsState>((set, get) => {
@@ -254,7 +265,11 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       }
 
       update(sessionId, transcript =>
-        withCurrentAssistant(transcript, message => ({ ...message, streaming: true, text: message.text + text }))
+        withCurrentAssistant(transcript, message => ({
+          ...message,
+          streaming: true,
+          text: message.text + text
+        }))
       )
     },
 
@@ -266,7 +281,11 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       }
 
       update(sessionId, transcript =>
-        withCurrentAssistant(transcript, message => ({ ...message, streaming: true, text: message.text + text }))
+        withCurrentAssistant(transcript, message => ({
+          ...message,
+          streaming: true,
+          text: message.text + text
+        }))
       )
     },
 
@@ -297,7 +316,10 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       }
 
       update(sessionId, transcript =>
-        withCurrentAssistant(transcript, message => ({ ...message, toolCalls: [...message.toolCalls, call] }))
+        withCurrentAssistant(transcript, message => ({
+          ...message,
+          toolCalls: [...message.toolCalls, call]
+        }))
       )
     },
 
@@ -306,7 +328,9 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       const result = payload.result ?? payload.result_text ?? null
 
       const failed =
-        typeof result === 'object' && result !== null && 'error' in (result as Record<string, unknown>)
+        typeof result === 'object' &&
+        result !== null &&
+        'error' in (result as Record<string, unknown>)
 
       update(sessionId, transcript => {
         const index = toolId
@@ -486,7 +510,9 @@ export function useTranscript(sessionId: null | string): Transcript | undefined 
 }
 
 export function useIsStreaming(sessionId: null | string): boolean {
-  return useTranscripts(state => Boolean(sessionId && state.bySession[sessionId]?.streamingMessageId))
+  return useTranscripts(state =>
+    Boolean(sessionId && state.bySession[sessionId]?.streamingMessageId)
+  )
 }
 
 export function transcriptActions(): TranscriptsState {

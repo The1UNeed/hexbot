@@ -7,7 +7,10 @@ export const Route = createFileRoute('/')({
   beforeLoad: () => {
     const last = uiActions().lastSection
 
-    if (last) {throw redirect({ to: '/b/$bot/s/$section', params: last })}
+    if (last) {
+      throw redirect({ to: '/b/$bot/s/$section', params: last })
+    }
+
     throw redirect({ to: connectionActions().target ? '/onboarding' : '/connect' })
   }
 })

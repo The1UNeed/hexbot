@@ -46,7 +46,9 @@ export const useUi = create<UiState>()(
       },
 
       setSidebarWidth(width) {
-        set({ sidebarWidth: Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(width))) })
+        set({
+          sidebarWidth: Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(width)))
+        })
       },
 
       setLastSection(value) {

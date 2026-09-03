@@ -9,17 +9,23 @@ import { AppearanceSettings, ApprovalsSettings, NetworkSettings, ProvidersSettin
 vi.mock('../../lib/api', async importOriginal => ({
   ...(await importOriginal()),
   modelsList: vi.fn(),
-  pairingCode: vi.fn().mockResolvedValue({ code: '123456', expires_at: Date.now() + 600_000, link: 'hexbot://pair' })
+  pairingCode: vi
+    .fn()
+    .mockResolvedValue({ code: '123456', expires_at: Date.now() + 600_000, link: 'hexbot://pair' })
 }))
 
 vi.mock('../../stores/ui', () => ({
-  useUi: (selector: (state: object) => unknown) => selector({
-    setTheme: (theme: string) => {
-      if (theme === 'system') {document.documentElement.removeAttribute('data-theme')}
-      else {document.documentElement.setAttribute('data-theme', theme)}
-    },
-    theme: 'system'
-  })
+  useUi: (selector: (state: object) => unknown) =>
+    selector({
+      setTheme: (theme: string) => {
+        if (theme === 'system') {
+          document.documentElement.removeAttribute('data-theme')
+        } else {
+          document.documentElement.setAttribute('data-theme', theme)
+        }
+      },
+      theme: 'system'
+    })
 }))
 
 describe('settings', () => {
@@ -47,11 +53,16 @@ describe('settings', () => {
   it('adds and tests a provider key', async () => {
     const setProviderKey = vi.fn().mockResolvedValue(undefined)
     useSettings.setState({
-      providers: [{ auth_type: 'key', configured: false, id: 'openai', label: 'OpenAI', models_source: 'api' }],
+      providers: [
+        { auth_type: 'key', configured: false, id: 'openai', label: 'OpenAI', models_source: 'api' }
+      ],
       refreshProviders: vi.fn().mockResolvedValue(undefined),
       setProviderKey
     })
-    vi.mocked(modelsList).mockResolvedValue({ all: [{ id: 'gpt', label: 'GPT', provider: 'openai' }], curated: [] })
+    vi.mocked(modelsList).mockResolvedValue({
+      all: [{ id: 'gpt', label: 'GPT', provider: 'openai' }],
+      curated: []
+    })
     render(<ProvidersSettings />)
     fireEvent.change(screen.getByLabelText('OpenAI API key'), { target: { value: 'secret' } })
     fireEvent.click(screen.getByRole('button', { name: 'Test' }))
@@ -71,7 +82,9 @@ describe('settings', () => {
     expect(screen.queryByText('Addresses')).not.toBeInTheDocument()
     fireEvent.click(screen.getByLabelText('Allow other devices on this network'))
     expect(setLanEnabled).toHaveBeenCalledWith(true)
-    useSettings.setState({ network: { addresses: ['192.168.1.2'], bind_host: '0.0.0.0', lan_enabled: true, port: 8000 } })
+    useSettings.setState({
+      network: { addresses: ['192.168.1.2'], bind_host: '0.0.0.0', lan_enabled: true, port: 8000 }
+    })
     rerender(<NetworkSettings />)
     expect(screen.getByText('Addresses')).toBeVisible()
     expect(screen.getByText('192.168.1.2:8000')).toBeVisible()
@@ -83,7 +96,14 @@ describe('settings', () => {
       patch,
       refresh: vi.fn().mockResolvedValue(undefined),
       refreshModels: vi.fn().mockResolvedValue(undefined),
-      settings: { approval_mode: 'manual', auto_approver_model: null, billing_notice_ack: false, lan_enabled: false, service_installed: false, workspace_dir: '' }
+      settings: {
+        approval_mode: 'manual',
+        auto_approver_model: null,
+        billing_notice_ack: false,
+        lan_enabled: false,
+        service_installed: false,
+        workspace_dir: ''
+      }
     })
     render(<ApprovalsSettings />)
     fireEvent.click(screen.getByRole('radio', { name: /^Auto/ }))
