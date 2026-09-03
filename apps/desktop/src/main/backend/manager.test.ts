@@ -29,3 +29,12 @@ describe('daemon helpers', () => {
     expect(await findFreePort(9119, createServer)).toBe(9121)
   })
 })
+
+import { describe as d2, expect as e2, it as i2 } from 'vitest'
+import { parseReadyLine as p2 } from './manager'
+
+d2('parseReadyLine dashboard mode', () => {
+  i2('accepts HERMES_DASHBOARD_READY', () => {
+    e2(p2('HERMES_DASHBOARD_READY port=9134')).toBe(9134)
+  })
+})

@@ -32,6 +32,7 @@ import {
   setSectionModel
 } from '../../lib/api'
 import { getBridge } from '../../lib/bridge'
+import { toMillis } from '../../lib/time'
 import type {
   ApprovalChoice,
   ApprovalRequest,
@@ -49,7 +50,7 @@ import { useUi } from '../../stores/ui'
 const avatarData = (bot?: Bot) =>
   bot?.avatar ? `data:${bot.avatar.mime};base64,${bot.avatar.data}` : null
 
-const dayKey = (time: number) => new Date(time).toDateString()
+const dayKey = (time: number) => new Date(toMillis(time)).toDateString()
 
 function CodeBlock({ children, className }: { children?: React.ReactNode; className?: string }) {
   const language = /language-([^ ]+)/.exec(className ?? '')?.[1]
@@ -295,13 +296,17 @@ function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
   )
 }
 
-export function suggestedPrompts(description: string): string[] {
-  const subject = description.trim().replace(/[.!?].*$/, '') || 'what you can help me with'
+export function suggestedPrompts(description: string, name = 'this bot'): string[] {
+  const focus = description.trim().replace(/[.!?].*$/, '')
+
+  const first = focus
+    ? `What can you help me with when it comes to ${focus.charAt(0).toLowerCase()}${focus.slice(1)}?`
+    : `What can you help me with, ${name}?`
 
   return [
-    `Help me get started with ${subject.toLowerCase()}`,
-    `What should I know about ${subject.toLowerCase()}?`,
-    'What can we work on together?'
+    first,
+    'Tell me what you remember about me so far.',
+    'Suggest three things we could do together right now.'
   ]
 }
 
@@ -706,7 +711,7 @@ export function ConversationColumn() {
               <p className="text-muted">{section?.title}</p>
             </div>
             <div className="grid gap-2">
-              {suggestedPrompts(bot?.description ?? '').map(prompt => (
+              {suggestedPrompts(bot?.description ?? '', bot?.display_name).map(prompt => (
                 <Button
                   key={prompt}
                   onClick={() => {

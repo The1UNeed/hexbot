@@ -8,6 +8,7 @@ import { Chip } from '../../components/ui/chip'
 import { Dialog } from '../../components/ui/dialog'
 import { Input } from '../../components/ui/input'
 import { Menu } from '../../components/ui/menu'
+import { toMillis } from '../../lib/time'
 import type { Bot, Section } from '../../lib/types'
 import { useBotList, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
@@ -20,7 +21,9 @@ const avatarData = (bot: Bot) =>
 
 const sectionTime = (section: Section) => section.updated_at ?? section.created_at ?? 0
 
-export function relativeTime(value: number | null): string {
+export function relativeTime(raw: number | null): string {
+  const value = toMillis(raw)
+
   if (!value) {
     return ''
   }
@@ -347,7 +350,7 @@ export function RosterColumn() {
         ) : null}
         <footer className="flex items-center gap-2 border-t border-border px-3 py-2 text-[length:var(--text-meta)] text-muted">
           <span className={`size-2 rounded-full ${dot}`} />
-          <span className="min-w-0 flex-1 truncate capitalize">{label}</span>
+          <span className="min-w-0 flex-1 truncate">{label}</span>
           <button
             aria-label="Settings"
             className="rounded-control p-1 hover:bg-surface-2 hover:text-foreground"

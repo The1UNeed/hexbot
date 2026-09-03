@@ -18,7 +18,7 @@ export interface DaemonStatus {
 }
 export const backoffSchedule = [1_000, 2_000, 4_000, 8_000, 16_000] as const
 export function parseReadyLine(line: string): number | undefined {
-  const match = /(?:^|\s)HERMES_BACKEND_READY port=(\d+)(?:\s|$)/.exec(line)
+  const match = /(?:^|\s)HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)(?:\s|$)/.exec(line)
   if (!match) return undefined
   const port = Number(match[1])
   return port > 0 && port <= 65_535 ? port : undefined
