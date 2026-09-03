@@ -42,7 +42,8 @@ function isTarget(value: unknown): value is ConnectionTarget {
     candidate.kind === 'remote' &&
     typeof candidate.host === 'string' &&
     typeof candidate.port === 'number' &&
-    typeof candidate.deviceToken === 'string'
+    typeof candidate.deviceToken === 'string' &&
+    typeof candidate.tls === 'boolean'
   )
 }
 

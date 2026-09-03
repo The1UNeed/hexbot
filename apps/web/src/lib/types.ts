@@ -53,6 +53,9 @@ export interface Bot {
   display_name: string
   last_activity_at: null | number
   model: null | string
+  dream_enabled: boolean
+  may_write_core: boolean
+  shareable: boolean
   name: string
   owner_id: string
   persona: string
@@ -78,13 +81,18 @@ export interface BotCreateInput {
   tools?: string[]
 }
 
-export type BotUpdatePatch = Partial<Omit<BotCreateInput, 'name'>> & { avatar?: null | string }
+export type BotUpdatePatch = Partial<Omit<BotCreateInput, 'name'>> & {
+  avatar?: null | string
+  dream_enabled?: boolean
+  may_write_core?: boolean
+  shareable?: boolean
+}
 
 export type ConnectionStatus =
   'connected' | 'connecting' | 'idle' | 'offline' | 'reconnecting' | 'unauthorized'
 
 export type ConnectionTarget =
-  | { deviceToken: string; host: string; kind: 'remote'; port: number }
+  | { deviceToken: string; host: string; kind: 'remote'; port: number; tls: boolean }
   | { kind: 'local'; origin?: string }
 
 export interface CoreMemory {
@@ -200,6 +208,33 @@ export interface Settings {
   room_budget_tokens_per_human_turn?: null | number
   service_installed: boolean
   workspace_dir: string
+  dream_enabled: boolean
+  dream_time: string
+}
+
+export interface CurrentUser {
+  id: string
+  display_name: string
+  role: 'admin' | 'member'
+}
+export interface User extends CurrentUser {
+  created_at?: number
+  disabled_at?: null | number
+  disabled?: boolean
+  limits?: { daily_tokens: null | number }
+}
+export interface UsageSummary {
+  input_tokens: number
+  output_tokens: number
+  estimated_cost_usd: number
+  by_bot:
+    | Record<string, { input_tokens: number; output_tokens: number; estimated_cost_usd?: number }>
+    | Array<{
+        bot: string
+        input_tokens: number
+        output_tokens: number
+        estimated_cost_usd?: number
+      }>
 }
 
 export interface RoomMember {

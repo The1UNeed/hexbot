@@ -49,6 +49,13 @@ export interface HexbotBridge {
   isPackaged: boolean
   notify(input: { body: string; sectionId?: string; title: string }): void
   openExternal(url: string): Promise<void> | void
+  onNavigate?(callback: (url: string) => void): () => void
+  pairWithGrant?(input: {
+    host: string
+    grant: string
+    deviceName: string
+    tls: true
+  }): Promise<PairResult>
   pair(host: string, port: number, code: string, deviceName: string): Promise<PairResult>
   httpFetch(
     url: string,

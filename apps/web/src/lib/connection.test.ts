@@ -1,9 +1,20 @@
-import { probeDaemon, resolveWsUrl, UnauthorizedError } from './connection'
+import { probeDaemon, resolveWsUrl, targetOrigin, UnauthorizedError } from './connection'
 
 const response = (body: string, init: ResponseInit = {}) =>
   new Response(body, { status: 200, ...init })
 
 describe('connection gate', () => {
+  it('uses TLS for Connect targets', () => {
+    expect(
+      targetOrigin({
+        deviceToken: 'x',
+        host: 'bot.connect.hexbot.app',
+        kind: 'remote',
+        port: 443,
+        tls: true
+      })
+    ).toBe('https://bot.connect.hexbot.app')
+  })
   it('uses the page token when the gate is off', async () => {
     const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       response(
@@ -14,7 +25,7 @@ describe('connection gate', () => {
     const probe = await probeDaemon('http://box:9119', { fetch })
     expect(
       await resolveWsUrl(
-        { kind: 'remote', host: 'box', port: 9119, deviceToken: 'device' },
+        { kind: 'remote', host: 'box', port: 9119, deviceToken: 'device', tls: false },
         probe,
         { fetch }
       )
@@ -30,7 +41,7 @@ describe('connection gate', () => {
     const probe = await probeDaemon('http://box:9119', { fetch })
     expect(
       await resolveWsUrl(
-        { kind: 'remote', host: 'box', port: 9119, deviceToken: 'device' },
+        { kind: 'remote', host: 'box', port: 9119, deviceToken: 'device', tls: false },
         probe,
         { fetch }
       )
@@ -66,7 +77,7 @@ describe('connection gate', () => {
     const fetch = vi.fn(async () => response('', { status: 401 }))
     await expect(
       resolveWsUrl(
-        { kind: 'remote', host: 'box', port: 9119, deviceToken: 'revoked' },
+        { kind: 'remote', host: 'box', port: 9119, deviceToken: 'revoked', tls: false },
         { authRequired: true, reachable: true },
         { fetch }
       )

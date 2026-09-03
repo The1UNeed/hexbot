@@ -29,6 +29,7 @@ import type {
   Settings,
   Usage
 } from './types'
+import type { CurrentUser, UsageSummary, User } from './types'
 
 /** Raw history row as projected by Hermes `session.history`. */
 export interface HistoryRow {
@@ -177,6 +178,64 @@ export function activityList(
 ): Promise<{ messages: BotMessage[] }> {
   return rpcCall<{ messages: BotMessage[] }>('hexbot.activity.list', { ...options })
 }
+
+export interface DreamStatus {
+  enabled: boolean
+  last_run_at: null | number
+  next_run_at: null | number
+  last_status: null | string
+  last_error: null | string
+}
+export interface Dream {
+  id: string
+  bot: string
+  started_at: number
+  finished_at?: null | number
+  status: string
+  summary: string
+}
+export const dreamingStatus = (bot: string) =>
+  rpcCall<DreamStatus>('hexbot.dreaming.status', { bot })
+export const dreamingRunNow = (bot: string) =>
+  rpcCall<{ job: unknown }>('hexbot.dreaming.run_now', { bot })
+export const dreamingList = (bot: string, limit = 10) =>
+  rpcCall<{ dreams: Dream[] }>('hexbot.dreaming.list', { bot, limit })
+
+export interface ConnectStatus {
+  registered: boolean
+  daemon_id: null | string
+  slug: null | string
+  tunnel_hostname: null | string
+  tunnel_running: boolean
+  last_heartbeat_at: null | number
+  last_error: null | string
+}
+export interface ConnectRegistration {
+  device_code: string
+  user_code: string
+  verify_url: string
+  interval: number
+}
+export const connectStatus = () => rpcCall<ConnectStatus>('hexbot.connect.status')
+export const connectRegisterStart = () =>
+  rpcCall<ConnectRegistration>('hexbot.connect.register_start')
+export const connectRegisterPoll = (deviceCode: string) =>
+  rpcCall<{ status: string }>('hexbot.connect.register_poll', { device_code: deviceCode })
+export const connectDisconnect = () => rpcCall<Record<string, unknown>>('hexbot.connect.disconnect')
+
+export const usersMe = () => rpcCall<CurrentUser>('hexbot.users.me')
+export const usersList = () => rpcCall<{ users: User[] }>('hexbot.users.list')
+export const usersInvite = (displayName: string, role: 'admin' | 'member' = 'member') =>
+  rpcCall<{ user: User; code: string; expires_at: number }>('hexbot.users.invite', {
+    display_name: displayName,
+    role
+  })
+export const usersUpdate = (
+  id: string,
+  patch: Partial<Pick<User, 'display_name' | 'role' | 'disabled' | 'limits'>>
+) => rpcCall<{ user: User }>('hexbot.users.update', { id, ...patch })
+export const usageSummary = (user?: string) =>
+  rpcCall<UsageSummary>('hexbot.usage.summary', user ? { user } : {})
 
 // ---------------------------------------------------------------------------
 // Sections

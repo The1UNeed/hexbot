@@ -4,14 +4,37 @@ import { X } from 'lucide-react'
 import { SettingsPanel } from '../app/settings'
 import { Button } from '../components/ui/button'
 import { Dialog } from '../components/ui/dialog'
+import { useUsers } from '../stores/users'
 
-const tabs = ['providers', 'network', 'approvals', 'appearance', 'updates', 'about'] as const
+const tabs = [
+  'providers',
+  'network',
+  'connect',
+  'memory',
+  'users',
+  'usage',
+  'approvals',
+  'appearance',
+  'updates',
+  'about'
+] as const
 
 export const Route = createFileRoute('/settings/$tab')({ component: SettingsDialog })
 
 function SettingsDialog() {
   const { tab } = Route.useParams()
   const navigate = useNavigate()
+  const supported = useUsers(state => state.supported)
+  const current = useUsers(state => state.current)
+  const usageSupported = useUsers(state => state.usageSupported)
+
+  const visibleTabs = tabs.filter(item =>
+    item === 'users'
+      ? Boolean(supported && current?.role === 'admin')
+      : item === 'usage'
+        ? Boolean(usageSupported)
+        : true
+  )
 
   return (
     <Dialog
@@ -35,7 +58,7 @@ function SettingsDialog() {
     >
       <div className="grid h-full grid-cols-[180px_1fr]">
         <nav aria-label="Settings tabs" className="border-r border-border p-3">
-          {tabs.map(item => (
+          {visibleTabs.map(item => (
             <Button
               className="mb-1 w-full justify-start"
               key={item}

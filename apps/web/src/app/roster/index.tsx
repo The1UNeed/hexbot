@@ -18,6 +18,7 @@ import { useConnection } from '../../stores/connection'
 import { roomUnread, useRoomList, useRooms } from '../../stores/rooms'
 import { sectionsActions, useSections } from '../../stores/sections'
 import { useSettings } from '../../stores/settings'
+import { useUsers } from '../../stores/users'
 
 const DAY = 86_400_000
 // Stable empty array: a fresh [] per render would re-render forever.
@@ -249,6 +250,7 @@ export function RosterColumn() {
   const rooms = useRoomList()
   const sectionMap = useSections(state => state.byId)
   const connection = useConnection()
+  const currentUser = useUsers(state => state.current)
   const [query, setQuery] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [archivedOpen, setArchivedOpen] = useState(false)
@@ -471,7 +473,10 @@ export function RosterColumn() {
         ) : null}
         <footer className="flex items-center gap-2 border-t border-border px-3 py-2 text-[length:var(--text-meta)] text-muted">
           <span className={`size-2 rounded-full ${dot}`} />
-          <span className="min-w-0 flex-1 truncate">{label}</span>
+          <span className="min-w-0 flex-1 truncate">
+            <span className="block truncate">{currentUser?.display_name ?? 'Local user'}</span>
+            <span className="block truncate">{label}</span>
+          </span>
           <button
             aria-label="Settings"
             className="rounded-control p-1 hover:bg-surface-2 hover:text-foreground"
@@ -575,10 +580,12 @@ function NewRoomDialog({
   open: boolean
 }) {
   const bots = useBotList()
+  const users = useUsers(state => state.users)
   const settings = useSettings(state => state.settings)
   const [name, setName] = useState('')
   const [query, setQuery] = useState('')
   const [members, setMembers] = useState<string[]>([])
+  const [humanMembers, setHumanMembers] = useState<string[]>([])
   const [mainBot, setMainBot] = useState('')
   const [approvalMode, setApprovalMode] = useState(settings?.approval_mode ?? 'manual')
   const [turns, setTurns] = useState(String(settings?.room_bot_turns_per_human_turn ?? 8))
@@ -600,7 +607,7 @@ function NewRoomDialog({
                 budget_tokens_per_human_turn: budget ? Number(budget) : null
               },
               main_bot: mainBot || undefined,
-              members,
+              members: [...members, ...humanMembers],
               name: name.trim()
             })
             .then(room => {
@@ -647,6 +654,27 @@ function NewRoomDialog({
               </label>
             ))}
         </fieldset>
+        {users.length > 1 ? (
+          <fieldset className="border-y border-border py-2">
+            <legend className="mb-1 font-medium">People</legend>
+            {users.map(user => (
+              <label className="flex items-center gap-3 py-1" key={user.id}>
+                <input
+                  checked={humanMembers.includes(user.id)}
+                  onChange={event =>
+                    setHumanMembers(items =>
+                      event.target.checked
+                        ? [...items, user.id]
+                        : items.filter(id => id !== user.id)
+                    )
+                  }
+                  type="checkbox"
+                />
+                <span>{user.display_name}</span>
+              </label>
+            ))}
+          </fieldset>
+        ) : null}
         <label className="grid gap-1">
           <span>
             Main bot <span className="text-muted">(optional)</span>
@@ -708,7 +736,11 @@ function NewRoomDialog({
         ) : null}
         <div className="flex justify-end gap-2">
           <Button onClick={onClose}>Cancel</Button>
-          <Button disabled={!name.trim() || !members.length} type="submit" variant="primary">
+          <Button
+            disabled={!name.trim() || (!members.length && !humanMembers.length)}
+            type="submit"
+            variant="primary"
+          >
             Create room
           </Button>
         </div>

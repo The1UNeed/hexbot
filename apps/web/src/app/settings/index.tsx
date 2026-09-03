@@ -6,15 +6,31 @@ import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
 import { Input } from '../../components/ui/input'
 import { Select } from '../../components/ui/select'
-import { daemonInfo, modelsList, pairingCode } from '../../lib/api'
+import {
+  connectDisconnect,
+  connectRegisterPoll,
+  connectRegisterStart,
+  connectStatus,
+  daemonInfo,
+  modelsList,
+  pairingCode,
+  usageSummary,
+  usersInvite,
+  usersUpdate
+} from '../../lib/api'
 import { getBridge } from '../../lib/bridge'
 import type { ApprovalMode, ModelOption, PairingCode, Provider } from '../../lib/types'
 import { useSettings } from '../../stores/settings'
 import { type ThemePreference, useUi } from '../../stores/ui'
+import { useUsers } from '../../stores/users'
 
 export const SETTINGS_TABS = [
   'providers',
   'network',
+  'connect',
+  'memory',
+  'users',
+  'usage',
   'approvals',
   'appearance',
   'updates',
@@ -29,11 +45,321 @@ export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
     <section aria-label={`${tab} settings`} className="min-w-0 p-6">
       {tab === 'providers' && <ProvidersSettings />}
       {tab === 'network' && <NetworkSettings />}
+      {tab === 'connect' && <ConnectSettings />}
+      {tab === 'memory' && <MemorySettings />}
+      {tab === 'users' && <UsersSettings />}
+      {tab === 'usage' && <UsageSettings />}
       {tab === 'approvals' && <ApprovalsSettings />}
       {tab === 'appearance' && <AppearanceSettings />}
       {tab === 'updates' && <UpdatesSettings />}
       {tab === 'about' && <AboutSettings />}
     </section>
+  )
+}
+
+export function MemorySettings() {
+  const settings = useSettings(state => state.settings)
+  const refresh = useSettings(state => state.refresh)
+  const patch = useSettings(state => state.patch)
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  return (
+    <>
+      <Heading description="Set when bots review the day's conversations and write to their memory.">
+        Memory
+      </Heading>
+      <label className="flex items-center justify-between border-b border-border py-3">
+        <span>
+          <strong className="block">Dreaming</strong>
+          <span className="text-muted">Run scheduled memory reviews for enabled bots.</span>
+        </span>
+        <input
+          aria-label="Enable dreaming globally"
+          checked={settings?.dream_enabled ?? false}
+          onChange={event => void patch({ dream_enabled: event.target.checked })}
+          type="checkbox"
+        />
+      </label>
+      <label className="mt-4 block">
+        <span className="mb-2 block font-medium">Daily dream time</span>
+        <Input
+          aria-label="Daily dream time"
+          defaultValue={settings?.dream_time ?? '03:00'}
+          onBlur={event => void patch({ dream_time: event.target.value })}
+          type="time"
+        />
+      </label>
+    </>
+  )
+}
+
+export function ConnectSettings() {
+  const [status, setStatus] = useState<Awaited<ReturnType<typeof connectStatus>> | null>(null)
+
+  const [registration, setRegistration] = useState<Awaited<
+    ReturnType<typeof connectRegisterStart>
+  > | null>(null)
+
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    void connectStatus()
+      .then(setStatus)
+      .catch(cause => setError(errorText(cause)))
+  }, [])
+  useEffect(() => {
+    if (!registration) {
+      return
+    }
+
+    let stopped = false
+
+    const poll = async () => {
+      try {
+        const result = await connectRegisterPoll(registration.device_code)
+
+        if (stopped) {
+          return
+        }
+
+        if (result.status === 'approved') {
+          setRegistration(null)
+          setStatus(await connectStatus())
+          setBusy(false)
+
+          return
+        }
+
+        window.setTimeout(() => void poll(), Math.max(1, registration.interval) * 1000)
+      } catch (cause) {
+        if (!stopped) {
+          setError(errorText(cause))
+          setBusy(false)
+        }
+      }
+    }
+
+    const timer = window.setTimeout(() => void poll(), Math.max(1, registration.interval) * 1000)
+
+    return () => {
+      stopped = true
+      window.clearTimeout(timer)
+    }
+  }, [registration])
+  const open = (url: string) => (getBridge() ? getBridge()?.openExternal(url) : undefined)
+
+  return (
+    <>
+      <Heading description="Reach this daemon securely when you are away from your local network.">
+        Hexbot Connect
+      </Heading>
+      {status?.registered ? (
+        <div>
+          <dl className="grid grid-cols-[auto_1fr] gap-2">
+            <dt className="text-muted">Tunnel</dt>
+            <dd>{status.tunnel_hostname}</dd>
+            <dt className="text-muted">Status</dt>
+            <dd>{status.tunnel_running ? 'Running' : 'Stopped'}</dd>
+          </dl>
+          <Button
+            className="mt-5"
+            onClick={() =>
+              void connectDisconnect().then(() => setStatus({ ...status, registered: false }))
+            }
+            variant="danger"
+          >
+            Disconnect
+          </Button>
+        </div>
+      ) : registration ? (
+        <div>
+          <p>Open this page and enter the code:</p>
+          {getBridge() ? (
+            <Button className="mt-3" onClick={() => void open(registration.verify_url)}>
+              Open verification page
+            </Button>
+          ) : (
+            <a className="mt-3 block text-accent underline" href={registration.verify_url}>
+              {registration.verify_url}
+            </a>
+          )}
+          <p className="mt-4 font-mono text-2xl tracking-[0.2em]">{registration.user_code}</p>
+          <p className="mt-2 text-muted">Waiting for approval…</p>
+        </div>
+      ) : (
+        <Button
+          busy={busy}
+          onClick={() => {
+            setBusy(true)
+            void connectRegisterStart()
+              .then(setRegistration)
+              .catch(cause => {
+                setError(errorText(cause))
+                setBusy(false)
+              })
+          }}
+          variant="primary"
+        >
+          Sign in and register
+        </Button>
+      )}
+      {error ? (
+        <p className="mt-3 text-danger" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </>
+  )
+}
+
+export function UsersSettings() {
+  const current = useUsers(state => state.current)
+  const users = useUsers(state => state.users)
+  const refresh = useUsers(state => state.refresh)
+  const network = useSettings(state => state.network)
+  const refreshNetwork = useSettings(state => state.refreshNetwork)
+  const [name, setName] = useState('')
+  const [invite, setInvite] = useState<{ code: string; expires_at: number } | null>(null)
+  useEffect(() => {
+    void Promise.all([refresh(), refreshNetwork()])
+  }, [refresh, refreshNetwork])
+
+  if (current?.role !== 'admin') {
+    return <p className="text-muted">Only administrators can manage users.</p>
+  }
+
+  return (
+    <>
+      <Heading description="Invite household members and set their daily token budgets.">
+        Users
+      </Heading>
+      <form
+        className="flex gap-2"
+        onSubmit={event => {
+          event.preventDefault()
+          void usersInvite(name).then(result => {
+            setInvite(result)
+            setName('')
+            void refresh()
+          })
+        }}
+      >
+        <Input
+          aria-label="New user name"
+          onChange={event => setName(event.target.value)}
+          placeholder="Display name"
+          value={name}
+        />
+        <Button disabled={!name.trim()} type="submit">
+          Invite
+        </Button>
+      </form>
+      {invite ? (
+        <div className="mt-3 bg-surface-2 p-3">
+          <p>Pairing code</p>
+          <p className="font-mono text-xl">{invite.code}</p>
+          <p className="text-muted">Use this code on the new user's device.</p>
+          {network?.addresses[0] ? (
+            <a
+              className="mt-2 block break-all text-accent underline"
+              href={`hexbot://pair?host=${encodeURIComponent(network.addresses[0])}&port=${network.port}#code=${encodeURIComponent(invite.code)}`}
+            >
+              Open pairing link
+            </a>
+          ) : null}
+        </div>
+      ) : null}
+      <ul className="mt-5 divide-y divide-border">
+        {users.map(user => (
+          <li className="grid grid-cols-[1fr_120px_auto] items-center gap-2 py-3" key={user.id}>
+            <Input
+              aria-label={`Name for ${user.display_name}`}
+              defaultValue={user.display_name}
+              onBlur={event =>
+                event.target.value !== user.display_name &&
+                void usersUpdate(user.id, { display_name: event.target.value }).then(() =>
+                  refresh()
+                )
+              }
+            />
+            <Input
+              aria-label={`Daily token budget for ${user.display_name}`}
+              defaultValue={user.limits?.daily_tokens ?? ''}
+              min="0"
+              onBlur={event =>
+                void usersUpdate(user.id, {
+                  limits: { daily_tokens: event.target.value ? Number(event.target.value) : null }
+                }).then(() => refresh())
+              }
+              placeholder="No limit"
+              type="number"
+            />
+            <Button
+              onClick={() =>
+                void usersUpdate(user.id, {
+                  disabled: !(user.disabled_at ?? user.disabled)
+                }).then(() => refresh())
+              }
+              size="sm"
+              variant="ghost"
+            >
+              {user.disabled_at || user.disabled ? 'Enable' : 'Disable'}
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </>
+  )
+}
+
+export function UsageSettings() {
+  const [summary, setSummary] = useState<Awaited<ReturnType<typeof usageSummary>> | null>(null)
+  useEffect(() => {
+    void usageSummary().then(setSummary)
+  }, [])
+
+  const rows = summary
+    ? Array.isArray(summary.by_bot)
+      ? summary.by_bot
+      : Object.entries(summary.by_bot).map(([bot, value]) => ({ bot, ...value }))
+    : []
+
+  return (
+    <>
+      <Heading description="Token use reported by this daemon.">Usage</Heading>
+      {summary ? (
+        <>
+          <p>
+            {summary.input_tokens.toLocaleString()} input · {summary.output_tokens.toLocaleString()}{' '}
+            output · ${summary.estimated_cost_usd.toFixed(2)}
+          </p>
+          <table className="mt-5 w-full text-left">
+            <thead>
+              <tr className="border-b border-border">
+                <th className="py-2">Bot</th>
+                <th>Input</th>
+                <th>Output</th>
+                <th>Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(row => (
+                <tr className="border-b border-border" key={row.bot}>
+                  <td className="py-2">{row.bot}</td>
+                  <td>{row.input_tokens.toLocaleString()}</td>
+                  <td>{row.output_tokens.toLocaleString()}</td>
+                  <td>${(row.estimated_cost_usd ?? 0).toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      ) : (
+        <p className="text-muted">Loading usage…</p>
+      )}
+    </>
   )
 }
 

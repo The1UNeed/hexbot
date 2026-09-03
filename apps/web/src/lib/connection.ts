@@ -21,6 +21,7 @@ import { useRooms } from '../stores/rooms'
 import { sectionsActions } from '../stores/sections'
 import { settingsActions } from '../stores/settings'
 import { uiActions } from '../stores/ui'
+import { useUsers } from '../stores/users'
 
 import { getBridge, type HexbotBridge } from './bridge'
 import { attachEventRouting } from './events'
@@ -110,7 +111,7 @@ function defaultFetch(deps: ConnectionDeps): typeof fetch {
 /** HTTP origin for a target, e.g. `http://192.168.1.10:9119`. */
 export function targetOrigin(target: ConnectionTarget): string {
   if (target.kind === 'remote') {
-    return `http://${target.host}:${target.port}`
+    return `${target.tls ? 'https' : 'http'}://${target.host}${target.port === (target.tls ? 443 : 80) ? '' : `:${target.port}`}`
   }
 
   if (target.origin) {
@@ -488,7 +489,8 @@ export class ConnectionSupervisor {
         this.client?.call<DaemonInfo>('hexbot.info') ?? Promise.resolve(null),
         settingsActions().refresh(),
         botsActions().refresh(),
-        useRooms.getState().refresh()
+        useRooms.getState().refresh(),
+        useUsers.getState().refresh()
       ])
 
       store.setDaemon(info)

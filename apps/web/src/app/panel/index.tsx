@@ -1,18 +1,31 @@
-import { Archive, Camera, Trash2, Undo2 } from 'lucide-react'
-import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from '@tanstack/react-router'
+import { Archive, Camera, Square, Trash2, Undo2 } from 'lucide-react'
+import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Select } from '../../components/ui/select'
 import { Textarea } from '../../components/ui/textarea'
-import { botMemoryGet, botMemorySet, coreMemoryGet, coreMemorySet, modelsList } from '../../lib/api'
-import type { Bot, CoreMemorySection, ModelOption } from '../../lib/types'
+import {
+  botMemoryGet,
+  botMemorySet,
+  coreMemoryGet,
+  coreMemorySet,
+  dreamingList,
+  dreamingRunNow,
+  dreamingStatus,
+  modelsList,
+  sessionInterrupt
+} from '../../lib/api'
+import type { Bot, CoreMemorySection, Message, ModelOption } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useSections, useSectionsForBot } from '../../stores/sections'
+import { useTranscript } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
+import { Markdown } from '../conversation'
 
-const TABS = ['persona', 'model', 'memory', 'tools', 'skills', 'sections'] as const
+const TABS = ['persona', 'model', 'memory', 'computer', 'tools', 'skills', 'sections'] as const
 type PanelTab = (typeof TABS)[number]
 const MEMORY_SECTIONS: CoreMemorySection[] = ['user', 'household', 'workspace', 'rules']
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024
@@ -128,6 +141,14 @@ export function ProfilePanel(): React.JSX.Element {
           placeholder="Add a description"
           value={bot.description}
         />
+        <label className="mt-3 flex items-center gap-2 text-[length:var(--text-secondary)] text-muted">
+          <input
+            checked={bot.shareable ?? false}
+            onChange={event => void save({ shareable: event.target.checked })}
+            type="checkbox"
+          />
+          Shareable with other users
+        </label>
       </div>
       {error ? (
         <p className="mt-3 text-danger" role="alert">
@@ -150,7 +171,8 @@ export function ProfilePanel(): React.JSX.Element {
       <div className="py-4">
         {tab === 'persona' && <PersonaTab bot={bot} onSave={save} />}
         {tab === 'model' && <ModelTab bot={bot} onSave={save} />}
-        {tab === 'memory' && <MemoryTab botName={bot.name} />}
+        {tab === 'memory' && <MemoryTab bot={bot} onSave={save} />}
+        {tab === 'computer' && <ComputerTab />}
         {tab === 'tools' && <ToolsTab bot={bot} onSave={save} />}
         {tab === 'skills' && <SkillsTab bot={bot} onSave={save} />}
         {tab === 'sections' && <SectionsTab botName={bot.name} />}
@@ -332,7 +354,14 @@ export function MemorySectionEditor({
   )
 }
 
-function MemoryTab({ botName }: { botName: string }) {
+export function MemoryTab({
+  bot,
+  onSave
+}: {
+  bot: Bot
+  onSave: (patch: { dream_enabled?: boolean; may_write_core?: boolean }) => Promise<void> | void
+}) {
+  const botName = bot.name
   const [core, setCore] = useState<Awaited<ReturnType<typeof coreMemoryGet>> | null>(null)
   const [notes, setNotes] = useState<Awaited<ReturnType<typeof botMemoryGet>> | null>(null)
   const [editing, setEditing] = useState(false)
@@ -428,6 +457,200 @@ function MemoryTab({ botName }: { botName: string }) {
           </Button>
         )}
       </div>
+      <DreamingBlock bot={bot} onSave={onSave} />
+    </div>
+  )
+}
+
+export function DreamingBlock({
+  bot,
+  onSave
+}: {
+  bot: Bot
+  onSave: (patch: { dream_enabled?: boolean; may_write_core?: boolean }) => Promise<void> | void
+}) {
+  const [status, setStatus] = useState<Awaited<ReturnType<typeof dreamingStatus>> | null>(null)
+  const [dreams, setDreams] = useState<Awaited<ReturnType<typeof dreamingList>>['dreams']>([])
+  const [running, setRunning] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    const [nextStatus, result] = await Promise.all([
+      dreamingStatus(bot.name),
+      dreamingList(bot.name)
+    ])
+
+    setStatus(nextStatus)
+    setDreams(result.dreams)
+  }, [bot.name])
+
+  useEffect(() => {
+    void load().catch(cause => setError(errorText(cause)))
+  }, [load])
+
+  const run = async () => {
+    setRunning(true)
+    const before = status?.last_run_at
+
+    try {
+      await dreamingRunNow(bot.name)
+
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        await new Promise(resolve => window.setTimeout(resolve, 1000))
+        const next = await dreamingStatus(bot.name)
+        setStatus(next)
+
+        if (next.last_run_at !== before || next.last_status !== status?.last_status) {
+          break
+        }
+      }
+
+      await load()
+    } catch (cause) {
+      setError(errorText(cause))
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const dreamsSection = useSectionsForBot(bot.name).find(section => section.title === 'Dreams')
+
+  return (
+    <div className="border-t border-border pt-4">
+      <h3 className="font-semibold">Dreaming</h3>
+      <p className="mt-1 text-[length:var(--text-secondary)] text-muted">
+        Each day, this bot reviews recent conversations and writes useful details to its notes.
+      </p>
+      <label className="mt-4 flex items-center justify-between">
+        <span>Enabled for this bot</span>
+        <input
+          aria-label="Enable dreaming"
+          checked={bot.dream_enabled ?? true}
+          onChange={event => void onSave({ dream_enabled: event.target.checked })}
+          type="checkbox"
+        />
+      </label>
+      <label className="mt-3 flex items-center justify-between">
+        <span>May write core memory</span>
+        <input
+          aria-label="May write core memory"
+          checked={bot.may_write_core ?? false}
+          onChange={event => void onSave({ may_write_core: event.target.checked })}
+          type="checkbox"
+        />
+      </label>
+      <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[length:var(--text-secondary)]">
+        <dt className="text-muted">Last run</dt>
+        <dd>{formatTimestamp(status?.last_run_at)}</dd>
+        <dt className="text-muted">Next run</dt>
+        <dd>{formatTimestamp(status?.next_run_at)}</dd>
+      </dl>
+      <Button
+        busy={running}
+        className="mt-4"
+        disabled={!status?.enabled}
+        onClick={() => void run()}
+      >
+        Dream now
+      </Button>
+      {error ? (
+        <p className="mt-2 text-danger" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {dreams.length ? (
+        <div className="mt-5">
+          <h4 className="font-medium">Recent dreams</h4>
+          <ul className="mt-2 divide-y divide-border">
+            {dreams.map(dream => (
+              <li className="py-2" key={dream.id}>
+                {dreamsSection ? (
+                  <Link
+                    className="block hover:text-accent"
+                    params={{ bot: bot.name, section: dreamsSection.id }}
+                    to="/b/$bot/s/$section"
+                  >
+                    <div className="line-clamp-2">
+                      <Markdown text={dream.summary || dream.status} />
+                    </div>
+                    <time className="text-[length:var(--text-meta)] text-muted">
+                      {formatTimestamp(dream.started_at)}
+                    </time>
+                  </Link>
+                ) : (
+                  <span className="line-clamp-2">{dream.summary || dream.status}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function formatTimestamp(value: null | number | undefined): string {
+  return value ? new Date(value < 1e12 ? value * 1000 : value).toLocaleString() : 'Never'
+}
+
+const NO_MESSAGES: Message[] = []
+
+export function ComputerTab({ sessionId }: { sessionId?: string } = {}) {
+  const sectionId = useUi(state => state.lastSection?.section ?? null)
+  const live = useSections(state => (sectionId ? (state.liveSessionId[sectionId] ?? null) : null))
+  const transcript = useTranscript(sessionId ?? live)
+
+  const calls = (transcript?.messages ?? NO_MESSAGES)
+    .flatMap(message => message.toolCalls)
+    .sort((a, b) => b.startedAt - a.startedAt)
+
+  return (
+    <div>
+      <h3 className="font-semibold">Computer</h3>
+      <p className="mt-1 text-muted">
+        Working directory: <span className="font-mono">{transcript?.info?.cwd ?? 'Unknown'}</span>
+      </p>
+      {(sessionId ?? live) ? (
+        <Button
+          className="mt-3"
+          icon={<Square size={13} />}
+          onClick={() => void sessionInterrupt(sessionId ?? live!)}
+          variant="danger"
+        >
+          Stop
+        </Button>
+      ) : null}
+      <h4 className="mt-5 font-medium">Tool activity</h4>
+      {calls.length ? (
+        <ol className="mt-2 divide-y divide-border">
+          {calls.map(call => (
+            <li className="py-2" key={call.toolId}>
+              <div className="flex justify-between gap-2">
+                <span className="font-mono">{call.name}</span>
+                <span
+                  className={
+                    call.status === 'error'
+                      ? 'text-danger'
+                      : call.status === 'running'
+                        ? 'text-warning'
+                        : 'text-success'
+                  }
+                >
+                  {call.status}
+                </span>
+              </div>
+              <p className="text-[length:var(--text-meta)] text-muted">
+                {call.durationS == null ? 'Running' : `${call.durationS.toFixed(2)}s`}
+              </p>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="mt-2 text-muted">No tool activity in this session.</p>
+      )}
+      <p className="mt-5 text-[length:var(--text-meta)] text-muted">
+        Terminal emulation comes later.
+      </p>
     </div>
   )
 }

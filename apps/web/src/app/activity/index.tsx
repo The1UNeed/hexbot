@@ -8,18 +8,49 @@ import { toMillis } from '../../lib/time'
 import type { ActivityPair, BotMessage } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 
+import { createGraphNodes, type GraphNode, stepGraph } from './layout'
+
+const WIDTH = 760,
+  HEIGHT = 380
+
 export function ActivityView() {
   const [pairs, setPairs] = useState<ActivityPair[]>([])
   const [selected, setSelected] = useState<ActivityPair | null>(null)
   const [messages, setMessages] = useState<BotMessage[]>([])
   const [error, setError] = useState<string | null>(null)
   const bots = useBots(state => state.byName)
+  const [nodes, setNodes] = useState<GraphNode[]>([])
 
   useEffect(() => {
     void activityPairs()
       .then(result => setPairs(result.pairs))
       .catch(reason => setError(String(reason)))
   }, [])
+  useEffect(() => {
+    if (!pairs.length) {
+      setNodes([])
+
+      return
+    }
+
+    let frame = 0,
+      iteration = 0,
+      current = createGraphNodes(pairs, WIDTH, HEIGHT)
+
+    setNodes(current)
+
+    const tick = () => {
+      current = stepGraph(current, pairs, WIDTH, HEIGHT)
+      setNodes(current)
+      iteration += 1
+
+      if (iteration < 300) {frame = requestAnimationFrame(tick)}
+    }
+
+    frame = requestAnimationFrame(tick)
+
+    return () => cancelAnimationFrame(frame)
+  }, [pairs])
 
   const choose = (pair: ActivityPair) => {
     setSelected(pair)
@@ -39,6 +70,66 @@ export function ActivityView() {
           <p className="text-danger" role="alert">
             {error}
           </p>
+        ) : null}
+        {nodes.length ? (
+          <svg
+            aria-label="Bot message graph"
+            className="mb-6 h-auto w-full border-y border-border"
+            role="img"
+            viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+          >
+            {pairs.map(pair => {
+              const from = nodes.find(node => node.id === pair.from_bot),
+                to = nodes.find(node => node.id === pair.to_bot)
+
+              return from && to ? (
+                <g
+                  className="cursor-pointer"
+                  key={`${pair.from_bot}:${pair.to_bot}`}
+                  onClick={() => choose(pair)}
+                >
+                  <title>
+                    {pair.count} messages from {pair.from_bot} to {pair.to_bot}
+                  </title>
+                  <line
+                    stroke="var(--color-border)"
+                    strokeWidth={Math.min(8, 1 + Math.sqrt(pair.count))}
+                    x1={from.x}
+                    x2={to.x}
+                    y1={from.y}
+                    y2={to.y}
+                  />
+                </g>
+              ) : null
+            })}
+            {nodes.map(node => {
+              const bot = bots[node.id]
+              const href = bot?.avatar ? `data:${bot.avatar.mime};base64,${bot.avatar.data}` : null
+
+              return (
+                <g key={node.id} transform={`translate(${node.x} ${node.y})`}>
+                  <circle fill="var(--color-surface-2)" r="24" stroke="var(--color-border)" />
+                  {href ? (
+                    <image
+                      clipPath="circle(24px at center)"
+                      height="48"
+                      href={href}
+                      width="48"
+                      x="-24"
+                      y="-24"
+                    />
+                  ) : (
+                    <text dominantBaseline="middle" fill="var(--color-text)" textAnchor="middle">
+                      {(bot?.display_name ?? node.id).slice(0, 2).toUpperCase()}
+                    </text>
+                  )}
+                  <text fill="var(--color-text)" fontSize="12" textAnchor="middle" y="39">
+                    {bot?.display_name ?? node.id}
+                  </text>
+                </g>
+              )
+            })}
+          </svg>
         ) : null}
         <table className="w-full border-collapse text-left">
           <thead>
