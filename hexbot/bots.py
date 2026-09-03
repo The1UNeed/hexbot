@@ -21,6 +21,16 @@ def default_display_name(name: str) -> str:
     return name.replace("-", " ").replace("_", " ").title()
 
 
+def default_persona(display_name: str, title: str | None = None) -> str:
+    """Persona used when a bot is created without one (never the Hermes default)."""
+    role = f", {title.strip()}" if title and title.strip() else ""
+    return (
+        f"You are {display_name}{role}, a bot in Hexbot. Be direct and concise: match the "
+        "length of your reply to the weight of the ask. Use your tools when they help, ask "
+        "when a request is ambiguous, and remember what matters about the people you work with."
+    )
+
+
 def _profile_details(name: str) -> dict:
     try:
         return gateway.call("profiles.describe", {"name": name})
@@ -112,7 +122,7 @@ def create_bot(name: str, *, display_name=None, title=None, description=None,
             raise HexbotError(4208, f"bot already exists: {name}")
     display_name = (display_name or "").strip() or default_display_name(name)
     gateway.call("profiles.create", {
-        "name": name, "description": description or "", "soul": persona or "",
+        "name": name, "description": description or "", "soul": (persona or "").strip() or default_persona(display_name or default_display_name(name), title),
         "model": model, "provider": provider, "mirror_credentials": True})
     profile_dir = get_profile_dir(name)
     write_profile_meta(profile_dir, description=description or "", display_name=display_name)
