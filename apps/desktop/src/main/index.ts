@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { BrowserWindow, app, dialog, ipcMain, shell, type Rectangle } from 'electron'
+import { APP_ORIGIN, installAppProtocol, registerAppScheme } from './app-protocol'
 import { bootstrap, type BootstrapProgress } from './backend/bootstrap'
 import { DaemonManager } from './backend/manager'
 import { hexbotHome } from './backend/paths'
@@ -14,6 +15,8 @@ import { createTray } from './tray'
 import { checkForUpdates, installUpdate, updaterEvents } from './updater'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
+const rendererDirectory = join(currentDirectory, '../renderer')
+registerAppScheme()
 const stateFile = (): string => join(hexbotHome(), 'desktop-state.json')
 let mainWindow: BrowserWindow | null = null
 let pendingLink = app.isPackaged
@@ -90,7 +93,7 @@ async function createWindow(): Promise<BrowserWindow> {
   })
   window.on('resize', () => void saveBounds(window))
   window.on('move', () => void saveBounds(window))
-  if (app.isPackaged) await window.loadFile(join(currentDirectory, '../renderer/index.html'))
+  if (app.isPackaged) await window.loadURL(`${APP_ORIGIN}/`)
   else {
     const devUrl = resolveWebDevUrl()
     try {
@@ -98,8 +101,7 @@ async function createWindow(): Promise<BrowserWindow> {
       if (!response.ok) throw new Error(`Web dev server returned ${response.status}`)
       await window.loadURL(devUrl)
     } catch {
-      const builtRenderer = join(currentDirectory, '../renderer/index.html')
-      if (existsSync(builtRenderer)) await window.loadFile(builtRenderer)
+      if (existsSync(join(rendererDirectory, 'index.html'))) await window.loadURL(`${APP_ORIGIN}/`)
       else await window.loadURL('data:text/html,<title>Hexbot</title>')
     }
   }
@@ -183,6 +185,7 @@ else {
     navigate(url)
   })
   void app.whenReady().then(async () => {
+    installAppProtocol(rendererDirectory, existsSync)
     daemon = new DaemonManager(undefined, async () => (await serviceStatus()).installed)
     registerIpc()
     updaterEvents.on('status', status => {
