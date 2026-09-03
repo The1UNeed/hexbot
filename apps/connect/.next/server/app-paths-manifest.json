@@ -1,0 +1,19 @@
+{
+  "/.well-known/jwks.json/route": "app/.well-known/jwks.json/route.js",
+  "/_global-error/page": "app/_global-error/page.js",
+  "/_not-found/page": "app/_not-found/page.js",
+  "/api/daemons/[id]/grant/route": "app/api/daemons/[id]/grant/route.js",
+  "/api/daemons/[id]/heartbeat/route": "app/api/daemons/[id]/heartbeat/route.js",
+  "/api/daemons/[id]/rename/route": "app/api/daemons/[id]/rename/route.js",
+  "/api/daemons/[id]/route": "app/api/daemons/[id]/route.js",
+  "/api/daemons/route": "app/api/daemons/route.js",
+  "/api/me/route": "app/api/me/route.js",
+  "/api/register/approve/route": "app/api/register/approve/route.js",
+  "/api/register/poll/route": "app/api/register/poll/route.js",
+  "/api/register/start/route": "app/api/register/start/route.js",
+  "/api/sessions/[id]/route": "app/api/sessions/[id]/route.js",
+  "/connect/approve/page": "app/connect/approve/page.js",
+  "/connect/authorize/page": "app/connect/authorize/page.js",
+  "/connect/page": "app/connect/page.js",
+  "/page": "app/page.js"
+}

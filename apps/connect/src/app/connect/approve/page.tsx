@@ -1,0 +1,4 @@
+import { SignInButton } from "@clerk/nextjs";
+import { currentClerkUserId } from "@/lib/auth";
+import { ApproveForm } from "./approve-form";
+export default async function ApprovePage({ searchParams }: { searchParams: Promise<{ code?: string }> }) { const userId = await currentClerkUserId(); const { code } = await searchParams; const clerkEnabled = !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY; return <section className="card"><h1>Approve this daemon</h1>{userId ? <><p>Check that this is the code shown by <code>hexbot connect</code>, then approve it.</p><ApproveForm initialCode={code} /></> : clerkEnabled ? <><p>Sign in before connecting a daemon to your account.</p><SignInButton mode="modal"><button>Sign in</button></SignInButton></> : <p className="error">Set DEV_USER_ID for local use, or configure Clerk.</p>}</section>; }

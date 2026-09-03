@@ -1,0 +1,3 @@
+{
+  "/.well-known/jwks.json/route": "app/.well-known/jwks.json/route.js"
+}

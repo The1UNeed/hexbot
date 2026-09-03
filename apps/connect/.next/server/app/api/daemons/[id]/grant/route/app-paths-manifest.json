@@ -1,0 +1,3 @@
+{
+  "/api/daemons/[id]/grant/route": "app/api/daemons/[id]/grant/route.js"
+}

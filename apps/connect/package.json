@@ -2,12 +2,14 @@
   "name": "@hexbot/connect",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "Hexbot Connect: identity and tunnel broker for reaching a daemon from outside the LAN.",
   "license": "AGPL-3.0-only",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "migrate": "node --experimental-strip-types scripts/migrate.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "eslint ."

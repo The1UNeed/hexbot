@@ -1,0 +1,6 @@
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE TABLE IF NOT EXISTS users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), clerk_user_id text UNIQUE NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS daemons (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid NOT NULL REFERENCES users(id), name text NOT NULL, slug text UNIQUE NOT NULL, tunnel_id text NOT NULL, tunnel_hostname text NOT NULL, token_hash text UNIQUE NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), last_seen_at timestamptz, revoked_at timestamptz);
+CREATE TABLE IF NOT EXISTS registrations (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_code text NOT NULL, device_code_hash text UNIQUE NOT NULL, daemon_name text NOT NULL, platform text NOT NULL, ingress_port integer NOT NULL DEFAULT 8000, user_id uuid REFERENCES users(id), expires_at timestamptz NOT NULL, approved_at timestamptz, consumed_at timestamptz, credentials jsonb);
+CREATE INDEX IF NOT EXISTS registrations_user_code_idx ON registrations(user_code);
+CREATE TABLE IF NOT EXISTS client_sessions (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid NOT NULL REFERENCES users(id), token_hash text UNIQUE NOT NULL, device_name text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), last_seen_at timestamptz, revoked_at timestamptz);
