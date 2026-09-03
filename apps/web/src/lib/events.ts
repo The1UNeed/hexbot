@@ -81,6 +81,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
     case 'hexbot.sections.changed':
       effects.refreshSections()
+      effects.refreshBots()
 
       return
 

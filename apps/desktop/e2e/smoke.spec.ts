@@ -30,9 +30,11 @@ test('creates a bot, chats, and creates another section', async () => {
     })
 
     const page = await app.firstWindow()
-    await expect(page.getByTestId('root-connection-status')).toContainText('Connected', {
-      timeout: 30_000
-    })
+    await expect(page.getByTestId('root-connection-status')).toHaveAttribute(
+      'data-connection-state',
+      'connected',
+      { timeout: 30_000 }
+    )
     await page.getByTestId('onboarding-provider-item-openai-codex').click()
     await expect(page.getByTestId('onboarding-continue')).toBeEnabled()
     await page.getByTestId('onboarding-continue').click()
@@ -40,7 +42,7 @@ test('creates a bot, chats, and creates another section', async () => {
     await page.getByTestId('onboarding-bot-display-input').fill('Scout')
     await page.getByTestId('onboarding-bot-name-input').fill('scout')
     await page.getByLabel('Model').click()
-    await page.getByRole('option', { name: /gpt-5\.6-sol/i }).click()
+    await page.getByRole('option', { exact: true, name: 'gpt-5.6-sol' }).click()
     await page.getByTestId('onboarding-create-button').click()
 
     const composer = page.locator('#conversation-composer')
@@ -53,8 +55,10 @@ test('creates a bot, chats, and creates another section', async () => {
 
     const firstSectionUrl = page.url()
     await page.getByRole('button', { name: 'New', exact: true }).click()
-    await page.getByTestId('roster-new-section').click()
-    await expect(page).not.toHaveURL(firstSectionUrl)
+    const newSection = page.getByTestId('roster-new-section')
+    await expect(newSection).toBeVisible()
+    await newSection.click()
+    await expect(page).not.toHaveURL(firstSectionUrl, { timeout: 30_000 })
     await expect(page.locator('[data-roster-id^="section:"]')).toHaveCount(2)
   } finally {
     await app?.close().catch(() => undefined)

@@ -27,7 +27,12 @@ function RootLayout() {
 
   return (
     <>
-      <div className="sr-only" data-testid="root-connection-status" role="status">
+      <div
+        className="sr-only"
+        data-connection-state={status}
+        data-testid="root-connection-status"
+        role="status"
+      >
         {daemon?.daemon_name ?? status}
         {attempt > 0 ? `, attempt ${attempt}` : ''}
       </div>

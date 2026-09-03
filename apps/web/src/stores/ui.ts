@@ -11,6 +11,8 @@ export type ThemePreference = 'dark' | 'light' | 'system'
 
 export interface LastSection {
   bot: string
+  /** install_id of the daemon the section belongs to, when known. */
+  daemon?: string
   section: string
 }
 

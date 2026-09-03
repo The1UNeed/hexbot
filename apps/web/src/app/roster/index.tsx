@@ -19,7 +19,7 @@ const DAY = 86_400_000
 const avatarData = (bot: Bot) =>
   bot.avatar ? `data:${bot.avatar.mime};base64,${bot.avatar.data}` : null
 
-const sectionTime = (section: Section) => section.updated_at ?? section.created_at ?? 0
+const sectionTime = (section: Section) => toMillis(section.updated_at ?? section.created_at)
 
 export function relativeTime(raw: number | null): string {
   const value = toMillis(raw)
@@ -53,7 +53,8 @@ export const orderedBots = (bots: Bot[]) =>
   [...bots].sort((a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0))
 
 export function visibleRecentSections(bot: Bot, expanded: boolean, all: Section[]): Section[] {
-  return [...(expanded && all.length ? all : bot.sections_recent)]
+  // Prefer the live sections store; the bot row's recent list can lag behind.
+  return [...(all.length ? all : bot.sections_recent)]
     .filter(
       section => !section.archived_at && (expanded || Date.now() - sectionTime(section) < 14 * DAY)
     )

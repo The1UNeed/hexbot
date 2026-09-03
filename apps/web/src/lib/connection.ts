@@ -19,6 +19,7 @@ import { botsActions } from '../stores/bots'
 import { connectionActions } from '../stores/connection'
 import { sectionsActions } from '../stores/sections'
 import { settingsActions } from '../stores/settings'
+import { uiActions } from '../stores/ui'
 
 import { getBridge, type HexbotBridge } from './bridge'
 import { attachEventRouting } from './events'
@@ -489,6 +490,13 @@ export class ConnectionSupervisor {
       ])
 
       store.setDaemon(info)
+
+      // A section remembered from another daemon must not be reopened here.
+      const last = uiActions().lastSection
+
+      if (last?.daemon && info?.install_id && last.daemon !== info.install_id) {
+        uiActions().setLastSection(null)
+      }
     } catch (error) {
       store.setStatus('connected', {
         error: error instanceof Error ? error.message : String(error)

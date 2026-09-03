@@ -45,7 +45,7 @@ import { useBot } from '../../stores/bots'
 import { sectionsActions, useLiveSessionId, useSection } from '../../stores/sections'
 import { useSettings } from '../../stores/settings'
 import { transcriptActions, useTranscript } from '../../stores/transcripts'
-import { useUi } from '../../stores/ui'
+import { uiActions, useUi } from '../../stores/ui'
 
 const avatarData = (bot?: Bot) =>
   bot?.avatar ? `data:${bot.avatar.mime};base64,${bot.avatar.data}` : null
@@ -499,9 +499,15 @@ export function ConversationColumn() {
   const streaming = Boolean(transcript?.streamingMessageId)
   useEffect(() => {
     if (params.section && !liveId) {
-      void sectionsActions().open(params.section)
+      sectionsActions()
+        .open(params.section)
+        .catch(() => {
+          // The remembered section does not exist on this daemon.
+          uiActions().setLastSection(null)
+          void navigate({ to: '/' })
+        })
     }
-  }, [liveId, params.section])
+  }, [liveId, navigate, params.section])
   useEffect(() => setTitle(section?.title ?? ''), [section?.title])
   useEffect(() => {
     if (!models.all.length) {

@@ -16,6 +16,9 @@ import { checkForUpdates, installUpdate, updaterEvents } from './updater'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
 const rendererDirectory = join(currentDirectory, '../renderer')
+// Keep Chromium's profile (localStorage, caches) inside the Hexbot home so an
+// install is self-contained and tests with a temporary home start clean.
+app.setPath('userData', join(hexbotHome(), 'desktop-data'))
 registerAppScheme()
 const stateFile = (): string => join(hexbotHome(), 'desktop-state.json')
 let mainWindow: BrowserWindow | null = null
