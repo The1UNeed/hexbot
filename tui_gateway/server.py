@@ -3174,6 +3174,11 @@ def handle_request(req: dict) -> dict | None:
     rid, method, params = normalized
     fn = _methods.get(method)
     if not fn:
+        # Hexbot core edit: plugins may contribute namespaced methods.
+        from hermes_cli.plugins import lookup_plugin_rpc_method
+
+        fn = lookup_plugin_rpc_method(method)
+    if not fn:
         return _err(rid, -32601, f"unknown method: {method}")
     token = _current_rpc_method.set(method)
     try:

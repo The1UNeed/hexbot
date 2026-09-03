@@ -1455,6 +1455,17 @@ class PluginState:
             atomic_json_write(self.path, data, mode=0o600)
 
 
+# Hexbot core edit: process-global JSON-RPC methods contributed by plugins.
+# Populated by :meth:`PluginContext.register_rpc_method`; consulted by
+# ``tui_gateway.server.handle_request`` after the core ``_methods`` table.
+_PLUGIN_RPC_METHODS: Dict[str, Callable] = {}
+
+
+def lookup_plugin_rpc_method(name: str) -> Optional[Callable]:
+    """Return the plugin-registered handler for ``name`` or ``None``."""
+    return _PLUGIN_RPC_METHODS.get(name)
+
+
 class PluginContext:
     """Facade given to plugins so they can register tools and hooks."""
 
@@ -3407,6 +3418,31 @@ class PluginContext:
             ),
         )
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
+        return handle
+
+    def register_rpc_method(self, name: str, fn: Callable) -> PluginRegistration:
+        """Register a JSON-RPC method on the gateway WebSocket (``/api/ws``).
+
+        Hexbot core edit: plugins expose their own RPC surface without editing
+        ``tui_gateway/server.py``. ``fn(rid, params)`` must return a JSON-RPC
+        response frame (normally via ``tui_gateway.server._ok`` / ``_err``).
+        Names must be namespaced under ``<plugin_id>.`` so a plugin can never
+        shadow a core method, and duplicates are rejected.
+        """
+        prefix = f"{self.plugin_id}."
+        if not name.startswith(prefix):
+            raise ValueError(f"RPC method {name!r} must start with {prefix!r}")
+        if not callable(fn):
+            raise TypeError(f"RPC method {name!r} handler is not callable")
+        if name in _PLUGIN_RPC_METHODS:
+            raise ValueError(f"RPC method {name!r} is already registered")
+        _PLUGIN_RPC_METHODS[name] = fn
+        handle = self._track(
+            "rpc_method", name,
+            lambda: _PLUGIN_RPC_METHODS.pop(name, None),
+            persistent=True,
+        )
+        logger.debug("Plugin %s registered RPC method: %s", self.manifest.name, name)
         return handle
 
     def register_system_prompt_section(
