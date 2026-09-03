@@ -53,6 +53,11 @@ def test_every_documented_method_is_registered(ctx):
         "hexbot.pairing.code", "hexbot.devices.list", "hexbot.devices.revoke",
         "hexbot.connect.status", "hexbot.connect.disconnect",
         "hexbot.connect.register_start", "hexbot.connect.register_poll",
+        "hexbot.rooms.list", "hexbot.rooms.get", "hexbot.rooms.create",
+        "hexbot.rooms.update", "hexbot.rooms.add_member",
+        "hexbot.rooms.remove_member", "hexbot.rooms.send", "hexbot.rooms.log",
+        "hexbot.rooms.stop", "hexbot.rooms.archive", "hexbot.rooms.delete",
+        "hexbot.rooms.mark_read", "hexbot.activity.pairs", "hexbot.activity.list",
     }
     assert set(ctx.methods) == expected
 

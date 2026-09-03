@@ -16,7 +16,9 @@ import platform
 import socket
 import sys
 
-from hexbot import bots, connect, memory, network, pairing, providers, sections, settings
+from hexbot import activity, bots, connect, memory, network, pairing, providers, sections, settings
+from hexbot.rooms import get_engine
+from hexbot.rooms import store as rooms
 from hexbot.errors import HexbotError
 
 logger = logging.getLogger(__name__)
@@ -147,6 +149,25 @@ def _connect_register_poll(params) -> dict:
     return result
 
 
+def _rooms_create(p):
+    return {"room": rooms.create(_required(p, "name"), p.get("members", []),
+                                  p.get("main_bot"), p.get("limits"),
+                                  p.get("approval_mode"))}
+
+
+def _rooms_update(p):
+    patch = _fields(p, ("name", "main_bot", "approval_mode", "limits"), skip=("id",))
+    return {"room": rooms.update(_required(p, "id"), **patch)}
+
+
+def _rooms_send(p):
+    room_id = _required(p, "id")
+    event = rooms.append_event(room_id, "message.user", "human", "local",
+                               {"text": _required(p, "text"), "attachments": p.get("attachments", [])})
+    get_engine().notify(room_id)
+    return {"event": event}
+
+
 METHODS = {
     "hexbot.info": info,
     "hexbot.settings.get": lambda p: settings.get_settings(),
@@ -191,6 +212,20 @@ METHODS = {
     "hexbot.connect.disconnect": lambda p: connect.disconnect(),
     "hexbot.connect.register_start": _connect_register_start,
     "hexbot.connect.register_poll": _connect_register_poll,
+    "hexbot.rooms.list": lambda p: {"rooms": rooms.list_rooms(bool(p.get("include_archived")))},
+    "hexbot.rooms.get": lambda p: {"room": rooms.get(_required(p, "id"))},
+    "hexbot.rooms.create": _rooms_create,
+    "hexbot.rooms.update": _rooms_update,
+    "hexbot.rooms.add_member": lambda p: {"room": rooms.add_member(_required(p, "id"), _required(p, "bot"))},
+    "hexbot.rooms.remove_member": lambda p: {"room": rooms.remove_member(_required(p, "id"), _required(p, "bot"))},
+    "hexbot.rooms.send": _rooms_send,
+    "hexbot.rooms.log": lambda p: {"events": rooms.log(_required(p, "id"), p.get("after_seq", 0), p.get("limit", 200))},
+    "hexbot.rooms.stop": lambda p: {"stopped": get_engine().stop(_required(p, "id"))},
+    "hexbot.rooms.archive": lambda p: {"room": rooms.archive(_required(p, "id"))},
+    "hexbot.rooms.delete": lambda p: {"deleted": rooms.delete(_required(p, "id"))},
+    "hexbot.rooms.mark_read": lambda p: {"room": rooms.mark_read(_required(p, "id"), _required(p, "seq"))},
+    "hexbot.activity.pairs": lambda p: {"pairs": activity.pairs()},
+    "hexbot.activity.list": lambda p: {"messages": activity.list_messages(p.get("from"), p.get("to"), p.get("limit", 200))},
 }
 
 #: method -> broadcast event emitted after a successful mutation.
@@ -208,6 +243,12 @@ MUTATION_EVENTS = {
     "hexbot.network.set": "hexbot.network.changed",
     "hexbot.connect.disconnect": "hexbot.connect.changed",
     "hexbot.connect.register_poll": "hexbot.connect.changed",
+    "hexbot.rooms.create": "hexbot.rooms.changed",
+    "hexbot.rooms.update": "hexbot.rooms.changed",
+    "hexbot.rooms.add_member": "hexbot.rooms.changed",
+    "hexbot.rooms.remove_member": "hexbot.rooms.changed",
+    "hexbot.rooms.archive": "hexbot.rooms.changed",
+    "hexbot.rooms.delete": "hexbot.rooms.changed",
 }
 
 
@@ -215,9 +256,12 @@ def _event_payload(params: dict, result: dict) -> dict:
     """Identify the mutated row from the result first, then the request."""
     section = result.get("section") if isinstance(result.get("section"), dict) else {}
     bot = result.get("bot") if isinstance(result.get("bot"), dict) else {}
+    room = result.get("room") if isinstance(result.get("room"), dict) else {}
     payload = {}
     if section.get("id") or params.get("id"):
         payload["id"] = section.get("id") or params.get("id")
+    if room.get("id"):
+        payload["id"] = room["id"]
     if bot.get("name") or section.get("bot") or params.get("bot") or params.get("name"):
         payload["bot"] = bot.get("name") or section.get("bot") or params.get("bot")
         payload.setdefault("name", bot.get("name") or params.get("name"))

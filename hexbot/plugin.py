@@ -68,4 +68,12 @@ def register(ctx):
     _register_core_memory(ctx)
     if hasattr(ctx, "register_hook"):
         _register_activity_hook(ctx)
+    if hasattr(ctx, "register_tool"):
+        from hexbot.activity import SCHEMA, message_bot
+        ctx.register_tool(name="message_bot", toolset="hexbot", schema=SCHEMA,
+                          handler=message_bot)
+    # Constructing the singleton performs restart reconciliation, then starts
+    # the room supervisor. No Hermes lifecycle code needs to know about it.
+    from hexbot.rooms import get_engine
+    get_engine()
     register_rpc(ctx)

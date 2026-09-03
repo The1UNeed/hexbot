@@ -11,7 +11,7 @@ from hexbot.home import DATABASE_NAME, ensure_layout
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);
@@ -39,6 +39,41 @@ CREATE INDEX IF NOT EXISTS idx_sections_bot ON sections(bot);
 _ADDED_COLUMNS: dict[int, list[tuple[str, str, str]]] = {
     # (table, column, definition)
     2: [("sections", "title_dirty", "INTEGER NOT NULL DEFAULT 0")],
+}
+
+_MIGRATION_DDL: dict[int, str] = {
+    3: """
+CREATE TABLE IF NOT EXISTS rooms(
+ id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT 'local',
+ main_bot TEXT, approval_mode TEXT, limits_json TEXT NOT NULL DEFAULT '{}',
+ created_at REAL, updated_at REAL, last_activity_at REAL, archived_at REAL);
+CREATE TABLE IF NOT EXISTS room_members(
+ room_id TEXT NOT NULL, member_kind TEXT NOT NULL CHECK(member_kind IN ('human','bot')),
+ member_id TEXT NOT NULL, added_by TEXT, added_at REAL, left_at REAL,
+ last_read_seq INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(room_id,member_kind,member_id),
+ FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS room_events(
+ room_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
+ actor_kind TEXT, actor_id TEXT, payload_json TEXT NOT NULL DEFAULT '{}', created_at REAL,
+ PRIMARY KEY(room_id,seq), FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS room_sessions(
+ room_id TEXT NOT NULL, bot TEXT NOT NULL, stored_session_id TEXT NOT NULL,
+ live_session_id TEXT, PRIMARY KEY(room_id,bot),
+ FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS room_turns(
+ id TEXT PRIMARY KEY, room_id TEXT NOT NULL, bot TEXT NOT NULL, trigger_seq INTEGER NOT NULL,
+ started_at REAL, finished_at REAL, status TEXT NOT NULL,
+ input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+ cost_usd REAL NOT NULL DEFAULT 0,
+ FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS bot_messages(
+ id TEXT PRIMARY KEY, from_bot TEXT NOT NULL, to_bot TEXT NOT NULL,
+ room_id TEXT, section_id TEXT, created_at REAL, text TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_room_events_room_seq ON room_events(room_id,seq);
+CREATE INDEX IF NOT EXISTS idx_room_turns_room_trigger ON room_turns(room_id,trigger_seq);
+CREATE INDEX IF NOT EXISTS idx_bot_messages_pair ON bot_messages(from_bot,to_bot,created_at);
+""",
 }
 
 
@@ -76,6 +111,8 @@ def migrate() -> None:
         row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
         current = int(row[0]) if row is not None else 0
         for version in range(max(current, 1) + 1, SCHEMA_VERSION + 1):
+            if version in _MIGRATION_DDL:
+                conn.executescript(_MIGRATION_DDL[version])
             for table, column, definition in _ADDED_COLUMNS.get(version, []):
                 if column not in _columns(conn, table):
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
@@ -87,6 +124,10 @@ def migrate() -> None:
             for table, column, definition in statements:
                 if column not in _columns(conn, table):
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        # New databases and databases whose version row got ahead of their
+        # physical schema still receive every idempotent table migration.
+        for ddl in _MIGRATION_DDL.values():
+            conn.executescript(ddl)
         if row is None:
             conn.execute("INSERT INTO schema_version(version) VALUES (?)", (SCHEMA_VERSION,))
         elif current != SCHEMA_VERSION:

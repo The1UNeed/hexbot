@@ -18,8 +18,22 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HEXBOT_WORKSPACE", str(tmp_path / "workspace"))
     from hexbot.sections import _LIVE
     _LIVE.clear()
+    from hexbot.activity import _DELIVERY_LOCKS, _HOPS, _SESSION_ORIGINS
+    _HOPS.clear()
+    _SESSION_ORIGINS.clear()
+    _DELIVERY_LOCKS.clear()
+    import hexbot.rooms.engine as room_engine
+    previous_engine = room_engine._ENGINE
+    room_engine._ENGINE = None
     yield home
     _LIVE.clear()
+    _HOPS.clear()
+    _SESSION_ORIGINS.clear()
+    _DELIVERY_LOCKS.clear()
+    current_engine = room_engine._ENGINE
+    if current_engine is not None and current_engine is not previous_engine:
+        current_engine.close()
+    room_engine._ENGINE = previous_engine
 
 
 @pytest.fixture

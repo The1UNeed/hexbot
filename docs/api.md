@@ -38,7 +38,7 @@ Events the client renders: `message.start`, `message.delta`, `message.interim`,
 `message.complete` (turn end), `thinking.delta`, `tool.start`, `tool.complete`,
 `approval.request`, `status.update`, `session.info`, `session.usage`, `error`.
 
-## `hexbot.*` methods (milestone 1)
+## `hexbot.*` methods
 
 All results are objects. Errors use JSON-RPC error objects with Hermes-style
 codes in the 4200–4299 (client) and 5200–5299 (server) ranges.
@@ -50,6 +50,9 @@ codes in the 4200–4299 (client) and 5200–5299 (server) ranges.
 - `hexbot.settings.get {}` → `{approval_mode, auto_approver_model, lan_enabled,
   service_installed, workspace_dir, billing_notice_ack}`
 - `hexbot.settings.set {patch}` → same shape; only whitelisted keys.
+  Room settings are `room_bot_turns_per_human_turn` (default 8),
+  `room_budget_tokens_per_human_turn` (default null), and
+  `bot_daily_token_budget` (default null).
 
 ### Bots
 
@@ -106,6 +109,43 @@ preview, message_count, live_session_id | null}`
 - `hexbot.memory.bot.get {bot}` → `{memory_md, user_md, caps}`
 - `hexbot.memory.bot.set {bot, memory_md?, user_md?}` → same as get.
 
+### Rooms
+
+Room shape: `{id, name, owner_id, main_bot, approval_mode, limits,
+created_at, updated_at, last_activity_at, archived_at, members}`. Member rows
+keep `left_at` after departure so old transcripts retain their identities.
+
+- `hexbot.rooms.list {include_archived?}` → `{rooms: [Room]}`
+- `hexbot.rooms.get {id}` → `{room: Room}`
+- `hexbot.rooms.create {name, members: [bot], main_bot?, limits?, approval_mode?}`
+  → `{room: Room}`
+- `hexbot.rooms.update {id, name?, main_bot?, limits?, approval_mode?}` → `{room}`
+- `hexbot.rooms.add_member {id, bot}` / `hexbot.rooms.remove_member {id, bot}`
+  → `{room}`
+- `hexbot.rooms.send {id, text, attachments?}` → `{event}`. This queues the
+  room engine after writing the user event.
+- `hexbot.rooms.log {id, after_seq?, limit?}` → `{events}` in ascending room
+  sequence order. `limit` is capped at 1000.
+- `hexbot.rooms.stop {id}` → `{stopped: true}`
+- `hexbot.rooms.archive {id}` → `{room}`
+- `hexbot.rooms.delete {id}` → `{deleted: true}`
+- `hexbot.rooms.mark_read {id, seq}` → `{room}`
+
+Room turns use hidden Hermes sessions on each bot profile. The daemon waits
+for the corresponding assistant row through `session.history` after
+`prompt.submit`; it does not depend on the WebSocket that initiated the room.
+
+### Bot activity
+
+- `hexbot.activity.pairs {}` → `{pairs: [{from_bot, to_bot, count, last_at}]}`
+- `hexbot.activity.list {from?, to?, limit?}` → `{messages: [BotMessage]}`
+
+The `message_bot {to, text, wait}` tool delivers into the target bot's
+`From <sender>` section. With `wait: false`, a background watcher submits the
+eventual reply to the sender section as hidden input prefixed
+`[reply from <bot>]`. This is the closest supported Hermes mechanism to a
+hidden note and preserves it in the section context.
+
 ### Providers and models
 
 - `hexbot.providers.list {}` → `{providers: [{id, label, configured,
@@ -155,6 +195,9 @@ preview, message_count, live_session_id | null}`
 `hexbot.memory.core.changed {}`, `hexbot.network.changed {}`. Session-less,
 broadcast to every connection.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
+Room mutations emit `hexbot.rooms.changed {id}`. Every persisted room event
+emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit
+`hexbot.rooms.turn {room_id, bot, live_session_id, status}`.
 
 ## Pairing and auth over HTTP
 

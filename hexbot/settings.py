@@ -16,7 +16,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULTS = {"approval_mode": "manual", "auto_approver_model": None,
             "lan_enabled": False, "service_installed": False,
-            "workspace_dir": str(DEFAULT_WORKSPACE), "billing_notice_ack": False}
+            "workspace_dir": str(DEFAULT_WORKSPACE), "billing_notice_ack": False,
+            "room_bot_turns_per_human_turn": 8,
+            "room_budget_tokens_per_human_turn": None,
+            "bot_daily_token_budget": None}
 
 #: Hermes calls the auto-approval mode ``smart``; the Hexbot UI labels it "Auto".
 APPROVAL_MODES = ("manual", "smart", "off")
@@ -46,6 +49,11 @@ def update_settings(patch: dict) -> dict:
     if "auto_approver_model" in patch and patch["auto_approver_model"] is not None:
         if "/" not in str(patch["auto_approver_model"]):
             raise HexbotError(4202, "auto_approver_model must be 'provider/model'")
+    for key in ("room_bot_turns_per_human_turn",
+                "room_budget_tokens_per_human_turn", "bot_daily_token_budget"):
+        if key in patch and (patch[key] is not None) and (
+                isinstance(patch[key], bool) or not isinstance(patch[key], int) or patch[key] < 0):
+            raise HexbotError(4202, f"{key} must be a non-negative integer or null")
     db.migrate()
     with db.transaction() as conn:
         for key, value in patch.items():
