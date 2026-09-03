@@ -53,3 +53,14 @@ bot with `openai-codex` and `gpt-5.6-sol`, sends a real prompt, and creates a se
 It requires a working Codex CLI login. `HEXBOT_E2E_TARGET` is exposed by
 `apps/desktop/src/preload/index.ts`; `apps/web/src/stores/connection.ts` adopts it only when no
 connection target is stored.
+
+## Live smoke scripts
+
+All of these need a Codex CLI login on the machine (see "Real-model checks").
+
+- `scripts/dev/pairing_smoke.sh`: LAN-gated daemon, pairing code, cookie login, bearer ticket, revoke.
+- `scripts/dev/multiuser_smoke.sh`: admin pairing, invite, member pairing, ownership filtering, admin-only refusal.
+- `scripts/dev/rooms_smoke.py --url ws://127.0.0.1:<port>/api/ws?token=<t> --token <t>`: two bots in a room with a main bot, one human message, prints the room log.
+- `scripts/dev/dream_smoke.py` (same flags): creates a bot, chats, runs a dream now, prints the memory notes and the Dreams section.
+- `scripts/dev/rpc.py <port> '<calls json>'`: ad-hoc JSON-RPC calls against a loopback daemon.
+- `scripts/dev/ui-review.mjs`, `ui-review-app.mjs`, `ui-shot.mjs`, `ui-error.mjs`, `ui-room-chat.mjs`: Playwright helpers that drive the daemon-served web bundle in Chromium and write screenshots to `/tmp/hexbot-shots`.
