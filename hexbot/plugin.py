@@ -73,7 +73,7 @@ def _register_dream_hooks(ctx) -> None:
 
 
 def register(ctx):
-    if hasattr(ctx, "register_dashboard_auth_provider"):
+    if hasattr(ctx, "register_dashboard_auth_provider") and not _auth_provider_registered():
         from hexbot.auth_provider import HexbotAuthProvider
         ctx.register_dashboard_auth_provider(HexbotAuthProvider())
     else:
@@ -98,4 +98,22 @@ def register(ctx):
     # the room supervisor. No Hermes lifecycle code needs to know about it.
     from hexbot.rooms import get_engine
     get_engine()
-    register_rpc(ctx)
+    if not _rpc_registered():
+        register_rpc(ctx)
+
+
+def _rpc_registered() -> bool:
+    """Hermes builds one plugin manager per profile home; the RPC table is
+    process-global, so only the first manager registers the methods."""
+    from hermes_cli.plugins import lookup_plugin_rpc_method
+
+    return lookup_plugin_rpc_method("hexbot.info") is not None
+
+
+def _auth_provider_registered() -> bool:
+    try:
+        from hermes_cli.dashboard_auth.registry import list_providers
+
+        return any(getattr(p, "name", "") == "hexbot" for p in list_providers())
+    except Exception:  # pragma: no cover - registry shape changes
+        return False
