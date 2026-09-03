@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import socket
+
+from hexbot.home import hexbot_home
 
 from hexbot.settings import get_settings, update_settings
 
@@ -27,8 +30,16 @@ def lan_addresses() -> list[str]:
 
 def get_network() -> dict:
     enabled = bool(get_settings()["lan_enabled"])
+    configured_port = os.environ.get("HEXBOT_PORT")
+    port = int(configured_port or "9119")
+    if configured_port is None:
+        try:
+            state = json.loads((hexbot_home() / "serve-state.json").read_text())
+            port = int(state.get("port", port))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
     return {"lan_enabled": enabled, "bind_host": "0.0.0.0" if enabled else "127.0.0.1",
-            "port": int(os.environ.get("HEXBOT_PORT", "9119")), "addresses": lan_addresses()}
+            "port": port, "addresses": lan_addresses()}
 
 
 def set_network(lan_enabled: bool) -> dict:

@@ -2,16 +2,32 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import threading
+from pathlib import Path
 
 _serve_args: list[str] = []
 _restart_scheduled = False
+_bind_host = "127.0.0.1"
+_bind_port = 9119
+
+
+def state() -> dict:
+    return {"host": _bind_host, "port": _bind_port,
+            "auth_required": _bind_host not in {"localhost", "127.0.0.1", "::1"}}
+
+
+def _web_dist() -> Path | None:
+    configured = os.environ.get("HEXBOT_WEB_DIST")
+    candidate = (Path(configured).expanduser() if configured
+                 else Path(__file__).parents[1] / "apps/web/dist")
+    return candidate.resolve() if (candidate / "index.html").is_file() else None
 
 
 def run(host=None, port=None, lan=None):
-    global _serve_args
+    global _serve_args, _bind_host, _bind_port
     from hexbot import db
     from hexbot.home import ensure_layout
     from hexbot.settings import apply_settings_everywhere, get_settings
@@ -19,11 +35,23 @@ def run(host=None, port=None, lan=None):
     enabled = get_settings()["lan_enabled"] if lan is None else lan
     host = host or ("0.0.0.0" if enabled else "127.0.0.1")
     port = port or int(os.environ.get("HEXBOT_PORT", "9119"))
+    _bind_host, _bind_port = host, port
+    os.environ["HEXBOT_PORT"] = str(port)
+    runtime_path = ensure_layout() / "serve-state.json"
+    runtime_path.write_text(json.dumps({"host": host, "port": port}) + "\n")
+    os.chmod(runtime_path, 0o600)
     _serve_args = ["--host", host, "--port", str(port)]
+    web_dist = _web_dist()
+    command = "serve"
+    extra = []
+    if web_dist is not None:
+        os.environ["HERMES_WEB_DIST"] = str(web_dist)
+        command = "dashboard"
+        extra = ["--skip-build", "--no-open"]
     from hermes_cli.main import main
     old = sys.argv
     try:
-        sys.argv = ["hermes", "serve", *_serve_args]
+        sys.argv = ["hermes", command, *extra, *_serve_args]
         return main()
     finally:
         sys.argv = old

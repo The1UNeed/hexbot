@@ -55,6 +55,11 @@ def _register_activity_hook(ctx) -> None:
 
 
 def register(ctx):
+    if hasattr(ctx, "register_dashboard_auth_provider"):
+        from hexbot.auth_provider import HexbotAuthProvider
+        ctx.register_dashboard_auth_provider(HexbotAuthProvider())
+    else:
+        logger.warning("Hexbot auth requires a newer Hermes PluginContext")
     if not hasattr(ctx, "register_rpc_method"):
         logger.warning("Hexbot RPC requires a newer Hermes PluginContext")
         return

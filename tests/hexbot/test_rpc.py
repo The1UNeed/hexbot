@@ -50,11 +50,9 @@ def test_every_documented_method_is_registered(ctx):
         "hexbot.providers.list", "hexbot.providers.set_key",
         "hexbot.providers.clear_key", "hexbot.models.list",
         "hexbot.network.get", "hexbot.network.set",
+        "hexbot.pairing.code", "hexbot.devices.list", "hexbot.devices.revoke",
     }
     assert set(ctx.methods) == expected
-    # Pairing and devices belong to the next milestone.
-    assert not any(name.startswith(("hexbot.pairing", "hexbot.devices"))
-                   for name in ctx.methods)
 
 
 def test_core_memory_is_registered_as_four_prompt_sections(ctx):
@@ -87,7 +85,8 @@ def test_info_frame(ctx):
     assert result["lan_enabled"] is False
     assert isinstance(result["addresses"], list)
     assert set(result) == {"version", "hermes_version", "daemon_name", "install_id",
-                           "auth_required", "lan_enabled", "addresses", "platform", "home"}
+                           "auth_required", "pairing_supported", "lan_enabled", "addresses",
+                           "platform", "home"}
 
 
 def test_missing_parameter_is_4200(ctx):

@@ -16,7 +16,7 @@ import platform
 import socket
 import sys
 
-from hexbot import bots, memory, network, providers, sections, settings
+from hexbot import bots, memory, network, pairing, providers, sections, settings
 from hexbot.errors import HexbotError
 
 logger = logging.getLogger(__name__)
@@ -80,9 +80,11 @@ def info(_params) -> dict:
         except Exception:
             logger.debug("install id unavailable", exc_info=True)
     net = network.get_network()
+    from hexbot.serve import state as serve_state
     return {"version": __version__, "hermes_version": hermes_version,
             "daemon_name": socket.gethostname(), "install_id": install_id,
-            "auth_required": _web_app_state("auth_required"),
+            "auth_required": serve_state()["auth_required"],
+            "pairing_supported": True,
             "lan_enabled": net["lan_enabled"], "addresses": net["addresses"],
             "platform": platform.system().lower(), "home": str(hexbot_home())}
 
@@ -98,6 +100,35 @@ def _list_models(params) -> dict:
         params.get("provider"),
         include_unconfigured=params.get("include_unconfigured"),
         refresh=bool(params.get("refresh")))
+
+
+def _pairing_code(_params) -> dict:
+    code = pairing.new_code()
+    net = network.get_network()
+    addresses = net["addresses"]
+    host = addresses[0] if addresses else net["bind_host"]
+    return {"code": code, "expires_at": pairing.code_expires_at(code),
+            "link": pairing.pair_link(host, net["port"], code), "addresses": addresses}
+
+
+def _current_device_id() -> str | None:
+    try:
+        from tui_gateway.server import current_transport
+        identity = getattr(current_transport(), "auth_identity", None) or {}
+    except Exception:
+        return None
+    user_id = str(identity.get("user_id", ""))
+    return user_id.removeprefix("device:") if user_id.startswith("device:") else None
+
+
+def _devices_list(_params) -> dict:
+    current = _current_device_id()
+    return {"devices": [
+        {"id": row.id, "name": row.name, "platform": row.platform,
+         "created_at": row.created_at, "last_seen_at": row.last_seen_at,
+         "current": row.id == current}
+        for row in pairing.list_devices()
+    ]}
 
 
 METHODS = {
@@ -137,6 +168,9 @@ METHODS = {
     "hexbot.models.list": _list_models,
     "hexbot.network.get": lambda p: network.get_network(),
     "hexbot.network.set": lambda p: network.set_network(_required(p, "lan_enabled")),
+    "hexbot.pairing.code": _pairing_code,
+    "hexbot.devices.list": _devices_list,
+    "hexbot.devices.revoke": lambda p: {"revoked": pairing.revoke_device(_required(p, "id"))},
 }
 
 #: method -> broadcast event emitted after a successful mutation.
