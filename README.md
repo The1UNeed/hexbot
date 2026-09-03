@@ -23,13 +23,13 @@ Built on 2026-09-03 from the design in `DESIGN.md`. What runs today:
 - Milestone 4: dreaming, room memory, memory tagging and purge, the activity
   graph, the computer tab.
 - Milestone 5: users, invites, ownership, shareable bots, budgets, usage.
-- Milestone 6: Docker image, Homebrew cask, deb metadata, beta channel,
+- Milestone 6: Homebrew cask, deb metadata, beta channel,
   opt-in crash reports, release docs.
 
 Not done on the build machine because it needs accounts or hardware that are
 not there: Apple signing and notarization, deploying `apps/site` and
 `apps/connect` to Vercel with Clerk, Neon and Cloudflare credentials, DNS for
-hexbot.app, a Docker image build, and a test on a second physical machine over
+hexbot.app, and a test on a second physical machine over
 LAN or Tailscale. `docs/release.md` lists the steps.
 
 ## Layout

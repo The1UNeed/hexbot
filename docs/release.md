@@ -53,4 +53,3 @@ On Linux x86_64:
 - Start the daemon, pair a client, restart the machine, and confirm saved state remains available.
 - Check update discovery from the matching channel.
 
-Finally, build the staged Docker context on a Docker-capable host, start the compose service, check `/api/health`, and run `docker compose -f docker/hexbot/docker-compose.yml exec hexbot hexbot pair`.

@@ -130,8 +130,9 @@ more freedom and more capability than a hosted product can offer.
 
 ## 5. Packaging and operations
 
-- One Electron app. First launch asks: connect to a Hexbot daemon, or run
-  one on this machine.
+- One Electron app, delivered as a single complete package. First launch
+  asks: connect to a Hexbot daemon, or run one on this machine. No container
+  engine or separate server install is ever required of a user.
 - The app bundles the Python source. First run downloads uv, Python 3.11,
   Git and ripgrep into `~/.hexbot` using the rebranded Hermes installer.
 - The daemon installs as a user service (launchd on macOS, systemd user unit
@@ -169,5 +170,5 @@ more freedom and more capability than a hosted product can offer.
 4. Live computer view, dreaming, activity graph, room memory, bundled vector
    memory.
 5. Multi-user.
-6. Packaging and release: Docker, Homebrew, .deb polish, beta channel,
+6. Packaging and release: Homebrew, .deb polish, beta channel,
    opt-in crash reports, public repo.

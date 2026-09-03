@@ -21,8 +21,6 @@
     "desktop:dev": "npm run dev --workspace @hexbot/desktop",
     "desktop:build": "npm run build --workspace @hexbot/desktop",
     "desktop:e2e": "npm run e2e --workspace @hexbot/desktop",
-    "docker:stage": "node scripts/docker/stage-context.mjs",
-    "docker:build": "npm run docker:stage && docker build -f docker/hexbot/Dockerfile -t hexbot:local docker/hexbot/context",
     "connect:dev": "npm run dev --workspace @hexbot/connect",
     "connect:build": "npm run build --workspace @hexbot/connect",
     "connect:test": "npm run test --workspace @hexbot/connect",
