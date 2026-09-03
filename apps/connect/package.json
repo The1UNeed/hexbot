@@ -1,0 +1,30 @@
+{
+  "name": "@hexbot/connect",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hexbot Connect: identity and tunnel broker for reaching a daemon from outside the LAN.",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@clerk/nextjs": "7.7.8",
+    "@neondatabase/serverless": "1.1.0",
+    "jose": "6.2.9",
+    "next": "16.3.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "@types/react": "19.2.17",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  }
+}
