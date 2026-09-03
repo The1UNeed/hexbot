@@ -4,19 +4,41 @@ import electronUpdater from 'electron-updater'
 
 const { autoUpdater } = electronUpdater
 
-export interface UpdateStatus { state: string; percent?: number; message?: string }
+export type UpdateState = 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'none' | 'error'
+export interface UpdateStatus { state: UpdateState; percent?: number; message?: string }
 export const updaterEvents = new EventEmitter()
 
-for (const event of ['checking-for-update', 'update-available', 'update-not-available', 'update-downloaded', 'error'] as const) {
-  autoUpdater.on(event, (value: unknown) => updaterEvents.emit('status', { state: event, message: value instanceof Error ? value.message : undefined } satisfies UpdateStatus))
+let configured = false
+let downloaded = false
+
+function emit(status: UpdateStatus): void {
+  updaterEvents.emit('status', status)
 }
-autoUpdater.on('download-progress', progress => updaterEvents.emit('status', { state: 'downloading', percent: progress.percent } satisfies UpdateStatus))
+
+function configureUpdater(): boolean {
+  if (!app.isPackaged) return false
+  if (configured) return true
+  configured = true
+  autoUpdater.channel = 'latest'
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = false
+  autoUpdater.on('checking-for-update', () => emit({ state: 'checking' }))
+  autoUpdater.on('update-available', () => emit({ state: 'available' }))
+  autoUpdater.on('update-not-available', () => emit({ state: 'none' }))
+  autoUpdater.on('download-progress', progress => emit({ state: 'downloading', percent: progress.percent }))
+  autoUpdater.on('update-downloaded', () => { downloaded = true; emit({ state: 'downloaded' }) })
+  autoUpdater.on('error', error => emit({ state: 'error', message: error.message }))
+  emit({ state: 'idle' })
+  return true
+}
 
 export async function checkForUpdates(): Promise<void> {
-  if (!app.isPackaged) {
-    return
-  }
-  await autoUpdater.checkForUpdatesAndNotify()
+  if (!configureUpdater()) return
+  await autoUpdater.checkForUpdates()
 }
 
-export function installUpdate(): void { autoUpdater.quitAndInstall() }
+export async function installUpdate(): Promise<void> {
+  if (!configureUpdater()) return
+  if (downloaded) autoUpdater.quitAndInstall()
+  else await autoUpdater.downloadUpdate()
+}

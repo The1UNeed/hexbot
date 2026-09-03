@@ -89,6 +89,7 @@ apps/web/dist/
 apps/desktop/out/
 apps/desktop/dist/
 apps/desktop/release/
+apps/desktop/resources/hexbot-src/
 
 # tsc-emitted artifacts (a stray `tsc -b` compiles into src/, and vite then
 # resolves the stale .js OVER the .tsx — never track these)

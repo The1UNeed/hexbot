@@ -6,9 +6,9 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "npm run build --workspace @hexbot/web && electron-vite build && node scripts/copy-web.mjs",
-    "dist:mac": "npm run build && electron-builder --mac",
-    "dist:linux": "npm run build && electron-builder --linux",
+    "build": "npm run build --workspace @hexbot/web && node ../../scripts/desktop/stage-python-src.mjs && electron-vite build && node scripts/copy-web.mjs",
+    "dist:mac": "node ../../scripts/desktop/dist.mjs --mac",
+    "dist:linux": "node ../../scripts/desktop/dist.mjs --linux",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

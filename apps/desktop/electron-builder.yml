@@ -6,7 +6,11 @@ directories:
 files:
   - out/**
   - resources/**
+  - "!resources/hexbot-src/**"
   - package.json
+extraResources:
+  - from: resources/hexbot-src
+    to: hexbot-src
 asar: true
 protocols:
   - name: Hexbot
