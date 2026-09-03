@@ -53,8 +53,8 @@ codes in the 4200–4299 (client) and 5200–5299 (server) ranges.
 
 ### Bots
 
-Bot shape: `{name, display_name, title, description, persona, provider, model,
-avatar: {mime, data} | null, created_at, updated_at, last_activity_at,
+Bot shape: `{name, display_name, title, description, persona, skills: [string],
+provider, model, avatar: {mime, data} | null, created_at, updated_at, last_activity_at,
 owner_id, sections_total, sections_recent: [Section]}`
 
 - `hexbot.bots.list {}` → `{bots: [Bot]}` ordered by `last_activity_at` desc.

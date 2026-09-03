@@ -39,6 +39,16 @@ def _avatar(name: str):
     return {"mime": asset.get("mime"), "data": asset.get("data")}
 
 
+def _skill_names(skills) -> list[str]:
+    """Normalise ``profiles.describe`` skill entries (dicts or strings) to names."""
+    names = []
+    for item in skills or []:
+        name = item.get("name") if isinstance(item, dict) else item
+        if isinstance(name, str) and name:
+            names.append(name)
+    return sorted(set(names))
+
+
 def _shape(row) -> dict:
     detail = _profile_details(row["name"])
     model = detail.get("model") or {}
@@ -50,6 +60,7 @@ def _shape(row) -> dict:
         "title": row["title"] or "",
         "description": row["description"] or detail.get("description", ""),
         "persona": detail.get("soul", ""),
+        "skills": _skill_names(detail.get("skills")),
         "provider": model.get("provider"),
         "model": model.get("default"),
         "avatar": _avatar(row["name"]),
