@@ -60,7 +60,7 @@ def list_rooms(include_archived=False, *, all_users=False) -> list[dict]:
 
 
 def create(name: str, members=(), main_bot=None, limits=None, approval_mode=None,
-           owner_id=None) -> dict:
+           owner_id=None, humans=()) -> dict:
     from hexbot.identity import current_user_id
     owner_id = owner_id or current_user_id()
     db.migrate()
@@ -68,23 +68,44 @@ def create(name: str, members=(), main_bot=None, limits=None, approval_mode=None
     if not name:
         raise HexbotError(4200, "missing parameter: name")
     room_id, now = uuid.uuid4().hex, time.time()
-    bots = list(dict.fromkeys(str(x) for x in members))
+    requested = list(dict.fromkeys(str(x) for x in members))
+    humans = list(dict.fromkeys(str(x) for x in (humans or ())))
+    bots: list[str] = []
+    with db.transaction() as conn:
+        for member in requested:
+            row = conn.execute("SELECT owner_id,shareable FROM bots WHERE name=?", (member,)).fetchone()
+            if row is None:
+                # Not a registered bot. A user id names a human member (the
+                # client sends both kinds in one list); anything else is kept
+                # as a bot name for callers that create profiles out of band.
+                user = conn.execute("SELECT id FROM users WHERE id=? AND disabled_at IS NULL", (member,)).fetchone()
+                if user is not None:
+                    if member not in humans:
+                        humans.append(member)
+                    continue
+                bots.append(member)
+                continue
+            if row["owner_id"] != owner_id and not row["shareable"]:
+                raise HexbotError(4302, "not the owner")
+            bots.append(member)
     if main_bot and main_bot not in bots:
         raise HexbotError(4231, "main_bot must be a room member")
-    with db.transaction() as conn:
-        for bot in bots:
-            row = conn.execute("SELECT owner_id,shareable FROM bots WHERE name=?", (bot,)).fetchone()
-            if row is not None and row["owner_id"] != owner_id and not row["shareable"]:
-                raise HexbotError(4302, "not the owner")
     with db.transaction() as conn:
         conn.execute("INSERT INTO rooms VALUES (?,?,?,?,?,?,?,?,?,NULL)",
                      (room_id, name, owner_id, main_bot, approval_mode,
                       json.dumps(limits or {}), now, now, now))
         conn.execute("INSERT INTO room_members VALUES (?,?,?,?,?,NULL,0)",
                      (room_id, "human", owner_id, owner_id, now))
+        for user in humans:
+            if user != owner_id:
+                conn.execute("INSERT INTO room_members VALUES (?,?,?,?,?,NULL,0)",
+                             (room_id, "human", user, owner_id, now))
         for bot in bots:
             conn.execute("INSERT INTO room_members VALUES (?,?,?,?,?,NULL,0)",
                          (room_id, "bot", bot, owner_id, now))
+    for user in humans:
+        if user != owner_id:
+            append_event(room_id, "member.added", "human", owner_id, {"user": user})
     for bot in bots:
         append_event(room_id, "member.added", "human", owner_id, {"bot": bot})
     result = get(room_id, enforce_owner=False)

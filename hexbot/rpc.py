@@ -168,7 +168,7 @@ def _connect_register_poll(params) -> dict:
 def _rooms_create(p):
     return {"room": rooms.create(_required(p, "name"), p.get("members", []),
                                   p.get("main_bot"), p.get("limits"),
-                                  p.get("approval_mode"))}
+                                  p.get("approval_mode"), humans=p.get("humans", []))}
 
 
 def _rooms_update(p):

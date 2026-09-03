@@ -60,3 +60,15 @@ def test_restart_reconciles_running_turn(fake_gateway):
     with db.transaction() as conn:
         assert conn.execute("SELECT status FROM room_turns WHERE id='t'").fetchone()[0] == "failed"
     assert room["id"] in engine._pending
+
+
+def test_create_accepts_human_members_by_user_id(fake_gateway):
+    from hexbot import db
+    from hexbot.rooms import store
+    db.migrate()
+    with db.transaction() as conn:
+        conn.execute("INSERT INTO bots(name,display_name,title,description,owner_id,created_at,updated_at,last_activity_at) VALUES ('scout','Scout','','','local',1,1,1)")
+        conn.execute("INSERT INTO users(id,display_name,role,limits_json,created_at,disabled_at) VALUES ('sam','Sam','member','{}',1,NULL)")
+    room = store.create("Plan", ["scout", "sam"], main_bot="scout")
+    kinds = {(m["member_kind"], m["member_id"]) for m in room["members"]}
+    assert ("bot", "scout") in kinds and ("human", "sam") in kinds and ("human", "local") in kinds
