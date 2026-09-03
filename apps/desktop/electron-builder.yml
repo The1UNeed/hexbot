@@ -44,3 +44,5 @@ linux:
 publish:
   provider: generic
   url: https://hexbot.app/updates/${os}/${arch}
+
+afterPack: ../../scripts/desktop/after-pack.cjs
