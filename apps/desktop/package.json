@@ -23,5 +23,12 @@
     "typescript": "6.0.3",
     "vite": "7.3.6",
     "vitest": "4.1.10"
-  }
+  },
+  "homepage": "https://hexbot.app",
+  "description": "Self-hosted multi-agent desktop app",
+  "author": {
+    "name": "Hexbot contributors",
+    "email": "hello@hexbot.app"
+  },
+  "license": "AGPL-3.0-only"
 }
