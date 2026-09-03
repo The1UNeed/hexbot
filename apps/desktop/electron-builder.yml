@@ -5,6 +5,7 @@ directories:
   output: release
 files:
   - out/**
+  - resources/**
   - package.json
 asar: true
 protocols:
