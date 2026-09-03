@@ -49,6 +49,8 @@ def run(host=None, port=None, lan=None):
         command = "dashboard"
         extra = ["--skip-build", "--no-open"]
     from hermes_cli.main import main
+
+    _start_cron_ticker()
     from hexbot import connect
     connect.start_daemon(port)
     old = sys.argv
@@ -70,3 +72,24 @@ def request_restart():
         time.sleep(0.5)
         os.execv(sys.executable, [sys.executable, "-m", "hexbot.cli", "serve", *_serve_args])
     threading.Thread(target=restart, daemon=True).start()
+
+
+def _start_cron_ticker(interval: int = 60) -> None:
+    """Tick every profile's cron store in-process.
+
+    Hermes only starts its ticker when spawned by Hermes Desktop
+    (``HERMES_DESKTOP=1``); ``hexbot serve`` must do it itself so scheduled
+    dreams and routines fire without a separate gateway process.
+    """
+    import logging
+    import threading
+
+    try:
+        from hermes_cli.web_server import _start_desktop_cron_ticker
+    except Exception:  # pragma: no cover - defensive
+        logging.getLogger(__name__).exception("cron ticker unavailable")
+        return
+    stop = threading.Event()
+    threading.Thread(
+        target=_start_desktop_cron_ticker, args=(stop, interval), name="hexbot-cron", daemon=True
+    ).start()

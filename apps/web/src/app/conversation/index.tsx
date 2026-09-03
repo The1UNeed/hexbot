@@ -83,7 +83,7 @@ function CodeBlock({ children, className }: { children?: React.ReactNode; classN
   )
 }
 
-function Markdown({ text }: { text: string }) {
+export function Markdown({ text }: { text: string }) {
   return (
     <ReactMarkdown
       components={{

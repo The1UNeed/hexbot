@@ -13,6 +13,8 @@ import { useBots } from '../../stores/bots'
 import { useRooms } from '../../stores/rooms'
 import { useTranscripts } from '../../stores/transcripts'
 
+import { Markdown } from './index'
+
 // Stable empty values: a fresh [] or {} per render re-renders forever.
 const NO_EVENTS: RoomEvent[] = []
 const NO_TURNS: Record<string, RoomTurn> = {}
@@ -77,7 +79,9 @@ function RoomEventRow({ event }: { event: RoomEvent }) {
             {bot?.display_name ?? event.actor_id}
           </div>
         ) : null}
-        <p className="whitespace-pre-wrap">{text}</p>
+        <div className="prose prose-sm max-w-none break-words">
+          <Markdown text={text} />
+        </div>
         <time className="mt-1 block text-[length:var(--text-meta)] text-muted">
           {new Date(toMillis(event.created_at)).toLocaleTimeString([], {
             hour: '2-digit',

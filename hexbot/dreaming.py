@@ -152,7 +152,7 @@ def build_digest(bot: dict | str, since: float) -> dict:
     for room_id in room_ids:
         events, after = [], 0
         while True:
-            page = rooms.log(room_id, after, 1000)
+            page = rooms.log(room_id, after, 1000, enforce_owner=False)
             events.extend(event for event in page
                           if float(event.get("created_at") or 0) >= float(since))
             if len(page) < 1000:
@@ -162,7 +162,7 @@ def build_digest(bot: dict | str, since: float) -> dict:
             transcript = "\n".join(
                 f"{event.get('kind')} {event.get('actor_id') or ''}: "
                 f"{event.get('payload', {}).get('text', '')}" for event in events)
-            result["rooms"].append({"id": room_id, "name": rooms.get(room_id)["name"],
+            result["rooms"].append({"id": room_id, "name": rooms.get(room_id, enforce_owner=False)["name"],
                                     "transcript": _cap(transcript)})
     return result
 
@@ -188,8 +188,9 @@ def dream_digest(args: dict, **kwargs) -> str:
                "session_id": str(kwargs.get("session_id") or ""),
                "task_id": str(kwargs.get("task_id") or "")}
     with db.transaction() as conn:
-        conn.execute("INSERT INTO dreams(id,bot,room_id,started_at,status,summary) "
-                     "VALUES (?,?,?,?,?,?)", (dream_id, bot, room_id, now, "running", ""))
+        conn.execute("INSERT INTO dreams(id,bot,room_id,started_at,status,summary,owner_id) "
+                     "VALUES (?,?,?,?,?,?,?)", (dream_id, bot, room_id, now, "running", "",
+                     bot_row["owner_id"]))
     _dream_context.set(context)
     for key in (context["session_id"], context["task_id"]):
         if key:
@@ -228,8 +229,11 @@ def record_dream(bot: str, output: str, *, room_id: str | None = None,
             conn.execute("UPDATE dreams SET finished_at=?,status=?,summary=? WHERE id=?",
                          (now, status, output, dream_id))
         else:
-            conn.execute("INSERT INTO dreams VALUES (?,?,?,?,?,?,?)",
-                         (dream_id, bot, room_id, now, now, status, output))
+            owner = conn.execute("SELECT owner_id FROM bots WHERE name=?", (bot,)).fetchone()
+            conn.execute("INSERT INTO dreams(id,bot,room_id,started_at,finished_at,status,summary,owner_id) "
+                         "VALUES (?,?,?,?,?,?,?,?)",
+                         (dream_id, bot, room_id, now, now, status, output,
+                          owner[0] if owner else "local"))
         if room_id and status == "complete":
             conn.execute("INSERT OR REPLACE INTO room_memory(room_id,text,updated_at) VALUES (?,?,?)",
                          (room_id, output, now))
@@ -282,11 +286,34 @@ def run_now(bot: str) -> dict:
     from cron import trigger_job
     from cron.jobs import use_cron_store
     job = ensure_dream_job(bot)
-    with use_cron_store(_profile_home(bot)):
+    home = _profile_home(bot)
+    with use_cron_store(home):
         triggered = trigger_job(job["id"])
     if not triggered:
         raise HexbotError(5240, f"dream job not found for {bot}")
+    _tick_soon(home)
     return {"job": triggered}
+
+
+def _tick_soon(home: Path) -> None:
+    """Run this profile's due jobs now instead of waiting for the next tick."""
+    import threading
+
+    def _run() -> None:
+        from cron.jobs import use_cron_store
+        from cron.scheduler import tick
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        token = set_hermes_home_override(str(home))
+        try:
+            with use_cron_store(home):
+                tick(verbose=False)
+        except Exception:  # pragma: no cover - logged, never raised into RPC
+            logger.exception("immediate dream tick failed for %s", home)
+        finally:
+            reset_hermes_home_override(token)
+
+    threading.Thread(target=_run, name="hexbot-dream-now", daemon=True).start()
 
 
 def list_dreams(bot: str, limit: int = 20) -> dict:
