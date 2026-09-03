@@ -9,38 +9,99 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as OnboardingRouteImport } from './routes/onboarding'
+import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as SettingsTabRouteImport } from './routes/settings.$tab'
+import { Route as BBotSSectionRouteImport } from './routes/b.$bot.s.$section'
 
+const OnboardingRoute = OnboardingRouteImport.update({
+  id: '/onboarding',
+  path: '/onboarding',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConnectRoute = ConnectRouteImport.update({
+  id: '/connect',
+  path: '/connect',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsTabRoute = SettingsTabRouteImport.update({
+  id: '/settings/$tab',
+  path: '/settings/$tab',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BBotSSectionRoute = BBotSSectionRouteImport.update({
+  id: '/b/$bot/s/$section',
+  path: '/b/$bot/s/$section',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/connect': typeof ConnectRoute
+  '/onboarding': typeof OnboardingRoute
+  '/settings/$tab': typeof SettingsTabRoute
+  '/b/$bot/s/$section': typeof BBotSSectionRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/connect': typeof ConnectRoute
+  '/onboarding': typeof OnboardingRoute
+  '/settings/$tab': typeof SettingsTabRoute
+  '/b/$bot/s/$section': typeof BBotSSectionRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/connect': typeof ConnectRoute
+  '/onboarding': typeof OnboardingRoute
+  '/settings/$tab': typeof SettingsTabRoute
+  '/b/$bot/s/$section': typeof BBotSSectionRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths:
+    '/' | '/connect' | '/onboarding' | '/settings/$tab' | '/b/$bot/s/$section'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to: '/' | '/connect' | '/onboarding' | '/settings/$tab' | '/b/$bot/s/$section'
+  id:
+    | '__root__'
+    | '/'
+    | '/connect'
+    | '/onboarding'
+    | '/settings/$tab'
+    | '/b/$bot/s/$section'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ConnectRoute: typeof ConnectRoute
+  OnboardingRoute: typeof OnboardingRoute
+  SettingsTabRoute: typeof SettingsTabRoute
+  BBotSSectionRoute: typeof BBotSSectionRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/onboarding': {
+      id: '/onboarding'
+      path: '/onboarding'
+      fullPath: '/onboarding'
+      preLoaderRoute: typeof OnboardingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/connect': {
+      id: '/connect'
+      path: '/connect'
+      fullPath: '/connect'
+      preLoaderRoute: typeof ConnectRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -48,11 +109,29 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/$tab': {
+      id: '/settings/$tab'
+      path: '/settings/$tab'
+      fullPath: '/settings/$tab'
+      preLoaderRoute: typeof SettingsTabRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/b/$bot/s/$section': {
+      id: '/b/$bot/s/$section'
+      path: '/b/$bot/s/$section'
+      fullPath: '/b/$bot/s/$section'
+      preLoaderRoute: typeof BBotSSectionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ConnectRoute: ConnectRoute,
+  OnboardingRoute: OnboardingRoute,
+  SettingsTabRoute: SettingsTabRoute,
+  BBotSSectionRoute: BBotSSectionRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

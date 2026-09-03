@@ -105,7 +105,7 @@ export async function probeDaemon(origin: string, deps: ConnectionDeps = {}): Pr
   let body = ''
 
   try {
-    const response = await doFetch(`${origin}/`, { cache: 'no-store' })
+    const response = await doFetch(`${origin}/`, { cache: 'no-store', credentials: 'include' })
     body = await response.text()
   } catch (error) {
     throw new UnreachableError(error instanceof Error ? error.message : String(error))
@@ -212,14 +212,16 @@ export async function pairWithDaemon(
   let response: Response
 
   try {
-    response = await doFetch(`http://${host}:${port}/hexbot/pair`, {
+    response = await doFetch(`http://${host}:${port}/auth/password-login`, {
       body: JSON.stringify({
-        code,
+        password: code,
+        provider: 'hexbot',
         device_name: deviceName,
         platform: typeof navigator === 'undefined' ? 'web' : navigator.platform
       }),
       headers: { 'Content-Type': 'application/json' },
-      method: 'POST'
+      method: 'POST',
+      credentials: 'include'
     })
   } catch (error) {
     throw new UnreachableError(error instanceof Error ? error.message : String(error))
@@ -239,14 +241,12 @@ export async function pairWithDaemon(
 
   const body = (await response.json()) as { daemon_name?: string; device_id?: string; device_token?: string }
 
-  if (!body.device_token) {
-    throw new InvalidCodeError('The daemon did not return a device token.')
-  }
-
   return {
     daemonName: body.daemon_name ?? host,
     deviceId: body.device_id ?? '',
-    deviceToken: body.device_token
+    // Browser auth lives in an HttpOnly cookie. Electron receives and stores
+    // the long-lived token in the main process instead.
+    deviceToken: body.device_token ?? ''
   }
 }
 

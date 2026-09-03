@@ -1,0 +1,11 @@
+[
+  {"type":"message.start","session_id":"live-1","seq":1,"payload":{}},
+  {"type":"message.delta","session_id":"live-1","seq":2,"payload":{"text":"Checking "}},
+  {"type":"tool.start","session_id":"live-1","seq":3,"payload":{"tool_id":"tool-1","name":"search","args":{"q":"weather"}}},
+  {"type":"tool.complete","session_id":"live-1","seq":4,"payload":{"tool_id":"tool-1","name":"search","result":"sunny","duration_s":0.2}},
+  {"type":"tool.start","session_id":"live-1","seq":5,"payload":{"tool_id":"tool-2","name":"terminal","args":{"cmd":"date"}}},
+  {"type":"approval.request","session_id":"live-1","seq":6,"payload":{"request_id":"approval-1","command":"date","choices":["once","deny"]}},
+  {"type":"tool.complete","session_id":"live-1","seq":7,"payload":{"tool_id":"tool-2","name":"terminal","result":"Thursday","duration_s":0.1}},
+  {"type":"message.delta","session_id":"live-1","seq":8,"payload":{"text":"done."}},
+  {"type":"message.complete","session_id":"live-1","seq":9,"payload":{"text":"Checking done.","usage":{"total_tokens":12}}}
+]
