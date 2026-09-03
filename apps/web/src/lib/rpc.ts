@@ -1,9 +1,9 @@
 import {
-  JsonRpcGatewayClient,
   type ConnectionState,
   type GatewayClientOptions,
   type GatewayEvent,
-  type GatewayEventName
+  type GatewayEventName,
+  JsonRpcGatewayClient
 } from '@hermes/shared'
 
 export class HexbotRpcClient {

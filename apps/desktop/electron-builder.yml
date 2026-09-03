@@ -22,8 +22,8 @@ mac:
         - arm64
         - x64
   hardenedRuntime: true
-  entitlements: build/entitlements.mac.plist
-  entitlementsInherit: build/entitlements.mac.plist
+  entitlements: entitlements.mac.plist
+  entitlementsInherit: entitlements.mac.plist
   # electron-builder notarizes only when APPLE_API_KEY, APPLE_API_KEY_ID,
   # and APPLE_API_ISSUER are all present in the release environment.
 linux:

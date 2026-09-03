@@ -4,7 +4,7 @@ import { HexbotRpcClient } from './rpc'
 
 class FakeWebSocket extends EventTarget {
   readonly sent: string[] = []
-  readyState = WebSocket.CONNECTING
+  readyState: number = WebSocket.CONNECTING
 
   constructor() {
     super()
@@ -36,9 +36,10 @@ class FakeWebSocket extends EventTarget {
 describe('HexbotRpcClient', () => {
   it('uses the shared JSON-RPC request and response framing', async () => {
     const socket = new FakeWebSocket()
+
     const rpc = new HexbotRpcClient('ws://localhost:8000/api/ws', {
       heartbeatIntervalMs: 0,
-      socketFactory: () => socket as WebSocket
+      socketFactory: () => socket as unknown as WebSocket
     })
 
     await rpc.connect()

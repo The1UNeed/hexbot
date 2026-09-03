@@ -1,9 +1,12 @@
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { BrowserWindow, app } from 'electron'
 
 import { resolveWebDevUrl } from './dev-url'
 import { checkForUpdates } from './updater'
+
+const currentDirectory = dirname(fileURLToPath(import.meta.url))
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -14,7 +17,7 @@ function createWindow(): BrowserWindow {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      preload: join(__dirname, '../preload/index.js')
+      preload: join(currentDirectory, '../preload/index.js')
     },
     width: 1200
   })
@@ -22,7 +25,7 @@ function createWindow(): BrowserWindow {
   window.once('ready-to-show', () => window.show())
 
   if (app.isPackaged) {
-    void window.loadFile(join(__dirname, '../renderer/index.html'))
+    void window.loadFile(join(currentDirectory, '../renderer/index.html'))
   } else {
     void window.loadURL(resolveWebDevUrl())
   }
