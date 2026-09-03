@@ -62,8 +62,11 @@ const hexbot = Object.freeze({
       listen<unknown>('hexbot:updater:status', value => {
         if (validUpdateStatus(value)) callback(value)
       }),
-    install: () => ipcRenderer.invoke('hexbot:updater:install')
+    install: () => ipcRenderer.invoke('hexbot:updater:install'),
+    setChannel: (channel: 'stable' | 'beta') =>
+      ipcRenderer.invoke('hexbot:updater:set-channel', channel)
   }),
+  setCrashReports: (enabled: boolean) => ipcRenderer.invoke('hexbot:crash-reports:set', enabled),
   service: Object.freeze({
     install: () => ipcRenderer.invoke('hexbot:service:install'),
     uninstall: () => ipcRenderer.invoke('hexbot:service:uninstall'),

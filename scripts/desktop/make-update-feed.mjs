@@ -14,6 +14,7 @@ import { cp, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { feedMetadataNames, writeFeedMetadata } from './update-feed-utils.mjs'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const input = process.argv[2]
@@ -71,7 +72,8 @@ for (const arch of ['arm64', 'x64']) {
   const destination = join(feedRoot, 'mac', arch)
   await mkdir(destination, { recursive: true })
   for (const e of entries) await cp(join(outputDirectory, e.url), join(destination, e.url))
-  await writeFile(join(destination, 'latest-mac.yml'), manifest(entries, entries[0]))
+  const contents = manifest(entries, entries[0])
+  await writeFeedMetadata(destination, version, 'mac', contents)
   console.log(`Prepared mac/${arch}`)
   prepared++
 }
@@ -93,7 +95,8 @@ if (linuxManifest) {
       throw new Error(`latest-linux.yml references missing artifact: ${artifact}`)
     await cp(source, join(destination, basename(artifact)))
   }
-  await cp(linuxYml, join(destination, 'latest-linux.yml'))
+  for (const name of feedMetadataNames(version, 'linux'))
+    await cp(linuxYml, join(destination, name))
   console.log('Prepared linux/x64')
   prepared++
 } else {

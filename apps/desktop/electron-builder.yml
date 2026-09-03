@@ -6,7 +6,7 @@ directories:
 files:
   - out/**
   - resources/**
-  - "!resources/hexbot-src/**"
+  - '!resources/hexbot-src/**'
   - package.json
 extraResources:
   - from: resources/hexbot-src
@@ -41,6 +41,18 @@ linux:
         - x64
   category: Utility
   executableName: hexbot
+  artifactName: Hexbot-${version}-linux-${arch}.${ext}
+deb:
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libasound2
+  desktop:
+    entry:
+      Categories: Utility
+      StartupWMClass: Hexbot
 publish:
   provider: generic
   url: https://hexbot.app/updates/${os}/${arch}

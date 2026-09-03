@@ -1,0 +1,14 @@
+services:
+  hexbot:
+    build:
+      context: context
+      dockerfile: ../Dockerfile
+    image: hexbot:local
+    restart: unless-stopped
+    ports:
+      - "9119:9119"
+    volumes:
+      - hexbot-data:/data
+
+volumes:
+  hexbot-data:

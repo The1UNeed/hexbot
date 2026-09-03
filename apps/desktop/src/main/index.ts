@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { BrowserWindow, Menu, app, dialog, ipcMain, shell, type Rectangle } from 'electron'
@@ -14,15 +14,17 @@ import { notify } from './notify'
 import { pair, pairWithGrant, type GrantPairOptions, type PairOptions } from './pair'
 import { installService, serviceStatus, uninstallService } from './service'
 import { createTray } from './tray'
-import { checkForUpdates, installUpdate, updaterEvents } from './updater'
+import { setCrashReports, startCrashReports } from './crash-reports'
+import { readDesktopState, updateDesktopState } from './desktop-state'
+import { checkForUpdates, installUpdate, setUpdateChannel, updaterEvents } from './updater'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
 const rendererDirectory = join(currentDirectory, '../renderer')
 // Keep Chromium's profile (localStorage, caches) inside the Hexbot home so an
 // install is self-contained and tests with a temporary home start clean.
 app.setPath('userData', join(hexbotHome(), 'desktop-data'))
+await startCrashReports()
 registerAppScheme()
-const stateFile = (): string => join(hexbotHome(), 'desktop-state.json')
 let mainWindow: BrowserWindow | null = null
 let pendingLink = app.isPackaged ? process.argv.find(arg => parseDeepLink(arg) !== null) : undefined
 let daemon: DaemonManager
@@ -63,7 +65,7 @@ function validateGrantPair(value: unknown): GrantPairOptions {
 }
 async function loadBounds(): Promise<Partial<Rectangle>> {
   try {
-    const value = JSON.parse(await readFile(stateFile(), 'utf8')) as Partial<Rectangle>
+    const value = await readDesktopState()
     return value.width && value.height ? value : {}
   } catch {
     return {}
@@ -71,8 +73,7 @@ async function loadBounds(): Promise<Partial<Rectangle>> {
 }
 async function saveBounds(window: BrowserWindow): Promise<void> {
   if (window.isDestroyed() || window.isMaximized() || window.isFullScreen()) return
-  await mkdir(hexbotHome(), { recursive: true })
-  await writeFile(stateFile(), JSON.stringify(window.getBounds()))
+  await updateDesktopState(window.getBounds())
 }
 async function createWindow(): Promise<BrowserWindow> {
   if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
@@ -217,6 +218,14 @@ function registerIpc(): void {
   )
   ipcMain.handle('hexbot:updater:check', () => checkForUpdates())
   ipcMain.handle('hexbot:updater:install', () => installUpdate())
+  ipcMain.handle('hexbot:updater:set-channel', (_event, channel: unknown) => {
+    if (channel !== 'stable' && channel !== 'beta') throw new TypeError('Invalid update channel')
+    return setUpdateChannel(channel)
+  })
+  ipcMain.handle('hexbot:crash-reports:set', (_event, enabled: unknown) => {
+    if (typeof enabled !== 'boolean') throw new TypeError('Invalid crash report preference')
+    return setCrashReports(enabled)
+  })
   ipcMain.handle('hexbot:service:install', () => installService())
   ipcMain.handle('hexbot:service:uninstall', () => uninstallService())
   ipcMain.handle('hexbot:service:status', () => serviceStatus())

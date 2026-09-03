@@ -60,10 +60,12 @@ export interface HexbotBridge {
     install(): Promise<ServiceStatus>
     status(): Promise<ServiceStatus>
   }
+  setCrashReports(enabled: boolean): Promise<void>
   updater: {
     check(): Promise<UpdateStatus>
     install(): Promise<void>
     onStatus(callback: (status: UpdateStatus) => void): () => void
+    setChannel(channel: 'stable' | 'beta'): Promise<void>
   }
   version: string
 }

@@ -12,6 +12,15 @@ The script checks every file named by the YAML metadata and writes `dist/updates
 
 Release signing uses electron-builder's standard environment variables. Set `CSC_LINK` to the Developer ID certificate and `CSC_KEY_PASSWORD` to its password. macOS notarization runs only when `APPLE_API_KEY`, `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER` are all set. Local unsigned builds disable certificate auto-discovery when neither `CSC_LINK` nor `CSC_NAME` is present.
 
+After collecting both macOS DMGs, update the Homebrew cask's version and SHA-256 values:
+
+```sh
+node scripts/desktop/update-cask.mjs path/to/builder-output
+```
+
+The command expects `Hexbot-<version>-mac-arm64.dmg` and `Hexbot-<version>-mac-x64.dmg`. It updates `packaging/homebrew/hexbot.rb` in place. Review the diff before publishing the cask.
+
+Crash reports remain off unless the user opts in and the build sets `HEXBOT_CRASH_URL`. Pass the URL when building, for example `HEXBOT_CRASH_URL=https://crashes.example.com/minidump npm run dist:mac -w apps/desktop`. The endpoint must accept Electron Crashpad multipart minidump uploads. An empty URL leaves uploads disabled even when the saved preference is true.
 
 ## Notes added after the first build
 
