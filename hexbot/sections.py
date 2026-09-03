@@ -143,6 +143,13 @@ def create_section(bot: str, title=None) -> dict:
         # Without the durable key the section could never be resumed or
         # deleted, so refuse rather than record an id Hermes does not know.
         raise HexbotError(5201, "session.create returned no stored_session_id")
+    if live:
+        # Hermes only persists a session once it has messages; save the empty
+        # session now so the section can be reopened after a reconnect.
+        try:
+            gateway.call("session.save", {"session_id": live})
+        except GatewayError:
+            logger.debug("session.save failed for new section %s", stored, exc_info=True)
     now = time.time()
     with db.transaction() as conn:
         conn.execute(
