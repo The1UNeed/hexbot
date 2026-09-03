@@ -85,14 +85,17 @@ function ConnectPage() {
 
   return (
     <main className="grid min-h-screen place-items-center bg-background p-6 text-foreground">
-      <form className="w-full max-w-md space-y-5" onSubmit={submit}>
+      <form
+        className="w-full max-w-[520px] space-y-5 rounded-panel border border-border bg-surface p-6"
+        onSubmit={submit}
+      >
         <header>
           <h1 className="text-[length:var(--text-title)] font-semibold">Connect to Hexbot</h1>
           <p className="mt-1 text-secondary text-muted">
             Enter the address and one-time pairing code shown by the daemon.
           </p>
         </header>
-        <label className="block space-y-1.5">
+        <label className="block space-y-2">
           <span>Daemon address</span>
           <Input
             data-testid="connect-address-input"
@@ -104,7 +107,7 @@ function ConnectPage() {
             value={address}
           />
         </label>
-        <label className="block space-y-1.5">
+        <label className="block space-y-2">
           <span>Pairing code</span>
           <Input
             data-testid="connect-code-input"
@@ -112,17 +115,12 @@ function ConnectPage() {
             value={code}
           />
         </label>
-        <label className="block space-y-1.5">
+        <label className="block space-y-2">
           <span>Device name</span>
           <Input onChange={e => setDeviceName(e.target.value)} value={deviceName} />
         </label>
-        {daemonName ? <p className="text-success">Found {daemonName}</p> : null}
-        {error ? (
-          <p className="text-danger" role="alert">
-            {error}
-          </p>
-        ) : null}
-        <div className="flex gap-2">
+        {daemonName ? <p className="text-secondary text-success">Found {daemonName}</p> : null}
+        <div className="flex justify-end gap-2">
           <Button busy={busy} onClick={() => void probe()} type="button">
             Probe
           </Button>
@@ -136,6 +134,11 @@ function ConnectPage() {
             Connect
           </Button>
         </div>
+        {error ? (
+          <p className="text-secondary text-danger" role="alert">
+            {error}
+          </p>
+        ) : null}
       </form>
     </main>
   )

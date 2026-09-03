@@ -58,14 +58,6 @@ let active: HexbotRpcClient | null = null
  * The connection supervisor publishes the live client here; `lib/api.ts` and
  * the stores read it so they never need a React context or a prop drill.
  */
-export function setActiveRpc(client: HexbotRpcClient | null): void {
-  active = client
-}
-
-export function getActiveRpc(): HexbotRpcClient | null {
-  return active
-}
-
 export class NotConnectedError extends Error {
   constructor(method: string) {
     super(`not connected to a Hexbot daemon (while calling ${method})`)
@@ -73,11 +65,53 @@ export class NotConnectedError extends Error {
   }
 }
 
+const waiters: Array<(client: HexbotRpcClient) => void> = []
+
+export function setActiveRpc(client: HexbotRpcClient | null): void {
+  active = client
+
+  if (client) {
+    for (const resolve of waiters.splice(0)) {resolve(client)}
+  }
+}
+
+/** How long a call waits for a connection before failing. */
+export const CONNECT_WAIT_MS = 15_000
+
+function waitForActive(timeoutMs: number): Promise<HexbotRpcClient> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const index = waiters.indexOf(onReady)
+
+      if (index >= 0) {waiters.splice(index, 1)}
+
+      reject(new NotConnectedError('(timed out waiting for a connection)'))
+    }, timeoutMs)
+
+    function onReady(client: HexbotRpcClient): void {
+      clearTimeout(timer)
+      resolve(client)
+    }
+
+    waiters.push(onReady)
+  })
+}
+
+export function getActiveRpc(): HexbotRpcClient | null {
+  return active
+}
+
 /** Call a method on the active connection. Rejects when there is none. */
-export function rpcCall<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-  if (!active) {
-    return Promise.reject(new NotConnectedError(method))
+export async function rpcCall<T>(
+  method: string,
+  params: Record<string, unknown> = {},
+  waitMs = CONNECT_WAIT_MS
+): Promise<T> {
+  const client = active ?? (await waitForActive(waitMs).catch(() => null))
+
+  if (!client) {
+    throw new NotConnectedError(method)
   }
 
-  return active.call<T>(method, params)
+  return client.call<T>(method, params)
 }

@@ -126,6 +126,11 @@ async function bearerToken(target: ConnectionTarget, deps: ConnectionDeps): Prom
   }
 
   const bridge = (deps.bridge ?? getBridge)()
+
+  if (!bridge && typeof window !== 'undefined' && targetOrigin(target) === window.location.origin) {
+    return ''
+  }
+
   const token = await bridge?.daemon.localToken()
 
   if (!token) {
@@ -141,7 +146,9 @@ async function mintTicket(origin: string, bearer: string, deps: ConnectionDeps):
 
   try {
     response = await doFetch(`${origin}/api/auth/ws-ticket`, {
-      headers: { Authorization: `Bearer ${bearer}` },
+      ...(bearer
+        ? { headers: { Authorization: `Bearer ${bearer}` } }
+        : { credentials: 'include' as const }),
       method: 'POST'
     })
   } catch (error) {

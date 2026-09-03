@@ -5,7 +5,7 @@ const response = (body: string, init: ResponseInit = {}) =>
 
 describe('connection gate', () => {
   it('uses the page token when the gate is off', async () => {
-    const fetch = vi.fn(async () =>
+    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       response(
         '<script>window.__HERMES_AUTH_REQUIRED__ = false; window.__HERMES_SESSION_TOKEN__ = "session"</script>'
       )
@@ -35,6 +35,32 @@ describe('connection gate', () => {
         { fetch }
       )
     ).toContain('ticket=short')
+    expect(fetch).toHaveBeenLastCalledWith(
+      'http://box:9119/api/auth/ws-ticket',
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer device' }
+      })
+    )
+  })
+  it('mints a same-origin browser ticket with cookies and no bearer', async () => {
+    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      response('{"ticket":"cookie-ticket"}', {
+        headers: { 'Content-Type': 'application/json' }
+      })
+    )
+
+    const url = await resolveWsUrl(
+      { kind: 'local' },
+      { authRequired: true, reachable: true },
+      { bridge: () => null, fetch }
+    )
+
+    expect(url).toContain('ticket=cookie-ticket')
+    expect(fetch).toHaveBeenCalledWith(
+      `${window.location.origin}/api/auth/ws-ticket`,
+      expect.objectContaining({ credentials: 'include' })
+    )
+    expect(fetch.mock.calls[0]?.[1]).not.toHaveProperty('headers')
   })
   it('reports a revoked device', async () => {
     const fetch = vi.fn(async () => response('', { status: 401 }))

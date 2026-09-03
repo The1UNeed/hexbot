@@ -56,15 +56,29 @@ export function readStoredTarget(): ConnectionTarget | null {
     const raw = localStorage.getItem(TARGET_KEY)
 
     if (!raw) {
-      return null
+      return resolveOriginTarget()
     }
 
     const parsed: unknown = JSON.parse(raw)
 
     return isTarget(parsed) ? parsed : null
   } catch {
-    return null
+    return resolveOriginTarget()
   }
+}
+
+/** Adopt a daemon-served web bundle without persisting its origin-bound target. */
+function resolveOriginTarget(): ConnectionTarget | null {
+  if (
+    typeof window !== 'undefined' &&
+    !window.hexbot &&
+    window.location.protocol.startsWith('http') &&
+    typeof window.__HERMES_AUTH_REQUIRED__ !== 'undefined'
+  ) {
+    return { kind: 'local' }
+  }
+
+  return null
 }
 
 export function writeStoredTarget(target: ConnectionTarget | null): void {
