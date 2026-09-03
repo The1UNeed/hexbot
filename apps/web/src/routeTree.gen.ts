@@ -11,8 +11,10 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as ConnectRouteImport } from './routes/connect'
+import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SettingsTabRouteImport } from './routes/settings.$tab'
+import { Route as RRoomRouteImport } from './routes/r.$room'
 import { Route as BBotSSectionRouteImport } from './routes/b.$bot.s.$section'
 
 const OnboardingRoute = OnboardingRouteImport.update({
@@ -25,6 +27,11 @@ const ConnectRoute = ConnectRouteImport.update({
   path: '/connect',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ActivityRoute = ActivityRouteImport.update({
+  id: '/activity',
+  path: '/activity',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -35,6 +42,11 @@ const SettingsTabRoute = SettingsTabRouteImport.update({
   path: '/settings/$tab',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RRoomRoute = RRoomRouteImport.update({
+  id: '/r/$room',
+  path: '/r/$room',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const BBotSSectionRoute = BBotSSectionRouteImport.update({
   id: '/b/$bot/s/$section',
   path: '/b/$bot/s/$section',
@@ -43,45 +55,68 @@ const BBotSSectionRoute = BBotSSectionRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/activity': typeof ActivityRoute
   '/connect': typeof ConnectRoute
   '/onboarding': typeof OnboardingRoute
+  '/r/$room': typeof RRoomRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/b/$bot/s/$section': typeof BBotSSectionRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/activity': typeof ActivityRoute
   '/connect': typeof ConnectRoute
   '/onboarding': typeof OnboardingRoute
+  '/r/$room': typeof RRoomRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/b/$bot/s/$section': typeof BBotSSectionRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/activity': typeof ActivityRoute
   '/connect': typeof ConnectRoute
   '/onboarding': typeof OnboardingRoute
+  '/r/$room': typeof RRoomRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/b/$bot/s/$section': typeof BBotSSectionRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/connect' | '/onboarding' | '/settings/$tab' | '/b/$bot/s/$section'
+    | '/'
+    | '/activity'
+    | '/connect'
+    | '/onboarding'
+    | '/r/$room'
+    | '/settings/$tab'
+    | '/b/$bot/s/$section'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/connect' | '/onboarding' | '/settings/$tab' | '/b/$bot/s/$section'
+  to:
+    | '/'
+    | '/activity'
+    | '/connect'
+    | '/onboarding'
+    | '/r/$room'
+    | '/settings/$tab'
+    | '/b/$bot/s/$section'
   id:
     | '__root__'
     | '/'
+    | '/activity'
     | '/connect'
     | '/onboarding'
+    | '/r/$room'
     | '/settings/$tab'
     | '/b/$bot/s/$section'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ActivityRoute: typeof ActivityRoute
   ConnectRoute: typeof ConnectRoute
   OnboardingRoute: typeof OnboardingRoute
+  RRoomRoute: typeof RRoomRoute
   SettingsTabRoute: typeof SettingsTabRoute
   BBotSSectionRoute: typeof BBotSSectionRoute
 }
@@ -102,6 +137,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConnectRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/activity': {
+      id: '/activity'
+      path: '/activity'
+      fullPath: '/activity'
+      preLoaderRoute: typeof ActivityRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -116,6 +158,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsTabRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/r/$room': {
+      id: '/r/$room'
+      path: '/r/$room'
+      fullPath: '/r/$room'
+      preLoaderRoute: typeof RRoomRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/b/$bot/s/$section': {
       id: '/b/$bot/s/$section'
       path: '/b/$bot/s/$section'
@@ -128,8 +177,10 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ActivityRoute: ActivityRoute,
   ConnectRoute: ConnectRoute,
   OnboardingRoute: OnboardingRoute,
+  RRoomRoute: RRoomRoute,
   SettingsTabRoute: SettingsTabRoute,
   BBotSSectionRoute: BBotSSectionRoute,
 }

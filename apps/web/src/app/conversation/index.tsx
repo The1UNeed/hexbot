@@ -47,6 +47,8 @@ import { useSettings } from '../../stores/settings'
 import { transcriptActions, useTranscript } from '../../stores/transcripts'
 import { uiActions, useUi } from '../../stores/ui'
 
+import { RoomConversation } from './room'
+
 const avatarData = (bot?: Bot) =>
   bot?.avatar ? `data:${bot.avatar.mime};base64,${bot.avatar.data}` : null
 
@@ -477,7 +479,7 @@ function Composer({
   )
 }
 
-export function ConversationColumn() {
+function BotConversation() {
   const params = useParams({ strict: false }) as { bot?: string; section?: string }
   const navigate = useNavigate()
   const bot = useBot(params.bot ?? null)
@@ -816,4 +818,10 @@ export function ConversationColumn() {
       </Dialog>
     </div>
   )
+}
+
+export function ConversationColumn() {
+  const params = useParams({ strict: false }) as { room?: string }
+
+  return params.room ? <RoomConversation /> : <BotConversation />
 }

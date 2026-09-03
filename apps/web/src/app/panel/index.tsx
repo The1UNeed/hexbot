@@ -12,7 +12,7 @@ import { useBots } from '../../stores/bots'
 import { useSections, useSectionsForBot } from '../../stores/sections'
 import { useUi } from '../../stores/ui'
 
-const TABS = ['persona', 'model', 'memory', 'skills', 'sections'] as const
+const TABS = ['persona', 'model', 'memory', 'tools', 'skills', 'sections'] as const
 type PanelTab = (typeof TABS)[number]
 const MEMORY_SECTIONS: CoreMemorySection[] = ['user', 'household', 'workspace', 'rules']
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024
@@ -151,7 +151,8 @@ export function ProfilePanel(): React.JSX.Element {
         {tab === 'persona' && <PersonaTab bot={bot} onSave={save} />}
         {tab === 'model' && <ModelTab bot={bot} onSave={save} />}
         {tab === 'memory' && <MemoryTab botName={bot.name} />}
-        {tab === 'skills' && <SkillsTab bot={bot} />}
+        {tab === 'tools' && <ToolsTab bot={bot} onSave={save} />}
+        {tab === 'skills' && <SkillsTab bot={bot} onSave={save} />}
         {tab === 'sections' && <SectionsTab botName={bot.name} />}
       </div>
       <div className="mt-8 border-t border-danger/30 pt-4">
@@ -431,22 +432,100 @@ function MemoryTab({ botName }: { botName: string }) {
   )
 }
 
-function SkillsTab({ bot }: { bot: Bot }) {
-  const skills =
-    'skills' in bot && Array.isArray(bot.skills)
-      ? bot.skills.filter((item): item is string => typeof item === 'string')
-      : []
+const TOOL_OPTIONS = [
+  ['terminal', 'Terminal'],
+  ['files', 'Files'],
+  ['browser', 'Browser'],
+  ['web_search', 'Web search'],
+  ['computer_use', 'Computer use']
+] as const
 
-  return skills.length ? (
-    <ul className="divide-y divide-border">
-      {skills.map(skill => (
-        <li className="py-3" key={skill}>
-          {skill}
-        </li>
+function ToolsTab({
+  bot,
+  onSave
+}: {
+  bot: Bot
+  onSave: (patch: { tools: string[] }) => Promise<void> | void
+}) {
+  const tools = Array.isArray(bot.tools) ? bot.tools : []
+
+  return (
+    <fieldset className="divide-y divide-border">
+      <legend className="sr-only">Bot tools</legend>
+      {TOOL_OPTIONS.map(([id, label]) => (
+        <label className="flex items-center justify-between py-3" key={id}>
+          <span>{label}</span>
+          <input
+            aria-label={label}
+            checked={tools.includes(id)}
+            className="size-4 accent-accent"
+            onChange={event =>
+              void onSave({
+                tools: event.target.checked ? [...tools, id] : tools.filter(tool => tool !== id)
+              })
+            }
+            type="checkbox"
+          />
+        </label>
       ))}
-    </ul>
-  ) : (
-    <p className="text-muted">No skill metadata is available for this profile.</p>
+    </fieldset>
+  )
+}
+
+function SkillsTab({
+  bot,
+  onSave
+}: {
+  bot: Bot
+  onSave: (patch: { skills: string[] }) => Promise<void> | void
+}) {
+  const skills = Array.isArray(bot.skills) ? bot.skills : []
+  const [draft, setDraft] = useState('')
+
+  return (
+    <div>
+      <form
+        className="flex gap-2"
+        onSubmit={event => {
+          event.preventDefault()
+          const skill = draft.trim()
+
+          if (skill && !skills.includes(skill)) {
+            void onSave({ skills: [...skills, skill] })
+            setDraft('')
+          }
+        }}
+      >
+        <Input
+          aria-label="Skill name"
+          onChange={event => setDraft(event.target.value)}
+          placeholder="Attach a skill"
+          value={draft}
+        />
+        <Button disabled={!draft.trim()} type="submit">
+          Attach
+        </Button>
+      </form>
+      {skills.length ? (
+        <ul className="mt-3 divide-y divide-border">
+          {skills.map(skill => (
+            <li className="flex items-center justify-between py-3" key={skill}>
+              <span>{skill}</span>
+              <Button
+                aria-label={`Detach ${skill}`}
+                onClick={() => void onSave({ skills: skills.filter(item => item !== skill) })}
+                size="sm"
+                variant="ghost"
+              >
+                Detach
+              </Button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-4 text-muted">No skills attached.</p>
+      )}
+    </div>
   )
 }
 

@@ -71,7 +71,9 @@ export function setActiveRpc(client: HexbotRpcClient | null): void {
   active = client
 
   if (client) {
-    for (const resolve of waiters.splice(0)) {resolve(client)}
+    for (const resolve of waiters.splice(0)) {
+      resolve(client)
+    }
   }
 }
 
@@ -83,7 +85,9 @@ function waitForActive(timeoutMs: number): Promise<HexbotRpcClient> {
     const timer = setTimeout(() => {
       const index = waiters.indexOf(onReady)
 
-      if (index >= 0) {waiters.splice(index, 1)}
+      if (index >= 0) {
+        waiters.splice(index, 1)
+      }
 
       reject(new NotConnectedError('(timed out waiting for a connection)'))
     }, timeoutMs)

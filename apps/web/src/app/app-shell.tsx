@@ -1,3 +1,4 @@
+import { useParams } from '@tanstack/react-router'
 import { useState } from 'react'
 
 import { useUi } from '../stores/ui'
@@ -9,6 +10,7 @@ export function AppShell() {
   const sidebarWidth = useUi(state => state.sidebarWidth)
   const setSidebarWidth = useUi(state => state.setSidebarWidth)
   const panelOpen = useUi(state => state.rightPanelOpen)
+  const roomMode = Boolean((useParams({ strict: false }) as { room?: string }).room)
 
   const resize = (side: 'left' | 'right', start: number) => (event: React.PointerEvent) => {
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -37,7 +39,7 @@ export function AppShell() {
     <main
       className="grid min-h-screen bg-background text-foreground"
       style={{
-        gridTemplateColumns: `${sidebarWidth}px 4px minmax(480px,1fr)${panelOpen ? ` 4px ${panelWidth}px` : ''}`
+        gridTemplateColumns: `${sidebarWidth}px 4px minmax(480px,1fr)${panelOpen && !roomMode ? ` 4px ${panelWidth}px` : ''}`
       }}
     >
       <aside className="min-w-0 overflow-auto border-r border-border">
@@ -52,7 +54,7 @@ export function AppShell() {
       <section className="min-w-0 overflow-auto">
         <ConversationColumn />
       </section>
-      {panelOpen ? (
+      {panelOpen && !roomMode ? (
         <>
           <div
             aria-label="Resize profile"

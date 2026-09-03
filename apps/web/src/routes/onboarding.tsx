@@ -6,6 +6,7 @@ import { Input } from '../components/ui/input'
 import { Select } from '../components/ui/select'
 import { Textarea } from '../components/ui/textarea'
 import { botsCreate, modelsList, providersList, providersSetKey } from '../lib/api'
+import { BOT_TEMPLATES } from '../lib/bot-templates'
 import { type DaemonProgress, getBridge, isElectron } from '../lib/bridge'
 import { connectTo } from '../lib/connection'
 import type { ModelOption, Provider } from '../lib/types'
@@ -102,6 +103,8 @@ function OnboardingPage() {
   const [displayName, setDisplayName] = useState('')
   const [nameEdited, setNameEdited] = useState(false)
   const [persona, setPersona] = useState('')
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -228,11 +231,13 @@ function OnboardingPage() {
 
     try {
       const result = await botsCreate({
+        description: description.trim(),
         display_name: displayName.trim(),
         model,
         name,
         persona: persona.trim(),
-        provider
+        provider,
+        title: title.trim()
       })
 
       const last = { bot: result.bot.name, section: result.section.id }
@@ -355,6 +360,23 @@ function OnboardingPage() {
         {step === 'bot' ? (
           <div className="space-y-4">
             <label className="block space-y-2">
+              <span>Role template</span>
+              <Select
+                label="Role template"
+                onValueChange={id => {
+                  const template = BOT_TEMPLATES.find(item => item.id === id)
+
+                  if (template) {
+                    setTitle(template.title)
+                    setDescription(template.description)
+                    setPersona(template.persona)
+                  }
+                }}
+                options={BOT_TEMPLATES.map(item => ({ label: item.title, value: item.id }))}
+                placeholder="Choose a role"
+              />
+            </label>
+            <label className="block space-y-2">
               <span>Display name</span>
               <Input
                 data-testid="onboarding-bot-display-input"
@@ -366,6 +388,22 @@ function OnboardingPage() {
                   }
                 }}
                 value={displayName}
+              />
+            </label>
+            <label className="block space-y-2">
+              <span>Title</span>
+              <Input
+                aria-label="Bot title"
+                onChange={event => setTitle(event.target.value)}
+                value={title}
+              />
+            </label>
+            <label className="block space-y-2">
+              <span>Description</span>
+              <Input
+                aria-label="Bot description"
+                onChange={event => setDescription(event.target.value)}
+                value={description}
               />
             </label>
             <label className="block space-y-2">

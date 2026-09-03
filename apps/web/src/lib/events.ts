@@ -20,6 +20,7 @@
 import type { GatewayEvent } from '@hermes/shared'
 
 import { useBots } from '../stores/bots'
+import { useRooms } from '../stores/rooms'
 import { useSections } from '../stores/sections'
 import { useSettings } from '../stores/settings'
 import type {
@@ -30,12 +31,13 @@ import type {
 import { useTranscripts } from '../stores/transcripts'
 
 import type { HexbotRpcClient } from './rpc'
-import type { SessionInfo, Usage } from './types'
+import type { RoomEvent, RoomTurn, SessionInfo, Usage } from './types'
 
 export interface EventRouterDeps {
   refreshBots?: () => void
   refreshNetwork?: () => void
   refreshSections?: () => void
+  refreshRooms?: () => void
 }
 
 const defaultDeps: Required<EventRouterDeps> = {
@@ -47,7 +49,8 @@ const defaultDeps: Required<EventRouterDeps> = {
   },
   refreshSections: () => {
     void useSections.getState().refresh()
-  }
+  },
+  refreshRooms: () => void useRooms.getState().refresh()
 }
 
 function payloadOf(event: GatewayEvent): Record<string, unknown> {
@@ -64,6 +67,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
   const payload = payloadOf(event)
   const sessionId = event.session_id ?? ''
   const transcripts = useTranscripts.getState()
+  const rooms = useRooms.getState()
 
   switch (event.type) {
     case 'hexbot.bots.changed':
@@ -72,6 +76,29 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       return
 
     case 'hexbot.memory.core.changed':
+      return
+
+    case 'hexbot.rooms.changed':
+      if (typeof payload.id === 'string') {
+        void rooms.refreshOne(payload.id)
+      } else {
+        effects.refreshRooms()
+      }
+
+      return
+
+    case 'hexbot.rooms.event':
+      if (typeof payload.room_id === 'string' && payload.event) {
+        rooms.handleEvent(payload.room_id, payload.event as RoomEvent)
+      }
+
+      return
+
+    case 'hexbot.rooms.turn':
+      if (typeof payload.room_id === 'string' && typeof payload.bot === 'string') {
+        rooms.handleTurn(payload as unknown as RoomTurn)
+      }
+
       return
 
     case 'hexbot.network.changed':

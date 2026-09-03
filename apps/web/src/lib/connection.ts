@@ -17,6 +17,7 @@ import { buildHermesWebSocketUrl } from '@hermes/shared'
 
 import { botsActions } from '../stores/bots'
 import { connectionActions } from '../stores/connection'
+import { useRooms } from '../stores/rooms'
 import { sectionsActions } from '../stores/sections'
 import { settingsActions } from '../stores/settings'
 import { uiActions } from '../stores/ui'
@@ -486,7 +487,8 @@ export class ConnectionSupervisor {
       const [info] = await Promise.all([
         this.client?.call<DaemonInfo>('hexbot.info') ?? Promise.resolve(null),
         settingsActions().refresh(),
-        botsActions().refresh()
+        botsActions().refresh(),
+        useRooms.getState().refresh()
       ])
 
       store.setDaemon(info)

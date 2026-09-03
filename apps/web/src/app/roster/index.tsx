@@ -1,5 +1,5 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
-import { Archive, ChevronDown, ChevronRight, Plus, Search, Settings } from 'lucide-react'
+import { Activity, Archive, ChevronDown, ChevronRight, Plus, Search, Settings } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar } from '../../components/ui/avatar'
@@ -8,16 +8,21 @@ import { Chip } from '../../components/ui/chip'
 import { Dialog } from '../../components/ui/dialog'
 import { Input } from '../../components/ui/input'
 import { Menu } from '../../components/ui/menu'
+import { Select } from '../../components/ui/select'
+import { Textarea } from '../../components/ui/textarea'
+import { BOT_TEMPLATES } from '../../lib/bot-templates'
 import { toMillis } from '../../lib/time'
-import type { Bot, Section } from '../../lib/types'
+import type { Bot, Room, Section } from '../../lib/types'
 import { useBotList, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
+import { roomUnread, useRoomList, useRooms } from '../../stores/rooms'
 import { sectionsActions, useSections } from '../../stores/sections'
+import { useSettings } from '../../stores/settings'
 
 const DAY = 86_400_000
 
-const avatarData = (bot: Bot) =>
-  bot.avatar ? `data:${bot.avatar.mime};base64,${bot.avatar.data}` : null
+const avatarData = (bot?: Bot) =>
+  bot?.avatar ? `data:${bot.avatar.mime};base64,${bot.avatar.data}` : null
 
 const sectionTime = (section: Section) => toMillis(section.updated_at ?? section.created_at)
 
@@ -50,7 +55,74 @@ export function relativeTime(raw: number | null): string {
 }
 
 export const orderedBots = (bots: Bot[]) =>
-  [...bots].sort((a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0))
+  [...bots].sort((a, b) => toMillis(b.last_activity_at) - toMillis(a.last_activity_at))
+
+export type RosterItem = { item: Bot | Room; kind: 'bot' | 'room' }
+
+export const orderedRosterItems = (bots: Bot[], rooms: Room[]): RosterItem[] =>
+  [
+    ...bots.map(item => ({ item, kind: 'bot' as const })),
+    ...rooms.filter(room => !room.archived_at).map(item => ({ item, kind: 'room' as const }))
+  ].sort((a, b) => toMillis(b.item.last_activity_at) - toMillis(a.item.last_activity_at))
+
+function RoomRow({
+  focused,
+  onOpen,
+  query,
+  room
+}: {
+  focused: string | null
+  onOpen: (id: string) => void
+  query: string
+  room: Room
+}) {
+  const bots = useBots(state => state.byName)
+  const events = useRooms(state => state.eventsByRoom[room.id] ?? [])
+
+  if (query && !room.name.toLowerCase().includes(query)) {
+    return null
+  }
+
+  const active = room.members.filter(member => member.member_kind === 'bot' && !member.left_at)
+  const latest = events.at(-1)
+
+  return (
+    <button
+      className={`grid w-full grid-cols-[auto_1fr_auto] gap-x-2 rounded-control px-2 py-2 text-left outline-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent ${focused === `room:${room.id}` ? 'bg-surface-2' : ''}`}
+      data-roster-id={`room:${room.id}`}
+      onClick={() => onOpen(room.id)}
+      type="button"
+    >
+      <span className="flex items-center -space-x-2">
+        {active.slice(0, 3).map(member => (
+          <Avatar
+            className="ring-2 ring-surface"
+            image={avatarData(bots[member.member_id])}
+            key={member.member_id}
+            name={bots[member.member_id]?.display_name ?? member.member_id}
+            size="sm"
+          />
+        ))}
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate font-medium">{room.name}</span>
+        <span className="block truncate text-[length:var(--text-secondary)] text-muted">
+          {typeof latest?.payload.text === 'string'
+            ? latest.payload.text
+            : `${active.length} bot${active.length === 1 ? '' : 's'}`}
+        </span>
+      </span>
+      <span className="flex flex-col items-end gap-2 text-[length:var(--text-meta)] text-muted">
+        <span>{relativeTime(room.last_activity_at)}</span>
+        {latest?.kind === 'waiting.human' ? (
+          <span aria-label="Waiting on you" className="size-2 rounded-full bg-warning" />
+        ) : roomUnread(room, events) ? (
+          <span aria-label="Unread" className="size-1.5 rounded-full bg-accent" />
+        ) : null}
+      </span>
+    </button>
+  )
+}
 
 export function visibleRecentSections(bot: Bot, expanded: boolean, all: Section[]): Section[] {
   // Prefer the live sections store; the bot row's recent list can lag behind.
@@ -172,13 +244,24 @@ export function RosterColumn() {
   const params = useParams({ strict: false }) as { bot?: string; section?: string }
   const navigate = useNavigate()
   const bots = useBotList()
+  const rooms = useRoomList()
   const sectionMap = useSections(state => state.byId)
   const connection = useConnection()
   const [query, setQuery] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [archivedOpen, setArchivedOpen] = useState(false)
   const [botDialog, setBotDialog] = useState(false)
-  const [newBot, setNewBot] = useState({ model: '', name: '', provider: '' })
+  const [roomDialog, setRoomDialog] = useState(false)
+
+  const [newBot, setNewBot] = useState({
+    description: '',
+    model: '',
+    name: '',
+    persona: '',
+    provider: '',
+    title: ''
+  })
+
   const [focused, setFocused] = useState<string | null>(null)
   const root = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -187,11 +270,17 @@ export function RosterColumn() {
     }
   }, [])
   useEffect(() => {
+    if (!useRooms.getState().order.length) {
+      void useRooms.getState().refresh()
+    }
+  }, [])
+  useEffect(() => {
     if (params.section) {
       localStorage.setItem(`hexbot.read.${params.section}`, String(Date.now()))
     }
   }, [params.section])
   const ordered = useMemo(() => orderedBots(bots), [bots])
+  const roster = useMemo(() => orderedRosterItems(bots, rooms), [bots, rooms])
   const archived = Object.values(sectionMap).filter(section => section.archived_at)
 
   const open = (bot: string, section: string) => {
@@ -201,6 +290,8 @@ export function RosterColumn() {
       .catch(() => undefined)
     void navigate({ to: '/b/$bot/s/$section', params: { bot, section } })
   }
+
+  const openRoom = (room: string) => void navigate({ to: '/r/$room', params: { room } })
 
   const createSection = async () => {
     const bot = params.bot ?? ordered[0]?.name
@@ -283,6 +374,12 @@ export function RosterColumn() {
                 disabled: !ordered.length,
                 label: 'New section',
                 onSelect: () => void createSection()
+              },
+              {
+                'data-testid': 'roster-new-room',
+                disabled: !ordered.length,
+                label: 'New room',
+                onSelect: () => setRoomDialog(true)
               }
             ]}
             trigger={
@@ -302,6 +399,14 @@ export function RosterColumn() {
             value={query}
           />
         </label>
+        <button
+          className="mt-2 flex w-full items-center gap-2 rounded-control px-2 py-1.5 text-[length:var(--text-secondary)] text-muted hover:bg-surface-2 hover:text-foreground"
+          onClick={() => void navigate({ to: '/activity' })}
+          type="button"
+        >
+          <Activity size={14} />
+          Activity
+        </button>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto p-1">
         {useBots.getState().loaded && ordered.length === 0 ? (
@@ -312,19 +417,31 @@ export function RosterColumn() {
             </Button>
           </div>
         ) : null}
-        {ordered.map(bot => (
-          <BotRows
-            active={params.section}
-            bot={bot}
-            expanded={expanded.has(bot.name)}
-            focused={focused}
-            key={bot.name}
-            onExpand={() => void expandBot(bot.name)}
-            onOpen={open}
-            query={query}
-            sections={Object.values(sectionMap).filter(section => section.bot === bot.name)}
-          />
-        ))}
+        {roster.map(entry =>
+          entry.kind === 'room' ? (
+            <RoomRow
+              focused={focused}
+              key={`room:${(entry.item as Room).id}`}
+              onOpen={openRoom}
+              query={query}
+              room={entry.item as Room}
+            />
+          ) : (
+            <BotRows
+              active={params.section}
+              bot={entry.item as Bot}
+              expanded={expanded.has((entry.item as Bot).name)}
+              focused={focused}
+              key={`bot:${(entry.item as Bot).name}`}
+              onExpand={() => void expandBot((entry.item as Bot).name)}
+              onOpen={open}
+              query={query}
+              sections={Object.values(sectionMap).filter(
+                section => section.bot === (entry.item as Bot).name
+              )}
+            />
+          )
+        )}
       </div>
       <div className="border-t border-border">
         <button
@@ -384,6 +501,41 @@ export function RosterColumn() {
             required
             value={newBot.name}
           />
+          <Select
+            label="Role template"
+            onValueChange={id => {
+              const template = BOT_TEMPLATES.find(item => item.id === id)
+
+              if (template) {
+                setNewBot(value => ({
+                  ...value,
+                  description: template.description,
+                  persona: template.persona,
+                  title: template.title
+                }))
+              }
+            }}
+            options={BOT_TEMPLATES.map(item => ({ label: item.title, value: item.id }))}
+            placeholder="Choose a role template"
+          />
+          <Input
+            aria-label="Title"
+            onChange={event => setNewBot(value => ({ ...value, title: event.target.value }))}
+            placeholder="Title"
+            value={newBot.title}
+          />
+          <Input
+            aria-label="Description"
+            onChange={event => setNewBot(value => ({ ...value, description: event.target.value }))}
+            placeholder="Description"
+            value={newBot.description}
+          />
+          <Textarea
+            aria-label="Persona"
+            onChange={event => setNewBot(value => ({ ...value, persona: event.target.value }))}
+            placeholder="Persona"
+            value={newBot.persona}
+          />
           <Input
             aria-label="Provider"
             onChange={event => setNewBot(value => ({ ...value, provider: event.target.value }))}
@@ -406,6 +558,159 @@ export function RosterColumn() {
           </div>
         </form>
       </Dialog>
+      <NewRoomDialog onClose={() => setRoomDialog(false)} onCreated={openRoom} open={roomDialog} />
     </div>
+  )
+}
+
+function NewRoomDialog({
+  onClose,
+  onCreated,
+  open
+}: {
+  onClose: () => void
+  onCreated: (id: string) => void
+  open: boolean
+}) {
+  const bots = useBotList()
+  const settings = useSettings(state => state.settings)
+  const [name, setName] = useState('')
+  const [query, setQuery] = useState('')
+  const [members, setMembers] = useState<string[]>([])
+  const [mainBot, setMainBot] = useState('')
+  const [approvalMode, setApprovalMode] = useState(settings?.approval_mode ?? 'manual')
+  const [turns, setTurns] = useState(String(settings?.room_bot_turns_per_human_turn ?? 8))
+  const [budget, setBudget] = useState(String(settings?.room_budget_tokens_per_human_turn ?? ''))
+  const [error, setError] = useState<string | null>(null)
+
+  return (
+    <Dialog onOpenChange={value => !value && onClose()} open={open} title="New room">
+      <form
+        className="grid gap-4 p-5"
+        onSubmit={event => {
+          event.preventDefault()
+          void useRooms
+            .getState()
+            .create({
+              approval_mode: approvalMode,
+              limits: {
+                bot_turns_per_human_turn: Number(turns),
+                budget_tokens_per_human_turn: budget ? Number(budget) : null
+              },
+              main_bot: mainBot || undefined,
+              members,
+              name: name.trim()
+            })
+            .then(room => {
+              onClose()
+              onCreated(room.id)
+            })
+            .catch(reason => setError(String(reason)))
+        }}
+      >
+        <Input
+          aria-label="Room name"
+          onChange={event => setName(event.target.value)}
+          placeholder="Room name"
+          required
+          value={name}
+        />
+        <Input
+          aria-label="Search bots"
+          onChange={event => setQuery(event.target.value)}
+          placeholder="Search bots"
+          value={query}
+        />
+        <fieldset className="max-h-44 overflow-auto border-y border-border">
+          <legend className="sr-only">Members</legend>
+          {bots
+            .filter(bot =>
+              `${bot.display_name} ${bot.name}`.toLowerCase().includes(query.toLowerCase())
+            )
+            .map(bot => (
+              <label className="flex items-center gap-3 py-2" key={bot.name}>
+                <input
+                  checked={members.includes(bot.name)}
+                  onChange={event =>
+                    setMembers(items =>
+                      event.target.checked
+                        ? [...items, bot.name]
+                        : items.filter(item => item !== bot.name)
+                    )
+                  }
+                  type="checkbox"
+                />
+                <Avatar image={avatarData(bot)} name={bot.display_name} size="sm" />
+                <span>{bot.display_name}</span>
+              </label>
+            ))}
+        </fieldset>
+        <label className="grid gap-1">
+          <span>
+            Main bot <span className="text-muted">(optional)</span>
+          </span>
+          <Select
+            label="Main bot"
+            onValueChange={value => setMainBot(value === '__none' ? '' : value)}
+            options={[
+              { label: 'No main bot', value: '__none' },
+              ...members.map(name => ({
+                label: useBots.getState().byName[name]?.display_name ?? name,
+                value: name
+              }))
+            ]}
+            placeholder="No main bot"
+            value={mainBot || '__none'}
+          />
+        </label>
+        <label className="grid gap-1">
+          <span>Approval mode</span>
+          <Select
+            label="Room approval mode"
+            onValueChange={value => setApprovalMode(value as typeof approvalMode)}
+            options={[
+              { label: 'Manual', value: 'manual' },
+              { label: 'Auto', value: 'smart' },
+              { label: 'Off', value: 'off' }
+            ]}
+            value={approvalMode}
+          />
+        </label>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="grid gap-1">
+            <span>Bot turns</span>
+            <Input
+              aria-label="Bot turns per human turn"
+              min="1"
+              onChange={event => setTurns(event.target.value)}
+              type="number"
+              value={turns}
+            />
+          </label>
+          <label className="grid gap-1">
+            <span>Token budget</span>
+            <Input
+              aria-label="Token budget per human turn"
+              min="1"
+              onChange={event => setBudget(event.target.value)}
+              placeholder="No limit"
+              type="number"
+              value={budget}
+            />
+          </label>
+        </div>
+        {error ? (
+          <p className="text-danger" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <div className="flex justify-end gap-2">
+          <Button onClick={onClose}>Cancel</Button>
+          <Button disabled={!name.trim() || !members.length} type="submit" variant="primary">
+            Create room
+          </Button>
+        </div>
+      </form>
+    </Dialog>
   )
 }

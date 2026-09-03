@@ -7,9 +7,11 @@
 
 import { rpcCall } from './rpc'
 import type {
+  ActivityPair,
   ApprovalChoice,
   Bot,
   BotCreateInput,
+  BotMessage,
   BotUpdatePatch,
   CoreMemory,
   CoreMemorySection,
@@ -20,6 +22,9 @@ import type {
   NetworkInfo,
   PairingCode,
   Provider,
+  Room,
+  RoomEvent,
+  RoomLimits,
   Section,
   Settings,
   Usage
@@ -87,6 +92,90 @@ export function botsUpdate(name: string, patch: BotUpdatePatch): Promise<{ bot: 
 
 export function botsDelete(name: string): Promise<{ deleted: boolean }> {
   return rpcCall<{ deleted: boolean }>('hexbot.bots.delete', { name })
+}
+
+// ---------------------------------------------------------------------------
+// Rooms and bot activity
+// ---------------------------------------------------------------------------
+
+export interface RoomCreateInput {
+  approval_mode?: string
+  limits?: RoomLimits
+  main_bot?: string
+  members: string[]
+  name: string
+}
+
+export function roomsList(includeArchived = false): Promise<{ rooms: Room[] }> {
+  return rpcCall<{ rooms: Room[] }>('hexbot.rooms.list', { include_archived: includeArchived })
+}
+
+export function roomsGet(id: string): Promise<{ room: Room }> {
+  return rpcCall<{ room: Room }>('hexbot.rooms.get', { id })
+}
+
+export function roomsCreate(input: RoomCreateInput): Promise<{ room: Room }> {
+  return rpcCall<{ room: Room }>('hexbot.rooms.create', { ...input })
+}
+
+export function roomsUpdate(
+  id: string,
+  patch: Partial<Pick<Room, 'approval_mode' | 'limits' | 'main_bot' | 'name'>>
+): Promise<{ room: Room }> {
+  return rpcCall<{ room: Room }>('hexbot.rooms.update', { id, ...patch })
+}
+
+export function roomsAddMember(id: string, bot: string): Promise<{ room: Room }> {
+  return rpcCall<{ room: Room }>('hexbot.rooms.add_member', { bot, id })
+}
+
+export function roomsRemoveMember(id: string, bot: string): Promise<{ room: Room }> {
+  return rpcCall<{ room: Room }>('hexbot.rooms.remove_member', { bot, id })
+}
+
+export function roomsSend(
+  id: string,
+  text: string,
+  attachments: unknown[] = []
+): Promise<{ event: RoomEvent }> {
+  return rpcCall<{ event: RoomEvent }>('hexbot.rooms.send', { attachments, id, text })
+}
+
+export function roomsLog(
+  id: string,
+  options: { after_seq?: number; limit?: number } = {}
+): Promise<{ events: RoomEvent[] }> {
+  return rpcCall<{ events: RoomEvent[] }>('hexbot.rooms.log', { id, ...options })
+}
+
+export function roomsStop(id: string): Promise<{ stopped: boolean }> {
+  return rpcCall<{ stopped: boolean }>('hexbot.rooms.stop', { id })
+}
+
+export function roomsArchive(id: string): Promise<{ room: Room }> {
+  return rpcCall<{ room: Room }>('hexbot.rooms.archive', { id })
+}
+
+export function roomsDelete(id: string): Promise<{ deleted: boolean }> {
+  return rpcCall<{ deleted: boolean }>('hexbot.rooms.delete', { id })
+}
+
+export function roomsMarkRead(id: string, seq: number): Promise<{ room: Room }> {
+  return rpcCall<{ room: Room }>('hexbot.rooms.mark_read', { id, seq })
+}
+
+export function activityPairs(): Promise<{ pairs: ActivityPair[] }> {
+  return rpcCall<{ pairs: ActivityPair[] }>('hexbot.activity.pairs')
+}
+
+export function activityList(
+  options: {
+    from?: string
+    limit?: number
+    to?: string
+  } = {}
+): Promise<{ messages: BotMessage[] }> {
+  return rpcCall<{ messages: BotMessage[] }>('hexbot.activity.list', { ...options })
 }
 
 // ---------------------------------------------------------------------------

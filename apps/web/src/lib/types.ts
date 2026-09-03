@@ -59,7 +59,9 @@ export interface Bot {
   provider: null | string
   sections_recent: Section[]
   sections_total: number
+  skills: string[]
   title: string
+  tools: string[]
   updated_at: null | number
 }
 
@@ -71,7 +73,9 @@ export interface BotCreateInput {
   name: string
   persona?: string
   provider: string
+  skills?: string[]
   title?: string
+  tools?: string[]
 }
 
 export type BotUpdatePatch = Partial<Omit<BotCreateInput, 'name'>> & { avatar?: null | string }
@@ -191,8 +195,87 @@ export interface Settings {
   auto_approver_model: null | string
   billing_notice_ack: boolean
   lan_enabled: boolean
+  bot_daily_token_budget?: null | number
+  room_bot_turns_per_human_turn?: number
+  room_budget_tokens_per_human_turn?: null | number
   service_installed: boolean
   workspace_dir: string
+}
+
+export interface RoomMember {
+  added_at: number
+  added_by: string
+  last_read_seq: number
+  left_at: null | number
+  member_id: string
+  member_kind: 'bot' | 'human'
+  room_id: string
+}
+
+export interface RoomLimits {
+  bot_daily_token_budget?: null | number
+  bot_turns_per_human_turn?: null | number
+  budget_tokens_per_human_turn?: null | number
+  [key: string]: unknown
+}
+
+export interface Room {
+  approval_mode: ApprovalMode | null
+  archived_at: null | number
+  created_at: number
+  id: string
+  last_activity_at: number
+  limits: RoomLimits
+  main_bot: null | string
+  members: RoomMember[]
+  name: string
+  owner_id: string
+  updated_at: number
+}
+
+export type RoomEventKind =
+  | 'limit.tripped'
+  | 'member.added'
+  | 'member.left'
+  | 'message.bot'
+  | 'message.user'
+  | 'note'
+  | 'turn.failed'
+  | 'turn.started'
+  | 'waiting.human'
+
+export interface RoomEvent {
+  actor_id: null | string
+  actor_kind: null | 'bot' | 'human' | 'system'
+  created_at: number
+  kind: RoomEventKind
+  payload: Record<string, unknown> & { attachments?: unknown[]; bot?: string; text?: string }
+  room_id: string
+  seq: number
+}
+
+export interface RoomTurn {
+  bot: string
+  live_session_id: null | string
+  room_id: string
+  status: string
+}
+
+export interface ActivityPair {
+  count: number
+  from_bot: string
+  last_at: number
+  to_bot: string
+}
+
+export interface BotMessage {
+  created_at: number
+  from_bot: string
+  id: string
+  room_id: null | string
+  section_id: string
+  text: string
+  to_bot: string
 }
 
 export interface StatusLine {
