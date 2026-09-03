@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light dark;
+  --hex-background: #f7f7f6;
+  --hex-surface: #ffffff;
+  --hex-text: #171717;
+  --hex-muted-text: #6b6b6b;
+  --hex-accent: #525252;
+  --hex-border: #dededb;
+  --hex-danger: #b42318;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --hex-background: #111111;
+    --hex-surface: #1b1b1b;
+    --hex-text: #f2f2f2;
+    --hex-muted-text: #a3a3a3;
+    --hex-accent: #d4d4d4;
+    --hex-border: #343434;
+    --hex-danger: #f97066;
+  }
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+  --hex-background: #f7f7f6;
+  --hex-surface: #ffffff;
+  --hex-text: #171717;
+  --hex-muted-text: #6b6b6b;
+  --hex-accent: #525252;
+  --hex-border: #dededb;
+  --hex-danger: #b42318;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+  --hex-background: #111111;
+  --hex-surface: #1b1b1b;
+  --hex-text: #f2f2f2;
+  --hex-muted-text: #a3a3a3;
+  --hex-accent: #d4d4d4;
+  --hex-border: #343434;
+  --hex-danger: #f97066;
+}
+
+@theme inline {
+  --color-background: var(--hex-background);
+  --color-surface: var(--hex-surface);
+  --color-foreground: var(--hex-text);
+  --color-muted: var(--hex-muted-text);
+  --color-accent: var(--hex-accent);
+  --color-border: var(--hex-border);
+  --color-danger: var(--hex-danger);
+}
+
+body {
+  margin: 0;
+}
