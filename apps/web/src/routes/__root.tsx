@@ -1,6 +1,7 @@
 import { createRootRoute, Outlet } from '@tanstack/react-router'
 import { useEffect } from 'react'
 
+import { getBridge, hasLocalRuntime } from '../lib/bridge'
 import { getSupervisor } from '../lib/connection'
 import { useConnection } from '../stores/connection'
 import { applyTheme, useUi } from '../stores/ui'
@@ -19,7 +20,16 @@ function RootLayout() {
   useEffect(() => applyTheme(theme), [theme])
   useEffect(() => {
     if (target) {
-      void getSupervisor().start(target)
+      // The full package owns its daemon: make sure it is running before
+      // connecting, so a relaunch does not land on "could not be reached".
+      const startLocal =
+        target.kind === 'local' && !target.origin && hasLocalRuntime()
+          ? getBridge()!
+              .daemon.start()
+              .catch(() => undefined)
+          : Promise.resolve()
+
+      void startLocal.then(() => getSupervisor().start(target))
     }
 
     return () => getSupervisor().stop()
