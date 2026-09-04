@@ -4,7 +4,7 @@ import type { HTMLAttributes } from 'react'
 import { cn } from '../../lib/cn'
 
 const chipVariants = cva(
-  'inline-flex items-center gap-1 rounded-control px-2 py-0.5 text-[length:var(--text-meta)] font-medium',
+  'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[length:var(--text-meta)] font-medium',
   {
     defaultVariants: { tone: 'neutral' },
     variants: {

@@ -11,6 +11,7 @@ export function AppShell() {
   const setSidebarWidth = useUi(state => state.setSidebarWidth)
   const panelOpen = useUi(state => state.rightPanelOpen)
   const roomMode = Boolean((useParams({ strict: false }) as { room?: string }).room)
+  const showPanel = panelOpen && !roomMode
 
   const resize = (side: 'left' | 'right', start: number) => (event: React.PointerEvent) => {
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -35,34 +36,43 @@ export function AppShell() {
     window.addEventListener('pointerup', up)
   }
 
+  const handle = 'group relative -mx-[3px] w-[6px] cursor-col-resize hex-no-drag'
+
+  const handleLine =
+    'absolute inset-y-0 left-[2px] w-px bg-border transition-colors group-hover:bg-foreground/30'
+
   return (
     <main
-      className="grid min-h-screen bg-background text-foreground"
+      className="grid h-screen overflow-hidden bg-background text-foreground"
       style={{
-        gridTemplateColumns: `${sidebarWidth}px 4px minmax(480px,1fr)${panelOpen && !roomMode ? ` 4px ${panelWidth}px` : ''}`
+        gridTemplateColumns: `${sidebarWidth}px 0px minmax(480px,1fr)${showPanel ? ` 0px ${panelWidth}px` : ''}`
       }}
     >
-      <aside className="min-w-0 overflow-auto border-r border-border">
+      <aside className="min-w-0 overflow-hidden bg-surface">
         <RosterColumn />
       </aside>
       <div
         aria-label="Resize roster"
-        className="cursor-col-resize"
+        className={handle}
         onPointerDown={event => resize('left', event.clientX)(event)}
         role="separator"
-      />
-      <section className="min-w-0 overflow-auto">
+      >
+        <span className={handleLine} />
+      </div>
+      <section className="min-w-0 overflow-hidden">
         <ConversationColumn />
       </section>
-      {panelOpen && !roomMode ? (
+      {showPanel ? (
         <>
           <div
             aria-label="Resize profile"
-            className="cursor-col-resize"
+            className={handle}
             onPointerDown={event => resize('right', event.clientX)(event)}
             role="separator"
-          />
-          <aside className="min-w-0 overflow-auto border-l border-border">
+          >
+            <span className={handleLine} />
+          </div>
+          <aside className="hex-fade min-w-0 overflow-hidden bg-surface">
             <ProfilePanel />
           </aside>
         </>

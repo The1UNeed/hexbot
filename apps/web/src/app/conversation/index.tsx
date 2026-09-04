@@ -2,13 +2,11 @@ import { useNavigate, useParams } from '@tanstack/react-router'
 import {
   Check,
   ChevronDown,
-  Clipboard,
+  Copy,
   File,
   MoreHorizontal,
   PanelRight,
-  Paperclip,
-  Send,
-  Square,
+  RotateCcw,
   Trash2,
   X
 } from 'lucide-react'
@@ -23,7 +21,6 @@ import { Dialog } from '../../components/ui/dialog'
 import { Input } from '../../components/ui/input'
 import { Menu } from '../../components/ui/menu'
 import { Spinner } from '../../components/ui/spinner'
-import { Textarea } from '../../components/ui/textarea'
 import { Thinking } from '../../components/ui/thinking'
 import {
   approvalRespond,
@@ -32,7 +29,9 @@ import {
   sessionInterrupt,
   setSectionModel
 } from '../../lib/api'
+import { avatarSrc } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
+import { cn } from '../../lib/cn'
 import { toMillis } from '../../lib/time'
 import type {
   ApprovalChoice,
@@ -48,12 +47,71 @@ import { useSettings } from '../../stores/settings'
 import { transcriptActions, useTranscript } from '../../stores/transcripts'
 import { uiActions, useUi } from '../../stores/ui'
 
+import { composerFieldClass, ComposerShell } from './composer'
 import { RoomConversation } from './room'
 
-const avatarData = (bot?: Bot) =>
-  bot?.avatar ? `data:${bot.avatar.mime};base64,${bot.avatar.data}` : null
+const avatarData = (bot?: Bot) => avatarSrc(bot?.avatar)
 
 const dayKey = (time: number) => new Date(toMillis(time)).toDateString()
+
+/** "Today 9:13 PM", "Yesterday 4:02 PM", or "12 Aug 2:10 PM". */
+export function dayLabel(time: number, now = Date.now()): string {
+  const date = new Date(toMillis(time))
+  const clock = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(date)
+  const today = new Date(now)
+  const yesterday = new Date(now - 86_400_000)
+
+  if (date.toDateString() === today.toDateString()) {
+    return `Today ${clock}`
+  }
+
+  if (date.toDateString() === yesterday.toDateString()) {
+    return `Yesterday ${clock}`
+  }
+
+  const day = new Intl.DateTimeFormat(undefined, {
+    day: 'numeric',
+    month: 'short',
+    ...(date.getFullYear() === today.getFullYear() ? {} : { year: 'numeric' })
+  }).format(date)
+
+  return `${day} ${clock}`
+}
+
+export function DaySeparator({ time }: { time: number }) {
+  return (
+    <div className="py-3 text-center text-[length:var(--text-meta)] text-muted">
+      {dayLabel(time)}
+    </div>
+  )
+}
+
+/** Small icon buttons that appear beside a bubble on hover. */
+export function BubbleActions({
+  actions
+}: {
+  actions: { icon: React.ReactNode; label: string; onClick: () => void }[]
+}) {
+  return (
+    <span className="flex shrink-0 items-center gap-0.5 self-center opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+      {actions.map(action => (
+        <button
+          aria-label={action.label}
+          className="grid size-7 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
+          key={action.label}
+          onClick={action.onClick}
+          title={action.label}
+          type="button"
+        >
+          {action.icon}
+        </button>
+      ))}
+    </span>
+  )
+}
+
+export const bubbleClass =
+  'hex-bubble min-w-0 max-w-[min(78%,42rem)] rounded-bubble bg-surface-2 px-4 py-2.5 leading-[1.5] break-words'
 
 function CodeBlock({ children, className }: { children?: React.ReactNode; className?: string }) {
   const language = /language-([^ ]+)/.exec(className ?? '')?.[1]
@@ -61,23 +119,26 @@ function CodeBlock({ children, className }: { children?: React.ReactNode; classN
 
   if (!className) {
     return (
-      <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.9em]">{children}</code>
+      <code className="rounded-[5px] bg-foreground/8 px-1.5 py-0.5 font-mono text-[0.9em]">
+        {children}
+      </code>
     )
   }
 
   return (
-    <div className="my-3 overflow-hidden rounded-panel border border-border">
-      <div className="flex items-center justify-between bg-surface-2 px-3 py-1 text-[length:var(--text-meta)] text-muted">
+    <div className="my-3 overflow-hidden rounded-panel bg-background/70">
+      <div className="flex items-center justify-between px-3 py-1.5 text-[length:var(--text-meta)] text-muted">
         <span>{language ?? 'code'}</span>
         <button
           aria-label="Copy code"
+          className="grid size-6 place-items-center rounded-full hover:bg-surface-2 hover:text-foreground"
           onClick={() => void navigator.clipboard.writeText(text)}
           type="button"
         >
-          <Clipboard size={13} />
+          <Copy size={12} />
         </button>
       </div>
-      <pre className="overflow-auto p-3 font-mono text-[length:var(--text-secondary)]">
+      <pre className="overflow-auto px-3 pb-3 font-mono text-[length:var(--text-secondary)] leading-relaxed">
         <code>{text}</code>
       </pre>
     </div>
@@ -89,7 +150,12 @@ export function Markdown({ text }: { text: string }) {
     <ReactMarkdown
       components={{
         a: props => (
-          <a className="text-accent underline" rel="noreferrer" target="_blank" {...props} />
+          <a
+            className="underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground"
+            rel="noreferrer"
+            target="_blank"
+            {...props}
+          />
         ),
         code: CodeBlock,
         table: props => (
@@ -114,7 +180,7 @@ function ToolRow({ call }: { call: ToolCall }) {
     typeof value === 'string' ? value : JSON.stringify(value, null, 2)
 
   return (
-    <div className="border-t border-border first:border-t-0">
+    <div className="border-t border-foreground/8 first:border-t-0">
       <button
         aria-expanded={open}
         className="flex w-full items-center gap-2 py-2 text-left text-[length:var(--text-secondary)]"
@@ -134,11 +200,11 @@ function ToolRow({ call }: { call: ToolCall }) {
       </button>
       {open ? (
         <div className="mb-2 grid gap-2">
-          <pre className="overflow-auto rounded-control bg-surface-2 p-2 font-mono text-[length:var(--text-meta)]">
+          <pre className="overflow-auto rounded-control bg-background/70 p-2 font-mono text-[length:var(--text-meta)]">
             {format(call.args)}
           </pre>
           {call.result !== null ? (
-            <pre className="max-h-60 overflow-auto rounded-control bg-surface-2 p-2 font-mono text-[length:var(--text-meta)]">
+            <pre className="max-h-60 overflow-auto rounded-control bg-background/70 p-2 font-mono text-[length:var(--text-meta)]">
               {format(call.result)}
             </pre>
           ) : null}
@@ -155,6 +221,10 @@ function Attachments({
   attachments: Attachment[]
   onImage: (source: string) => void
 }) {
+  if (!attachments.length) {
+    return null
+  }
+
   return (
     <div className="mt-2 flex flex-wrap gap-2">
       {attachments.map(item =>
@@ -180,7 +250,6 @@ function Attachments({
 
 function MessageRow({
   bot,
-  firstInRun,
   message,
   onImage,
   onRetry
@@ -208,57 +277,47 @@ function MessageRow({
 
   const assistant = message.role === 'assistant'
 
-  if (
-    assistant &&
-    message.streaming &&
-    !message.text &&
-    !message.thinking &&
-    message.toolCalls.length === 0
-  ) {
+  if (assistant && message.streaming && !message.text && message.toolCalls.length === 0) {
     return <Thinking image={avatarData(bot)} name={bot?.display_name ?? 'Bot'} />
   }
 
+  const copy = {
+    icon: <Copy size={14} />,
+    label: 'Copy',
+    onClick: () => void navigator.clipboard.writeText(message.text)
+  }
+
+  const actions = assistant
+    ? [copy, { icon: <RotateCcw size={14} />, label: 'Retry', onClick: onRetry }]
+    : [copy]
+
   return (
     <article
-      className={`flex gap-2 py-2 ${assistant ? 'justify-start' : 'justify-end'}`}
+      className={cn('group flex gap-1 py-1', assistant ? 'justify-start' : 'flex-row-reverse')}
       data-testid={assistant ? 'bot-message' : 'user-message'}
     >
-      {assistant ? (
-        <div className="w-8 shrink-0">
-          {firstInRun ? <Avatar image={avatarData(bot)} name={bot?.display_name ?? 'Bot'} /> : null}
-        </div>
-      ) : null}
-      <div
-        className={
-          assistant ? 'min-w-0 max-w-[78%]' : 'max-w-[78%] rounded-bubble bg-accent/12 px-4 py-2.5'
-        }
-      >
-        {assistant && firstInRun ? (
-          <div className="mb-1 text-[length:var(--text-secondary)] font-semibold">
-            {bot?.display_name ?? 'Bot'}
-          </div>
-        ) : null}
+      <div className={bubbleClass}>
         {message.thinking ? (
           <details className="mb-2 text-[length:var(--text-secondary)] text-muted">
-            <summary className="cursor-pointer">Thinking</summary>
-            <div className="mt-1 whitespace-pre-wrap border-l border-border pl-3">
+            <summary className="cursor-pointer select-none">Thinking</summary>
+            <div className="mt-1 whitespace-pre-wrap border-l border-foreground/15 pl-3">
               {message.thinking}
             </div>
           </details>
         ) : null}
         {message.text ? (
-          <div className="prose prose-sm max-w-none break-words">
+          <div className="hex-prose">
             <Markdown text={message.text} />
             {message.streaming ? (
               <span
                 aria-label="Streaming"
-                className="ml-0.5 inline-block h-4 w-px animate-pulse bg-accent align-middle"
+                className="ml-0.5 inline-block h-4 w-[2px] animate-pulse rounded bg-foreground/70 align-middle"
               />
             ) : null}
           </div>
         ) : null}
         {message.toolCalls.length ? (
-          <div className="mt-2 border-y border-border">
+          <div className={message.text ? 'mt-2 border-t border-foreground/8' : ''}>
             {message.toolCalls.map(call => (
               <ToolRow call={call} key={call.toolId} />
             ))}
@@ -266,6 +325,7 @@ function MessageRow({
         ) : null}
         <Attachments attachments={message.attachments} onImage={onImage} />
       </div>
+      {message.streaming ? null : <BubbleActions actions={actions} />}
     </article>
   )
 }
@@ -277,10 +337,10 @@ function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
   }
 
   return (
-    <div className="ml-10 max-w-xl border-l-2 border-warning px-4 py-3">
-      <div className="font-medium">Approval needed</div>
+    <div className="hex-bubble my-2 max-w-[min(78%,42rem)] rounded-bubble border border-warning/40 bg-surface-2 px-4 py-3">
+      <div className="font-semibold">Approval needed</div>
       {approval.command ? (
-        <pre className="my-2 overflow-auto rounded-control bg-surface-2 p-2 font-mono text-[length:var(--text-secondary)]">
+        <pre className="my-2 overflow-auto rounded-control bg-background/70 p-2 font-mono text-[length:var(--text-secondary)]">
           {approval.command}
         </pre>
       ) : null}
@@ -400,93 +460,72 @@ function Composer({
   }, [text])
 
   return (
-    <div className="border-t border-border bg-surface p-3">
-      {files.length ? (
-        <div className="mb-2 flex flex-wrap gap-2">
-          {files.map(item => (
-            <Chip key={item.id}>
-              {item.preview ? (
-                <img alt="" className="size-5 rounded object-cover" src={item.preview} />
-              ) : (
-                <File size={12} />
-              )}
-              {item.file.name}
-              <button
-                aria-label={`Remove ${item.file.name}`}
-                onClick={() => setFiles(current => current.filter(file => file.id !== item.id))}
-                type="button"
-              >
-                <X size={12} />
-              </button>
-            </Chip>
-          ))}
-        </div>
-      ) : null}
-      <div className="flex items-end gap-2 rounded-panel border border-border bg-surface px-2 py-2 focus-within:ring-2 focus-within:ring-accent/40">
-        <input
-          className="hidden"
-          multiple
-          onChange={event => addFiles([...(event.target.files ?? [])])}
-          ref={picker}
-          type="file"
-        />
-        <button
-          aria-label="Attach files"
-          className="rounded-control p-2 text-muted hover:bg-surface-2"
-          onClick={() => picker.current?.click()}
-          type="button"
-        >
-          <Paperclip size={18} />
-        </button>
-        <Textarea
-          aria-label="Message"
-          className="max-h-44 min-h-9 flex-1 border-0 p-2 focus-visible:ring-0"
-          disabled={!sessionId}
-          id="conversation-composer"
-          onChange={event => setText(event.target.value)}
-          onKeyDown={event => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault()
-              void send()
-            }
-          }}
-          onPaste={event => {
-            const pasted = [...event.clipboardData.files].filter(
-              file => file.type.startsWith('image/') || file.type.startsWith('text/')
-            )
+    <ComposerShell
+      above={
+        files.length ? (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {files.map(item => (
+              <Chip className="py-1 pr-1.5 pl-1.5" key={item.id}>
+                {item.preview ? (
+                  <img alt="" className="size-5 rounded object-cover" src={item.preview} />
+                ) : (
+                  <File size={12} />
+                )}
+                {item.file.name}
+                <button
+                  aria-label={`Remove ${item.file.name}`}
+                  className="grid size-4 place-items-center rounded-full hover:bg-surface-3"
+                  onClick={() => setFiles(current => current.filter(file => file.id !== item.id))}
+                  type="button"
+                >
+                  <X size={11} />
+                </button>
+              </Chip>
+            ))}
+          </div>
+        ) : null
+      }
+      canSend={Boolean(sessionId) && (Boolean(text.trim()) || files.length > 0)}
+      onAttach={() => picker.current?.click()}
+      onSend={() => void send()}
+      onStop={() => sessionId && void sessionInterrupt(sessionId)}
+      sending={sending}
+      streaming={streaming}
+    >
+      <input
+        className="hidden"
+        multiple
+        onChange={event => addFiles([...(event.target.files ?? [])])}
+        ref={picker}
+        type="file"
+      />
+      <textarea
+        aria-label="Message"
+        className={composerFieldClass}
+        disabled={!sessionId}
+        id="conversation-composer"
+        onChange={event => setText(event.target.value)}
+        onKeyDown={event => {
+          if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault()
+            void send()
+          }
+        }}
+        onPaste={event => {
+          const pasted = [...event.clipboardData.files].filter(
+            file => file.type.startsWith('image/') || file.type.startsWith('text/')
+          )
 
-            if (pasted.length) {
-              event.preventDefault()
-              addFiles(pasted)
-            }
-          }}
-          placeholder={`Message ${bot?.display_name ?? 'bot'}`}
-          rows={1}
-          value={text}
-        />
-        {streaming ? (
-          <Button
-            aria-label="Stop"
-            icon={<Square size={14} />}
-            onClick={() => sessionId && void sessionInterrupt(sessionId)}
-            variant="primary"
-          >
-            Stop
-          </Button>
-        ) : (
-          <Button
-            aria-label="Send"
-            busy={sending}
-            disabled={!sessionId || (!text.trim() && !files.length)}
-            icon={<Send size={15} />}
-            onClick={() => void send()}
-            variant="primary"
-          >
-            Send
-          </Button>
-        )}
-      </div>
-    </div>
+          if (pasted.length) {
+            event.preventDefault()
+            addFiles(pasted)
+          }
+        }}
+        placeholder={`Message ${bot?.display_name ?? 'bot'}`}
+        rows={1}
+        value={text}
+      />
+    </ComposerShell>
   )
 }
 
@@ -510,17 +549,19 @@ function BotConversation() {
   const messages = useMemo(() => transcript?.messages ?? [], [transcript?.messages])
   const approvals = useMemo(() => transcript?.approvals ?? [], [transcript?.approvals])
   const streaming = Boolean(transcript?.streamingMessageId)
+  const [unavailable, setUnavailable] = useState<string | null>(null)
   useEffect(() => {
-    if (params.section && !liveId) {
+    if (params.section && !liveId && unavailable !== params.section) {
       sectionsActions()
         .open(params.section)
         .catch(() => {
-          // The remembered section does not exist on this daemon.
+          // The section does not exist on this daemon: show that instead of
+          // bouncing through `/`, which would remember it and come back here.
+          setUnavailable(params.section ?? null)
           uiActions().setLastSection(null)
-          void navigate({ to: '/' })
         })
     }
-  }, [liveId, navigate, params.section])
+  }, [liveId, params.section, unavailable])
   useEffect(() => setTitle(section?.title ?? ''), [section?.title])
   useEffect(() => {
     if (!models.all.length) {
@@ -633,20 +674,16 @@ function BotConversation() {
         }
       }}
     >
-      <header className="flex h-16 shrink-0 items-center gap-3 border-b border-border bg-surface px-4">
-        <Avatar
-          className="hex-face"
-          image={avatarData(bot)}
-          name={bot?.display_name ?? params.bot ?? 'Bot'}
-        />
-        <div className="min-w-0 flex-1">
-          <div className="text-[length:var(--text-secondary)] font-medium">
+      <header className="hex-drag flex h-11 shrink-0 items-center gap-2 px-4">
+        <Avatar image={avatarData(bot)} name={bot?.display_name ?? params.bot ?? 'Bot'} size="xs" />
+        <div className="hex-no-drag flex min-w-0 flex-1 items-baseline gap-2">
+          <span className="truncate text-[length:var(--text-secondary)] font-semibold">
             {bot?.display_name ?? params.bot}
-          </div>
+          </span>
           {editing ? (
             <Input
               autoFocus
-              className="h-7 max-w-sm"
+              className="h-6 max-w-xs rounded-[6px] px-1.5 text-[length:var(--text-secondary)]"
               onBlur={() => void rename()}
               onChange={event => setTitle(event.target.value)}
               onKeyDown={event => {
@@ -661,65 +698,72 @@ function BotConversation() {
               }}
               value={title}
             />
-          ) : (
+          ) : section?.title && section.title !== bot?.display_name ? (
             <button
-              className="max-w-full truncate text-left font-semibold"
+              className="min-w-0 truncate text-left text-[length:var(--text-secondary)] text-muted hover:text-foreground"
               onClick={() => setEditing(true)}
+              title="Rename section"
               type="button"
             >
-              {section?.title ?? 'Conversation'}
+              {section.title}
             </button>
-          )}
+          ) : null}
         </div>
-        <Menu
-          items={models.all.map(model => ({
-            label: (
-              <span className="flex w-full items-center gap-2">
-                <span className="flex-1">{model.label}</span>
-                {model.id === currentModel ? <Check size={13} /> : null}
-              </span>
-            ),
-            onSelect: () => void selectModel(model.id)
-          }))}
-          trigger={
-            <button aria-label="Choose model" type="button">
-              <Chip>{currentModel}</Chip>
-            </button>
-          }
-        />
-        <Menu
-          items={[
-            { label: 'Rename', onSelect: () => setEditing(true) },
-            { label: 'Archive', onSelect: () => void archive() },
-            { separator: true, label: '' },
-            {
+        <div className="hex-no-drag flex items-center gap-1">
+          <Menu
+            items={models.all.map(model => ({
               label: (
-                <span className="flex items-center gap-2 text-danger">
-                  <Trash2 size={14} />
-                  Delete
+                <span className="flex w-full items-center gap-2">
+                  <span className="flex-1">{model.label}</span>
+                  {model.id === currentModel ? <Check size={13} /> : null}
                 </span>
               ),
-              onSelect: () => void remove()
+              onSelect: () => void selectModel(model.id)
+            }))}
+            trigger={
+              <button
+                aria-label="Choose model"
+                className="max-w-40 truncate rounded-full px-2.5 py-1 text-[length:var(--text-meta)] text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
+                type="button"
+              >
+                {currentModel}
+              </button>
             }
-          ]}
-          trigger={
-            <button
-              aria-label="Conversation actions"
-              className="rounded-control p-2 hover:bg-surface-2"
-              type="button"
-            >
-              <MoreHorizontal size={18} />
-            </button>
-          }
-        />
-        <button
-          aria-label="Toggle profile panel"
-          className="rounded-control p-2 hover:bg-surface-2"
-          onClick={() => togglePanel()}
-          type="button"
-        >
-          <PanelRight size={18} />
-        </button>
+          />
+          <Menu
+            items={[
+              { label: 'Rename', onSelect: () => setEditing(true) },
+              { label: 'Archive', onSelect: () => void archive() },
+              { separator: true, label: '' },
+              {
+                label: (
+                  <span className="flex items-center gap-2 text-danger">
+                    <Trash2 size={14} />
+                    Delete
+                  </span>
+                ),
+                onSelect: () => void remove()
+              }
+            ]}
+            trigger={
+              <button
+                aria-label="Conversation actions"
+                className="grid size-7 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
+                type="button"
+              >
+                <MoreHorizontal size={16} />
+              </button>
+            }
+          />
+          <button
+            aria-label="Toggle profile panel"
+            className="grid size-7 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
+            onClick={() => togglePanel()}
+            type="button"
+          >
+            <PanelRight size={16} />
+          </button>
+        </div>
       </header>
       <div
         className="min-h-0 flex-1 overflow-y-auto"
@@ -729,14 +773,45 @@ function BotConversation() {
         }}
         ref={viewport}
       >
-        {messages.length === 0 ? (
-          <div className="grid h-full place-content-center justify-items-center gap-3 p-8 text-center">
-            <Avatar image={avatarData(bot)} name={bot?.display_name ?? 'Bot'} size="lg" />
+        {unavailable === params.section && !liveId ? (
+          <div className="hex-fade grid h-full place-content-center justify-items-center gap-4 p-8 text-center">
+            <Avatar image={avatarData(bot)} name={bot?.display_name ?? 'Bot'} size="xl" />
+            <div>
+              <h2 className="text-[length:var(--text-title)] font-semibold">
+                This conversation is no longer available
+              </h2>
+              <p className="mt-1 text-muted">
+                It may have been deleted, or it lives on another daemon.
+              </p>
+            </div>
+            {bot ? (
+              <Button
+                onClick={() =>
+                  void sectionsActions()
+                    .create(bot.name)
+                    .then(section =>
+                      navigate({
+                        to: '/b/$bot/s/$section',
+                        params: { bot: bot.name, section: section.id }
+                      })
+                    )
+                }
+                variant="primary"
+              >
+                Start a new section
+              </Button>
+            ) : null}
+          </div>
+        ) : messages.length === 0 ? (
+          <div className="hex-fade grid h-full place-content-center justify-items-center gap-5 p-8 text-center">
+            <Avatar image={avatarData(bot)} name={bot?.display_name ?? 'Bot'} size="xl" />
             <div>
               <h2 className="text-[length:var(--text-title)] font-semibold">{bot?.display_name}</h2>
-              <p className="text-muted">{section?.title}</p>
+              {bot?.title || bot?.description ? (
+                <p className="mt-1 text-muted">{bot.title || bot.description}</p>
+              ) : null}
             </div>
-            <div className="grid gap-2">
+            <div className="flex max-w-md flex-wrap justify-center gap-2">
               {suggestedPrompts(bot?.description ?? '', bot?.display_name).map(prompt => (
                 <Button
                   key={prompt}
@@ -746,6 +821,8 @@ function BotConversation() {
                       void promptSubmit(liveId, prompt)
                     }
                   }}
+                  size="sm"
+                  variant="pill"
                 >
                   {prompt}
                 </Button>
@@ -753,10 +830,10 @@ function BotConversation() {
             </div>
           </div>
         ) : (
-          <div className="mx-auto max-w-3xl px-5 py-4">
+          <div className="mx-auto max-w-3xl px-4 py-2">
             {messages.length > visible ? (
               <button
-                className="mx-auto mb-4 block text-[length:var(--text-secondary)] text-accent"
+                className="mx-auto mb-3 block rounded-full px-3 py-1 text-[length:var(--text-secondary)] text-muted hover:bg-surface-2 hover:text-foreground"
                 onClick={() => setVisible(value => value + 60)}
                 type="button"
               >
@@ -767,21 +844,13 @@ function BotConversation() {
               const previous = shown[index - 1]
 
               const separator =
-                !previous || dayKey(previous.createdAt) !== dayKey(message.createdAt)
+                !previous ||
+                dayKey(previous.createdAt) !== dayKey(message.createdAt) ||
+                toMillis(message.createdAt) - toMillis(previous.createdAt) > 20 * 60_000
 
               return (
                 <div key={message.id}>
-                  {separator ? (
-                    <div className="my-4 flex items-center gap-3 text-[length:var(--text-meta)] text-muted">
-                      <span className="h-px flex-1 bg-border" />
-                      <span>
-                        {new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(
-                          message.createdAt
-                        )}
-                      </span>
-                      <span className="h-px flex-1 bg-border" />
-                    </div>
-                  ) : null}
+                  {separator ? <DaySeparator time={message.createdAt} /> : null}
                   <MessageRow
                     bot={bot}
                     firstInRun={!previous || previous.role !== message.role}
@@ -795,13 +864,13 @@ function BotConversation() {
             {approvals.map(approval => (
               <ApprovalCard approval={approval} key={approval.requestId} />
             ))}
-            <div ref={bottom} />
+            <div className="h-2" ref={bottom} />
           </div>
         )}
       </div>
       {!atBottom ? (
         <button
-          className="absolute right-5 bottom-24 rounded-full border border-border bg-surface px-3 py-1.5 text-[length:var(--text-secondary)] shadow-popup"
+          className="hex-bubble absolute bottom-20 left-1/2 -translate-x-1/2 rounded-full border border-border bg-surface px-3 py-1.5 text-[length:var(--text-secondary)] shadow-popup"
           onClick={() => {
             bottom.current?.scrollIntoView({ behavior: 'smooth' })
             setAtBottom(true)
@@ -821,7 +890,7 @@ function BotConversation() {
           </button>
         }
       >
-        <div className="grid max-h-[85vh] place-items-center bg-background p-4">
+        <div className="grid max-h-[85vh] place-items-center bg-black p-2">
           {lightbox ? (
             <img
               alt="Attachment preview"

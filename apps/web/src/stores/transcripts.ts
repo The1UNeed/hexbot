@@ -203,12 +203,25 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     bySession: {},
 
     open(sessionId, sectionId, messages) {
-      set(state => ({
-        bySession: {
-          ...state.bySession,
-          [sessionId]: { ...emptyTranscript(sessionId, sectionId), messages }
+      set(state => {
+        const existing = state.bySession[sessionId]
+
+        // A live transcript that is ahead of the stored history (a message
+        // just sent, a reply streaming) wins over the snapshot.
+        if (
+          existing &&
+          (existing.streamingMessageId || existing.messages.length > messages.length)
+        ) {
+          return { bySession: { ...state.bySession, [sessionId]: { ...existing, sectionId } } }
         }
-      }))
+
+        return {
+          bySession: {
+            ...state.bySession,
+            [sessionId]: { ...emptyTranscript(sessionId, sectionId), messages }
+          }
+        }
+      })
     },
 
     setSectionId(sessionId, sectionId) {

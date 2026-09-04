@@ -1,7 +1,11 @@
 /**
- * Generated bot faces: a shape and a colour, drawn as SVG and rasterised to
- * PNG for the profile asset (the daemon accepts png, jpeg or webp only).
+ * Generated bot faces: a shape and a colour with two small eyes. Drawn as
+ * SVG in the UI and rasterised to PNG for the profile asset (the daemon
+ * accepts png, jpeg or webp only). Bots without an uploaded avatar get a
+ * face derived from their name so every bot has one.
  */
+
+import { hueFromString } from './cn'
 
 export interface AvatarStyle {
   color: string
@@ -9,70 +13,94 @@ export interface AvatarStyle {
 }
 
 export const AVATAR_SHAPES: { id: string; label: string; path: string }[] = [
-  { id: 'round', label: 'Round', path: 'M50 6a44 44 0 1 1 0 88a44 44 0 1 1 0-88Z' },
+  { id: 'round', label: 'Round', path: 'M50 5a45 45 0 1 1 0 90a45 45 0 1 1 0-90Z' },
   {
     id: 'squircle',
     label: 'Squircle',
-    path: 'M50 6c33 0 44 11 44 44S83 94 50 94 6 83 6 50 17 6 50 6Z'
+    path: 'M50 5c34 0 45 11 45 45S84 95 50 95 5 84 5 50 16 5 50 5Z'
   },
   {
     id: 'square',
     label: 'Square',
-    path: 'M22 8h56a14 14 0 0 1 14 14v56a14 14 0 0 1-14 14H22A14 14 0 0 1 8 78V22A14 14 0 0 1 22 8Z'
+    path: 'M24 7h52a17 17 0 0 1 17 17v52a17 17 0 0 1-17 17H24A17 17 0 0 1 7 76V24A17 17 0 0 1 24 7Z'
   },
   {
-    id: 'blob',
-    label: 'Blob',
-    path: 'M52 6c24 0 42 16 42 40 0 26-18 48-44 48S6 78 6 52 24 6 52 6Z'
+    id: 'pill',
+    label: 'Pill',
+    path: 'M50 20c31 0 47 13 47 30S81 80 50 80 3 67 3 50s16-30 47-30Z'
   },
   {
     id: 'triangle',
     label: 'Triangle',
-    path: 'M44 12a8 8 0 0 1 12 0l38 66a8 8 0 0 1-6 12H12a8 8 0 0 1-6-12Z'
+    path: 'M43 12a8 8 0 0 1 14 0l38 66a8 8 0 0 1-7 12H12a8 8 0 0 1-7-12Z'
   },
   {
     id: 'hexagon',
     label: 'Hexagon',
-    path: 'M45 6a10 10 0 0 1 10 0l30 17a10 10 0 0 1 5 9v36a10 10 0 0 1-5 9L55 94a10 10 0 0 1-10 0L15 77a10 10 0 0 1-5-9V32a10 10 0 0 1 5-9Z'
+    path: 'M44 6a12 12 0 0 1 12 0l30 17a12 12 0 0 1 6 10v34a12 12 0 0 1-6 10L56 94a12 12 0 0 1-12 0L14 77a12 12 0 0 1-6-10V33a12 12 0 0 1 6-10Z'
   },
   {
     id: 'cloud',
     label: 'Cloud',
-    path: 'M30 88a20 20 0 0 1-6-39 24 24 0 0 1 46-10 18 18 0 0 1 24 18 16 16 0 0 1-4 31Z'
+    path: 'M28 88a21 21 0 0 1-5-41 25 25 0 0 1 48-10 19 19 0 0 1 25 19 17 17 0 0 1-5 32Z'
   },
-  { id: 'drop', label: 'Drop', path: 'M50 6c14 24 40 44 40 62a40 40 0 0 1-80 0C10 50 36 30 50 6Z' }
+  { id: 'drop', label: 'Drop', path: 'M50 4c14 24 42 44 42 63a42 42 0 0 1-84 0C8 48 36 28 50 4Z' }
 ]
 
 export const AVATAR_COLORS: { id: string; label: string; value: string }[] = [
-  { id: 'white', label: 'Chalk', value: '#e8e8ec' },
-  { id: 'brown', label: 'Cocoa', value: '#8b5a3c' },
-  { id: 'red', label: 'Cherry', value: '#e5484d' },
-  { id: 'orange', label: 'Tangerine', value: '#f76b15' },
+  { id: 'white', label: 'Chalk', value: '#ececf0' },
+  { id: 'brown', label: 'Cocoa', value: '#9a6242' },
+  { id: 'red', label: 'Cherry', value: '#ef4444' },
+  { id: 'orange', label: 'Tangerine', value: '#f97316' },
   { id: 'amber', label: 'Honey', value: '#f5a524' },
-  { id: 'green', label: 'Mint', value: '#30a46c' },
-  { id: 'teal', label: 'Lagoon', value: '#12a594' },
-  { id: 'blue', label: 'Sky', value: '#3e8ef7' },
-  { id: 'violet', label: 'Iris', value: '#7c5cf7' },
-  { id: 'pink', label: 'Bubblegum', value: '#e93d82' },
-  { id: 'gray', label: 'Slate', value: '#8b8d98' }
+  { id: 'green', label: 'Mint', value: '#22a55b' },
+  { id: 'teal', label: 'Lagoon', value: '#14b8a6' },
+  { id: 'blue', label: 'Sky', value: '#3b82f6' },
+  { id: 'violet', label: 'Iris', value: '#8b5cf6' },
+  { id: 'pink', label: 'Bubblegum', value: '#ec2f8a' },
+  { id: 'gray', label: 'Slate', value: '#8e8e93' }
 ]
 
-export const DEFAULT_AVATAR_STYLE: AvatarStyle = { color: 'pink', shape: 'round' }
+export const DEFAULT_AVATAR_STYLE: AvatarStyle = { color: 'pink', shape: 'hexagon' }
 
-const eyeColor = (color: string) => (color === 'white' ? '#17171a' : '#17171a')
+const EYES = '#151517'
+
+/** A stable face for a bot that has no uploaded avatar. */
+export function styleForName(name: string): AvatarStyle {
+  const hue = hueFromString(name)
+  const colors = AVATAR_COLORS.filter(item => !['white', 'gray', 'brown'].includes(item.id))
+
+  return {
+    color: colors[hue % colors.length]!.id,
+    shape: AVATAR_SHAPES[Math.floor(hue / 7) % AVATAR_SHAPES.length]!.id
+  }
+}
+
+export function resolveStyle(style: AvatarStyle) {
+  return {
+    color: AVATAR_COLORS.find(item => item.id === style.color) ?? AVATAR_COLORS[0]!,
+    shape: AVATAR_SHAPES.find(item => item.id === style.shape) ?? AVATAR_SHAPES[0]!
+  }
+}
+
+/** The eyes as SVG markup, shared by the inline face and the rasterised one. */
+export function faceEyes(): string {
+  return (
+    `<g class="hex-eyes">` +
+    `<ellipse cx="41" cy="48" rx="3.6" ry="6.2" fill="${EYES}"/>` +
+    `<ellipse cx="59" cy="48" rx="3.6" ry="6.2" fill="${EYES}"/>` +
+    `</g>`
+  )
+}
 
 /** The face as an SVG document (100×100 viewBox). */
 export function avatarSvg(style: AvatarStyle): string {
-  const shape = AVATAR_SHAPES.find(item => item.id === style.shape) ?? AVATAR_SHAPES[0]!
-  const color = AVATAR_COLORS.find(item => item.id === style.color) ?? AVATAR_COLORS[0]!
-  const eyes = eyeColor(color.id)
+  const { color, shape } = resolveStyle(style)
 
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">` +
     `<path d="${shape.path}" fill="${color.value}"/>` +
-    `<circle cx="39" cy="54" r="4.5" fill="${eyes}"/>` +
-    `<circle cx="61" cy="54" r="4.5" fill="${eyes}"/>` +
-    `<path d="M44 66q6 4 12 0" stroke="${eyes}" stroke-width="3" stroke-linecap="round" fill="none"/>` +
+    faceEyes() +
     `</svg>`
   )
 }
@@ -82,7 +110,7 @@ export function avatarSvgDataUrl(style: AvatarStyle): string {
 }
 
 /** PNG data URL for the profile asset. Resolves to `null` where canvas is unavailable. */
-export function avatarPng(style: AvatarStyle, size = 256): Promise<null | string> {
+export function avatarPng(style: AvatarStyle, size = 512): Promise<null | string> {
   if (typeof document === 'undefined') {
     return Promise.resolve(null)
   }
@@ -114,4 +142,13 @@ export function avatarPng(style: AvatarStyle, size = 256): Promise<null | string
     image.onerror = () => resolve(null)
     image.src = avatarSvgDataUrl(style)
   })
+}
+
+/** `src` for a bot's uploaded avatar, or `null` when it has none. */
+export function avatarSrc(avatar?: null | { data: string; mime: string }): null | string {
+  if (!avatar?.data) {
+    return null
+  }
+
+  return avatar.data.startsWith('data:') ? avatar.data : `data:${avatar.mime};base64,${avatar.data}`
 }

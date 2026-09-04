@@ -13,7 +13,7 @@ describe('avatar builder', () => {
 
     expect(svg).toContain(hexagon.path)
     expect(svg).toContain(pink.value)
-    expect(svg.match(/<circle/g)).toHaveLength(2)
+    expect(svg.match(/<ellipse/g)).toHaveLength(2)
     expect(avatarSvgDataUrl({ color: 'pink', shape: 'hexagon' })).toMatch(/^data:image\/svg\+xml/)
   })
 

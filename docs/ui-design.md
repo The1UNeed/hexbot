@@ -21,13 +21,21 @@ own visual identity. Read `CLAUDE.md` for the words.
 - Font: system UI stack (SF Pro on macOS, Inter or Cantarell on Linux),
   14px base, 13px secondary, 12px meta, 20px title. Monospace for code:
   SF Mono, JetBrains Mono, monospace.
-- Radii: 6px controls, 10px panels and cards, 16px message bubbles.
-- Light: bg #FAFAF9, surface #FFFFFF, surface-2 #F3F3F1, text #17171A,
-  text-muted #6B6B72, border #E6E6E2, accent #4F46E5, accent-fg #FFFFFF,
-  danger #D92D20, success #12805C, warning #B54708.
-- Dark: bg #121214, surface #1A1A1E, surface-2 #232328, text #F2F2F4,
-  text-muted #9A9AA3, border #2C2C33, accent #8B85FF, accent-fg #121214,
-  danger #F97066, success #3CCB7F, warning #F7B24A.
+- Radii: 8px controls, 12px panels and cards, 18px message bubbles, full
+  pills for the composer, chips and round icon buttons.
+- Neutral first: the chrome is greys; colour comes from bot faces. Primary
+  buttons are foreground-on-background (white on dark, black on light). The
+  accent is reserved for unread dots and links.
+- Light: bg #FFFFFF, surface #F5F5F5, surface-2 #EBEBEB, surface-3 #DEDEDE,
+  text #141414, text-muted #767676, border #E3E3E3, accent #4F46E5,
+  danger #D92D20, success #16A34A, warning #B54708.
+- Dark: bg #0E0E0E, surface #171717, surface-2 #262626, surface-3 #343434,
+  text #F4F4F4, text-muted #8E8E8E, border #2A2A2A, accent #8B85FF,
+  danger #F4645B, success #34C759, warning #F7B24A.
+- Bot faces: every bot has a face, a shape and a colour with two eyes
+  (`lib/avatar-builder.ts`). Uploaded images replace it; otherwise the face
+  is derived from the bot's name. Faces wiggle on hover, blink at rest, and
+  bob while the bot is working.
 - Shadows only on floating layers (menus, dialogs): a hairline border plus
   one soft shadow. Nothing in-panel.
 - Motion: 120ms ease-out for hover and open, 200ms for panel slide. Respect
@@ -39,30 +47,34 @@ Three columns, resizable, min widths 240 / 480 / 300.
 
 ### Left: roster
 
-- Header: app name, search field, "New" menu (New bot, New section, New room
-  from milestone 3).
+- Header: a window-drag strip (padded for the macOS traffic lights), a "+"
+  menu (New bot, New section, New room) and a search pill. No app name.
 - List: bots and rooms in one list, ordered by last activity. Each row:
-  avatar (uploaded image or initials on a per-bot hue), name, model chip
-  (small, muted), last message preview, relative time, unread dot.
+  face (40px), name, last message preview, relative time, unread dot, and a
+  green dot on the face while the bot is working. The selected bot's row is
+  filled.
 - Under each row: the one or two most recent sections as indented rows
   (title, time). A "more" affordance expands to the full list. Sections with
   no activity in 14 days are hidden behind "more".
-- Bottom: "Archived" collapsed group, then a footer with connection state
-  (daemon name or address, green/amber/red dot) and a settings gear.
+- Bottom: Activity, an "Archived" collapsed group (only when there is
+  something archived), then the current user with a connection dot on their
+  avatar and a settings gear.
 - Selection: one section is active. Selecting a bot row opens its most
   recent section.
 
 ### Centre: conversation
 
-- Header: bot avatar and name, section title (editable inline), model chip
-  with a menu to change the section's model, section actions (rename,
-  archive, delete, dream now from milestone 4), and a toggle for the right
-  panel.
-- Transcript: virtualised list. Human messages right-aligned in an accent
-  tinted bubble. Bot messages left-aligned, no bubble, avatar and name on
-  the first message of a run, markdown body with code blocks (copy button),
-  tables, images. Day separators. "Waiting on you" banner when a bot has
-  asked the human something (milestone 3).
+- Header: a 44px strip with a small face and the bot name, the section
+  title beside it in muted text (click to rename), the model as a muted
+  pill with a menu, section actions (rename, archive, delete), and a toggle
+  for the right panel.
+- Transcript: bot messages left-aligned and human messages right-aligned,
+  both in grey bubbles (no avatars in a direct message; rooms show a small
+  face and name). Copy and retry icons appear beside a bubble on hover.
+  Markdown body with code blocks (copy button), tables, images. Time
+  separators ("Today 9:13 PM") between days and after 20 quiet minutes.
+  While a reply is pending the bot's face bobs beside "<name> is working".
+  "Waiting on you" banner when a bot has asked the human something.
 - Tool activity: an inline collapsed row per tool call with icon, tool name,
   a one-line summary, and a spinner while running. Expand shows arguments
   and output in monospace. Consecutive tool calls group into one block.
@@ -77,6 +89,8 @@ Three columns, resizable, min widths 240 / 480 / 300.
 
 ### Composer
 
+- A floating pill: a round "+" attach button on the left, the field, and a
+  round send arrow on the right that becomes a stop square while streaming.
 - Multiline textarea growing to 8 lines, then scrolling. Placeholder
   "Message {bot name}".
 - Left: attach button (file picker; drag and drop anywhere over the
@@ -89,12 +103,15 @@ Three columns, resizable, min widths 240 / 480 / 300.
 
 ### Right: profile panel
 
-- Bot: large avatar, name, title, description. Tabs: Persona (editable
-  persona text, saved on blur), Model (provider and model picker, live list
-  with a curated group pinned on top), Memory (core memory sections editor,
-  and this bot's notes, read-only for now with an "edit" affordance),
-  Skills (list of attached skills), Sections (all sections with archive and
-  delete). Danger zone at the bottom: delete bot.
+- A "Settings" page: a large face (click it for a Bot / Upload picker with
+  the shape and colour grids), then labelled Name, Label and Description
+  fields saved on blur, a Shareable switch card, and a list of sub-pages
+  each opened with a back chevron in the header: Persona (editable persona
+  text, saved on blur), Model (provider and model picker, live list with a
+  curated group pinned on top), Memory (core memory sections editor, this
+  bot's notes, and dreaming), Tools (switches), Skills, Sections (all
+  sections with archive and delete), Computer. A red "Delete bot" action at
+  the bottom of the root page.
 - The panel remembers open or closed per window.
 
 ## Screens outside the three columns

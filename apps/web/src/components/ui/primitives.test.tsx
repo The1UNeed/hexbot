@@ -24,9 +24,10 @@ describe('UI components', () => {
     render(<Textarea aria-label="Persona" />)
     expect(screen.getByLabelText('Persona')).toBeVisible()
   })
-  it('renders Avatar fallback', () => {
-    render(<Avatar name="Ada Lovelace" />)
-    expect(screen.getByText('AL')).toBeVisible()
+  it('renders a generated face when there is no image', () => {
+    const { container } = render(<Avatar name="Ada Lovelace" />)
+    expect(screen.getByRole('img', { name: 'Ada Lovelace' })).toBeVisible()
+    expect(container.querySelectorAll('ellipse')).toHaveLength(2)
   })
   it('renders Chip', () => {
     render(<Chip>Ready</Chip>)

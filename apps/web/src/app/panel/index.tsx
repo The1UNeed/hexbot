@@ -1,11 +1,21 @@
 import { Link } from '@tanstack/react-router'
-import { Archive, Camera, Square, Trash2, Undo2 } from 'lucide-react'
+import {
+  Archive,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsRight,
+  Square,
+  Trash2,
+  Undo2
+} from 'lucide-react'
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar } from '../../components/ui/avatar'
+import { AvatarBuilder } from '../../components/ui/avatar-builder'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Select } from '../../components/ui/select'
+import { Switch } from '../../components/ui/switch'
 import { Textarea } from '../../components/ui/textarea'
 import {
   botMemoryGet,
@@ -18,6 +28,8 @@ import {
   modelsList,
   sessionInterrupt
 } from '../../lib/api'
+import { avatarPng, avatarSrc, type AvatarStyle, styleForName } from '../../lib/avatar-builder'
+import { cn } from '../../lib/cn'
 import type { Bot, CoreMemorySection, Message, ModelOption } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useSections, useSectionsForBot } from '../../stores/sections'
@@ -25,44 +37,68 @@ import { useTranscript } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
 import { Markdown } from '../conversation'
 
-const TABS = ['persona', 'model', 'memory', 'computer', 'tools', 'skills', 'sections'] as const
+const TABS = ['persona', 'model', 'memory', 'tools', 'skills', 'sections', 'computer'] as const
+
+const TAB_LABELS: Record<PanelTab, string> = {
+  computer: 'Computer',
+  memory: 'Memory',
+  model: 'Model',
+  persona: 'Persona',
+  sections: 'Sections',
+  skills: 'Skills',
+  tools: 'Tools'
+}
+
+export const cardClass = 'rounded-panel bg-surface-2/70'
+export const fieldLabel = 'mb-1.5 block text-[length:var(--text-secondary)] text-muted'
 type PanelTab = (typeof TABS)[number]
 const MEMORY_SECTIONS: CoreMemorySection[] = ['user', 'household', 'workspace', 'rules']
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024
 const PANEL_TAB_KEY = 'hexbot.ui.profilePanelTab'
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
-function usePersistentPanelTab(): [PanelTab, (tab: PanelTab) => void] {
-  const [tab, setState] = useState<PanelTab>(() => {
+function usePersistentPanelTab(): [null | PanelTab, (tab: null | PanelTab) => void] {
+  const [tab, setState] = useState<null | PanelTab>(() => {
     const saved = typeof localStorage === 'undefined' ? null : localStorage.getItem(PANEL_TAB_KEY)
 
-    return TABS.includes(saved as PanelTab) ? (saved as PanelTab) : 'persona'
+    return TABS.includes(saved as PanelTab) ? (saved as PanelTab) : null
   })
 
   return [
     tab,
     next => {
       setState(next)
-      localStorage.setItem(PANEL_TAB_KEY, next)
+
+      if (next) {
+        localStorage.setItem(PANEL_TAB_KEY, next)
+      } else {
+        localStorage.removeItem(PANEL_TAB_KEY)
+      }
     }
   ]
 }
 
-function avatarUrl(avatar: Bot['avatar']): string | null {
-  return avatar ? `data:${avatar.mime};base64,${avatar.data}` : null
-}
+const avatarUrl = avatarSrc
 
 export function ProfilePanel(): React.JSX.Element {
   const selectedName = useUi(state => state.lastSection?.bot ?? null)
   const bot = useBots(state => (selectedName ? state.byName[selectedName] : undefined))
   const updateBot = useBots(state => state.update)
   const removeBot = useBots(state => state.remove)
+  const closePanel = useUi(state => state.toggleRightPanel)
   const [tab, setTab] = usePersistentPanelTab()
   const [error, setError] = useState<string | null>(null)
+  const [picking, setPicking] = useState(false)
+  const [pickerTab, setPickerTab] = useState<'bot' | 'upload'>('bot')
+  const [style, setStyle] = useState<AvatarStyle | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   if (!bot) {
-    return <div className="p-5 text-muted">Select a bot to view its profile.</div>
+    return (
+      <div className="grid h-full place-content-center p-5 text-center text-muted">
+        Select a bot to see its settings.
+      </div>
+    )
   }
 
   const save = async (patch: Parameters<typeof updateBot>[1]) => {
@@ -96,90 +132,205 @@ export function ProfilePanel(): React.JSX.Element {
     reader.readAsDataURL(file)
   }
 
+  const chooseFace = (next: AvatarStyle) => {
+    setStyle(next)
+    void avatarPng(next).then(png => {
+      if (png) {
+        void save({ avatar: png })
+      }
+    })
+  }
+
+  const currentStyle = style ?? styleForName(bot.display_name)
+
+  const header = (
+    <header className="hex-drag flex h-11 shrink-0 items-center px-2">
+      <button
+        aria-label="Back"
+        className={cn(
+          'hex-no-drag grid size-7 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-foreground',
+          tab ? '' : 'invisible'
+        )}
+        onClick={() => setTab(null)}
+        type="button"
+      >
+        <ChevronLeft size={16} />
+      </button>
+      <span className="flex-1 text-center text-[length:var(--text-secondary)] font-semibold">
+        {tab ? TAB_LABELS[tab] : 'Settings'}
+      </span>
+      <button
+        aria-label="Hide settings"
+        className="hex-no-drag grid size-7 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
+        onClick={() => closePanel(false)}
+        type="button"
+      >
+        <ChevronsRight size={16} />
+      </button>
+    </header>
+  )
+
+  if (tab) {
+    return (
+      <div className="flex h-screen min-h-0 flex-col" data-testid="profile-panel">
+        {header}
+        <div className="hex-fade min-h-0 flex-1 overflow-y-auto px-4 pt-1 pb-6" key={tab}>
+          {tab === 'persona' && <PersonaTab bot={bot} onSave={save} />}
+          {tab === 'model' && <ModelTab bot={bot} onSave={save} />}
+          {tab === 'memory' && <MemoryTab bot={bot} onSave={save} />}
+          {tab === 'computer' && <ComputerTab />}
+          {tab === 'tools' && <ToolsTab bot={bot} onSave={save} />}
+          {tab === 'skills' && <SkillsTab bot={bot} onSave={save} />}
+          {tab === 'sections' && <SectionsTab botName={bot.name} />}
+          {error ? (
+            <p className="mt-3 text-[length:var(--text-secondary)] text-danger" role="alert">
+              {error}
+            </p>
+          ) : null}
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div className="min-h-full p-5">
-      <div className="flex flex-col items-center text-center">
-        <button
-          aria-label="Change avatar"
-          className="group relative rounded-full outline-none focus-visible:ring-2 focus-visible:ring-accent"
-          onClick={() => fileRef.current?.click()}
-        >
-          <Avatar
-            className="size-24 text-xl"
-            image={avatarUrl(bot.avatar)}
-            name={bot.display_name}
-            size="lg"
-          />
-          <span className="absolute inset-0 flex items-center justify-center rounded-full bg-foreground/50 text-accent-fg opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100">
-            <Camera aria-hidden size={22} />
-          </span>
-        </button>
-        <input
-          accept="image/png,image/jpeg,image/webp"
-          className="hidden"
-          onChange={upload}
-          ref={fileRef}
-          type="file"
-        />
-        <InlineField
-          ariaLabel="Bot name"
-          className="mt-3 text-center text-[length:var(--text-title)] font-semibold"
-          onSave={value => save({ display_name: value })}
-          value={bot.display_name}
-        />
-        <InlineField
-          ariaLabel="Title"
-          className="mt-1 text-center text-muted"
-          onSave={value => save({ title: value })}
-          placeholder="Add a title"
-          value={bot.title}
-        />
-        <InlineField
-          ariaLabel="Description"
-          className="mt-1 text-center text-[length:var(--text-secondary)] text-muted"
-          onSave={value => save({ description: value })}
-          placeholder="Add a description"
-          value={bot.description}
-        />
-        <label className="mt-3 flex items-center gap-2 text-[length:var(--text-secondary)] text-muted">
-          <input
-            checked={bot.shareable ?? false}
-            onChange={event => void save({ shareable: event.target.checked })}
-            type="checkbox"
-          />
-          Shareable with other users
-        </label>
-      </div>
-      {error ? (
-        <p className="mt-3 text-danger" role="alert">
-          {error}
-        </p>
-      ) : null}
-      <div className="mt-5 flex gap-1 overflow-x-auto border-b border-border" role="tablist">
-        {TABS.map(item => (
+    <div className="flex h-screen min-h-0 flex-col" data-testid="profile-panel">
+      {header}
+      <div className="hex-fade min-h-0 flex-1 overflow-y-auto px-4 pt-3 pb-4">
+        <div className="flex flex-col items-center">
           <button
-            aria-selected={tab === item}
-            className="border-b-2 border-transparent px-2 py-2 text-[length:var(--text-secondary)] capitalize text-muted aria-selected:border-accent aria-selected:text-foreground"
-            key={item}
-            onClick={() => setTab(item)}
-            role="tab"
+            aria-expanded={picking}
+            aria-label="Change avatar"
+            className="hex-face rounded-full outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-foreground/40"
+            onClick={() => setPicking(value => !value)}
+            type="button"
           >
-            {item}
+            <Avatar
+              image={avatarUrl(bot.avatar)}
+              name={bot.display_name}
+              size="xl"
+              style={currentStyle}
+            />
           </button>
-        ))}
-      </div>
-      <div className="py-4">
-        {tab === 'persona' && <PersonaTab bot={bot} onSave={save} />}
-        {tab === 'model' && <ModelTab bot={bot} onSave={save} />}
-        {tab === 'memory' && <MemoryTab bot={bot} onSave={save} />}
-        {tab === 'computer' && <ComputerTab />}
-        {tab === 'tools' && <ToolsTab bot={bot} onSave={save} />}
-        {tab === 'skills' && <SkillsTab bot={bot} onSave={save} />}
-        {tab === 'sections' && <SectionsTab botName={bot.name} />}
-      </div>
-      <div className="mt-8 border-t border-danger/30 pt-4">
-        <h3 className="font-semibold text-danger">Danger zone</h3>
-        <DeleteBot bot={bot} onDelete={() => removeBot(bot.name)} />
+          <input
+            accept="image/png,image/jpeg,image/webp"
+            className="hidden"
+            onChange={upload}
+            ref={fileRef}
+            type="file"
+          />
+        </div>
+        {picking ? (
+          <div className={cn(cardClass, 'hex-bubble mt-4 border border-border')}>
+            <div className="flex gap-1 border-b border-border px-2 py-2" role="tablist">
+              {(
+                [
+                  ['bot', 'Bot'],
+                  ['upload', 'Upload']
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  aria-selected={pickerTab === id}
+                  className={cn(
+                    'rounded-control px-2.5 py-1 text-[length:var(--text-secondary)] transition-colors',
+                    pickerTab === id
+                      ? 'bg-surface-3 text-foreground'
+                      : 'text-muted hover:text-foreground'
+                  )}
+                  key={id}
+                  onClick={() => setPickerTab(id)}
+                  role="tab"
+                  type="button"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="p-3">
+              {pickerTab === 'bot' ? (
+                <AvatarBuilder onChange={chooseFace} preview={false} value={currentStyle} />
+              ) : (
+                <div className="grid gap-2 text-center">
+                  <p className="text-[length:var(--text-secondary)] text-muted">
+                    PNG, JPEG or WebP up to 2 MB.
+                  </p>
+                  <Button onClick={() => fileRef.current?.click()} variant="secondary">
+                    Choose image
+                  </Button>
+                  {bot.avatar ? (
+                    <Button onClick={() => void save({ avatar: null })} variant="ghost">
+                      Use a generated face
+                    </Button>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
+        <div className="mt-5 grid gap-3">
+          <label className="block">
+            <span className={fieldLabel}>Name</span>
+            <InlineField
+              ariaLabel="Bot name"
+              onSave={value => save({ display_name: value })}
+              value={bot.display_name}
+            />
+          </label>
+          <label className="block">
+            <span className={fieldLabel}>Label (optional)</span>
+            <InlineField
+              ariaLabel="Title"
+              onSave={value => save({ title: value })}
+              placeholder="Research, marketing, admin"
+              value={bot.title}
+            />
+          </label>
+          <label className="block">
+            <span className={fieldLabel}>Description</span>
+            <InlineField
+              ariaLabel="Description"
+              multiline
+              onSave={value => save({ description: value })}
+              placeholder="What this bot is for"
+              value={bot.description}
+            />
+          </label>
+        </div>
+        {error ? (
+          <p className="mt-3 text-[length:var(--text-secondary)] text-danger" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <div className={cn(cardClass, 'mt-4 flex items-center justify-between gap-3 px-3 py-2.5')}>
+          <span>
+            <span className="block font-medium">Shareable</span>
+            <span className="block text-[length:var(--text-meta)] text-muted">
+              Other users on this daemon can talk to this bot
+            </span>
+          </span>
+          <Switch
+            aria-label="Shareable with other users"
+            checked={bot.shareable ?? false}
+            onCheckedChange={checked => void save({ shareable: checked })}
+          />
+        </div>
+        <div className={cn(cardClass, 'mt-4 divide-y divide-border')} role="tablist">
+          {TABS.map(item => (
+            <button
+              aria-selected={false}
+              className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors first:rounded-t-panel last:rounded-b-panel hover:bg-surface-2"
+              key={item}
+              onClick={() => setTab(item)}
+              role="tab"
+              type="button"
+            >
+              <span>{TAB_LABELS[item]}</span>
+              <ChevronRight className="text-muted" size={15} />
+            </button>
+          ))}
+        </div>
+        <div className="mt-6">
+          <DeleteBot bot={bot} onDelete={() => removeBot(bot.name)} />
+        </div>
       </div>
     </div>
   )
@@ -188,14 +339,39 @@ export function ProfilePanel(): React.JSX.Element {
 interface InlineFieldProps {
   ariaLabel: string
   className?: string
+  multiline?: boolean
   onSave: (value: string) => void
   placeholder?: string
   value: string
 }
 
-function InlineField({ ariaLabel, className, onSave, placeholder, value }: InlineFieldProps) {
+function InlineField({
+  ariaLabel,
+  className,
+  multiline = false,
+  onSave,
+  placeholder,
+  value
+}: InlineFieldProps) {
   const [draft, setDraft] = useState(value)
   useEffect(() => setDraft(value), [value])
+
+  if (multiline) {
+    return (
+      <Textarea
+        aria-label={ariaLabel}
+        className={className}
+        onBlur={() => {
+          if (draft !== value) {
+            onSave(draft)
+          }
+        }}
+        onChange={event => setDraft(event.target.value)}
+        placeholder={placeholder}
+        value={draft}
+      />
+    )
+  }
 
   return (
     <Input
@@ -219,10 +395,10 @@ function PersonaTab({ bot, onSave }: { bot: Bot; onSave: (patch: { persona: stri
 
   return (
     <label className="block">
-      <span className="mb-2 block font-medium">Persona</span>
+      <span className={fieldLabel}>How this bot behaves and speaks</span>
       <Textarea
         aria-label="Persona"
-        className="min-h-56"
+        className="min-h-64"
         onBlur={() => {
           if (persona !== bot.persona) {
             onSave({ persona })
@@ -272,7 +448,7 @@ function ModelTab({
   return (
     <div className="space-y-4">
       <label className="block">
-        <span className="mb-2 block font-medium">Provider</span>
+        <span className={fieldLabel}>Provider</span>
         <Select
           label="Provider"
           onValueChange={provider => void onSave({ provider })}
@@ -282,7 +458,7 @@ function ModelTab({
         />
       </label>
       <label className="block">
-        <span className="mb-2 block font-medium">Model</span>
+        <span className={fieldLabel}>Model</span>
         <Select
           label="Model"
           onValueChange={model => {
@@ -321,8 +497,8 @@ export function MemorySectionEditor({
 
   return (
     <label className="block">
-      <span className="mb-1 flex justify-between font-medium">
-        <span className="capitalize">{label}</span>
+      <span className="mb-1.5 flex justify-between text-[length:var(--text-secondary)]">
+        <span className="font-medium capitalize">{label}</span>
         <span className={tooLong ? 'text-danger' : 'text-muted'}>
           {draft.length} / {cap}
         </span>
@@ -342,7 +518,7 @@ export function MemorySectionEditor({
           setDraft(event.target.value)
           setError(null)
         }}
-        rows={5}
+        rows={3}
         value={draft}
       />
       {error && (
@@ -426,7 +602,7 @@ export function MemoryTab({
             aria-label="Bot memory notes"
             disabled={!editing}
             onChange={event => setDraft(value => ({ ...value, memory_md: event.target.value }))}
-            rows={6}
+            rows={4}
             value={draft.memory_md}
           />
         </label>
@@ -436,7 +612,7 @@ export function MemoryTab({
             aria-label="Bot user notes"
             disabled={!editing}
             onChange={event => setDraft(value => ({ ...value, user_md: event.target.value }))}
-            rows={5}
+            rows={3}
             value={draft.user_md}
           />
         </label>
@@ -521,24 +697,24 @@ export function DreamingBlock({
       <p className="mt-1 text-[length:var(--text-secondary)] text-muted">
         Each day, this bot reviews recent conversations and writes useful details to its notes.
       </p>
-      <label className="mt-4 flex items-center justify-between">
-        <span>Enabled for this bot</span>
-        <input
-          aria-label="Enable dreaming"
-          checked={bot.dream_enabled ?? true}
-          onChange={event => void onSave({ dream_enabled: event.target.checked })}
-          type="checkbox"
-        />
-      </label>
-      <label className="mt-3 flex items-center justify-between">
-        <span>May write core memory</span>
-        <input
-          aria-label="May write core memory"
-          checked={bot.may_write_core ?? false}
-          onChange={event => void onSave({ may_write_core: event.target.checked })}
-          type="checkbox"
-        />
-      </label>
+      <div className={cn(cardClass, 'mt-4 divide-y divide-border')}>
+        <div className="flex items-center justify-between gap-3 px-3 py-2.5">
+          <span>Enabled for this bot</span>
+          <Switch
+            aria-label="Enable dreaming"
+            checked={bot.dream_enabled ?? true}
+            onCheckedChange={checked => void onSave({ dream_enabled: checked })}
+          />
+        </div>
+        <div className="flex items-center justify-between gap-3 px-3 py-2.5">
+          <span>May write core memory</span>
+          <Switch
+            aria-label="May write core memory"
+            checked={bot.may_write_core ?? false}
+            onCheckedChange={checked => void onSave({ may_write_core: checked })}
+          />
+        </div>
+      </div>
       <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[length:var(--text-secondary)]">
         <dt className="text-muted">Last run</dt>
         <dd>{formatTimestamp(status?.last_run_at)}</dd>
@@ -606,9 +782,9 @@ export function ComputerTab({ sessionId }: { sessionId?: string } = {}) {
 
   return (
     <div>
-      <h3 className="font-semibold">Computer</h3>
-      <p className="mt-1 text-muted">
-        Working directory: <span className="font-mono">{transcript?.info?.cwd ?? 'Unknown'}</span>
+      <p className="text-[length:var(--text-secondary)] text-muted">Working directory</p>
+      <p className="mt-0.5 font-mono text-[length:var(--text-secondary)]">
+        {transcript?.info?.cwd ?? 'Unknown'}
       </p>
       {(sessionId ?? live) ? (
         <Button
@@ -620,11 +796,11 @@ export function ComputerTab({ sessionId }: { sessionId?: string } = {}) {
           Stop
         </Button>
       ) : null}
-      <h4 className="mt-5 font-medium">Tool activity</h4>
+      <h4 className="mt-5 text-[length:var(--text-secondary)] text-muted">Tool activity</h4>
       {calls.length ? (
-        <ol className="mt-2 divide-y divide-border">
+        <ol className={cn(cardClass, 'mt-2 divide-y divide-border')}>
           {calls.map(call => (
-            <li className="py-2" key={call.toolId}>
+            <li className="px-3 py-2" key={call.toolId}>
               <div className="flex justify-between gap-2">
                 <span className="font-mono">{call.name}</span>
                 <span
@@ -673,23 +849,21 @@ function ToolsTab({
   const tools = Array.isArray(bot.tools) ? bot.tools : []
 
   return (
-    <fieldset className="divide-y divide-border">
+    <fieldset className={cn(cardClass, 'divide-y divide-border')}>
       <legend className="sr-only">Bot tools</legend>
       {TOOL_OPTIONS.map(([id, label]) => (
-        <label className="flex items-center justify-between py-3" key={id}>
+        <div className="flex items-center justify-between gap-3 px-3 py-2.5" key={id}>
           <span>{label}</span>
-          <input
+          <Switch
             aria-label={label}
             checked={tools.includes(id)}
-            className="size-4 accent-accent"
-            onChange={event =>
+            onCheckedChange={checked =>
               void onSave({
-                tools: event.target.checked ? [...tools, id] : tools.filter(tool => tool !== id)
+                tools: checked ? [...tools, id] : tools.filter(tool => tool !== id)
               })
             }
-            type="checkbox"
           />
-        </label>
+        </div>
       ))}
     </fieldset>
   )
@@ -730,9 +904,9 @@ function SkillsTab({
         </Button>
       </form>
       {skills.length ? (
-        <ul className="mt-3 divide-y divide-border">
+        <ul className={cn(cardClass, 'mt-3 divide-y divide-border')}>
           {skills.map(skill => (
-            <li className="flex items-center justify-between py-3" key={skill}>
+            <li className="flex items-center justify-between py-2 pr-2 pl-3" key={skill}>
               <span>{skill}</span>
               <Button
                 aria-label={`Detach ${skill}`}
@@ -760,9 +934,9 @@ function SectionsTab({ botName }: { botName: string }) {
   }, [botName, refresh])
 
   return (
-    <ul className="divide-y divide-border">
+    <ul className={cn(cardClass, 'divide-y divide-border')}>
       {sections.map(section => (
-        <li className="flex items-center gap-2 py-3" key={section.id}>
+        <li className="flex items-center gap-2 py-2 pr-2 pl-3" key={section.id}>
           <span className="min-w-0 flex-1 truncate">{section.title}</span>
           {section.archived_at ? (
             <Button
@@ -804,14 +978,18 @@ function DeleteBot({ bot, onDelete }: { bot: Bot; onDelete: () => Promise<void> 
 
   if (!confirming) {
     return (
-      <Button className="mt-3" onClick={() => setConfirming(true)} variant="danger">
+      <button
+        className="w-full rounded-panel px-3 py-2.5 text-center font-medium text-danger transition-colors hover:bg-danger/10"
+        onClick={() => setConfirming(true)}
+        type="button"
+      >
         Delete bot
-      </Button>
+      </button>
     )
   }
 
   return (
-    <div className="mt-3 space-y-2">
+    <div className={cn(cardClass, 'space-y-3 p-3')}>
       <p className="text-[length:var(--text-secondary)]">
         Type <strong>{bot.name}</strong> to delete this bot and all of its sections.
       </p>

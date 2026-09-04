@@ -1,26 +1,27 @@
 import { useParams } from '@tanstack/react-router'
-import { Crown, Plus, Send, Square, X } from 'lucide-react'
+import { Crown, Plus, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
 import { Menu } from '../../components/ui/menu'
-import { Textarea } from '../../components/ui/textarea'
 import { roomsSend, roomsStop } from '../../lib/api'
+import { avatarSrc } from '../../lib/avatar-builder'
 import { toMillis } from '../../lib/time'
 import type { Bot, RoomEvent, RoomMember, RoomTurn } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useRooms } from '../../stores/rooms'
 import { useTranscripts } from '../../stores/transcripts'
 
-import { Markdown } from './index'
+import { composerFieldClass, ComposerShell } from './composer'
+
+import { bubbleClass, DaySeparator, Markdown } from './index'
 
 // Stable empty values: a fresh [] or {} per render re-renders forever.
 const NO_EVENTS: RoomEvent[] = []
 const NO_TURNS: Record<string, RoomTurn> = {}
 
-const avatarData = (bot?: Bot) =>
-  bot?.avatar ? `data:${bot.avatar.mime};base64,${bot.avatar.data}` : null
+const avatarData = (bot?: Bot) => avatarSrc(bot?.avatar)
 
 function RoomEventRow({ event }: { event: RoomEvent }) {
   const bot = useBots(state => (event.actor_id ? state.byName[event.actor_id] : undefined))
@@ -53,7 +54,7 @@ function RoomEventRow({ event }: { event: RoomEvent }) {
   if (event.kind === 'waiting.human' || event.kind === 'limit.tripped') {
     return (
       <div
-        className={`my-3 rounded-control px-3 py-2 ${event.kind === 'limit.tripped' ? 'bg-warning/12 text-warning' : 'bg-accent/12 text-accent'}`}
+        className={`hex-bubble my-3 rounded-bubble px-4 py-2.5 text-[length:var(--text-secondary)] ${event.kind === 'limit.tripped' ? 'bg-warning/12 text-warning' : 'bg-accent/12 text-accent'}`}
         data-testid="room-event"
       >
         {event.kind === 'waiting.human' ? 'Waiting on you' : text || 'A room limit was reached.'}
@@ -65,29 +66,26 @@ function RoomEventRow({ event }: { event: RoomEvent }) {
 
   return (
     <article
-      className={`flex gap-3 py-3 ${human ? 'flex-row-reverse' : ''}`}
+      className={`flex gap-2 py-1 ${human ? 'flex-row-reverse' : ''}`}
       data-testid="room-event"
     >
       {human ? null : (
-        <Avatar image={avatarData(bot)} name={bot?.display_name ?? event.actor_id ?? 'Bot'} />
+        <Avatar
+          className="mt-1"
+          image={avatarData(bot)}
+          name={bot?.display_name ?? event.actor_id ?? 'Bot'}
+          size="sm"
+        />
       )}
-      <div
-        className={human ? 'max-w-[80%] rounded-message bg-accent/12 px-3 py-2' : 'min-w-0 flex-1'}
-      >
+      <div className={bubbleClass}>
         {!human ? (
-          <div className="mb-1 text-[length:var(--text-secondary)] font-medium">
+          <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
             {bot?.display_name ?? event.actor_id}
           </div>
         ) : null}
-        <div className="prose prose-sm max-w-none break-words">
+        <div className="hex-prose">
           <Markdown text={text} />
         </div>
-        <time className="mt-1 block text-[length:var(--text-meta)] text-muted">
-          {new Date(toMillis(event.created_at)).toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit'
-          })}
-        </time>
       </div>
     </article>
   )
@@ -114,12 +112,12 @@ export function RoomMentionPopover({
 
   return (
     <div
-      className="absolute bottom-full left-12 mb-1 min-w-52 rounded-control border border-border bg-surface p-1 shadow-popup"
+      className="hex-bubble absolute bottom-full left-14 mb-1 min-w-52 rounded-panel border border-border bg-surface p-1 shadow-popup"
       role="listbox"
     >
       {suggestions.map(member => (
         <button
-          className="block w-full rounded-control px-3 py-2 text-left hover:bg-surface-2"
+          className="block w-full rounded-control px-3 py-2 text-left text-[length:var(--text-secondary)] hover:bg-surface-2"
           key={member.member_id}
           onClick={() => onSelect(member.member_id)}
           type="button"
@@ -186,10 +184,12 @@ export function RoomConversation() {
 
   return (
     <div className="flex h-screen min-h-0 flex-col bg-background">
-      <header className="flex min-h-16 items-center gap-3 border-b border-border bg-surface px-4">
-        <div className="min-w-0 flex-1">
-          <h2 className="font-semibold">{room.name}</h2>
-          <div className="mt-1 flex items-center -space-x-1">
+      <header className="hex-drag flex h-11 shrink-0 items-center gap-3 px-4">
+        <div className="hex-no-drag flex min-w-0 flex-1 items-center gap-3">
+          <h2 className="truncate text-[length:var(--text-secondary)] font-semibold">
+            {room.name}
+          </h2>
+          <div className="flex items-center -space-x-1">
             {members.map(member => {
               const bot = bots[member.member_id]
 
@@ -208,7 +208,7 @@ export function RoomConversation() {
                   ) : null}
                   <button
                     aria-label={`Remove ${bot?.display_name ?? member.member_id}`}
-                    className="absolute inset-0 hidden place-items-center rounded-full bg-foreground/60 text-accent-fg group-hover:grid"
+                    className="absolute inset-0 hidden place-items-center rounded-full bg-black/60 text-white group-hover:grid"
                     onClick={() => void useRooms.getState().removeMember(roomId, member.member_id)}
                     type="button"
                   >
@@ -227,32 +227,53 @@ export function RoomConversation() {
               onSelect: () => void useRooms.getState().addMember(roomId, bot.name)
             }))}
           trigger={
-            <Button aria-label="Add member" icon={<Plus size={14} />} size="sm">
+            <Button
+              aria-label="Add member"
+              className="hex-no-drag"
+              icon={<Plus size={14} />}
+              size="sm"
+              variant="pill"
+            >
               Add
             </Button>
           }
         />
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-3xl px-5 py-4">
-          {events.map(event => (
-            <RoomEventRow event={event} key={event.seq} />
-          ))}
+        <div className="mx-auto max-w-3xl px-4 py-2">
+          {events.map((event, index) => {
+            const previous = events[index - 1]
+
+            const separator =
+              !previous || toMillis(event.created_at) - toMillis(previous.created_at) > 20 * 60_000
+
+            return (
+              <div key={event.seq}>
+                {separator ? <DaySeparator time={event.created_at} /> : null}
+                <RoomEventRow event={event} />
+              </div>
+            )
+          })}
           {Object.values(turns).map(turn => {
             const transcript = turn.live_session_id ? transcripts[turn.live_session_id] : undefined
             const message = transcript?.messages.at(-1)
             const bot = bots[turn.bot]
 
             return message?.text ? (
-              <article className="flex gap-3 py-3" data-testid="room-event" key={turn.bot}>
-                <Avatar image={avatarData(bot)} name={bot?.display_name ?? turn.bot} />
-                <div>
-                  <div className="mb-1 text-[length:var(--text-secondary)] font-medium">
+              <article className="flex gap-2 py-1" data-testid="room-event" key={turn.bot}>
+                <Avatar
+                  className="mt-1"
+                  image={avatarData(bot)}
+                  name={bot?.display_name ?? turn.bot}
+                  size="sm"
+                />
+                <div className={bubbleClass}>
+                  <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
                     {bot?.display_name ?? turn.bot}
                   </div>
                   <p className="whitespace-pre-wrap">
                     {message.text}
-                    <span className="ml-1 inline-block h-4 w-px animate-pulse bg-accent" />
+                    <span className="ml-0.5 inline-block h-4 w-[2px] animate-pulse rounded bg-foreground/70 align-middle" />
                   </p>
                 </div>
               </article>
@@ -261,19 +282,27 @@ export function RoomConversation() {
           <div ref={bottom} />
         </div>
       </div>
-      <div className="relative border-t border-border bg-surface p-3" data-testid="room-composer">
-        {mention === undefined ? null : (
-          <RoomMentionPopover
-            bots={bots}
-            members={members}
-            onSelect={name => setText(value => value.replace(/@([\w-]*)$/, `@${name} `))}
-            query={mention}
-          />
-        )}
-        <div className="flex items-end gap-2 rounded-panel border border-border px-2 py-2 focus-within:ring-2 focus-within:ring-accent/40">
-          <Textarea
+      <div data-testid="room-composer">
+        <ComposerShell
+          above={
+            mention === undefined ? null : (
+              <RoomMentionPopover
+                bots={bots}
+                members={members}
+                onSelect={name => setText(value => value.replace(/@([\w-]*)$/, `@${name} `))}
+                query={mention}
+              />
+            )
+          }
+          canSend={Boolean(text.trim())}
+          onSend={() => void send()}
+          onStop={() => void roomsStop(roomId)}
+          sending={sending}
+          streaming={streaming}
+        >
+          <textarea
             aria-label="Message room"
-            className="min-h-9 flex-1 border-0 p-2 focus-visible:ring-0"
+            className={composerFieldClass}
             onChange={event => setText(event.target.value)}
             onKeyDown={event => {
               if (event.key === 'Enter' && !event.shiftKey) {
@@ -285,26 +314,7 @@ export function RoomConversation() {
             rows={1}
             value={text}
           />
-          {streaming ? (
-            <Button
-              icon={<Square size={14} />}
-              onClick={() => void roomsStop(roomId)}
-              variant="primary"
-            >
-              Stop
-            </Button>
-          ) : (
-            <Button
-              busy={sending}
-              disabled={!text.trim()}
-              icon={<Send size={15} />}
-              onClick={() => void send()}
-              variant="primary"
-            >
-              Send
-            </Button>
-          )}
-        </div>
+        </ComposerShell>
       </div>
     </div>
   )

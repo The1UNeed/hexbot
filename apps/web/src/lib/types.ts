@@ -81,7 +81,7 @@ export interface BotCreateInput {
   tools?: string[]
 }
 
-export type BotUpdatePatch = Partial<Omit<BotCreateInput, 'name'>> & {
+export type BotUpdatePatch = Partial<Omit<BotCreateInput, 'avatar' | 'name'>> & {
   avatar?: null | string
   dream_enabled?: boolean
   may_write_core?: boolean

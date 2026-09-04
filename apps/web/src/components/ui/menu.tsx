@@ -23,7 +23,7 @@ export function Menu({ items, trigger }: MenuProps) {
       <BaseMenu.Trigger render={<span className="inline-flex" />}>{trigger}</BaseMenu.Trigger>
       <BaseMenu.Portal>
         <BaseMenu.Positioner className="z-50 outline-none" sideOffset={6}>
-          <BaseMenu.Popup className="min-w-44 rounded-control border border-border bg-surface p-1 text-foreground shadow-popup outline-none">
+          <BaseMenu.Popup className="hex-bubble min-w-44 rounded-panel border border-border bg-surface p-1 text-foreground shadow-popup outline-none">
             {items.map((item, index) =>
               item.separator ? (
                 <BaseMenu.Separator className="my-1 h-px bg-border" key={index} />

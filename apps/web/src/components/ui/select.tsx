@@ -31,7 +31,7 @@ export function Select({
     >
       <BaseSelect.Trigger
         aria-label={label}
-        className="flex h-9 w-full items-center justify-between rounded-control border border-border bg-surface px-3 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50"
+        className="flex h-9 w-full items-center justify-between rounded-control border border-border bg-background px-3 text-foreground outline-none focus-visible:border-foreground/40 disabled:opacity-50"
       >
         <BaseSelect.Value>
           {selected =>
@@ -44,7 +44,7 @@ export function Select({
       </BaseSelect.Trigger>
       <BaseSelect.Portal>
         <BaseSelect.Positioner className="z-50 outline-none" sideOffset={6}>
-          <BaseSelect.Popup className="min-w-[var(--anchor-width)] rounded-control border border-border bg-surface p-1 text-foreground shadow-popup outline-none">
+          <BaseSelect.Popup className="max-h-80 min-w-[var(--anchor-width)] overflow-auto rounded-panel border border-border bg-surface p-1 text-foreground shadow-popup outline-none">
             <BaseSelect.List>
               {options.map(option => (
                 <BaseSelect.Item

@@ -9,27 +9,29 @@
 :root {
   color-scheme: light dark;
 
-  --hex-background: #fafaf9;
-  --hex-surface: #ffffff;
-  --hex-surface-2: #f3f3f1;
-  --hex-text: #17171a;
-  --hex-muted-text: #6b6b72;
-  --hex-border: #e6e6e2;
+  --hex-background: #ffffff;
+  --hex-surface: #f5f5f5;
+  --hex-surface-2: #ebebeb;
+  --hex-surface-3: #dedede;
+  --hex-text: #141414;
+  --hex-muted-text: #767676;
+  --hex-border: #e3e3e3;
   --hex-accent: #4f46e5;
   --hex-accent-fg: #ffffff;
   --hex-danger: #d92d20;
-  --hex-success: #12805c;
+  --hex-success: #16a34a;
   --hex-warning: #b54708;
 
-  --hex-radius-control: 6px;
-  --hex-radius-panel: 10px;
-  --hex-radius-bubble: 16px;
+  --hex-radius-control: 8px;
+  --hex-radius-panel: 12px;
+  --hex-radius-bubble: 18px;
 
   --hex-font-sans:
-    system-ui, -apple-system, 'SF Pro Text', Inter, Cantarell, 'Segoe UI', sans-serif;
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, Inter, Cantarell, 'Segoe UI',
+    sans-serif;
   --hex-font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
 
-  --hex-shadow-popup: 0 8px 24px -8px rgb(0 0 0 / 0.24);
+  --hex-shadow-popup: 0 12px 32px -8px rgb(0 0 0 / 0.2), 0 0 0 1px rgb(0 0 0 / 0.04);
 
   --hex-motion-fast: 120ms;
   --hex-motion-panel: 200ms;
@@ -37,62 +39,66 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --hex-background: #121214;
-    --hex-surface: #1a1a1e;
-    --hex-surface-2: #232328;
-    --hex-text: #f2f2f4;
-    --hex-muted-text: #9a9aa3;
-    --hex-border: #2c2c33;
+    --hex-background: #0e0e0e;
+    --hex-surface: #171717;
+    --hex-surface-2: #262626;
+    --hex-surface-3: #343434;
+    --hex-text: #f4f4f4;
+    --hex-muted-text: #8e8e8e;
+    --hex-border: #2a2a2a;
     --hex-accent: #8b85ff;
-    --hex-accent-fg: #121214;
-    --hex-danger: #f97066;
-    --hex-success: #3ccb7f;
+    --hex-accent-fg: #0e0e0e;
+    --hex-danger: #f4645b;
+    --hex-success: #34c759;
     --hex-warning: #f7b24a;
 
-    --hex-shadow-popup: 0 8px 24px -8px rgb(0 0 0 / 0.6);
+    --hex-shadow-popup: 0 16px 40px -8px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.06);
   }
 }
 
 [data-theme='light'] {
   color-scheme: light;
 
-  --hex-background: #fafaf9;
-  --hex-surface: #ffffff;
-  --hex-surface-2: #f3f3f1;
-  --hex-text: #17171a;
-  --hex-muted-text: #6b6b72;
-  --hex-border: #e6e6e2;
+  --hex-background: #ffffff;
+  --hex-surface: #f5f5f5;
+  --hex-surface-2: #ebebeb;
+  --hex-surface-3: #dedede;
+  --hex-text: #141414;
+  --hex-muted-text: #767676;
+  --hex-border: #e3e3e3;
   --hex-accent: #4f46e5;
   --hex-accent-fg: #ffffff;
   --hex-danger: #d92d20;
-  --hex-success: #12805c;
+  --hex-success: #16a34a;
   --hex-warning: #b54708;
 
-  --hex-shadow-popup: 0 8px 24px -8px rgb(0 0 0 / 0.24);
+  --hex-shadow-popup: 0 12px 32px -8px rgb(0 0 0 / 0.2), 0 0 0 1px rgb(0 0 0 / 0.04);
 }
 
 [data-theme='dark'] {
   color-scheme: dark;
 
-  --hex-background: #121214;
-  --hex-surface: #1a1a1e;
-  --hex-surface-2: #232328;
-  --hex-text: #f2f2f4;
-  --hex-muted-text: #9a9aa3;
-  --hex-border: #2c2c33;
+  --hex-background: #0e0e0e;
+  --hex-surface: #171717;
+  --hex-surface-2: #262626;
+  --hex-surface-3: #343434;
+  --hex-text: #f4f4f4;
+  --hex-muted-text: #8e8e8e;
+  --hex-border: #2a2a2a;
   --hex-accent: #8b85ff;
-  --hex-accent-fg: #121214;
-  --hex-danger: #f97066;
-  --hex-success: #3ccb7f;
+  --hex-accent-fg: #0e0e0e;
+  --hex-danger: #f4645b;
+  --hex-success: #34c759;
   --hex-warning: #f7b24a;
 
-  --hex-shadow-popup: 0 8px 24px -8px rgb(0 0 0 / 0.6);
+  --hex-shadow-popup: 0 16px 40px -8px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.06);
 }
 
 @theme inline {
   --color-background: var(--hex-background);
   --color-surface: var(--hex-surface);
   --color-surface-2: var(--hex-surface-2);
+  --color-surface-3: var(--hex-surface-3);
   --color-foreground: var(--hex-text);
   --color-muted: var(--hex-muted-text);
   --color-border: var(--hex-border);
@@ -112,6 +118,7 @@
   --text-meta: 12px;
   --text-secondary: 13px;
   --text-body: 14px;
+  --text-heading: 16px;
   --text-title: 20px;
 
   --shadow-popup: var(--hex-shadow-popup);
@@ -124,6 +131,90 @@ body {
   color: var(--hex-text);
   font-family: var(--hex-font-sans);
   font-size: var(--text-body, 14px);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* macOS-style overlay scrollbars that stay out of the way. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--hex-text) 18%, transparent) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--hex-text) 18%, transparent);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* The window title bar is hidden on macOS; this strip is the drag handle. */
+.hex-drag {
+  -webkit-app-region: drag;
+}
+.hex-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Typography inside message bubbles. */
+.hex-prose > :first-child {
+  margin-top: 0;
+}
+.hex-prose > :last-child {
+  margin-bottom: 0;
+}
+.hex-prose p,
+.hex-prose ul,
+.hex-prose ol,
+.hex-prose blockquote {
+  margin: 0.55em 0;
+}
+.hex-prose ul,
+.hex-prose ol {
+  padding-left: 1.4em;
+}
+.hex-prose ul {
+  list-style: disc;
+}
+.hex-prose ol {
+  list-style: decimal;
+}
+.hex-prose h1,
+.hex-prose h2,
+.hex-prose h3,
+.hex-prose h4 {
+  margin: 0.9em 0 0.4em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.hex-prose h1 {
+  font-size: 1.25em;
+}
+.hex-prose h2 {
+  font-size: 1.15em;
+}
+.hex-prose h3 {
+  font-size: 1.05em;
+}
+.hex-prose blockquote {
+  border-left: 2px solid var(--hex-border);
+  padding-left: 0.9em;
+  color: var(--hex-muted-text);
+}
+.hex-prose hr {
+  border: 0;
+  border-top: 1px solid var(--hex-border);
+  margin: 1em 0;
+}
+.hex-prose strong {
+  font-weight: 600;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -152,10 +243,21 @@ body {
 @keyframes hex-bob {
   0%,
   100% {
-    transform: translateY(0) rotate(-3deg);
+    transform: translateY(0) rotate(-4deg);
   }
   50% {
-    transform: translateY(-3px) rotate(3deg);
+    transform: translateY(-3px) rotate(4deg);
+  }
+}
+
+@keyframes hex-blink {
+  0%,
+  92%,
+  100% {
+    transform: scaleY(1);
+  }
+  96% {
+    transform: scaleY(0.1);
   }
 }
 
@@ -175,35 +277,68 @@ body {
 @keyframes hex-pop {
   from {
     opacity: 0;
-    transform: scale(0.85);
+    transform: translateY(6px) scale(0.97);
   }
   to {
     opacity: 1;
-    transform: scale(1);
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes hex-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes hex-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
   }
 }
 
 .hex-face:hover {
   animation: hex-wiggle 500ms ease-in-out;
 }
+.hex-face .hex-eyes {
+  animation: hex-blink 4.5s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
 .hex-think {
-  animation: hex-bob 1.2s ease-in-out infinite;
+  animation: hex-bob 1.1s ease-in-out infinite;
   transform-origin: 50% 90%;
 }
 .hex-bubble {
   animation: hex-pop var(--hex-motion-panel) ease-out;
 }
+.hex-fade {
+  animation: hex-fade var(--hex-motion-panel) ease-out;
+}
 .hex-dot {
   animation: hex-dot 1.2s ease-in-out infinite;
+}
+.hex-pulse {
+  animation: hex-pulse 1.6s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .hex-face:hover,
+  .hex-face .hex-eyes,
   .hex-think,
-  .hex-bubble {
+  .hex-bubble,
+  .hex-fade {
     animation: none;
   }
-  .hex-dot {
+  .hex-dot,
+  .hex-pulse {
     animation-duration: 2.4s;
   }
 }
