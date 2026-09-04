@@ -1,5 +1,5 @@
 import { Check, Copy, ExternalLink } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import {
   modelsList,
@@ -43,13 +43,18 @@ export function ProviderPanel({
   const [login, setLogin] = useState<ProviderLogin | null>(null)
   const [copied, setCopied] = useState(false)
 
+  const loginId = login?.login_id
+  const pending = login?.status === 'pending'
+  const active = useRef<string | null>(null)
+  active.current = pending && loginId ? loginId : null
+
   useEffect(() => {
-    if (login?.status !== 'pending') {
+    if (!pending || !loginId) {
       return
     }
 
     const timer = setInterval(() => {
-      void providersLoginPoll(login.login_id)
+      void providersLoginPoll(loginId)
         .then(next => {
           setLogin(next)
 
@@ -61,15 +66,17 @@ export function ProviderPanel({
     }, 3_000)
 
     return () => clearInterval(timer)
-  }, [login, onConfigured])
+  }, [loginId, onConfigured, pending])
 
+  // Cancel a sign-in that is still waiting when the panel goes away, and only
+  // then: a poll result must not tear down the login it just reported on.
   useEffect(
     () => () => {
-      if (login?.status === 'pending') {
-        void providersLoginCancel(login.login_id).catch(() => undefined)
+      if (active.current) {
+        void providersLoginCancel(active.current).catch(() => undefined)
       }
     },
-    [login]
+    []
   )
 
   const signIn = async () => {
