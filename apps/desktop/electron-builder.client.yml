@@ -1,0 +1,17 @@
+# Client-only package: the desktop app without the daemon runtime. Everything
+# not listed here comes from electron-builder.base.yml. Build with
+# HEXBOT_EDITION=client so the main process knows it has no runtime.
+extends: ./electron-builder.base.yml
+appId: app.hexbot.client
+productName: Hexbot Client
+artifactName: HexbotClient-${version}-${os}-${arch}.${ext}
+linux:
+  executableName: hexbot-client
+  artifactName: HexbotClient-${version}-linux-${arch}.${ext}
+deb:
+  desktop:
+    entry:
+      StartupWMClass: Hexbot Client
+publish:
+  provider: generic
+  url: https://hexbot.app/updates/client/${os}/${arch}

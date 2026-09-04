@@ -20,7 +20,7 @@ Changing channels affects future checks. It does not downgrade the installed app
 
 ## What an update check sends
 
-The updater requests platform and architecture-specific metadata from `hexbot.app`, then downloads the selected release artifact from the URL in that metadata. Conversations, provider credentials, bot memory, and pairing codes are not part of the request.
+The updater requests package, platform, and architecture-specific metadata from `hexbot.app` (the client-only package uses a separate feed), then downloads the selected release artifact from the URL in that metadata. Conversations, provider credentials, bot memory, and pairing codes are not part of the request.
 
 ## Crash reports
 

@@ -9,6 +9,7 @@ import { bootstrap, type BootstrapProgress } from './backend/bootstrap'
 import { DaemonManager } from './backend/manager'
 import { hexbotHome } from './backend/paths'
 import { resolveWebDevUrl } from './dev-url'
+import { edition, hasRuntime, requireRuntime } from './edition'
 import { parseDeepLink } from './deep-link'
 import { notify } from './notify'
 import { pair, pairWithGrant, type GrantPairOptions, type PairOptions } from './pair'
@@ -174,11 +175,13 @@ function registerIpc(): void {
       e2eTarget: process.env.HEXBOT_E2E_TARGET,
       platform: process.platform,
       version: app.getVersion(),
-      isPackaged: app.isPackaged
+      isPackaged: app.isPackaged,
+      edition
     }
   })
   ipcMain.handle('hexbot:daemon:status', () => daemon.status())
   ipcMain.handle('hexbot:daemon:start', async () => {
+    requireRuntime('Running a daemon on this machine')
     await bootstrap(sendProgress)
     return daemon.start()
   })
@@ -226,7 +229,10 @@ function registerIpc(): void {
     if (typeof enabled !== 'boolean') throw new TypeError('Invalid crash report preference')
     return setCrashReports(enabled)
   })
-  ipcMain.handle('hexbot:service:install', () => installService())
+  ipcMain.handle('hexbot:service:install', () => {
+    requireRuntime('Starting the daemon at login')
+    return installService()
+  })
   ipcMain.handle('hexbot:service:uninstall', () => uninstallService())
   ipcMain.handle('hexbot:service:status', () => serviceStatus())
 }
@@ -266,7 +272,9 @@ else {
       void createWindow()
       return mainWindow!
     })
-    if (app.isPackaged && existsSync(join(hexbotHome(), 'runtime')))
+    // The full package checks only once its runtime is installed; the client
+    // package has nothing to install first.
+    if (app.isPackaged && (!hasRuntime || existsSync(join(hexbotHome(), 'runtime'))))
       void checkForUpdates().catch(error => console.error('Update check failed', error))
     app.on('activate', () => void createWindow())
   })

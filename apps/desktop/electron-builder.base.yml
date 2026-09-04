@@ -1,0 +1,59 @@
+# Settings shared by both packages. Do not build from this file directly;
+# electron-builder.yml (full) and electron-builder.client.yml (client) extend it.
+appId: app.hexbot.desktop
+productName: Hexbot
+artifactName: Hexbot-${version}-${os}-${arch}.${ext}
+directories:
+  output: release
+files:
+  - out/**
+  - resources/**
+  - '!resources/hexbot-src/**'
+  - package.json
+asar: true
+protocols:
+  - name: Hexbot
+    schemes:
+      - hexbot
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: zip
+      arch:
+        - arm64
+        - x64
+  hardenedRuntime: true
+  entitlements: entitlements.mac.plist
+  entitlementsInherit: entitlements.mac.plist
+  # electron-builder notarizes only when APPLE_API_KEY, APPLE_API_KEY_ID,
+  # and APPLE_API_ISSUER are all present in the release environment.
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
+  category: Utility
+  executableName: hexbot
+  artifactName: Hexbot-${version}-linux-${arch}.${ext}
+deb:
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libasound2
+  desktop:
+    entry:
+      Categories: Utility
+      StartupWMClass: Hexbot
+publish:
+  provider: generic
+  url: https://hexbot.app/updates/${os}/${arch}
+
+afterPack: ../../scripts/desktop/after-pack.cjs

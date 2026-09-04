@@ -6,11 +6,16 @@ description: Install Hexbot on macOS or Linux.
 
 # Install Hexbot
 
-Hexbot has a desktop app and a background daemon. The full package runs both on one computer. Client-only mode connects the desktop app to a daemon running somewhere else.
+Hexbot has a desktop app and a background daemon, shipped as two packages:
+
+- **Full package** (`Hexbot`): the desktop app plus the daemon runtime. Install this on the computer that will run your bots.
+- **Client only** (`Hexbot Client`): the desktop app alone. Install this on any other computer, and pair it with a full package over LAN, Tailscale, or Hex Connect. It never installs Python or a daemon.
+
+Both packages update independently and can be installed side by side.
 
 ## Download
 
-Choose the build for your computer from the [home page](/):
+Pick a package, then choose the build for your computer from the [home page](/):
 
 - Apple Silicon for Macs with an M-series chip
 - Intel for older Macs
@@ -21,12 +26,12 @@ Release downloads will replace the placeholder links before the first public rel
 
 ## First launch
 
-Open Hexbot and choose one of these setups:
+The full package asks where Hexbot should run:
 
-1. **Run on this machine.** Hexbot installs its daemon under `~/.hexbot`. You can let it start at login and continue running after the desktop window closes.
+1. **Run on this machine.** Hexbot installs its daemon under `~/.hexbot`. You can let it start at login and continue running after the desktop window closes. The first run may download Python 3.11, uv, Git, and ripgrep. Hexbot keeps these managed tools inside `~/.hexbot`; it does not replace system copies.
 2. **Connect to a daemon.** Use a pairing link or enter the daemon address and one-time code.
 
-For a local setup, the first run may download Python 3.11, uv, Git, and ripgrep. Hexbot keeps these managed tools inside `~/.hexbot`; it does not replace system copies.
+The client-only package opens straight on the connect screen.
 
 ## macOS
 
@@ -49,6 +54,6 @@ sudo apt install ./Hexbot-0.1.0-linux-x64.deb
 
 ## Data and updates
 
-Hexbot stores configuration, bots, memory, and its managed runtime in `~/.hexbot`. Back up that directory before moving a daemon to another machine.
+Hexbot stores configuration, bots, memory, and its managed runtime in `~/.hexbot`. Back up that directory before moving a daemon to another machine. The client-only package keeps only window state and pairing tokens there.
 
 The desktop app checks `hexbot.app` for signed updates. The website does not receive your conversations, provider keys, or pairing codes.

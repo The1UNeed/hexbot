@@ -29,6 +29,18 @@ test('cask updater rewrites version and both architecture hashes', async () => {
   assert.match(source, new RegExp(result.hashes.x64))
 })
 
+test('cask updater accepts the client package prefix', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hexbot-cask-client-'))
+  const cask = join(directory, 'hexbot-client.rb')
+  await writeFile(cask, '  version "old"\n  sha256 arm: "old-arm", intel: "old-intel"\n')
+  await writeFile(join(directory, 'HexbotClient-1.2.3-mac-arm64.dmg'), 'arm')
+  await writeFile(join(directory, 'HexbotClient-1.2.3-mac-x64.dmg'), 'intel')
+  await writeFile(join(directory, 'Hexbot-9.9.9-mac-arm64.dmg'), 'full')
+  const result = await updateCask(directory, cask, undefined, 'HexbotClient')
+  assert.equal(result.version, '1.2.3')
+  assert.match(await readFile(cask, 'utf8'), /version "1\.2\.3"/)
+})
+
 test('prerelease feeds include beta metadata beside latest metadata', async () => {
   assert.deepEqual(feedMetadataNames('1.2.3-beta.1', 'mac'), ['latest-mac.yml', 'beta-mac.yml'])
   assert.deepEqual(feedMetadataNames('1.2.3', 'linux'), ['latest-linux.yml'])

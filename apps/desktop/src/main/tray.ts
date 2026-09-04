@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { BrowserWindow, Menu, Tray, app, nativeImage } from 'electron'
 
 import type { DaemonManager, DaemonStatus } from './backend/manager'
+import { hasRuntime } from './edition'
 
 let tray: Tray | undefined
 export function createTray(manager: DaemonManager, openWindow: () => BrowserWindow): Tray {
@@ -25,10 +26,14 @@ export function createTray(manager: DaemonManager, openWindow: () => BrowserWind
             window.focus()
           }
         },
-        { label: `Daemon: ${status.state}`, enabled: false },
-        status.state === 'running' || status.state === 'starting'
-          ? { label: 'Stop daemon', click: () => void manager.stop() }
-          : { label: 'Start daemon', click: () => void manager.start() },
+        ...(hasRuntime
+          ? [
+              { label: `Daemon: ${status.state}`, enabled: false },
+              status.state === 'running' || status.state === 'starting'
+                ? { label: 'Stop daemon', click: () => void manager.stop() }
+                : { label: 'Start daemon', click: () => void manager.start() }
+            ]
+          : [{ label: 'Client-only app', enabled: false }]),
         { type: 'separator' },
         { label: 'Quit', click: () => app.quit() }
       ])

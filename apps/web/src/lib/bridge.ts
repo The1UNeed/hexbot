@@ -46,6 +46,8 @@ export interface HexbotBridge {
   }
   /** Test-only daemon origin supplied by the Electron main process. */
   e2eTarget?: string
+  /** 'full' ships the daemon runtime; 'client' can only connect to one elsewhere. */
+  edition: 'client' | 'full'
   isPackaged: boolean
   notify(input: { body: string; sectionId?: string; title: string }): void
   openExternal(url: string): Promise<void> | void
@@ -121,6 +123,11 @@ export function getBridge(): HexbotBridge | null {
 
 export function isElectron(): boolean {
   return getBridge() !== null
+}
+
+/** True when this app can run a daemon on this machine. */
+export function hasLocalRuntime(): boolean {
+  return getBridge()?.edition === 'full'
 }
 
 /** Default device name for the connect screen. */

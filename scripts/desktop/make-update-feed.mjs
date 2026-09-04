@@ -17,13 +17,21 @@ import { fileURLToPath } from 'node:url'
 import { feedMetadataNames, writeFeedMetadata } from './update-feed-utils.mjs'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const input = process.argv[2]
+// --client prepares the client-only package: artifacts are named
+// HexbotClient-* and the feed lives under updates/client/<os>/<arch>.
+const client = process.argv.includes('--client')
+const positional = process.argv.slice(2).filter(arg => arg !== '--client')
+const input = positional[0]
 if (!input)
   throw new Error(
-    'Usage: node scripts/desktop/make-update-feed.mjs <electron-builder-output-directory>'
+    'Usage: node scripts/desktop/make-update-feed.mjs [--client] <electron-builder-output-directory> [feed-root]'
   )
 const outputDirectory = resolve(input)
-const feedRoot = process.argv[3] ? resolve(process.argv[3]) : join(repositoryRoot, 'dist/updates')
+const prefix = client ? 'HexbotClient' : 'Hexbot'
+const feedRoot = join(
+  positional[1] ? resolve(positional[1]) : join(repositoryRoot, 'dist/updates'),
+  client ? 'client' : ''
+)
 const version = JSON.parse(
   await readFile(join(repositoryRoot, 'apps/desktop/package.json'), 'utf8')
 ).version
@@ -61,8 +69,8 @@ const files = await readdir(outputDirectory)
 let prepared = 0
 
 for (const arch of ['arm64', 'x64']) {
-  const zip = files.find(f => f === `Hexbot-${version}-mac-${arch}.zip`)
-  const dmg = files.find(f => f === `Hexbot-${version}-mac-${arch}.dmg`)
+  const zip = files.find(f => f === `${prefix}-${version}-mac-${arch}.zip`)
+  const dmg = files.find(f => f === `${prefix}-${version}-mac-${arch}.dmg`)
   if (!zip) {
     console.log(`mac/${arch}: no zip artifact, skipped`)
     continue

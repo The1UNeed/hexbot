@@ -11,9 +11,9 @@ async function sha256(file) {
   return hash.digest('hex')
 }
 
-export async function updateCask(releaseDirectory, caskFile, requestedVersion) {
+export async function updateCask(releaseDirectory, caskFile, requestedVersion, prefix = 'Hexbot') {
   const files = await import('node:fs/promises').then(fs => fs.readdir(releaseDirectory))
-  const pattern = /^Hexbot-(.+)-mac-(arm64|x64)\.dmg$/
+  const pattern = new RegExp(`^${prefix}-(.+)-mac-(arm64|x64)\\.dmg$`)
   const matches = files.map(file => [file, file.match(pattern)]).filter(([, match]) => match)
   const versions = new Set(matches.map(([, match]) => match[1]))
   const version = requestedVersion ?? (versions.size === 1 ? [...versions][0] : undefined)
@@ -40,10 +40,17 @@ export async function updateCask(releaseDirectory, caskFile, requestedVersion) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const releaseDirectory = process.argv[2]
+  const client = process.argv.includes('--client')
+  const [releaseDirectory, requestedVersion] = process.argv.slice(2).filter(a => a !== '--client')
   if (!releaseDirectory)
-    throw new Error('Usage: node scripts/desktop/update-cask.mjs <release-directory> [version]')
-  const caskFile = join(repositoryRoot, 'packaging/homebrew/hexbot.rb')
-  const result = await updateCask(resolve(releaseDirectory), caskFile, process.argv[3])
-  console.log(`Updated ${basename(caskFile)} for Hexbot ${result.version}`)
+    throw new Error(
+      'Usage: node scripts/desktop/update-cask.mjs [--client] <release-directory> [version]'
+    )
+  const caskFile = join(
+    repositoryRoot,
+    client ? 'packaging/homebrew/hexbot-client.rb' : 'packaging/homebrew/hexbot.rb'
+  )
+  const prefix = client ? 'HexbotClient' : 'Hexbot'
+  const result = await updateCask(resolve(releaseDirectory), caskFile, requestedVersion, prefix)
+  console.log(`Updated ${basename(caskFile)} for ${prefix} ${result.version}`)
 }

@@ -7,7 +7,7 @@ import { Select } from '../components/ui/select'
 import { Textarea } from '../components/ui/textarea'
 import { botsCreate, modelsList, providersList, providersSetKey } from '../lib/api'
 import { BOT_TEMPLATES } from '../lib/bot-templates'
-import { type DaemonProgress, getBridge, isElectron } from '../lib/bridge'
+import { type DaemonProgress, getBridge, hasLocalRuntime, isElectron } from '../lib/bridge'
 import { connectTo } from '../lib/connection'
 import type { ModelOption, Provider } from '../lib/types'
 import { useBots } from '../stores/bots'
@@ -16,11 +16,12 @@ import { uiActions } from '../stores/ui'
 
 export const Route = createFileRoute('/onboarding')({ component: OnboardingPage })
 
-type OnboardingStep = 'bot' | 'choice' | 'existing' | 'install' | 'providers'
+type OnboardingStep = 'bot' | 'choice' | 'connect' | 'existing' | 'install' | 'providers'
 
 export function initialOnboardingStep(input: {
   connected: boolean
   hasBots: boolean
+  hasLocalRuntime: boolean
   isElectron: boolean
 }): OnboardingStep {
   if (input.hasBots) {
@@ -28,7 +29,9 @@ export function initialOnboardingStep(input: {
   }
 
   if (!input.connected && input.isElectron) {
-    return 'choice'
+    // The client-only package has nothing to install, so the only way in is
+    // to pair with a daemon.
+    return input.hasLocalRuntime ? 'choice' : 'connect'
   }
 
   return 'providers'
@@ -83,7 +86,12 @@ function OnboardingPage() {
   const bots = useMemo(() => order.map(name => byName[name]).filter(Boolean), [byName, order])
 
   const [step, setStep] = useState<OnboardingStep>(() =>
-    initialOnboardingStep({ connected, hasBots: bots.length > 0, isElectron: isElectron() })
+    initialOnboardingStep({
+      connected,
+      hasBots: bots.length > 0,
+      hasLocalRuntime: hasLocalRuntime(),
+      isElectron: isElectron()
+    })
   )
 
   const [progress, setProgress] = useState<DaemonProgress[]>([])
@@ -133,10 +141,16 @@ function OnboardingPage() {
   }, [bots, navigate])
 
   useEffect(() => {
-    if (step === 'choice' && connected) {
+    if ((step === 'choice' || step === 'connect') && connected) {
       setStep('providers')
     }
   }, [connected, step])
+
+  useEffect(() => {
+    if (step === 'connect') {
+      void navigate({ to: '/connect' })
+    }
+  }, [navigate, step])
 
   useEffect(() => {
     if (step !== 'install') {
@@ -250,7 +264,7 @@ function OnboardingPage() {
     }
   }
 
-  if (step === 'existing') {
+  if (step === 'existing' || step === 'connect') {
     return null
   }
 

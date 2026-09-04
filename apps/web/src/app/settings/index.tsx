@@ -790,6 +790,12 @@ export function AboutSettings(): React.JSX.Element {
       <dl className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-2">
         <dt className="text-muted">Hexbot</dt>
         <dd>{bridge?.version ?? info?.version ?? '—'}</dd>
+        {bridge ? (
+          <>
+            <dt className="text-muted">Package</dt>
+            <dd>{bridge.edition === 'client' ? 'Client only' : 'Full'}</dd>
+          </>
+        ) : null}
         <dt className="text-muted">Hermes Agent</dt>
         <dd>{info?.hermes_version ?? '—'}</dd>
         <dt className="text-muted">License</dt>

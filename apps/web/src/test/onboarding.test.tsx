@@ -4,10 +4,11 @@ import { initialOnboardingStep, OnboardingChoiceCards } from '../routes/onboardi
 
 describe('onboarding', () => {
   it.each([
-    [{ connected: false, hasBots: false, isElectron: true }, 'choice'],
-    [{ connected: true, hasBots: false, isElectron: true }, 'providers'],
-    [{ connected: false, hasBots: false, isElectron: false }, 'providers'],
-    [{ connected: true, hasBots: true, isElectron: false }, 'existing']
+    [{ connected: false, hasBots: false, hasLocalRuntime: true, isElectron: true }, 'choice'],
+    [{ connected: false, hasBots: false, hasLocalRuntime: false, isElectron: true }, 'connect'],
+    [{ connected: true, hasBots: false, hasLocalRuntime: true, isElectron: true }, 'providers'],
+    [{ connected: false, hasBots: false, hasLocalRuntime: false, isElectron: false }, 'providers'],
+    [{ connected: true, hasBots: true, hasLocalRuntime: false, isElectron: false }, 'existing']
   ] as const)('selects the initial step for %o', (input, expected) => {
     expect(initialOnboardingStep(input)).toBe(expected)
   })

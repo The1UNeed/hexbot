@@ -5,6 +5,10 @@ with its own memory and skills, talking to you and to each other in rooms.
 Runs on your machine or a box on your LAN; the desktop app pairs with it by
 code.
 
+Two packages are built from this repository: the **full package** (`Hexbot`,
+the app plus the daemon runtime) and the **client-only package**
+(`Hexbot Client`, the app alone, which connects to a full package elsewhere).
+
 Hexbot is a hard fork of [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 (see `NOTICE` and `docs/upstream/`). Design: `DESIGN.md`. Words: `CLAUDE.md`.
 
@@ -39,7 +43,8 @@ LAN or Tailscale. `docs/release.md` lists the steps.
   WebSocket extensions).
 - `apps/web/`: the React bundle used by the desktop app and served to LAN
   browsers by the daemon.
-- `apps/desktop/`: the Electron shell.
+- `apps/desktop/`: the Electron shell. `electron-builder.yml` builds the full
+  package; `electron-builder.client.yml` builds the client-only package.
 
 ## License
 

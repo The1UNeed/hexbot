@@ -2,12 +2,16 @@
 import Base from '../layouts/Base.astro'
 import manifest from '../../public/downloads/manifest.json'
 
-const downloads = [
-  ['macOS', 'Apple Silicon', manifest.mac.arm64],
-  ['macOS', 'Intel', manifest.mac.x64],
-  ['Linux', 'AppImage', manifest.linux.AppImage],
-  ['Linux', 'deb', manifest.linux.deb],
+const builds = (m: { mac: Record<string, string>; linux: Record<string, string> }) => [
+  ['macOS', 'Apple Silicon', m.mac.arm64],
+  ['macOS', 'Intel', m.mac.x64],
+  ['Linux', 'AppImage', m.linux.AppImage],
+  ['Linux', 'deb', m.linux.deb],
 ]
+const packages = [
+  ['Full package', 'Desktop app plus the daemon. Runs your bots on this machine.', builds(manifest)],
+  ['Client only', 'Desktop app alone. Connects to a Hexbot daemon on another machine.', builds(manifest.client)],
+] as const
 ---
 <Base>
   <section class="mx-auto flex min-h-[calc(100vh-13rem)] max-w-6xl flex-col justify-center px-5 py-10 sm:px-8">
@@ -18,12 +22,18 @@ const downloads = [
       <p>Put people and bots in rooms, with mentions deciding who replies.</p>
       <p>Let bots dream over the day's chats and keep what matters in memory.</p>
     </div>
-    <div class="mt-8 flex flex-wrap gap-3">
-      {downloads.map(([os, detail, artifact], index) => (
-        <a class:list={['border-2 border-ink px-5 py-3 text-sm font-black no-underline transition hover:-translate-y-1', index === 0 ? 'bg-acid' : 'bg-white']} href={`/downloads/${artifact}`}>
-          {os} <span class="font-medium">{detail}</span>
-        </a>
-      ))}
-    </div>
+    {packages.map(([title, blurb, downloads], group) => (
+      <div class="mt-8">
+        <p class="text-sm font-black uppercase tracking-[.18em]">{title}</p>
+        <p class="mt-1 text-sm font-medium">{blurb}</p>
+        <div class="mt-3 flex flex-wrap gap-3">
+          {downloads.map(([os, detail, artifact], index) => (
+            <a class:list={['border-2 border-ink px-5 py-3 text-sm font-black no-underline transition hover:-translate-y-1', group === 0 && index === 0 ? 'bg-acid' : 'bg-white']} href={`/downloads/${artifact}`}>
+              {os} <span class="font-medium">{detail}</span>
+            </a>
+          ))}
+        </div>
+      </div>
+    ))}
   </section>
 </Base>

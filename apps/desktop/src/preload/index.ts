@@ -5,6 +5,7 @@ const metadata = ipcRenderer.sendSync('hexbot:metadata') as {
   platform: NodeJS.Platform
   version: string
   isPackaged: boolean
+  edition: 'full' | 'client'
 }
 const listen = <T>(channel: string, callback: (value: T) => void): (() => void) => {
   if (typeof callback !== 'function') throw new TypeError('Listener must be a function')
