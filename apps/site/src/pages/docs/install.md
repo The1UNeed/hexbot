@@ -42,14 +42,14 @@ Open the DMG and drag Hexbot to Applications. Public releases are signed and not
 Make an AppImage executable before opening it:
 
 ```sh
-chmod +x Hexbot-0.1.0-linux-x64.AppImage
-./Hexbot-0.1.0-linux-x64.AppImage
+chmod +x Hexbot-0.2.0-linux-x64.AppImage
+./Hexbot-0.2.0-linux-x64.AppImage
 ```
 
 Install a deb package with your usual package manager:
 
 ```sh
-sudo apt install ./Hexbot-0.1.0-linux-x64.deb
+sudo apt install ./Hexbot-0.2.0-linux-x64.deb
 ```
 
 ## Data and updates

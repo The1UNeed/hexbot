@@ -1,21 +1,21 @@
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "mac": {
-    "arm64": "Hexbot-0.1.0-mac-arm64.dmg",
-    "x64": "Hexbot-0.1.0-mac-x64.dmg"
+    "arm64": "Hexbot-0.2.0-mac-arm64.dmg",
+    "x64": "Hexbot-0.2.0-mac-x64.dmg"
   },
   "linux": {
-    "AppImage": "Hexbot-0.1.0-linux-x64.AppImage",
-    "deb": "Hexbot-0.1.0-linux-x64.deb"
+    "AppImage": "Hexbot-0.2.0-linux-x64.AppImage",
+    "deb": "Hexbot-0.2.0-linux-x64.deb"
   },
   "client": {
     "mac": {
-      "arm64": "HexbotClient-0.1.0-mac-arm64.dmg",
-      "x64": "HexbotClient-0.1.0-mac-x64.dmg"
+      "arm64": "HexbotClient-0.2.0-mac-arm64.dmg",
+      "x64": "HexbotClient-0.2.0-mac-x64.dmg"
     },
     "linux": {
-      "AppImage": "HexbotClient-0.1.0-linux-x64.AppImage",
-      "deb": "HexbotClient-0.1.0-linux-x64.deb"
+      "AppImage": "HexbotClient-0.2.0-linux-x64.AppImage",
+      "deb": "HexbotClient-0.2.0-linux-x64.deb"
     }
   }
 }
