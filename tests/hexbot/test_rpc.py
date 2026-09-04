@@ -53,6 +53,8 @@ def test_every_documented_method_is_registered(ctx):
         "hexbot.memory.bot.get", "hexbot.memory.bot.set",
         "hexbot.providers.list", "hexbot.providers.set_key",
         "hexbot.providers.clear_key", "hexbot.models.list",
+        "hexbot.providers.login_start", "hexbot.providers.login_poll",
+        "hexbot.providers.login_cancel",
         "hexbot.network.get", "hexbot.network.set",
         "hexbot.pairing.code", "hexbot.devices.list", "hexbot.devices.revoke",
         "hexbot.connect.status", "hexbot.connect.disconnect",

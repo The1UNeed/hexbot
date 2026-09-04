@@ -2,6 +2,7 @@ import { ExternalLink, RefreshCw, Trash2 } from 'lucide-react'
 import QRCode from 'qrcode'
 import { useEffect, useRef, useState } from 'react'
 
+import { isSubscription, ProviderPanel } from '../../components/provider-panel'
 import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
 import { Input } from '../../components/ui/input'
@@ -385,14 +386,128 @@ export function ProvidersSettings(): React.JSX.Element {
     <>
       <Heading description="Connect the model providers your bots can use.">Providers</Heading>
       <div className="divide-y divide-border">
-        {providers.map(provider => (
-          <ProviderRow clearKey={clearKey} key={provider.id} provider={provider} setKey={setKey} />
-        ))}
+        {providers.map(provider =>
+          isSubscription(provider) ? (
+            <SubscriptionRow
+              clearKey={clearKey}
+              key={provider.id}
+              provider={provider}
+              refresh={refresh}
+            />
+          ) : (
+            <ProviderRow
+              clearKey={clearKey}
+              key={provider.id}
+              provider={provider}
+              setKey={setKey}
+            />
+          )
+        )}
       </div>
       <p className="mt-6 text-[length:var(--text-secondary)] text-muted">
         Hexbot does not include any model credits. Usage is billed by your providers.
       </p>
+      <DefaultModels />
     </>
+  )
+}
+
+function SubscriptionRow({
+  clearKey,
+  provider,
+  refresh
+}: {
+  clearKey: (provider: string) => Promise<void>
+  provider: Provider
+  refresh: () => Promise<void>
+}) {
+  return (
+    <div className="py-4">
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <h3 className="font-medium">{provider.label}</h3>
+          <Chip className="mt-1" tone={provider.configured ? 'success' : 'accent'}>
+            {provider.configured ? 'Signed in' : 'Subscription'}
+          </Chip>
+        </div>
+        {provider.configured && (
+          <Button
+            aria-label={`Sign out of ${provider.label}`}
+            icon={<Trash2 size={14} />}
+            onClick={() => void clearKey(provider.id)}
+            size="sm"
+            variant="ghost"
+          >
+            Sign out
+          </Button>
+        )}
+      </div>
+      <div className="mt-3">
+        <ProviderPanel onConfigured={refresh} provider={provider} />
+      </div>
+    </div>
+  )
+}
+
+function DefaultModels() {
+  const settings = useSettings(state => state.settings)
+  const providers = useSettings(state => state.providers)
+  const refresh = useSettings(state => state.refresh)
+  const patch = useSettings(state => state.patch)
+  const [choices, setChoices] = useState<{ label: string; value: string }[]>([])
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+  useEffect(() => {
+    const configured = providers.filter(item => item.configured === true)
+    void Promise.all(
+      configured.map(provider =>
+        modelsList(provider.id)
+          .then(result => (result.curated.length ? result.curated : result.all))
+          .catch(() => [] as ModelOption[])
+          .then(models =>
+            models.map(model => ({
+              label: `${provider.label} · ${model.label}`,
+              value: `${provider.id}/${model.id}`
+            }))
+          )
+      )
+    ).then(lists => setChoices(lists.flat()))
+  }, [providers])
+
+  return (
+    <div className="mt-8 space-y-4">
+      <Heading description="The model new bots start with, and where a bot goes when its own provider fails.">
+        Defaults
+      </Heading>
+      <label className="block space-y-2">
+        <span className="font-medium">Default model</span>
+        <Select
+          label="Default model"
+          onValueChange={value => void patch({ default_model: value })}
+          options={choices}
+          placeholder="Choose a model"
+          value={settings?.default_model ?? undefined}
+        />
+      </label>
+      <label className="block space-y-2">
+        <span className="font-medium">
+          Fallback <span className="text-muted">(optional)</span>
+        </span>
+        <Select
+          label="Fallback model"
+          onValueChange={value =>
+            void patch({ fallback_model: value === '__none__' ? null : value })
+          }
+          options={[
+            { label: 'None', value: '__none__' },
+            ...choices.filter(item => item.value !== settings?.default_model)
+          ]}
+          placeholder="None"
+          value={settings?.fallback_model ?? '__none__'}
+        />
+      </label>
+    </div>
   )
 }
 

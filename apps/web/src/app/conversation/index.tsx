@@ -24,6 +24,7 @@ import { Input } from '../../components/ui/input'
 import { Menu } from '../../components/ui/menu'
 import { Spinner } from '../../components/ui/spinner'
 import { Textarea } from '../../components/ui/textarea'
+import { Thinking } from '../../components/ui/thinking'
 import {
   approvalRespond,
   attachFile,
@@ -206,6 +207,16 @@ function MessageRow({
   }
 
   const assistant = message.role === 'assistant'
+
+  if (
+    assistant &&
+    message.streaming &&
+    !message.text &&
+    !message.thinking &&
+    message.toolCalls.length === 0
+  ) {
+    return <Thinking image={avatarData(bot)} name={bot?.display_name ?? 'Bot'} />
+  }
 
   return (
     <article
@@ -623,7 +634,11 @@ function BotConversation() {
       }}
     >
       <header className="flex h-16 shrink-0 items-center gap-3 border-b border-border bg-surface px-4">
-        <Avatar image={avatarData(bot)} name={bot?.display_name ?? params.bot ?? 'Bot'} />
+        <Avatar
+          className="hex-face"
+          image={avatarData(bot)}
+          name={bot?.display_name ?? params.bot ?? 'Bot'}
+        />
         <div className="min-w-0 flex-1">
           <div className="text-[length:var(--text-secondary)] font-medium">
             {bot?.display_name ?? params.bot}

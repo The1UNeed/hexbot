@@ -22,6 +22,7 @@ import type {
   NetworkInfo,
   PairingCode,
   Provider,
+  ProviderLogin,
   Room,
   RoomEvent,
   RoomLimits,
@@ -325,6 +326,18 @@ export function providersClearKey(
   return rpcCall<{ configured: boolean; provider: string }>('hexbot.providers.clear_key', {
     provider
   })
+}
+
+export function providersLoginStart(provider: string): Promise<ProviderLogin> {
+  return rpcCall<ProviderLogin>('hexbot.providers.login_start', { provider })
+}
+
+export function providersLoginPoll(loginId: string): Promise<ProviderLogin> {
+  return rpcCall<ProviderLogin>('hexbot.providers.login_poll', { login_id: loginId })
+}
+
+export function providersLoginCancel(loginId: string): Promise<ProviderLogin> {
+  return rpcCall<ProviderLogin>('hexbot.providers.login_cancel', { login_id: loginId })
 }
 
 export function modelsList(provider?: string): Promise<ModelList> {

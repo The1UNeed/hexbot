@@ -166,7 +166,18 @@ export interface PairingCode {
   link: string
 }
 
+export interface ProviderLogin {
+  code: string
+  login_id: string
+  message: string
+  provider: string
+  status: 'cancelled' | 'done' | 'error' | 'pending' | 'starting'
+  supported?: boolean
+  url: string
+}
+
 export interface Provider {
+  /** `api_key`, or `oauth_*` for a subscription sign-in. */
   auth_type: string
   /** `null` means an external OAuth provider whose state is unknown. */
   configured: boolean | null
@@ -201,6 +212,10 @@ export interface SessionInfo {
 export interface Settings {
   approval_mode: ApprovalMode
   auto_approver_model: null | string
+  /** `provider/model` pre-filled for new bots. */
+  default_model?: null | string
+  /** `provider/model` bots fall back to when their own provider fails. */
+  fallback_model?: null | string
   billing_notice_ack: boolean
   lan_enabled: boolean
   bot_daily_token_budget?: null | number

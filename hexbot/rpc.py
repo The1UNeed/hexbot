@@ -16,7 +16,8 @@ import platform
 import socket
 import sys
 
-from hexbot import activity, bots, connect, dreaming, memory, network, pairing, providers, sections, settings, usage, users
+from hexbot import (activity, bots, connect, dreaming, memory, network, pairing, provider_login,
+                    providers, sections, settings, usage, users)
 from hexbot.rooms import get_engine
 from hexbot.rooms import store as rooms
 from hexbot.errors import HexbotError
@@ -227,6 +228,9 @@ METHODS = {
     "hexbot.providers.set_key": _admin(lambda p: providers.set_key(
         _required(p, "provider"), _required(p, "key"))),
     "hexbot.providers.clear_key": _admin(lambda p: providers.clear_key(_required(p, "provider"))),
+    "hexbot.providers.login_start": _admin(lambda p: provider_login.start(_required(p, "provider"))),
+    "hexbot.providers.login_poll": _admin(lambda p: provider_login.poll(_required(p, "login_id"))),
+    "hexbot.providers.login_cancel": _admin(lambda p: provider_login.cancel(_required(p, "login_id"))),
     "hexbot.models.list": _list_models,
     "hexbot.network.get": _admin(lambda p: network.get_network()),
     "hexbot.network.set": _admin(lambda p: network.set_network(_required(p, "lan_enabled"))),

@@ -3,6 +3,7 @@ import { Activity, Archive, ChevronDown, ChevronRight, Plus, Search, Settings } 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar } from '../../components/ui/avatar'
+import { AvatarBuilder } from '../../components/ui/avatar-builder'
 import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
 import { Dialog } from '../../components/ui/dialog'
@@ -10,9 +11,11 @@ import { Input } from '../../components/ui/input'
 import { Menu } from '../../components/ui/menu'
 import { Select } from '../../components/ui/select'
 import { Textarea } from '../../components/ui/textarea'
+import { modelsList } from '../../lib/api'
+import { avatarPng, type AvatarStyle, DEFAULT_AVATAR_STYLE } from '../../lib/avatar-builder'
 import { BOT_TEMPLATES } from '../../lib/bot-templates'
 import { toMillis } from '../../lib/time'
-import type { Bot, Room, RoomEvent, Section } from '../../lib/types'
+import type { Bot, ModelOption, Room, RoomEvent, Section } from '../../lib/types'
 import { useBotList, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { roomUnread, useRoomList, useRooms } from '../../stores/rooms'
@@ -266,6 +269,47 @@ export function RosterColumn() {
     title: ''
   })
 
+  const [newStyle, setNewStyle] = useState<AvatarStyle>(DEFAULT_AVATAR_STYLE)
+  const [newModels, setNewModels] = useState<ModelOption[]>([])
+  const providers = useSettings(state => state.providers)
+  const settings = useSettings(state => state.settings)
+
+  const configuredProviders = useMemo(
+    () => providers.filter(item => item.configured === true),
+    [providers]
+  )
+
+  useEffect(() => {
+    if (!botDialog) {
+      return
+    }
+
+    void useSettings.getState().refreshProviders()
+    void useSettings.getState().refresh()
+    const [provider, ...rest] = (settings?.default_model ?? '').split('/')
+    setNewBot(value => ({
+      ...value,
+      model: value.model || rest.join('/'),
+      provider: value.provider || provider || ''
+    }))
+  }, [botDialog, settings?.default_model])
+  useEffect(() => {
+    if (!newBot.provider) {
+      return
+    }
+
+    void modelsList(newBot.provider)
+      .then(result => {
+        const list = result.curated.length ? result.curated : result.all
+        setNewModels(list)
+        setNewBot(value => ({
+          ...value,
+          model: list.some(item => item.id === value.model) ? value.model : (list[0]?.id ?? '')
+        }))
+      })
+      .catch(() => setNewModels([]))
+  }, [newBot.provider])
+
   const [focused, setFocused] = useState<string | null>(null)
   const root = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -492,15 +536,17 @@ export function RosterColumn() {
           className="grid gap-3 p-5"
           onSubmit={event => {
             event.preventDefault()
-            void useBots
-              .getState()
-              .create(newBot)
+            void avatarPng(newStyle)
+              .then(avatar =>
+                useBots.getState().create({ ...newBot, ...(avatar ? { avatar } : {}) })
+              )
               .then(({ bot, section }) => {
                 setBotDialog(false)
                 open(bot.name, section.id)
               })
           }}
         >
+          <AvatarBuilder onChange={setNewStyle} value={newStyle} />
           <Input
             aria-label="Bot name"
             onChange={event => setNewBot(value => ({ ...value, name: event.target.value }))}
@@ -543,23 +589,25 @@ export function RosterColumn() {
             placeholder="Persona"
             value={newBot.persona}
           />
-          <Input
-            aria-label="Provider"
-            onChange={event => setNewBot(value => ({ ...value, provider: event.target.value }))}
-            placeholder="Provider"
-            required
-            value={newBot.provider}
-          />
-          <Input
-            aria-label="Model"
-            onChange={event => setNewBot(value => ({ ...value, model: event.target.value }))}
-            placeholder="Model"
-            required
-            value={newBot.model}
-          />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Select
+              label="Provider"
+              onValueChange={provider => setNewBot(value => ({ ...value, provider }))}
+              options={configuredProviders.map(item => ({ label: item.label, value: item.id }))}
+              placeholder="Provider"
+              value={newBot.provider || undefined}
+            />
+            <Select
+              label="Model"
+              onValueChange={model => setNewBot(value => ({ ...value, model }))}
+              options={newModels.map(item => ({ label: item.label, value: item.id }))}
+              placeholder="Model"
+              value={newBot.model || undefined}
+            />
+          </div>
           <div className="flex justify-end gap-2">
             <Button onClick={() => setBotDialog(false)}>Cancel</Button>
-            <Button type="submit" variant="primary">
+            <Button disabled={!newBot.provider || !newBot.model} type="submit" variant="primary">
               Create
             </Button>
           </div>

@@ -20,7 +20,10 @@ DEFAULTS = {"approval_mode": "manual", "auto_approver_model": None,
             "room_bot_turns_per_human_turn": 8,
             "room_budget_tokens_per_human_turn": None,
             "bot_daily_token_budget": None,
-            "dream_time": "03:00", "dream_enabled": True}
+            "dream_time": "03:00", "dream_enabled": True,
+            # "provider/model" pre-filled for new bots, and the model bots fall
+            # back to when their own provider fails. Both optional.
+            "default_model": None, "fallback_model": None}
 
 #: Hermes calls the auto-approval mode ``smart``; the Hexbot UI labels it "Auto".
 APPROVAL_MODES = ("manual", "smart", "off")
@@ -47,9 +50,9 @@ def update_settings(patch: dict) -> dict:
         raise HexbotError(4201, f"unknown setting: {sorted(unknown)[0]}")
     if "approval_mode" in patch and patch["approval_mode"] not in APPROVAL_MODES:
         raise HexbotError(4202, "approval_mode must be manual, smart, or off")
-    if "auto_approver_model" in patch and patch["auto_approver_model"] is not None:
-        if "/" not in str(patch["auto_approver_model"]):
-            raise HexbotError(4202, "auto_approver_model must be 'provider/model'")
+    for key in ("auto_approver_model", "default_model", "fallback_model"):
+        if key in patch and patch[key] is not None and "/" not in str(patch[key]):
+            raise HexbotError(4202, f"{key} must be 'provider/model'")
     if "dream_enabled" in patch and not isinstance(patch["dream_enabled"], bool):
         raise HexbotError(4202, "dream_enabled must be a boolean")
     if "dream_time" in patch:
@@ -104,6 +107,12 @@ def mirror_deployment_config(profile_dir: Path) -> None:
         provider, _, model = str(choice).partition("/")
         approval = data.setdefault("auxiliary", {}).setdefault("approval", {})
         approval["provider"], approval["model"] = provider, model
+    fallback = settings.get("fallback_model")
+    if fallback:
+        provider, _, model = str(fallback).partition("/")
+        data["fallback_providers"] = [{"provider": provider, "model": model}]
+    elif "fallback_providers" in data:
+        del data["fallback_providers"]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as stream:
         yaml.dump(data, stream)

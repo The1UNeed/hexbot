@@ -206,7 +206,24 @@ def set_key(provider: str, key: str) -> dict:
     return {"provider": slug, "configured": True}
 
 
+def _clear_oauth_state(slug: str) -> None:
+    """Sign out of a subscription provider by dropping its grant from the auth store."""
+    from hermes_cli import auth
+    with auth._auth_store_lock():
+        store = auth._load_auth_store()
+        providers = store.get("providers")
+        if isinstance(providers, dict) and slug in providers:
+            del providers[slug]
+            if store.get("active_provider") == slug:
+                store.pop("active_provider", None)
+            auth._save_auth_store(store)
+
+
 def clear_key(provider: str) -> dict:
+    slug = canonical_provider(provider)
+    if _auth_type(slug).startswith("oauth") and not _env_vars(slug):
+        _clear_oauth_state(slug)
+        return {"provider": slug, "configured": False}
     slug, env_name = _key_env_var(provider)
     for path in [hexbot_home(), *_profile_dirs()]:
         env = path / ".env"
