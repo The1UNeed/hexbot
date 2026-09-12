@@ -1,38 +1,68 @@
 ---
 import '../styles/global.css'
+import Logo from '../components/Logo.astro'
 
-interface Props {
-  title?: string
-  description?: string
-}
-
+interface Props { title?: string; description?: string }
 const {
   title = 'Hexbot',
-  description = 'Self-hosted bots with memory, tools, and your choice of model.',
+  description = 'Self-hosted bots with faces, names, and a memory of their own. Rooms for people and bots, your choice of model, running on your own machine.',
 } = Astro.props
-const pageTitle = title === 'Hexbot' ? title : `${title} | Hexbot`
+const pageTitle = title === 'Hexbot' ? 'Hexbot' : `${title} | Hexbot`
+const canonical = new URL(Astro.url.pathname, Astro.site)
+const image = new URL('/og.png', Astro.site)
+const github = 'https://github.com/The1UNeed/hexbot'
 ---
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={description} />
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⬡</text></svg>" />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Hexbot" />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={image} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={pageTitle} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={image} />
     <title>{pageTitle}</title>
   </head>
   <body>
-    <header class="mx-auto flex max-w-6xl items-center justify-between px-5 py-6 sm:px-8">
-      <a class="text-xl font-black tracking-[-.05em] no-underline" href="/">HEXBOT</a>
-      <nav aria-label="Main navigation" class="flex gap-5 text-sm font-semibold">
-        <a href="/docs/">Docs</a>
-        <a href="/privacy/">Privacy</a>
+    <header class="mx-auto flex max-w-[1120px] items-center justify-between gap-4 px-5 py-5 sm:px-8">
+      <a class="flex items-center gap-2.5 text-[17px] font-semibold" href="/"><Logo size={28} />Hexbot</a>
+      <nav aria-label="Main" class="flex items-center gap-4 text-[15px] font-medium sm:gap-7">
+        <a class="hover:text-accent" href="/docs/">Docs</a>
+        <a class="hover:text-accent" href="/docs/connect/">Connect</a>
+        <a class="hidden hover:text-accent md:inline" href={github}>GitHub</a>
+        <a class="button button-sm" href="/docs/install/">Install</a>
       </nav>
     </header>
     <main><slot /></main>
-    <footer class="mx-auto mt-16 flex max-w-6xl flex-wrap justify-between gap-4 border-t-2 border-ink px-5 py-8 text-sm sm:px-8">
-      <span>Hexbot is AGPL-3.0 software.</span>
-      <a href="/privacy/">No tracking. No cookies.</a>
+    <footer class="mx-auto mt-24 max-w-[1120px] border-t border-line px-5 py-10 sm:px-8">
+      <div class="flex flex-wrap items-start justify-between gap-6">
+        <div class="flex flex-col gap-3">
+          <a class="flex items-center gap-2.5 text-[17px] font-semibold" href="/"><Logo size={28} />Hexbot</a>
+          <p class="max-w-[28em] text-[15px] text-mute">Self-hosted bots with memory, rooms, and your choice of model. AGPL-3.0 software, built on Hermes Agent.</p>
+        </div>
+        <nav aria-label="Footer" class="grid grid-cols-2 gap-x-10 gap-y-2 text-[15px] sm:grid-cols-3">
+          <a class="hover:text-accent" href="/docs/">Docs</a>
+          <a class="hover:text-accent" href="/docs/install/">Install</a>
+          <a class="hover:text-accent" href="/docs/connect/">Connect</a>
+          <a class="hover:text-accent" href={github}>GitHub</a>
+          <a class="hover:text-accent" href="/terms/">Terms</a>
+          <a class="hover:text-accent" href="/privacy/">Privacy</a>
+        </nav>
+      </div>
     </footer>
+    <script src="../scripts/faces.ts"></script>
   </body>
 </html>

@@ -1,0 +1,24 @@
+---
+/**
+ * The Hexbot mark, traced from the app icon (apps/desktop/build/Hexbot.icon):
+ * a rounded hexagon with two pill eyes. `tile` wraps it in the macOS icon
+ * squircle so it reads as the app people will see in their Dock.
+ */
+interface Props { size?: number; tile?: boolean; class?: string }
+const { size = 28, tile = false, class: className = '' } = Astro.props
+const hex = 'M44 6a12 12 0 0 1 12 0l30 17a12 12 0 0 1 6 10v34a12 12 0 0 1-6 10L56 94a12 12 0 0 1-12 0L14 77a12 12 0 0 1-6-10V33a12 12 0 0 1 6-10Z'
+---
+<svg aria-hidden="true" class={className} viewBox="0 0 100 100" width={size} height={size}>
+  {tile && (
+    <>
+      <rect x="1" y="1" width="98" height="98" rx="22" fill="#f4f4f5" />
+      <rect x="1" y="1" width="98" height="49" rx="22" fill="#ffffff" opacity=".7" />
+      <rect x="1.5" y="1.5" width="97" height="97" rx="21.7" fill="none" stroke="#d6d6da" />
+    </>
+  )}
+  <g transform={tile ? 'translate(50 50) scale(.84) translate(-50 -50)' : undefined} fill="currentColor">
+    <path d={hex}></path>
+    <rect x="24.3" y="32.7" width="15.5" height="34.8" rx="7.75" fill={tile ? '#f7f7f8' : 'var(--color-paper)'}></rect>
+    <rect x="60.2" y="32.7" width="15.5" height="34.8" rx="7.75" fill={tile ? '#f7f7f8' : 'var(--color-paper)'}></rect>
+  </g>
+</svg>

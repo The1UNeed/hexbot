@@ -1,0 +1,27 @@
+---
+/**
+ * A bot face as the app draws it: a shape, a colour, two eyes.
+ * Give `size` for a fixed face, or omit it and size the parent: the SVG then fills its container.
+ */
+interface Props { shape: keyof typeof shapes; color: string; size?: number; class?: string; delay?: number }
+const shapes = {
+  round: 'M50 5a45 45 0 1 1 0 90a45 45 0 1 1 0-90Z',
+  squircle: 'M50 5c34 0 45 11 45 45S84 95 50 95 5 84 5 50 16 5 50 5Z',
+  square: 'M24 7h52a17 17 0 0 1 17 17v52a17 17 0 0 1-17 17H24A17 17 0 0 1 7 76V24A17 17 0 0 1 24 7Z',
+  wide: 'M50 20c31 0 47 13 47 30S81 80 50 80 3 67 3 50s16-30 47-30Z',
+  tri: 'M43 12a8 8 0 0 1 14 0l38 66a8 8 0 0 1-7 12H12a8 8 0 0 1-7-12Z',
+  hex: 'M44 6a12 12 0 0 1 12 0l30 17a12 12 0 0 1 6 10v34a12 12 0 0 1-6 10L56 94a12 12 0 0 1-12 0L14 77a12 12 0 0 1-6-10V33a12 12 0 0 1 6-10Z',
+  cloud: 'M28 88a21 21 0 0 1-5-41 25 25 0 0 1 48-10 19 19 0 0 1 25 19 17 17 0 0 1-5 32Z',
+  drop: 'M50 4c14 24 42 44 42 63a42 42 0 0 1-84 0C8 48 36 28 50 4Z',
+}
+const { shape, color, size, class: className = '', delay = 0 } = Astro.props
+---
+<svg aria-hidden="true" class:list={['face', size === undefined && 'h-auto w-full', className]} viewBox="0 0 100 100" width={size ?? 100} height={size ?? 100} data-face>
+  <path d={shapes[shape]} fill={color}></path>
+  <g class:list={['eyes', `[animation-delay:${delay}s]`]}>
+    <g class="pupils">
+      <ellipse cx="41" cy="48" rx="3.6" ry="6.2" fill="#151517"></ellipse>
+      <ellipse cx="59" cy="48" rx="3.6" ry="6.2" fill="#151517"></ellipse>
+    </g>
+  </g>
+</svg>

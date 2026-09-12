@@ -4,8 +4,6 @@ title: Approvals and Auto mode
 description: Choose when Hexbot may approve tool actions.
 ---
 
-# Approvals and Auto mode
-
 Tools can read files, run commands, use a browser, and change data. Approval mode controls how Hexbot handles actions that need permission.
 
 ## Manual

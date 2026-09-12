@@ -1,26 +1,27 @@
 ---
 layout: ../../layouts/Docs.astro
 title: Updates
-description: Choose a Hexbot desktop release channel and control crash reports.
+description: Choose a Hexbot update track and control crash reports.
 ---
 
-# Updates
-
-The packaged desktop app checks `hexbot.app` for signed updates after it starts. Development builds do not check. You can also choose "Check for Updates" from the application menu on macOS.
+The packaged desktop app checks `updates.hexbot.app` for signed updates after it starts. Development builds do not check. You can also choose "Check for Updates" from the application menu on macOS, or open Settings, Updates.
 
 Hexbot does not download an update during the check. When an update is available, the app shows its progress after you choose to download and install it. It does not install an update automatically when you quit.
 
-## Stable and beta channels
+## Stable and nightly
 
-Stable is the default. It receives regular releases intended for general use.
+Hexbot ships on two tracks:
 
-Beta receives prerelease builds as well as stable releases. Beta builds may have unfinished behavior or upgrade problems. Choose it only if you are prepared to report issues and restore your `~/.hexbot` backup if needed.
+- **Stable** is the tagged releases. While Hexbot is in alpha the app is named `Hexbot [alpha]` and every release is an early build, but each one was checked before it was tagged.
+- **Nightly** is built from the main branch every day. It is named `Hexbot Nightly`, installs next to the stable app, and updates itself to the next nightly. It may break; back up `~/.hexbot` before opening one, because the two share it.
 
-Changing channels affects future checks. It does not downgrade the installed app or replace it immediately.
+A stable install follows the stable track and a nightly install follows the nightly track. You can switch in Settings, Updates. Switching affects the next update check: a stable app on the nightly track is replaced by the next nightly, and a nightly app on the stable track by the next stable release, even when that release has a lower version number. The installed app is not changed until an update is installed.
+
+Dev builds run from a source checkout and do not check for updates.
 
 ## What an update check sends
 
-The updater requests package, platform, and architecture-specific metadata from `hexbot.app` (the client-only package uses a separate feed), then downloads the selected release artifact from the URL in that metadata. Conversations, provider credentials, bot memory, and pairing codes are not part of the request.
+The updater requests package, platform, and architecture-specific metadata from `updates.hexbot.app` (the client-only package uses a separate path), then downloads the selected release artifact from the URL in that metadata. Conversations, provider credentials, bot memory, and pairing codes are not part of the request.
 
 ## Crash reports
 

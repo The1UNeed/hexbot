@@ -4,8 +4,6 @@ title: CLI
 description: Start, pair, and manage Hexbot from the command line.
 ---
 
-# Hexbot CLI
-
 The `hexbot` command wraps the agent core and adds commands for the Hexbot daemon and data model.
 
 ## Start a daemon

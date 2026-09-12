@@ -4,8 +4,6 @@ title: Tailscale
 description: Connect to a Hexbot daemon over Tailscale.
 ---
 
-# Use Hexbot over Tailscale
-
 Tailscale is the recommended first way to reach your daemon outside your LAN. It creates a private network between your devices, so you do not need to expose a router port.
 
 ## Set it up

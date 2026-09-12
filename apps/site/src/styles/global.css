@@ -1,24 +1,72 @@
 @import "tailwindcss";
+@import "@fontsource-variable/bricolage-grotesque/opsz.css";
+/* Face blink delays are emitted as arbitrary classes from a prop, so Tailwind cannot see them in source. Add new delays here. */
+@source inline("[animation-delay:{0,0.4,0.7,1.1,1.2,1.4,1.8,2.1,2.2,2.6,2.8,3.5,4.2,4.9}s]");
 
 @theme {
-  --color-ink: #171714;
-  --color-paper: #f4f0e7;
-  --color-acid: #d6ff4b;
-  --color-coral: #ff785a;
-  --font-sans: Inter, ui-sans-serif, system-ui, sans-serif;
+  --color-paper: #ffffff;
+  --color-ink: #141414;
+  --color-mute: #6b6b70;
+  --color-line: #e6e6e8;
+  --color-wash: #f5f5f5;
+  --color-accent: #4f46e5;
+  --font-sans: "Bricolage Grotesque Variable", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
 }
 
-html { background: var(--color-paper); color: var(--color-ink); }
-body { min-height: 100vh; margin: 0; font-family: var(--font-sans); }
-a { text-underline-offset: 0.2em; }
-.prose { max-width: 46rem; font-size: 1.05rem; line-height: 1.75; }
-.prose h1 { margin: 0 0 1.25rem; font-size: clamp(2.25rem, 8vw, 4.5rem); line-height: .95; letter-spacing: -.055em; }
-.prose h2 { margin-top: 2.5rem; font-size: 1.45rem; letter-spacing: -.025em; }
-.prose h3 { margin-top: 2rem; font-size: 1.1rem; }
-.prose p, .prose ul, .prose ol, .prose pre { margin: 1rem 0; }
+html { background: var(--color-paper); color: var(--color-ink); scroll-behavior: smooth; }
+body { min-height: 100vh; margin: 0; font-family: var(--font-sans); font-size: 17px; line-height: 1.55; font-variation-settings: "opsz" 17, "wdth" 100; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+a { color: inherit; text-decoration: none; }
+p a { color: var(--color-accent); text-decoration: underline; text-underline-offset: .18em; text-decoration-thickness: 1px; }
+:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; border-radius: 2px; }
+::selection { background: #f5a524; color: var(--color-ink); }
+
+/* Display type: heavier, narrower, tighter. */
+.display { font-weight: 700; letter-spacing: -0.035em; line-height: 0.98; font-variation-settings: "opsz" 96, "wdth" 88; text-wrap: balance; }
+.display-sm { font-weight: 650; letter-spacing: -0.025em; line-height: 1.08; font-variation-settings: "opsz" 40, "wdth" 92; text-wrap: balance; }
+.lede { font-size: 1.25rem; line-height: 1.5; color: var(--color-mute); text-wrap: pretty; max-width: 34em; }
+
+.button { display: inline-flex; align-items: center; gap: .5rem; min-height: 44px; padding: 0 1.25rem; border-radius: 999px; background: var(--color-ink); color: var(--color-paper); font-weight: 600; font-size: 1rem; transition: transform 120ms ease-out, background 120ms ease-out; }
+.button:hover { background: #2a2a2a; transform: translateY(-1px); }
+.button-quiet { background: transparent; color: var(--color-ink); box-shadow: inset 0 0 0 1px var(--color-line); }
+.button-quiet:hover { background: var(--color-wash); }
+
+/* Bot faces. Eyes blink at rest; a small script points them at the cursor. */
+.face { display: inline-block; }
+.face .eyes { transform-origin: 50px 48px; animation: blink 5.4s infinite; }
+.face .pupils { transition: transform 160ms ease-out; }
+@keyframes blink { 0%, 93%, 100% { transform: scaleY(1); } 96.5% { transform: scaleY(.08); } }
+@media (prefers-reduced-motion: reduce) {
+  .face .eyes { animation: none; }
+  .face .pupils { transition: none; }
+  .button:hover { transform: none; }
+  html { scroll-behavior: auto; }
+}
+
+/* Transcript panel used as product proof. */
+.bubble { display: inline-block; max-width: 36em; padding: .55rem .9rem; border-radius: 18px; background: var(--color-wash); font-size: 1rem; line-height: 1.45; }
+
+/* Long-form documentation. */
+.prose { max-width: 40rem; font-size: 1.0625rem; line-height: 1.65; }
+.prose h1 { margin: 0 0 1.25rem; font-size: clamp(2.25rem, 6vw, 3.5rem); }
+.prose h2 { margin: 2.5rem 0 .75rem; font-size: 1.5rem; }
+.prose h3 { margin: 2rem 0 .5rem; font-size: 1.15rem; font-weight: 650; }
+.prose p, .prose ul, .prose ol, .prose pre, .prose table { margin: 1rem 0; }
 .prose ul, .prose ol { padding-left: 1.4rem; }
-.prose ul { list-style: square; }
+.prose ul { list-style: disc; }
 .prose ol { list-style: decimal; }
-.prose code { border-radius: .25rem; background: #e6e0d4; padding: .1rem .3rem; font-size: .9em; }
-.prose pre { overflow-x: auto; border: 2px solid var(--color-ink); background: var(--color-ink); color: white; padding: 1rem; }
-.prose pre code { background: transparent; padding: 0; }
+.prose li { margin: .35rem 0; }
+.prose code { border-radius: 6px; background: var(--color-wash); padding: .1rem .35rem; font-family: var(--font-mono); font-size: .88em; }
+.prose pre { overflow-x: auto; border-radius: 12px; background: var(--color-ink); color: #f4f4f4; padding: 1rem 1.25rem; font-size: .92rem; line-height: 1.55; }
+.prose pre code { background: transparent; padding: 0; font-size: inherit; }
+.prose table { width: 100%; border-collapse: collapse; font-size: .95rem; }
+.prose th, .prose td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--color-line); vertical-align: top; }
+.prose strong { font-weight: 650; }
+.prose a { color: var(--color-accent); text-decoration: underline; text-underline-offset: .18em; }
+
+/* Header button: a touch shorter so the nav reads as one line on phones. */
+.button-sm { min-height: 38px; padding: 0 1rem; font-size: .9375rem; }
+
+/* The composer pill at the foot of the room demo, drawn like the app's. */
+.composer { display: flex; align-items: center; gap: .75rem; padding: .375rem .5rem .375rem .5rem; border-radius: 999px; border: 1px solid var(--color-line); background: var(--color-paper); box-shadow: 0 1px 2px rgb(0 0 0 / .04); font-size: 1rem; }
+.composer-dot { display: inline-flex; width: 32px; height: 32px; align-items: center; justify-content: center; border-radius: 999px; background: var(--color-wash); color: var(--color-mute); flex-shrink: 0; }

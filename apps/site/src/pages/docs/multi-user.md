@@ -4,8 +4,6 @@ title: Multi-user
 description: Share one daemon while keeping ownership, memory, and usage separate.
 ---
 
-# Multi-user
-
 One Hexbot daemon can serve a household or small group. The first user is the admin. Other people join as members through invites.
 
 ## Admin and members

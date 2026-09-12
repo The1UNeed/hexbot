@@ -4,8 +4,6 @@ title: Dreaming
 description: Let bots review recent conversations and update their memory.
 ---
 
-# Dreaming
-
 A dream is a normal bot turn that reviews conversations since the bot's last dream. It looks for durable facts, preferences, decisions, and unfinished work, then records useful items in the bot's section memory.
 
 The dream uses the bot's configured model, persona, memory, and skills. Model provider charges apply as they do for any other turn.

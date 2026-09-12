@@ -4,8 +4,6 @@ title: Pairing and LAN
 description: Pair a Hexbot desktop app with a daemon on your local network.
 ---
 
-# Pairing and LAN
-
 A fresh daemon listens only on its own computer. Turn on "Allow other devices" before pairing over your local network.
 
 ## On the daemon computer

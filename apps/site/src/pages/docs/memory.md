@@ -4,8 +4,6 @@ title: Memory
 description: Learn what Hexbot remembers and where that memory belongs.
 ---
 
-# Memory
-
 Hexbot separates shared facts from a bot's own history. This keeps one bot's private context out of another bot unless you choose to share it.
 
 ## Core memory

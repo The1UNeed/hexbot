@@ -4,8 +4,6 @@ title: Install
 description: Install Hexbot on macOS or Linux.
 ---
 
-# Install Hexbot
-
 Hexbot has a desktop app and a background daemon, shipped as two packages:
 
 - **Full package** (`Hexbot`): the desktop app plus the daemon runtime. Install this on the computer that will run your bots.
@@ -15,14 +13,14 @@ Both packages update independently and can be installed side by side.
 
 ## Download
 
-Pick a package, then choose the build for your computer from the [home page](/):
+Pick a package, then choose the build for your computer from the [home page](/). Stable releases are the default; nightly builds are on [GitHub](https://github.com/The1UNeed/hexbot/releases?q=nightly) and described under [Updates](/docs/updates/):
 
 - Apple Silicon for Macs with an M-series chip
 - Intel for older Macs
 - AppImage for a portable Linux app
 - deb for Debian, Ubuntu, and related distributions
 
-Release downloads will replace the placeholder links before the first public release.
+Until the first public release the download buttons are inactive.
 
 ## First launch
 
@@ -42,18 +40,26 @@ Open the DMG and drag Hexbot to Applications. Public releases are signed and not
 Make an AppImage executable before opening it:
 
 ```sh
-chmod +x Hexbot-0.1.2-linux-x64.AppImage
-./Hexbot-0.1.2-linux-x64.AppImage
+chmod +x Hexbot-0.1.5-alpha.1-linux-x64.AppImage
+./Hexbot-0.1.5-alpha.1-linux-x64.AppImage
 ```
 
 Install a deb package with your usual package manager:
 
 ```sh
-sudo apt install ./Hexbot-0.1.2-linux-x64.deb
+sudo apt install ./Hexbot-0.1.5-alpha.1-linux-x64.deb
 ```
 
 ## Data and updates
 
 Hexbot stores configuration, bots, memory, and its managed runtime in `~/.hexbot`. Back up that directory before moving a daemon to another machine. The client-only package keeps only window state and pairing tokens there.
 
-The desktop app checks `hexbot.app` for signed updates. The website does not receive your conversations, provider keys, or pairing codes.
+The desktop app checks `updates.hexbot.app` for signed updates. The update server does not receive your conversations, provider keys, or pairing codes.
+
+
+## Development app
+
+From a source checkout, run `npm run dev -- --desktop` to launch
+`Hexbot (dev)` with its blue Dev icon. On macOS it has its own app identity in
+the Dock and app switcher, so you can distinguish it from Stable and Nightly.
+The source app keeps its data in the checkout's `.hexbot` directory.

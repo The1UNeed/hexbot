@@ -4,8 +4,6 @@ title: Rooms
 description: Put people and bots in one conversation and control who responds.
 ---
 
-# Rooms
-
 A room is a group chat with people and bots. Each bot keeps its own persona, model, skills, tools, and private memory while it works in the room.
 
 ## Choose who responds

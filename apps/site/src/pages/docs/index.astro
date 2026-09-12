@@ -16,17 +16,14 @@ const docs = [
   ['CLI', 'Run and manage Hexbot from a terminal.', '/docs/cli/'],
 ]
 ---
-<Base title="Documentation">
-  <section class="mx-auto max-w-6xl px-5 py-14 sm:px-8">
-    <p class="text-sm font-black uppercase tracking-[.22em]">Documentation</p>
-    <h1 class="mt-3 text-6xl font-black tracking-[-.06em] sm:text-8xl">Start here.</h1>
-    <div class="mt-10 grid border-l-2 border-t-2 border-ink sm:grid-cols-2 lg:grid-cols-3">
+<Base title="Documentation" description="Install, pair, and run Hexbot.">
+  <section class="mx-auto max-w-[1120px] px-5 py-10 sm:px-8 lg:py-16">
+    <h1 class="display text-[clamp(2.75rem,7vw,4.25rem)]">Documentation</h1>
+    <p class="lede mt-4">Start with Install, then pair a second device. Everything else is here when you need it.</p>
+    <ul class="mt-10 grid gap-x-8 border-t border-line sm:grid-cols-2 lg:grid-cols-3">
       {docs.map(([title, summary, href]) => (
-        <a class="min-h-44 border-b-2 border-r-2 border-ink bg-white p-6 no-underline transition hover:bg-acid" href={href}>
-          <h2 class="text-xl font-black">{title}</h2>
-          <p class="mt-3 text-sm leading-6">{summary}</p>
-        </a>
+        <li><a class="group flex h-full flex-col gap-1.5 border-b border-line py-5 pr-4" href={href}><span class="text-[1.15rem] font-semibold group-hover:text-accent">{title}</span><span class="text-mute">{summary}</span></a></li>
       ))}
-    </div>
+    </ul>
   </section>
 </Base>

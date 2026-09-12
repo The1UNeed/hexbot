@@ -4,8 +4,6 @@ title: Providers and billing
 description: Configure model providers and understand model charges.
 ---
 
-# Providers and billing
-
 Hexbot runs the agent. Model providers run the models. You bring provider credentials and the provider bills your account for usage. Hexbot does not include model tokens or pay those charges.
 
 ## Add a provider
