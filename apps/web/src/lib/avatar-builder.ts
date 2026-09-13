@@ -42,9 +42,9 @@ export const AVATAR_SHAPES: { id: string; label: string; path: string }[] = [
   {
     id: 'cloud',
     label: 'Cloud',
-    path: 'M28 88a21 21 0 0 1-5-41 25 25 0 0 1 48-10 19 19 0 0 1 25 19 17 17 0 0 1-5 32Z'
+    path: 'M26 85a19 19 0 0 1-5.9-37 28 28 0 0 1 55.8-4.6 21 21 0 0 1-3.9 41.6Z'
   },
-  { id: 'drop', label: 'Drop', path: 'M50 4c14 24 42 44 42 63a42 42 0 0 1-84 0C8 48 36 28 50 4Z' }
+  { id: 'drop', label: 'Drop', path: 'M50 5c12.7 19.8 38 36.3 38 52a38 38 0 0 1-76 0C12 41.3 37.3 24.8 50 5Z' }
 ]
 
 export const AVATAR_COLORS: { id: string; label: string; value: string }[] = [
