@@ -327,7 +327,7 @@ jobs:
           done
       # The download page reads the nightly feed while it builds
       # (apps/site/src/lib/nightly.ts), so rebuild it now that the feed moved.
-      # Stable does the same in `finalize` after committing the manifest.
+      # Stable needs no hook: `finalize` pushes to main, which Vercel builds.
       - name: Redeploy hexbot.app
         if: env.CHANNEL == 'nightly' && env.HAS_R2 == 'true' && env.HAS_SITE_HOOK == 'true'
         run: curl -fsS -X POST "${{ secrets.SITE_DEPLOY_HOOK_URL }}" > /dev/null && echo 'Site deploy requested'
@@ -350,7 +350,6 @@ jobs:
       contents: write
     env:
       VERSION: ${{ needs.preflight.outputs.version }}
-      HAS_SITE_HOOK: ${{ secrets.SITE_DEPLOY_HOOK_URL != '' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -378,8 +377,5 @@ jobs:
           fi
           git commit -m "release: point downloads and casks at $VERSION"
           git push origin HEAD:main
-      # Vercel deploy hook for the hexbot-site project (docs/deploy.md). Not
-      # needed when the project deploys from Git on every push to main.
-      - name: Redeploy hexbot.app
-        if: env.HAS_SITE_HOOK == 'true'
-        run: curl -fsS -X POST "${{ secrets.SITE_DEPLOY_HOOK_URL }}" > /dev/null && echo 'Site deploy requested'
+      # The push above makes Vercel build hexbot.app from main (docs/deploy.md),
+      # so unlike a nightly this job does not call SITE_DEPLOY_HOOK_URL.

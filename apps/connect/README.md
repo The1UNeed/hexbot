@@ -40,7 +40,7 @@ The migration is idempotent. Run it before the first deployment and after schema
 
 ## Deploy to Vercel
 
-The Vercel project `hexbot-connect` has its root directory at `apps/connect` and serves `connect.hexbot.app`. Deploy from this directory with `vercel deploy --prod`.
+The Vercel project `hexbot-connect` is connected to the GitHub repository with its root directory at `apps/connect`. Every push to `main` deploys `connect.hexbot.app`; every other branch gets a preview URL, posted on the pull request. Nobody deploys by hand. `docs/deploy.md` describes both environments.
 
 Production needs these environment variables, all from `.env.example`:
 
@@ -54,11 +54,11 @@ Production needs these environment variables, all from `.env.example`:
 | `CF_ACCOUNT_ID`, `CF_ZONE_ID` | Cloudflare dashboard, zone `hexbot.app` |
 | `CONNECT_SIGNING_KEY_JWK` | one line from `node scripts/make-signing-key.mjs` |
 
-Do not set `DEV_USER_ID` in production. Run the migration against the production database, then deploy, then confirm `https://connect.hexbot.app/api/health` returns `ready: true`.
+Do not set `DEV_USER_ID` in production. Run the migration against the production database, then redeploy from the Vercel dashboard, then confirm `https://connect.hexbot.app/api/health` returns `ready: true`.
 
 DNS for `hexbot.app` must be a Cloudflare zone, because tunnel hostnames are Cloudflare DNS records. Keep the records that point `hexbot.app`, `www`, and `connect` at Vercel set to DNS only (not proxied).
 
-Check the workspace before deployment:
+CI runs the same checks Vercel builds against:
 
 ```bash
 npm run typecheck -w apps/connect
