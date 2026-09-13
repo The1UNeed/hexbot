@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { downloadsManifest, finalizeRelease } from './finalize-release.mjs'
+import { keep, updateNightlyIndex } from './update-nightly-index.mjs'
 import { nightlyBase, productName, resolveRelease } from './release-version.mjs'
 import { setVersion } from './set-version.mjs'
 import { feedMetadataName, writeFeedMetadata } from './update-feed-utils.mjs'
@@ -21,17 +22,17 @@ test('default dev packaging preserves the platform and builder flags', () => {
   assert.throws(() => parseBuildArgs(['--mac', '--channel']), /Unknown channel/)
 })
 
-test('only dev packages select the custom icon, with and without Icon Composer', () => {
-  assert.deepEqual(iconOptions('dev', true), [
-    '-c.mac.icon=../../icon-dev.icon', '-c.linux.icon=resources/icon-dev.png'
-  ])
-  assert.deepEqual(iconOptions('dev', false), [
-    '-c.mac.icon=build/icon-dev.icns', '-c.linux.icon=resources/icon-dev.png'
-  ])
-  for (const channel of ['stable', 'nightly']) {
-    assert.deepEqual(iconOptions(channel, true), ['-c.mac.icon=build/Hexbot.icon'])
-    assert.deepEqual(iconOptions(channel, false), [])
+test('nightly and dev packages select their own icon, with and without Icon Composer', () => {
+  for (const channel of ['dev', 'nightly']) {
+    assert.deepEqual(iconOptions(channel, true), [
+      `-c.mac.icon=build/icon-${channel}.icon`, `-c.linux.icon=resources/icon-${channel}.png`
+    ])
+    assert.deepEqual(iconOptions(channel, false), [
+      `-c.mac.icon=build/icon-${channel}.icns`, `-c.linux.icon=resources/icon-${channel}.png`
+    ])
   }
+  assert.deepEqual(iconOptions('stable', true), ['-c.mac.icon=build/Hexbot.icon'])
+  assert.deepEqual(iconOptions('stable', false), [])
 })
 
 test('Python source manifest shares root and nested exclusions', () => {
@@ -170,7 +171,7 @@ test('set-version writes the app and daemon versions', async () => {
 })
 
 test('finalize-release names the artifacts on the website and in the casks', async () => {
-  assert.equal(downloadsManifest('0.1.6').client.linux.deb, 'HexbotClient-0.1.6-linux-x64.deb')
+  assert.equal(downloadsManifest('0.1.6').client.linux.deb, 'HexbotClient-0.1.6-linux-amd64.deb')
   const root = await mkdtemp(join(tmpdir(), 'hexbot-finalize-'))
   await mkdir(join(root, 'apps/site/public/downloads'), { recursive: true })
   await mkdir(join(root, 'packaging/homebrew'), { recursive: true })
@@ -200,4 +201,22 @@ test('finalize-release names the artifacts on the website and in the casks', asy
     await readFile(join(root, 'packaging/homebrew/hexbot-client.rb'), 'utf8'),
     /version "0\.1\.6"/
   )
+})
+
+test('update-nightly-index puts the new nightly first, replaces reruns, and keeps the last 30', () => {
+  const first = updateNightlyIndex({}, { version: '0.1.5-nightly.20260912.1', commit: 'abcdef0123456', date: '2026-09-12T07:00:00Z' })
+  assert.deepEqual(first.nightlies.map(n => n.version), ['0.1.5-nightly.20260912.1'])
+  assert.equal(first.nightlies[0].commit, 'abcdef0')
+  assert.equal(first.nightlies[0].files.full['mac-arm64'], 'Hexbot-0.1.5-nightly.20260912.1-mac-arm64.dmg')
+  assert.equal(first.nightlies[0].files.client['linux-deb'], 'HexbotClient-0.1.5-nightly.20260912.1-linux-amd64.deb')
+  const second = updateNightlyIndex(first, { version: '0.1.5-nightly.20260913.2', commit: '4be62ee11bc' })
+  assert.deepEqual(second.nightlies.map(n => n.version), ['0.1.5-nightly.20260913.2', '0.1.5-nightly.20260912.1'])
+  const rerun = updateNightlyIndex(second, { version: '0.1.5-nightly.20260913.2', commit: '9999999' })
+  assert.equal(rerun.nightlies.length, 2)
+  assert.equal(rerun.nightlies[0].commit, '9999999')
+  let index = {}
+  for (let day = 1; day <= keep + 5; day++)
+    index = updateNightlyIndex(index, { version: `0.1.5-nightly.202610${String(day).padStart(2, '0')}.1`, commit: 'c0ffee0' })
+  assert.equal(index.nightlies.length, keep)
+  assert.throws(() => updateNightlyIndex({}, { version: '0.1.5', commit: 'c0ffee0' }), /not a nightly/)
 })

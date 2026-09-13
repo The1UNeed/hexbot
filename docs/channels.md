@@ -13,9 +13,9 @@ its desktop app (see "Borrowed from T3 Code" at the end).
 | App id | `app.hexbot.desktop`, `app.hexbot.client` | `app.hexbot.desktop.nightly`, `app.hexbot.client.nightly` | `app.hexbot.desktop.dev`, `app.hexbot.client.dev` |
 | Trigger | Push of a `v<version>` tag | 09:00 UTC daily when `main` moved, or by hand | You |
 | GitHub release | `v<version>`; "latest" for a plain `X.Y.Z`, prerelease otherwise | `v<version>` prerelease, last 14 kept | None |
-| Update feed | `latest-*.yml` on `updates.hexbot.app` | `nightly-*.yml` on `updates.hexbot.app` | None |
+| Update feed | `latest-*.yml` on `updates.hexbot.app` | `nightly-*.yml` and `nightlies.json` on `updates.hexbot.app` | None |
 | Auto-updates | Yes, stable track | Yes, nightly track | No |
-| Website | Landing page downloads, Homebrew casks | Linked to GitHub | `README.md`, "Develop" |
+| Website | hexbot.app/download once published, Homebrew casks | hexbot.app/download until the first stable release, read from the nightly feed at build time | `README.md`, "Develop" |
 | Data directory | `~/.hexbot` | `~/.hexbot` (shared with stable; back it up) | `<checkout>/.hexbot`, never `~/.hexbot` |
 
 Stable and Nightly can be installed side by side because their app ids
@@ -30,7 +30,7 @@ behaviour lives in a small set of files:
 | File | Channel | Role |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | all | Tests and builds on every push and pull request. Publishes nothing. Also called by `release.yml`. Ends with `release-smoke.mjs` |
-| `.github/workflows/release.yml` | stable, nightly | One workflow for both channels: `preflight` picks the channel and version, `check` runs CI, `build` makes six packages, `publish` uploads the feed and creates the GitHub release, `finalize` (stable only) commits the website manifest and casks |
+| `.github/workflows/release.yml` | stable, nightly | One workflow for both channels: `preflight` picks the channel and version, `check` runs CI, `build` makes six packages, `publish` uploads the feed, creates the GitHub release, and after a nightly redeploys the site, `finalize` (stable only) commits the website manifest and casks |
 | `scripts/desktop/release-version.mjs` | stable, nightly | Channel and version rules: tag must match `package.json`, nightly version format, product names. Tested in `packaging.test.mjs` |
 | `scripts/desktop/set-version.mjs` | all | Writes one version into `apps/desktop/package.json` and `hexbot/__init__.py` |
 | `scripts/desktop/dist.mjs` | all | `--channel stable\|nightly\|dev` sets the product name and app id passed to electron-builder |
@@ -42,6 +42,8 @@ behaviour lives in a small set of files:
 | `apps/desktop/electron-builder.yml`, `electron-builder.client.yml` | all | Full and client-only package definitions and their feed URLs; channel flags override `productName` and `appId` |
 | `apps/desktop/src/main/updater.ts`, `desktop-state.ts` | stable, nightly | The in-app updater. The track defaults to the one the build came from and can be switched in Settings, Updates |
 | `apps/site/public/downloads/manifest.json` | stable | Names the downloadable artifacts on hexbot.app; written by `finalize` |
+| `scripts/desktop/update-nightly-index.mjs` | nightly | Prepends each nightly to `nightlies.json` on `updates.hexbot.app` (last 30) so hexbot.app can list earlier builds. Tested in `packaging.test.mjs` |
+| `apps/site/src/lib/nightly.ts` | nightly | Reads the `nightly-*.yml` feed on `updates.hexbot.app` while the site builds, so the download page can offer the current nightly before the first stable release |
 | `packaging/homebrew/*.rb` | stable | Homebrew casks pointing at `updates.hexbot.app`; written by `finalize` |
 | `docs/releases/<version>.md` | stable | Release notes; `release.yml` uses this file as the GitHub release body when it exists, otherwise GitHub generates notes |
 
@@ -76,6 +78,10 @@ track never sees a downgrade.
 A manual run (`workflow_dispatch`) builds even when nothing changed. Only the
 last 14 nightlies are kept on GitHub; the update feed keeps every artifact.
 
+Nightly packages carry the purple icon from
+`apps/desktop/build/icon-nightly.icon`, so a nightly install is easy to tell
+apart from stable in the Dock.
+
 Nightlies are signed when the signing secrets are present and ad-hoc signed
 otherwise. They are notarized only when the Apple secrets are set.
 
@@ -85,8 +91,9 @@ The dev channel is the source tree. `npm run dev` starts the daemon and the
 web bundle from the checkout with `HEXBOT_HOME=<checkout>/.hexbot` and ports
 derived from the checkout path; `npm run dev -- --desktop` starts the Electron
 app as `Hexbot (dev)` instead (it runs the daemon itself). Its window, app
-menus, Dock, and app switcher use this name and the blue icon from the root
-`icon-dev.icon` bundle. Its data stays in the checkout's `.hexbot` directory.
+menus, Dock, and app switcher use this name and the blue icon from the
+`apps/desktop/build/icon-dev.icon` bundle. Its data stays in the checkout's
+`.hexbot` directory.
 On macOS, `scripts/dev/electron-launcher.mjs` creates an ad-hoc signed copy
 of Electron under `apps/desktop/.electron-runtime/` with a bundle id unique
 to the checkout and edition. The installed Electron dependency stays unchanged.
@@ -120,7 +127,7 @@ client/...                          the same for HexbotClient-*
 Artifacts are immutable (their names carry the version); the `.yml` files are
 served with `no-cache` and rewritten each release. After uploading,
 `release.yml` reads every feed file back through `updates.hexbot.app` and
-fails if one does not announce the new version. The landing page and the
+fails if one does not announce the new version. The download page and the
 Homebrew casks link to the same files. The feed files are not attached to
 the GitHub release; the packages are.
 

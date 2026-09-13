@@ -31,12 +31,58 @@ p a { color: var(--color-accent); text-decoration: underline; text-underline-off
 .button-quiet { background: transparent; color: var(--color-ink); box-shadow: inset 0 0 0 1px var(--color-line); }
 .button-quiet:hover { background: var(--color-wash); }
 
+.button-lg { min-height: 52px; padding: 0 1.6rem; font-size: 1.0625rem; }
+
+/* Download pills, and the numbered cards on the download page. */
+.pill { display: inline-flex; align-items: center; gap: .45rem; min-height: 38px; padding: 0 .95rem; border-radius: 999px; background: var(--color-paper); box-shadow: inset 0 0 0 1px var(--color-line); font-size: .95rem; font-weight: 500; }
+.pill:hover { color: var(--color-accent); }
+.notice { display: flex; align-items: flex-start; gap: .6rem; max-width: 34em; padding: .8rem 1rem; border-radius: 14px; background: var(--color-wash); color: var(--color-mute); font-size: .95rem; line-height: 1.45; text-align: left; }
+.notice svg { flex-shrink: 0; margin-top: .15rem; }
+.notice a { color: var(--color-ink); text-decoration: underline; text-underline-offset: .18em; }
+.step { display: flex; flex-direction: column; align-items: center; gap: .6rem; padding: 1.25rem 1.5rem; border-radius: 20px; background: var(--color-wash); text-align: center; text-wrap: pretty; }
+.step-number { display: inline-flex; width: 30px; height: 30px; align-items: center; justify-content: center; border-radius: 999px; background: var(--color-paper); box-shadow: inset 0 0 0 1px var(--color-line); font-weight: 650; font-size: .95rem; }
+.more > summary { list-style: none; cursor: pointer; }
+.more > summary::-webkit-details-marker { display: none; }
+.more[open] > summary svg { transform: rotate(180deg); }
+
+/* The hero: headline lines rise in, and the crowd of faces flies in around
+   them and then drifts. This is the site's one moment of motion. */
+.hero { padding-top: 5rem; }
+.hero-crowd { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.hero-face { position: absolute; left: calc(50% + var(--x)); top: var(--y); width: var(--s); height: var(--s); margin-left: calc(var(--s) / -2); }
+.hero-face-in { display: block; width: 100%; height: 100%; animation: face-in 1s cubic-bezier(.2, .7, .2, 1) var(--in) both, face-drift var(--dd) ease-in-out calc(var(--in) + 1s) infinite; }
+.hero-face-in .face { width: 100%; height: 100%; }
+@keyframes face-in { from { opacity: 0; transform: translate(var(--fx), var(--fy)) rotate(calc(var(--rot) + 24deg)) scale(.6); } to { opacity: 1; transform: translate(0, 0) rotate(var(--rot)) scale(1); } }
+@keyframes face-drift { 0%, 100% { transform: translate(0, 0) rotate(var(--rot)); } 50% { transform: translate(var(--dx), var(--dy)) rotate(calc(var(--rot) + var(--wob))); } }
+.hf-1 { --x: -450px; --y: 110px; --s: 104px; --rot: -10deg; --fx: -80px; --fy: 40px; --dx: 6px; --dy: -10px; --wob: 3deg; --in: 240ms; --dd: 9s; }
+.hf-2 { --x: -230px; --y: 6px; --s: 68px; --rot: -5deg; --fx: -40px; --fy: -60px; --dx: -5px; --dy: 8px; --wob: -3deg; --in: 380ms; --dd: 11s; }
+.hf-3 { --x: 230px; --y: 10px; --s: 72px; --rot: 6deg; --fx: 40px; --fy: -60px; --dx: 6px; --dy: 7px; --wob: 3deg; --in: 460ms; --dd: 10s; }
+.hf-4 { --x: 460px; --y: 120px; --s: 100px; --rot: 8deg; --fx: 80px; --fy: 40px; --dx: -7px; --dy: -8px; --wob: -3deg; --in: 300ms; --dd: 8.5s; }
+.hf-5 { --x: -420px; --y: 380px; --s: 76px; --rot: -7deg; --fx: -70px; --fy: 60px; --dx: 7px; --dy: 6px; --wob: 4deg; --in: 560ms; --dd: 12s; }
+.hf-6 { --x: 430px; --y: 390px; --s: 76px; --rot: 7deg; --fx: 70px; --fy: 60px; --dx: -6px; --dy: 8px; --wob: -4deg; --in: 640ms; --dd: 9.5s; }
+@media (width <= 820px) {
+  .hero { padding-top: 7.5rem; }
+  .hf-1 { --x: -37vw; --y: 24px; --s: 60px; }
+  .hf-2 { --x: -13vw; --y: 8px; --s: 46px; }
+  .hf-3 { --x: 13vw; --y: 8px; --s: 46px; }
+  .hf-4 { --x: 37vw; --y: 24px; --s: 60px; }
+  .hf-5 { --x: -38vw; --y: 460px; --s: 56px; }
+  .hf-6 { --x: 38vw; --y: 470px; --s: 56px; }
+}
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+.rise { display: inline-block; animation: rise 700ms cubic-bezier(.2, .7, .2, 1) both; }
+p.rise, div.rise { display: block; }
+div.rise { display: flex; }
+.rise-2 { animation-delay: 90ms; } .rise-3 { animation-delay: 180ms; } .rise-4 { animation-delay: 300ms; } .rise-5 { animation-delay: 420ms; }
+
 /* Bot faces. Eyes blink at rest; a small script points them at the cursor. */
 .face { display: inline-block; }
 .face .eyes { transform-origin: 50px 48px; animation: blink 5.4s infinite; }
 .face .pupils { transition: transform 160ms ease-out; }
 @keyframes blink { 0%, 93%, 100% { transform: scaleY(1); } 96.5% { transform: scaleY(.08); } }
 @media (prefers-reduced-motion: reduce) {
+  .hero-face-in { animation: none; transform: rotate(var(--rot)); }
+  .rise { animation: none; }
   .face .eyes { animation: none; }
   .face .pupils { transition: none; }
   .button:hover { transform: none; }

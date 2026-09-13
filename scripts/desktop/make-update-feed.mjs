@@ -120,7 +120,7 @@ if (linuxManifest) {
   }
   // The deb is not an update payload but is published next to the feed so the
   // website and the docs can link to it.
-  const deb = files.find(f => f === `${prefix}-${version}-linux-x64.deb`)
+  const deb = files.find(f => f === `${prefix}-${version}-linux-amd64.deb`)
   if (deb) await cp(join(outputDirectory, deb), join(destination, deb))
   await cp(linuxYml, join(destination, feedMetadataName(channel, 'linux')))
   console.log('Prepared linux/x64')

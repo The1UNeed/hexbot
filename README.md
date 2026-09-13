@@ -17,8 +17,8 @@ what you are running.
 
 | Channel | Name | Get it from | For |
 | --- | --- | --- | --- |
-| **Stable** | `Hexbot [alpha]` | [GitHub releases](https://github.com/The1UNeed/hexbot/releases) and, once published, [hexbot.app](https://hexbot.app/#download) | Users. Tagged, signed, notarized when the keys are in place, updates itself. Still alpha while the version is `0.x`. |
-| **Nightly** | `Hexbot Nightly` | [Nightly prereleases on GitHub](https://github.com/The1UNeed/hexbot/releases?q=nightly) | Testers who want yesterday's fixes. Installs next to the stable app, updates itself to the next nightly. |
+| **Stable** | `Hexbot [alpha]` | [GitHub releases](https://github.com/The1UNeed/hexbot/releases) and, once published, [hexbot.app](https://hexbot.app/download/) | Users. Tagged, signed, notarized when the keys are in place, updates itself. Still alpha while the version is `0.x`. |
+| **Nightly** | `Hexbot Nightly` | [hexbot.app](https://hexbot.app/download/) until the first stable release, and [nightly prereleases on GitHub](https://github.com/The1UNeed/hexbot/releases?q=nightly) | Testers who want yesterday's fixes. Installs next to the stable app, updates itself to the next nightly. |
 | **Dev** | `Hexbot (dev)` / source | This repository, see [Develop](#develop) | Contributors and coding agents. |
 
 Each channel comes in two packages for macOS (Apple Silicon and Intel) and
@@ -134,8 +134,8 @@ Milestones 1 through 6 of `DESIGN.md` are implemented: daemon, pairing, the
 desktop app on macOS and Linux, sections and memory, Connect end to end,
 rooms and the turn engine, dreaming, multi-user, and packaging. The first
 public alpha waits on Apple signing credentials and the Connect production
-accounts (Clerk, Neon, Cloudflare). Until then the download buttons on
-hexbot.app stay inert and builds come from GitHub.
+accounts (Clerk, Neon, Cloudflare). Until then hexbot.app/download offers
+the current nightly and says stable is coming soon.
 
 ## License
 

@@ -206,6 +206,7 @@ jobs:
       # Step-level `if` cannot read secrets; the job env can.
       HAS_R2: ${{ secrets.R2_ACCESS_KEY_ID != '' && secrets.R2_SECRET_ACCESS_KEY != '' && secrets.R2_ACCOUNT_ID != '' }}
       R2_BUCKET: ${{ vars.R2_UPDATES_BUCKET || 'hexbot-updates' }}
+      HAS_SITE_HOOK: ${{ secrets.SITE_DEPLOY_HOOK_URL != '' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -244,6 +245,22 @@ jobs:
             --cache-control 'public, max-age=31536000, immutable'
           aws s3 cp dist/updates "s3://$R2_BUCKET/" --recursive --exclude '*' --include '*.yml' --no-progress \
             --cache-control 'no-cache' --content-type 'text/yaml'
+      # hexbot.app lists recent nightlies from this file (docs/channels.md).
+      - name: Update the nightly index
+        if: env.HAS_R2 == 'true' && env.CHANNEL == 'nightly'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          AWS_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          set -euo pipefail
+          aws s3 cp "s3://$R2_BUCKET/nightlies.json" existing-nightlies.json --no-progress || echo '{}' > existing-nightlies.json
+          node scripts/desktop/update-nightly-index.mjs --version "$VERSION" --commit "$GITHUB_SHA" --index existing-nightlies.json --out dist/nightlies.json
+          aws s3 cp dist/nightlies.json "s3://$R2_BUCKET/nightlies.json" --no-progress \
+            --cache-control 'no-cache' --content-type 'application/json'
       - name: Check the feed the apps will read
         if: env.HAS_R2 == 'true'
         run: |
@@ -308,6 +325,12 @@ jobs:
             echo "Deleting nightly $tag"
             gh release delete "$tag" --yes --cleanup-tag
           done
+      # The download page reads the nightly feed while it builds
+      # (apps/site/src/lib/nightly.ts), so rebuild it now that the feed moved.
+      # Stable does the same in `finalize` after committing the manifest.
+      - name: Redeploy hexbot.app
+        if: env.CHANNEL == 'nightly' && env.HAS_R2 == 'true' && env.HAS_SITE_HOOK == 'true'
+        run: curl -fsS -X POST "${{ secrets.SITE_DEPLOY_HOOK_URL }}" > /dev/null && echo 'Site deploy requested'
       - name: Summary
         run: |
           {

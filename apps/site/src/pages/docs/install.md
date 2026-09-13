@@ -13,14 +13,14 @@ Both packages update independently and can be installed side by side.
 
 ## Download
 
-Pick a package, then choose the build for your computer from the [home page](/). Stable releases are the default; nightly builds are on [GitHub](https://github.com/The1UNeed/hexbot/releases?q=nightly) and described under [Updates](/docs/updates/):
+The [download page](/download/) picks the build for your computer and lists every other one. Stable releases are the default once they exist; nightly builds are also listed on [GitHub](https://github.com/The1UNeed/hexbot/releases?q=nightly) and described under [Updates](/docs/updates/):
 
 - Apple Silicon for Macs with an M-series chip
 - Intel for older Macs
 - AppImage for a portable Linux app
 - deb for Debian, Ubuntu, and related distributions
 
-Until the first public release the download buttons are inactive.
+Until the first stable release the download page offers the current nightly build instead.
 
 ## First launch
 
@@ -40,14 +40,14 @@ Open the DMG and drag Hexbot to Applications. Public releases are signed and not
 Make an AppImage executable before opening it:
 
 ```sh
-chmod +x Hexbot-0.1.5-alpha.1-linux-x64.AppImage
-./Hexbot-0.1.5-alpha.1-linux-x64.AppImage
+chmod +x Hexbot-0.1.5-alpha.1-linux-x86_64.AppImage
+./Hexbot-0.1.5-alpha.1-linux-x86_64.AppImage
 ```
 
 Install a deb package with your usual package manager:
 
 ```sh
-sudo apt install ./Hexbot-0.1.5-alpha.1-linux-x64.deb
+sudo apt install ./Hexbot-0.1.5-alpha.1-linux-amd64.deb
 ```
 
 ## Data and updates

@@ -1,0 +1,102 @@
+---
+import Base from '../layouts/Base.astro'
+import Logo from '../components/Logo.astro'
+import DownloadList from '../components/DownloadList.astro'
+import { loadDownloads, releasesUrl, targets } from '../lib/downloads'
+import { loadNightlies, nightlyRows } from '../lib/nightlies'
+
+const downloads = await loadDownloads()
+const nightlies = downloads?.channel === 'nightly' ? nightlyRows(await loadNightlies(), downloads) : []
+const first = downloads?.full[0]
+const macSteps = [
+  'Open the Hexbot .dmg file from your Downloads folder',
+  'Drag Hexbot into your Applications folder',
+  'Open Hexbot and choose "Run on this machine"',
+  'Add a model key, name your first bot, and say hello',
+]
+const linuxSteps = [
+  'Make the AppImage executable: right-click it, or run chmod +x on it',
+  'Open it. If you chose the deb, install it with your package manager instead',
+  'Choose "Run on this machine"',
+  'Add a model key, name your first bot, and say hello',
+]
+---
+<Base title="Download" description="Get Hexbot for Mac or Linux. Free and open source.">
+  <section class="mx-auto max-w-[720px] px-5 pt-14 text-center sm:px-8 lg:pt-20">
+    <Logo tile size={112} class="mx-auto" />
+    <h1 id="dl-title" class="display-sm mx-auto mt-8 text-[clamp(2rem,5.5vw,3rem)]">Download Hexbot</h1>
+    <p id="dl-sub" class="lede mx-auto mt-3">For Mac and Linux. Free and open source.</p>
+    {downloads && first ? (
+      <>
+        <div class="mt-7 flex flex-wrap items-center justify-center gap-3">
+          <a id="dl-primary" class="button" href={first.url} download>
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8m0 0 3-3M8 10 5 7M3 13h10"/></svg>
+            <span id="dl-primary-label">Download for {targets[0].name}</span>
+          </a>
+          <a class="button button-quiet" href="#all">See all downloads</a>
+        </div>
+        <p class="notice mx-auto mt-8">
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.5v4M8 5v.5" stroke-linecap="round"/></svg>
+          <span>{downloads.channel === 'nightly' ? 'Hexbot is in alpha and this is a nightly build, so things may break.' : 'Hexbot is in alpha, so things may break.'} <a href="https://github.com/The1UNeed/hexbot/issues">Report what you find</a>.</span>
+        </p>
+      </>
+    ) : (
+      <div class="mt-7 flex flex-wrap items-center justify-center gap-3">
+        <a class="button" href={`${releasesUrl}?q=nightly`}>Builds on GitHub</a>
+      </div>
+    )}
+  </section>
+
+  {downloads && (
+    <section class="mx-auto max-w-[720px] px-5 pt-20 sm:px-8">
+      <h2 class="display-sm text-center text-[1.75rem]">A few more steps</h2>
+      <ol class="mt-8 grid gap-3 sm:grid-cols-2" data-os="mac">
+        {macSteps.map((step, i) => (
+          <li class="step"><span class="step-number">{i + 1}</span><span>{step}</span></li>
+        ))}
+      </ol>
+      <p class="mx-auto mt-4 max-w-[36em] text-center text-[15px] text-mute" data-os="mac">If macOS says it cannot check the app, open System Settings, Privacy and Security, and choose Open Anyway.</p>
+      <ol class="mt-8 grid gap-3 sm:grid-cols-2" data-os="linux" hidden>
+        {linuxSteps.map((step, i) => (
+          <li class="step"><span class="step-number">{i + 1}</span><span>{step}</span></li>
+        ))}
+      </ol>
+    </section>
+  )}
+
+  {downloads && (
+    <section id="all" class="mx-auto max-w-[720px] scroll-mt-8 px-5 pt-20 sm:px-8">
+      <h2 class="display-sm text-center text-[1.75rem]">All downloads</h2>
+      <p class="mt-2 text-center text-mute">{downloads.built}.</p>
+      <div class="mt-8"><DownloadList downloads={downloads} /></div>
+    </section>
+  )}
+
+  {nightlies.length > 0 && (
+    <section id="nightlies" class="mx-auto max-w-[720px] scroll-mt-8 px-5 pt-20 sm:px-8">
+      <h2 class="display-sm text-center text-[1.75rem]">Nightly builds</h2>
+      <p class="mx-auto mt-2 max-w-[34em] text-center text-mute">A new build every morning the code changes. An installed nightly updates itself to the newest one; earlier builds stay here if you need to go back.</p>
+      <ol class="mt-8 flex flex-col">
+        {nightlies.map(row => (
+          <li class="flex flex-col gap-3 border-t border-line py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+            <div class="flex items-center gap-3">
+              <span class="font-semibold">{row.day}</span>
+              {row.latest && <span class="rounded-full bg-ink px-2.5 py-0.5 text-[13px] font-medium text-paper">Latest</span>}
+              <span class="font-mono text-[13px] text-mute">{row.version}</span>
+            </div>
+            {row.latest ? (
+              <a class="text-[15px] underline decoration-line underline-offset-4 hover:text-accent" href="#all">Above</a>
+            ) : (
+              <div class="flex flex-wrap gap-2">
+                {row.files.map(file => (
+                  <a class="pill" href={file.url} download>{file.label}</a>
+                ))}
+              </div>
+            )}
+          </li>
+        ))}
+      </ol>
+    </section>
+  )}
+  <script src="../scripts/downloadPage.ts"></script>
+</Base>

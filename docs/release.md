@@ -21,7 +21,13 @@ page is the procedure and the one-time setup. Modelled on T3 Code's
   confirm it announces the new version, then creates the GitHub release with
   every DMG, ZIP, AppImage, deb, and blockmap. Stable notes come from
   `docs/releases/<version>.md`, or GitHub generates them from the commits
-  since the previous stable release. Nightlies beyond the last 14 are deleted.
+  since the previous stable release. A nightly also prepends itself to
+  `nightlies.json` in the bucket, which hexbot.app lists as earlier builds;
+  the packages themselves are never deleted from the bucket. GitHub
+  releases beyond the last 14 nightlies are deleted,
+  and a nightly ends by asking Vercel to redeploy hexbot.app when
+  `SITE_DEPLOY_HOOK_URL` is set, because the download page reads the nightly
+  feed while it builds.
 - `finalize` (stable only) runs `scripts/desktop/finalize-release.mjs` and
   commits `apps/site/public/downloads/manifest.json` and both Homebrew casks
   to `main` as `github-actions[bot]`. That push does not trigger CI. When the
