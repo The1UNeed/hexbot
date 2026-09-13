@@ -60,7 +60,7 @@ Three columns, resizable, min widths 240 / 480 / 300.
   is sent. Untouched sections and older ones stay behind "More", which lists
   everything with untouched sections last.
   A bot with nothing to list is just its row; there is no fold toggle.
-- Bottom: Activity, an "Archived" collapsed group (only when there is
+- Bottom: an "Archived" collapsed group (only when there is
   something archived), then the current user with a connection dot on their
   avatar and a settings gear.
 - Selection: one section is active, or the bot row is filled when its open

@@ -415,23 +415,6 @@ export interface RoomTurn {
   status: string
 }
 
-export interface ActivityPair {
-  count: number
-  from_bot: string
-  last_at: number
-  to_bot: string
-}
-
-export interface BotMessage {
-  created_at: number
-  from_bot: string
-  id: string
-  room_id: null | string
-  section_id: string
-  text: string
-  to_bot: string
-}
-
 export interface StatusLine {
   kind: string
   text: string

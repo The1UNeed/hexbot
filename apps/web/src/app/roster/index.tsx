@@ -1,6 +1,5 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
 import {
-  Activity,
   Archive,
   ChevronDown,
   ChevronRight,
@@ -774,16 +773,6 @@ export function RosterColumn() {
         )}
       </div>
       <div className="shrink-0 px-2 pb-2">
-        <button
-          className={footerRow}
-          onClick={() => void navigate({ to: '/activity' })}
-          type="button"
-        >
-          <span className={footerIcon}>
-            <Activity size={14} />
-          </span>
-          <span className="font-medium">Activity</span>
-        </button>
         {archived.length ? (
           <>
             <button
