@@ -186,6 +186,12 @@ On Linux x86_64:
   `set-version.mjs`, commit, re-tag.
 - macOS build unsigned when expected signed: check that all five Apple
   secrets are populated.
+- macOS build fails in `set-key-partition-list` with "SecKeychainUnlock: The
+  user name or passphrase you entered is not correct": the secrets are fine
+  (the `.p12` import just before it succeeded). electron-builder older than
+  26.16.1 passes the `.p12` password where the keychain's own password
+  belongs, and the `macos-26` runner rejects it. Keep electron-builder at
+  26.16.1 or newer.
 - `publish` skipped the upload: the R2 secrets are missing. Add them and run
   a manual nightly to confirm, then re-run the stable workflow from the tag.
 - "does not announce" in `publish`: the upload succeeded but

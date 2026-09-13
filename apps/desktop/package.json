@@ -23,7 +23,7 @@
     "@playwright/test": "1.62.1",
     "@types/node": "22.20.1",
     "electron": "40.10.2",
-    "electron-builder": "26.15.3",
+    "electron-builder": "26.16.1",
     "electron-vite": "5.0.0",
     "typescript": "6.0.3",
     "vite": "7.3.6",
