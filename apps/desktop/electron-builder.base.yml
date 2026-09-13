@@ -16,15 +16,12 @@ protocols:
     schemes:
       - hexbot
 mac:
+  # No arch here: release.yml picks one per job with --arm64 or --x64, and a
+  # bare --mac builds the host architecture. A per-target arch list would
+  # override those flags and every job would package both.
   target:
-    - target: dmg
-      arch:
-        - arm64
-        - x64
-    - target: zip
-      arch:
-        - arm64
-        - x64
+    - dmg
+    - zip
   hardenedRuntime: true
   entitlements: entitlements.mac.plist
   entitlementsInherit: entitlements.mac.plist
