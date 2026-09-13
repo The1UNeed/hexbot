@@ -15,7 +15,7 @@
 | `finalize-release.mjs <version> <full-dir> <client-dir>` | Rewrites the website downloads manifest and both Homebrew casks after a stable release. |
 | `release-smoke.mjs` | Runs `release-version`, `set-version`, `make-update-feed`, and `finalize-release` the way `release.yml` does, against synthetic packages in a temporary directory. CI runs it on every push. |
 | `update-cask.mjs [--client] <release-dir> [version]` | The cask part of finalize, on its own. |
-| `make-dev-icons.mjs` | Compiles root `icon-dev.icon` into the Dev ICNS and PNG fallbacks using Xcode 26. |
+| `make-channel-icons.mjs [dev\|nightly]` | Compiles `build/icon-dev.icon` and `build/icon-nightly.icon` into their ICNS and PNG fallbacks using Xcode 26. |
 | `make-icons.py` | Renders `build/icon.png`, `build/icon.icns`, and the tray images from `apps/desktop/build/Hexbot.icon`. |
 
 Tests: `node --test scripts/desktop/*.test.mjs && node scripts/desktop/release-smoke.mjs`.
@@ -43,18 +43,19 @@ The icon source is the Icon Composer bundle `apps/desktop/build/Hexbot.icon`. `d
 
 Run it and commit the outputs whenever the bundle changes.
 
-Dev uses the root `icon-dev.icon` bundle. Rebuild its fallbacks on a Mac with
-Xcode 26 or newer:
+Nightly and Dev each have their own bundle next to it, `build/icon-nightly.icon`
+(purple) and `build/icon-dev.icon` (blue), so installs are easy to tell apart.
+Rebuild their fallbacks on a Mac with Xcode 26 or newer:
 
 ```sh
-node scripts/desktop/make-dev-icons.mjs
+node scripts/desktop/make-channel-icons.mjs          # both, or name one: dev | nightly
 ```
 
-Commit `apps/desktop/build/icon-dev.icns` and
-`apps/desktop/resources/icon-dev.png` with the source. Apple's compiler renders
-the 256px fallback with the macOS padding and shadow. The source launcher and
-older build machines use these files; macOS packages built with Xcode 26 use
-the layered `.icon` directly. Stable and Nightly keep their existing icon.
+Commit `apps/desktop/build/icon-<channel>.icns` and
+`apps/desktop/resources/icon-<channel>.png` with the source. Apple's compiler
+renders the 256px fallback with the macOS padding and shadow. The source
+launcher, Linux, and older build machines use these files; macOS packages
+built with Xcode 26 use the layered `.icon` directly.
 
 `npm run dev -- --desktop` prepares a separate `Hexbot (dev).app` inside the
 ignored `apps/desktop/.electron-runtime/` directory. The launcher refreshes it

@@ -13,13 +13,13 @@ Deploy either one from its directory with `vercel deploy --prod`. Both directori
 
 The site has no secrets. `apps/site/vercel.json` sets the security headers and marks hashed assets immutable. Before deploying run `npm run check -w apps/site`.
 
-Downloads: `apps/site/public/downloads/manifest.json` names the artifacts and has a `published` flag. The landing page renders inert buttons until it is `true`. The release workflow's `finalize` job rewrites the manifest and commits it to `main` after every stable release (`docs/release.md`); deploy the site afterwards so the buttons point at the new files.
+Downloads: `apps/site/public/downloads/manifest.json` names the stable artifacts and has a `published` flag. While it is `false` the download page (`apps/site/src/pages/download.astro`) says stable is coming soon and offers the current nightly instead: `apps/site/src/lib/nightly.ts` reads the `nightly-*.yml` feed files on `updates.hexbot.app` during the build and links the files they name, or falls back to the GitHub nightly listing if the feed is unreachable. The same page lists earlier nightlies from `nightlies.json` in the bucket, written by the nightly workflow; until that file exists it lists the current build alone. The release workflow's `finalize` job rewrites the manifest and commits it to `main` after every stable release (`docs/release.md`), and both channels ask Vercel to redeploy afterwards through `SITE_DEPLOY_HOOK_URL`, so the page follows each build.
 
 Smoke check after a deploy: `https://hexbot.app/`, `/docs/`, `/docs/connect/`, `/pair/`, and `/privacy/` all return 200 with the security headers.
 
 ## Update server
 
-`updates.hexbot.app` is a Cloudflare R2 bucket with a custom domain, nothing else. The release workflow uploads every package and the electron-updater feed files into it; the desktop app, the landing page, and the Homebrew casks all read from it. Layout and one-time setup are in `docs/release.md`. There is no code to deploy.
+`updates.hexbot.app` is a Cloudflare R2 bucket with a custom domain, nothing else. The release workflow uploads every package and the electron-updater feed files into it; the desktop app, the download page, and the Homebrew casks all read from it. Layout and one-time setup are in `docs/release.md`. There is no code to deploy.
 
 ## Connect
 

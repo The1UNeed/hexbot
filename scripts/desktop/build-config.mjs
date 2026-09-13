@@ -10,10 +10,13 @@ export function parseBuildArgs(args) {
   return { client, channel, builderArgs }
 }
 
+// Stable uses electron-builder's defaults (build/icon.icns, build/icon.png).
+// Nightly and Dev carry their own Icon Composer bundle in apps/desktop/build
+// with fallbacks compiled by make-channel-icons.mjs.
 export function iconOptions(channel, iconComposer) {
-  if (channel === 'dev') return [
-    `-c.mac.icon=${iconComposer ? '../../icon-dev.icon' : 'build/icon-dev.icns'}`,
-    '-c.linux.icon=resources/icon-dev.png'
+  if (channel === 'stable') return iconComposer ? ['-c.mac.icon=build/Hexbot.icon'] : []
+  return [
+    `-c.mac.icon=build/icon-${channel}.${iconComposer ? 'icon' : 'icns'}`,
+    `-c.linux.icon=resources/icon-${channel}.png`
   ]
-  return iconComposer ? ['-c.mac.icon=build/Hexbot.icon'] : []
 }

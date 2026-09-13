@@ -103,7 +103,7 @@ function useWorkClock(message: Message): number {
 }
 
 /**
- * Sits under the bot's latest bubble. While the turn runs: the face, then
+ * Sits above the bot's latest bubble, where the work happened. While the turn runs: the face, then
  * after `MIN_WORK_S` a panel with the reasoning trace and each step as it
  * happens, open while the bot thinks or a tool runs. Afterwards: one muted
  * line ("Thought for 12s · 3 steps") that opens into the same panel, or
@@ -144,7 +144,7 @@ export function WorkStatus({
   const steps = visibleSteps(message.toolCalls)
 
   return (
-    <div className="hex-fade px-1 pt-1" data-testid="work-status">
+    <div className="hex-fade px-1 pb-1" data-testid="work-status">
       <div className="flex items-center gap-2">
         {face && message.streaming ? (
           <div className="hex-think shrink-0">

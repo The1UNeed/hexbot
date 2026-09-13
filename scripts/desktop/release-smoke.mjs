@@ -105,13 +105,13 @@ try {
         `${prefix}-${version}-mac-arm64.dmg`,
         `${prefix}-${version}-mac-x64.zip`,
         `${prefix}-${version}-mac-x64.dmg`,
-        `${prefix}-${version}-linux-x64.AppImage`,
-        `${prefix}-${version}-linux-x64.deb`
+        `${prefix}-${version}-linux-x86_64.AppImage`,
+        `${prefix}-${version}-linux-amd64.deb`
       ]) {
         files[name] = `${channel} ${edition} ${name}`
         await writeFile(join(output, name), files[name])
       }
-      const appImage = `${prefix}-${version}-linux-x64.AppImage`
+      const appImage = `${prefix}-${version}-linux-x86_64.AppImage`
       await writeFile(
         join(output, 'latest-linux.yml'),
         [
@@ -155,8 +155,8 @@ try {
     }
     const linux = await readFile(join(feedRoot, edition, 'linux/x64', `${feed}-linux.yml`), 'utf8')
     assert.match(linux, new RegExp(`^version: ${version.replaceAll('.', '\\.')}$`, 'm'))
-    await readFile(join(feedRoot, edition, 'linux/x64', `${prefix}-${version}-linux-x64.AppImage`))
-    await readFile(join(feedRoot, edition, 'linux/x64', `${prefix}-${version}-linux-x64.deb`))
+    await readFile(join(feedRoot, edition, 'linux/x64', `${prefix}-${version}-linux-x86_64.AppImage`))
+    await readFile(join(feedRoot, edition, 'linux/x64', `${prefix}-${version}-linux-amd64.deb`))
   }
   // Both channels wrote into the same directories without clobbering each other.
   await readFile(join(feedRoot, 'full/mac/arm64/latest-mac.yml'))
@@ -186,7 +186,7 @@ try {
   assert.equal(manifest.published, true)
   assert.equal(manifest.version, stable.version)
   assert.equal(manifest.mac.arm64, `Hexbot-${stable.version}-mac-arm64.dmg`)
-  assert.equal(manifest.client.linux.deb, `HexbotClient-${stable.version}-linux-x64.deb`)
+  assert.equal(manifest.client.linux.deb, `HexbotClient-${stable.version}-linux-amd64.deb`)
   for (const [cask, hashes] of [
     ['hexbot.rb', result.full.hashes],
     ['hexbot-client.rb', result.client.hashes]
