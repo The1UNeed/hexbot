@@ -76,7 +76,7 @@ export function BubbleActions({
   actions: { icon: React.ReactNode; label: string; onClick: () => void }[]
 }) {
   return (
-    <span className="flex shrink-0 items-center gap-0.5 self-center opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+    <span className="mt-0.5 flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
       {actions.map(action => (
         <button
           aria-label={action.label}
@@ -339,6 +339,7 @@ export function MessageRow({
   const name = bot?.display_name ?? 'Bot'
 
   // Same row as the room view: the bot's face beside its bubble, its name on top.
+  // The column reads in order: the work that produced the reply, the reply, then its actions.
   return (
     <article
       className={cn('group flex gap-2 py-1', assistant ? 'justify-start' : 'flex-row-reverse')}
@@ -356,6 +357,9 @@ export function MessageRow({
       <div
         className={cn('flex min-w-0 max-w-[80%] flex-col', assistant ? 'items-start' : 'items-end')}
       >
+        {assistant ? (
+          <WorkStatus face={!hasBody} image={avatarData(bot)} message={message} name={name} />
+        ) : null}
         {hasBody ? (
           <div className={assistant ? bubbleClass : userBubbleClass}>
             {assistant ? (
@@ -371,11 +375,8 @@ export function MessageRow({
             <Attachments attachments={message.attachments} onImage={onImage} />
           </div>
         ) : null}
-        {assistant ? (
-          <WorkStatus face={!hasBody} image={avatarData(bot)} message={message} name={name} />
-        ) : null}
+        {message.streaming || !hasBody ? null : <BubbleActions actions={actions} />}
       </div>
-      {message.streaming || !hasBody ? null : <BubbleActions actions={actions} />}
     </article>
   )
 }

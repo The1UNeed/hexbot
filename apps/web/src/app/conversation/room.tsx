@@ -286,6 +286,16 @@ export function RoomConversation() {
 
             return (
               <div data-testid="room-event" key={turn.bot}>
+                {message ? (
+                  <WorkStatus
+                    face={!message.text}
+                    image={avatarData(bot)}
+                    message={message}
+                    name={name}
+                  />
+                ) : (
+                  <Thinking image={avatarData(bot)} name={name} />
+                )}
                 {message?.text ? (
                   <article className="flex gap-2 py-1">
                     <Avatar
@@ -303,16 +313,6 @@ export function RoomConversation() {
                     </div>
                   </article>
                 ) : null}
-                {message ? (
-                  <WorkStatus
-                    face={!message.text}
-                    image={avatarData(bot)}
-                    message={message}
-                    name={name}
-                  />
-                ) : (
-                  <Thinking image={avatarData(bot)} name={name} />
-                )}
               </div>
             )
           })}
