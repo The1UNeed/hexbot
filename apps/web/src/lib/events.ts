@@ -6,13 +6,15 @@
  *   message.delta          append text
  *   message.interim        append commentary when `already_streamed` is false
  *   message.complete       finalize, attach usage, `hexbot.sections.touch`
- *   thinking.delta         append to the collapsed thinking block
+ *   reasoning.delta        append to the message's reasoning trace
+ *   thinking.delta         replace the daemon's status line (a wait notice)
  *   tool.start/complete    add or resolve a tool call in the current message
  *   approval.request       push an approval card (session scoped) and notify
  *   status.update          header status line
  *   session.info           section model and provider chips
  *   session.usage          usage badge
  *   error                  inline error row
+ *   hexbot.bots.incident   Stopped card in the section's transcript, notification
  *
  * Session-less `hexbot.*.changed` events refresh the cold stores.
  */
@@ -20,6 +22,7 @@
 import type { GatewayEvent } from '@hermes/shared'
 
 import { useBots } from '../stores/bots'
+import { useConnectors } from '../stores/connectors'
 import { useRooms } from '../stores/rooms'
 import { useSections } from '../stores/sections'
 import { useSettings } from '../stores/settings'
@@ -28,13 +31,14 @@ import type {
   ToolCompletePayload,
   ToolStartPayload
 } from '../stores/transcripts'
-import { useTranscripts } from '../stores/transcripts'
+import { transcriptNotify, useTranscripts } from '../stores/transcripts'
 
 import type { HexbotRpcClient } from './rpc'
 import type { RoomEvent, RoomTurn, SessionInfo, Usage } from './types'
 
 export interface EventRouterDeps {
   refreshBots?: () => void
+  refreshConnectors?: () => void
   refreshNetwork?: () => void
   refreshSections?: () => void
   refreshRooms?: () => void
@@ -43,6 +47,9 @@ export interface EventRouterDeps {
 const defaultDeps: Required<EventRouterDeps> = {
   refreshBots: () => {
     void useBots.getState().refresh()
+  },
+  refreshConnectors: () => {
+    void useConnectors.getState().refreshAll()
   },
   refreshNetwork: () => {
     void useSettings.getState().refreshNetwork()
@@ -61,6 +68,36 @@ function text(payload: Record<string, unknown>): string {
   return typeof payload.text === 'string' ? payload.text : ''
 }
 
+/** Fields the daemon adds to a bot for status; read loosely so older records still work. */
+type BotSignals = Partial<{ notify: boolean; status: string }>
+
+/** Per-bot "Notify me" switch; a bot without the field is treated as on. */
+export function botNotifies(bot?: string | null): boolean {
+  const record = bot ? (useBots.getState().byName[bot] as BotSignals | undefined) : undefined
+
+  return record?.notify !== false
+}
+
+function botOfSection(sectionId?: string | null): string | undefined {
+  return sectionId ? useSections.getState().byId[sectionId]?.bot : undefined
+}
+
+/** The open transcript for an incident: the section's live session, else the id as sent. */
+function incidentSession(payload: Record<string, unknown>): null | string {
+  const sections = useSections.getState()
+  const transcripts = useTranscripts.getState().bySession
+  const sectionId = typeof payload.section_id === 'string' ? payload.section_id : null
+  const live = sectionId ? sections.liveSessionId[sectionId] : undefined
+
+  if (live && transcripts[live]) {
+    return live
+  }
+
+  const sent = typeof payload.session_id === 'string' ? payload.session_id : null
+
+  return sent && transcripts[sent] ? sent : null
+}
+
 /** Dispatch one gateway event. Unknown types are ignored on purpose. */
 export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): void {
   const effects = { ...defaultDeps, ...deps }
@@ -77,6 +114,37 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
     case 'hexbot.memory.core.changed':
       return
+
+    case 'hexbot.connectors.changed':
+      effects.refreshConnectors()
+
+      return
+    case 'hexbot.bots.incident': {
+      const incident = (payload.incident ?? {}) as Record<string, unknown>
+      const bot = typeof payload.bot === 'string' ? payload.bot : ''
+      const message = typeof incident.text === 'string' ? incident.text : 'The bot stopped.'
+
+      if (incident.resolved_at) {
+        return
+      }
+
+      const target = incidentSession(payload)
+
+      if (target) {
+        transcripts.incidentEvent(target, message, {
+          connector: typeof incident.connector === 'string' ? incident.connector : null,
+          ...(typeof incident.id === 'string' ? { incidentId: incident.id } : {})
+        })
+      }
+
+      if (botNotifies(bot)) {
+        const name = useBots.getState().byName[bot]?.display_name ?? bot
+        const sectionId = typeof payload.section_id === 'string' ? payload.section_id : undefined
+        transcriptNotify({ body: message, sectionId, title: `${name} stopped` })
+      }
+
+      return
+    }
 
     case 'hexbot.rooms.changed':
       if (typeof payload.id === 'string') {
@@ -122,7 +190,9 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
   switch (event.type) {
     case 'approval.request':
-      transcripts.approvalRequest(sessionId, payload as ApprovalRequestPayload)
+      transcripts.approvalRequest(sessionId, payload as ApprovalRequestPayload, {
+        notify: botNotifies(botOfSection(transcripts.bySession[sessionId]?.sectionId))
+      })
 
       return
 
@@ -175,6 +245,11 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
         kind: typeof payload.kind === 'string' ? payload.kind : 'status',
         text: text(payload)
       })
+
+      return
+
+    case 'reasoning.delta':
+      transcripts.reasoningDelta(sessionId, text(payload))
 
       return
 

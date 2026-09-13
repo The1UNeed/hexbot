@@ -12,7 +12,7 @@
     "migrate": "node --experimental-strip-types scripts/migrate.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "lint": "eslint ."
+    "lint": "eslint src"
   },
   "dependencies": {
     "@clerk/nextjs": "7.7.8",

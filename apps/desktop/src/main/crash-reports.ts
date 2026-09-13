@@ -1,7 +1,7 @@
 import { crashReporter } from 'electron'
 import { readDesktopState, updateDesktopState } from './desktop-state'
 
-const crashUrl = import.meta.env.HEXBOT_CRASH_URL?.trim() ?? ''
+const crashUrl = __HEXBOT_CRASH_URL__.trim()
 
 export async function startCrashReports(): Promise<void> {
   const enabled = (await readDesktopState()).crashReports === true && crashUrl.length > 0

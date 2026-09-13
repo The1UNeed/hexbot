@@ -54,6 +54,10 @@ deb:
       StartupWMClass: Hexbot
 publish:
   provider: generic
-  url: https://hexbot.app/updates/${os}/${arch}
+  url: https://updates.hexbot.app/full/${os}/${arch}
+# Prerelease versions (0.1.5-alpha.1) would otherwise get an "alpha" feed name.
+# The feed has two channels only, latest (stable) and nightly; the updater and
+# scripts/desktop/make-update-feed.mjs pick the file (docs/channels.md).
+detectUpdateChannel: false
 
 afterPack: ../../scripts/desktop/after-pack.cjs

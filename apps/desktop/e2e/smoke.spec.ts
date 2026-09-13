@@ -1,5 +1,6 @@
 import { _electron as electron, expect, test } from '@playwright/test'
 import electronExecutable from 'electron'
+import { execFileSync } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
@@ -18,18 +19,43 @@ test('creates a bot, chats, and creates another section', async () => {
 
   try {
     await seedCodexTokens(repoRoot, daemonHome)
-    daemon = await startDaemon(repoRoot, daemonHome)
+    daemon = await startDaemon(
+      repoRoot,
+      daemonHome,
+      undefined,
+      process.env.HEXBOT_E2E_CLIENT === '1'
+    )
     app = await electron.launch({
-      executablePath: electronExecutable,
-      args: [resolve(desktopRoot, 'out/main/index.js')],
+      executablePath: process.env.HEXBOT_E2E_APP || electronExecutable,
+      args: process.env.HEXBOT_E2E_APP ? [] : [resolve(desktopRoot, 'out/main/index.js')],
       env: {
         ...process.env,
-        HEXBOT_E2E_TARGET: `http://127.0.0.1:${daemon.port}`,
+        HEXBOT_E2E_TARGET:
+          process.env.HEXBOT_E2E_CLIENT === '1' ? undefined : `http://127.0.0.1:${daemon.port}`,
         HEXBOT_HOME: desktopHome
       }
     })
 
     const page = await app.firstWindow()
+    await page.getByTestId('onboarding-get-started').click()
+    // Two tour pages sit between the welcome screen and the setup steps.
+    await page.getByTestId('onboarding-next').click()
+    await page.getByTestId('onboarding-next').click()
+    if (process.env.HEXBOT_E2E_CLIENT === '1') {
+      // Exercise a real pairing against a LAN-enabled daemon.
+      const code = execFileSync(
+        resolve(repoRoot, 'venv/bin/python'),
+        ['-c', 'from hexbot.pairing import new_code; print(new_code())'],
+        {
+          cwd: repoRoot,
+          env: { ...process.env, HEXBOT_HOME: daemonHome, HERMES_HOME: daemonHome },
+          encoding: 'utf8'
+        }
+      ).trim()
+      await page.getByTestId('connect-address-input').fill(`127.0.0.1:${daemon.port}`)
+      await page.getByTestId('connect-code-input').fill(code)
+      await page.getByTestId('connect-submit').click()
+    }
     await expect(page.getByTestId('root-connection-status')).toHaveAttribute(
       'data-connection-state',
       'connected',
@@ -38,10 +64,12 @@ test('creates a bot, chats, and creates another section', async () => {
     await page.getByTestId('onboarding-provider-item-openai-codex').click()
     await expect(page.getByTestId('onboarding-continue')).toBeEnabled()
     await page.getByTestId('onboarding-continue').click()
+    await page.getByTestId('onboarding-defaults-skip').click()
 
     await page.getByTestId('onboarding-bot-display-input').fill('Scout')
     await page.getByTestId('onboarding-bot-name-input').fill('scout')
-    await page.getByLabel('Model').click()
+    await expect(page.getByTestId('onboarding-create-button')).toBeEnabled({ timeout: 120_000 })
+    await page.getByLabel('Model', { exact: true }).click()
     await page.getByRole('option', { exact: true, name: 'gpt-5.6-sol' }).click()
     await page.getByTestId('onboarding-create-button').click()
 

@@ -120,12 +120,14 @@ def test_bot_tools_and_skills_map_to_profile_config(gw, profiles):
     gw.responses["profiles.describe"] = {"skills": [
         {"name": "alpha", "enabled": True}, {"name": "beta", "enabled": True}]}
     gw.calls.clear()
-    bot = update_bot("scout", tools=["files", "web_search"], skills=["beta"],
+    bot = update_bot("scout", tools=["files", "vision"], skills=["beta"],
                      dream_enabled=False, may_write_core=True)
-    configured = gw.params_for("profiles.configure")[0]
-    assert configured["enabled_toolsets"] == ["file", "search"]
-    assert configured["disabled_skills"] == ["alpha"]
-    assert bot["tools"] == ["files", "web_search"]
+    calls = gw.params_for("profiles.configure")
+    # The toolset pin is its own call (it also writes platform_toolsets.cli);
+    # skills ride on the general configure call.
+    assert [c["enabled_toolsets"] for c in calls if "enabled_toolsets" in c] == [["file", "vision"]]
+    assert [c["disabled_skills"] for c in calls if "disabled_skills" in c] == [["alpha"]]
+    assert bot["tools"] == ["files", "vision"]
     assert bot["skills"] == ["beta"]
     assert bot["dream_enabled"] is False and bot["may_write_core"] is True
 
@@ -235,3 +237,99 @@ def test_list_bots_orders_by_activity(gw, profiles):
         conn.execute("UPDATE bots SET last_activity_at=1 WHERE name='alpha'")
         conn.execute("UPDATE bots SET last_activity_at=2 WHERE name='beta'")
     assert [bot["name"] for bot in list_bots()] == ["beta", "alpha"]
+
+
+def test_bot_tools_default_to_everything_and_keep_unmanaged_toolsets(gw, profiles):
+    from hexbot.bots import TOOL_TOOLSETS, create_bot, get_bot, update_bot
+    create_bot("scout")
+    # Hermes resolves the pin (or "everything" when unpinned); the Tools tab shows that.
+    gw.responses["profiles.describe"] = {"toolsets": [
+        {"name": n, "enabled": True} for n in ("memory", *TOOL_TOOLSETS.values())]}
+    assert get_bot("scout")["tools"] == list(TOOL_TOOLSETS)
+    gw.responses["profiles.describe"] = {"toolsets": [
+        {"name": "memory", "enabled": True}, {"name": "terminal", "enabled": True},
+        {"name": "vision", "enabled": True}, {"name": "hermes-discord", "enabled": False}]}
+    assert get_bot("scout")["tools"] == ["terminal", "vision"]
+    gw.calls.clear()
+    update_bot("scout", tools=["terminal"])
+    # Turning off vision keeps memory pinned; the allowlist never drops it.
+    assert gw.params_for("profiles.configure")[0]["enabled_toolsets"] == ["memory", "terminal"]
+
+
+def test_tools_patch_keeps_connector_toolsets_pinned(gw, profiles):
+    """web, image_gen and mcp-* belong to connectors; a Tools patch leaves them alone."""
+    from hexbot.bots import create_bot, update_bot
+    create_bot("scout")
+    gw.responses["profiles.describe"] = {"toolsets": [
+        {"name": "web", "enabled": True}, {"name": "image_gen", "enabled": True},
+        {"name": "terminal", "enabled": True}, {"name": "file", "enabled": True}]}
+    gw.calls.clear()
+    update_bot("scout", tools=["files"])
+    assert gw.params_for("profiles.configure")[0]["enabled_toolsets"] == ["file", "image_gen", "web"]
+    with pytest.raises(HexbotError) as caught:
+        update_bot("scout", tools=["web_search"])
+    assert caught.value.code == 4202
+
+
+def test_new_bot_fields_default_and_update(gw, profiles):
+    from hexbot.bots import create_bot, update_bot
+    from ruamel.yaml import YAML
+    bot, _ = create_bot("scout")
+    assert bot["notify"] is True
+    assert bot["approval_mode"] == "inherit"
+    assert bot["workdir"] is None
+    assert bot["status"] == "idle" and bot["status_detail"] is None
+
+    bot = update_bot("scout", notify=False, approval_mode="off", workdir="~/Hexbot/scout")
+    assert bot["notify"] is False
+    assert bot["approval_mode"] == "off"
+    assert bot["workdir"] == "~/Hexbot/scout"
+    config = YAML(typ="safe").load((profiles["root"] / "scout" / "config.yaml").read_text())
+    assert config["approvals"]["mode"] == "off"
+    assert config["terminal"]["cwd"].endswith("Hexbot/scout")
+
+    # The deployment mirror keeps the per-bot override.
+    from hexbot.settings import update_settings
+    update_settings({"approval_mode": "smart"})
+    config = YAML(typ="safe").load((profiles["root"] / "scout" / "config.yaml").read_text())
+    assert config["approvals"]["mode"] == "off"
+    bot = update_bot("scout", approval_mode="inherit", workdir=None)
+    config = YAML(typ="safe").load((profiles["root"] / "scout" / "config.yaml").read_text())
+    assert config["approvals"]["mode"] == "smart"
+    assert bot["approval_mode"] == "inherit" and bot["workdir"] is None
+
+    for bad in ({"approval_mode": "auto"}, {"notify": "yes"}, {"workdir": ""}):
+        with pytest.raises(HexbotError) as caught:
+            update_bot("scout", **bad)
+        assert caught.value.code == 4202
+
+
+def test_status_follows_live_sessions_and_incidents(gw, profiles):
+    from hexbot import incidents
+    from hexbot.bots import clear_status, create_bot, get_bot, list_bots
+    bot, section = create_bot("scout")
+
+    gw.responses["session.active_list"] = {"sessions": [
+        {"session_key": section["id"], "status": "working"}]}
+    bot = get_bot("scout")
+    assert bot["status"] == "working"
+    assert bot["status_detail"]["section_id"] == section["id"]
+
+    gw.responses["session.active_list"] = {"sessions": [
+        {"session_key": section["id"], "status": "waiting"}]}
+    assert get_bot("scout")["status"] == "needs_you"
+
+    incident = incidents.record("scout", "connector_error", "Notion said 401",
+                                connector="notion", section_id=section["id"])
+    bot = list_bots()[0]
+    assert bot["status"] == "stopped"
+    assert bot["status_detail"]["action"] == {"kind": "fix_connector", "connector": "notion"}
+    assert bot["status_detail"]["text"] == "Notion said 401"
+    assert ("hexbot.bots.incident", {
+        "bot": "scout", "section_id": section["id"], "room_id": None, "session_id": None,
+        "incident": {k: incident[k] for k in
+                     ("id", "kind", "connector", "text", "created_at", "resolved_at")}}) in gw.events
+    assert ("hexbot.bots.changed", {"name": "scout"}) in gw.events
+
+    assert clear_status("scout")["status"] == "needs_you"
+    assert incidents.open_incidents() == {}

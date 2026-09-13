@@ -16,8 +16,8 @@ import platform
 import socket
 import sys
 
-from hexbot import (activity, bots, connect, dreaming, memory, network, pairing, provider_login,
-                    providers, sections, settings, usage, users)
+from hexbot import (activity, bots, connect, connectors, dreaming, memory, network, pairing,
+                    provider_login, providers, sections, settings, usage, users)
 from hexbot.rooms import get_engine
 from hexbot.rooms import store as rooms
 from hexbot.errors import HexbotError
@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 
 _BOT_CREATE_FIELDS = ("display_name", "title", "description", "persona",
                       "provider", "model", "avatar")
-_BOT_UPDATE_FIELDS = _BOT_CREATE_FIELDS + ("dream_enabled", "may_write_core", "shareable", "tools", "skills")
+_BOT_UPDATE_FIELDS = _BOT_CREATE_FIELDS + ("dream_enabled", "may_write_core", "shareable", "tools",
+                                            "skills", "notify", "approval_mode", "workdir")
 
 
 def _required(params, key):
@@ -65,15 +66,6 @@ def _admin(fn):
         require_admin()
         return fn(params)
     return wrapped
-
-
-def _web_app_state(attribute, default=None):
-    """Read the running web server's app state without importing it."""
-    module = sys.modules.get("hermes_cli.web_server")
-    if module is None:
-        return default
-    return getattr(getattr(module, "app", None), "state", None) and getattr(
-        module.app.state, attribute, default)
 
 
 def info(_params) -> dict:
@@ -163,6 +155,8 @@ def _connect_register_poll(params) -> dict:
     result["status"] = state
     if state == "approved":
         connect.save_registration(result, client.api_base)
+        from hexbot import serve
+        connect.start_daemon(serve.state()["port"])
     return result
 
 
@@ -186,6 +180,20 @@ def _rooms_send(p):
     return {"event": event}
 
 
+def _connectors_setup(p) -> dict:
+    fields = _fields(p, ("id", "values", "provider", "bot", "enable_for_bot", "bot_only"), skip=())
+    return connectors.setup(_required(p, "id"), fields.get("values"), provider=fields.get("provider"),
+                            bot=fields.get("bot"), enable_for_bot=fields.get("enable_for_bot"),
+                            bot_only=bool(fields.get("bot_only")))
+
+
+def _connectors_add_mcp(p) -> dict:
+    fields = _fields(p, ("name", "command", "args", "env", "url", "transport"), skip=())
+    return connectors.add_mcp(_required(p, "name"), command=fields.get("command"),
+                              args=fields.get("args"), env=fields.get("env"),
+                              url=fields.get("url"), transport=fields.get("transport"))
+
+
 def _dreams_list(params):
     args = (_required(params, "bot"), params.get("limit", 20))
     if params.get("all"):
@@ -204,6 +212,18 @@ METHODS = {
     "hexbot.bots.update": lambda p: {"bot": bots.update_bot(
         _required(p, "name"), **_fields(p, _BOT_UPDATE_FIELDS))},
     "hexbot.bots.delete": lambda p: {"deleted": bots.delete_bot(_required(p, "name"))},
+    "hexbot.bots.clear_status": lambda p: {"bot": bots.clear_status(_required(p, "name"))},
+    "hexbot.connectors.list": lambda p: connectors.list_connectors(p.get("bot") or None),
+    "hexbot.connectors.setup": _admin(_connectors_setup),
+    "hexbot.connectors.test": lambda p: connectors.test_connector(
+        _required(p, "id"), bot=p.get("bot") or None),
+    "hexbot.connectors.clear": _admin(lambda p: connectors.clear(
+        _required(p, "id"), bot=p.get("bot") or None, bot_only=bool(p.get("bot_only")))),
+    "hexbot.connectors.set_for_bot": lambda p: connectors.set_for_bot(
+        _required(p, "id"), _required(p, "bot"), bool(p.get("enabled", True))),
+    "hexbot.connectors.add_mcp": _admin(_connectors_add_mcp),
+    "hexbot.connectors.remove_mcp": _admin(lambda p: connectors.remove_mcp(_required(p, "name"))),
+    "hexbot.skills.list": lambda p: connectors.list_skills(_required(p, "bot")),
     "hexbot.sections.list": lambda p: {"sections": sections.list_sections(
         p.get("bot"), bool(p.get("include_archived")), all_users=bool(p.get("all")))},
     "hexbot.sections.create": lambda p: {"section": sections.create_section(
@@ -275,6 +295,12 @@ MUTATION_EVENTS = {
     "hexbot.bots.create": "hexbot.bots.changed",
     "hexbot.bots.update": "hexbot.bots.changed",
     "hexbot.bots.delete": "hexbot.bots.changed",
+    "hexbot.bots.clear_status": "hexbot.bots.changed",
+    "hexbot.connectors.setup": ("hexbot.connectors.changed", "hexbot.bots.changed"),
+    "hexbot.connectors.clear": ("hexbot.connectors.changed", "hexbot.bots.changed"),
+    "hexbot.connectors.set_for_bot": ("hexbot.connectors.changed", "hexbot.bots.changed"),
+    "hexbot.connectors.add_mcp": ("hexbot.connectors.changed", "hexbot.bots.changed"),
+    "hexbot.connectors.remove_mcp": ("hexbot.connectors.changed", "hexbot.bots.changed"),
     "hexbot.sections.create": "hexbot.sections.changed",
     "hexbot.sections.rename": "hexbot.sections.changed",
     "hexbot.sections.archive": "hexbot.sections.changed",
@@ -308,18 +334,25 @@ def _event_payload(params: dict, result: dict) -> dict:
     if bot.get("name") or section.get("bot") or params.get("bot") or params.get("name"):
         payload["bot"] = bot.get("name") or section.get("bot") or params.get("bot")
         payload.setdefault("name", bot.get("name") or params.get("name"))
+    connector = result.get("connector") if isinstance(result.get("connector"), dict) else {}
+    if connector.get("id"):
+        payload["connector"] = connector["id"]
     return {key: value for key, value in payload.items() if value}
 
 
 def _emitting(fn, event):
+    events = event if isinstance(event, tuple) else (event,)
+
     @functools.wraps(fn)
     def wrapped(params):
         result = fn(params)
         from hexbot.gateway import broadcast
-        try:
-            broadcast(event, _event_payload(params, result if isinstance(result, dict) else {}))
-        except Exception:
-            logger.debug("could not broadcast %s", event, exc_info=True)
+        payload = _event_payload(params, result if isinstance(result, dict) else {})
+        for name in events:
+            try:
+                broadcast(name, payload)
+            except Exception:
+                logger.debug("could not broadcast %s", name, exc_info=True)
         return result
 
     return wrapped

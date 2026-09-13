@@ -1,40 +1,54 @@
 // Build the electron-updater feed from an electron-builder output directory.
 //
-// Layout (mirrors the publish URL `https://hexbot.app/updates/${os}/${arch}`):
-//   dist/updates/mac/arm64/latest-mac.yml + Hexbot-<v>-mac-arm64.zip|.dmg
-//   dist/updates/mac/x64/latest-mac.yml   + Hexbot-<v>-mac-x64.zip|.dmg
-//   dist/updates/linux/x64/latest-linux.yml + AppImage
+//   node scripts/desktop/make-update-feed.mjs --channel stable|nightly --version <v> [--client] <builder-output> [feed-root]
+//
+// Layout mirrors the publish URL in electron-builder.base.yml,
+// `https://updates.hexbot.app/${edition}/${os}/${arch}`:
+//   dist/updates/full/mac/arm64/latest-mac.yml + Hexbot-<v>-mac-arm64.zip|.dmg
+//   dist/updates/full/mac/x64/latest-mac.yml   + Hexbot-<v>-mac-x64.zip|.dmg
+//   dist/updates/full/linux/x64/latest-linux.yml + AppImage + deb
+//   dist/updates/client/...                    the same for HexbotClient-*
+// A nightly writes nightly-*.yml instead of latest-*.yml, so both channels
+// share one directory and the updater picks the file for its channel.
 //
 // electron-builder writes one latest-mac.yml per run and the second
 // architecture overwrites the first, so the mac manifests are generated here
 // from the artifacts themselves (sha512 base64 + size, as electron-updater
 // expects). Linux reuses electron-builder's manifest after validation.
 import { createHash } from 'node:crypto'
-import { cp, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readdir, readFile, stat } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { feedMetadataNames, writeFeedMetadata } from './update-feed-utils.mjs'
+import { feedMetadataName, writeFeedMetadata } from './update-feed-utils.mjs'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-// --client prepares the client-only package: artifacts are named
-// HexbotClient-* and the feed lives under updates/client/<os>/<arch>.
-const client = process.argv.includes('--client')
-const positional = process.argv.slice(2).filter(arg => arg !== '--client')
-const input = positional[0]
-if (!input)
+const args = process.argv.slice(2)
+const option = name => {
+  const index = args.indexOf(name)
+  return index === -1 ? undefined : args[index + 1]
+}
+const client = args.includes('--client')
+const channel = option('--channel') ?? 'stable'
+const version =
+  option('--version') ??
+  JSON.parse(await readFile(join(repositoryRoot, 'apps/desktop/package.json'), 'utf8')).version
+const positional = args.filter(
+  (arg, i) =>
+    arg !== '--client' &&
+    !['--channel', '--version'].includes(arg) &&
+    !['--channel', '--version'].includes(args[i - 1])
+)
+if (!positional[0])
   throw new Error(
-    'Usage: node scripts/desktop/make-update-feed.mjs [--client] <electron-builder-output-directory> [feed-root]'
+    'Usage: node scripts/desktop/make-update-feed.mjs --channel stable|nightly [--version <v>] [--client] <electron-builder-output-directory> [feed-root]'
   )
-const outputDirectory = resolve(input)
+const outputDirectory = resolve(positional[0])
 const prefix = client ? 'HexbotClient' : 'Hexbot'
 const feedRoot = join(
   positional[1] ? resolve(positional[1]) : join(repositoryRoot, 'dist/updates'),
-  client ? 'client' : ''
+  client ? 'client' : 'full'
 )
-const version = JSON.parse(
-  await readFile(join(repositoryRoot, 'apps/desktop/package.json'), 'utf8')
-).version
 const releaseDate = new Date().toISOString()
 
 async function sha512(file) {
@@ -80,8 +94,7 @@ for (const arch of ['arm64', 'x64']) {
   const destination = join(feedRoot, 'mac', arch)
   await mkdir(destination, { recursive: true })
   for (const e of entries) await cp(join(outputDirectory, e.url), join(destination, e.url))
-  const contents = manifest(entries, entries[0])
-  await writeFeedMetadata(destination, version, 'mac', contents)
+  await writeFeedMetadata(destination, channel, 'mac', manifest(entries, entries[0]))
   console.log(`Prepared mac/${arch}`)
   prepared++
 }
@@ -89,6 +102,8 @@ for (const arch of ['arm64', 'x64']) {
 const linuxYml = join(outputDirectory, 'latest-linux.yml')
 const linuxManifest = await readFile(linuxYml, 'utf8').catch(() => undefined)
 if (linuxManifest) {
+  if (!linuxManifest.includes(`version: ${version}`))
+    throw new Error(`latest-linux.yml is not for version ${version}`)
   const urls = [...linuxManifest.matchAll(/^\s*-?\s*url:\s*['"]?([^'"\s]+)['"]?\s*$/gm)].map(
     m => m[1]
   )
@@ -103,8 +118,11 @@ if (linuxManifest) {
       throw new Error(`latest-linux.yml references missing artifact: ${artifact}`)
     await cp(source, join(destination, basename(artifact)))
   }
-  for (const name of feedMetadataNames(version, 'linux'))
-    await cp(linuxYml, join(destination, name))
+  // The deb is not an update payload but is published next to the feed so the
+  // website and the docs can link to it.
+  const deb = files.find(f => f === `${prefix}-${version}-linux-x64.deb`)
+  if (deb) await cp(join(outputDirectory, deb), join(destination, deb))
+  await cp(linuxYml, join(destination, feedMetadataName(channel, 'linux')))
   console.log('Prepared linux/x64')
   prepared++
 } else {

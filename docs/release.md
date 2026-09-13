@@ -1,42 +1,152 @@
 # Release process
 
-## Prepare the version
+For maintainers. `docs/channels.md` explains Stable, Nightly, and Dev; this
+page is the procedure and the one-time setup. Modelled on T3 Code's
+`docs/operations/release.md`.
 
-1. Update `apps/desktop/package.json`. Use a SemVer prerelease suffix such as `0.2.0-beta.1` for beta builds.
-2. Run the desktop typecheck, tests, and build listed in `docs/testing.md`.
-3. Run `node --test scripts/desktop/*.test.mjs`.
-4. Review the generated Python source at `apps/desktop/resources/hexbot-src`. It must not contain development virtual environments, tests, docs, or `node_modules`.
-5. Commit the release changes, then create and push the matching `v<version>` tag.
+## What `release.yml` does
 
-## Collect CI artifacts
+- Triggers: a `v*` tag push (stable), the 09:00 UTC schedule (nightly), or a
+  manual dispatch (nightly).
+- `preflight` picks the channel, checks that a stable tag matches
+  `apps/desktop/package.json`, computes the nightly version, and stops a
+  scheduled nightly when `main` has not moved.
+- `check` runs `ci.yml`: Python, web, desktop, site, Connect, and the
+  desktop script tests. Nothing is built until it passes.
+- `build` makes six packages in parallel: full and client for macOS arm64,
+  macOS x64, and Linux x64, signed and notarized when the Apple secrets are
+  present.
+- `publish` builds the update feed, uploads it to `updates.hexbot.app` when
+  the R2 secrets are present, reads the feed back through the public URL to
+  confirm it announces the new version, then creates the GitHub release with
+  every DMG, ZIP, AppImage, deb, and blockmap. Stable notes come from
+  `docs/releases/<version>.md`, or GitHub generates them from the commits
+  since the previous stable release. Nightlies beyond the last 14 are deleted.
+- `finalize` (stable only) runs `scripts/desktop/finalize-release.mjs` and
+  commits `apps/site/public/downloads/manifest.json` and both Homebrew casks
+  to `main` as `github-actions[bot]`. That push does not trigger CI. When the
+  `SITE_DEPLOY_HOOK_URL` secret is set it then asks Vercel to redeploy
+  hexbot.app.
 
-The tag build produces two packages, the full package (`Hexbot-*`) and the client-only package (`HexbotClient-*`), each for macOS arm64, macOS x64, and Linux x64. Download all six `apps/desktop/release` outputs into one release directory. Keep every DMG, macOS ZIP, AppImage, and Debian package, and their builder metadata (note that `latest-linux.yml` differs per package; keep the full and client artifacts in separate directories if you download them by hand).
+`ci.yml` runs `scripts/desktop/release-smoke.mjs` on every push: the version
+resolution, feed, manifest, and cask scripts against synthetic packages, so
+a broken release script fails before tag day.
 
-Build one package locally with `npm run dist:mac -w apps/desktop` (full) or `npm run dist:mac:client -w apps/desktop` (client), or the `dist:linux` variants.
+## Cut a stable release
 
-## Build and publish update feeds
+1. `main` is green.
+2. Pick the version. While Hexbot is `0.x` it is `0.x.y-alpha.N`. Run
+   `node scripts/desktop/set-version.mjs 0.x.y-alpha.N`; it writes
+   `apps/desktop/package.json` and `hexbot/__init__.py`.
+3. Write `docs/releases/0.x.y-alpha.N.md`: user-visible changes, upgrade
+   concerns, known issues. Without it GitHub generates notes from commits.
+4. If `apps/desktop/build/Hexbot.icon` changed, run
+   `./venv/bin/python scripts/desktop/make-icons.py` and commit the icons.
+5. Run the desktop suite and the script tests (`docs/testing.md`). Build one
+   package locally if the packaging changed:
+   `node scripts/desktop/dist.mjs --mac --channel stable`.
+6. Commit, then tag and push:
 
-Run:
+   ```sh
+   git tag v0.x.y-alpha.N && git push origin main v0.x.y-alpha.N
+   ```
+
+7. Watch the run: preflight, check, six builds, publish, finalize. Confirm
+   the GitHub release lists 6 DMGs, 4 ZIPs, 2 AppImages, 2 debs, and that
+   `finalize` pushed a commit to `main`.
+8. The site redeploys on its own when the `hexbot-site` Vercel project
+   deploys from Git or `SITE_DEPLOY_HOOK_URL` is set; otherwise deploy it
+   (`docs/deploy.md`). Publish the updated casks through the Homebrew tap.
+9. Smoke test (below).
+
+## Cut a nightly by hand
+
+Actions, Release, "Run workflow", channel `nightly`. This publishes a real
+nightly (GitHub prerelease and the nightly feed) even when `main` has not
+moved. Use it to exercise the whole release graph without touching the
+stable track; there is no dry-run mode, and a test tag such as
+`v0.0.0-test.1` would be a real stable release.
+
+## One-time setup
+
+### Update server (Cloudflare R2)
+
+1. In the Cloudflare account that holds the `hexbot.app` zone, create an R2
+   bucket named `hexbot-updates` (or set the repository variable
+   `R2_UPDATES_BUCKET`).
+2. Add the custom domain `updates.hexbot.app` to the bucket (R2, Settings,
+   Custom Domains). Cloudflare creates the DNS record.
+3. Create an R2 API token with Object Read & Write on that bucket.
+4. Add the GitHub Actions secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, and
+   `R2_SECRET_ACCESS_KEY`:
+
+   ```sh
+   gh secret set R2_ACCOUNT_ID
+   gh secret set R2_ACCESS_KEY_ID
+   gh secret set R2_SECRET_ACCESS_KEY
+   ```
+
+Until these exist the `publish` job skips the upload and the release is only
+on GitHub; installed apps then find no update. The bucket layout is in
+`docs/channels.md`. Nothing in the bucket is ever rewritten except the
+`.yml` feed files, so a bad release is fixed by cutting the next one.
+
+### Apple signing and notarization
+
+Secrets: `CSC_LINK` (base64 Developer ID Application `.p12`),
+`CSC_KEY_PASSWORD`, `APPLE_API_KEY` (contents of the App Store Connect `.p8`),
+`APPLE_API_KEY_ID`, `APPLE_API_ISSUER`. electron-builder signs when the first
+two are set and notarizes when all five are. The workflow writes the `.p8`
+contents to a file on the runner because electron-builder expects
+`APPLE_API_KEY` to be a path. Without the secrets macOS builds are ad-hoc
+signed by `scripts/desktop/after-pack.cjs` so they still launch on Apple
+Silicon, but Gatekeeper warns.
 
 ```sh
-node scripts/desktop/make-update-feed.mjs path/to/release/full
-node scripts/desktop/make-update-feed.mjs --client path/to/release/client
+gh secret set CSC_LINK < developer-id.p12.base64
+gh secret set CSC_KEY_PASSWORD
+gh secret set APPLE_API_KEY < AuthKey_XXXXXXXXXX.p8
+gh secret set APPLE_API_KEY_ID
+gh secret set APPLE_API_ISSUER
 ```
 
-Copy `dist/updates/mac/arm64`, `dist/updates/mac/x64`, `dist/updates/linux/x64`, and the same layout under `dist/updates/client/` into `apps/site/public/updates`. A prerelease version also produces `beta-mac.yml` and `beta-linux.yml`. Upload the site and confirm that every YAML URL returns the named artifact. Do not cache update metadata.
+Linux packages are not signed.
 
-Upload the DMGs to `https://hexbot.app/downloads/` with their electron-builder filenames and update `apps/site/public/downloads/manifest.json`. Then update both Homebrew casks:
+### Optional
+
+- `SITE_DEPLOY_HOOK_URL` (secret): a Vercel deploy hook for the `hexbot-site`
+  project. `finalize` calls it after committing the manifest. Skip it when
+  the project deploys from Git on every push to `main`.
+- `HEXBOT_CRASH_URL` (variable): the Crashpad endpoint baked into every
+  package (`scripts/desktop/README.md`, "Crash reports"). Unset means crash
+  reports stay off.
+- `R2_UPDATES_BUCKET` (variable): the bucket name when it is not
+  `hexbot-updates`.
+
+Secrets and variables live at the repository level (`gh secret list`,
+`gh variable list`). No GitHub environment is involved.
+
+## Verify by hand
+
+Build one package locally:
 
 ```sh
-node scripts/desktop/update-cask.mjs path/to/release/full
-node scripts/desktop/update-cask.mjs --client path/to/release/client
+node scripts/desktop/dist.mjs --mac --channel stable            # full
+node scripts/desktop/dist.mjs --mac --channel stable --client   # client
+node scripts/desktop/dist.mjs --linux --channel stable
 ```
 
-Check the cask diffs, publish them through the Homebrew tap, and verify every architecture hash against the uploaded files.
+Then build the feed from it and inspect the tree:
 
-## Publish the GitHub release
+```sh
+node scripts/desktop/make-update-feed.mjs --channel stable apps/desktop/release
+node scripts/desktop/make-update-feed.mjs --channel stable --client apps/desktop/release
+find dist/updates -type f
+```
 
-Create the GitHub release from the tag. Attach the DMGs, macOS ZIP files, AppImages, and Debian packages for both packages. Write release notes that name user-visible changes, upgrade concerns, and known issues. Mark prerelease versions as prereleases.
+A nightly needs a nightly version first:
+`node scripts/desktop/set-version.mjs 0.1.5-nightly.20260906.1`, then
+`--channel nightly`. Do not commit that version.
 
 ## Smoke checks
 
@@ -44,17 +154,39 @@ Use clean machines or clean virtual machines, not development hosts.
 
 On macOS arm64 and x64:
 
-- Install the DMG and launch `Hexbot.app` through Finder.
+- Install the DMG and launch the app through Finder.
 - Confirm Gatekeeper accepts the signature and notarization.
 - Start the bundled daemon, quit and reopen the app, then pair another client.
-- Check stable or beta update discovery against the selected channel.
+- Settings, Updates: "Check now" reports up to date. Switch the track to
+  Nightly and check again; a nightly newer than the build is offered.
 - Install through the cask and launch the installed app.
-- Install the client-only DMG on a second machine, confirm it opens on the connect screen with no runtime install, and pair it with the first.
+- Install the client-only DMG on a second machine, confirm it opens on the
+  connect screen with no runtime install, and pair it with the first.
 
 On Linux x86_64:
 
-- Launch the AppImage and install the Debian package on a clean supported distribution.
-- Confirm the application menu entry uses the Hexbot name, Utility category, and correct window grouping.
-- Start the daemon, pair a client, restart the machine, and confirm saved state remains available.
-- Check update discovery from the matching channel.
+- Launch the AppImage and install the Debian package on a clean supported
+  distribution.
+- Confirm the application menu entry uses the Hexbot name, Utility category,
+  and correct window grouping.
+- Start the daemon, pair a client, restart the machine, and confirm saved
+  state remains available.
+- Check update discovery from the matching track.
 
+## Troubleshooting
+
+- `preflight` fails with "does not match": the tag and
+  `apps/desktop/package.json` disagree. Delete the tag, fix the version with
+  `set-version.mjs`, commit, re-tag.
+- macOS build unsigned when expected signed: check that all five Apple
+  secrets are populated.
+- `publish` skipped the upload: the R2 secrets are missing. Add them and run
+  a manual nightly to confirm, then re-run the stable workflow from the tag.
+- "does not announce" in `publish`: the upload succeeded but
+  `https://updates.hexbot.app/...` serves something else. Check the custom
+  domain on the bucket and that `R2_UPDATES_BUCKET` names the same bucket.
+- macOS notarization skipped although the secrets exist: the "Prepare macOS
+  signing" step lists which of the five it found empty.
+- The app says "Up to date" after a release: the `.yml` for that edition,
+  OS, and arch was not rewritten. Check
+  `https://updates.hexbot.app/full/mac/arm64/latest-mac.yml`.

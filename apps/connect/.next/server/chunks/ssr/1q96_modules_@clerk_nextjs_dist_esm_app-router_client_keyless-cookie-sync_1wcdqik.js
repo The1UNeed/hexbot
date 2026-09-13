@@ -1,3 +1,0 @@
-module.exports=[91789,a=>{"use strict";a.s(["KeylessCookieSync",()=>b]);let b=(0,a.i(11857).registerClientReference)(function(){throw Error("Attempted to call KeylessCookieSync() from the server but KeylessCookieSync is on the client. It's not possible to invoke a client function from the server, it can only be rendered as a Component or passed to props of a Client Component.")},"[project]/node_modules/@clerk/nextjs/dist/esm/app-router/client/keyless-cookie-sync.js","KeylessCookieSync")},6223,a=>{"use strict";var b=a.i(91789);a.n(b)}];
-
-//# sourceMappingURL=1q96_modules_%40clerk_nextjs_dist_esm_app-router_client_keyless-cookie-sync_1wcdqik.js.map

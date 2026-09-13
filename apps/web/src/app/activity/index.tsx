@@ -44,7 +44,9 @@ export function ActivityView() {
       setNodes(current)
       iteration += 1
 
-      if (iteration < 300) {frame = requestAnimationFrame(tick)}
+      if (iteration < 300) {
+        frame = requestAnimationFrame(tick)
+      }
     }
 
     frame = requestAnimationFrame(tick)
@@ -140,6 +142,13 @@ export function ActivityView() {
             </tr>
           </thead>
           <tbody>
+            {!pairs.length && !error ? (
+              <tr>
+                <td className="py-4 text-muted" colSpan={3}>
+                  No messages yet. Bots message each other from rooms and with the message_bot tool.
+                </td>
+              </tr>
+            ) : null}
             {pairs.map(pair => (
               <tr
                 className="cursor-pointer border-b border-border hover:bg-surface-2"

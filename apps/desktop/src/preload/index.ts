@@ -26,6 +26,7 @@ interface UpdateStatus {
   state: string
   percent?: number
   message?: string
+  version?: string
 }
 function validUpdateStatus(value: unknown): value is UpdateStatus {
   if (!value || typeof value !== 'object') return false
@@ -34,7 +35,8 @@ function validUpdateStatus(value: unknown): value is UpdateStatus {
     typeof item.state === 'string' &&
     updateStates.has(item.state) &&
     (item.percent === undefined || typeof item.percent === 'number') &&
-    (item.message === undefined || typeof item.message === 'string')
+    (item.message === undefined || typeof item.message === 'string') &&
+    (item.version === undefined || typeof item.version === 'string')
   )
 }
 const hexbot = Object.freeze({
@@ -46,10 +48,27 @@ const hexbot = Object.freeze({
     onProgress: (callback: (value: unknown) => void) => listen('hexbot:daemon:progress', callback),
     localToken: () => ipcRenderer.invoke('hexbot:daemon:local-token')
   }),
-  pair: (host: string, port: number, code: string, deviceName: string) =>
-    ipcRenderer.invoke('hexbot:pair', { host, port, code, deviceName }),
-  pairWithGrant: (host: string, grant: string, deviceName: string, tls = true) =>
-    ipcRenderer.invoke('hexbot:pair-with-grant', { host, grant, deviceName, tls }),
+  // The main process returns camelCase; the renderer reads the daemon's wire
+  // shape (daemon_name, device_id, device_token), so normalise here.
+  pair: async (host: string, port: number, code: string, deviceName: string) => {
+    const result = (await ipcRenderer.invoke('hexbot:pair', { host, port, code, deviceName })) as {
+      deviceToken: string
+      daemonName: string
+    }
+    return { daemon_name: result.daemonName, device_id: '', device_token: result.deviceToken }
+  },
+  pairWithGrant: async (input: {
+    host: string
+    grant: string
+    deviceName: string
+    tls?: boolean
+  }) => {
+    const token = (await ipcRenderer.invoke('hexbot:pair-with-grant', {
+      tls: true,
+      ...input
+    })) as string
+    return { daemon_name: input.host, device_id: '', device_token: token }
+  },
   httpFetch: (
     url: string,
     init?: { method?: string; headers?: Record<string, string>; body?: string }
@@ -58,13 +77,14 @@ const hexbot = Object.freeze({
   openExternal: (url: string) => ipcRenderer.invoke('hexbot:open-external', url),
   pickFiles: () => ipcRenderer.invoke('hexbot:pick-files'),
   updater: Object.freeze({
+    channel: () => ipcRenderer.invoke('hexbot:updater:channel'),
     check: () => ipcRenderer.invoke('hexbot:updater:check'),
     onStatus: (callback: (value: UpdateStatus) => void) =>
       listen<unknown>('hexbot:updater:status', value => {
         if (validUpdateStatus(value)) callback(value)
       }),
     install: () => ipcRenderer.invoke('hexbot:updater:install'),
-    setChannel: (channel: 'stable' | 'beta') =>
+    setChannel: (channel: 'stable' | 'nightly') =>
       ipcRenderer.invoke('hexbot:updater:set-channel', channel)
   }),
   setCrashReports: (enabled: boolean) => ipcRenderer.invoke('hexbot:crash-reports:set', enabled),

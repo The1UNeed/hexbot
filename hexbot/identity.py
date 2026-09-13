@@ -41,10 +41,6 @@ def user(user_id: str | None = None):
     return row
 
 
-def is_admin() -> bool:
-    return user()["role"] == "admin"
-
-
 def require_admin() -> str:
     row = user()
     if row["role"] != "admin":

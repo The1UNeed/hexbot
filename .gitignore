@@ -84,9 +84,13 @@ environments/benchmarks/evals/
 hermes_cli/web_dist/
 # Cross-process web UI build lock (flock target, always empty)
 .web_ui_build.lock
-apps/desktop/build/
 apps/web/dist/
+# Site and Connect build output (astro build, next build).
+apps/site/dist/
+apps/site/.astro/
+apps/connect/.next/
 apps/desktop/out/
+apps/desktop/.electron-runtime/
 apps/desktop/dist/
 apps/desktop/release/
 apps/desktop/resources/hexbot-src/
@@ -223,3 +227,6 @@ native/fts5_cjk/*.so
 
 # update feed output from scripts/desktop/make-update-feed.mjs
 dist/
+
+# Per-checkout dev daemon state (scripts/dev/run.mjs). Never ~/.hexbot.
+.hexbot/

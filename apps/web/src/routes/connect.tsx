@@ -3,7 +3,10 @@ import { useEffect, useState } from 'react'
 
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
+import { Spinner } from '../components/ui/spinner'
+import { Wordmark } from '../components/ui/wordmark'
 import { defaultDeviceName, getBridge } from '../lib/bridge'
+import { connectBaseUrl, grantTarget } from '../lib/connect-url'
 import {
   connectTo,
   InvalidCodeError,
@@ -31,7 +34,7 @@ async function fetchConnect(
   token: string,
   body?: Record<string, unknown>
 ): Promise<unknown> {
-  const response = await fetch(`https://hexbot.app${path}`, {
+  const response = await fetch(`${connectBaseUrl()}${path}`, {
     body: body ? JSON.stringify(body) : undefined,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -91,10 +94,12 @@ function ConnectPage() {
       .catch(reason => setError(String(reason)))
   }, [clientSession])
 
-  const startConnectLogin = () => {
-    const state = crypto.randomUUID()
+  // Reopening keeps the same state, so the link already open in the browser
+  // still completes the sign-in.
+  const startConnectLogin = (existing?: string) => {
+    const state = existing ?? crypto.randomUUID()
     setConnectState(state)
-    const url = `https://hexbot.app/connect/authorize?state=${encodeURIComponent(state)}&device=${encodeURIComponent(deviceName)}`
+    const url = `${connectBaseUrl()}/connect/authorize?state=${encodeURIComponent(state)}&device=${encodeURIComponent(deviceName)}`
     const bridge = getBridge()
 
     if (bridge) {void bridge.openExternal(url)}
@@ -110,28 +115,23 @@ function ConnectPage() {
         `/api/daemons/${encodeURIComponent(daemon.id)}/grant`,
         clientSession,
         { device_name: deviceName }
-      )) as { grant: string; tunnel_hostname?: string }
+      )) as { grant: string; daemon?: { host?: string; port?: number; tls?: boolean } }
 
-      const host = granted.tunnel_hostname ?? daemon.tunnel_hostname
+      const { host, port, tls } = grantTarget(granted, daemon.tunnel_hostname)
+      const origin = targetOrigin({ deviceToken: '', host, kind: 'remote', port, tls })
       const bridge = getBridge()
 
       if (bridge?.pairWithGrant) {
         const result = await bridge.pairWithGrant({
           deviceName,
           grant: granted.grant,
-          host,
-          tls: true
+          host: origin.replace(/^https?:\/\//, ''),
+          tls
         })
 
-        await connectTo({
-          deviceToken: result.device_token,
-          host,
-          kind: 'remote',
-          port: 443,
-          tls: true
-        })
+        await connectTo({ deviceToken: result.device_token, host, kind: 'remote', port, tls })
       } else {
-        const response = await fetch(`https://${host}/auth/password-login`, {
+        const response = await fetch(`${origin}/auth/password-login`, {
           body: JSON.stringify({
             password: `cg_${granted.grant}`,
             provider: 'hexbot',
@@ -143,7 +143,7 @@ function ConnectPage() {
         })
 
         if (!response.ok) {throw new Error(`Connect login failed (${response.status})`)}
-        await connectTo({ deviceToken: '', host, kind: 'remote', port: 443, tls: true })
+        await connectTo({ deviceToken: '', host, kind: 'remote', port, tls })
       }
 
       await navigate({ to: '/' })
@@ -216,23 +216,50 @@ function ConnectPage() {
   }
 
   return (
-    <main className="grid min-h-screen place-items-center bg-background p-6 text-foreground">
+    <main className="relative grid min-h-screen place-items-center bg-background p-6 text-foreground">
+      <div aria-hidden className="hex-drag absolute inset-x-0 top-0 h-11" />
       <form
-        className="w-full max-w-[520px] space-y-5 rounded-panel border border-border bg-surface p-6"
+        className="hex-rise w-full max-w-[520px] space-y-5 rounded-window border border-border bg-surface p-6"
         onSubmit={submit}
       >
-        <header>
-          <h1 className="text-[length:var(--text-title)] font-semibold">Connect to Hexbot</h1>
-          <p className="mt-1 text-secondary text-muted">
-            Enter the address and one-time pairing code shown by the daemon.
-          </p>
+        <header className="space-y-3">
+          <Wordmark mood={connectState && !clientSession ? 'listening' : 'idle'} />
+          <div>
+            <h1 className="text-[length:var(--text-title)] font-semibold">Connect to Hexbot</h1>
+            <p className="mt-1 text-secondary text-muted">
+              Enter the address and one-time pairing code shown by the daemon.
+            </p>
+          </div>
         </header>
-        <Button onClick={startConnectLogin} type="button">
-          Sign in with Hexbot Connect
-        </Button>
         {connectState && !clientSession ? (
-          <p className="text-muted">Finish signing in in your browser.</p>
-        ) : null}
+          <div className="flex h-9 items-center gap-3" role="status">
+            <span className="flex items-center gap-2 text-muted">
+              <Spinner label="Waiting for the browser" size="sm" />
+              Continue in your browser
+            </span>
+            <button
+              className="text-accent hover:underline"
+              onClick={() => startConnectLogin(connectState)}
+              type="button"
+            >
+              Reopen link
+            </button>
+            <span aria-hidden className="text-muted">
+              ·
+            </span>
+            <button
+              className="hover:underline"
+              onClick={() => setConnectState(null)}
+              type="button"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <Button onClick={() => startConnectLogin()} type="button">
+            Sign in with Hexbot Connect
+          </Button>
+        )}
         {daemons.length ? (
           <div>
             <p className="mb-2 font-medium">Choose a daemon</p>

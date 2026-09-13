@@ -19,6 +19,7 @@ import {
 } from '../lib/api'
 import type { Section } from '../lib/types'
 
+import { draftsActions } from './drafts'
 import { useTranscripts } from './transcripts'
 
 export interface SectionsState {
@@ -141,6 +142,7 @@ export const useSections = create<SectionsState>((set, get) => ({
 
   async remove(id, purgeMemory = true) {
     await sectionsDelete(id, purgeMemory)
+    draftsActions().clear(id)
 
     const live = get().liveSessionId[id]
 

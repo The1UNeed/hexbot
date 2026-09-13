@@ -15,6 +15,7 @@ import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SettingsTabRouteImport } from './routes/settings.$tab'
 import { Route as RRoomRouteImport } from './routes/r.$room'
+import { Route as BBotSettingsTabRouteImport } from './routes/b.$bot.settings.$tab'
 import { Route as BBotSSectionRouteImport } from './routes/b.$bot.s.$section'
 
 const OnboardingRoute = OnboardingRouteImport.update({
@@ -47,6 +48,11 @@ const RRoomRoute = RRoomRouteImport.update({
   path: '/r/$room',
   getParentRoute: () => rootRouteImport,
 } as any)
+const BBotSettingsTabRoute = BBotSettingsTabRouteImport.update({
+  id: '/b/$bot/settings/$tab',
+  path: '/b/$bot/settings/$tab',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const BBotSSectionRoute = BBotSSectionRouteImport.update({
   id: '/b/$bot/s/$section',
   path: '/b/$bot/s/$section',
@@ -61,6 +67,7 @@ export interface FileRoutesByFullPath {
   '/r/$room': typeof RRoomRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/b/$bot/s/$section': typeof BBotSSectionRoute
+  '/b/$bot/settings/$tab': typeof BBotSettingsTabRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -70,6 +77,7 @@ export interface FileRoutesByTo {
   '/r/$room': typeof RRoomRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/b/$bot/s/$section': typeof BBotSSectionRoute
+  '/b/$bot/settings/$tab': typeof BBotSettingsTabRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -80,6 +88,7 @@ export interface FileRoutesById {
   '/r/$room': typeof RRoomRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/b/$bot/s/$section': typeof BBotSSectionRoute
+  '/b/$bot/settings/$tab': typeof BBotSettingsTabRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -91,6 +100,7 @@ export interface FileRouteTypes {
     | '/r/$room'
     | '/settings/$tab'
     | '/b/$bot/s/$section'
+    | '/b/$bot/settings/$tab'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -100,6 +110,7 @@ export interface FileRouteTypes {
     | '/r/$room'
     | '/settings/$tab'
     | '/b/$bot/s/$section'
+    | '/b/$bot/settings/$tab'
   id:
     | '__root__'
     | '/'
@@ -109,6 +120,7 @@ export interface FileRouteTypes {
     | '/r/$room'
     | '/settings/$tab'
     | '/b/$bot/s/$section'
+    | '/b/$bot/settings/$tab'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -119,6 +131,7 @@ export interface RootRouteChildren {
   RRoomRoute: typeof RRoomRoute
   SettingsTabRoute: typeof SettingsTabRoute
   BBotSSectionRoute: typeof BBotSSectionRoute
+  BBotSettingsTabRoute: typeof BBotSettingsTabRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -165,6 +178,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RRoomRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/b/$bot/settings/$tab': {
+      id: '/b/$bot/settings/$tab'
+      path: '/b/$bot/settings/$tab'
+      fullPath: '/b/$bot/settings/$tab'
+      preLoaderRoute: typeof BBotSettingsTabRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/b/$bot/s/$section': {
       id: '/b/$bot/s/$section'
       path: '/b/$bot/s/$section'
@@ -183,6 +203,7 @@ const rootRouteChildren: RootRouteChildren = {
   RRoomRoute: RRoomRoute,
   SettingsTabRoute: SettingsTabRoute,
   BBotSSectionRoute: BBotSSectionRoute,
+  BBotSettingsTabRoute: BBotSettingsTabRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -76,6 +76,12 @@ function resolveOriginTarget(): ConnectionTarget | null {
     return { kind: 'local', origin: e2eTarget }
   }
 
+  // `npm run dev` serves the bundle from Vite and points it at a loopback
+  // daemon through VITE_HEXBOT_ORIGIN (scripts/dev/run.mjs): no pairing.
+  if (typeof window !== 'undefined' && !window.hexbot && import.meta.env?.VITE_HEXBOT_ORIGIN) {
+    return { kind: 'local' }
+  }
+
   if (
     typeof window !== 'undefined' &&
     !window.hexbot &&
@@ -142,8 +148,4 @@ export const useConnection = create<ConnectionState>(set => ({
 
 export function connectionActions(): ConnectionState {
   return useConnection.getState()
-}
-
-export function useIsConnected(): boolean {
-  return useConnection(state => state.status === 'connected')
 }

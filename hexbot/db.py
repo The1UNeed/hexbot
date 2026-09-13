@@ -11,7 +11,7 @@ from hexbot.home import DATABASE_NAME, ensure_layout
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);
@@ -49,6 +49,11 @@ _ADDED_COLUMNS: dict[int, list[tuple[str, str, str]]] = {
         ("bots", "shareable", "INTEGER NOT NULL DEFAULT 0"),
         ("pairing_codes", "user_id", "TEXT NOT NULL DEFAULT 'local'"),
         ("dreams", "owner_id", "TEXT NOT NULL DEFAULT 'local'"),
+    ],
+    6: [
+        ("bots", "notify", "INTEGER NOT NULL DEFAULT 1"),
+        ("bots", "approval_mode", "TEXT NOT NULL DEFAULT 'inherit'"),
+        ("bots", "workdir", "TEXT"),
     ],
 }
 
@@ -109,6 +114,13 @@ CREATE INDEX IF NOT EXISTS idx_devices_owner ON devices(owner_id);
 CREATE INDEX IF NOT EXISTS idx_bots_owner ON bots(owner_id);
 CREATE INDEX IF NOT EXISTS idx_sections_owner ON sections(owner_id);
 CREATE INDEX IF NOT EXISTS idx_rooms_owner ON rooms(owner_id);
+""",
+    6: """
+CREATE TABLE IF NOT EXISTS bot_incidents(
+ id TEXT PRIMARY KEY, bot TEXT NOT NULL, section_id TEXT, room_id TEXT, session_id TEXT,
+ kind TEXT NOT NULL CHECK(kind IN ('connector_error','turn_failed')), connector TEXT,
+ text TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL, resolved_at REAL);
+CREATE INDEX IF NOT EXISTS idx_bot_incidents_bot_open ON bot_incidents(bot,resolved_at);
 """,
 }
 

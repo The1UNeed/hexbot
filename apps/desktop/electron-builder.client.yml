@@ -14,4 +14,4 @@ deb:
       StartupWMClass: Hexbot Client
 publish:
   provider: generic
-  url: https://hexbot.app/updates/client/${os}/${arch}
+  url: https://updates.hexbot.app/client/${os}/${arch}

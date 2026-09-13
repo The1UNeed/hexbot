@@ -1,26 +1,49 @@
+# Tests and builds on every push and pull request. Publishes nothing.
+# release.yml calls this workflow before it builds packages, so a release
+# runs the same checks as a pull request (docs/channels.md, docs/testing.md).
 name: CI
 
 on:
   push:
+    branches: ['**']
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# One run per pull request or pushed commit. A newer push to the same pull
+# request cancels the older run; pushes to a branch and release checks never
+# cancel each other.
+concurrency:
+  group: ci-${{ github.workflow_ref }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   python:
-    runs-on: ubuntu-22.04
+    name: Python
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # The venv lives at ./venv, like a developer checkout (AGENTS.md).
+      UV_PROJECT_ENVIRONMENT: venv
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
       - run: uv venv venv --python 3.11
-      - run: uv sync --extra all --locked
-        env:
-          UV_PROJECT_ENVIRONMENT: venv
+      # `all` is every runtime extra; `dev` adds pytest and pytest-asyncio.
+      - run: uv sync --extra all --extra dev --locked
       - run: ./venv/bin/pytest tests/hexbot -q
 
   web:
-    runs-on: ubuntu-22.04
+    name: Web and desktop
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 26
           cache: npm
@@ -33,52 +56,26 @@ jobs:
       - run: npm run typecheck -w apps/desktop
       - run: npm run test -w apps/desktop -- --run
       - run: npm run build -w apps/desktop
+      - name: Release script tests
+        run: node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs
+      # Runs the exact commands release.yml runs after a build (version
+      # resolution, update feed, website manifest, casks) against synthetic
+      # packages, so a broken release script fails here and not on tag day.
+      - name: Release smoke
+        run: node scripts/desktop/release-smoke.mjs
 
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    strategy:
-      matrix:
-        edition: [full, client]
-        build: [mac-arm64, mac-x64, linux-x64]
-        include:
-          - build: mac-arm64
-            runner: macos-14
-            target: --mac
-            arch: --arm64
-          - build: mac-x64
-            runner: macos-14
-            target: --mac
-            arch: --x64
-          - build: linux-x64
-            runner: ubuntu-22.04
-            target: --linux
-            arch: --x64
-    runs-on: ${{ matrix.runner }}
+  services:
+    name: Site and Connect
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 26
           cache: npm
       - run: npm ci
       - run: npm approve-scripts electron esbuild @tailwindcss/oxide
-      - run: npm run build -w apps/web
-      - run: node scripts/desktop/stage-python-src.mjs
-        if: matrix.edition == 'full'
-      - run: npx electron-vite build
-        working-directory: apps/desktop
-        env:
-          HEXBOT_EDITION: ${{ matrix.edition }}
-      - run: npx electron-builder ${{ matrix.target }} ${{ matrix.arch }} ${{ matrix.edition == 'client' && '--config electron-builder.client.yml' || '' }} --publish never
-        working-directory: apps/desktop
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: desktop-${{ matrix.edition }}-${{ matrix.build }}
-          path: apps/desktop/release/**
-          if-no-files-found: error
+      - run: npm run check -w apps/site
+      - run: npm run typecheck -w apps/connect
+      - run: npm run test -w apps/connect -- --run

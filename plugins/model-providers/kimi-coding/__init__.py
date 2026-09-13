@@ -112,6 +112,7 @@ class KimiProfile(ProviderProfile):
 
 kimi = KimiProfile(
     name="kimi-coding",
+    display_name="Kimi For Coding (Global)",
     aliases=("kimi", "moonshot", "kimi-for-coding"),
     env_vars=("KIMI_API_KEY", "KIMI_CODING_API_KEY"),
     base_url="https://api.moonshot.ai/v1",
@@ -127,6 +128,7 @@ kimi = KimiProfile(
 
 kimi_cn = KimiProfile(
     name="kimi-coding-cn",
+    display_name="Kimi For Coding (China)",
     aliases=("kimi-cn", "moonshot-cn"),
     env_vars=("KIMI_CN_API_KEY",),
     base_url="https://api.moonshot.cn/v1",

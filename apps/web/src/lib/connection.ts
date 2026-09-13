@@ -108,6 +108,15 @@ function defaultFetch(deps: ConnectionDeps): typeof fetch {
   }
 }
 
+let localDaemonPort = DEFAULT_DAEMON_PORT
+
+/** Remember the port of the daemon the Electron main process started. */
+export function setLocalDaemonPort(port?: null | number): void {
+  if (port) {
+    localDaemonPort = port
+  }
+}
+
 /** HTTP origin for a target, e.g. `http://192.168.1.10:9119`. */
 export function targetOrigin(target: ConnectionTarget): string {
   if (target.kind === 'remote') {
@@ -124,19 +133,17 @@ export function targetOrigin(target: ConnectionTarget): string {
     return override.replace(/\/+$/, '')
   }
 
-  if (typeof window !== 'undefined' && window.location.protocol.startsWith('http')) {
+  // A browser page came from the daemon itself. Inside Electron the page
+  // origin is hexbot-app:// or, in dev, the Vite server: never the daemon.
+  if (
+    typeof window !== 'undefined' &&
+    !getBridge() &&
+    window.location.protocol.startsWith('http')
+  ) {
     return window.location.origin
   }
 
-  return `http://127.0.0.1:${DEFAULT_DAEMON_PORT}`
-}
-
-function readGlobalToken(origin: string): string | undefined {
-  if (typeof window === 'undefined' || window.location.origin !== origin) {
-    return undefined
-  }
-
-  return window.__HERMES_SESSION_TOKEN__
+  return `http://127.0.0.1:${localDaemonPort}`
 }
 
 /**
@@ -148,7 +155,10 @@ export async function probeDaemon(origin: string, deps: ConnectionDeps = {}): Pr
   let body = ''
 
   try {
-    const response = await doFetch(`${origin}/`, { cache: 'no-store', credentials: 'include' })
+    // Cookies only exist for the daemon-served bundle, which is same-origin.
+    // Cross-origin (the Vite dev server) the daemon's CORS policy rejects
+    // credentialed requests outright, so never ask for them there.
+    const response = await doFetch(`${origin}/`, { cache: 'no-store', credentials: 'same-origin' })
     body = await response.text()
   } catch (error) {
     throw new UnreachableError(error instanceof Error ? error.message : String(error))
@@ -156,7 +166,10 @@ export async function probeDaemon(origin: string, deps: ConnectionDeps = {}): Pr
 
   const flag = /__HERMES_AUTH_REQUIRED__\s*=\s*(true|false)/.exec(body)
   const token = /__HERMES_SESSION_TOKEN__\s*=\s*"([^"]+)"/.exec(body)
-  const sessionToken = readGlobalToken(origin) ?? token?.[1]
+  // Only the freshly fetched page knows the current auth gate and token.
+  // A login page after enabling LAN has neither; the loaded page's old
+  // global must not make that authenticated daemon look ungated.
+  const sessionToken = token?.[1]
   const authRequired = flag ? flag[1] === 'true' : !sessionToken
 
   return { authRequired, reachable: true, sessionToken }
@@ -191,7 +204,7 @@ async function mintTicket(origin: string, bearer: string, deps: ConnectionDeps):
     response = await doFetch(`${origin}/api/auth/ws-ticket`, {
       ...(bearer
         ? { headers: { Authorization: `Bearer ${bearer}` } }
-        : { credentials: 'include' as const }),
+        : { credentials: 'same-origin' as const }),
       method: 'POST'
     })
   } catch (error) {
@@ -266,6 +279,7 @@ export async function pairWithDaemon(
       body: JSON.stringify({
         password: code,
         provider: 'hexbot',
+        username: deviceName,
         device_name: deviceName,
         platform: typeof navigator === 'undefined' ? 'web' : navigator.platform
       }),
@@ -319,6 +333,7 @@ export class ConnectionSupervisor {
   private retryTimer: null | ReturnType<typeof setTimeout> = null
   private stopped = true
   private target: ConnectionTarget | null = null
+  private starting: Promise<void> | null = null
 
   constructor(private readonly deps: ConnectionDeps = {}) {}
 
@@ -328,6 +343,12 @@ export class ConnectionSupervisor {
 
   /** Connect to `target` and keep reconnecting until `stop()`. */
   start(target: ConnectionTarget): Promise<void> {
+    // The target-setting action and root lifecycle can observe the same
+    // target in one render. Share that handshake instead of cancelling it.
+    if (!this.stopped && this.target === target && this.starting) {
+      return this.starting
+    }
+
     this.teardown()
     this.stopped = false
     this.revoked = false
@@ -335,7 +356,9 @@ export class ConnectionSupervisor {
     this.connectedAt = 0
     this.target = target
 
-    return this.attemptConnect()
+    this.starting = this.attemptConnect()
+
+    return this.starting
   }
 
   stop(): void {
@@ -363,6 +386,7 @@ export class ConnectionSupervisor {
   private teardown(): void {
     this.generation += 1
     this.stopped = true
+    this.starting = null
 
     if (this.retryTimer) {
       clearTimeout(this.retryTimer)
@@ -572,8 +596,4 @@ export function connectTo(target: ConnectionTarget): Promise<void> {
 
 export function disconnect(): void {
   getSupervisor().stop()
-}
-
-export function retryConnection(): Promise<void> {
-  return getSupervisor().retryNow()
 }

@@ -27,7 +27,7 @@ export function Select({
     <BaseSelect.Root
       disabled={disabled}
       onValueChange={next => next && onValueChange(next)}
-      value={value}
+      value={value ?? null}
     >
       <BaseSelect.Trigger
         aria-label={label}
@@ -43,7 +43,11 @@ export function Select({
         </BaseSelect.Icon>
       </BaseSelect.Trigger>
       <BaseSelect.Portal>
-        <BaseSelect.Positioner className="z-50 outline-none" sideOffset={6}>
+        <BaseSelect.Positioner
+          alignItemWithTrigger={false}
+          className="z-50 outline-none"
+          sideOffset={6}
+        >
           <BaseSelect.Popup className="max-h-80 min-w-[var(--anchor-width)] overflow-auto rounded-panel border border-border bg-surface p-1 text-foreground shadow-popup outline-none">
             <BaseSelect.List>
               {options.map(option => (

@@ -15,6 +15,7 @@ def test_message_bot_delivery_and_hop_limit(fake_gateway):
                 [{"role": "assistant", "content": "reply"}]}
     fake_gateway.responses.update({
         "session.create": {"session_id": "target-live", "stored_session_id": "target-stored", "messages": []},
+        "session.resume": {"session_id": "target-live", "messages": []},
         "session.list": {"sessions": []}, "prompt.submit": {"status": "streaming"},
         "session.history": history})
     watcher = CompletionWatcher(sleep=lambda _: None, interval=0)

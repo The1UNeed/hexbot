@@ -2,7 +2,7 @@ import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 import { randomUUID } from "node:crypto";
 
 export interface User { id: string; clerkUserId: string; createdAt: Date }
-export interface Daemon { id: string; userId: string; name: string; slug: string; tunnelId: string; tunnelHostname: string; tokenHash: string; createdAt: Date; lastSeenAt: Date | null; revokedAt: Date | null }
+export interface Daemon { id: string; userId: string; name: string; slug: string; tunnelId: string; tunnelHostname: string; ingressPort: number; tokenHash: string; createdAt: Date; lastSeenAt: Date | null; revokedAt: Date | null }
 export interface Registration { id: string; userCode: string; deviceCodeHash: string; daemonName: string; platform: string; ingressPort: number; userId: string | null; expiresAt: Date; approvedAt: Date | null; consumedAt: Date | null; credentials: RegistrationCredentials | null }
 export interface RegistrationCredentials { daemonToken: string; daemonId: string; slug: string; tunnelToken: string; tunnelHostname: string }
 export interface ClientSession { id: string; userId: string; tokenHash: string; deviceName: string; createdAt: Date; lastSeenAt: Date | null; revokedAt: Date | null }
@@ -19,7 +19,7 @@ export interface Store {
   listDaemons(userId: string): Promise<Daemon[]>;
   findDaemonByTokenHash(hash: string): Promise<Daemon | null>;
   slugExists(slug: string): Promise<boolean>;
-  updateDaemonHeartbeat(id: string, at: Date): Promise<void>;
+  updateDaemonHeartbeat(id: string, at: Date, ingressPort: number): Promise<void>;
   renameDaemon(id: string, name: string): Promise<void>;
   revokeDaemon(id: string, at: Date): Promise<void>;
   createClientSession(input: Omit<ClientSession, "id" | "createdAt" | "lastSeenAt" | "revokedAt">): Promise<ClientSession>;
@@ -42,7 +42,7 @@ export class MemoryStore implements Store {
   async listDaemons(userId: string) { return this.daemons.filter(x => x.userId === userId && !x.revokedAt); }
   async findDaemonByTokenHash(hash: string) { return this.daemons.find(x => x.tokenHash === hash) ?? null; }
   async slugExists(slug: string) { return this.daemons.some(x => x.slug === slug); }
-  async updateDaemonHeartbeat(id: string, at: Date) { const row = await this.getDaemon(id); if (row) row.lastSeenAt = at; }
+  async updateDaemonHeartbeat(id: string, at: Date, ingressPort: number) { const row = await this.getDaemon(id); if (row) { row.lastSeenAt = at; row.ingressPort = ingressPort; } }
   async renameDaemon(id: string, name: string) { const row = await this.getDaemon(id); if (row) row.name = name; }
   async revokeDaemon(id: string, at: Date) { const row = await this.getDaemon(id); if (row) row.revokedAt = at; }
   async createClientSession(input: Omit<ClientSession, "id" | "createdAt" | "lastSeenAt" | "revokedAt">) { const row = { ...input, id: randomUUID(), createdAt: new Date(), lastSeenAt: null, revokedAt: null }; this.clientSessions.push(row); return row; }
@@ -54,7 +54,7 @@ export class MemoryStore implements Store {
 
 type DbRow = Record<string, unknown>;
 const date = (value: unknown): Date | null => value ? new Date(String(value)) : null;
-const daemonRow = (r: DbRow): Daemon => ({ id: String(r.id), userId: String(r.user_id), name: String(r.name), slug: String(r.slug), tunnelId: String(r.tunnel_id), tunnelHostname: String(r.tunnel_hostname), tokenHash: String(r.token_hash), createdAt: new Date(String(r.created_at)), lastSeenAt: date(r.last_seen_at), revokedAt: date(r.revoked_at) });
+const daemonRow = (r: DbRow): Daemon => ({ id: String(r.id), userId: String(r.user_id), name: String(r.name), slug: String(r.slug), tunnelId: String(r.tunnel_id), tunnelHostname: String(r.tunnel_hostname), ingressPort: Number(r.ingress_port ?? 9119), tokenHash: String(r.token_hash), createdAt: new Date(String(r.created_at)), lastSeenAt: date(r.last_seen_at), revokedAt: date(r.revoked_at) });
 const sessionRow = (r: DbRow): ClientSession => ({ id: String(r.id), userId: String(r.user_id), tokenHash: String(r.token_hash), deviceName: String(r.device_name), createdAt: new Date(String(r.created_at)), lastSeenAt: date(r.last_seen_at), revokedAt: date(r.revoked_at) });
 const credentials = (r: DbRow): RegistrationCredentials | null => r.credentials ? JSON.parse(String(r.credentials)) as RegistrationCredentials : null;
 const registrationRow = (r: DbRow): Registration => ({ id: String(r.id), userCode: String(r.user_code), deviceCodeHash: String(r.device_code_hash), daemonName: String(r.daemon_name), platform: String(r.platform), ingressPort: Number(r.ingress_port), userId: r.user_id ? String(r.user_id) : null, expiresAt: new Date(String(r.expires_at)), approvedAt: date(r.approved_at), consumedAt: date(r.consumed_at), credentials: credentials(r) });
@@ -68,12 +68,12 @@ export class NeonStore implements Store {
   async findRegistrationByUserCode(c: string) { const rows = await this.sql`SELECT * FROM registrations WHERE user_code=${c} ORDER BY expires_at DESC LIMIT 1`; return rows[0] ? registrationRow(rows[0] as DbRow) : null; }
   async approveRegistration(id: string, userId: string, c: RegistrationCredentials) { const rows = await this.sql`UPDATE registrations SET user_id=${userId}, approved_at=now(), credentials=${JSON.stringify(c)}::jsonb WHERE id=${id} RETURNING *`; return registrationRow(rows[0] as DbRow); }
   async consumeRegistration(id: string) { const rows = await this.sql`UPDATE registrations SET consumed_at=now(), credentials=NULL WHERE id=${id} AND consumed_at IS NULL RETURNING id`; return rows.length === 1; }
-  async createDaemon(i: Omit<Daemon, "id" | "createdAt" | "lastSeenAt" | "revokedAt">) { const rows = await this.sql`INSERT INTO daemons (user_id,name,slug,tunnel_id,tunnel_hostname,token_hash) VALUES (${i.userId},${i.name},${i.slug},${i.tunnelId},${i.tunnelHostname},${i.tokenHash}) RETURNING *`; return daemonRow(rows[0] as DbRow); }
+  async createDaemon(i: Omit<Daemon, "id" | "createdAt" | "lastSeenAt" | "revokedAt">) { const rows = await this.sql`INSERT INTO daemons (user_id,name,slug,tunnel_id,tunnel_hostname,ingress_port,token_hash) VALUES (${i.userId},${i.name},${i.slug},${i.tunnelId},${i.tunnelHostname},${i.ingressPort},${i.tokenHash}) RETURNING *`; return daemonRow(rows[0] as DbRow); }
   async getDaemon(id: string) { const rows = await this.sql`SELECT * FROM daemons WHERE id=${id} LIMIT 1`; return rows[0] ? daemonRow(rows[0] as DbRow) : null; }
   async listDaemons(uid: string) { return (await this.sql`SELECT * FROM daemons WHERE user_id=${uid} AND revoked_at IS NULL ORDER BY created_at`).map(r => daemonRow(r as DbRow)); }
   async findDaemonByTokenHash(h: string) { const rows = await this.sql`SELECT * FROM daemons WHERE token_hash=${h} LIMIT 1`; return rows[0] ? daemonRow(rows[0] as DbRow) : null; }
   async slugExists(s: string) { const rows = await this.sql`SELECT 1 FROM daemons WHERE slug=${s} LIMIT 1`; return rows.length > 0; }
-  async updateDaemonHeartbeat(id: string, at: Date) { await this.sql`UPDATE daemons SET last_seen_at=${at.toISOString()} WHERE id=${id}`; }
+  async updateDaemonHeartbeat(id: string, at: Date, ingressPort: number) { await this.sql`UPDATE daemons SET last_seen_at=${at.toISOString()}, ingress_port=${ingressPort} WHERE id=${id}`; }
   async renameDaemon(id: string, name: string) { await this.sql`UPDATE daemons SET name=${name} WHERE id=${id}`; }
   async revokeDaemon(id: string, at: Date) { await this.sql`UPDATE daemons SET revoked_at=${at.toISOString()} WHERE id=${id}`; }
   async createClientSession(i: Omit<ClientSession, "id" | "createdAt" | "lastSeenAt" | "revokedAt">) { const rows = await this.sql`INSERT INTO client_sessions (user_id,token_hash,device_name) VALUES (${i.userId},${i.tokenHash},${i.deviceName}) RETURNING *`; return sessionRow(rows[0] as DbRow); }

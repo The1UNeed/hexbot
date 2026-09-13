@@ -30,7 +30,7 @@ export function Dialog({
         <BaseDialog.Backdrop className="fixed inset-0 bg-black/40 backdrop-blur-[2px]" />
         <BaseDialog.Popup
           className={cn(
-            'hex-bubble fixed top-1/2 left-1/2 flex max-h-[85vh] w-[min(36rem,92vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[16px] border border-border bg-surface text-foreground shadow-popup outline-none',
+            'hex-bubble fixed top-1/2 left-1/2 flex max-h-[85vh] w-[min(36rem,92vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-window border border-border bg-surface text-foreground shadow-popup outline-none',
             className
           )}
         >
@@ -55,6 +55,3 @@ export function Dialog({
     </BaseDialog.Root>
   )
 }
-
-export const DialogClose = BaseDialog.Close
-export const DialogTrigger = BaseDialog.Trigger

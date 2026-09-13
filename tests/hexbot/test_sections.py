@@ -58,34 +58,30 @@ def test_create_section_refuses_a_missing_stored_id(fake_gateway):
     assert sections.list_sections("scout") == []
 
 
-def test_open_section_uses_the_live_id_for_history(gw):
+def test_open_section_resumes_the_stored_id_even_when_live(gw):
+    """A reload must reattach the caller to the live session, which only
+    ``session.resume`` does; a ``session.history`` probe leaves it parked."""
     from hexbot import sections
 
     sections.create_section("scout", "General")
+    gw.responses["session.resume"] = lambda p: {"session_id": "live1", "messages": [{"role": "user", "content": "hi"}]}
     gw.calls.clear()
     opened = sections.open_section("stored1")
 
     assert len(opened["messages"]) == 1
     assert opened["section"]["live_session_id"] == "live1"
-    assert gw.calls == [("session.history", {"session_id": "live1"})]
+    assert gw.calls == [("session.resume", {"session_id": "stored1", "profile": "scout"})]
 
 
-def test_open_section_recovers_from_a_dead_live_session(gw):
+def test_open_section_takes_the_new_live_id_after_a_reap(gw):
     from hexbot import sections
 
     sections.create_section("scout", "General")
-
-    def dead(_params):
-        raise GatewayError(4001, "session not found")
-
-    gw.responses["session.history"] = dead
     gw.calls.clear()
     opened = sections.open_section("stored1")
 
     assert opened["section"]["live_session_id"] == "live2"
-    assert gw.methods() == ["session.history", "session.resume"]
-    # The resume must carry the STORED id and the bot's profile.
-    assert gw.params_for("session.resume")[0] == {"session_id": "stored1", "profile": "scout"}
+    assert gw.methods() == ["session.resume"]
     assert sections.live_id("stored1") == "live2"
 
 
@@ -97,7 +93,7 @@ def test_open_section_propagates_other_gateway_errors(gw):
     def broken(_params):
         raise GatewayError(5007, "database unavailable")
 
-    gw.responses["session.history"] = broken
+    gw.responses["session.resume"] = broken
     with pytest.raises(GatewayError) as caught:
         sections.open_section("stored1")
     assert caught.value.code == 5007
@@ -268,3 +264,18 @@ def test_live_statuses_survives_an_unavailable_gateway(fake_gateway):
 
     fake_gateway.responses["session.active_list"] = boom
     assert sections.live_statuses() == {}
+
+
+def test_delete_section_tolerates_a_never_messaged_session(gw):
+    """An empty section has no stored Hermes session; deleting it must still work."""
+    from hexbot import sections
+
+    sections.create_section("scout", "New section")
+
+    def missing(_params):
+        raise GatewayError(4007, "session not found")
+
+    gw.responses["session.delete"] = missing
+    gw.responses["session.close"] = {"status": "closed"}
+    assert sections.delete_section("stored1") is True
+    assert sections.list_sections("scout") == []

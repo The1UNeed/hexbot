@@ -10,7 +10,7 @@ import subprocess
 import threading
 import time
 import urllib.request
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 import httpx
@@ -20,14 +20,19 @@ from hexbot.errors import HexbotError
 from hexbot.home import hexbot_home
 
 logger = logging.getLogger(__name__)
-DEFAULT_API_BASE = "https://hexbot.app"
+DEFAULT_API_BASE = "https://connect.hexbot.app"
+
+
+def default_api_base() -> str:
+    """Connect service URL. HEXBOT_CONNECT_URL points a daemon at a local or self-hosted instance."""
+    return (os.environ.get("HEXBOT_CONNECT_URL") or DEFAULT_API_BASE).rstrip("/")
 REGISTER_TIMEOUT = 10 * 60
 HEARTBEAT_INTERVAL = 5 * 60
 
 
 @dataclass
 class ConnectConfig:
-    api_base: str = DEFAULT_API_BASE
+    api_base: str = field(default_factory=default_api_base)
     daemon_id: str = ""
     daemon_token: str = ""
     slug: str = ""
@@ -76,8 +81,8 @@ class ConnectConfig:
 
 
 class ConnectClient:
-    def __init__(self, api_base: str = DEFAULT_API_BASE, http=None):
-        self.api_base = api_base.rstrip("/")
+    def __init__(self, api_base: str | None = None, http=None):
+        self.api_base = (api_base or default_api_base()).rstrip("/")
         self.http = http or httpx.request
 
     def _json(self, method: str, path: str, **kwargs) -> dict:
@@ -101,6 +106,10 @@ class ConnectClient:
 
     def register_poll(self, device_code: str) -> dict:
         return self._json("POST", "/api/register/poll", json={"device_code": device_code})
+
+    def revoke(self, daemon_id: str, daemon_token: str) -> dict:
+        return self._json("DELETE", f"/api/daemons/{daemon_id}",
+                          headers={"Authorization": f"Bearer {daemon_token}"})
 
     def heartbeat(self, daemon_id: str, daemon_token: str, port: int) -> dict:
         return self._json("POST", f"/api/daemons/{daemon_id}/heartbeat",
@@ -293,22 +302,25 @@ def start_daemon(port: int, *, client=None, tunnel=None) -> bool:
     config = ConnectConfig.load()
     if config is None or not config.daemon_id:
         return False
+    stop_daemon()  # idempotent: a registration made while serving restarts the workers
     apply_public_url(config.tunnel_hostname)
     _tunnel = tunnel or Tunnel(config)
     _tunnel.start(port)
     api = client or ConnectClient(config.api_base)
-    _heartbeat_stop = threading.Event()
+    stop = _heartbeat_stop = threading.Event()
 
     def heartbeat_loop():
         global _last_heartbeat_at, _last_error
-        while not _heartbeat_stop.is_set():
+        while not stop.is_set():
             try:
                 api.heartbeat(config.daemon_id, config.daemon_token, port)
+                if stop.is_set():
+                    break
                 _last_heartbeat_at, _last_error = time.time(), None
             except Exception as exc:
                 _last_error = str(exc)
                 logger.debug("Connect heartbeat failed", exc_info=True)
-            if _heartbeat_stop.wait(HEARTBEAT_INTERVAL):
+            if stop.wait(HEARTBEAT_INTERVAL):
                 break
 
     _heartbeat_thread = threading.Thread(target=heartbeat_loop, name="hexbot-heartbeat", daemon=True)
@@ -316,16 +328,15 @@ def start_daemon(port: int, *, client=None, tunnel=None) -> bool:
     return True
 
 
-def disconnect() -> dict:
-    global _tunnel, _heartbeat_stop, _heartbeat_thread
-    if _heartbeat_stop:
-        _heartbeat_stop.set()
-    if _tunnel:
-        _tunnel.stop()
-    if _heartbeat_thread and _heartbeat_thread is not threading.current_thread():
-        _heartbeat_thread.join(timeout=5)
-    _tunnel = None
-    _heartbeat_thread = None
+def disconnect(*, client=None) -> dict:
+    """Stop the workers, revoke the registration with Connect (best effort), forget it locally."""
+    stop_daemon()
+    config = ConnectConfig.load()
+    if config and config.daemon_id:
+        try:
+            (client or ConnectClient(config.api_base)).revoke(config.daemon_id, config.daemon_token)
+        except Exception:
+            logger.warning("could not revoke the Connect registration remotely", exc_info=True)
     ConnectConfig.clear()
     apply_public_url(None)
     return status()

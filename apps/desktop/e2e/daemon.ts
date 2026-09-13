@@ -59,15 +59,20 @@ export interface RunningDaemon {
 export async function startDaemon(
   repoRoot: string,
   home: string,
-  requestedPort?: number
+  requestedPort?: number,
+  lan = false
 ): Promise<RunningDaemon> {
   const port = requestedPort ?? (await pickFreePort())
-  const child = spawn(resolve(repoRoot, 'venv/bin/hexbot'), ['serve', '--port', String(port)], {
-    cwd: repoRoot,
-    detached: process.platform !== 'win32',
-    env: { ...process.env, HEXBOT_HOME: home, HERMES_HOME: undefined },
-    stdio: ['ignore', 'pipe', 'pipe']
-  })
+  const child = spawn(
+    resolve(repoRoot, 'venv/bin/hexbot'),
+    ['serve', '--port', String(port), ...(lan ? ['--lan'] : [])],
+    {
+      cwd: repoRoot,
+      detached: process.platform !== 'win32',
+      env: { ...process.env, HEXBOT_HOME: home, HERMES_HOME: undefined },
+      stdio: ['ignore', 'pipe', 'pipe']
+    }
+  )
   let output = ''
   let pending = ''
 

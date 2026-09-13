@@ -2,15 +2,12 @@
 // - full: the desktop app plus the daemon runtime (Python source, bootstrap,
 //   launch-at-login service).
 // - client: the desktop app alone; it can only connect to a daemon elsewhere.
-// The edition is fixed at build time by HEXBOT_EDITION (see
-// electron.vite.config.ts) so a client package never tries to run a daemon.
+// The edition is fixed at build time by HEXBOT_EDITION, which
+// electron.vite.config.ts bakes into __HEXBOT_EDITION__, so a client package
+// never tries to run a daemon. edition.build.test.ts checks the baked value.
 export type Edition = 'full' | 'client'
 
-export function parseEdition(value: string | undefined): Edition {
-  return value === 'client' ? 'client' : 'full'
-}
-
-export const edition: Edition = parseEdition(import.meta.env.HEXBOT_EDITION)
+export const edition: Edition = __HEXBOT_EDITION__ === 'client' ? 'client' : 'full'
 export const hasRuntime = edition === 'full'
 
 export function requireRuntime(action: string): void {

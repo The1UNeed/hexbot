@@ -35,7 +35,7 @@ data model. Reference for the Hermes subset: `/tmp/hexbot-notes/ws-api.md`
 - Health: `gateway.ping`, `gateway.capabilities`.
 
 Events the client renders: `message.start`, `message.delta`, `message.interim`,
-`message.complete` (turn end), `thinking.delta`, `tool.start`, `tool.complete`,
+`message.complete` (turn end), `reasoning.delta`, `thinking.delta`, `tool.start`, `tool.complete`,
 `approval.request`, `status.update`, `session.info`, `session.usage`, `error`.
 
 ## `hexbot.*` methods
@@ -63,7 +63,16 @@ user. Get and mutation methods always check ownership.
 
 Bot shape: `{name, display_name, title, description, persona, tools: [string], skills: [string], shareable,
 provider, model, avatar: {mime, data} | null, created_at, updated_at, last_activity_at,
-owner_id, dream_enabled, may_write_core, sections_total, sections_recent: [Section]}`
+owner_id, dream_enabled, may_write_core, notify, approval_mode, workdir | null,
+status, status_detail | null, sections_total, sections_recent: [Section]}`
+
+`status` is `idle`, `working`, `needs_you`, or `stopped` (priority in that
+reverse order), folded by the daemon from live session state, room turns,
+room `waiting.human` events, and open incidents. `status_detail` is
+`{text, section_id, room_id, session_id, since, action}` where `action` is
+null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
+`approval_mode` is `inherit` (the deployment setting), `manual`, `smart`, or
+`off`; `workdir` overrides the deployment workspace for that bot's terminal.
 
 - `hexbot.bots.list {all?}` → `{bots: [Bot]}` ordered by `last_activity_at` desc.
 - `hexbot.bots.get {name}` → `{bot: Bot}`
@@ -75,9 +84,14 @@ owner_id, dream_enabled, may_write_core, sections_total, sections_recent: [Secti
   `display_name` defaults to the bot name in title case — never to `title`,
   which is free-form caller text stored verbatim.
 - `hexbot.bots.update {name, display_name?, title?, description?, persona?,
-  provider?, model?, avatar?, dream_enabled?, may_write_core?, shareable?, tools?, skills?}` →
-  `{bot: Bot}`. `tools` accepts `terminal`, `files`, `browser`, `web_search`, and
-  `computer_use`. Both capability lists use replace semantics.
+  provider?, model?, avatar?, dream_enabled?, may_write_core?, shareable?, tools?, skills?,
+  notify?, approval_mode?, workdir?}` →
+  `{bot: Bot}`. `tools` accepts `terminal`, `files`, `code_execution`, `browser`,
+  `computer_use`, `vision`, `voice`, `message_bots`, `delegate`, and
+  `scheduling`; toolsets owned by connectors (web, image_gen, mcp-*) are left
+  as they are. Both capability lists use replace semantics.
+- `hexbot.bots.clear_status {name}` → `{bot: Bot}`. Closes every open incident
+  for the bot.
 - `hexbot.bots.delete {name}` → `{deleted: true}` (deletes the profile
   directory and all rows; refuses with 4211 if any of its sections is live
   and mid-turn — `session.active_list` status `working` or `waiting` —
@@ -162,6 +176,42 @@ eventual reply to the sender section as hidden input prefixed
 `[reply from <bot>]`. This is the closest supported Hermes mechanism to a
 hidden note and preserves it in the section context.
 
+### Connectors and skills
+
+A connector is an outside service a bot can reach (web search, image
+generation, Notion, X search, Home Assistant, an MCP server, ...). Credentials
+are stored once for the daemon; each bot has its own on/off switch.
+
+Connector shape: `{id, name, description, group, icon, scope, state, state_text,
+providers | null, provider | null, fields: [{key, provider, label, help, url,
+secret, advanced, set, hint}], enabled_for_bot | null, enabled_bots: [string],
+last_error | null, mcp?: {transport, tool_count, running}}`. `state` is
+`not_set_up`, `ready`, or `error`; `icon` is a Simple Icons slug or `glyph:*`.
+`fields` carries every provider's fields, each tagged with its `provider`
+(`null` = common to all), so a client can show the right ones before a choice
+is saved. `state_text` says "Connected" only after a probe answered (Notion,
+Airtable, ElevenLabs, Home Assistant, xAI make one small authenticated GET);
+connectors with only an offline check say "Key saved". A failed probe keeps
+the row in `error` with the probe's message until the next successful setup
+or a clear.
+
+- `hexbot.connectors.list {bot?}` → `{connectors: [Connector]}`.
+- `hexbot.connectors.setup {id, values: {ENV_KEY: value}, provider?, bot?,
+  enable_for_bot?, bot_only?}` → `{connector, test: {ok, message}}`. Admin
+  only. Writes the values into the root `.env`, every profile `.env` and the
+  process environment (`bot_only` writes only that bot's profile), records the
+  backend choice where Hermes reads it, runs the check or probe, and, when
+  it passes, turns the connector on for `bot` unless `enable_for_bot` is
+  false. A failed probe leaves the connector off for the bot.
+- `hexbot.connectors.test {id, bot?}` → `{ok, message}`.
+- `hexbot.connectors.clear {id, bot?, bot_only?}` → `{connector}`. Admin only.
+- `hexbot.connectors.set_for_bot {id, bot, enabled}` → `{connector}`.
+- `hexbot.connectors.add_mcp {name, command?, args?, env?, url?, transport?}` →
+  `{connector}`; `hexbot.connectors.remove_mcp {name}` → `{removed: true}`.
+  Admin only. MCP servers live in the root `config.yaml` and appear as
+  `mcp:<name>` connectors.
+- `hexbot.skills.list {bot}` → `{skills: [{name, description, category, enabled}]}`.
+
 ### Providers and models
 
 - `hexbot.providers.list {}` → `{providers: [{id, label, configured,
@@ -232,6 +282,11 @@ Room mutations emit `hexbot.rooms.changed {id}`. Every persisted room event
 emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit
 `hexbot.rooms.turn {room_id, bot, live_session_id, status}`.
 Dream triggers emit `hexbot.dreaming.changed {bot}`.
+Connector mutations emit `hexbot.connectors.changed {connector, bot?}` and
+`hexbot.bots.changed`. Opening or resolving an incident emits
+`hexbot.bots.incident {bot, section_id, room_id, session_id, incident: {id,
+kind, connector, text, created_at, resolved_at}}` followed by
+`hexbot.bots.changed {name}`.
 
 ## Pairing and auth over HTTP
 

@@ -33,9 +33,9 @@ describe('avatar builder', () => {
 })
 
 describe('thinking', () => {
-  it('announces the bot as thinking', () => {
+  it('announces what the bot is doing', () => {
     render(<Thinking image={null} name="Scout" />)
-    expect(screen.getByRole('status', { name: 'Scout is thinking' })).toBeInTheDocument()
+    expect(screen.getByRole('status', { name: 'Scout is working' })).toBeInTheDocument()
   })
 })
 

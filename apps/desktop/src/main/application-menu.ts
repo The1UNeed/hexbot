@@ -7,11 +7,12 @@ export interface ApplicationMenuActions {
 }
 
 export function applicationMenuTemplate(
-  actions: ApplicationMenuActions
+  actions: ApplicationMenuActions,
+  appName = 'Hexbot'
 ): MenuItemConstructorOptions[] {
   return [
     {
-      label: 'Hexbot',
+      label: appName,
       submenu: [
         { role: 'about' },
         { type: 'separator' },

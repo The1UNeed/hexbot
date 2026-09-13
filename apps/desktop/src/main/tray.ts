@@ -19,7 +19,7 @@ export function createTray(manager: DaemonManager, openWindow: () => BrowserWind
     tray?.setContextMenu(
       Menu.buildFromTemplate([
         {
-          label: 'Open Hexbot',
+          label: `Open ${app.name}`,
           click: () => {
             const window = openWindow()
             window.show()
@@ -42,9 +42,4 @@ export function createTray(manager: DaemonManager, openWindow: () => BrowserWind
   manager.on('status', rebuild)
   tray.on('double-click', () => openWindow().show())
   return tray
-}
-
-export function destroyTray(): void {
-  tray?.destroy()
-  tray = undefined
 }

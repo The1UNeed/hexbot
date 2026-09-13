@@ -25,6 +25,7 @@
   --hex-radius-control: 8px;
   --hex-radius-panel: 12px;
   --hex-radius-bubble: 18px;
+  --hex-radius-window: 16px;
 
   --hex-font-sans:
     -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, Inter, Cantarell, 'Segoe UI',
@@ -35,6 +36,8 @@
 
   --hex-motion-fast: 120ms;
   --hex-motion-panel: 200ms;
+  --hex-motion-enter: 320ms;
+  --hex-ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -111,6 +114,7 @@
   --radius-control: var(--hex-radius-control);
   --radius-panel: var(--hex-radius-panel);
   --radius-bubble: var(--hex-radius-bubble);
+  --radius-window: var(--hex-radius-window);
 
   --font-sans: var(--hex-font-sans);
   --font-mono: var(--hex-font-mono);
@@ -175,6 +179,10 @@ body {
 .hex-prose ol,
 .hex-prose blockquote {
   margin: 0.55em 0;
+}
+/* Chat, not a document: a single newline (a poem line, an address) stays a line break. */
+.hex-prose p {
+  white-space: pre-wrap;
 }
 .hex-prose ul,
 .hex-prose ol {
@@ -243,10 +251,10 @@ body {
 @keyframes hex-bob {
   0%,
   100% {
-    transform: translateY(0) rotate(-4deg);
+    transform: translateY(0) scale(1.04, 0.96);
   }
   50% {
-    transform: translateY(-3px) rotate(4deg);
+    transform: translateY(-5px) scale(0.96, 1.04);
   }
 }
 
@@ -304,6 +312,48 @@ body {
   }
 }
 
+/* A screen or step arriving: a short fade with a small lift, once. */
+@keyframes hex-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Eyes wander a little while idle, so a face never looks frozen. */
+@keyframes hex-gaze {
+  0%,
+  38%,
+  100% {
+    transform: translate(0, 0);
+  }
+  42%,
+  56% {
+    transform: translate(2.5px, -0.5px);
+  }
+  60%,
+  78% {
+    transform: translate(-2px, 0.5px);
+  }
+  82%,
+  96% {
+    transform: translate(0.5px, 1px);
+  }
+}
+
+@keyframes hex-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
 .hex-face:hover {
   animation: hex-wiggle 500ms ease-in-out;
 }
@@ -312,9 +362,20 @@ body {
   transform-box: fill-box;
   transform-origin: center;
 }
+.hex-face .hex-gaze {
+  animation: hex-gaze 9s ease-in-out infinite;
+}
+/* Eye geometry morphs between moods instead of snapping. */
+.hex-face .hex-eyes ellipse {
+  transition:
+    cx var(--hex-motion-panel) var(--hex-ease-out),
+    cy var(--hex-motion-panel) var(--hex-ease-out),
+    rx var(--hex-motion-panel) var(--hex-ease-out),
+    ry var(--hex-motion-panel) var(--hex-ease-out);
+}
 .hex-think {
-  animation: hex-bob 1.1s ease-in-out infinite;
-  transform-origin: 50% 90%;
+  animation: hex-bob 1.4s ease-in-out infinite;
+  transform-origin: 50% 100%;
 }
 .hex-bubble {
   animation: hex-pop var(--hex-motion-panel) ease-out;
@@ -328,13 +389,35 @@ body {
 .hex-pulse {
   animation: hex-pulse 1.6s ease-in-out infinite;
 }
+.hex-rise {
+  animation: hex-rise var(--hex-motion-enter) var(--hex-ease-out) both;
+}
+/* Like hex-bubble, but honours an animation-delay: hidden until its turn. */
+.hex-pop-in {
+  animation: hex-pop var(--hex-motion-enter) var(--hex-ease-out) both;
+}
+.hex-skeleton {
+  border-radius: var(--hex-radius-control);
+  background: linear-gradient(
+    90deg,
+    var(--hex-surface-2) 0%,
+    var(--hex-surface-3) 50%,
+    var(--hex-surface-2) 100%
+  );
+  background-size: 200% 100%;
+  animation: hex-shimmer 1.8s linear infinite;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .hex-face:hover,
   .hex-face .hex-eyes,
+  .hex-face .hex-gaze,
   .hex-think,
   .hex-bubble,
-  .hex-fade {
+  .hex-fade,
+  .hex-rise,
+  .hex-pop-in,
+  .hex-skeleton {
     animation: none;
   }
   .hex-dot,

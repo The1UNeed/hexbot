@@ -13,7 +13,6 @@
   },
   "dependencies": {
     "@base-ui/react": "1.0.0",
-    "@hermes/shared": "file:../shared",
     "@tanstack/react-router": "1.131.35",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",

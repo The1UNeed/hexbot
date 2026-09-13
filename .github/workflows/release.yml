@@ -1,0 +1,360 @@
+# Stable and nightly releases from one workflow, modelled on T3 Code's
+# release.yml (docs/channels.md, docs/release.md).
+#
+#   stable   push a v<version> tag that matches apps/desktop/package.json.
+#            Plain X.Y.Z is the repository's "latest" release; a suffix such as
+#            -alpha.1 makes a GitHub prerelease. The finalize job then commits
+#            the website downloads manifest and the Homebrew casks to main.
+#   nightly  09:00 UTC daily, or dispatch by hand. Skipped when main has not
+#            moved since the last nightly. Version <base>-nightly.<date>.<run>.
+#            Always a prerelease; the last 14 are kept.
+#
+# Both channels: six packages (full and client, for macOS arm64, macOS x64,
+# Linux x64), the update feed on updates.hexbot.app when the R2 secrets are
+# present, and a GitHub release with every package. Signing and notarization
+# happen when the Apple secrets are present and are skipped otherwise.
+#
+# Secrets (all optional; docs/release.md, "One-time setup"):
+#   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY   update server
+#   CSC_LINK, CSC_KEY_PASSWORD                              Developer ID signing
+#   APPLE_API_KEY, APPLE_API_KEY_ID, APPLE_API_ISSUER       notarization
+#   SITE_DEPLOY_HOOK_URL                                    redeploy hexbot.app
+# Variables (optional): R2_UPDATES_BUCKET (default hexbot-updates),
+#   HEXBOT_CRASH_URL (crash report endpoint baked into the app).
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Channel
+        type: choice
+        options: [nightly]
+        default: nightly
+
+# Jobs that publish ask for more below.
+permissions:
+  contents: read
+
+# One publisher per channel at a time. A queued run waits; it never cancels a
+# running one, so a half-published release cannot happen.
+concurrency:
+  group: release-${{ startsWith(github.ref, 'refs/tags/v') && 'stable' || 'nightly' }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      build: ${{ steps.resolve.outputs.build }}
+      channel: ${{ steps.resolve.outputs.channel }}
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+      latest: ${{ steps.resolve.outputs.latest }}
+      previous_tag: ${{ steps.resolve.outputs.previous_tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - id: resolve
+        name: Resolve the channel and version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            channel=stable
+            # Release notes compare against the previous stable release.
+            previous=$(gh release list --limit 200 --json tagName,isPrerelease,isDraft \
+              -q '[.[] | select(.isDraft | not) | select(.tagName | test("-nightly\\.") | not) | .tagName][0] // empty')
+          else
+            channel=nightly
+            previous=$(gh release list --limit 200 --json tagName,isDraft \
+              -q '[.[] | select(.isDraft | not) | select(.tagName | test("-nightly\\."))][0].tagName // empty')
+            # A scheduled nightly needs new commits since the last one. A
+            # manual dispatch always builds. The compare API works even when
+            # the last nightly's tag has since been pruned from the clone.
+            if [ "$GITHUB_EVENT_NAME" = schedule ] && [ -n "$previous" ]; then
+              status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$previous...$GITHUB_SHA" --jq .status || echo unknown)
+              if [ "$status" != ahead ]; then
+                echo "main is '$status' relative to $previous; nothing to build"
+                echo "build=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            fi
+          fi
+          echo "build=true" >> "$GITHUB_OUTPUT"
+          echo "previous_tag=$previous" >> "$GITHUB_OUTPUT"
+          node scripts/desktop/release-version.mjs --channel "$channel" | tee -a "$GITHUB_OUTPUT"
+
+  check:
+    name: Check
+    needs: preflight
+    if: needs.preflight.outputs.build == 'true'
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build ${{ matrix.edition }} ${{ matrix.build }}
+    needs: [preflight, check]
+    if: needs.preflight.outputs.build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        edition: [full, client]
+        build: [mac-arm64, mac-x64, linux-x64]
+        include:
+          # macOS 26 runners carry Xcode 26, whose actool compiles the layered
+          # Icon Composer icon (scripts/desktop/dist.mjs). Both architectures
+          # build on the arm64 image; electron-builder cross-packages x64.
+          - build: mac-arm64
+            runner: macos-26
+            target: --mac --arm64
+          - build: mac-x64
+            runner: macos-26
+            target: --mac --x64
+          # The oldest supported Ubuntu keeps the AppImage's glibc floor low.
+          - build: linux-x64
+            runner: ubuntu-22.04
+            target: --linux --x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      CHANNEL: ${{ needs.preflight.outputs.channel }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npm approve-scripts electron esbuild @tailwindcss/oxide
+      - name: Set the release version
+        run: node scripts/desktop/set-version.mjs "$VERSION"
+      - name: Prepare macOS signing
+        if: runner.os == 'macOS'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CSC_LINK" ] || [ -z "$CSC_KEY_PASSWORD" ]; then
+            echo "No Developer ID certificate; the app will be ad-hoc signed (scripts/desktop/after-pack.cjs)."
+            exit 0
+          fi
+          {
+            echo "CSC_LINK=$CSC_LINK"
+            echo "CSC_KEY_PASSWORD=$CSC_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+          echo "Developer ID signing enabled."
+          if [ -z "$APPLE_API_KEY" ] || [ -z "$APPLE_API_KEY_ID" ] || [ -z "$APPLE_API_ISSUER" ]; then
+            echo "Apple API key incomplete; notarization skipped."
+            exit 0
+          fi
+          # electron-builder wants APPLE_API_KEY as a path to the .p8 file,
+          # while the secret holds its contents (docs/release.md).
+          key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY" > "$key_path"
+          {
+            echo "APPLE_API_KEY=$key_path"
+            echo "APPLE_API_KEY_ID=$APPLE_API_KEY_ID"
+            echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"
+          } >> "$GITHUB_ENV"
+          echo "Notarization enabled."
+      - name: Build the package
+        env:
+          HEXBOT_CRASH_URL: ${{ vars.HEXBOT_CRASH_URL }}
+        run: node scripts/desktop/dist.mjs ${{ matrix.target }} --channel "$CHANNEL" ${{ matrix.edition == 'client' && '--client' || '' }}
+      - name: List the output
+        run: ls -l apps/desktop/release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.edition }}-${{ matrix.build }}
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/*.deb
+            apps/desktop/release/*.blockmap
+            apps/desktop/release/latest-linux.yml
+          if-no-files-found: error
+
+  publish:
+    name: Publish ${{ needs.preflight.outputs.channel }} ${{ needs.preflight.outputs.version }}
+    needs: [preflight, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      CHANNEL: ${{ needs.preflight.outputs.channel }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+      TAG: ${{ needs.preflight.outputs.tag }}
+      # Step-level `if` cannot read secrets; the job env can.
+      HAS_R2: ${{ secrets.R2_ACCESS_KEY_ID != '' && secrets.R2_SECRET_ACCESS_KEY != '' && secrets.R2_ACCOUNT_ID != '' }}
+      R2_BUCKET: ${{ vars.R2_UPDATES_BUCKET || 'hexbot-updates' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+      - name: Collect the packages
+        run: |
+          set -euo pipefail
+          mkdir -p release/full release/client
+          cp artifacts/full-*/* release/full/
+          cp artifacts/client-*/* release/client/
+          ls -l release/full release/client
+      - name: Build the update feed
+        run: |
+          set -euo pipefail
+          node scripts/desktop/make-update-feed.mjs --channel "$CHANNEL" --version "$VERSION" release/full
+          node scripts/desktop/make-update-feed.mjs --channel "$CHANNEL" --version "$VERSION" --client release/client
+          find dist/updates -type f | sort
+      - name: Publish the update feed to updates.hexbot.app
+        if: env.HAS_R2 == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          AWS_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          set -euo pipefail
+          # Packages first (their names carry the version, so they never
+          # change once uploaded), then the feed files that point at them.
+          aws s3 sync dist/updates "s3://$R2_BUCKET/" --exclude '*.yml' --no-progress \
+            --cache-control 'public, max-age=31536000, immutable'
+          aws s3 cp dist/updates "s3://$R2_BUCKET/" --recursive --exclude '*' --include '*.yml' --no-progress \
+            --cache-control 'no-cache' --content-type 'text/yaml'
+      - name: Check the feed the apps will read
+        if: env.HAS_R2 == 'true'
+        run: |
+          set -euo pipefail
+          feed=$([ "$CHANNEL" = stable ] && echo latest || echo nightly)
+          for path in full/mac/arm64/$feed-mac.yml full/mac/x64/$feed-mac.yml full/linux/x64/$feed-linux.yml \
+                      client/mac/arm64/$feed-mac.yml client/mac/x64/$feed-mac.yml client/linux/x64/$feed-linux.yml; do
+            url="https://updates.hexbot.app/$path"
+            if curl -fsS --retry 5 --retry-delay 5 "$url" | grep -x "version: $VERSION" > /dev/null; then
+              echo "ok  $url"
+            else
+              echo "::error::$url does not announce $VERSION. Check the R2 custom domain and the bucket name ($R2_BUCKET)."
+              exit 1
+            fi
+          done
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
+          LATEST: ${{ needs.preflight.outputs.latest }}
+          PREVIOUS_TAG: ${{ needs.preflight.outputs.previous_tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          if [ "$CHANNEL" = stable ]; then
+            title="Hexbot $VERSION"
+            notes=docs/releases/$VERSION.md
+            if [ -f "$notes" ]; then
+              notes_args=(--notes-file "$notes")
+            elif [ -n "$PREVIOUS_TAG" ]; then
+              notes_args=(--generate-notes --notes-start-tag "$PREVIOUS_TAG")
+            else
+              notes_args=(--generate-notes)
+            fi
+          else
+            title="Hexbot Nightly $VERSION (${GITHUB_SHA::7})"
+            {
+              printf 'Commit: %s\n\n' "$GITHUB_SHA"
+              printf 'Automated build of main. May break; back up ~/.hexbot before opening it (docs/channels.md).\n'
+              if [ -n "$PREVIOUS_TAG" ]; then
+                printf '\nChanges: https://github.com/%s/compare/%s...%s\n' "$GITHUB_REPOSITORY" "$PREVIOUS_TAG" "$TAG"
+              fi
+            } > notes.md
+            notes_args=(--notes-file notes.md)
+          fi
+          # The feed files stay on updates.hexbot.app; both editions write a
+          # latest-linux.yml and GitHub asset names must be unique.
+          assets=(release/full/*.{dmg,zip,AppImage,deb,blockmap} release/client/*.{dmg,zip,AppImage,deb,blockmap})
+          if [ "${#assets[@]}" -eq 0 ]; then echo '::error::No packages to upload'; exit 1; fi
+          echo "Uploading ${#assets[@]} assets"
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "$title" "${notes_args[@]}" \
+            --prerelease="$PRERELEASE" --latest="$LATEST" "${assets[@]}"
+      - name: Keep the last 14 nightlies
+        if: env.CHANNEL == 'nightly'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release list --limit 200 --json tagName,createdAt \
+            -q '[.[] | select(.tagName | test("-nightly\\."))] | sort_by(.createdAt) | reverse | .[14:] | .[].tagName' |
+          while read -r tag; do
+            echo "Deleting nightly $tag"
+            gh release delete "$tag" --yes --cleanup-tag
+          done
+      - name: Summary
+        run: |
+          {
+            echo "## Hexbot $CHANNEL $VERSION"
+            echo
+            echo "- Release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
+            if [ "$HAS_R2" = true ]; then echo "- Update feed: uploaded to updates.hexbot.app"; else echo "- Update feed: **not uploaded** (R2 secrets missing); installed apps will not see this release"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  finalize:
+    name: Finalize
+    needs: [preflight, publish]
+    if: needs.preflight.outputs.channel == 'stable'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      HAS_SITE_HOOK: ${{ secrets.SITE_DEPLOY_HOOK_URL != '' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: '*-mac-*'
+          path: artifacts
+      - name: Point the website and the casks at the release
+        run: |
+          set -euo pipefail
+          mkdir -p release/full release/client
+          cp artifacts/full-*/*.dmg release/full/
+          cp artifacts/client-*/*.dmg release/client/
+          node scripts/desktop/finalize-release.mjs "$VERSION" release/full release/client
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add apps/site/public/downloads/manifest.json packaging/homebrew
+          if git diff --cached --quiet; then
+            echo 'Nothing to finalize'
+            exit 0
+          fi
+          git commit -m "release: point downloads and casks at $VERSION"
+          git push origin HEAD:main
+      # Vercel deploy hook for the hexbot-site project (docs/deploy.md). Not
+      # needed when the project deploys from Git on every push to main.
+      - name: Redeploy hexbot.app
+        if: env.HAS_SITE_HOOK == 'true'
+        run: curl -fsS -X POST "${{ secrets.SITE_DEPLOY_HOOK_URL }}" > /dev/null && echo 'Site deploy requested'

@@ -101,10 +101,6 @@ function waitForActive(timeoutMs: number): Promise<HexbotRpcClient> {
   })
 }
 
-export function getActiveRpc(): HexbotRpcClient | null {
-  return active
-}
-
 /** Call a method on the active connection. Rejects when there is none. */
 export async function rpcCall<T>(
   method: string,

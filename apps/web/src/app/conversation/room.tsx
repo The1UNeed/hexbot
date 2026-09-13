@@ -5,8 +5,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Avatar } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
 import { Menu } from '../../components/ui/menu'
+import { SkeletonLines } from '../../components/ui/skeleton'
+import { Thinking } from '../../components/ui/thinking'
 import { roomsSend, roomsStop } from '../../lib/api'
 import { avatarSrc } from '../../lib/avatar-builder'
+import { cn } from '../../lib/cn'
 import { toMillis } from '../../lib/time'
 import type { Bot, RoomEvent, RoomMember, RoomTurn } from '../../lib/types'
 import { useBots } from '../../stores/bots'
@@ -14,8 +17,9 @@ import { useRooms } from '../../stores/rooms'
 import { useTranscripts } from '../../stores/transcripts'
 
 import { composerFieldClass, ComposerShell } from './composer'
+import { WorkStatus } from './work-status'
 
-import { bubbleClass, DaySeparator, Markdown } from './index'
+import { bubbleClass, DaySeparator, Markdown, transcriptClass, userBubbleClass } from './index'
 
 // Stable empty values: a fresh [] or {} per render re-renders forever.
 const NO_EVENTS: RoomEvent[] = []
@@ -26,7 +30,11 @@ const avatarData = (bot?: Bot) => avatarSrc(bot?.avatar)
 function RoomEventRow({ event }: { event: RoomEvent }) {
   const bot = useBots(state => (event.actor_id ? state.byName[event.actor_id] : undefined))
   const text = typeof event.payload.text === 'string' ? event.payload.text : ''
-  const member = typeof event.payload.bot === 'string' ? event.payload.bot : event.actor_id
+  const memberId = typeof event.payload.bot === 'string' ? event.payload.bot : event.actor_id
+
+  const member =
+    useBots(state => (memberId ? state.byName[memberId]?.display_name : undefined)) ?? memberId
+
   const system = ['member.added', 'member.left', 'note'].includes(event.kind)
 
   if (event.kind === 'turn.started' || event.kind === 'turn.failed') {
@@ -77,7 +85,7 @@ function RoomEventRow({ event }: { event: RoomEvent }) {
           size="sm"
         />
       )}
-      <div className={bubbleClass}>
+      <div className={cn(human ? userBubbleClass : bubbleClass, 'max-w-[80%]')}>
         {!human ? (
           <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
             {bot?.display_name ?? event.actor_id}
@@ -178,13 +186,19 @@ export function RoomConversation() {
     }
   }
 
+  const addable = Object.values(bots).filter(bot => !members.some(m => m.member_id === bot.name))
+
   if (!room) {
-    return <div className="grid h-screen place-content-center text-muted">Loading room…</div>
+    return (
+      <div className="grid h-screen place-content-center">
+        <SkeletonLines className="w-64" label="Loading room" />
+      </div>
+    )
   }
 
   return (
     <div className="flex h-screen min-h-0 flex-col bg-background">
-      <header className="hex-drag flex h-11 shrink-0 items-center gap-3 px-4">
+      <header className="hex-drag flex h-11 shrink-0 items-center gap-3 px-4 max-[700px]:pl-12">
         <div className="hex-no-drag flex min-w-0 flex-1 items-center gap-3">
           <h2 className="truncate text-[length:var(--text-secondary)] font-semibold">
             {room.name}
@@ -220,12 +234,22 @@ export function RoomConversation() {
           </div>
         </div>
         <Menu
-          items={Object.values(bots)
-            .filter(bot => !members.some(m => m.member_id === bot.name))
-            .map(bot => ({
-              label: bot.display_name,
-              onSelect: () => void useRooms.getState().addMember(roomId, bot.name)
-            }))}
+          items={
+            addable.length > 0
+              ? addable.map(bot => ({
+                  label: bot.display_name,
+                  onSelect: () => void useRooms.getState().addMember(roomId, bot.name)
+                }))
+              : [
+                  {
+                    disabled: true,
+                    label:
+                      Object.keys(bots).length === 0
+                        ? 'No bots yet'
+                        : 'Every bot is already a member'
+                  }
+                ]
+          }
           trigger={
             <Button
               aria-label="Add member"
@@ -240,7 +264,7 @@ export function RoomConversation() {
         />
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-3xl px-4 py-2">
+        <div className={transcriptClass}>
           {events.map((event, index) => {
             const previous = events[index - 1]
 
@@ -258,26 +282,39 @@ export function RoomConversation() {
             const transcript = turn.live_session_id ? transcripts[turn.live_session_id] : undefined
             const message = transcript?.messages.at(-1)
             const bot = bots[turn.bot]
+            const name = bot?.display_name ?? turn.bot
 
-            return message?.text ? (
-              <article className="flex gap-2 py-1" data-testid="room-event" key={turn.bot}>
-                <Avatar
-                  className="mt-1"
-                  image={avatarData(bot)}
-                  name={bot?.display_name ?? turn.bot}
-                  size="sm"
-                />
-                <div className={bubbleClass}>
-                  <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
-                    {bot?.display_name ?? turn.bot}
-                  </div>
-                  <p className="whitespace-pre-wrap">
-                    {message.text}
-                    <span className="ml-0.5 inline-block h-4 w-[2px] animate-pulse rounded bg-foreground/70 align-middle" />
-                  </p>
-                </div>
-              </article>
-            ) : null
+            return (
+              <div data-testid="room-event" key={turn.bot}>
+                {message?.text ? (
+                  <article className="flex gap-2 py-1">
+                    <Avatar
+                      className="hex-think mt-1"
+                      image={avatarData(bot)}
+                      mood="working"
+                      name={name}
+                      size="sm"
+                    />
+                    <div className={cn(bubbleClass, 'max-w-[80%]')}>
+                      <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
+                        {name}
+                      </div>
+                      <p className="whitespace-pre-wrap">{message.text}</p>
+                    </div>
+                  </article>
+                ) : null}
+                {message ? (
+                  <WorkStatus
+                    face={!message.text}
+                    image={avatarData(bot)}
+                    message={message}
+                    name={name}
+                  />
+                ) : (
+                  <Thinking image={avatarData(bot)} name={name} />
+                )}
+              </div>
+            )
           })}
           <div ref={bottom} />
         </div>

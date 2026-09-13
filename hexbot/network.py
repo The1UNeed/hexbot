@@ -46,4 +46,4 @@ def set_network(lan_enabled: bool) -> dict:
     update_settings({"lan_enabled": bool(lan_enabled)})
     from hexbot.serve import request_restart
     request_restart()
-    return {**get_network(), "restart_required": True}
+    return {**get_network(), "restarting": True}

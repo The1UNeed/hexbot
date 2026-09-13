@@ -1,6 +1,6 @@
 import { Menu as BaseMenu } from '@base-ui/react/menu'
 import { Check, ChevronRight } from 'lucide-react'
-import type { ReactNode } from 'react'
+import type { ReactElement, ReactNode } from 'react'
 
 import { cn } from '../../lib/cn'
 
@@ -14,16 +14,17 @@ export interface MenuItem {
 
 export interface MenuProps {
   items: MenuItem[]
-  trigger: ReactNode
+  /** The button that opens the menu. Base UI merges its trigger props onto it. */
+  trigger: ReactElement
 }
 
 export function Menu({ items, trigger }: MenuProps) {
   return (
     <BaseMenu.Root>
-      <BaseMenu.Trigger render={<span className="inline-flex" />}>{trigger}</BaseMenu.Trigger>
+      <BaseMenu.Trigger render={trigger} />
       <BaseMenu.Portal>
         <BaseMenu.Positioner className="z-50 outline-none" sideOffset={6}>
-          <BaseMenu.Popup className="hex-bubble min-w-44 rounded-panel border border-border bg-surface p-1 text-foreground shadow-popup outline-none">
+          <BaseMenu.Popup className="hex-bubble max-h-[min(70vh,32rem)] min-w-44 overflow-y-auto rounded-panel border border-border bg-surface p-1 text-foreground shadow-popup outline-none">
             {items.map((item, index) =>
               item.separator ? (
                 <BaseMenu.Separator className="my-1 h-px bg-border" key={index} />

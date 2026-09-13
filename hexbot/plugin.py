@@ -33,25 +33,70 @@ def _register_core_memory(ctx) -> None:
 
 
 def _register_activity_hook(ctx) -> None:
-    """Stamp section + bot activity when a turn's stream finishes.
+    """Stamp section + bot activity when a turn's stream finishes, and keep
+    the bot's incidents in step with it.
 
     ``on_stream_end`` carries ``session_id`` from ``AIAgent.session_id``, which
     is the *stored* session key (== the Hexbot section id), not the gateway's
     live session id. Resolution goes through
     ``hexbot.sections.section_for_session``, which accepts either flavour.
+    A finished stream closes the section's ``turn_failed`` incident; a stream
+    that ended with an error (other than the user stopping it) opens one,
+    which the client shows as the Stopped card.
     """
-    def touch_completed_section(*, session_id="", finished=False, **_kwargs):
-        if not finished or not session_id:
+    def touch_completed_section(*, session_id="", finished=False, error=None, **_kwargs):
+        if not session_id:
             return
         try:
+            from hexbot import incidents
             from hexbot.sections import section_for_session, touch_section
             row = section_for_session(str(session_id))
-            if row is not None:
+            if row is None:
+                return
+            if finished:
+                # Each streamed LLM call ends here, so only the turn's own
+                # failure is closed; a connector incident raised by a tool call
+                # a moment earlier must outlive the model's follow-up stream.
                 touch_section(row["id"])
+                incidents.resolve(section_id=row["id"], kind="turn_failed")
+            elif error and not incidents.is_interrupt(str(error)):
+                incidents.record(row["bot"], "turn_failed", str(error), section_id=row["id"],
+                                 session_id=str(session_id))
         except Exception:
             logger.debug("could not stamp section activity", exc_info=True)
 
     ctx.register_hook("on_stream_end", touch_completed_section)
+
+
+def connector_incident(*, tool_name="", result=None, status=None, error_message=None,
+                       session_id="", **_kwargs) -> None:
+    """``post_tool_call``: a connector refusing a tool call opens an incident."""
+    try:
+        from hexbot import incidents
+        verdict = incidents.classify_tool_result(
+            tool_name, result, status=status, error_message=error_message)
+        if verdict is None or not session_id:
+            return
+        connector, text = verdict
+        from hexbot.sections import section_for_session
+        section = section_for_session(str(session_id))
+        bot = section["bot"] if section else None
+        room_id = None
+        if bot is None:
+            from hexbot import db
+            with db.transaction() as conn:
+                row = conn.execute(
+                    "SELECT room_id,bot FROM room_sessions WHERE stored_session_id=? "
+                    "OR live_session_id=? LIMIT 1", (session_id, session_id)).fetchone()
+            if row:
+                room_id, bot = row["room_id"], row["bot"]
+        if not bot:
+            return
+        incidents.record(bot, "connector_error", text, connector=connector,
+                         section_id=section["id"] if section else None, room_id=room_id,
+                         session_id=str(session_id))
+    except Exception:
+        logger.debug("could not record connector incident", exc_info=True)
 
 
 def _register_dream_hooks(ctx) -> None:
@@ -59,6 +104,7 @@ def _register_dream_hooks(ctx) -> None:
     from hexbot.memory import tag_memory_write
 
     ctx.register_hook("post_tool_call", tag_memory_write)
+    ctx.register_hook("post_tool_call", connector_incident)
 
     def finish_dream(*, assistant_response="", **kwargs):
         finish_turn(assistant_response or "", **kwargs)

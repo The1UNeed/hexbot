@@ -69,7 +69,8 @@ Only the transcript store is hot; everything else is small.
 | `message.delta` | append text |
 | `message.interim` | append commentary text if `already_streamed` is false |
 | `message.complete` | finalize, attach usage, call `hexbot.sections.touch` |
-| `thinking.delta` | append to the collapsed thinking block |
+| `reasoning.delta` | append to the message's reasoning trace, shown in the work panel |
+| `thinking.delta` | replace the daemon's status line (a wait notice); spinner copy is dropped |
 | `tool.start` / `tool.complete` | add or resolve a tool call in the current assistant message |
 | `approval.request` | push an approval card (session scoped) and notify |
 | `status.update` | header status line |

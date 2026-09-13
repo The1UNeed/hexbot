@@ -49,13 +49,3 @@ export const BOT_TEMPLATES: BotTemplate[] = [
     title: 'Chief of staff'
   }
 ]
-
-export function botTemplateFields(
-  id: string
-): Pick<BotTemplate, 'description' | 'persona' | 'title'> | null {
-  const template = BOT_TEMPLATES.find(item => item.id === id)
-
-  return template
-    ? { description: template.description, persona: template.persona, title: template.title }
-    : null
-}

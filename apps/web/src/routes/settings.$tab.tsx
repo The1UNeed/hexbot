@@ -38,7 +38,7 @@ function SettingsDialog() {
 
   return (
     <Dialog
-      className="h-[min(42rem,86vh)]"
+      className="h-[min(56rem,92vh)] max-h-[92vh] w-[min(76rem,94vw)]"
       onOpenChange={open => {
         if (!open) {
           void navigate({ to: '/' })
@@ -56,11 +56,15 @@ function SettingsDialog() {
         />
       }
     >
-      <div className="grid h-full grid-cols-[180px_1fr]">
-        <nav aria-label="Settings tabs" className="border-r border-border p-3">
+      <div className="grid h-full grid-rows-[auto_1fr] sm:grid-cols-[208px_1fr] sm:grid-rows-1">
+        <nav
+          aria-label="Settings tabs"
+          className="flex gap-1 overflow-x-auto border-b border-border p-2 sm:block sm:border-r sm:border-b-0 sm:p-3"
+        >
           {visibleTabs.map(item => (
             <Button
-              className="mb-1 w-full justify-start"
+              aria-current={tab === item ? 'page' : undefined}
+              className="shrink-0 justify-start sm:mb-1 sm:w-full"
               key={item}
               onClick={() => void navigate({ to: '/settings/$tab', params: { tab: item } })}
               variant={tab === item ? 'secondary' : 'ghost'}
@@ -70,7 +74,7 @@ function SettingsDialog() {
             </Button>
           ))}
         </nav>
-        <section aria-label={`${tab} settings`} className="min-h-0 overflow-y-auto p-5">
+        <section aria-label={`${tab} settings`} className="min-h-0 overflow-y-auto">
           <SettingsPanel tab={tab} />
         </section>
       </div>

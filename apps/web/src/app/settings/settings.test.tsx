@@ -1,7 +1,16 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, vi } from 'vitest'
 
-import { connectRegisterPoll, connectRegisterStart, connectStatus, modelsList } from '../../lib/api'
+import {
+  connectRegisterPoll,
+  connectRegisterStart,
+  connectStatus,
+  modelsList,
+  pairingCode
+} from '../../lib/api'
+import type { UpdateStatus } from '../../lib/bridge'
+import { pairWithDaemon } from '../../lib/connection'
+import { useConnection } from '../../stores/connection'
 import { useSettings } from '../../stores/settings'
 import { useUsers } from '../../stores/users'
 
@@ -11,11 +20,13 @@ import {
   ConnectSettings,
   NetworkSettings,
   ProvidersSettings,
+  UpdatesSettings,
   UsersSettings
 } from './index'
 
 vi.mock('../../lib/api', async importOriginal => ({
   ...(await importOriginal()),
+  daemonInfo: vi.fn().mockResolvedValue({ version: '0.1.5-alpha.1' }),
   modelsList: vi.fn(),
   connectStatus: vi.fn(),
   connectRegisterStart: vi.fn(),
@@ -24,6 +35,13 @@ vi.mock('../../lib/api', async importOriginal => ({
     .fn()
     .mockResolvedValue({ code: '123456', expires_at: Date.now() + 600_000, link: 'hexbot://pair' })
 }))
+
+vi.mock('../../lib/connection', async importOriginal => ({
+  ...(await importOriginal()),
+  pairWithDaemon: vi.fn().mockResolvedValue({ deviceToken: '', deviceId: '', daemonName: 'local' })
+}))
+
+vi.mock('qrcode', () => ({ default: { toCanvas: vi.fn().mockResolvedValue(undefined) } }))
 
 vi.mock('../../stores/ui', () => ({
   useUi: (selector: (state: object) => unknown) =>
@@ -57,6 +75,7 @@ describe('settings', () => {
       providers: [],
       settings: null
     })
+    useConnection.setState({ status: 'connected', target: null })
     document.documentElement.removeAttribute('data-theme')
     vi.clearAllMocks()
   })
@@ -81,7 +100,7 @@ describe('settings', () => {
     expect(await screen.findByText('1 models available.')).toBeVisible()
   })
 
-  it('shows LAN off and reveals network details when enabled', () => {
+  it('shows LAN off and explains the automatic restart when enabled', async () => {
     const setLanEnabled = vi.fn().mockResolvedValue(undefined)
     useSettings.setState({
       network: { addresses: [], bind_host: '127.0.0.1', lan_enabled: false, port: 8000 },
@@ -93,12 +112,105 @@ describe('settings', () => {
     expect(screen.queryByText('Addresses')).not.toBeInTheDocument()
     fireEvent.click(screen.getByLabelText('Allow other devices on this network'))
     expect(setLanEnabled).toHaveBeenCalledWith(true)
+    expect(
+      await screen.findByText('Hexbot is restarting and will reconnect automatically.')
+    ).toBeVisible()
     useSettings.setState({
       network: { addresses: ['192.168.1.2'], bind_host: '0.0.0.0', lan_enabled: true, port: 8000 }
     })
     rerender(<NetworkSettings />)
     expect(screen.getByText('Addresses')).toBeVisible()
     expect(screen.getByText('192.168.1.2:8000')).toBeVisible()
+  })
+
+  it('pairs the local browser before enabling LAN and refreshes after reconnect', async () => {
+    const setLanEnabled = vi.fn().mockResolvedValue(undefined)
+    const refreshNetwork = vi.fn().mockResolvedValue(undefined)
+    useConnection.setState({ status: 'connected', target: { kind: 'local' } })
+    useSettings.setState({
+      network: { addresses: [], bind_host: '127.0.0.1', lan_enabled: false, port: 9119 },
+      refreshDevices: vi.fn().mockResolvedValue(undefined),
+      refreshNetwork,
+      setLanEnabled
+    })
+    render(<NetworkSettings />)
+    fireEvent.click(screen.getByLabelText('Allow other devices on this network'))
+    await waitFor(() => expect(setLanEnabled).toHaveBeenCalledWith(true))
+    expect(pairWithDaemon).toHaveBeenCalled()
+    expect(vi.mocked(pairWithDaemon).mock.invocationCallOrder[0]).toBeLessThan(
+      setLanEnabled.mock.invocationCallOrder[0]!
+    )
+    vi.mocked(pairingCode).mockClear()
+    act(() => {
+      useConnection.setState({ status: 'reconnecting' })
+      useSettings.setState({
+        network: { addresses: [], bind_host: '0.0.0.0', lan_enabled: true, port: 9119 }
+      })
+    })
+    expect(pairingCode).not.toHaveBeenCalled()
+    act(() => {
+      useConnection.setState({ status: 'connected' })
+    })
+    await waitFor(() =>
+      expect(screen.getByLabelText('Allow other devices on this network')).toBeEnabled()
+    )
+    expect(pairingCode).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Create link' }))
+    await waitFor(() => expect(pairingCode).toHaveBeenCalledTimes(1))
+    expect(refreshNetwork).toHaveBeenCalledTimes(2)
+  })
+
+  it('creates a copyable link on demand and retries after a failure', async () => {
+    useSettings.setState({
+      network: { addresses: ['192.168.1.2'], bind_host: '0.0.0.0', lan_enabled: true, port: 9119 },
+      refreshDevices: vi.fn().mockResolvedValue(undefined),
+      refreshNetwork: vi.fn().mockResolvedValue(undefined)
+    })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    vi.mocked(pairingCode).mockRejectedValueOnce(new Error('Connection lost'))
+    render(<NetworkSettings />)
+    expect(pairingCode).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Create link' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Connection lost')
+    fireEvent.click(screen.getByRole('button', { name: 'Create link' }))
+    expect(await screen.findByLabelText('Pairing link')).toHaveValue('hexbot://pair')
+    fireEvent.click(screen.getByRole('button', { name: 'Copy link' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('hexbot://pair'))
+    expect(await screen.findByRole('button', { name: 'Copied' })).toBeVisible()
+  })
+
+  it('shows clients with LAN off and revokes only other devices', async () => {
+    const revokeDevice = vi.fn().mockResolvedValue(undefined)
+    useSettings.setState({
+      network: { addresses: [], bind_host: '127.0.0.1', lan_enabled: false, port: 9119 },
+      refreshDevices: vi.fn().mockResolvedValue(undefined),
+      refreshNetwork: vi.fn().mockResolvedValue(undefined),
+      revokeDevice,
+      devices: [
+        {
+          id: 'self',
+          name: 'Hexbot Desktop',
+          platform: 'Desktop',
+          current: true,
+          created_at: 1,
+          last_seen_at: 1
+        },
+        {
+          id: 'other',
+          name: 'Laptop',
+          platform: 'Browser',
+          current: false,
+          created_at: 1,
+          last_seen_at: 1
+        }
+      ]
+    })
+    render(<NetworkSettings />)
+    expect(screen.getByText('This device')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Create link' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke others' }))
+    await waitFor(() => expect(revokeDevice).toHaveBeenCalledExactlyOnceWith('other'))
   })
 
   it('maps Auto approvals to smart', () => {
@@ -163,6 +275,42 @@ describe('settings', () => {
       timeout: 2500
     })
     expect(await screen.findByText('home.connect.hexbot.app')).toBeVisible()
+  })
+
+  it('reports an available update and offers to download it', async () => {
+    const install = vi.fn().mockResolvedValue(undefined)
+    let onStatus: ((status: UpdateStatus) => void) | undefined
+    Object.defineProperty(window, 'hexbot', {
+      configurable: true,
+      value: {
+        updater: {
+          channel: vi.fn().mockResolvedValue('stable'),
+          check: vi.fn().mockResolvedValue({ state: 'available', version: '9.9.9' }),
+          install,
+          onStatus: (callback: (status: UpdateStatus) => void) => {
+            onStatus = callback
+
+            return () => undefined
+          },
+          setChannel: vi.fn().mockResolvedValue(undefined)
+        },
+        version: '0.1.5-alpha.1'
+      }
+    })
+
+    try {
+      render(<UpdatesSettings />)
+      expect(await screen.findByText('Up to date')).toBeVisible()
+      fireEvent.click(screen.getByRole('button', { name: 'Check now' }))
+      expect(await screen.findByText('Version 9.9.9 is available.')).toBeVisible()
+      fireEvent.click(screen.getByRole('button', { name: 'Download update' }))
+      expect(install).toHaveBeenCalledTimes(1)
+      act(() => onStatus?.({ state: 'downloaded', version: '9.9.9' }))
+      expect(screen.getByText('Update downloaded. Restart to install it.')).toBeVisible()
+      expect(screen.getByRole('button', { name: 'Restart and install' })).toBeVisible()
+    } finally {
+      delete (window as { hexbot?: unknown }).hexbot
+    }
   })
 
   it('gates user management to administrators', () => {

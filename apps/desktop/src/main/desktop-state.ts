@@ -2,7 +2,9 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { hexbotHome } from './backend/paths'
 
-export type UpdateChannel = 'stable' | 'beta'
+// The update track the app follows (docs/channels.md). Stable installs default
+// to stable, nightly installs to nightly; the user can switch in Settings.
+export type UpdateChannel = 'stable' | 'nightly'
 export interface DesktopState {
   crashReports?: boolean
   height?: number
@@ -13,6 +15,10 @@ export interface DesktopState {
 }
 
 export const desktopStateFile = (): string => join(hexbotHome(), 'desktop-state.json')
+
+export const isNightlyVersion = (version: string): boolean => /-nightly\.\d{8}\.\d+$/.test(version)
+export const defaultUpdateChannel = (version: string): UpdateChannel =>
+  isNightlyVersion(version) ? 'nightly' : 'stable'
 
 export async function readDesktopState(file = desktopStateFile()): Promise<DesktopState> {
   try {
@@ -31,7 +37,10 @@ export async function updateDesktopState(
   await writeFile(file, `${JSON.stringify({ ...(await readDesktopState(file)), ...patch })}\n`)
 }
 
-export async function readUpdateChannel(file = desktopStateFile()): Promise<UpdateChannel> {
+export async function readUpdateChannel(
+  fallback: UpdateChannel = 'stable',
+  file = desktopStateFile()
+): Promise<UpdateChannel> {
   const channel = (await readDesktopState(file)).updateChannel
-  return channel === 'beta' ? 'beta' : 'stable'
+  return channel === 'stable' || channel === 'nightly' ? channel : fallback
 }

@@ -1,3 +1,0 @@
-{
-  "/api/daemons/[id]/heartbeat/route": "app/api/daemons/[id]/heartbeat/route.js"
-}

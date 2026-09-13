@@ -30,8 +30,13 @@ def run(host=None, port=None, lan=None):
     global _serve_args, _bind_host, _bind_port
     from hexbot import db
     from hexbot.home import ensure_layout
+    from hexbot.pairing import local_device
     from hexbot.settings import apply_settings_everywhere, get_settings
     ensure_layout(); db.migrate(); apply_settings_everywhere()
+    # The desktop app connects to a LAN-enabled daemon with this token
+    # (`local-device.token`); mint it before the listener opens so the app
+    # never sees the gated daemon without a credential.
+    local_device()
     enabled = get_settings()["lan_enabled"] if lan is None else lan
     host = host or ("0.0.0.0" if enabled else "127.0.0.1")
     port = port or int(os.environ.get("HEXBOT_PORT", "9119"))
@@ -70,7 +75,10 @@ def request_restart():
     def restart():
         import time
         time.sleep(0.5)
-        os.execv(sys.executable, [sys.executable, "-m", "hexbot.cli", "serve", *_serve_args])
+        # Resolve the bind address from the newly saved LAN setting. Reusing
+        # --host here pins the old listener even after the switch changes.
+        os.execv(sys.executable, [sys.executable, "-m", "hexbot.cli", "serve",
+                                 "--port", str(_bind_port)])
     threading.Thread(target=restart, daemon=True).start()
 
 

@@ -49,18 +49,24 @@ Three columns, resizable, min widths 240 / 480 / 300.
 
 - Header: a window-drag strip (padded for the macOS traffic lights), a "+"
   menu (New bot, New section, New room) and a search pill. No app name.
-- List: bots and rooms in one list, ordered by last activity. Each row:
-  face (40px), name, last message preview, relative time, unread dot, and a
-  green dot on the face while the bot is working. The selected bot's row is
-  filled.
-- Under each row: the one or two most recent sections as indented rows
-  (title, time). A "more" affordance expands to the full list. Sections with
-  no activity in 14 days are hidden behind "more".
+- List: bots and rooms in one list, ordered by last activity. A bot row is
+  its face (40px), name, optional label, relative time, and a green dot on
+  the face while the bot is working. No message preview: a bot has many
+  sections, so one message says little. A room row shows its latest message.
+- Under each bot: its two most recent touched sections from the last 14
+  days, newest first, plus the open one. A section is touched once the user
+  has sent something in it, or typed a draft in its composer; drafts are
+  kept per section in the browser and the row shows a pencil until the text
+  is sent. Untouched sections and older ones stay behind "More", which lists
+  everything with untouched sections last.
+  A bot with nothing to list is just its row; there is no fold toggle.
 - Bottom: Activity, an "Archived" collapsed group (only when there is
   something archived), then the current user with a connection dot on their
   avatar and a settings gear.
-- Selection: one section is active. Selecting a bot row opens its most
-  recent section.
+- Selection: one section is active, or the bot row is filled when its open
+  section is not listed. Clicking a bot row starts fresh: it opens the bot's
+  newest untouched section, or creates one. The header "+" menu also creates
+  a section for the open bot.
 
 ### Centre: conversation
 
@@ -68,16 +74,28 @@ Three columns, resizable, min widths 240 / 480 / 300.
   title beside it in muted text (click to rename), the model as a muted
   pill with a menu, section actions (rename, archive, delete), and a toggle
   for the right panel.
-- Transcript: bot messages left-aligned and human messages right-aligned,
-  both in grey bubbles (no avatars in a direct message; rooms show a small
-  face and name). Copy and retry icons appear beside a bubble on hover.
+- Transcript: full width with a slim gutter (capped at 64rem on very wide
+  windows). Bot messages left-aligned in grey bubbles, human messages
+  right-aligned in inverse bubbles (black on light, white on dark). No
+  avatars in a direct message; rooms show a small face and name. Copy and retry icons appear beside a bubble on hover.
   Markdown body with code blocks (copy button), tables, images. Time
   separators ("Today 9:13 PM") between days and after 20 quiet minutes.
-  While a reply is pending the bot's face bobs beside "<name> is working".
+  While a reply is pending the bot's face bobs, alone, where the next
+  bubble will land (under the last one once text has arrived). No spinner,
+  no ring; a muted step label ("Searching the web for apple") sits beside
+  it only while a tool runs.
   "Waiting on you" banner when a bot has asked the human something.
-- Tool activity: an inline collapsed row per tool call with icon, tool name,
-  a one-line summary, and a spinner while running. Expand shows arguments
-  and output in monospace. Consecutive tool calls group into one block.
+- Work panel: once a turn has thought or run tools for two seconds, a
+  panel opens beside the face with the reasoning trace as it streams and
+  each step as it happens (the running step shows its arguments live). It
+  closes on its own when the reply text starts and reopens while a tool
+  runs; a chevron toggles it by hand. When the turn ends the work collapses
+  into one small muted line under the reply ("Thought for 12s · 3 steps",
+  "Searched the web for apple · 3s") that opens into the same panel; each
+  step expands to arguments and output in monospace. Work that finished in
+  under two seconds leaves no line.
+  Housekeeping tools (memory, tasks, section search, skills) never appear
+  once finished. The Computer tab in the panel still lists every call.
 - Approvals: an inline card with the command or action in monospace, the
   reason, and three buttons: Approve, Deny, Always allow. The card stays in
   the transcript after the decision, marked with the outcome.
@@ -103,16 +121,52 @@ Three columns, resizable, min widths 240 / 480 / 300.
 
 ### Right: profile panel
 
-- A "Settings" page: a large face (click it for a Bot / Upload picker with
-  the shape and colour grids), then labelled Name, Label and Description
-  fields saved on blur, a Shareable switch card, and a list of sub-pages
-  each opened with a back chevron in the header: Persona (editable persona
-  text, saved on blur), Model (provider and model picker, live list with a
-  curated group pinned on top), Memory (core memory sections editor, this
-  bot's notes, and dreaming), Tools (switches), Skills, Sections (all
-  sections with archive and delete), Computer. A red "Delete bot" action at
-  the bottom of the root page.
+- A glance at the bot, titled with its name: a large face (click it for
+  the Bot / Upload picker with the shape and colour grids), the name with
+  the label chip and model under it, then Name, Label and Description
+  fields saved on blur, a "Notify me" switch card (native notifications
+  when this bot stops or needs you), and one "Bot settings" button that
+  opens the window below on the tab last used for this bot.
+- Status is not in the panel. It lives in the chat: the status line above
+  a reply while the bot works, the approval card when it needs a decision,
+  and a Stopped card at the point of failure.
 - The panel remembers open or closed per window.
+
+### Bot settings window
+
+- Route `/b/$bot/settings/$tab`, rendered as the same dialog as global
+  Settings (left tabs, 208 px) over the three columns. Closing returns to
+  the section that was open. `?connector=<id>` opens that connector's
+  set-up sheet, which is how a "Fix Notion" action in the chat lands here.
+- Tabs: Profile (face, name, label, description, Shareable), Persona
+  (full-height editor, template menu with a confirm, word count), Model
+  (provider and model, curated group pinned on top, context and price
+  when known), Memory (this bot's notes and dreaming; core memory is
+  shared and links to Settings, Memory), Tools (switches grouped as
+  Computer, Senses, Working with others, plus the working directory),
+  Connectors (below), Skills (installed skills with switches, grouped by
+  category), Approvals (Inherit, Manual, Auto, Off), Sections (open and
+  archived, with archive and delete), Advanced (Delete bot with the
+  type-the-name confirmation).
+- Connectors: a search pill, filter chips (All, On for this bot, Needs
+  setup), and rows grouped as Search and browsing, Images and voice,
+  Notes and work, Social and home, MCP servers. Each row: a 28 px icon
+  (Simple Icons brand glyph in white on the brand colour, or a neutral
+  glyph for rows that front several providers), name, state in words,
+  one-line description, and one control: "Set up" when the daemon has no
+  credentials, a switch when it does, "Fix" in the primary style when the
+  last use failed. Clicking the row expands it to the saved fields, the
+  last error, Edit, Remove values, and for MCP servers Remove server. An
+  "Add MCP server" row takes a name and a command or URL.
+- The set-up sheet is a dialog over the window: the connector's fields
+  (secrets masked, "Show advanced" for the rest), a provider select when
+  the connector has several backends, a help line with a "Where to get
+  it" link, a "Turn on for <bot>" switch defaulted on, an advanced "Use a
+  different value for this bot only" switch, Cancel and "Connect and
+  test". The daemon saves, tests, and the sheet closes only on success;
+  a failed test keeps it open with the message under the field.
+- Fields save on blur and switches on change. Errors show inline. No
+  Save button.
 
 ## Screens outside the three columns
 

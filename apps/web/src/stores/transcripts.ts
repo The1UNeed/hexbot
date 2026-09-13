@@ -24,12 +24,23 @@ import type {
   Usage
 } from '../lib/types'
 
+/** Why an error row exists, when the daemon knows more than the text. */
+export interface ErrorDetail {
+  /** Connector catalog id, when the failure came from one (drives "Fix <name>"). */
+  connector: null | string
+  connectorName?: string
+  incidentId?: string
+}
+
+/** A transcript message; error rows may carry a detail the daemon reported. */
+export type TranscriptMessage = Message & { errorDetail?: ErrorDetail }
+
 export interface Transcript {
   approvals: ApprovalRequest[]
   /** Inline error rows are also pushed as messages; this is the header copy. */
   error: null | string
   info: null | SessionInfo
-  messages: Message[]
+  messages: TranscriptMessage[]
   /** The section this live session belongs to, when known. */
   sectionId?: string
   sessionId: string
@@ -81,17 +92,28 @@ export interface ApprovalRequestPayload {
 }
 
 export interface TranscriptsState {
-  approvalRequest: (sessionId: string, payload: ApprovalRequestPayload) => void
+  approvalRequest: (
+    sessionId: string,
+    payload: ApprovalRequestPayload,
+    options?: { notify?: boolean }
+  ) => void
   appendUserMessage: (sessionId: string, text: string, attachments?: Attachment[]) => Message
   bySession: Record<string, Transcript>
   drop: (sessionId: string) => void
   dropAll: () => void
-  errorEvent: (sessionId: string, message: string) => void
+  errorEvent: (sessionId: string, message: string, detail?: ErrorDetail) => void
+  /**
+   * A Stopped card from a daemon incident. Unlike `errorEvent` it leaves the
+   * streaming message alone: the incident fires mid-turn (a tool refused) and
+   * the reply keeps streaming after it.
+   */
+  incidentEvent: (sessionId: string, message: string, detail: ErrorDetail) => void
   messageComplete: (sessionId: string, payload?: MessageCompletePayload) => void
   messageDelta: (sessionId: string, text: string) => void
   messageInterim: (sessionId: string, text: string, alreadyStreamed?: boolean) => void
   messageStart: (sessionId: string) => void
   open: (sessionId: string, sectionId: string, messages: Message[]) => void
+  reasoningDelta: (sessionId: string, text: string) => void
   resolveApproval: (sessionId: string, requestId: string, choice: ApprovalChoice) => void
   sessionInfo: (sessionId: string, info: SessionInfo) => void
   sessionUsage: (sessionId: string, usage: Usage) => void
@@ -115,6 +137,11 @@ const defaultEffects: TranscriptEffects = {
 }
 
 let effects: TranscriptEffects = defaultEffects
+
+/** Send a native notification through the same effect the store uses. */
+export function transcriptNotify(input: { body: string; sectionId?: string; title: string }): void {
+  effects.notify(input)
+}
 
 /** Override one or more effects (tests, or the Electron notification path). */
 export function setTranscriptEffects(next: Partial<TranscriptEffects>): void {
@@ -161,6 +188,12 @@ function replaceMessage(
     messages: transcript.messages.map(message => (message.id === id ? patch(message) : message))
   }
 }
+
+/**
+ * Hermes's spinner copy, "(◔_◔) pondering...": a face without letters and one
+ * verb. Wait notices ("⏳ waiting on the provider — 30s ...") are kept.
+ */
+const SPINNER_LINE = /^[^a-z]*[a-z]+\.\.\.$/i
 
 /**
  * The assistant message deltas and tool calls attach to. Hermes can emit a
@@ -280,6 +313,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       update(sessionId, transcript =>
         withCurrentAssistant(transcript, message => ({
           ...message,
+          activity: undefined,
           streaming: true,
           text: message.text + text
         }))
@@ -302,7 +336,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       )
     },
 
-    thinkingDelta(sessionId, text) {
+    reasoningDelta(sessionId, text) {
       if (!text) {
         return
       }
@@ -311,9 +345,27 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         withCurrentAssistant(transcript, message => ({
           ...message,
           streaming: true,
-          thinking: (message.thinking ?? '') + text
+          thinking: (message.thinking ?? '') + text,
+          workUntil: Date.now()
         }))
       )
+    },
+
+    thinkingDelta(sessionId, text) {
+      // Hermes's status line, not reasoning: it fires before and between API
+      // calls, so it only annotates a message that is already streaming.
+      const activity = SPINNER_LINE.test(text.trim()) ? '' : text.trim()
+
+      update(sessionId, transcript => {
+        const id = transcript.streamingMessageId
+
+        return id
+          ? replaceMessage(transcript, id, message => ({
+              ...message,
+              activity: activity || undefined
+            }))
+          : transcript
+      })
     },
 
     toolStart(sessionId, payload) {
@@ -372,7 +424,8 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
                     summary: payload.summary ?? call.summary
                   }
                 : call
-            )
+            ),
+            workUntil: Date.now()
           }))
         }
 
@@ -392,7 +445,8 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
               summary: payload.summary,
               toolId: toolId ?? nextMessageId('t')
             }
-          ]
+          ],
+          workUntil: Date.now()
         }))
       })
     },
@@ -405,6 +459,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
         const finalize = (message: Message): Message => ({
           ...message,
+          activity: undefined,
           error: payload.error ?? message.error,
           status: payload.status,
           streaming: false,
@@ -412,7 +467,10 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           toolCalls: message.toolCalls.map(call =>
             call.status === 'running' ? { ...call, status: 'ok' } : call
           ),
-          usage: payload.usage ?? message.usage ?? null
+          usage: payload.usage ?? message.usage ?? null,
+          workUntil: message.toolCalls.some(call => call.status === 'running')
+            ? Date.now()
+            : message.workUntil
         })
 
         const next = withCurrentAssistant(transcript, finalize)
@@ -431,7 +489,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       }
     },
 
-    approvalRequest(sessionId, payload) {
+    approvalRequest(sessionId, payload, options = {}) {
       const requestId = String(payload.request_id ?? nextMessageId('ap'))
 
       const approval: ApprovalRequest = {
@@ -456,6 +514,11 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       const transcript = get().bySession[sessionId]
 
       effects.ackApproval(sessionId, requestId)
+
+      if (options.notify === false) {
+        return
+      }
+
       effects.notify({
         body: payload.command ?? payload.reason ?? 'A bot is asking for permission.',
         sectionId: transcript?.sectionId,
@@ -484,27 +547,74 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       update(sessionId, transcript => ({ ...transcript, usage }))
     },
 
-    errorEvent(sessionId, message) {
-      update(sessionId, transcript => ({
-        ...transcript,
-        error: message,
-        messages: [
-          ...transcript.messages.map(item =>
-            item.id === transcript.streamingMessageId ? { ...item, streaming: false } : item
-          ),
-          {
+    errorEvent(sessionId, message, detail) {
+      update(sessionId, transcript => {
+        const existing = detail?.incidentId
+          ? transcript.messages.findIndex(item => item.errorDetail?.incidentId === detail.incidentId)
+          : -1
+
+        const messages = transcript.messages.map(item =>
+          item.id === transcript.streamingMessageId ? { ...item, streaming: false } : item
+        )
+
+        if (existing >= 0) {
+          messages[existing] = { ...messages[existing]!, error: message, errorDetail: detail }
+        } else {
+          messages.push({
             attachments: [],
             createdAt: Date.now(),
             error: message,
+            ...(detail ? { errorDetail: detail } : {}),
             id: nextMessageId('e'),
             role: 'system' as const,
             streaming: false,
             text: '',
             toolCalls: []
-          }
-        ],
-        streamingMessageId: null
-      }))
+          })
+        }
+
+        return { ...transcript, error: message, messages, streamingMessageId: null }
+      })
+    },
+
+    incidentEvent(sessionId, message, detail) {
+      update(sessionId, transcript => {
+        const existing = detail.incidentId
+          ? transcript.messages.findIndex(item => item.errorDetail?.incidentId === detail.incidentId)
+          : -1
+
+        const messages = [...transcript.messages]
+
+        if (existing >= 0) {
+          messages[existing] = { ...messages[existing]!, error: message, errorDetail: detail }
+
+          return { ...transcript, messages }
+        }
+
+        const card: TranscriptMessage = {
+          attachments: [],
+          createdAt: Date.now(),
+          error: message,
+          errorDetail: detail,
+          id: nextMessageId('e'),
+          role: 'system',
+          streaming: false,
+          text: '',
+          toolCalls: []
+        }
+
+        const streamingAt = transcript.streamingMessageId
+          ? messages.findIndex(item => item.id === transcript.streamingMessageId)
+          : -1
+
+        if (streamingAt >= 0) {
+          messages.splice(streamingAt, 0, card)
+        } else {
+          messages.push(card)
+        }
+
+        return { ...transcript, messages }
+      })
     }
   }
 })
@@ -520,12 +630,6 @@ export function selectTranscript(sessionId: null | string) {
 
 export function useTranscript(sessionId: null | string): Transcript | undefined {
   return useTranscripts(selectTranscript(sessionId))
-}
-
-export function useIsStreaming(sessionId: null | string): boolean {
-  return useTranscripts(state =>
-    Boolean(sessionId && state.bySession[sessionId]?.streamingMessageId)
-  )
 }
 
 export function transcriptActions(): TranscriptsState {

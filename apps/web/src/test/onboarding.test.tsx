@@ -1,6 +1,12 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 
-import { initialOnboardingStep, OnboardingChoiceCards } from '../routes/onboarding'
+import {
+  initialOnboardingStep,
+  JobsStep,
+  MeetStep,
+  OnboardingChoiceCards,
+  WelcomeStep
+} from '../routes/onboarding'
 
 describe('onboarding', () => {
   it.each([
@@ -11,6 +17,31 @@ describe('onboarding', () => {
     [{ connected: true, hasBots: true, hasLocalRuntime: false, isElectron: false }, 'existing']
   ] as const)('selects the initial step for %o', (input, expected) => {
     expect(initialOnboardingStep(input)).toBe(expected)
+  })
+
+  it('opens on a welcome screen with one way forward', () => {
+    const onStart = vi.fn()
+    render(<WelcomeStep onStart={onStart} />)
+
+    expect(screen.getByText('Hexbot')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Get started/ }))
+    expect(onStart).toHaveBeenCalledOnce()
+  })
+
+  it('walks the tour with Next and Back', () => {
+    const next = vi.fn()
+    const back = vi.fn()
+    const { unmount } = render(<MeetStep back={back} next={next} />)
+
+    expect(screen.getByRole('heading', { name: 'Meet Hexbot' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    expect(next).toHaveBeenCalledOnce()
+    unmount()
+
+    render(<JobsStep back={back} next={next} />)
+    expect(screen.getByText('Release notes')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    expect(back).toHaveBeenCalledOnce()
   })
 
   it('renders the two Electron choices as descriptive cards', () => {

@@ -113,7 +113,7 @@ more freedom and more capability than a hosted product can offer.
   implements it. One daemon connection at a time (several in the Connect
   milestone).
 - Bot avatars: uploaded image, generated initials by default.
-- Tool calls render inline and collapsed.
+- Tool calls show only while they run, then collapse into one line above the reply.
 
 ## 4. Network, auth, Connect
 

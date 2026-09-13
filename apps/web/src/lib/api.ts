@@ -13,6 +13,8 @@ import type {
   BotCreateInput,
   BotMessage,
   BotUpdatePatch,
+  Connector,
+  ConnectorTest,
   CoreMemory,
   CoreMemorySection,
   DaemonInfo,
@@ -28,6 +30,7 @@ import type {
   RoomLimits,
   Section,
   Settings,
+  SkillInfo,
   Usage
 } from './types'
 import type { CurrentUser, UsageSummary, User } from './types'
@@ -94,6 +97,76 @@ export function botsUpdate(name: string, patch: BotUpdatePatch): Promise<{ bot: 
 
 export function botsDelete(name: string): Promise<{ deleted: boolean }> {
   return rpcCall<{ deleted: boolean }>('hexbot.bots.delete', { name })
+}
+
+/** Dismiss a bot's Stopped state without fixing anything. */
+export function botsClearStatus(name: string): Promise<{ bot: Bot }> {
+  return rpcCall<{ bot: Bot }>('hexbot.bots.clear_status', { name })
+}
+
+// ---------------------------------------------------------------------------
+// Connectors and skills
+// ---------------------------------------------------------------------------
+
+export function connectorsList(bot?: string): Promise<{ connectors: Connector[] }> {
+  return rpcCall<{ connectors: Connector[] }>('hexbot.connectors.list', bot ? { bot } : {})
+}
+
+export interface ConnectorSetupInput {
+  bot?: string
+  bot_only?: boolean
+  enable_for_bot?: boolean
+  id: string
+  provider?: string
+  values: Record<string, string>
+}
+
+export function connectorsSetup(
+  input: ConnectorSetupInput
+): Promise<{ connector: Connector; test: ConnectorTest }> {
+  return rpcCall<{ connector: Connector; test: ConnectorTest }>('hexbot.connectors.setup', {
+    ...input
+  })
+}
+
+export function connectorsTest(id: string, bot?: string): Promise<ConnectorTest> {
+  return rpcCall<ConnectorTest>('hexbot.connectors.test', { id, ...(bot ? { bot } : {}) })
+}
+
+export function connectorsClear(
+  id: string,
+  options: { bot?: string; bot_only?: boolean } = {}
+): Promise<{ connector: Connector }> {
+  return rpcCall<{ connector: Connector }>('hexbot.connectors.clear', { id, ...options })
+}
+
+export function connectorsSetForBot(
+  id: string,
+  bot: string,
+  enabled: boolean
+): Promise<{ connector: Connector }> {
+  return rpcCall<{ connector: Connector }>('hexbot.connectors.set_for_bot', { bot, enabled, id })
+}
+
+export interface McpServerInput {
+  args?: string[]
+  command?: string
+  env?: Record<string, string>
+  name: string
+  transport?: 'http' | 'sse' | 'stdio'
+  url?: string
+}
+
+export function connectorsAddMcp(input: McpServerInput): Promise<{ connector: Connector }> {
+  return rpcCall<{ connector: Connector }>('hexbot.connectors.add_mcp', { ...input })
+}
+
+export function connectorsRemoveMcp(name: string): Promise<{ removed: boolean }> {
+  return rpcCall<{ removed: boolean }>('hexbot.connectors.remove_mcp', { name })
+}
+
+export function skillsList(bot: string): Promise<{ skills: SkillInfo[] }> {
+  return rpcCall<{ skills: SkillInfo[] }>('hexbot.skills.list', { bot })
 }
 
 // ---------------------------------------------------------------------------
@@ -395,34 +468,6 @@ export function sessionInterrupt(sessionId: string): Promise<{ status: string }>
   return rpcCall<{ status: string }>('session.interrupt', { session_id: sessionId })
 }
 
-export function sessionSteer(
-  sessionId: string,
-  text: string
-): Promise<{ status: string; text: string }> {
-  return rpcCall<{ status: string; text: string }>('session.steer', { session_id: sessionId, text })
-}
-
-export function sessionHistory(
-  sessionId: string
-): Promise<{ count: number; messages: HistoryRow[] }> {
-  return rpcCall<{ count: number; messages: HistoryRow[] }>('session.history', {
-    session_id: sessionId
-  })
-}
-
-export function sessionEventsSince(
-  sessionId: string,
-  lastSeen: number
-): Promise<{
-  count: number
-  epoch?: string
-  events: unknown[]
-  latest_seq: number
-  truncated: boolean
-}> {
-  return rpcCall('session.events.since', { last_seen: lastSeen, session_id: sessionId })
-}
-
 export function sessionUsage(sessionId: string): Promise<{ usage: Usage }> {
   return rpcCall<{ usage: Usage }>('session.usage', { session_id: sessionId })
 }
@@ -441,21 +486,9 @@ export function setSectionModel(
   })
 }
 
-export function gatewayCapabilities(): Promise<Record<string, unknown>> {
-  return rpcCall<Record<string, unknown>>('gateway.capabilities')
-}
-
-export function gatewayPing(): Promise<{ ok: boolean }> {
-  return rpcCall<{ ok: boolean }>('gateway.ping')
-}
-
 // ---------------------------------------------------------------------------
 // Approvals
 // ---------------------------------------------------------------------------
-
-export function approvalPending(sessionId: string): Promise<{ approvals: unknown[] }> {
-  return rpcCall<{ approvals: unknown[] }>('approval.pending', { session_id: sessionId })
-}
 
 export function approvalRespond(
   sessionId: string,
@@ -505,13 +538,6 @@ export function imageAttachBytes(
   })
 }
 
-export function imageDetach(sessionId: string, index?: number): Promise<AttachResult> {
-  return rpcCall<AttachResult>('image.detach', {
-    session_id: sessionId,
-    ...(index === undefined ? {} : { index })
-  })
-}
-
 export function pdfAttach(sessionId: string, contentBase64: string): Promise<AttachResult> {
   return rpcCall<AttachResult>('pdf.attach', {
     content_base64: contentBase64,
@@ -540,13 +566,6 @@ export function readFileAsDataUrl(file: Blob): Promise<string> {
     })
     reader.readAsDataURL(file)
   })
-}
-
-/** Base64 payload without the `data:` prefix. */
-export async function readFileAsBase64(file: Blob): Promise<string> {
-  const dataUrl = await readFileAsDataUrl(file)
-
-  return base64FromDataUrl(dataUrl)
 }
 
 export function base64FromDataUrl(dataUrl: string): string {
@@ -603,6 +622,10 @@ export function nextMessageId(prefix = 'm'): string {
  * Tool rows fold into the assistant message that precedes them, matching how
  * live `tool.start` / `tool.complete` events are rendered.
  */
+/**
+ * Hermes history rows carry no timestamps, so restored messages get `createdAt: 0`
+ * ("unknown") and the transcript draws no time separator for them.
+ */
 export function messagesFromHistory(rows: HistoryRow[]): Message[] {
   const messages: Message[] = []
 
@@ -630,7 +653,7 @@ export function messagesFromHistory(rows: HistoryRow[]): Message[] {
       } else {
         messages.push({
           attachments: [],
-          createdAt: Date.now(),
+          createdAt: 0,
           id: nextMessageId(),
           role: 'assistant',
           streaming: false,
@@ -647,13 +670,24 @@ export function messagesFromHistory(rows: HistoryRow[]): Message[] {
         ? row.role
         : 'assistant'
 
+    const text = typeof row.text === 'string' ? row.text : ''
+    const previous = messages.at(-1)
+
+    // Hermes stores one turn as assistant(tool calls) → tool rows → assistant(text).
+    // Live streaming shows that as one bubble, so history must too.
+    if (role === 'assistant' && previous?.role === 'assistant' && previous.toolCalls.length) {
+      previous.text = previous.text ? `${previous.text}\n\n${text}` : text
+
+      continue
+    }
+
     messages.push({
       attachments: [],
-      createdAt: Date.now(),
+      createdAt: 0,
       id: String(row.row_id ?? nextMessageId()),
       role,
       streaming: false,
-      text: typeof row.text === 'string' ? row.text : '',
+      text,
       toolCalls: []
     })
   }

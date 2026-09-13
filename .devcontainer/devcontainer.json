@@ -1,0 +1,17 @@
+{
+  "name": "Hexbot dev",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-22.04",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "26" },
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.11" },
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "postCreateCommand": "pip install uv && uv venv venv --python 3.11 && UV_PROJECT_ENVIRONMENT=venv uv sync --extra all --extra dev --locked && npm ci && npm approve-scripts electron esbuild @tailwindcss/oxide",
+  "forwardPorts": [9119, 5173, 3000, 4321],
+  "portsAttributes": {
+    "9119": { "label": "hexbot daemon" },
+    "5173": { "label": "web bundle" },
+    "3000": { "label": "connect" },
+    "4321": { "label": "site" }
+  }
+}

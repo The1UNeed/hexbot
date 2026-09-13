@@ -56,7 +56,7 @@ export interface HexbotBridge {
     host: string
     grant: string
     deviceName: string
-    tls: true
+    tls?: boolean
   }): Promise<PairResult>
   pair(host: string, port: number, code: string, deviceName: string): Promise<PairResult>
   httpFetch(
@@ -71,13 +71,17 @@ export interface HexbotBridge {
   }
   setCrashReports(enabled: boolean): Promise<void>
   updater: {
+    channel(): Promise<UpdateChannel>
     check(): Promise<UpdateStatus>
     install(): Promise<void>
     onStatus(callback: (status: UpdateStatus) => void): () => void
-    setChannel(channel: 'stable' | 'beta'): Promise<void>
+    setChannel(channel: UpdateChannel): Promise<void>
   }
   version: string
 }
+
+/** The update track (docs/channels.md): tagged releases, or nightly builds of main. */
+export type UpdateChannel = 'nightly' | 'stable'
 
 export interface PairResult {
   daemon_name: string
@@ -98,9 +102,11 @@ export interface ServiceStatus {
   running?: boolean
 }
 
+/** What the desktop updater reports (apps/desktop/src/main/updater.ts). */
 export interface UpdateStatus {
   message?: string
-  state: 'available' | 'checking' | 'downloading' | 'error' | 'idle' | 'ready' | (string & {})
+  percent?: number
+  state: 'available' | 'checking' | 'downloaded' | 'downloading' | 'error' | 'idle' | 'none'
   version?: string
 }
 

@@ -87,6 +87,25 @@ def test_list_providers_reports_labels_and_oauth_state(monkeypatch):
     assert seen == {"openai-codex": True}
 
 
+def test_list_providers_marks_non_key_and_custom_endpoint_setup(monkeypatch):
+    from hexbot import providers
+
+    monkeypatch.setattr(providers, "_known_slugs", lambda: ["custom", "kimi-coding", "kimi-coding-cn"])
+    monkeypatch.setattr("hermes_cli.models._get_custom_base_url", lambda: "http://localhost:11434/v1")
+    rows = {row["id"]: row for row in providers.list_providers()}
+
+    assert rows["custom"] == {
+        "id": "custom",
+        "label": "Custom endpoint",
+        "configured": True,
+        "auth_type": "api_key",
+        "key_supported": False,
+        "models_source": "registry",
+    }
+    assert rows["kimi-coding"]["label"] == "Kimi For Coding (Global)"
+    assert rows["kimi-coding-cn"]["label"] == "Kimi For Coding (China)"
+
+
 def test_codex_oauth_detection_uses_the_auth_store(monkeypatch):
     from hexbot import providers
 
@@ -256,5 +275,29 @@ def test_network_get_and_set(monkeypatch):
     result = network.set_network(True)
     assert result["lan_enabled"] is True
     assert result["bind_host"] == "0.0.0.0"
-    assert result["restart_required"] is True
+    assert result["restarting"] is True
     assert restarts == [True]
+
+
+def test_restart_reloads_saved_bind_settings(monkeypatch):
+    from hexbot import serve
+
+    calls = []
+    monkeypatch.setattr(serve, "_serve_args", ["--host", "127.0.0.1", "--port", "9131"])
+    monkeypatch.setattr(serve, "_bind_port", 9131)
+    monkeypatch.setattr(serve, "_restart_scheduled", False)
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    monkeypatch.setattr(serve.os, "execv", lambda executable, args: calls.append(args))
+
+    class ImmediateThread:
+        def __init__(self, target, **kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(serve.threading, "Thread", ImmediateThread)
+    serve.request_restart()
+    assert len(calls) == 1
+    assert "--host" not in calls[0]
+    assert calls[0][-2:] == ["--port", "9131"]

@@ -67,6 +67,10 @@ def test_every_documented_method_is_registered(ctx):
             "hexbot.dreaming.status", "hexbot.dreaming.run_now", "hexbot.dreaming.list",
             "hexbot.users.me", "hexbot.users.list", "hexbot.users.invite",
             "hexbot.users.update", "hexbot.usage.summary",
+            "hexbot.bots.clear_status", "hexbot.connectors.list", "hexbot.connectors.setup",
+            "hexbot.connectors.test", "hexbot.connectors.clear",
+            "hexbot.connectors.set_for_bot", "hexbot.connectors.add_mcp",
+            "hexbot.connectors.remove_mcp", "hexbot.skills.list",
     }
     assert set(ctx.methods) == expected
 
@@ -103,7 +107,8 @@ def test_info_frame(ctx):
     assert frame["jsonrpc"] == "2.0"
     assert frame["id"] == 1
     result = frame["result"]
-    assert result["version"] == "0.1.0"
+    from hexbot import __version__
+    assert result["version"] == __version__
     assert result["home"]
     assert result["lan_enabled"] is False
     assert isinstance(result["addresses"], list)
@@ -230,7 +235,7 @@ def test_activity_hook_resolves_the_stored_session_id(ctx, fake_gateway):
         conn.execute("UPDATE sections SET updated_at=0 WHERE id='stored1'")
 
     assert [name for name, _ in ctx.hooks] == [
-        "on_stream_end", "post_tool_call", "post_llm_call", "on_session_end"]
+        "on_stream_end", "post_tool_call", "post_tool_call", "post_llm_call", "on_session_end"]
     hook = ctx.hooks[0][1]
 
     hook(session_id="stored1", finished=False)
@@ -246,6 +251,42 @@ def test_activity_hook_resolves_the_stored_session_id(ctx, fake_gateway):
     # Unknown ids and hook failures must never escape into the agent loop.
     hook(session_id="who", finished=True)
     hook(finished=True)
+
+    # A turn that ends in error opens a turn_failed incident; the next
+    # finished turn on the same section closes it.
+    from hexbot.incidents import open_incidents
+    hook(session_id="stored1", finished=False, error="provider timed out")
+    assert open_incidents()["scout"]["kind"] == "turn_failed"
+    hook(session_id="stored1", finished=True, final_text="ok", error=None)
+    assert open_incidents() == {}
+
+
+def test_post_tool_call_hook_opens_connector_incidents(ctx, fake_gateway):
+    from hexbot import sections
+    from hexbot.incidents import open_incidents
+    fake_gateway.responses.update({
+        "session.create": {"session_id": "live1", "stored_session_id": "stored1",
+                           "messages": []},
+        "session.list": {"sessions": []},
+    })
+    sections.create_section("scout", "General")
+    hooks = [fn for name, fn in ctx.hooks if name == "post_tool_call"]
+    hook = hooks[1]
+
+    hook(tool_name="terminal", result="ok", status="success", session_id="stored1")
+    assert open_incidents() == {}
+    hook(tool_name="image_generate", result="", status="error",
+         error_message="FAL: 401 Unauthorized", session_id="stored1")
+    incident = open_incidents()["scout"]
+    assert incident["connector"] == "image_gen"
+    assert incident["kind"] == "connector_error"
+    assert incident["section_id"] == "stored1"
+    # A skill talking to Notion through the terminal is caught by the text.
+    hook(tool_name="terminal", status="success", session_id="stored1",
+         result='{"error":"API token is invalid","code":"unauthorized"} from api.notion.com')
+    assert {i["connector"] for i in [open_incidents()["scout"]]} <= {"notion", "image_gen"}
+    hook(tool_name="terminal", result="boom", status="error", session_id="nope")
+    hook(result=None)
 
 
 def test_plugin_skips_registration_on_an_old_context():
@@ -271,7 +312,8 @@ def test_register_against_the_real_gateway_and_dispatch(monkeypatch):
 
         ok = server.handle_request(
             {"jsonrpc": "2.0", "id": 1, "method": "hexbot.info", "params": {}})
-        assert ok["result"]["version"] == "0.1.0"
+        from hexbot import __version__
+        assert ok["result"]["version"] == __version__
         assert ok["result"]["home"]
 
         bad = server.handle_request({"jsonrpc": "2.0", "id": 2,

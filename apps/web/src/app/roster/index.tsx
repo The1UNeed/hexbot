@@ -1,5 +1,15 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
-import { Activity, Archive, ChevronDown, ChevronRight, Plus, Search, Settings } from 'lucide-react'
+import {
+  Activity,
+  Archive,
+  ChevronDown,
+  ChevronRight,
+  MoreHorizontal,
+  Plus,
+  Search,
+  Settings,
+  SquarePen
+} from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar, PersonAvatar } from '../../components/ui/avatar'
@@ -15,8 +25,10 @@ import {
   avatarPng,
   avatarSrc,
   type AvatarStyle,
-  DEFAULT_AVATAR_STYLE
+  DEFAULT_AVATAR_STYLE,
+  styleForName
 } from '../../lib/avatar-builder'
+import { toHandle } from '../../lib/bot-handle'
 import { BOT_TEMPLATES } from '../../lib/bot-templates'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
@@ -24,6 +36,7 @@ import { toMillis } from '../../lib/time'
 import type { Bot, ModelOption, Room, RoomEvent, Section } from '../../lib/types'
 import { useBotList, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
+import { useDrafts } from '../../stores/drafts'
 import { roomUnread, useRoomList, useRooms } from '../../stores/rooms'
 import { sectionsActions, useSections } from '../../stores/sections'
 import { useSettings } from '../../stores/settings'
@@ -169,39 +182,67 @@ function RoomRow({
   )
 }
 
-export function visibleRecentSections(bot: Bot, expanded: boolean, all: Section[]): Section[] {
+type Drafts = Record<string, string>
+
+/**
+ * A section the user has sent or typed something in. New, untouched ones sort last and
+ * stay hidden.
+ */
+export const touched = (section: Section, drafts: Drafts = {}) =>
+  section.message_count > 0 || Boolean(section.preview) || Boolean(drafts[section.id])
+
+/**
+ * The sections listed under a bot: touched ones, newest first. Folded, only the two most
+ * recent from the last 14 days plus the open section; expanded, every unarchived one.
+ */
+export function visibleRecentSections(
+  bot: Bot,
+  expanded: boolean,
+  all: Section[],
+  active?: string,
+  drafts: Drafts = {}
+): Section[] {
+  const byActivity = (a: Section, b: Section) =>
+    Number(touched(b, drafts)) - Number(touched(a, drafts)) || sectionTime(b) - sectionTime(a)
+
   // Prefer the live sections store; the bot row's recent list can lag behind.
-  return [...(all.length ? all : bot.sections_recent)]
-    .filter(
-      section => !section.archived_at && (expanded || Date.now() - sectionTime(section) < 14 * DAY)
-    )
-    .sort((a, b) => sectionTime(b) - sectionTime(a))
-    .slice(0, expanded ? undefined : 2)
+  const sections = [...(all.length ? all : bot.sections_recent)]
+    .filter(section => !section.archived_at)
+    .sort(byActivity)
+
+  if (expanded) {
+    return sections
+  }
+
+  const recent = sections
+    .filter(section => touched(section, drafts) && Date.now() - sectionTime(section) < 14 * DAY)
+    .slice(0, 2)
+
+  const current = sections.find(section => section.id === active)
+
+  return current && !recent.includes(current)
+    ? [...recent, current].sort((a, b) => sectionTime(b) - sectionTime(a))
+    : recent
 }
 
 interface BotRowsProps {
   active?: string
   bot: Bot
   busy?: boolean
+  drafts: Drafts
   expanded: boolean
   focused: string | null
+  onArchive: (section: Section) => void
+  onDelete: (section: Section) => void
   onExpand: () => void
   onOpen: (bot: string, section: string) => void
+  onStart: (bot: string) => void
   query: string
   sections: Section[]
 }
 
-function BotRows({
-  active,
-  bot,
-  busy,
-  expanded,
-  focused,
-  onExpand,
-  onOpen,
-  query,
-  sections
-}: BotRowsProps) {
+/** Which of a bot's rows match the roster search: the bot itself, or section titles. */
+function matchBot(bot: Bot, sections: Section[], query: string) {
   const matchesBot = `${bot.display_name} ${bot.name}`.toLowerCase().includes(query)
 
   const available = [
@@ -211,43 +252,95 @@ function BotRows({
 
   const matching = available.filter(section => section.title.toLowerCase().includes(query))
 
+  return { available, matchesBot, matching }
+}
+
+/** Daemon-reported status; a record without the field falls back to the client's streaming flag. */
+type BotSignals = Partial<{ status: 'idle' | 'needs_you' | 'stopped' | 'working' }>
+
+export function botStatus(bot: Bot, busy = false): 'idle' | 'needs_you' | 'stopped' | 'working' {
+  const status = (bot as BotSignals).status
+
+  if (status === 'stopped' || status === 'needs_you') {
+    return status
+  }
+
+  return status === 'working' || busy ? 'working' : 'idle'
+}
+
+const STATUS_DOTS = {
+  needs_you: ['Needs you', 'bg-warning'],
+  stopped: ['Stopped', 'bg-danger'],
+  working: ['Working', 'bg-success']
+} as const
+
+function StatusDot({ bot, busy }: { bot: Bot; busy?: boolean }) {
+  const status = botStatus(bot, busy)
+
+  if (status === 'idle') {
+    return null
+  }
+
+  const [label, color] = STATUS_DOTS[status]
+
+  return (
+    <span
+      aria-label={label}
+      className={cn(
+        'absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-2 border-surface',
+        color
+      )}
+    />
+  )
+}
+
+function BotRows({
+  active,
+  bot,
+  busy,
+  drafts,
+  expanded,
+  focused,
+  onArchive,
+  onDelete,
+  onExpand,
+  onOpen,
+  onStart,
+  query,
+  sections
+}: BotRowsProps) {
+  const { available, matchesBot, matching } = matchBot(bot, sections, query)
+
   if (query && !matchesBot && matching.length === 0) {
     return null
   }
 
-  const rows = query ? matching : visibleRecentSections(bot, expanded, available)
-  const first = rows[0] ?? bot.sections_recent[0]
+  const rows = query ? matching : visibleRecentSections(bot, expanded, available, active, drafts)
 
   const canExpand =
-    bot.sections_total > rows.length ||
-    bot.sections_recent.some(section => Date.now() - sectionTime(section) >= 14 * DAY)
+    !query &&
+    (expanded ||
+      available.filter(section => !section.archived_at).length > rows.length ||
+      bot.sections_total > rows.length)
 
-  const selected =
-    rows.some(section => section.id === active) ||
-    bot.sections_recent.some(section => section.id === active)
-
-  const showSections = query ? rows.length > 0 : rows.length > 1 || canExpand || expanded
+  const selected = rows.length === 0 && bot.sections_recent.some(section => section.id === active)
+  const label = bot.title || bot.description
 
   return (
     <div data-testid="bot-group">
       <button
         className={cn(
           rowClass,
-          selected && !showSections && 'bg-surface-2',
+          selected && 'bg-surface-2',
           focused === `bot:${bot.name}` && rowFocus
         )}
         data-roster-id={`bot:${bot.name}`}
-        onClick={() => first && onOpen(bot.name, first.id)}
+        onClick={() => onStart(bot.name)}
         type="button"
       >
         <span className="relative shrink-0">
           <Avatar image={avatarData(bot)} name={bot.display_name} size="lg" />
-          {busy ? (
-            <span
-              aria-label="Working"
-              className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-2 border-surface bg-success"
-            />
-          ) : null}
+          <StatusDot bot={bot} busy={busy} />
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
@@ -256,43 +349,70 @@ function BotRows({
               {relativeTime(bot.last_activity_at)}
             </span>
           </span>
-          <span className="block truncate text-[length:var(--text-secondary)] text-muted">
-            {first?.preview || bot.title || bot.description || 'No messages yet'}
-          </span>
+          {label ? (
+            <span className="block truncate text-[length:var(--text-secondary)] text-muted">
+              {label}
+            </span>
+          ) : null}
         </span>
       </button>
-      {showSections ? (
-        <div className="mb-1 ml-[52px] flex flex-col gap-px pr-1">
+      {rows.length > 0 || canExpand ? (
+        <div className="mb-1 ml-5 flex flex-col gap-px border-l border-border pr-1 pl-1.5">
           {rows.map(section => {
             const unread =
               section.id !== active &&
               sectionTime(section) > Number(localStorage.getItem(`hexbot.read.${section.id}`) ?? 0)
 
             return (
-              <button
+              <div
                 className={cn(
-                  'flex w-full items-center gap-2 rounded-control px-2.5 py-1.5 text-left text-[length:var(--text-secondary)] outline-none transition-colors hover:bg-surface-2',
-                  active === section.id ? 'bg-surface-2 text-foreground' : 'text-muted',
-                  focused === `section:${section.id}` && rowFocus
+                  'group/row flex items-center rounded-control pr-1 transition-colors hover:bg-surface-2',
+                  active === section.id && 'bg-surface-2'
                 )}
-                data-roster-id={`section:${section.id}`}
                 key={section.id}
-                onClick={() => onOpen(bot.name, section.id)}
-                type="button"
               >
-                <span className="min-w-0 flex-1 truncate">{section.title}</span>
-                {unread ? (
-                  <span aria-label="Unread" className="size-1.5 rounded-full bg-accent" />
-                ) : null}
-                <span className="text-[length:var(--text-meta)] text-muted">
-                  {relativeTime(section.updated_at)}
-                </span>
-              </button>
+                <button
+                  className={cn(
+                    'flex min-w-0 flex-1 items-center gap-2 rounded-control px-2 py-1 text-left text-[length:var(--text-meta)] outline-none',
+                    active === section.id ? 'text-foreground' : 'text-muted',
+                    focused === `section:${section.id}` && rowFocus
+                  )}
+                  data-roster-id={`section:${section.id}`}
+                  onClick={() => onOpen(bot.name, section.id)}
+                  type="button"
+                >
+                  <span className="min-w-0 flex-1 truncate">{section.title}</span>
+                  {drafts[section.id] ? (
+                    <SquarePen aria-label="Draft" className="shrink-0" size={12} />
+                  ) : null}
+                  {unread ? (
+                    <span aria-label="Unread" className="size-1.5 rounded-full bg-accent" />
+                  ) : null}
+                  <span className="text-[length:var(--text-meta)] text-muted">
+                    {relativeTime(section.updated_at)}
+                  </span>
+                </button>
+                <Menu
+                  items={[
+                    { label: 'Archive', onSelect: () => onArchive(section) },
+                    { label: 'Delete', onSelect: () => onDelete(section) }
+                  ]}
+                  trigger={
+                    <button
+                      aria-label={`Section actions for ${section.title}`}
+                      className="grid size-6 shrink-0 place-items-center rounded-full text-muted opacity-0 transition-opacity group-hover/row:opacity-100 hover:text-foreground focus-visible:opacity-100 data-[popup-open]:opacity-100"
+                      type="button"
+                    >
+                      <MoreHorizontal size={14} />
+                    </button>
+                  }
+                />
+              </div>
             )
           })}
-          {!query && canExpand ? (
+          {canExpand ? (
             <button
-              className="flex items-center gap-1 px-2.5 py-1 text-[length:var(--text-meta)] text-muted hover:text-foreground"
+              className="flex items-center gap-1 px-2 py-0.5 text-[length:var(--text-meta)] text-muted hover:text-foreground"
               onClick={onExpand}
               type="button"
             >
@@ -312,6 +432,7 @@ export function RosterColumn() {
   const bots = useBotList()
   const rooms = useRoomList()
   const sectionMap = useSections(state => state.byId)
+  const drafts = useDrafts(state => state.byId)
   const connection = useConnection()
   const currentUser = useUsers(state => state.current)
   const [query, setQuery] = useState('')
@@ -326,8 +447,11 @@ export function RosterColumn() {
     name: '',
     persona: '',
     provider: '',
+    template: '',
     title: ''
   })
+
+  const [newBotError, setNewBotError] = useState<null | string>(null)
 
   const [newStyle, setNewStyle] = useState<AvatarStyle>(DEFAULT_AVATAR_STYLE)
   const [newModels, setNewModels] = useState<ModelOption[]>([])
@@ -382,11 +506,12 @@ export function RosterColumn() {
       void useRooms.getState().refresh()
     }
   }, [])
+  const activeSectionUpdatedAt = params.section ? sectionMap[params.section]?.updated_at : null
   useEffect(() => {
     if (params.section) {
       localStorage.setItem(`hexbot.read.${params.section}`, String(Date.now()))
     }
-  }, [params.section])
+  }, [activeSectionUpdatedAt, params.section])
   const streamingSessions = useTranscripts(state => state.bySession)
 
   const busyBots = useMemo(() => {
@@ -405,6 +530,21 @@ export function RosterColumn() {
 
   const ordered = useMemo(() => orderedBots(bots), [bots])
   const roster = useMemo(() => orderedRosterItems(bots, rooms), [bots, rooms])
+
+  const anyMatch =
+    !query ||
+    roster.some(entry => {
+      if (entry.kind === 'room') {
+        return (entry.item as Room).name.toLowerCase().includes(query)
+      }
+
+      const bot = entry.item as Bot
+      const own = Object.values(sectionMap).filter(section => section.bot === bot.name)
+      const { matchesBot, matching } = matchBot(bot, own, query)
+
+      return matchesBot || matching.length > 0
+    })
+
   const archived = Object.values(sectionMap).filter(section => section.archived_at)
 
   const open = (bot: string, section: string) => {
@@ -417,15 +557,54 @@ export function RosterColumn() {
 
   const openRoom = (room: string) => void navigate({ to: '/r/$room', params: { room } })
 
-  const createSection = async () => {
-    const bot = params.bot ?? ordered[0]?.name
+  /** After archiving or deleting the open section, land on the bot's next one (or a new one). */
+  const leaveSection = async (bot: string, sectionId: string) => {
+    if (params.section !== sectionId) {
+      return
+    }
 
+    const next = Object.values(useSections.getState().byId)
+      .filter(item => item.bot === bot && !item.archived_at && item.id !== sectionId)
+      .sort((a, b) => toMillis(b.updated_at) - toMillis(a.updated_at))[0]
+
+    const target = next ?? (await sectionsActions().create(bot))
+    open(bot, target.id)
+  }
+
+  const archiveSection = async (section: Section) => {
+    await sectionsActions().archive(section.id)
+    await leaveSection(section.bot, section.id)
+  }
+
+  const deleteSection = async (section: Section) => {
+    if (!window.confirm(`Delete “${section.title}”? This also purges its memory.`)) {
+      return
+    }
+
+    await sectionsActions().remove(section.id)
+    await leaveSection(section.bot, section.id)
+  }
+
+  const createSection = async (bot = params.bot ?? ordered[0]?.name) => {
     if (!bot) {
       return
     }
 
     const section = await sectionsActions().create(bot)
     open(bot, section.id)
+  }
+
+  /** Clicking a bot lands on a fresh section: an untouched one if it has any, else a new one. */
+  const startSection = async (bot: string) => {
+    const blank = Object.values(useSections.getState().byId)
+      .filter(item => item.bot === bot && !item.archived_at && !touched(item, drafts))
+      .sort((a, b) => toMillis(b.updated_at) - toMillis(a.updated_at))[0]
+
+    if (blank) {
+      open(bot, blank.id)
+    } else {
+      await createSection(bot)
+    }
   }
 
   const expandBot = async (name: string) => {
@@ -501,7 +680,14 @@ export function RosterColumn() {
         <div className="hex-no-drag mb-2 flex items-center justify-end">
           <Menu
             items={[
-              { label: 'New bot', onSelect: () => setBotDialog(true) },
+              {
+                label: 'New bot',
+                onSelect: () => {
+                  // Start each new bot on a different face than the last.
+                  setNewStyle(styleForName(`bot-${ordered.length}`))
+                  setBotDialog(true)
+                }
+              },
               {
                 'data-testid': 'roster-new-section',
                 disabled: !ordered.length,
@@ -550,6 +736,11 @@ export function RosterColumn() {
             <span className="font-semibold">Create new</span>
           </button>
         ) : null}
+        {query && !anyMatch ? (
+          <p className="px-3 py-6 text-center text-[length:var(--text-secondary)] text-muted">
+            No bots, rooms or sections match “{query}”.
+          </p>
+        ) : null}
         {roster.map(entry =>
           entry.kind === 'room' ? (
             <RoomRow
@@ -565,11 +756,15 @@ export function RosterColumn() {
               active={params.section}
               bot={entry.item as Bot}
               busy={busyBots.has((entry.item as Bot).name)}
+              drafts={drafts}
               expanded={expanded.has((entry.item as Bot).name)}
               focused={focused}
               key={`bot:${(entry.item as Bot).name}`}
+              onArchive={section => void archiveSection(section)}
+              onDelete={section => void deleteSection(section)}
               onExpand={() => void expandBot((entry.item as Bot).name)}
               onOpen={open}
+              onStart={name => void startSection(name)}
               query={query}
               sections={Object.values(sectionMap).filter(
                 section => section.bot === (entry.item as Bot).name
@@ -657,14 +852,32 @@ export function RosterColumn() {
           className="grid gap-4 p-5"
           onSubmit={event => {
             event.preventDefault()
+            const { template: _template, ...input } = newBot
+            const handle = toHandle(input.name)
+
+            if (!handle) {
+              setNewBotError('Give the bot a name with at least one letter or digit.')
+
+              return
+            }
+
+            setNewBotError(null)
             void avatarPng(newStyle)
               .then(avatar =>
-                useBots.getState().create({ ...newBot, ...(avatar ? { avatar } : {}) })
+                useBots.getState().create({
+                  ...input,
+                  display_name: input.name.trim(),
+                  name: handle,
+                  ...(avatar ? { avatar } : {})
+                })
               )
               .then(({ bot, section }) => {
                 setBotDialog(false)
                 open(bot.name, section.id)
               })
+              .catch(error =>
+                setNewBotError(error instanceof Error ? error.message : String(error))
+              )
           }}
         >
           <AvatarBuilder onChange={setNewStyle} value={newStyle} />
@@ -689,12 +902,14 @@ export function RosterColumn() {
                     ...value,
                     description: template.description,
                     persona: template.persona,
+                    template: id,
                     title: template.title
                   }))
                 }
               }}
               options={BOT_TEMPLATES.map(item => ({ label: item.title, value: item.id }))}
               placeholder="Choose a role template"
+              value={newBot.template || undefined}
             />
           </Field>
           <div className="grid gap-4 sm:grid-cols-2">
@@ -745,6 +960,11 @@ export function RosterColumn() {
               />
             </Field>
           </div>
+          {newBotError ? (
+            <p className="text-[length:var(--text-secondary)] text-danger" role="alert">
+              {newBotError}
+            </p>
+          ) : null}
           <div className="flex justify-end gap-2 pt-1">
             <Button onClick={() => setBotDialog(false)} variant="ghost">
               Cancel

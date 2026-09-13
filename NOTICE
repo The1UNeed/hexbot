@@ -31,3 +31,7 @@ Copyright (c) 2026 T3 Tools Inc. No T3 Code source is included.
 
 plugins/security-guidance/ is derived from Anthropic's claude-plugins-official
 under the Apache License 2.0; see that directory for its license.
+
+Connector icons in apps/web/src/assets/connectors/ are from Simple Icons
+(https://simpleicons.org), released under CC0 1.0 Universal. Brand names and
+logos remain the property of their respective owners.

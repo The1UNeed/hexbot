@@ -46,7 +46,23 @@ export interface Avatar {
   mime: string
 }
 
+export type BotApprovalMode = 'inherit' | ApprovalMode
+
+export type BotStatus = 'idle' | 'needs_you' | 'stopped' | 'working'
+
+export interface BotStatusDetail {
+  action: null | { kind: 'fix_connector'; connector: string } | { kind: 'retry' }
+  room_id: null | string
+  section_id: null | string
+  session_id: null | string
+  /** Epoch seconds. */
+  since: number
+  text: string
+}
+
 export interface Bot {
+  /** Per-bot override; `inherit` follows the deployment setting. */
+  approval_mode?: BotApprovalMode
   avatar: Avatar | null
   created_at: null | number
   description: string
@@ -55,6 +71,8 @@ export interface Bot {
   model: null | string
   dream_enabled: boolean
   may_write_core: boolean
+  /** Native notifications when the bot stops or needs the user. */
+  notify?: boolean
   shareable: boolean
   name: string
   owner_id: string
@@ -63,10 +81,27 @@ export interface Bot {
   sections_recent: Section[]
   sections_total: number
   skills: string[]
+  status?: BotStatus
+  status_detail?: BotStatusDetail | null
   title: string
   tools: string[]
   updated_at: null | number
+  /** Per-bot working directory; null means the deployment workspace. */
+  workdir?: null | string
 }
+
+/** Keys of `Bot.tools`; each maps to one Hermes toolset on the daemon. */
+export type BotTool =
+  | 'browser'
+  | 'code_execution'
+  | 'computer_use'
+  | 'delegate'
+  | 'files'
+  | 'message_bots'
+  | 'scheduling'
+  | 'terminal'
+  | 'vision'
+  | 'voice'
 
 export interface BotCreateInput {
   avatar?: string
@@ -82,10 +117,70 @@ export interface BotCreateInput {
 }
 
 export type BotUpdatePatch = Partial<Omit<BotCreateInput, 'avatar' | 'name'>> & {
+  approval_mode?: BotApprovalMode
   avatar?: null | string
   dream_enabled?: boolean
   may_write_core?: boolean
+  notify?: boolean
   shareable?: boolean
+  workdir?: null | string
+}
+
+export type ConnectorGroup = 'mcp' | 'media' | 'search' | 'social_home' | 'work'
+
+export type ConnectorState = 'error' | 'not_set_up' | 'ready'
+
+export interface ConnectorField {
+  advanced: boolean
+  help: string
+  /** Masked tail of the stored value, like "…4f2a". */
+  hint: null | string
+  key: string
+  label: string
+  /** Provider this field belongs to; null when every provider needs it. */
+  provider?: null | string
+  secret: boolean
+  set: boolean
+  url: null | string
+}
+
+export interface ConnectorProviderOption {
+  configured: boolean
+  id: string
+  label: string
+}
+
+/** One row of the connector catalog, with daemon and per-bot state. */
+export interface Connector {
+  description: string
+  enabled_bots: string[]
+  /** Null when the list was fetched without a bot. */
+  enabled_for_bot: boolean | null
+  fields: ConnectorField[]
+  group: ConnectorGroup
+  /** A Simple Icons slug, or `glyph:<name>` for a neutral icon. */
+  icon: string
+  id: string
+  last_error: null | { at: number; text: string }
+  mcp?: { running: boolean; tool_count: number; transport: 'http' | 'sse' | 'stdio' }
+  name: string
+  provider?: null | string
+  providers?: ConnectorProviderOption[]
+  scope: 'bot' | 'daemon'
+  state: ConnectorState
+  state_text: string
+}
+
+export interface ConnectorTest {
+  message: string
+  ok: boolean
+}
+
+export interface SkillInfo {
+  category: string
+  description: string
+  enabled: boolean
+  name: string
 }
 
 export type ConnectionStatus =
@@ -125,6 +220,11 @@ export interface Device {
 }
 
 export interface Message {
+  /**
+   * The daemon's live status line (`thinking.delta`): a wait notice on a slow
+   * provider. Replaced on every event, cleared by an empty one.
+   */
+  activity?: string
   attachments: Attachment[]
   createdAt: number
   /** Inline error row attached to this message (`error` event). */
@@ -135,10 +235,12 @@ export interface Message {
   status?: string
   streaming: boolean
   text: string
-  /** Collapsed thinking block, filled by `thinking.delta`. */
+  /** The reasoning trace, appended by `reasoning.delta`. */
   thinking?: string
   toolCalls: ToolCall[]
   usage?: Usage | null
+  /** When the last reasoning or tool event landed; with `createdAt` it times the work. */
+  workUntil?: number
 }
 
 export type MessageRole = 'assistant' | 'system' | 'tool' | 'user'
@@ -157,7 +259,7 @@ export interface NetworkInfo {
   bind_host: string
   lan_enabled: boolean
   port: number
-  restart_required?: boolean
+  restarting?: boolean
 }
 
 export interface PairingCode {
@@ -182,6 +284,8 @@ export interface Provider {
   /** `null` means an external OAuth provider whose state is unknown. */
   configured: boolean | null
   id: string
+  /** False for providers configured through a local SDK, process, or endpoint config. */
+  key_supported?: boolean
   label: string
   models_source: string
 }

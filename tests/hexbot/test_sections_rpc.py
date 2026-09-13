@@ -24,16 +24,14 @@ def test_bot_lifecycle_uses_profile_gateway(tmp_path, monkeypatch):
 
 
 def test_section_lifecycle_and_dead_live_session(monkeypatch):
-    from hexbot.errors import GatewayError
     calls = []
     dead = {"value": False}
     def fake(method, params, rid=None):
         calls.append((method, params))
         if method == "session.create": return {"session_id": "live1", "stored_session_id": "stored1", "messages": []}
-        if method == "session.history":
-            if dead["value"]: raise GatewayError(4001, "gone")
-            return {"messages": [{"role": "user", "content": "hi"}]}
-        if method == "session.resume": return {"session_id": "live2", "messages": []}
+        if method == "session.resume":
+            if dead["value"]: return {"session_id": "live2", "messages": []}
+            return {"session_id": "live1", "messages": [{"role": "user", "content": "hi"}]}
         if method == "session.list": return {"sessions": []}
         return {}
     monkeypatch.setattr("hexbot.gateway.call", fake)
@@ -59,6 +57,7 @@ def test_rpc_frames_and_real_dispatch(monkeypatch):
     from hexbot.plugin import register
     register(Ctx())
     ok = server.handle_request({"jsonrpc": "2.0", "id": 1, "method": "hexbot.info", "params": {}})
-    assert ok["result"]["version"] == "0.1.0"
+    from hexbot import __version__
+    assert ok["result"]["version"] == __version__
     bad = server.handle_request({"jsonrpc": "2.0", "id": 2, "method": "hexbot.memory.core.set", "params": {"section": "rules", "text": "x" * 4001}})
     assert bad["error"]["code"] == 4221

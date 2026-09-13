@@ -14,11 +14,67 @@ logger = logging.getLogger(__name__)
 
 _UPDATABLE = frozenset(
     {"display_name", "title", "description", "persona", "provider", "model", "avatar",
-     "dream_enabled", "may_write_core", "shareable", "tools", "skills"}
+     "dream_enabled", "may_write_core", "shareable", "tools", "skills",
+     "notify", "approval_mode", "workdir"}
 )
 
-TOOL_TOOLSETS = {"terminal": "terminal", "files": "file", "browser": "browser",
-                 "web_search": "search", "computer_use": "computer_use"}
+#: Tools page keys -> Hermes toolsets. Everything a bot can do on this computer
+#: with no account. Anything that needs an outside service is a connector
+#: (``hexbot.connectors``) and is never listed here.
+TOOL_TOOLSETS = {"terminal": "terminal", "files": "file", "code_execution": "code_execution",
+                 "browser": "browser", "computer_use": "computer_use", "vision": "vision",
+                 "voice": "tts", "message_bots": "hexbot", "delegate": "delegation",
+                 "scheduling": "cronjob"}
+
+BOT_APPROVAL_MODES = ("inherit", "manual", "smart", "off")
+#: The platform name Hexbot sessions resolve their tools under
+#: (``tui_gateway/server.py`` calls ``_get_platform_tools(cfg, "cli")``).
+SESSION_PLATFORM = "cli"
+
+
+def _write_profile_config_key(profile_dir, section: str, key: str, value) -> None:
+    """Set ``section.key`` in one profile's ``config.yaml`` (ruamel round-trip)."""
+    from pathlib import Path
+    from ruamel.yaml import YAML
+    path = Path(profile_dir) / "config.yaml"
+    yaml = YAML(typ="rt")
+    try:
+        data = yaml.load(path.read_text()) if path.exists() else None
+    except Exception:
+        logger.warning("could not parse %s; rewriting the managed key only", path)
+        data = None
+    data = data if isinstance(data, dict) else {}
+    block = data.get(section)
+    if not isinstance(block, dict):
+        block = {}
+        data[section] = block
+    block[key] = value
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as stream:
+        yaml.dump(data, stream)
+
+
+def pin_toolsets(name: str, toolsets) -> None:
+    """Pin exactly which toolsets a bot's sessions load.
+
+    Two keys, because Hermes reads two: ``tools.enabled_toolsets`` is what
+    ``profiles.describe`` reports (and what the UI reads back), while a session
+    resolves its tools from ``platform_toolsets.cli`` (``_get_platform_tools``
+    in ``hermes_cli/tools_config.py``). An explicit platform list turns
+    default-off toolsets (``x_search``, ``video_gen``) on when listed and any
+    listed toolset off when absent. MCP servers are never listed: absent means
+    "every enabled server", and per-bot MCP choice is the server's own
+    ``disabled`` flag. ``hexbot`` is marked known so that absent means off.
+    """
+    from hermes_cli.profiles import get_profile_dir
+    wanted = sorted({str(t) for t in toolsets if str(t) and not str(t).startswith("mcp-")})
+    gateway.call("profiles.configure", {"name": name, "enabled_toolsets": wanted})
+    profile_dir = get_profile_dir(name)
+    _write_profile_config_key(profile_dir, "platform_toolsets", SESSION_PLATFORM, wanted)
+    _write_profile_config_key(profile_dir, "known_plugin_toolsets", SESSION_PLATFORM, ["hexbot"])
+
+
+STATUS_ORDER = ("stopped", "needs_you", "working", "idle")
 
 
 def default_display_name(name: str) -> str:
@@ -44,6 +100,21 @@ def _profile_details(name: str) -> dict:
         return {}
 
 
+def _tools(detail: dict, row) -> list[str]:
+    """The Tools tab keys that are on for this bot.
+
+    Hermes is the source of truth: ``profiles.describe`` resolves the
+    ``enabled_toolsets`` pin (or every toolset when unpinned), so a new bot
+    shows all five on, as it really is. The stored list is the fallback when
+    the profile cannot be described.
+    """
+    toolsets = detail.get("toolsets")
+    if isinstance(toolsets, list) and toolsets:
+        enabled = {t.get("name") for t in toolsets if isinstance(t, dict) and t.get("enabled")}
+        return [key for key, toolset in TOOL_TOOLSETS.items() if toolset in enabled]
+    return json.loads(row["tools_json"] or "[]")
+
+
 def _avatar(name: str):
     try:
         asset = gateway.call("profiles.get_asset", {"name": name, "asset": "avatar"})
@@ -64,12 +135,85 @@ def _skill_names(skills) -> list[str]:
     return sorted(set(names))
 
 
-def _shape(row, *, all_users=False) -> dict:
+def _status(name: str, all_sections: list[dict], live: dict[str, str],
+            incidents: dict[str, dict]) -> tuple[str, dict | None]:
+    """Fold the live signals into one status. Priority: stopped > needs_you > working."""
+    incident = incidents.get(name)
+    if incident is not None:
+        action = None
+        if incident["kind"] == "connector_error" and incident.get("connector"):
+            action = {"kind": "fix_connector", "connector": incident["connector"]}
+        elif incident["kind"] == "turn_failed":
+            action = {"kind": "retry"}
+        return "stopped", {"text": incident["text"], "section_id": incident["section_id"],
+                           "room_id": incident["room_id"], "session_id": incident["session_id"],
+                           "since": incident["created_at"], "action": action}
+    by_status: dict[str, dict] = {}
+    for item in all_sections:
+        state = live.get(item["id"])
+        if state in ("working", "starting", "waiting") and state not in by_status:
+            by_status[state] = item
+    waiting = by_status.get("waiting")
+    if waiting is not None:
+        return "needs_you", {"text": f"Waiting on you in “{waiting['title']}”.",
+                             "section_id": waiting["id"], "room_id": None,
+                             "session_id": waiting.get("live_session_id"),
+                             "since": waiting.get("updated_at"), "action": None}
+    room_wait = _room_waiting(name)
+    if room_wait is not None:
+        return "needs_you", room_wait
+    working = by_status.get("working") or by_status.get("starting")
+    if working is not None:
+        return "working", {"text": f"Working in “{working['title']}”.",
+                           "section_id": working["id"], "room_id": None,
+                           "session_id": working.get("live_session_id"),
+                           "since": working.get("updated_at"), "action": None}
+    room_turn = _room_running(name)
+    if room_turn is not None:
+        return "working", room_turn
+    return "idle", None
+
+
+def _room_waiting(name: str) -> dict | None:
+    """The newest room whose latest event is this bot tagging a human."""
+    with db.transaction() as conn:
+        row = conn.execute(
+            "SELECT e.room_id, e.created_at, r.name AS room_name FROM room_events e "
+            "JOIN rooms r ON r.id=e.room_id WHERE e.kind='waiting.human' AND e.actor_id=? "
+            "AND e.seq=(SELECT MAX(seq) FROM room_events WHERE room_id=e.room_id) "
+            "AND r.archived_at IS NULL ORDER BY e.created_at DESC LIMIT 1", (name,)).fetchone()
+    if row is None:
+        return None
+    return {"text": f"Waiting on you in “{row['room_name']}”.", "section_id": None,
+            "room_id": row["room_id"], "session_id": None, "since": row["created_at"],
+            "action": None}
+
+
+def _room_running(name: str) -> dict | None:
+    with db.transaction() as conn:
+        row = conn.execute(
+            "SELECT t.room_id, t.started_at, r.name AS room_name FROM room_turns t "
+            "JOIN rooms r ON r.id=t.room_id WHERE t.bot=? AND t.status='running' "
+            "ORDER BY t.started_at DESC LIMIT 1", (name,)).fetchone()
+    if row is None:
+        return None
+    return {"text": f"Working in “{row['room_name']}”.", "section_id": None,
+            "room_id": row["room_id"], "session_id": None, "since": row["started_at"],
+            "action": None}
+
+
+def _shape(row, *, all_users=False, live=None, incidents=None) -> dict:
+    from hexbot.incidents import open_incidents
     detail = _profile_details(row["name"])
     model = detail.get("model") or {}
     all_sections = sections.list_sections(
         row["name"], include_archived=True, all_users=all_users)
     recent = [item for item in all_sections if item["archived_at"] is None][:2]
+    if live is None:
+        live = sections.live_statuses()
+    if incidents is None:
+        incidents = open_incidents([row["name"]])
+    status, detail_row = _status(row["name"], all_sections, live, incidents)
     return {
         "name": row["name"],
         "display_name": row["display_name"] or default_display_name(row["name"]),
@@ -77,10 +221,15 @@ def _shape(row, *, all_users=False) -> dict:
         "description": row["description"] or detail.get("description", ""),
         "persona": detail.get("soul", ""),
         "skills": json.loads(row["skills_json"] or "[]"),
-        "tools": json.loads(row["tools_json"] or "[]"),
+        "tools": _tools(detail, row),
         "dream_enabled": bool(row["dream_enabled"]),
         "may_write_core": bool(row["may_write_core"]),
         "shareable": bool(row["shareable"]),
+        "notify": bool(row["notify"]),
+        "approval_mode": row["approval_mode"] or "inherit",
+        "workdir": row["workdir"] or None,
+        "status": status,
+        "status_detail": detail_row,
         "provider": model.get("provider"),
         "model": model.get("default"),
         "avatar": _avatar(row["name"]),
@@ -114,7 +263,10 @@ def list_bots(*, all_users=False) -> list[dict]:
         if owner is not None:
             sql += " WHERE owner_id=?"; args.append(owner)
         rows = conn.execute(sql + " ORDER BY last_activity_at DESC, name ASC", args).fetchall()
-    return [_shape(row, all_users=all_users) for row in rows]
+    from hexbot.incidents import open_incidents
+    live = sections.live_statuses()
+    incidents = open_incidents([row["name"] for row in rows])
+    return [_shape(row, all_users=all_users, live=live, incidents=incidents) for row in rows]
 
 
 def get_bot(name: str, *, all_users=False) -> dict:
@@ -181,8 +333,22 @@ def update_bot(name: str, **patch) -> dict:
     if "tools" in patch:
         tools = patch["tools"]
         if not isinstance(tools, list) or any(item not in TOOL_TOOLSETS for item in tools):
-            raise HexbotError(4202, "tools must contain terminal, files, browser, web_search, or computer_use")
-        configure["enabled_toolsets"] = [TOOL_TOOLSETS[item] for item in dict.fromkeys(tools)]
+            raise HexbotError(4202, f"tools must be a list of {', '.join(TOOL_TOOLSETS)}")
+        # ``enabled_toolsets`` is an allowlist, so pin the toolsets the UI does
+        # not manage (memory, skills, web, image_gen, mcp-*, ...) exactly as
+        # they are today and only swap the ones the Tools page shows.
+        managed = set(TOOL_TOOLSETS.values())
+        current = {t["name"] for t in _profile_details(name).get("toolsets") or []
+                   if isinstance(t, dict) and t.get("enabled") and t.get("name")}
+        chosen = {TOOL_TOOLSETS[item] for item in tools}
+        pin_toolsets(name, (current - managed) | chosen)
+    if "approval_mode" in patch and patch["approval_mode"] not in BOT_APPROVAL_MODES:
+        raise HexbotError(4202, "approval_mode must be inherit, manual, smart, or off")
+    if "workdir" in patch and patch["workdir"] is not None and (
+            not isinstance(patch["workdir"], str) or not patch["workdir"].strip()):
+        raise HexbotError(4202, "workdir must be a path or null")
+    if "notify" in patch and not isinstance(patch["notify"], bool):
+        raise HexbotError(4202, "notify must be a boolean")
     if "skills" in patch:
         skills = patch["skills"]
         if not isinstance(skills, list) or any(not isinstance(item, str) for item in skills):
@@ -210,10 +376,12 @@ def update_bot(name: str, **patch) -> dict:
         except (OSError, FileNotFoundError):
             logger.warning("could not update profile.yaml for %s", name, exc_info=True)
     values = dict(patch)
+    if "workdir" in patch and patch["workdir"] is not None:
+        values["workdir"] = patch["workdir"].strip()
     values["tools_json"] = json.dumps(list(dict.fromkeys(patch.get("tools", [])))) if "tools" in patch else None
     values["skills_json"] = json.dumps(list(dict.fromkeys(patch.get("skills", [])))) if "skills" in patch else None
     columns = [key for key in ("display_name", "title", "description", "dream_enabled",
-                               "shareable",
+                               "shareable", "notify", "approval_mode", "workdir",
                                "may_write_core", "tools_json", "skills_json")
                if key in patch or key.removesuffix("_json") in patch]
     if columns:
@@ -221,11 +389,27 @@ def update_bot(name: str, **patch) -> dict:
             assignments = ",".join(f"{key}=?" for key in columns)
             conn.execute(f"UPDATE bots SET {assignments},updated_at=? WHERE name=?",
                          [values[key] for key in columns] + [time.time(), name])
+    if "approval_mode" in patch or "workdir" in patch:
+        # The per-bot override lives in the bots row; the mirror reads it back
+        # so the profile's config.yaml follows without a second code path.
+        from hermes_cli.profiles import get_profile_dir
+        try:
+            mirror_deployment_config(get_profile_dir(name))
+        except (OSError, FileNotFoundError):
+            logger.warning("could not mirror settings into %s", name, exc_info=True)
     result = get_bot(name)
     if "dream_enabled" in patch:
         from hexbot.dreaming import ensure_dream_job
         ensure_dream_job(result)
     return result
+
+
+def clear_status(name: str) -> dict:
+    """Close every open incident for the bot and return it."""
+    from hexbot.incidents import resolve
+    _row(name)
+    resolve(bot=name)
+    return get_bot(name)
 
 
 def busy_sections(name: str) -> list[tuple[str, str]]:

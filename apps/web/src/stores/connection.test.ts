@@ -13,6 +13,18 @@ describe('initial connection target', () => {
     })
     delete window.hexbot
     delete window.__HERMES_AUTH_REQUIRED__
+    vi.unstubAllEnvs()
+  })
+
+  it('adopts the dev daemon named by VITE_HEXBOT_ORIGIN', () => {
+    vi.stubEnv('VITE_HEXBOT_ORIGIN', 'http://127.0.0.1:9119')
+
+    expect(readStoredTarget()).toEqual({ kind: 'local' })
+    expect(localStorage.getItem('hexbot.target')).toBeNull()
+  })
+
+  it('lands on the connect screen when nothing names a daemon', () => {
+    expect(readStoredTarget()).toBeNull()
   })
 
   it('adopts the origin when the daemon injected its auth flag', () => {

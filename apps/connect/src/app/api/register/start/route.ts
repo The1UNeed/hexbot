@@ -14,7 +14,7 @@ export async function POST(request: Request) {
   let code = userCode();
   for (let i = 0; i < 20 && await getStore().findRegistrationByUserCode(code); i++) code = userCode();
   if (await getStore().findRegistrationByUserCode(code)) return jsonError("unavailable", "Could not allocate a registration code", 503);
-  await getStore().createRegistration({ userCode: code, deviceCodeHash: hashToken(deviceCode), daemonName: body.daemon_name, platform: body.platform, ingressPort: Number(process.env.CONNECT_INGRESS_PORT ?? 8000), expiresAt: new Date(Date.now() + 10 * 60_000) });
+  await getStore().createRegistration({ userCode: code, deviceCodeHash: hashToken(deviceCode), daemonName: body.daemon_name, platform: body.platform, ingressPort: Number(process.env.CONNECT_INGRESS_PORT ?? 9119), expiresAt: new Date(Date.now() + 10 * 60_000) });
   const origin = process.env.CONNECT_BASE_URL ?? new URL(request.url).origin;
   return NextResponse.json({ device_code: deviceCode, user_code: code, verify_url: `${origin}/connect/approve?code=${encodeURIComponent(code)}`, interval: 5 });
 }

@@ -14,7 +14,8 @@ Two identifiers exist for every section and they are never interchangeable:
     ``prompt.submit`` take; passing a stored id to those returns Hermes error
     4001 "session not found".
 
-``_LIVE`` maps stored -> live for the sections this process has opened, and is
+``_LIVE`` maps stored -> live for the sections this process has opened. It is
+refreshed by every ``open_section`` (a ``session.resume`` on the stored id) and
 dropped for a section as soon as Hermes reports 4001 for its live id.
 """
 
@@ -175,26 +176,25 @@ def create_section(bot: str, title=None) -> dict:
 
 
 def open_section(section_id: str) -> dict:
-    """Return the section and its messages, resuming the stored session if needed."""
+    """Return the section and its messages, attaching the caller to its live session.
+
+    Always ``session.resume`` on the stored id. When Hermes still holds the
+    session it reuses it (same agent, warm prompt cache), rebinds it to the
+    calling transport and cancels the orphan reap that a page reload armed;
+    otherwise it rebuilds the session from the store. A ``session.history``
+    probe would leave a reloaded page attached to nothing: the parked session
+    is reaped twenty seconds later and the next ``prompt.submit`` fails with
+    4001 "session not found".
+    """
     row = _get(section_id)
     from hexbot.usage import require_budget
     require_budget(row["owner_id"])
-    live = _LIVE.get(section_id)
-    if live:
-        try:
-            messages = gateway.call("session.history", {"session_id": live}).get("messages", [])
-            return {"section": _row_shape(row, {"message_count": len(messages)}),
-                    "messages": messages}
-        except GatewayError as exc:
-            if exc.code != 4001:
-                raise
-            logger.info("live session %s for section %s is gone; resuming", live, section_id)
-            _forget_live(section_id)
     result = gateway.call("session.resume", {"session_id": section_id, "profile": row["bot"]})
     live = result.get("session_id")
     if not live:
         raise HexbotError(5201, f"session.resume returned no session_id for {section_id}")
-    _remember_live(section_id, live)
+    if _LIVE.get(section_id) != live:
+        _remember_live(section_id, live)
     _flush_pending_title(section_id, live, row["title"])
     messages = result.get("messages", [])
     return {"section": _row_shape(_get(section_id), {"message_count": len(messages)}),
@@ -294,7 +294,14 @@ def delete_section(section_id: str, purge_memory=True) -> bool:
     row = _get(section_id)
     close_section(section_id)
     if purge_memory:
-        gateway.call("session.delete", {"session_id": section_id, "profile": row["bot"]})
+        try:
+            gateway.call("session.delete", {"session_id": section_id, "profile": row["bot"]})
+        except GatewayError as exc:
+            # A section that never had a message has no stored Hermes session
+            # (Hermes persists on the first prompt), so there is nothing to
+            # purge. session.delete says 4007 for that; 4001 is the live-id form.
+            if exc.code not in (4001, 4007):
+                raise
         from hexbot.memory import purge_entries
         purge_entries(section_id=section_id)
     with db.transaction() as conn:

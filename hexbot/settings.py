@@ -92,6 +92,7 @@ def mirror_deployment_config(profile_dir: Path) -> None:
     Round-trips with ruamel so unrelated keys, comments and ordering survive.
     """
     settings = get_settings()
+    override = _bot_overrides(Path(profile_dir).name)
     path = Path(profile_dir) / "config.yaml"
     yaml = YAML(typ="rt")
     try:
@@ -100,8 +101,10 @@ def mirror_deployment_config(profile_dir: Path) -> None:
         logger.warning("could not parse %s; rewriting the managed keys only", path)
         data = None
     data = data if isinstance(data, dict) else {}
-    data.setdefault("approvals", {})["mode"] = settings["approval_mode"]
-    data.setdefault("terminal", {})["cwd"] = str(Path(settings["workspace_dir"]).expanduser())
+    mode = override.get("approval_mode") or settings["approval_mode"]
+    data.setdefault("approvals", {})["mode"] = mode
+    workdir = override.get("workdir") or settings["workspace_dir"]
+    data.setdefault("terminal", {})["cwd"] = str(Path(workdir).expanduser())
     choice = settings["auto_approver_model"]
     if choice:
         provider, _, model = str(choice).partition("/")
@@ -116,6 +119,18 @@ def mirror_deployment_config(profile_dir: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as stream:
         yaml.dump(data, stream)
+
+
+def _bot_overrides(name: str) -> dict:
+    """Per-bot approval mode and working directory, when the bot row has them."""
+    db.migrate()
+    with db.transaction() as conn:
+        row = conn.execute("SELECT approval_mode, workdir FROM bots WHERE name=?",
+                           (name,)).fetchone()
+    if row is None:
+        return {}
+    mode = row["approval_mode"] if row["approval_mode"] in APPROVAL_MODES else None
+    return {"approval_mode": mode, "workdir": row["workdir"] or None}
 
 
 def apply_settings_everywhere() -> None:

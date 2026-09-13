@@ -4,7 +4,6 @@
  */
 
 import { create } from 'zustand'
-import { useShallow } from 'zustand/react/shallow'
 
 import {
   devicesList,
@@ -113,14 +112,4 @@ export const useSettings = create<SettingsState>((set, get) => ({
 
 export function settingsActions(): SettingsState {
   return useSettings.getState()
-}
-
-export function useConfiguredProviders(): Provider[] {
-  return useSettings(
-    useShallow((state: SettingsState) => state.providers.filter(item => item.configured === true))
-  )
-}
-
-export function useHasProviderKey(): boolean {
-  return useSettings(state => state.providers.some(provider => provider.configured === true))
 }

@@ -82,3 +82,21 @@ def test_local_device_reuse_and_missing_file_rotation(isolated_home):
     path.unlink()
     rotated, rotated_token = local_device()
     assert rotated.id != first.id and rotated_token != token
+
+
+def test_serve_mints_local_device_token_before_listening(isolated_home, monkeypatch):
+    from hexbot import serve
+    from hexbot.pairing import verify_token
+
+    seen = []
+    monkeypatch.setattr("hermes_cli.main.main",
+                        lambda: seen.append((isolated_home / "local-device.token").exists()))
+    monkeypatch.setattr(serve, "_start_cron_ticker", lambda: None)
+    monkeypatch.setattr("hexbot.connect.start_daemon", lambda port: None)
+    monkeypatch.setattr("hexbot.connect.stop_daemon", lambda: None)
+
+    serve.run(port=9131, lan=True)
+
+    assert seen == [True]
+    token = (isolated_home / "local-device.token").read_text().strip()
+    assert verify_token(token) is not None

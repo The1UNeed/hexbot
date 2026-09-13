@@ -18,7 +18,6 @@ export function includePythonSource(repositoryRoot, source) {
   const path = relative(repositoryRoot, source)
   const parts = path.split(/[\\/]/)
   if (parts.length === 1 && excludedRoots.has(parts[0])) return false
-  if (parts.join('/') === 'docker/hexbot/context') return false
   return !parts.some(
     part =>
       part === '__pycache__' ||

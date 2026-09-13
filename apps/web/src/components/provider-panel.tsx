@@ -2,7 +2,6 @@ import { Check, Copy, ExternalLink } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import {
-  modelsList,
   providersLoginCancel,
   providersLoginPoll,
   providersLoginStart,
@@ -17,6 +16,10 @@ import { Input } from './ui/input'
 /** Subscription providers sign in through the browser; everything else takes a key. */
 export function isSubscription(provider: Pick<Provider, 'auth_type'>): boolean {
   return provider.auth_type.startsWith('oauth')
+}
+
+export function supportsApiKey(provider: Pick<Provider, 'key_supported'>): boolean {
+  return provider.key_supported !== false
 }
 
 function openInBrowser(url: string) {
@@ -107,7 +110,6 @@ export function ProviderPanel({
 
     try {
       await providersSetKey(provider.id, key.trim())
-      await modelsList(provider.id)
       setKey('')
       await onConfigured()
     } catch (reason) {
@@ -211,6 +213,18 @@ export function ProviderPanel({
             {error}
           </p>
         ) : null}
+      </div>
+    )
+  }
+
+  if (!supportsApiKey(provider)) {
+    return (
+      <div className="space-y-2 text-secondary text-muted">
+        <p>
+          {provider.id === 'custom'
+            ? "Set model.base_url in the daemon's config.yaml, then refresh this page."
+            : 'This provider uses credentials managed outside Hexbot. Configure them on the daemon, then refresh this page.'}
+        </p>
       </div>
     )
   }

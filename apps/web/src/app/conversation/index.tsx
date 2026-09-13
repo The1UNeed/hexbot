@@ -1,15 +1,5 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
-import {
-  Check,
-  ChevronDown,
-  Copy,
-  File,
-  MoreHorizontal,
-  PanelRight,
-  RotateCcw,
-  Trash2,
-  X
-} from 'lucide-react'
+import { Check, Copy, File, MoreHorizontal, PanelRight, RotateCcw, Trash2, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -20,8 +10,6 @@ import { Chip } from '../../components/ui/chip'
 import { Dialog } from '../../components/ui/dialog'
 import { Input } from '../../components/ui/input'
 import { Menu } from '../../components/ui/menu'
-import { Spinner } from '../../components/ui/spinner'
-import { Thinking } from '../../components/ui/thinking'
 import {
   approvalRespond,
   attachFile,
@@ -33,22 +21,17 @@ import { avatarSrc } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { toMillis } from '../../lib/time'
-import type {
-  ApprovalChoice,
-  ApprovalRequest,
-  Attachment,
-  Bot,
-  Message,
-  ToolCall
-} from '../../lib/types'
+import type { ApprovalChoice, ApprovalRequest, Attachment, Bot } from '../../lib/types'
 import { useBot } from '../../stores/bots'
-import { sectionsActions, useLiveSessionId, useSection } from '../../stores/sections'
+import { draftsActions } from '../../stores/drafts'
+import { sectionsActions, useLiveSessionId, useSection, useSections } from '../../stores/sections'
 import { useSettings } from '../../stores/settings'
-import { transcriptActions, useTranscript } from '../../stores/transcripts'
+import { transcriptActions, type TranscriptMessage, useTranscript } from '../../stores/transcripts'
 import { uiActions, useUi } from '../../stores/ui'
 
 import { composerFieldClass, ComposerShell } from './composer'
 import { RoomConversation } from './room'
+import { WorkStatus } from './work-status'
 
 const avatarData = (bot?: Bot) => avatarSrc(bot?.avatar)
 
@@ -110,8 +93,13 @@ export function BubbleActions({
   )
 }
 
+/** Grey for bots. Humans get the inverse (`userBubbleClass`), like Grok Bot. */
 export const bubbleClass =
-  'hex-bubble min-w-0 max-w-[min(78%,42rem)] rounded-bubble bg-surface-2 px-4 py-2.5 leading-[1.5] break-words'
+  'hex-bubble min-w-0 max-w-full rounded-bubble bg-surface-2 px-3.5 py-2 leading-[1.5] break-words'
+export const userBubbleClass = cn(bubbleClass, 'bg-foreground text-background')
+
+/** The transcript column: full width with a slim gutter, capped only on very wide windows. */
+export const transcriptClass = 'mx-auto max-w-5xl px-3 py-2'
 
 function CodeBlock({ children, className }: { children?: React.ReactNode; className?: string }) {
   const language = /language-([^ ]+)/.exec(className ?? '')?.[1]
@@ -173,47 +161,6 @@ export function Markdown({ text }: { text: string }) {
   )
 }
 
-function ToolRow({ call }: { call: ToolCall }) {
-  const [open, setOpen] = useState(false)
-
-  const format = (value: unknown) =>
-    typeof value === 'string' ? value : JSON.stringify(value, null, 2)
-
-  return (
-    <div className="border-t border-foreground/8 first:border-t-0">
-      <button
-        aria-expanded={open}
-        className="flex w-full items-center gap-2 py-2 text-left text-[length:var(--text-secondary)]"
-        onClick={() => setOpen(value => !value)}
-        type="button"
-      >
-        {call.status === 'running' ? (
-          <Spinner size="sm" />
-        ) : (
-          <Check className={call.status === 'error' ? 'text-danger' : 'text-success'} size={13} />
-        )}
-        <span className="font-medium">{call.name}</span>
-        <span className="min-w-0 flex-1 truncate text-muted">
-          {call.summary ?? (call.status === 'running' ? 'Running…' : format(call.result))}
-        </span>
-        <ChevronDown className={open ? 'rotate-180' : ''} size={13} />
-      </button>
-      {open ? (
-        <div className="mb-2 grid gap-2">
-          <pre className="overflow-auto rounded-control bg-background/70 p-2 font-mono text-[length:var(--text-meta)]">
-            {format(call.args)}
-          </pre>
-          {call.result !== null ? (
-            <pre className="max-h-60 overflow-auto rounded-control bg-background/70 p-2 font-mono text-[length:var(--text-meta)]">
-              {format(call.result)}
-            </pre>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
 function Attachments({
   attachments,
   onImage
@@ -248,26 +195,127 @@ function Attachments({
   )
 }
 
-function MessageRow({
+/**
+ * A Stopped card built from the bot's `status_detail` for a section opened
+ * after the incident fired (the live event only reaches open transcripts).
+ * Null once the transcript carries its own error row.
+ */
+export function stoppedCardFor(
+  bot: Bot | undefined,
+  sectionId: null | string,
+  messages: TranscriptMessage[]
+): null | TranscriptMessage {
+  const detail = bot?.status === 'stopped' ? bot.status_detail : null
+
+  if (!detail || !sectionId || detail.section_id !== sectionId) {
+    return null
+  }
+
+  if (messages.some(message => message.error)) {
+    return null
+  }
+
+  return {
+    attachments: [],
+    createdAt: detail.since,
+    error: detail.text,
+    errorDetail: {
+      connector: detail.action?.kind === 'fix_connector' ? detail.action.connector : null
+    },
+    id: `status-${sectionId}`,
+    role: 'system',
+    streaming: false,
+    text: '',
+    toolCalls: []
+  }
+}
+
+/** The inline card for a turn that did not finish (design: "Status in the chat"). */
+/** "notion" -> "Notion", "web_search" -> "Web search", "mcp:github" -> "github". */
+export function humanConnector(id: null | string | undefined): string {
+  if (!id) {
+    return ''
+  }
+
+  if (id.startsWith('mcp:')) {
+    return id.slice(4)
+  }
+
+  const words = id.replace(/_/g, ' ')
+
+  return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+export function StoppedCard({
+  message,
+  name,
+  onFix,
+  onRetry
+}: {
+  message: TranscriptMessage
+  name: string
+  onFix?: (connector: string) => void
+  onRetry: () => void
+}) {
+  const connector = message.errorDetail?.connector ?? null
+
+  const connectorName = message.errorDetail?.connectorName ?? humanConnector(connector)
+
+  return (
+    <div
+      className="my-1 flex max-w-[80%] flex-col gap-2 rounded-panel bg-surface-2/70 px-3 py-2.5"
+      data-testid="stopped-card"
+      role="alert"
+    >
+      <div className="flex items-center gap-2">
+        <span aria-hidden className="size-2 shrink-0 rounded-full bg-danger" />
+        <span className="font-medium">{name} stopped</span>
+        {message.createdAt > 0 ? (
+          <time className="ml-auto text-[length:var(--text-meta)] text-muted">
+            {new Date(toMillis(message.createdAt)).toLocaleTimeString([], {
+              hour: 'numeric',
+              minute: '2-digit'
+            })}
+          </time>
+        ) : null}
+      </div>
+      <p className="text-[length:var(--text-secondary)]">{message.error}</p>
+      <div className="flex gap-2">
+        {connector && onFix ? (
+          <Button onClick={() => onFix(connector)} size="sm" variant="primary">
+            Fix {connectorName}
+          </Button>
+        ) : null}
+        <Button onClick={onRetry} size="sm">
+          Retry
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+export function MessageRow({
   bot,
   message,
+  onFix,
   onImage,
   onRetry
 }: {
   bot?: Bot
   firstInRun: boolean
-  message: Message
+  message: TranscriptMessage
+  onFix?: (connector: string) => void
   onImage: (source: string) => void
   onRetry: () => void
 }) {
   if (message.error) {
     return (
-      <div className="flex items-center justify-center gap-2 py-3 text-[length:var(--text-secondary)] text-danger">
-        <span>{message.error}</span>
-        <button className="underline" onClick={onRetry} type="button">
-          Retry
-        </button>
-      </div>
+      <StoppedCard
+        message={message}
+        name={bot?.display_name ?? 'The bot'}
+        onFix={onFix}
+        onRetry={onRetry}
+      />
     )
   }
 
@@ -276,10 +324,6 @@ function MessageRow({
   }
 
   const assistant = message.role === 'assistant'
-
-  if (assistant && message.streaming && !message.text && message.toolCalls.length === 0) {
-    return <Thinking image={avatarData(bot)} name={bot?.display_name ?? 'Bot'} />
-  }
 
   const copy = {
     icon: <Copy size={14} />,
@@ -291,41 +335,47 @@ function MessageRow({
     ? [copy, { icon: <RotateCcw size={14} />, label: 'Retry', onClick: onRetry }]
     : [copy]
 
+  const hasBody = Boolean(message.text || message.attachments.length)
+  const name = bot?.display_name ?? 'Bot'
+
+  // Same row as the room view: the bot's face beside its bubble, its name on top.
   return (
     <article
-      className={cn('group flex gap-1 py-1', assistant ? 'justify-start' : 'flex-row-reverse')}
+      className={cn('group flex gap-2 py-1', assistant ? 'justify-start' : 'flex-row-reverse')}
       data-testid={assistant ? 'bot-message' : 'user-message'}
     >
-      <div className={bubbleClass}>
-        {message.thinking ? (
-          <details className="mb-2 text-[length:var(--text-secondary)] text-muted">
-            <summary className="cursor-pointer select-none">Thinking</summary>
-            <div className="mt-1 whitespace-pre-wrap border-l border-foreground/15 pl-3">
-              {message.thinking}
-            </div>
-          </details>
-        ) : null}
-        {message.text ? (
-          <div className="hex-prose">
-            <Markdown text={message.text} />
-            {message.streaming ? (
-              <span
-                aria-label="Streaming"
-                className="ml-0.5 inline-block h-4 w-[2px] animate-pulse rounded bg-foreground/70 align-middle"
-              />
+      {assistant && hasBody ? (
+        <Avatar
+          className={cn('mt-1', message.streaming && 'hex-think')}
+          image={avatarData(bot)}
+          mood={message.streaming ? 'working' : undefined}
+          name={name}
+          size="sm"
+        />
+      ) : null}
+      <div
+        className={cn('flex min-w-0 max-w-[80%] flex-col', assistant ? 'items-start' : 'items-end')}
+      >
+        {hasBody ? (
+          <div className={assistant ? bubbleClass : userBubbleClass}>
+            {assistant ? (
+              <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
+                {name}
+              </div>
             ) : null}
+            {message.text ? (
+              <div className="hex-prose">
+                <Markdown text={message.text} />
+              </div>
+            ) : null}
+            <Attachments attachments={message.attachments} onImage={onImage} />
           </div>
         ) : null}
-        {message.toolCalls.length ? (
-          <div className={message.text ? 'mt-2 border-t border-foreground/8' : ''}>
-            {message.toolCalls.map(call => (
-              <ToolRow call={call} key={call.toolId} />
-            ))}
-          </div>
+        {assistant ? (
+          <WorkStatus face={!hasBody} image={avatarData(bot)} message={message} name={name} />
         ) : null}
-        <Attachments attachments={message.attachments} onImage={onImage} />
       </div>
-      {message.streaming ? null : <BubbleActions actions={actions} />}
+      {message.streaming || !hasBody ? null : <BubbleActions actions={actions} />}
     </article>
   )
 }
@@ -337,7 +387,7 @@ function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
   }
 
   return (
-    <div className="hex-bubble my-2 max-w-[min(78%,42rem)] rounded-bubble border border-warning/40 bg-surface-2 px-4 py-3">
+    <div className="hex-bubble my-2 max-w-[80%] rounded-bubble border border-warning/40 bg-surface-2 px-4 py-3">
       <div className="font-semibold">Approval needed</div>
       {approval.command ? (
         <pre className="my-2 overflow-auto rounded-control bg-background/70 p-2 font-mono text-[length:var(--text-secondary)]">
@@ -373,10 +423,8 @@ function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
 }
 
 export function suggestedPrompts(description: string, name = 'this bot'): string[] {
-  const focus = description.trim().replace(/[.!?].*$/, '')
-
-  const first = focus
-    ? `What can you help me with when it comes to ${focus.charAt(0).toLowerCase()}${focus.slice(1)}?`
+  const first = description.trim()
+    ? `What can you help me with, ${name}? Give me two examples.`
     : `What can you help me with, ${name}?`
 
   return [
@@ -384,6 +432,33 @@ export function suggestedPrompts(description: string, name = 'this bot'): string
     'Tell me what you remember about me so far.',
     'Suggest three things we could do together right now.'
   ]
+}
+
+/**
+ * Submit a prompt, and if the daemon no longer holds the live session (it was
+ * reaped after a reload or a daemon restart), reopen the section once and
+ * resend on the fresh session. Any other failure lands in the transcript as
+ * an error row instead of an unhandled rejection.
+ */
+async function submitOrReopen(sessionId: string, sectionId: string | null, text: string) {
+  try {
+    await promptSubmit(sessionId, text)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+
+    if (sectionId && /session not found/i.test(message)) {
+      const reopened = await sectionsActions().open(sectionId)
+
+      if (reopened.liveSessionId && reopened.liveSessionId !== sessionId) {
+        transcriptActions().appendUserMessage(reopened.liveSessionId, text)
+        await promptSubmit(reopened.liveSessionId, text)
+
+        return
+      }
+    }
+
+    transcriptActions().errorEvent(sessionId, message)
+  }
 }
 
 interface DraftAttachment {
@@ -394,14 +469,16 @@ interface DraftAttachment {
 
 function Composer({
   bot,
+  sectionId,
   sessionId,
   streaming
 }: {
   bot?: Bot
+  sectionId: string | null
   sessionId: string | null
   streaming: boolean
 }) {
-  const [text, setText] = useState('')
+  const [text, setText] = useState(() => (sectionId ? draftsActions().byId[sectionId] : '') ?? '')
   const [files, setFiles] = useState<DraftAttachment[]>([])
   const [sending, setSending] = useState(false)
   const picker = useRef<HTMLInputElement>(null)
@@ -442,9 +519,13 @@ function Composer({
       }))
 
       transcriptActions().appendUserMessage(sessionId, text.trim(), attachments)
-      await promptSubmit(sessionId, text.trim())
+      await submitOrReopen(sessionId, sectionId, text.trim())
       setText('')
       setFiles([])
+
+      if (sectionId) {
+        draftsActions().clear(sectionId)
+      }
     } finally {
       setSending(false)
     }
@@ -504,7 +585,13 @@ function Composer({
         className={composerFieldClass}
         disabled={!sessionId}
         id="conversation-composer"
-        onChange={event => setText(event.target.value)}
+        onChange={event => {
+          setText(event.target.value)
+
+          if (sectionId) {
+            draftsActions().set(sectionId, event.target.value)
+          }
+        }}
         onKeyDown={event => {
           if (event.key === 'Enter' && !event.shiftKey) {
             event.preventDefault()
@@ -550,6 +637,7 @@ function BotConversation() {
   const approvals = useMemo(() => transcript?.approvals ?? [], [transcript?.approvals])
   const streaming = Boolean(transcript?.streamingMessageId)
   const [unavailable, setUnavailable] = useState<string | null>(null)
+  const stoppedHere = stoppedCardFor(bot, params.section ?? null, messages)
   useEffect(() => {
     if (params.section && !liveId && unavailable !== params.section) {
       sectionsActions()
@@ -616,6 +704,16 @@ function BotConversation() {
     }
   }
 
+  const fixConnector = (connector: string) => {
+    if (bot) {
+      void navigate({
+        params: { bot: bot.name, tab: 'connectors' },
+        search: { connector },
+        to: '/b/$bot/settings/$tab'
+      })
+    }
+  }
+
   const rename = async () => {
     if (section && title.trim() && title.trim() !== section.title) {
       await sectionsActions().rename(section.id, title.trim())
@@ -641,6 +739,14 @@ function BotConversation() {
     }
 
     await sectionsActions().archive(section.id)
+
+    // Leave the archived section: go to the bot's latest open one, or start a fresh one.
+    const next = Object.values(useSections.getState().byId)
+      .filter(item => item.bot === section.bot && !item.archived_at && item.id !== section.id)
+      .sort((a, b) => toMillis(b.updated_at) - toMillis(a.updated_at))[0]
+
+    const target = next ?? (await sectionsActions().create(section.bot))
+    void navigate({ params: { bot: section.bot, section: target.id }, to: '/b/$bot/s/$section' })
   }
 
   const remove = async () => {
@@ -674,7 +780,7 @@ function BotConversation() {
         }
       }}
     >
-      <header className="hex-drag flex h-11 shrink-0 items-center gap-2 px-4">
+      <header className="hex-drag flex h-11 shrink-0 items-center gap-2 px-4 max-[700px]:pl-12">
         <Avatar image={avatarData(bot)} name={bot?.display_name ?? params.bot ?? 'Bot'} size="xs" />
         <div className="hex-no-drag flex min-w-0 flex-1 items-baseline gap-2">
           <span className="truncate text-[length:var(--text-secondary)] font-semibold">
@@ -682,6 +788,7 @@ function BotConversation() {
           </span>
           {editing ? (
             <Input
+              aria-label="Section title"
               autoFocus
               className="h-6 max-w-xs rounded-[6px] px-1.5 text-[length:var(--text-secondary)]"
               onBlur={() => void rename()}
@@ -830,7 +937,7 @@ function BotConversation() {
             </div>
           </div>
         ) : (
-          <div className="mx-auto max-w-3xl px-4 py-2">
+          <div className={transcriptClass}>
             {messages.length > visible ? (
               <button
                 className="mx-auto mb-3 block rounded-full px-3 py-1 text-[length:var(--text-secondary)] text-muted hover:bg-surface-2 hover:text-foreground"
@@ -843,10 +950,14 @@ function BotConversation() {
             {shown.map((message, index) => {
               const previous = shown[index - 1]
 
+              // Restored history carries no times (createdAt 0): draw no separator
+              // for it, and none right after it, so a reload never splits a turn.
               const separator =
-                !previous ||
-                dayKey(previous.createdAt) !== dayKey(message.createdAt) ||
-                toMillis(message.createdAt) - toMillis(previous.createdAt) > 20 * 60_000
+                message.createdAt > 0 &&
+                (!previous ||
+                  (previous.createdAt > 0 &&
+                    (dayKey(previous.createdAt) !== dayKey(message.createdAt) ||
+                      toMillis(message.createdAt) - toMillis(previous.createdAt) > 20 * 60_000)))
 
               return (
                 <div key={message.id}>
@@ -855,12 +966,21 @@ function BotConversation() {
                     bot={bot}
                     firstInRun={!previous || previous.role !== message.role}
                     message={message}
+                    onFix={fixConnector}
                     onImage={setLightbox}
                     onRetry={retry}
                   />
                 </div>
               )
             })}
+            {stoppedHere ? (
+              <StoppedCard
+                message={stoppedHere}
+                name={bot?.display_name ?? 'Bot'}
+                onFix={fixConnector}
+                onRetry={retry}
+              />
+            ) : null}
             {approvals.map(approval => (
               <ApprovalCard approval={approval} key={approval.requestId} />
             ))}
@@ -880,7 +1000,13 @@ function BotConversation() {
           Jump to latest
         </button>
       ) : null}
-      <Composer bot={bot} sessionId={liveId} streaming={streaming} />
+      <Composer
+        bot={bot}
+        key={params.section}
+        sectionId={params.section ?? null}
+        sessionId={liveId}
+        streaming={streaming}
+      />
       <Dialog
         onOpenChange={open => !open && setLightbox(null)}
         open={Boolean(lightbox)}

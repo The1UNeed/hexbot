@@ -47,7 +47,7 @@ export function Button({
   return (
     <button
       className={cn(buttonVariants({ size, variant }), className)}
-      disabled={disabled ?? busy}
+      disabled={disabled || busy}
       type={type}
       {...props}
     >

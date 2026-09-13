@@ -1,8 +1,8 @@
-import { createRootRoute, Outlet } from '@tanstack/react-router'
+import { createRootRoute, Outlet, useNavigate } from '@tanstack/react-router'
 import { useEffect } from 'react'
 
 import { getBridge, hasLocalRuntime } from '../lib/bridge'
-import { getSupervisor } from '../lib/connection'
+import { getSupervisor, setLocalDaemonPort } from '../lib/connection'
 import { useConnection } from '../stores/connection'
 import { applyTheme, useUi } from '../stores/ui'
 
@@ -11,6 +11,7 @@ export const Route = createRootRoute({
 })
 
 function RootLayout() {
+  const navigate = useNavigate()
   const target = useConnection(state => state.target)
   const status = useConnection(state => state.status)
   const attempt = useConnection(state => state.attempt)
@@ -19,6 +20,11 @@ function RootLayout() {
 
   useEffect(() => applyTheme(theme), [theme])
   useEffect(() => {
+    if (status === 'unauthorized') {
+      void navigate({ to: '/connect' })
+    }
+  }, [navigate, status])
+  useEffect(() => {
     if (target) {
       // The full package owns its daemon: make sure it is running before
       // connecting, so a relaunch does not land on "could not be reached".
@@ -26,14 +32,15 @@ function RootLayout() {
         target.kind === 'local' && !target.origin && hasLocalRuntime()
           ? getBridge()!
               .daemon.start()
+              .then(status => setLocalDaemonPort(status.port))
               .catch(() => undefined)
           : Promise.resolve()
 
       void startLocal.then(() => getSupervisor().start(target))
     }
 
-    return () => getSupervisor().stop()
   }, [target])
+  useEffect(() => () => getSupervisor().stop(), [])
 
   return (
     <>

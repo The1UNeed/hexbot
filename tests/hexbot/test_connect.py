@@ -138,3 +138,66 @@ def test_connect_rpc_methods_and_frames(monkeypatch):
     rpc.register(context)
     frame = context.methods["hexbot.connect.status"]("request-1", {})
     assert frame["id"] == "request-1" and "result" in frame
+
+
+def test_api_base_defaults_and_env_override(monkeypatch):
+    from hexbot import connect
+
+    monkeypatch.delenv("HEXBOT_CONNECT_URL", raising=False)
+    assert connect.ConnectClient().api_base == "https://connect.hexbot.app"
+    monkeypatch.setenv("HEXBOT_CONNECT_URL", "http://localhost:3000/")
+    assert connect.ConnectClient().api_base == "http://localhost:3000"
+    assert connect.ConnectConfig().jwks_url == "http://localhost:3000/.well-known/jwks.json"
+
+
+def test_disconnect_revokes_remotely_and_clears(isolated_home):
+    from hexbot import connect
+
+    connect.ConnectConfig(daemon_id="daemon-1", daemon_token="secret", slug="kitchen").save()
+    calls = []
+
+    class Client:
+        def revoke(self, daemon_id, token): calls.append((daemon_id, token)); return {"ok": True}
+
+    assert connect.disconnect(client=Client())["registered"] is False
+    assert calls == [("daemon-1", "secret")] and connect.ConnectConfig.load() is None
+
+
+def test_disconnect_survives_unreachable_service(isolated_home):
+    from hexbot import connect
+
+    connect.ConnectConfig(daemon_id="daemon-1", daemon_token="secret", slug="kitchen").save()
+
+    class Client:
+        def revoke(self, *_args): raise RuntimeError("offline")
+
+    assert connect.disconnect(client=Client())["registered"] is False
+    assert connect.ConnectConfig.load() is None
+
+
+def test_restarting_workers_stops_the_previous_heartbeat(isolated_home):
+    import threading
+    from hexbot import connect
+
+    connect.ConnectConfig(daemon_id="daemon-1", daemon_token="secret", slug="kitchen",
+                          tunnel_hostname="kitchen.hexbot.test").save()
+    ports = []
+    release = threading.Event()
+
+    class Client:
+        def heartbeat(self, _id, _token, port):
+            ports.append(port)
+            release.wait(2)  # a slow request in flight while the workers are restarted
+            return {"ok": True}
+
+    class NoTunnel:
+        running = False
+        def start(self, port): pass
+        def stop(self): pass
+
+    assert connect.start_daemon(9001, client=Client(), tunnel=NoTunnel())
+    assert connect.start_daemon(9002, client=Client(), tunnel=NoTunnel())
+    release.set()
+    connect.stop_daemon()
+    assert ports == [9001, 9002]
+    assert connect.status()["last_heartbeat_at"] is None or ports[-1] == 9002

@@ -17,7 +17,7 @@ export async function POST(request: Request) {
   const user = await getStore().getOrCreateUser(clerkId); const slug = await generateSlug(getStore());
   const tunnel = await getTunnels().create(slug, registration.ingressPort); const daemonToken = randomToken("hxd_");
   try {
-    const daemon = await getStore().createDaemon({ userId: user.id, name: registration.daemonName, slug, tunnelId: tunnel.tunnelId, tunnelHostname: tunnel.hostname, tokenHash: hashToken(daemonToken) });
+    const daemon = await getStore().createDaemon({ userId: user.id, name: registration.daemonName, slug, tunnelId: tunnel.tunnelId, tunnelHostname: tunnel.hostname, ingressPort: registration.ingressPort, tokenHash: hashToken(daemonToken) });
     await getStore().approveRegistration(registration.id, user.id, { daemonToken, daemonId: daemon.id, slug, tunnelToken: tunnel.token, tunnelHostname: tunnel.hostname });
     return NextResponse.json({ approved: true, daemon_id: daemon.id, name: daemon.name, hostname: daemon.tunnelHostname });
   } catch (error) { await getTunnels().delete(tunnel.tunnelId).catch(() => undefined); throw error; }

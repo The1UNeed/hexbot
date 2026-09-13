@@ -91,6 +91,8 @@ def _auth_type(slug: str) -> str:
 
 def _label(slug: str) -> str:
     """Human display name: providers/ registry, else the Hermes label table."""
+    if slug == "custom":
+        return "Custom endpoint"
     profile = _registry_profile(slug)
     if profile is not None and (profile.display_name or "").strip():
         return profile.display_name.strip()
@@ -171,14 +173,23 @@ def list_providers() -> list[dict]:
         configured = bool(first and (os.environ.get(first) or values.get(first)))
         if not configured and auth_type.startswith("oauth"):
             configured = _oauth_credentials_present(slug)
+        if not configured and slug == "custom":
+            try:
+                from hermes_cli.models import _get_custom_base_url
+                configured = bool(_get_custom_base_url())
+            except Exception:
+                logger.debug("custom endpoint config unavailable", exc_info=True)
         profile = _registry_profile(slug)
         result.append({
             "id": slug,
             "label": _label(slug),
             "configured": configured,
             "auth_type": auth_type,
+            "key_supported": bool(env_vars),
             "models_source": "live" if (profile is not None and profile.models_url) else "registry",
         })
+    # Connected providers first, then alphabetical: the registry order is arbitrary.
+    result.sort(key=lambda row: (not row["configured"], row["label"].lower()))
     return result
 
 
@@ -318,6 +329,8 @@ def list_models(provider=None, include_unconfigured=None, refresh=False) -> dict
         models = _catalog_models(slug)
         if models:
             sources.add("catalog")
+    # Provider catalogs arrive in no useful order; pickers show a few dozen rows.
+    models.sort(key=lambda m: str(m.get("label") or "").lower())
     all_source = sources.pop() if len(sources) == 1 else ("mixed" if sources else "none")
     return {"curated": curated, "all": models, "all_source": all_source}
 

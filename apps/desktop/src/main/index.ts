@@ -2,7 +2,16 @@ import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { BrowserWindow, Menu, app, dialog, ipcMain, shell, type Rectangle } from 'electron'
+import {
+  BrowserWindow,
+  Menu,
+  app,
+  dialog,
+  ipcMain,
+  nativeTheme,
+  shell,
+  type Rectangle
+} from 'electron'
 import { applicationMenuTemplate } from './application-menu'
 import { APP_ORIGIN, installAppProtocol, registerAppScheme } from './app-protocol'
 import { bootstrap, type BootstrapProgress } from './backend/bootstrap'
@@ -17,10 +26,18 @@ import { installService, serviceStatus, uninstallService } from './service'
 import { createTray } from './tray'
 import { setCrashReports, startCrashReports } from './crash-reports'
 import { readDesktopState, updateDesktopState } from './desktop-state'
-import { checkForUpdates, installUpdate, setUpdateChannel, updaterEvents } from './updater'
+import {
+  checkForUpdates,
+  getUpdateChannel,
+  installUpdate,
+  setUpdateChannel,
+  updaterEvents
+} from './updater'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
 const rendererDirectory = join(currentDirectory, '../renderer')
+if (!app.isPackaged) app.setName(hasRuntime ? 'Hexbot (dev)' : 'Hexbot Client (dev)')
+const devIcon = !app.isPackaged ? join(currentDirectory, '../../resources/icon-dev.png') : undefined
 // Keep Chromium's profile (localStorage, caches) inside the Hexbot home so an
 // install is self-contained and tests with a temporary home start clean.
 app.setPath('userData', join(hexbotHome(), 'desktop-data'))
@@ -79,12 +96,15 @@ async function saveBounds(window: BrowserWindow): Promise<void> {
 async function createWindow(): Promise<BrowserWindow> {
   if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
   const window = new BrowserWindow({
+    icon: devIcon,
     width: 1280,
     height: 800,
     minWidth: 960,
     minHeight: 600,
     ...(await loadBounds()),
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    // Matches the page background in tokens.css, so the first frame is not white.
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0e0e0e' : '#ffffff',
     show: false,
     webPreferences: {
       contextIsolation: true,
@@ -93,6 +113,10 @@ async function createWindow(): Promise<BrowserWindow> {
       preload: join(currentDirectory, '../preload/index.js')
     }
   })
+  if (!app.isPackaged) {
+    window.setTitle(app.name)
+    window.on('page-title-updated', event => event.preventDefault())
+  }
   mainWindow = window
   window.once('ready-to-show', () => {
     window.show()
@@ -221,8 +245,9 @@ function registerIpc(): void {
   )
   ipcMain.handle('hexbot:updater:check', () => checkForUpdates())
   ipcMain.handle('hexbot:updater:install', () => installUpdate())
+  ipcMain.handle('hexbot:updater:channel', () => getUpdateChannel())
   ipcMain.handle('hexbot:updater:set-channel', (_event, channel: unknown) => {
-    if (channel !== 'stable' && channel !== 'beta') throw new TypeError('Invalid update channel')
+    if (channel !== 'stable' && channel !== 'nightly') throw new TypeError('Invalid update channel')
     return setUpdateChannel(channel)
   })
   ipcMain.handle('hexbot:crash-reports:set', (_event, enabled: unknown) => {
@@ -250,17 +275,21 @@ else {
     navigate(url)
   })
   void app.whenReady().then(async () => {
+    if (devIcon && process.platform === 'darwin') app.dock?.setIcon(devIcon)
     installAppProtocol(rendererDirectory, existsSync)
     daemon = new DaemonManager(undefined, async () => (await serviceStatus()).installed)
     registerIpc()
     if (process.platform === 'darwin')
       Menu.setApplicationMenu(
         Menu.buildFromTemplate(
-          applicationMenuTemplate({
-            openSettings: () => navigate('/settings/providers'),
-            checkForUpdates: () => void checkForUpdates(),
-            quit: () => app.quit()
-          })
+          applicationMenuTemplate(
+            {
+              openSettings: () => navigate('/settings/providers'),
+              checkForUpdates: () => void checkForUpdates(),
+              quit: () => app.quit()
+            },
+            app.name
+          )
         )
       )
     updaterEvents.on('status', status => {
