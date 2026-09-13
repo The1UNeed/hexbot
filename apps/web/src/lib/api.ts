@@ -7,11 +7,9 @@
 
 import { rpcCall } from './rpc'
 import type {
-  ActivityPair,
   ApprovalChoice,
   Bot,
   BotCreateInput,
-  BotMessage,
   BotUpdatePatch,
   Connector,
   ConnectorTest,
@@ -237,20 +235,6 @@ export function roomsDelete(id: string): Promise<{ deleted: boolean }> {
 
 export function roomsMarkRead(id: string, seq: number): Promise<{ room: Room }> {
   return rpcCall<{ room: Room }>('hexbot.rooms.mark_read', { id, seq })
-}
-
-export function activityPairs(): Promise<{ pairs: ActivityPair[] }> {
-  return rpcCall<{ pairs: ActivityPair[] }>('hexbot.activity.pairs')
-}
-
-export function activityList(
-  options: {
-    from?: string
-    limit?: number
-    to?: string
-  } = {}
-): Promise<{ messages: BotMessage[] }> {
-  return rpcCall<{ messages: BotMessage[] }>('hexbot.activity.list', { ...options })
 }
 
 export interface DreamStatus {
