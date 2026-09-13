@@ -24,15 +24,13 @@ page is the procedure and the one-time setup. Modelled on T3 Code's
   since the previous stable release. A nightly also prepends itself to
   `nightlies.json` in the bucket, which hexbot.app lists as earlier builds;
   the packages themselves are never deleted from the bucket. GitHub
-  releases beyond the last 14 nightlies are deleted,
-  and a nightly ends by asking Vercel to redeploy hexbot.app when
-  `SITE_DEPLOY_HOOK_URL` is set, because the download page reads the nightly
-  feed while it builds.
+  releases beyond the last 14 nightlies are deleted, and a nightly ends by
+  asking Vercel to rebuild hexbot.app through `SITE_DEPLOY_HOOK_URL`,
+  because the download page reads the nightly feed while it builds.
 - `finalize` (stable only) runs `scripts/desktop/finalize-release.mjs` and
   commits `apps/site/public/downloads/manifest.json` and both Homebrew casks
-  to `main` as `github-actions[bot]`. That push does not trigger CI. When the
-  `SITE_DEPLOY_HOOK_URL` secret is set it then asks Vercel to redeploy
-  hexbot.app.
+  to `main` as `github-actions[bot]`. That push does not trigger CI, but it
+  does trigger a production build of hexbot.app on Vercel (`docs/deploy.md`).
 
 `ci.yml` runs `scripts/desktop/release-smoke.mjs` on every push: the version
 resolution, feed, manifest, and cask scripts against synthetic packages, so
@@ -60,9 +58,8 @@ a broken release script fails before tag day.
 7. Watch the run: preflight, check, six builds, publish, finalize. Confirm
    the GitHub release lists 6 DMGs, 4 ZIPs, 2 AppImages, 2 debs, and that
    `finalize` pushed a commit to `main`.
-8. The site redeploys on its own when the `hexbot-site` Vercel project
-   deploys from Git or `SITE_DEPLOY_HOOK_URL` is set; otherwise deploy it
-   (`docs/deploy.md`). Publish the updated casks through the Homebrew tap.
+8. The site rebuilds on its own from the `finalize` commit (`docs/deploy.md`).
+   Publish the updated casks through the Homebrew tap.
 9. Smoke test (below).
 
 ## Cut a nightly by hand
@@ -120,9 +117,12 @@ Linux packages are not signed.
 
 ### Optional
 
-- `SITE_DEPLOY_HOOK_URL` (secret): a Vercel deploy hook for the `hexbot-site`
-  project. `finalize` calls it after committing the manifest. Skip it when
-  the project deploys from Git on every push to `main`.
+- `SITE_DEPLOY_HOOK_URL` (secret): the `release-workflow` deploy hook on the
+  `hexbot-site` Vercel project, for the `main` branch. A nightly calls it so
+  the download page picks up the new feed; without it the page shows the
+  previous nightly until the next push to `main`. Recreate it with
+  `vercel deploy-hooks create release-workflow --ref main` from `apps/site`
+  and `gh secret set SITE_DEPLOY_HOOK_URL`.
 - `HEXBOT_CRASH_URL` (variable): the Crashpad endpoint baked into every
   package (`scripts/desktop/README.md`, "Crash reports"). Unset means crash
   reports stay off.
