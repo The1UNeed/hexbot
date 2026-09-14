@@ -1,6 +1,7 @@
 import { createRootRoute, Outlet, useNavigate } from '@tanstack/react-router'
 import { useEffect } from 'react'
 
+import { ConnectionLost, useConnectionLost } from '../app/connection-lost'
 import { getBridge, hasLocalRuntime } from '../lib/bridge'
 import { getSupervisor, setLocalDaemonPort } from '../lib/connection'
 import { useConnection } from '../stores/connection'
@@ -17,6 +18,7 @@ function RootLayout() {
   const attempt = useConnection(state => state.attempt)
   const daemon = useConnection(state => state.daemon)
   const theme = useUi(state => state.theme)
+  const lost = useConnectionLost()
 
   useEffect(() => applyTheme(theme), [theme])
   useEffect(() => {
@@ -53,7 +55,10 @@ function RootLayout() {
         {daemon?.daemon_name ?? status}
         {attempt > 0 ? `, attempt ${attempt}` : ''}
       </div>
-      <Outlet />
+      <div className="contents" inert={lost}>
+        <Outlet />
+      </div>
+      {lost ? <ConnectionLost /> : null}
     </>
   )
 }

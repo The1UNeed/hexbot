@@ -37,6 +37,13 @@ differs from the stored one, drop live ids and reopen sections lazily.
 A 401 on ws-ticket means the device was revoked: clear the target and show
 the connect screen.
 
+While the status is `reconnecting` (or `offline` on an app page)
+`src/app/connection-lost.tsx` locks the window: the page underneath is
+`inert` behind a full-window overlay with "Reconnect now" and "Connect to
+another daemon". The connect and onboarding screens handle first contact
+themselves, so `offline` never covers them; `reconnecting` covers everything
+except the connect screen.
+
 The RPC client is `@hermes/shared`'s `JsonRpcGatewayClient` wrapped in
 `src/lib/rpc.ts`. Events arrive as notifications with method `event`;
 `src/lib/events.ts` routes them by `params.session_id` to the transcript
