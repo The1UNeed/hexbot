@@ -18,6 +18,8 @@ Each `vercel.json` pins the install command to `npm install`, run inside the roo
 
 Rolling back is a Vercel action: Deployments, pick the previous production deployment, Promote to Production.
 
+Both projects use Vercel Web Analytics and Speed Insights. The code side is the `@vercel/analytics` and `@vercel/speed-insights` packages, rendered once in each root layout (`apps/site/src/layouts/Base.astro`, `apps/connect/src/app/layout.tsx`); the dashboard side is the Analytics and Speed Insights toggles on each project, which must be enabled for the `/_vercel/insights/` and `/_vercel/speed-insights/` endpoints to exist. Both scripts are served from the deployment's own origin, so the security headers allow them without changes. The pairing page opts out (`analytics={false}`) because its URL carries the daemon address and pairing code. `/privacy/` describes what is collected; keep it in step with this.
+
 ## Site
 
 The site has no secrets. `apps/site/vercel.json` sets the security headers and marks hashed assets immutable. CI runs `npm run check -w apps/site` on every push, and Vercel builds the same commit.

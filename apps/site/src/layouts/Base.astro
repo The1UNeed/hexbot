@@ -1,10 +1,15 @@
 ---
 import '../styles/global.css'
 import Logo from '../components/Logo.astro'
+import Analytics from '@vercel/analytics/astro'
+import SpeedInsights from '@vercel/speed-insights/astro'
 
-interface Props { title?: string; description?: string }
+// `analytics` is off on pages whose URL carries private data (the pairing page):
+// Vercel's script reports the full page URL, query string and fragment included.
+interface Props { title?: string; description?: string; analytics?: boolean }
 const {
   title = 'Hexbot',
+  analytics = true,
   description = 'Self-hosted bots with faces, names, and a memory of their own. Rooms for people and bots, your choice of model, running on your own machine.',
 } = Astro.props
 const pageTitle = title === 'Hexbot' ? 'Hexbot' : `${title} | Hexbot`
@@ -65,5 +70,7 @@ const github = 'https://github.com/The1UNeed/hexbot'
       </div>
     </footer>
     <script src="../scripts/faces.ts"></script>
+    {analytics && <Analytics />}
+    {analytics && <SpeedInsights />}
   </body>
 </html>
