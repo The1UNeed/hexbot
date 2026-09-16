@@ -1,11 +1,11 @@
-import { useParams } from '@tanstack/react-router'
-import { Crown, Plus, X } from 'lucide-react'
+import { useNavigate, useParams } from '@tanstack/react-router'
+import { Info } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar } from '../../components/ui/avatar'
-import { Button } from '../../components/ui/button'
-import { Menu } from '../../components/ui/menu'
+import { RoomCluster } from '../../components/ui/room-cluster'
 import { SkeletonLines } from '../../components/ui/skeleton'
+import { StatusDot } from '../../components/ui/status-dot'
 import { Thinking } from '../../components/ui/thinking'
 import { roomsSend, roomsStop } from '../../lib/api'
 import { avatarSrc } from '../../lib/avatar-builder'
@@ -13,7 +13,7 @@ import { cn } from '../../lib/cn'
 import { toMillis } from '../../lib/time'
 import type { Bot, RoomEvent, RoomMember, RoomTurn } from '../../lib/types'
 import { useBots } from '../../stores/bots'
-import { useRooms } from '../../stores/rooms'
+import { roomFailure, roomStatus, useRooms } from '../../stores/rooms'
 import { useTranscripts } from '../../stores/transcripts'
 
 import { composerFieldClass, ComposerShell } from './composer'
@@ -27,7 +27,7 @@ const NO_TURNS: Record<string, RoomTurn> = {}
 
 const avatarData = (bot?: Bot) => avatarSrc(bot?.avatar)
 
-function RoomEventRow({ event }: { event: RoomEvent }) {
+export function RoomEventRow({ event }: { event: RoomEvent }) {
   const bot = useBots(state => (event.actor_id ? state.byName[event.actor_id] : undefined))
   const text = typeof event.payload.text === 'string' ? event.payload.text : ''
   const memberId = typeof event.payload.bot === 'string' ? event.payload.bot : event.actor_id
@@ -37,8 +37,26 @@ function RoomEventRow({ event }: { event: RoomEvent }) {
 
   const system = ['member.added', 'member.left', 'note'].includes(event.kind)
 
-  if (event.kind === 'turn.started' || event.kind === 'turn.failed') {
+  if (event.kind === 'turn.started') {
     return null
+  }
+
+  if (event.kind === 'turn.failed') {
+    const error = typeof event.payload.error === 'string' ? event.payload.error : ''
+
+    return (
+      <div
+        className="hex-bubble my-3 flex items-center gap-2 rounded-bubble bg-danger/12 px-4 py-2.5 text-[length:var(--text-secondary)] text-danger"
+        data-testid="room-event"
+        role="alert"
+      >
+        <span aria-hidden className="size-2 shrink-0 rounded-full bg-danger" />
+        <span className="min-w-0 flex-1 truncate">
+          <span className="font-semibold">{member} stopped</span>
+          {error ? ` · ${error}` : ''}
+        </span>
+      </div>
+    )
   }
 
   if (system) {
@@ -140,6 +158,7 @@ export function RoomMentionPopover({
 
 export function RoomConversation() {
   const { room: roomId } = useParams({ strict: false }) as { room: string }
+  const navigate = useNavigate()
   const room = useRooms(state => state.byId[roomId])
   const events = useRooms(state => state.eventsByRoom[roomId] ?? NO_EVENTS)
   const turns = useRooms(state => state.liveTurnsByRoom[roomId] ?? NO_TURNS)
@@ -170,6 +189,8 @@ export function RoomConversation() {
 
   const mention = /(?:^|\s)@([\w-]*)$/.exec(text)?.[1]
   const streaming = Object.keys(turns).length > 0
+  const status = roomStatus(events, turns)
+  const failure = roomFailure(events)
 
   const send = async () => {
     if (!text.trim()) {
@@ -186,8 +207,6 @@ export function RoomConversation() {
     }
   }
 
-  const addable = Object.values(bots).filter(bot => !members.some(m => m.member_id === bot.name))
-
   if (!room) {
     return (
       <div className="grid h-screen place-content-center">
@@ -198,70 +217,24 @@ export function RoomConversation() {
 
   return (
     <div className="flex h-screen min-h-0 flex-col bg-background">
-      <header className="hex-drag flex h-11 shrink-0 items-center gap-3 px-4 max-[700px]:pl-12">
-        <div className="hex-no-drag flex min-w-0 flex-1 items-center gap-3">
+      <header className="hex-drag flex h-11 shrink-0 items-center gap-2 px-4 max-[700px]:pl-12">
+        <RoomCluster bots={bots} room={room} size="sm" status={status} />
+        <div className="hex-no-drag flex min-w-0 flex-1 items-baseline gap-2">
           <h2 className="truncate text-[length:var(--text-secondary)] font-semibold">
             {room.name}
           </h2>
-          <div className="flex items-center -space-x-1">
-            {members.map(member => {
-              const bot = bots[member.member_id]
-
-              return (
-                <div className="group relative" data-testid="room-member" key={member.member_id}>
-                  <Avatar
-                    image={avatarData(bot)}
-                    name={bot?.display_name ?? member.member_id}
-                    size="sm"
-                  />
-                  {room.main_bot === member.member_id ? (
-                    <Crown
-                      className="absolute -top-2 -right-1 fill-warning text-warning"
-                      size={11}
-                    />
-                  ) : null}
-                  <button
-                    aria-label={`Remove ${bot?.display_name ?? member.member_id}`}
-                    className="absolute inset-0 hidden place-items-center rounded-full bg-black/60 text-white group-hover:grid"
-                    onClick={() => void useRooms.getState().removeMember(roomId, member.member_id)}
-                    type="button"
-                  >
-                    <X size={12} />
-                  </button>
-                </div>
-              )
-            })}
-          </div>
+          <span className="shrink-0 text-[length:var(--text-meta)] text-muted">
+            {members.length} bot{members.length === 1 ? '' : 's'}
+          </span>
         </div>
-        <Menu
-          items={
-            addable.length > 0
-              ? addable.map(bot => ({
-                  label: bot.display_name,
-                  onSelect: () => void useRooms.getState().addMember(roomId, bot.name)
-                }))
-              : [
-                  {
-                    disabled: true,
-                    label:
-                      Object.keys(bots).length === 0
-                        ? 'No bots yet'
-                        : 'Every bot is already a member'
-                  }
-                ]
-          }
-          trigger={
-            <Button
-              aria-label="Add member"
-              className="hex-no-drag"
-              icon={<Plus size={14} />}
-              size="sm"
-              variant="pill"
-            >
-              Add
-            </Button>
-          }
-        />
+        <button
+          aria-label="Room settings"
+          className="hex-no-drag grid size-7 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
+          onClick={() => void navigate({ params: { room: roomId }, to: '/r/$room/settings' })}
+          type="button"
+        >
+          <Info size={16} />
+        </button>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className={transcriptClass}>
@@ -298,13 +271,16 @@ export function RoomConversation() {
                 )}
                 {message?.text ? (
                   <article className="flex gap-2 py-1">
-                    <Avatar
-                      className="hex-think mt-1"
-                      image={avatarData(bot)}
-                      mood="working"
-                      name={name}
-                      size="sm"
-                    />
+                    <span className="relative mt-1 shrink-0">
+                      <Avatar
+                        className="hex-think"
+                        image={avatarData(bot)}
+                        mood="working"
+                        name={name}
+                        size="sm"
+                      />
+                      <StatusDot size="sm" status="working" />
+                    </span>
                     <div className={cn(bubbleClass, 'max-w-[80%]')}>
                       <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
                         {name}
@@ -332,9 +308,13 @@ export function RoomConversation() {
             )
           }
           canSend={Boolean(text.trim())}
+          notice={
+            status === 'stopped' ? failure : status === 'needs_you' ? 'Waiting on you' : null
+          }
           onSend={() => void send()}
           onStop={() => void roomsStop(roomId)}
           sending={sending}
+          status={status}
           streaming={streaming}
         >
           <textarea

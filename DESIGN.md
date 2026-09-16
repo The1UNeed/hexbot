@@ -164,7 +164,7 @@ more freedom and more capability than a hosted product can offer.
    Done means: fresh macOS and fresh Linux install; a second machine paired
    over LAN and Tailscale; memory survives restarts; an update is delivered.
 2. Connect.
-3. Roster and rooms: bot creation with all fields and templates, per-bot
+3. Roster and rooms: name-first bot creation (the bot asks the rest), per-bot
    tools, skills and directories, room mechanics and limits, bot-to-bot
    messages, activity list, usage view.
 4. Live computer view, dreaming, activity graph, room memory, bundled vector

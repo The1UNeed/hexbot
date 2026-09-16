@@ -36,9 +36,11 @@ describe('event routing', () => {
       routeEvent(event as GatewayEvent)
     }
 
+    // The approval card closes the first bubble; the words after it start a new one.
     const transcript = useTranscripts.getState().bySession['live-1']!
-    expect(transcript.messages[0]?.text).toBe('Checking done.')
+    expect(transcript.messages.map(message => message.text)).toEqual(['Checking ', 'done.'])
     expect(transcript.messages[0]?.toolCalls.map(call => call.status)).toEqual(['ok', 'ok'])
+    expect(transcript.messages[1]?.streaming).toBe(false)
     expect(transcript.approvals[0]?.requestId).toBe('approval-1')
     expect(transcript.usage?.total_tokens).toBe(12)
   })

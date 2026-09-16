@@ -28,7 +28,7 @@ Tool approvals appear in the room like approvals in a normal section. A room can
 
 ## Membership and history
 
-You can add or remove bots after creating a room. A newly added bot receives the existing transcript so it can follow the discussion. Removing a bot keeps the old messages and their author labels.
+You can add or remove bots after creating a room, from Room settings (the info button in the room header). A newly added bot receives the existing transcript so it can follow the discussion. Removing a bot keeps the old messages and their author labels. Removing the last bot deletes the room; the bot itself is kept.
 
 Archiving hides a room but keeps its history. Deleting it removes the room and can purge memory made from it.
 

@@ -72,3 +72,25 @@ def test_create_accepts_human_members_by_user_id(fake_gateway):
     room = store.create("Plan", ["scout", "sam"], main_bot="scout")
     kinds = {(m["member_kind"], m["member_id"]) for m in room["members"]}
     assert ("bot", "scout") in kinds and ("human", "sam") in kinds and ("human", "local") in kinds
+
+
+def test_removing_the_last_bot_deletes_the_room(fake_gateway):
+    from hexbot.errors import HexbotError
+    from hexbot.rooms import store
+    import pytest
+    room = store.create("Solo", ["scout", "writer"], "scout")
+    kept = store.remove_member(room["id"], "writer")
+    assert not kept.get("deleted") and kept["main_bot"] == "scout"
+    gone = store.remove_member(room["id"], "scout")
+    assert gone["deleted"] is True and gone["id"] == room["id"]
+    with pytest.raises(HexbotError):
+        store.get(room["id"])
+    assert not any(item["id"] == room["id"] for item in store.list_rooms(True))
+
+
+def test_rooms_changed_payload_marks_deleted_rooms():
+    from hexbot.rpc import _event_payload
+    assert _event_payload({"id": "r1", "bot": "scout"}, {"room": {"id": "r1", "deleted": True}}) == {
+        "id": "r1", "deleted": True, "bot": "scout"}
+    assert _event_payload({"id": "r1"}, {"deleted": True}) == {"id": "r1", "deleted": True}
+    assert "deleted" not in _event_payload({"id": "r1"}, {"room": {"id": "r1"}})

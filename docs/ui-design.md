@@ -50,9 +50,11 @@ Three columns, resizable, min widths 240 / 480 / 300.
 - Header: a window-drag strip (padded for the macOS traffic lights), a "+"
   menu (New bot, New section, New room) and a search pill. No app name.
 - List: bots and rooms in one list, ordered by last activity. A bot row is
-  its face (40px), name, optional label, relative time, and a green dot on
-  the face while the bot is working. No message preview: a bot has many
-  sections, so one message says little. A room row shows its latest message.
+  its face (40px), name, optional label, relative time, and a status dot
+  on the face (see "Status colours"). No message preview: a bot has many
+  sections, so one message says little. A room row is the room's cluster
+  (one face, or up to four in a 2x2 grid), name, latest message, and the
+  same status dot; a neutral dot on the right means unread.
 - Under each bot: its two most recent touched sections from the last 14
   days, newest first, plus the open one. A section is touched once the user
   has sent something in it, or typed a draft in its composer; drafts are
@@ -84,7 +86,8 @@ Three columns, resizable, min widths 240 / 480 / 300.
   bubble will land (under the last one once text has arrived). No spinner,
   no ring; a muted step label ("Searching the web for apple") sits beside
   it only while a tool runs.
-  "Waiting on you" banner when a bot has asked the human something.
+  "Waiting on you" banner (purple) when a bot has asked the human
+  something; a red banner naming the bot when a room turn failed.
 - Work panel: once a turn has thought or run tools for two seconds, a
   panel opens beside the face with the reasoning trace as it streams and
   each step as it happens (the running step shows its arguments live). It
@@ -103,7 +106,23 @@ Three columns, resizable, min widths 240 / 480 / 300.
   send button becomes Stop.
 - Attachments: images render inline with a lightbox; files render as chips
   with name, size, and type icon.
-- Errors: a muted inline row with the message and a retry action.
+- Questions: when a bot asks through the clarify tool, a card with the
+  question, the choices as rows A, B, C… (the first marked Recommended)
+  and a field for the user's own answer. One click answers a single-choice
+  question; multi-select and typed answers confirm with Done. An answered
+  card collapses to the chosen line with a check. The card survives a
+  reload (the daemon replays the pending question when the section opens).
+- Errors: a Stopped card with the message and a retry action; one card per
+  failure, even when the gateway and the daemon both report it.
+
+### Status colours
+
+One colour per state, used everywhere a bot or room shows one: blue while
+it works (the dot pulses), purple (the accent) when it needs you, red when
+it stopped. The dot sits on the face in the roster, on the section row it
+is about, on the face in the conversation header, and on the room cluster.
+The composer pill takes the same colour with a one-line notice above it
+("Waiting on you", or the error). Working and idle draw the plain pill.
 
 ### Composer
 
@@ -128,8 +147,8 @@ Three columns, resizable, min widths 240 / 480 / 300.
   when this bot stops or needs you), and one "Bot settings" button that
   opens the window below on the tab last used for this bot.
 - Status is not in the panel. It lives in the chat: the status line above
-  a reply while the bot works, the approval card when it needs a decision,
-  and a Stopped card at the point of failure.
+  a reply while the bot works, the question or approval card when it needs
+  you, a Stopped card at the point of failure, and the coloured composer.
 - The panel remembers open or closed per window.
 
 ### Bot settings window
@@ -208,6 +227,14 @@ Three columns, resizable, min widths 240 / 480 / 300.
   (device token revoked: return to the connect screen with a message),
   daemon offline (full-panel message with retry).
 - Empty roster: a single centred call to action to create a bot.
+- New bot: a dialog with a face and a name, nothing else (provider and
+  model come from the defaults; "Change" reveals them). The bot then asks
+  the rest itself: a hidden first prompt makes it greet the user and ask
+  up to three clarify questions shaped by its name, and save the answers
+  to its memory. The room's "Room settings" (the info button in the
+  header, route `/r/$room/settings`) holds the name, the members with
+  Make main and a two-step Remove, Add bot, approval mode, limits, and
+  Delete room. Removing the last bot deletes the room, never the bot.
 - Empty section: the bot's avatar, name, and title, and three suggested
   prompts derived from its description.
 

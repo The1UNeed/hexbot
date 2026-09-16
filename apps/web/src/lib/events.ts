@@ -10,6 +10,7 @@
  *   thinking.delta         replace the daemon's status line (a wait notice)
  *   tool.start/complete    add or resolve a tool call in the current message
  *   approval.request       push an approval card (session scoped) and notify
+ *   clarify.request/expire push a question card the bot is waiting on; expire freezes it
  *   status.update          header status line
  *   session.info           section model and provider chips
  *   session.usage          usage badge
@@ -34,7 +35,7 @@ import type {
 import { transcriptNotify, useTranscripts } from '../stores/transcripts'
 
 import type { HexbotRpcClient } from './rpc'
-import type { RoomEvent, RoomTurn, SessionInfo, Usage } from './types'
+import type { ClarifyRequestPayload, RoomEvent, RoomTurn, SessionInfo, Usage } from './types'
 
 export interface EventRouterDeps {
   refreshBots?: () => void
@@ -147,7 +148,9 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
     }
 
     case 'hexbot.rooms.changed':
-      if (typeof payload.id === 'string') {
+      if (typeof payload.id === 'string' && payload.deleted === true) {
+        rooms.drop(payload.id)
+      } else if (typeof payload.id === 'string') {
         void rooms.refreshOne(payload.id)
       } else {
         effects.refreshRooms()
@@ -193,6 +196,20 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       transcripts.approvalRequest(sessionId, payload as ApprovalRequestPayload, {
         notify: botNotifies(botOfSection(transcripts.bySession[sessionId]?.sectionId))
       })
+
+      return
+
+    case 'clarify.request':
+      transcripts.clarifyRequest(sessionId, payload as ClarifyRequestPayload, {
+        notify: botNotifies(botOfSection(transcripts.bySession[sessionId]?.sectionId))
+      })
+
+      return
+
+    case 'clarify.expire':
+      if (typeof payload.request_id === 'string') {
+        transcripts.clarifyExpire(sessionId, payload.request_id)
+      }
 
       return
 

@@ -13,6 +13,35 @@ export type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 
 export type ApprovalMode = 'manual' | 'off' | 'smart'
 
+/** One question a bot asks through the clarify tool. */
+export interface ClarifyQuestion {
+  choices: string[]
+  multiSelect: boolean
+  question: string
+  /** Set for questions that arrived as one batch. */
+  questionId?: string
+}
+
+/** Wire shape of `clarify.request`: one question, or a batch under `questions`. */
+export interface ClarifyRequestPayload {
+  choices?: null | string[]
+  multi_select?: boolean
+  question?: string
+  questions?: { choices?: null | string[]; multi_select?: boolean; qid: string; question: string }[]
+  request_id?: string
+}
+
+export interface ClarifyRequest {
+  /** Per question id (single questions use the request id) once answered. */
+  answers: Record<string, string>
+  /** The gateway stopped waiting; the card stays but no longer takes input. */
+  expired?: boolean
+  questions: ClarifyQuestion[]
+  receivedAt: number
+  requestId: string
+  sessionId: string
+}
+
 export interface ApprovalRequest {
   choices: ApprovalChoice[]
   /** Present once the user answered; the card stays in the transcript. */

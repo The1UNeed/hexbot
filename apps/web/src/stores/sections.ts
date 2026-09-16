@@ -9,6 +9,7 @@ import { useShallow } from 'zustand/react/shallow'
 
 import {
   messagesFromHistory,
+  promptSubmit,
   sectionsArchive,
   sectionsCreate,
   sectionsDelete,
@@ -17,7 +18,8 @@ import {
   sectionsRename,
   sectionsUnarchive
 } from '../lib/api'
-import type { Section } from '../lib/types'
+import { KICKOFF_MARKER, kickoffPrompt } from '../lib/bot-kickoff'
+import type { Bot, BotStatus, Section } from '../lib/types'
 
 import { draftsActions } from './drafts'
 import { useTranscripts } from './transcripts'
@@ -94,7 +96,7 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   async open(id) {
-    const { messages, section } = await sectionsOpen(id)
+    const { messages, pending_clarify, section } = await sectionsOpen(id)
     const live = section.live_session_id
 
     set(state => ({
@@ -103,7 +105,20 @@ export const useSections = create<SectionsState>((set, get) => ({
     }))
 
     if (live) {
-      useTranscripts.getState().open(live, id, messagesFromHistory(messages ?? []))
+      useTranscripts
+        .getState()
+        .open(
+          live,
+          id,
+          messagesFromHistory(messages ?? []).filter(
+            // Hermes replays an interrupted hidden kickoff as a plain user turn.
+            message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
+          )
+        )
+
+      if (pending_clarify) {
+        useTranscripts.getState().clarifyRequest(live, pending_clarify, { notify: false })
+      }
     }
 
     return { liveSessionId: live, section }
@@ -200,4 +215,94 @@ export function useSection(id: null | string): Section | undefined {
 
 export function useLiveSessionId(sectionId: null | string): null | string {
   return useSections(state => (sectionId ? (state.liveSessionId[sectionId] ?? null) : null))
+}
+
+/** Hand a fresh bot its hidden first prompt so it greets you and asks its questions. */
+export async function introduceBot(section: Section, displayName: string): Promise<void> {
+  try {
+    const live = section.live_session_id ?? (await sectionsActions().open(section.id)).liveSessionId
+
+    if (live) {
+      await promptSubmit(live, kickoffPrompt(displayName), { display_kind: 'hidden' })
+    }
+  } catch {
+    // The bot exists either way; the user can just start typing.
+  }
+}
+
+/** Per-section state the open transcripts know before the daemon does. */
+export type LiveSections = Record<string, BotStatus>
+
+/** What each open transcript says about its section: a card waiting on you, or a reply streaming. */
+export function liveSectionsOf(
+  bySession: Record<
+    string,
+    {
+      approvals: { decision?: unknown }[]
+      clarifies: { answers: Record<string, string>; expired?: boolean; questions: unknown[] }[]
+      sectionId?: string
+      streamingMessageId: null | string
+    }
+  >
+): LiveSections {
+  const live: LiveSections = {}
+
+  for (const transcript of Object.values(bySession)) {
+    if (!transcript.sectionId) {
+      continue
+    }
+
+    const asking =
+      transcript.clarifies.some(
+        item => !item.expired && Object.keys(item.answers).length < item.questions.length
+      ) || transcript.approvals.some(item => !item.decision)
+
+    if (asking) {
+      live[transcript.sectionId] = 'needs_you'
+    } else if (transcript.streamingMessageId) {
+      live[transcript.sectionId] = 'working'
+    }
+  }
+
+  return live
+}
+
+/** The daemon's word on a bot; a record without the field is idle. */
+export function botStatus(bot: Bot | undefined): BotStatus {
+  return bot?.status ?? 'idle'
+}
+
+/**
+ * A section's state: the daemon's status when its detail names this section,
+ * else what the live transcript says.
+ */
+export function sectionStatusOf(
+  bot: Bot | undefined,
+  sectionId: null | string,
+  live: LiveSections = {}
+): BotStatus {
+  const status = botStatus(bot)
+
+  if (status !== 'idle' && sectionId && bot?.status_detail?.section_id === sectionId) {
+    return status
+  }
+
+  return (sectionId && live[sectionId]) || 'idle'
+}
+
+/** A bot's dot: the daemon's word, unless a live section is waiting on you right now. */
+export function botStatusWithLive(bot: Bot, sections: Section[], live: LiveSections): BotStatus {
+  const status = botStatus(bot)
+
+  if (status === 'stopped') {
+    return status
+  }
+
+  const own = sections.map(section => live[section.id])
+
+  if (own.includes('needs_you')) {
+    return 'needs_you'
+  }
+
+  return status !== 'idle' ? status : own.includes('working') ? 'working' : 'idle'
 }

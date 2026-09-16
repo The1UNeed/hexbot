@@ -13,10 +13,13 @@ import { create } from 'zustand'
 
 import { approvalReceived, nextMessageId, sectionsTouch } from '../lib/api'
 import { getBridge } from '../lib/bridge'
+import { toMillis } from '../lib/time'
 import type {
   ApprovalChoice,
   ApprovalRequest,
   Attachment,
+  ClarifyRequest,
+  ClarifyRequestPayload,
   Message,
   SessionInfo,
   StatusLine,
@@ -32,11 +35,16 @@ export interface ErrorDetail {
   incidentId?: string
 }
 
+/** An incident within this long of an error row is the same failure, not a new card. */
+const INCIDENT_MERGE_MS = 15_000
+
 /** A transcript message; error rows may carry a detail the daemon reported. */
 export type TranscriptMessage = Message & { errorDetail?: ErrorDetail }
 
 export interface Transcript {
   approvals: ApprovalRequest[]
+  /** Questions the bot asked through the clarify tool, oldest first. */
+  clarifies: ClarifyRequest[]
   /** Inline error rows are also pushed as messages; this is the header copy. */
   error: null | string
   info: null | SessionInfo
@@ -47,6 +55,12 @@ export interface Transcript {
   status: null | StatusLine
   /** Id of the assistant message currently receiving deltas. */
   streamingMessageId: null | string
+  /**
+   * Text of the bubbles a question or approval card closed during this
+   * turn. `message.complete` carries the whole turn, so this much is cut
+   * from its front before it lands in the bubble that followed the card.
+   */
+  turnPrefix?: string
   usage: null | Usage
 }
 
@@ -92,9 +106,16 @@ export interface ApprovalRequestPayload {
 }
 
 export interface TranscriptsState {
+  answerClarify: (sessionId: string, requestId: string, questionId: string, answer: string) => void
   approvalRequest: (
     sessionId: string,
     payload: ApprovalRequestPayload,
+    options?: { notify?: boolean }
+  ) => void
+  clarifyExpire: (sessionId: string, requestId: string) => void
+  clarifyRequest: (
+    sessionId: string,
+    payload: ClarifyRequestPayload & { answers?: Record<string, string> },
     options?: { notify?: boolean }
   ) => void
   appendUserMessage: (sessionId: string, text: string, attachments?: Attachment[]) => Message
@@ -155,6 +176,7 @@ export function resetTranscriptEffects(): void {
 export function emptyTranscript(sessionId: string, sectionId?: string): Transcript {
   return {
     approvals: [],
+    clarifies: [],
     error: null,
     info: null,
     messages: [],
@@ -200,6 +222,26 @@ const SPINNER_LINE = /^[^a-z]*[a-z]+\.\.\.$/i
  * delta or a tool call without a preceding `message.start` (a resumed turn),
  * so one is opened on demand.
  */
+/**
+ * A card that blocks the turn (a question, an approval) ends the bubble in
+ * progress so the bot's next words start a new one under the card. The
+ * closed bubble's text is remembered for `messageComplete`.
+ */
+function closeForCard(transcript: Transcript): Transcript {
+  const currentId = transcript.streamingMessageId
+  const current = currentId ? transcript.messages.find(item => item.id === currentId) : undefined
+
+  if (!current) {
+    return transcript
+  }
+
+  return {
+    ...replaceMessage(transcript, current.id, message => ({ ...message, streaming: false })),
+    streamingMessageId: null,
+    turnPrefix: (transcript.turnPrefix ?? '') + current.text
+  }
+}
+
 function withCurrentAssistant(
   transcript: Transcript,
   patch: (message: Message) => Message
@@ -248,10 +290,17 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           return { bySession: { ...state.bySession, [sessionId]: { ...existing, sectionId } } }
         }
 
+        // Cards that arrived while the snapshot was loading (a replayed
+        // question, an approval) outlive the swap.
         return {
           bySession: {
             ...state.bySession,
-            [sessionId]: { ...emptyTranscript(sessionId, sectionId), messages }
+            [sessionId]: {
+              ...emptyTranscript(sessionId, sectionId),
+              approvals: existing?.approvals ?? [],
+              clarifies: existing?.clarifies ?? [],
+              messages
+            }
           }
         }
       })
@@ -301,7 +350,8 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         ...transcript,
         error: null,
         messages: [...transcript.messages, message],
-        streamingMessageId: message.id
+        streamingMessageId: message.id,
+        turnPrefix: undefined
       }))
     },
 
@@ -456,6 +506,17 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
       update(sessionId, transcript => {
         sectionId = transcript.sectionId
+        const prefix = transcript.turnPrefix ?? ''
+
+        const finalText =
+          payload.text && prefix && payload.text.startsWith(prefix)
+            ? payload.text.slice(prefix.length).trimStart()
+            : payload.text
+
+        if (!transcript.streamingMessageId && prefix && !finalText && !payload.error) {
+          // The turn ended right after the card: the closed bubble already holds it all.
+          return { ...transcript, turnPrefix: undefined, usage: payload.usage ?? transcript.usage }
+        }
 
         const finalize = (message: Message): Message => ({
           ...message,
@@ -463,7 +524,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           error: payload.error ?? message.error,
           status: payload.status,
           streaming: false,
-          text: payload.text ? payload.text : message.text,
+          text: finalText ? finalText : message.text,
           toolCalls: message.toolCalls.map(call =>
             call.status === 'running' ? { ...call, status: 'ok' } : call
           ),
@@ -477,6 +538,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
         return {
           ...next,
+          turnPrefix: undefined,
           error: payload.error ?? null,
           status: null,
           streamingMessageId: null,
@@ -503,19 +565,23 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         toolName: payload.tool
       }
 
+      let added = false
+
       update(sessionId, transcript => {
         if (transcript.approvals.some(item => item.requestId === requestId)) {
           return transcript
         }
 
-        return { ...transcript, approvals: [...transcript.approvals, approval] }
+        added = true
+
+        return { ...closeForCard(transcript), approvals: [...transcript.approvals, approval] }
       })
 
       const transcript = get().bySession[sessionId]
 
       effects.ackApproval(sessionId, requestId)
 
-      if (options.notify === false) {
+      if (!added || options.notify === false) {
         return
       }
 
@@ -524,6 +590,75 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         sectionId: transcript?.sectionId,
         title: 'Approval needed'
       })
+    },
+
+    clarifyRequest(sessionId, payload, options = {}) {
+      const requestId = String(payload.request_id ?? nextMessageId('cl'))
+
+      const questions = payload.questions?.length
+        ? payload.questions.map(item => ({
+            choices: item.choices ?? [],
+            multiSelect: Boolean(item.multi_select),
+            question: item.question,
+            questionId: item.qid
+          }))
+        : [
+            {
+              choices: payload.choices ?? [],
+              multiSelect: Boolean(payload.multi_select),
+              question: payload.question ?? ''
+            }
+          ]
+
+      let added = false
+
+      update(sessionId, transcript => {
+        if (transcript.clarifies.some(item => item.requestId === requestId)) {
+          return transcript
+        }
+
+        added = true
+
+        const clarify: ClarifyRequest = {
+          answers: payload.answers ?? {},
+          questions,
+          receivedAt: Date.now(),
+          requestId,
+          sessionId
+        }
+
+        return { ...closeForCard(transcript), clarifies: [...transcript.clarifies, clarify] }
+      })
+
+      if (!added || options.notify === false) {
+        return
+      }
+
+      effects.notify({
+        body: questions[0]?.question ?? 'A bot has a question for you.',
+        sectionId: get().bySession[sessionId]?.sectionId,
+        title: 'Needs you'
+      })
+    },
+
+    answerClarify(sessionId, requestId, questionId, answer) {
+      update(sessionId, transcript => ({
+        ...transcript,
+        clarifies: transcript.clarifies.map(item =>
+          item.requestId === requestId
+            ? { ...item, answers: { ...item.answers, [questionId]: answer } }
+            : item
+        )
+      }))
+    },
+
+    clarifyExpire(sessionId, requestId) {
+      update(sessionId, transcript => ({
+        ...transcript,
+        clarifies: transcript.clarifies.map(item =>
+          item.requestId === requestId ? { ...item, expired: true } : item
+        )
+      }))
     },
 
     resolveApproval(sessionId, requestId, choice) {
@@ -589,6 +724,22 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           messages[existing] = { ...messages[existing]!, error: message, errorDetail: detail }
 
           return { ...transcript, messages }
+        }
+
+        // The gateway's own `error` event usually lands first for the same
+        // failure; the incident then adds its detail to that card instead of
+        // drawing a second one.
+        const recent = messages.findLastIndex(
+          item =>
+            Boolean(item.error) &&
+            !item.errorDetail?.incidentId &&
+            Date.now() - toMillis(item.createdAt) < INCIDENT_MERGE_MS
+        )
+
+        if (recent >= 0) {
+          messages[recent] = { ...messages[recent]!, error: message, errorDetail: detail }
+
+          return { ...transcript, error: message, messages }
         }
 
         const card: TranscriptMessage = {

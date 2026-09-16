@@ -17,8 +17,9 @@ import { Button } from '../../components/ui/button'
 import { Dialog } from '../../components/ui/dialog'
 import { Input } from '../../components/ui/input'
 import { Menu } from '../../components/ui/menu'
+import { RoomCluster } from '../../components/ui/room-cluster'
 import { Select } from '../../components/ui/select'
-import { Textarea } from '../../components/ui/textarea'
+import { StatusDot } from '../../components/ui/status-dot'
 import { modelsList } from '../../lib/api'
 import {
   avatarPng,
@@ -28,7 +29,6 @@ import {
   styleForName
 } from '../../lib/avatar-builder'
 import { toHandle } from '../../lib/bot-handle'
-import { BOT_TEMPLATES } from '../../lib/bot-templates'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { toMillis } from '../../lib/time'
@@ -36,8 +36,16 @@ import type { Bot, ModelOption, Room, RoomEvent, Section } from '../../lib/types
 import { useBotList, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useDrafts } from '../../stores/drafts'
-import { roomUnread, useRoomList, useRooms } from '../../stores/rooms'
-import { sectionsActions, useSections } from '../../stores/sections'
+import { roomStatus, roomUnread, useRoomList, useRooms } from '../../stores/rooms'
+import {
+  botStatusWithLive,
+  introduceBot,
+  type LiveSections,
+  liveSectionsOf,
+  sectionsActions,
+  sectionStatusOf,
+  useSections
+} from '../../stores/sections'
 import { useSettings } from '../../stores/settings'
 import { useTranscripts } from '../../stores/transcripts'
 import { useUsers } from '../../stores/users'
@@ -119,6 +127,7 @@ function RoomRow({
 }) {
   const bots = useBots(state => state.byName)
   const events = useRooms(state => state.eventsByRoom[room.id] ?? NO_EVENTS)
+  const turns = useRooms(state => state.liveTurnsByRoom[room.id])
 
   if (query && !room.name.toLowerCase().includes(query)) {
     return null
@@ -126,8 +135,8 @@ function RoomRow({
 
   const active_ = room.members.filter(member => member.member_kind === 'bot' && !member.left_at)
   const latest = events.at(-1)
-  const waiting = latest?.kind === 'waiting.human'
-  const unread = !waiting && roomUnread(room, events)
+  const status = roomStatus(events, turns)
+  const unread = status === 'idle' && roomUnread(room, events)
 
   return (
     <button
@@ -136,27 +145,7 @@ function RoomRow({
       onClick={() => onOpen(room.id)}
       type="button"
     >
-      <span className="relative grid size-10 shrink-0 place-items-center">
-        {active_.length <= 1 ? (
-          <Avatar
-            image={avatarData(bots[active_[0]?.member_id ?? ''])}
-            name={bots[active_[0]?.member_id ?? '']?.display_name ?? room.name}
-            size="lg"
-          />
-        ) : (
-          <span className="grid size-10 grid-cols-2 gap-0.5">
-            {active_.slice(0, 4).map(member => (
-              <Avatar
-                className="size-[19px]"
-                image={avatarData(bots[member.member_id])}
-                key={member.member_id}
-                name={bots[member.member_id]?.display_name ?? member.member_id}
-                size="xs"
-              />
-            ))}
-          </span>
-        )}
-      </span>
+      <RoomCluster bots={bots} room={room} status={status} />
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-2">
           <span className="min-w-0 flex-1 truncate font-semibold">{room.name}</span>
@@ -170,10 +159,8 @@ function RoomRow({
               ? latest.payload.text
               : `${active_.length} bot${active_.length === 1 ? '' : 's'}`}
           </span>
-          {waiting ? (
-            <span aria-label="Waiting on you" className="size-2 shrink-0 rounded-full bg-warning" />
-          ) : unread ? (
-            <span aria-label="Unread" className="size-2 shrink-0 rounded-full bg-accent" />
+          {unread ? (
+            <span aria-label="Unread" className="size-2 shrink-0 rounded-full bg-foreground/60" />
           ) : null}
         </span>
       </span>
@@ -227,10 +214,10 @@ export function visibleRecentSections(
 interface BotRowsProps {
   active?: string
   bot: Bot
-  busy?: boolean
   drafts: Drafts
   expanded: boolean
   focused: string | null
+  live: LiveSections
   onArchive: (section: Section) => void
   onDelete: (section: Section) => void
   onExpand: () => void
@@ -254,52 +241,13 @@ function matchBot(bot: Bot, sections: Section[], query: string) {
   return { available, matchesBot, matching }
 }
 
-/** Daemon-reported status; a record without the field falls back to the client's streaming flag. */
-type BotSignals = Partial<{ status: 'idle' | 'needs_you' | 'stopped' | 'working' }>
-
-export function botStatus(bot: Bot, busy = false): 'idle' | 'needs_you' | 'stopped' | 'working' {
-  const status = (bot as BotSignals).status
-
-  if (status === 'stopped' || status === 'needs_you') {
-    return status
-  }
-
-  return status === 'working' || busy ? 'working' : 'idle'
-}
-
-const STATUS_DOTS = {
-  needs_you: ['Needs you', 'bg-warning'],
-  stopped: ['Stopped', 'bg-danger'],
-  working: ['Working', 'bg-success']
-} as const
-
-function StatusDot({ bot, busy }: { bot: Bot; busy?: boolean }) {
-  const status = botStatus(bot, busy)
-
-  if (status === 'idle') {
-    return null
-  }
-
-  const [label, color] = STATUS_DOTS[status]
-
-  return (
-    <span
-      aria-label={label}
-      className={cn(
-        'absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-2 border-surface',
-        color
-      )}
-    />
-  )
-}
-
 function BotRows({
   active,
   bot,
-  busy,
   drafts,
   expanded,
   focused,
+  live,
   onArchive,
   onDelete,
   onExpand,
@@ -339,7 +287,7 @@ function BotRows({
       >
         <span className="relative shrink-0">
           <Avatar image={avatarData(bot)} name={bot.display_name} size="lg" />
-          <StatusDot bot={bot} busy={busy} />
+          <StatusDot status={botStatusWithLive(bot, available, live)} />
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
@@ -358,7 +306,10 @@ function BotRows({
       {rows.length > 0 || canExpand ? (
         <div className="mb-1 ml-5 flex flex-col gap-px border-l border-border pr-1 pl-1.5">
           {rows.map(section => {
+            const status = sectionStatusOf(bot, section.id, live)
+
             const unread =
+              status === 'idle' &&
               section.id !== active &&
               sectionTime(section) > Number(localStorage.getItem(`hexbot.read.${section.id}`) ?? 0)
 
@@ -384,8 +335,12 @@ function BotRows({
                   {drafts[section.id] ? (
                     <SquarePen aria-label="Draft" className="shrink-0" size={12} />
                   ) : null}
-                  {unread ? (
-                    <span aria-label="Unread" className="size-1.5 rounded-full bg-accent" />
+                  {status !== 'idle' ? (
+                    <span className="relative size-2 shrink-0">
+                      <StatusDot className="inset-0 border-0" status={status} />
+                    </span>
+                  ) : unread ? (
+                    <span aria-label="Unread" className="size-1.5 rounded-full bg-foreground/60" />
                   ) : null}
                   <span className="text-[length:var(--text-meta)] text-muted">
                     {relativeTime(section.updated_at)}
@@ -440,17 +395,10 @@ export function RosterColumn() {
   const [botDialog, setBotDialog] = useState(false)
   const [roomDialog, setRoomDialog] = useState(false)
 
-  const [newBot, setNewBot] = useState({
-    description: '',
-    model: '',
-    name: '',
-    persona: '',
-    provider: '',
-    template: '',
-    title: ''
-  })
-
+  const [newBot, setNewBot] = useState({ model: '', name: '', provider: '' })
   const [newBotError, setNewBotError] = useState<null | string>(null)
+  const [creatingBot, setCreatingBot] = useState(false)
+  const [showModel, setShowModel] = useState(false)
 
   const [newStyle, setNewStyle] = useState<AvatarStyle>(DEFAULT_AVATAR_STYLE)
   const [newModels, setNewModels] = useState<ModelOption[]>([])
@@ -513,19 +461,7 @@ export function RosterColumn() {
   }, [activeSectionUpdatedAt, params.section])
   const streamingSessions = useTranscripts(state => state.bySession)
 
-  const busyBots = useMemo(() => {
-    const names = new Set<string>()
-
-    for (const transcript of Object.values(streamingSessions)) {
-      const section = transcript.sectionId ? sectionMap[transcript.sectionId] : undefined
-
-      if (transcript.streamingMessageId && section) {
-        names.add(section.bot)
-      }
-    }
-
-    return names
-  }, [sectionMap, streamingSessions])
+  const liveSections = useMemo(() => liveSectionsOf(streamingSessions), [streamingSessions])
 
   const ordered = useMemo(() => orderedBots(bots), [bots])
   const roster = useMemo(() => orderedRosterItems(bots, rooms), [bots, rooms])
@@ -754,11 +690,11 @@ export function RosterColumn() {
             <BotRows
               active={params.section}
               bot={entry.item as Bot}
-              busy={busyBots.has((entry.item as Bot).name)}
               drafts={drafts}
               expanded={expanded.has((entry.item as Bot).name)}
               focused={focused}
               key={`bot:${(entry.item as Bot).name}`}
+              live={liveSections}
               onArchive={section => void archiveSection(section)}
               onDelete={section => void deleteSection(section)}
               onExpand={() => void expandBot((entry.item as Bot).name)}
@@ -832,8 +768,15 @@ export function RosterColumn() {
         </div>
       </div>
       <Dialog
-        description="Give it a face, a name and a role. You can change all of it later."
-        onOpenChange={setBotDialog}
+        description="A face and a name. It will ask you the rest in its first section."
+        onOpenChange={value => {
+          setBotDialog(value)
+
+          if (!value) {
+            setShowModel(false)
+            setNewBotError(null)
+          }
+        }}
         open={botDialog}
         title="New bot"
       >
@@ -841,8 +784,7 @@ export function RosterColumn() {
           className="grid gap-4 p-5"
           onSubmit={event => {
             event.preventDefault()
-            const { template: _template, ...input } = newBot
-            const handle = toHandle(input.name)
+            const handle = toHandle(newBot.name)
 
             if (!handle) {
               setNewBotError('Give the bot a name with at least one letter or digit.')
@@ -851,22 +793,28 @@ export function RosterColumn() {
             }
 
             setNewBotError(null)
+            setCreatingBot(true)
+            const displayName = newBot.name.trim()
             void avatarPng(newStyle)
               .then(avatar =>
                 useBots.getState().create({
-                  ...input,
-                  display_name: input.name.trim(),
+                  display_name: displayName,
+                  model: newBot.model,
                   name: handle,
+                  provider: newBot.provider,
                   ...(avatar ? { avatar } : {})
                 })
               )
-              .then(({ bot, section }) => {
+              .then(async ({ bot, section }) => {
                 setBotDialog(false)
+                setNewBot(value => ({ ...value, name: '' }))
                 open(bot.name, section.id)
+                await introduceBot(section, displayName)
               })
               .catch(error =>
                 setNewBotError(error instanceof Error ? error.message : String(error))
               )
+              .finally(() => setCreatingBot(false))
           }}
         >
           <AvatarBuilder onChange={setNewStyle} value={newStyle} />
@@ -875,80 +823,46 @@ export function RosterColumn() {
               aria-label="Bot name"
               autoFocus
               onChange={event => setNewBot(value => ({ ...value, name: event.target.value }))}
-              placeholder="New bot"
+              placeholder="research"
               required
               value={newBot.name}
             />
           </Field>
-          <Field label="Role">
-            <Select
-              label="Role template"
-              onValueChange={id => {
-                const template = BOT_TEMPLATES.find(item => item.id === id)
-
-                if (template) {
-                  setNewBot(value => ({
-                    ...value,
-                    description: template.description,
-                    persona: template.persona,
-                    template: id,
-                    title: template.title
-                  }))
-                }
-              }}
-              options={BOT_TEMPLATES.map(item => ({ label: item.title, value: item.id }))}
-              placeholder="Choose a role template"
-              value={newBot.template || undefined}
-            />
-          </Field>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Label (optional)">
-              <Input
-                aria-label="Title"
-                onChange={event => setNewBot(value => ({ ...value, title: event.target.value }))}
-                placeholder="Research, marketing, admin"
-                value={newBot.title}
-              />
-            </Field>
-            <Field label="Description">
-              <Input
-                aria-label="Description"
-                onChange={event =>
-                  setNewBot(value => ({ ...value, description: event.target.value }))
-                }
-                placeholder="What this bot is for"
-                value={newBot.description}
-              />
-            </Field>
-          </div>
-          <Field label="Persona">
-            <Textarea
-              aria-label="Persona"
-              onChange={event => setNewBot(value => ({ ...value, persona: event.target.value }))}
-              placeholder="How this bot behaves and speaks"
-              value={newBot.persona}
-            />
-          </Field>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Provider">
-              <Select
-                label="Provider"
-                onValueChange={provider => setNewBot(value => ({ ...value, provider }))}
-                options={configuredProviders.map(item => ({ label: item.label, value: item.id }))}
-                placeholder="Provider"
-                value={newBot.provider || undefined}
-              />
-            </Field>
-            <Field label="Model">
-              <Select
-                label="Model"
-                onValueChange={model => setNewBot(value => ({ ...value, model }))}
-                options={newModels.map(item => ({ label: item.label, value: item.id }))}
-                placeholder="Model"
-                value={newBot.model || undefined}
-              />
-            </Field>
-          </div>
+          {showModel || !newBot.provider || !newBot.model ? (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Provider">
+                <Select
+                  label="Provider"
+                  onValueChange={provider => setNewBot(value => ({ ...value, provider }))}
+                  options={configuredProviders.map(item => ({ label: item.label, value: item.id }))}
+                  placeholder="Provider"
+                  value={newBot.provider || undefined}
+                />
+              </Field>
+              <Field label="Model">
+                <Select
+                  label="Model"
+                  onValueChange={model => setNewBot(value => ({ ...value, model }))}
+                  options={newModels.map(item => ({ label: item.label, value: item.id }))}
+                  placeholder="Model"
+                  value={newBot.model || undefined}
+                />
+              </Field>
+            </div>
+          ) : (
+            <p className="flex items-center gap-2 text-[length:var(--text-secondary)] text-muted">
+              <span className="min-w-0 truncate">
+                Runs on {newModels.find(item => item.id === newBot.model)?.label ?? newBot.model}
+              </span>
+              <button
+                className="shrink-0 underline-offset-2 hover:text-foreground hover:underline"
+                onClick={() => setShowModel(true)}
+                type="button"
+              >
+                Change
+              </button>
+            </p>
+          )}
           {newBotError ? (
             <p className="text-[length:var(--text-secondary)] text-danger" role="alert">
               {newBotError}
@@ -958,7 +872,12 @@ export function RosterColumn() {
             <Button onClick={() => setBotDialog(false)} variant="ghost">
               Cancel
             </Button>
-            <Button disabled={!newBot.provider || !newBot.model} type="submit" variant="primary">
+            <Button
+              busy={creatingBot}
+              disabled={!newBot.provider || !newBot.model || !newBot.name.trim()}
+              type="submit"
+              variant="primary"
+            >
               Create bot
             </Button>
           </div>

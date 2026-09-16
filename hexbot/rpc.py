@@ -331,6 +331,8 @@ def _event_payload(params: dict, result: dict) -> dict:
         payload["id"] = section.get("id") or params.get("id")
     if room.get("id"):
         payload["id"] = room["id"]
+    if room.get("deleted") or (result.get("deleted") is True and params.get("id")):
+        payload["deleted"] = True
     if bot.get("name") or section.get("bot") or params.get("bot") or params.get("name"):
         payload["bot"] = bot.get("name") or section.get("bot") or params.get("bot")
         payload.setdefault("name", bot.get("name") or params.get("name"))
