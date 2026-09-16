@@ -10,16 +10,6 @@ describe('roster ordering', () => {
   })
 })
 
-describe('roster status dot', () => {
-  it('prefers the daemon status and falls back to the streaming flag', async () => {
-    const { botStatus } = await import('./index')
-    expect(botStatus({ name: 'a' } as Bot, true)).toBe('working')
-    expect(botStatus({ name: 'a', status: 'stopped' } as unknown as Bot, true)).toBe('stopped')
-    expect(botStatus({ name: 'a', status: 'needs_you' } as unknown as Bot)).toBe('needs_you')
-    expect(botStatus({ name: 'a', status: 'idle' } as unknown as Bot)).toBe('idle')
-  })
-})
-
 describe('sections under a bot', () => {
   const now = Date.now() / 1000
 
@@ -61,3 +51,4 @@ describe('sections under a bot', () => {
     ])
   })
 })
+

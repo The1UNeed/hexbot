@@ -14,6 +14,7 @@ import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SettingsTabRouteImport } from './routes/settings.$tab'
 import { Route as RRoomRouteImport } from './routes/r.$room'
+import { Route as RRoomSettingsRouteImport } from './routes/r.$room_.settings'
 import { Route as BBotSettingsTabRouteImport } from './routes/b.$bot.settings.$tab'
 import { Route as BBotSSectionRouteImport } from './routes/b.$bot.s.$section'
 
@@ -42,6 +43,11 @@ const RRoomRoute = RRoomRouteImport.update({
   path: '/r/$room',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RRoomSettingsRoute = RRoomSettingsRouteImport.update({
+  id: '/r/$room_/settings',
+  path: '/r/$room/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const BBotSettingsTabRoute = BBotSettingsTabRouteImport.update({
   id: '/b/$bot/settings/$tab',
   path: '/b/$bot/settings/$tab',
@@ -59,6 +65,7 @@ export interface FileRoutesByFullPath {
   '/onboarding': typeof OnboardingRoute
   '/r/$room': typeof RRoomRoute
   '/settings/$tab': typeof SettingsTabRoute
+  '/r/$room/settings': typeof RRoomSettingsRoute
   '/b/$bot/s/$section': typeof BBotSSectionRoute
   '/b/$bot/settings/$tab': typeof BBotSettingsTabRoute
 }
@@ -68,6 +75,7 @@ export interface FileRoutesByTo {
   '/onboarding': typeof OnboardingRoute
   '/r/$room': typeof RRoomRoute
   '/settings/$tab': typeof SettingsTabRoute
+  '/r/$room/settings': typeof RRoomSettingsRoute
   '/b/$bot/s/$section': typeof BBotSSectionRoute
   '/b/$bot/settings/$tab': typeof BBotSettingsTabRoute
 }
@@ -78,6 +86,7 @@ export interface FileRoutesById {
   '/onboarding': typeof OnboardingRoute
   '/r/$room': typeof RRoomRoute
   '/settings/$tab': typeof SettingsTabRoute
+  '/r/$room_/settings': typeof RRoomSettingsRoute
   '/b/$bot/s/$section': typeof BBotSSectionRoute
   '/b/$bot/settings/$tab': typeof BBotSettingsTabRoute
 }
@@ -89,6 +98,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/r/$room'
     | '/settings/$tab'
+    | '/r/$room/settings'
     | '/b/$bot/s/$section'
     | '/b/$bot/settings/$tab'
   fileRoutesByTo: FileRoutesByTo
@@ -98,6 +108,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/r/$room'
     | '/settings/$tab'
+    | '/r/$room/settings'
     | '/b/$bot/s/$section'
     | '/b/$bot/settings/$tab'
   id:
@@ -107,6 +118,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/r/$room'
     | '/settings/$tab'
+    | '/r/$room_/settings'
     | '/b/$bot/s/$section'
     | '/b/$bot/settings/$tab'
   fileRoutesById: FileRoutesById
@@ -117,6 +129,7 @@ export interface RootRouteChildren {
   OnboardingRoute: typeof OnboardingRoute
   RRoomRoute: typeof RRoomRoute
   SettingsTabRoute: typeof SettingsTabRoute
+  RRoomSettingsRoute: typeof RRoomSettingsRoute
   BBotSSectionRoute: typeof BBotSSectionRoute
   BBotSettingsTabRoute: typeof BBotSettingsTabRoute
 }
@@ -158,6 +171,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RRoomRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/r/$room_/settings': {
+      id: '/r/$room_/settings'
+      path: '/r/$room/settings'
+      fullPath: '/r/$room/settings'
+      preLoaderRoute: typeof RRoomSettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/b/$bot/settings/$tab': {
       id: '/b/$bot/settings/$tab'
       path: '/b/$bot/settings/$tab'
@@ -181,6 +201,7 @@ const rootRouteChildren: RootRouteChildren = {
   OnboardingRoute: OnboardingRoute,
   RRoomRoute: RRoomRoute,
   SettingsTabRoute: SettingsTabRoute,
+  RRoomSettingsRoute: RRoomSettingsRoute,
   BBotSSectionRoute: BBotSSectionRoute,
   BBotSettingsTabRoute: BBotSettingsTabRoute,
 }

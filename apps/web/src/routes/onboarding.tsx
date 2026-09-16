@@ -24,9 +24,10 @@ import { BOT_TEMPLATES } from '../lib/bot-templates'
 import { type DaemonProgress, getBridge, hasLocalRuntime, isElectron } from '../lib/bridge'
 import { cn } from '../lib/cn'
 import { connectTo, setLocalDaemonPort } from '../lib/connection'
-import type { ModelOption, Provider } from '../lib/types'
+import type { ModelOption, Provider, Section } from '../lib/types'
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
+import { introduceBot } from '../stores/sections'
 import { uiActions } from '../stores/ui'
 
 export const Route = createFileRoute('/onboarding')({ component: OnboardingPage })
@@ -527,7 +528,7 @@ function BotStep({
 }: {
   configured: Provider[]
   defaultModel: string | null
-  onCreated: (bot: string, section: string) => void
+  onCreated: (bot: string, section: Section, displayName: string) => void
   /** The page shows a full-screen "getting ready" state while this is true. */
   onCreating?: (creating: boolean) => void
   onError: (message: string) => void
@@ -602,7 +603,7 @@ function BotStep({
         title: title.trim()
       })
 
-      onCreated(result.bot.name, result.section.id)
+      onCreated(result.bot.name, result.section, displayName.trim())
     } catch (reason) {
       onCreating?.(false)
       onError(String(reason))
@@ -928,10 +929,11 @@ function OnboardingPage() {
           <BotStep
             configured={configured}
             defaultModel={defaultModel}
-            onCreated={(bot, section) => {
-              const last = { bot, section }
+            onCreated={(bot, section, displayName) => {
+              const last = { bot, section: section.id }
               uiActions().setLastSection(last)
               void navigate({ to: '/b/$bot/s/$section', params: last })
+              void introduceBot(section, displayName)
             }}
             onCreating={setCreating}
             onError={onError}

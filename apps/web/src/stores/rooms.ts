@@ -4,14 +4,16 @@ import { useShallow } from 'zustand/react/shallow'
 import {
   roomsAddMember,
   roomsCreate,
+  roomsDelete,
   roomsGet,
   roomsList,
   roomsLog,
   roomsMarkRead,
-  roomsRemoveMember
+  roomsRemoveMember,
+  roomsUpdate
 } from '../lib/api'
 import type { RoomCreateInput } from '../lib/api'
-import type { Room, RoomEvent, RoomTurn } from '../lib/types'
+import type { BotStatus, Room, RoomEvent, RoomTurn } from '../lib/types'
 
 import { useTranscripts } from './transcripts'
 
@@ -19,6 +21,8 @@ export interface RoomsState {
   addMember: (id: string, bot: string) => Promise<void>
   byId: Record<string, Room>
   create: (input: RoomCreateInput) => Promise<Room>
+  /** Forget a room the daemon deleted. */
+  drop: (id: string) => void
   error: null | string
   eventsByRoom: Record<string, RoomEvent[]>
   handleEvent: (roomId: string, event: RoomEvent) => void
@@ -30,7 +34,10 @@ export interface RoomsState {
   order: string[]
   refresh: () => Promise<void>
   refreshOne: (id: string) => Promise<void>
-  removeMember: (id: string, bot: string) => Promise<void>
+  remove: (id: string) => Promise<void>
+  /** Resolves true when the room was deleted because its last bot left. */
+  removeMember: (id: string, bot: string) => Promise<boolean>
+  update: (id: string, patch: Parameters<typeof roomsUpdate>[1]) => Promise<void>
 }
 
 function messageSeq(events: RoomEvent[]): number {
@@ -49,6 +56,17 @@ function mergeRoom(state: RoomsState, room: Room): Partial<RoomsState> {
     byId: { ...state.byId, [room.id]: room },
     order: state.order.includes(room.id) ? state.order : [room.id, ...state.order]
   }
+}
+
+function dropRoom(state: RoomsState, id: string): Partial<RoomsState> {
+  const byId = { ...state.byId }
+  const eventsByRoom = { ...state.eventsByRoom }
+  const liveTurnsByRoom = { ...state.liveTurnsByRoom }
+  delete byId[id]
+  delete eventsByRoom[id]
+  delete liveTurnsByRoom[id]
+
+  return { byId, eventsByRoom, liveTurnsByRoom, order: state.order.filter(item => item !== id) }
 }
 
 export const useRooms = create<RoomsState>((set, get) => ({
@@ -122,7 +140,30 @@ export const useRooms = create<RoomsState>((set, get) => ({
 
   async removeMember(id, bot) {
     const { room } = await roomsRemoveMember(id, bot)
+
+    if ((room as Room & { deleted?: boolean }).deleted) {
+      set(state => dropRoom(state, id))
+
+      return true
+    }
+
     set(state => mergeRoom(state, room))
+
+    return false
+  },
+
+  drop(id) {
+    set(state => dropRoom(state, id))
+  },
+
+  async update(id, patch) {
+    const { room } = await roomsUpdate(id, patch)
+    set(state => mergeRoom(state, room))
+  },
+
+  async remove(id) {
+    await roomsDelete(id)
+    set(state => dropRoom(state, id))
   },
 
   handleEvent(roomId, event) {
@@ -184,6 +225,41 @@ export const useRooms = create<RoomsState>((set, get) => ({
     })
   }
 }))
+
+/**
+ * What the room is doing, folded from its live turns and its latest event:
+ * working while any bot has a turn in flight, needs you while the last thing
+ * that happened was a bot tagging you, stopped when the last turn failed.
+ */
+export function roomStatus(
+  events: RoomEvent[],
+  turns: Record<string, RoomTurn> | undefined
+): BotStatus {
+  if (turns && Object.keys(turns).length > 0) {
+    return 'working'
+  }
+
+  const latest = events.at(-1)
+
+  if (latest?.kind === 'turn.failed') {
+    return 'stopped'
+  }
+
+  return latest?.kind === 'waiting.human' ? 'needs_you' : 'idle'
+}
+
+/** The error text of the latest failed turn, when the room's last event is one. */
+export function roomFailure(events: RoomEvent[]): null | string {
+  const latest = events.at(-1)
+
+  if (latest?.kind !== 'turn.failed') {
+    return null
+  }
+
+  return typeof latest.payload.error === 'string' && latest.payload.error
+    ? latest.payload.error
+    : 'The turn did not finish.'
+}
 
 export function roomUnread(room: Room, events: RoomEvent[]): boolean {
   const human = room.members.find(member => member.member_kind === 'human' && !member.left_at)

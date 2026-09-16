@@ -197,8 +197,14 @@ def open_section(section_id: str) -> dict:
         _remember_live(section_id, live)
     _flush_pending_title(section_id, live, row["title"])
     messages = result.get("messages", [])
-    return {"section": _row_shape(_get(section_id), {"message_count": len(messages)}),
-            "messages": messages}
+    opened = {"section": _row_shape(_get(section_id), {"message_count": len(messages)}),
+              "messages": messages}
+    # A question the bot is still waiting on: the client re-draws its card
+    # after a reload, since the clarify.request event only reached the page
+    # that was open when it fired.
+    if result.get("pending_clarify"):
+        opened["pending_clarify"] = result["pending_clarify"]
+    return opened
 
 
 def _flush_pending_title(section_id: str, live: str, title: str) -> None:

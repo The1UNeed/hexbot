@@ -10,6 +10,7 @@ import { Chip } from '../../components/ui/chip'
 import { Dialog } from '../../components/ui/dialog'
 import { Input } from '../../components/ui/input'
 import { Menu } from '../../components/ui/menu'
+import { StatusDot } from '../../components/ui/status-dot'
 import {
   approvalRespond,
   attachFile,
@@ -21,14 +22,29 @@ import { avatarSrc } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { toMillis } from '../../lib/time'
-import type { ApprovalChoice, ApprovalRequest, Attachment, Bot } from '../../lib/types'
+import type {
+  ApprovalChoice,
+  ApprovalRequest,
+  Attachment,
+  Bot,
+  BotStatus,
+  ClarifyRequest
+} from '../../lib/types'
 import { useBot } from '../../stores/bots'
 import { draftsActions } from '../../stores/drafts'
-import { sectionsActions, useLiveSessionId, useSection, useSections } from '../../stores/sections'
+import {
+  liveSectionsOf,
+  sectionsActions,
+  sectionStatusOf,
+  useLiveSessionId,
+  useSection,
+  useSections
+} from '../../stores/sections'
 import { useSettings } from '../../stores/settings'
 import { transcriptActions, type TranscriptMessage, useTranscript } from '../../stores/transcripts'
 import { uiActions, useUi } from '../../stores/ui'
 
+import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
 import { RoomConversation } from './room'
 import { WorkStatus } from './work-status'
@@ -470,13 +486,17 @@ interface DraftAttachment {
 
 function Composer({
   bot,
+  notice,
   sectionId,
   sessionId,
+  status,
   streaming
 }: {
   bot?: Bot
+  notice?: React.ReactNode
   sectionId: string | null
   sessionId: string | null
+  status?: BotStatus
   streaming: boolean
 }) {
   const [text, setText] = useState(() => (sectionId ? draftsActions().byId[sectionId] : '') ?? '')
@@ -568,10 +588,12 @@ function Composer({
         ) : null
       }
       canSend={Boolean(sessionId) && (Boolean(text.trim()) || files.length > 0)}
+      notice={notice}
       onAttach={() => picker.current?.click()}
       onSend={() => void send()}
       onStop={() => sessionId && void sessionInterrupt(sessionId)}
       sending={sending}
+      status={status}
       streaming={streaming}
     >
       <input
@@ -617,6 +639,11 @@ function Composer({
   )
 }
 
+type TimelineItem =
+  | { approval: ApprovalRequest; at: number; kind: 'approval' }
+  | { at: number; clarify: ClarifyRequest; kind: 'clarify' }
+  | { at: number; index: number; kind: 'message'; message: TranscriptMessage }
+
 function BotConversation() {
   const params = useParams({ strict: false }) as { bot?: string; section?: string }
   const navigate = useNavigate()
@@ -636,9 +663,24 @@ function BotConversation() {
   const togglePanel = useUi(state => state.toggleRightPanel)
   const messages = useMemo(() => transcript?.messages ?? [], [transcript?.messages])
   const approvals = useMemo(() => transcript?.approvals ?? [], [transcript?.approvals])
+  const clarifies = useMemo(() => transcript?.clarifies ?? [], [transcript?.clarifies])
   const streaming = Boolean(transcript?.streamingMessageId)
   const [unavailable, setUnavailable] = useState<string | null>(null)
   const stoppedHere = stoppedCardFor(bot, params.section ?? null, messages)
+
+  const status = sectionStatusOf(
+    bot,
+    params.section ?? null,
+    transcript && liveId ? liveSectionsOf({ [liveId]: transcript }) : {}
+  )
+
+  const notice =
+    status === 'stopped'
+      ? (bot?.status_detail?.text ?? messages.findLast(message => message.error)?.error)
+      : status === 'needs_you'
+        ? 'Waiting on you'
+        : null
+
   useEffect(() => {
     if (params.section && !liveId && unavailable !== params.section) {
       sectionsActions()
@@ -661,7 +703,7 @@ function BotConversation() {
     if (atBottom) {
       bottom.current?.scrollIntoView({ block: 'end' })
     }
-  }, [approvals.length, atBottom, messages])
+  }, [approvals.length, atBottom, clarifies, messages])
   const wasStreaming = useRef(streaming)
   useEffect(() => {
     if (document.hidden && wasStreaming.current && !streaming) {
@@ -696,6 +738,27 @@ function BotConversation() {
     previousApprovalCount.current = approvals.length
   }, [approvals])
   const shown = messages.slice(-visible)
+
+  // Messages, question cards and approval cards in the order they happened.
+  // Restored history carries no times and stays first.
+  const timeline = useMemo(() => {
+    const items: TimelineItem[] = [
+      ...shown.map((message, index) => ({
+        at: message.createdAt > 0 ? toMillis(message.createdAt) : 0,
+        index,
+        kind: 'message' as const,
+        message
+      })),
+      ...clarifies.map(clarify => ({ at: clarify.receivedAt, clarify, kind: 'clarify' as const })),
+      ...approvals.map(approval => ({
+        approval,
+        at: approval.receivedAt,
+        kind: 'approval' as const
+      }))
+    ]
+
+    return items.sort((a, b) => a.at - b.at)
+  }, [approvals, clarifies, shown])
 
   const retry = () => {
     const last = messages.findLast(message => message.role === 'user')
@@ -782,7 +845,14 @@ function BotConversation() {
       }}
     >
       <header className="hex-drag flex h-11 shrink-0 items-center gap-2 px-4 max-[700px]:pl-12">
-        <Avatar image={avatarData(bot)} name={bot?.display_name ?? params.bot ?? 'Bot'} size="xs" />
+        <span className="relative shrink-0">
+          <Avatar
+            image={avatarData(bot)}
+            name={bot?.display_name ?? params.bot ?? 'Bot'}
+            size="sm"
+          />
+          <StatusDot size="sm" status={status} />
+        </span>
         <div className="hex-no-drag flex min-w-0 flex-1 items-baseline gap-2">
           <span className="truncate text-[length:var(--text-secondary)] font-semibold">
             {bot?.display_name ?? params.bot}
@@ -910,7 +980,7 @@ function BotConversation() {
               </Button>
             ) : null}
           </div>
-        ) : messages.length === 0 ? (
+        ) : messages.length === 0 && clarifies.length === 0 ? (
           <div className="hex-fade grid h-full place-content-center justify-items-center gap-5 p-8 text-center">
             <Avatar image={avatarData(bot)} name={bot?.display_name ?? 'Bot'} size="xl" />
             <div>
@@ -948,7 +1018,16 @@ function BotConversation() {
                 Load earlier messages
               </button>
             ) : null}
-            {shown.map((message, index) => {
+            {timeline.map(item => {
+              if (item.kind === 'clarify') {
+                return <ClarifyCard clarify={item.clarify} key={item.clarify.requestId} />
+              }
+
+              if (item.kind === 'approval') {
+                return <ApprovalCard approval={item.approval} key={item.approval.requestId} />
+              }
+
+              const { index, message } = item
               const previous = shown[index - 1]
 
               // Restored history carries no times (createdAt 0): draw no separator
@@ -982,9 +1061,6 @@ function BotConversation() {
                 onRetry={retry}
               />
             ) : null}
-            {approvals.map(approval => (
-              <ApprovalCard approval={approval} key={approval.requestId} />
-            ))}
             <div className="h-2" ref={bottom} />
           </div>
         )}
@@ -1004,8 +1080,10 @@ function BotConversation() {
       <Composer
         bot={bot}
         key={params.section}
+        notice={notice}
         sectionId={params.section ?? null}
         sessionId={liveId}
+        status={status}
         streaming={streaming}
       />
       <Dialog

@@ -114,8 +114,14 @@ tool `message_bot {to, text, wait: bool}` for every bot through
 - Room creation dialog: name, members, optional main bot, approval mode,
   limits prefilled from settings.
 - Room view reuses the conversation column with sender avatars per bot, a
-  "waiting on you" banner on `waiting.human`, a limit notice on
-  `limit.tripped`, and a member strip in the header with add and remove.
+  "waiting on you" banner on `waiting.human`, a red banner on
+  `turn.failed`, a limit notice on `limit.tripped`, and a header with the
+  room cluster, name, member count, status dot and a Room settings button.
+- Room settings (`/r/$room/settings`): name, members (Make main, Remove
+  with an inline confirm, Add bot), approval mode, limits, Delete room.
+  `hexbot.rooms.remove_member` deletes the room when the last bot leaves
+  and answers `{room: {..., deleted: true}}`; the client drops it and
+  returns to `/`.
 - Composer @-mention popover lists members; `@user` is not offered to
   humans.
 - Activity view: list of bot pairs with counts, click-through to sections.

@@ -11,6 +11,7 @@ import type {
   Bot,
   BotCreateInput,
   BotUpdatePatch,
+  ClarifyRequestPayload,
   Connector,
   ConnectorTest,
   CoreMemory,
@@ -312,8 +313,15 @@ export function sectionsCreate(bot: string, title?: string): Promise<{ section: 
   )
 }
 
-export function sectionsOpen(id: string): Promise<{ messages: HistoryRow[]; section: Section }> {
-  return rpcCall<{ messages: HistoryRow[]; section: Section }>('hexbot.sections.open', { id })
+export interface SectionOpened {
+  messages: HistoryRow[]
+  /** A clarify question the bot is still waiting on (same shape as the event, plus locked answers). */
+  pending_clarify?: ClarifyRequestPayload & { answers?: Record<string, string> }
+  section: Section
+}
+
+export function sectionsOpen(id: string): Promise<SectionOpened> {
+  return rpcCall<SectionOpened>('hexbot.sections.open', { id })
 }
 
 export function sectionsRename(id: string, title: string): Promise<{ section: Section }> {
@@ -483,6 +491,21 @@ export function approvalRespond(
     choice,
     request_id: requestId,
     session_id: sessionId
+  })
+}
+
+/** Answer a clarify question; `questionId` locks one question of a batch. */
+export function clarifyRespond(
+  sessionId: string,
+  requestId: string,
+  answer: string,
+  questionId?: string
+): Promise<{ remaining?: string[]; status: string }> {
+  return rpcCall<{ remaining?: string[]; status: string }>('clarify.respond', {
+    answer,
+    request_id: requestId,
+    session_id: sessionId,
+    ...(questionId ? { question_id: questionId } : {})
   })
 }
 

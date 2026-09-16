@@ -3,6 +3,15 @@ import type { ReactNode } from 'react'
 
 import { Spinner } from '../../components/ui/spinner'
 import { cn } from '../../lib/cn'
+import type { BotStatus } from '../../lib/types'
+
+/** Border and notice colour per bot state; idle and working draw the plain pill. */
+const TONES: Record<BotStatus, { border: string; text: string }> = {
+  idle: { border: '', text: '' },
+  needs_you: { border: 'border-accent/70 focus-within:border-accent', text: 'text-accent' },
+  stopped: { border: 'border-danger/70 focus-within:border-danger', text: 'text-danger' },
+  working: { border: '', text: '' }
+}
 
 export interface ComposerShellProps {
   /** Attachment chips or popovers rendered above the field. */
@@ -10,10 +19,14 @@ export interface ComposerShellProps {
   canSend: boolean
   children: ReactNode
   className?: string
+  /** One line above the field, coloured by `status` (an error, "Waiting on you"). */
+  notice?: ReactNode
   onAttach?: () => void
   onSend: () => void
   onStop?: () => void
   sending?: boolean
+  /** Colours the pill so the bottom of the chat matches the bot's dot. */
+  status?: BotStatus
   streaming: boolean
 }
 
@@ -27,16 +40,39 @@ export function ComposerShell({
   canSend,
   children,
   className,
+  notice,
   onAttach,
   onSend,
   onStop,
   sending = false,
+  status = 'idle',
   streaming
 }: ComposerShellProps) {
+  const tone = TONES[status]
+
   return (
     <div className={cn('relative shrink-0 px-4 pt-2 pb-4', className)}>
       {above}
-      <div className="flex items-end gap-2 rounded-[26px] border border-border bg-surface py-1.5 pr-1.5 pl-1.5 shadow-[0_1px_2px_rgb(0_0_0/0.04)] transition-colors focus-within:border-foreground/25">
+      {notice ? (
+        <p
+          className={cn(
+            'hex-fade mb-2 flex items-center gap-2 px-3 text-[length:var(--text-secondary)]',
+            tone.text || 'text-muted'
+          )}
+          data-testid="composer-notice"
+          role={status === 'stopped' ? 'alert' : 'status'}
+        >
+          <span aria-hidden className={cn('size-2 shrink-0 rounded-full bg-current')} />
+          <span className="min-w-0 flex-1 truncate">{notice}</span>
+        </p>
+      ) : null}
+      <div
+        className={cn(
+          'flex items-end gap-2 rounded-[26px] border border-border bg-surface py-1.5 pr-1.5 pl-1.5 shadow-[0_1px_2px_rgb(0_0_0/0.04)] transition-colors focus-within:border-foreground/25',
+          tone.border
+        )}
+        data-status={status}
+      >
         {onAttach ? (
           <button
             aria-label="Attach files"

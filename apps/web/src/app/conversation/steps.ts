@@ -44,6 +44,8 @@ const PREVIEW: Record<string, string> = {
  * from the transcript; the Computer tab in the panel still lists every call.
  */
 export const QUIET_TOOLS = new Set([
+  // The question card is the clarify tool's whole UI; a step row would repeat it.
+  'clarify',
   'memory',
   'session_search',
   'skill_view',

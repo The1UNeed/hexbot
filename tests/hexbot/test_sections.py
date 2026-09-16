@@ -279,3 +279,15 @@ def test_delete_section_tolerates_a_never_messaged_session(gw):
     gw.responses["session.close"] = {"status": "closed"}
     assert sections.delete_section("stored1") is True
     assert sections.list_sections("scout") == []
+
+
+def test_open_section_replays_a_pending_question(gw):
+    from hexbot.sections import create_section, open_section
+    section = create_section("scout", "Q")
+    question = {"question": "Which?", "choices": ["a", "b"], "request_id": "r1"}
+    gw.responses["session.resume"] = lambda p: {"session_id": "live9", "messages": [],
+                                                "pending_clarify": question}
+    opened = open_section(section["id"])
+    assert opened["pending_clarify"] == question
+    gw.responses["session.resume"] = lambda p: {"session_id": "live9", "messages": []}
+    assert "pending_clarify" not in open_section(section["id"])

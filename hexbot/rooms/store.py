@@ -169,9 +169,14 @@ def remove_member(room_id: str, bot: str, removed_by=None) -> dict:
     if not cur.rowcount:
         raise HexbotError(4232, f"active room member not found: {bot}")
     append_event(room_id, "member.left", "human", removed_by, {"bot": bot})
-    if get(room_id)["main_bot"] == bot:
-        update(room_id, main_bot=None)
-    return get(room_id)
+    room = get(room_id)
+    if not any(m["member_kind"] == "bot" and not m["left_at"] for m in room["members"]):
+        # A room with no bots is nothing: delete it (never the bot).
+        delete(room_id)
+        return dict(room, deleted=True)
+    if room["main_bot"] == bot:
+        room = update(room_id, main_bot=None)
+    return room
 
 
 def append_event(room_id, kind, actor_kind=None, actor_id=None, payload=None, *,
