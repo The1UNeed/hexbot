@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { ArrowRight, ArrowUp, Check, Plus } from 'lucide-react'
+import { ArrowRight, ArrowUp, Plus } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 
 import { isSubscription, ProviderPanel, supportsApiKey } from '../components/provider-panel'
@@ -9,7 +9,6 @@ import { Button } from '../components/ui/button'
 import { Chip } from '../components/ui/chip'
 import { Input } from '../components/ui/input'
 import { Select } from '../components/ui/select'
-import { Spinner } from '../components/ui/spinner'
 import { Textarea } from '../components/ui/textarea'
 import { HexbotMark, Wordmark } from '../components/ui/wordmark'
 import { botsCreate, modelsList, providersList, settingsGet, settingsSet } from '../lib/api'
@@ -119,6 +118,35 @@ export function WelcomeStep({ onStart }: { onStart: () => void }) {
   )
 }
 
+/** Every page after the welcome screen: the title in one place, one column. */
+function SetupFrame({
+  children,
+  subtitle,
+  title
+}: {
+  children: ReactNode
+  subtitle?: string
+  title: string
+}) {
+  return (
+    <main className="relative flex min-h-screen flex-col items-center bg-background px-6 text-foreground">
+      <div aria-hidden className="hex-drag absolute inset-x-0 top-0 h-11" />
+      <div className="hex-rise flex w-full max-w-[520px] flex-1 flex-col items-center" key={title}>
+        <h1 className="pt-[13vh] text-center text-[22px] leading-snug font-medium">{title}</h1>
+        {subtitle ? <p className="mt-1 text-center text-secondary text-muted">{subtitle}</p> : null}
+        {children}
+      </div>
+    </main>
+  )
+}
+
+const PILL = 'h-9 w-full rounded-full'
+
+/** The stacked buttons under every page, primary first. */
+function SetupActions({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cn('mx-auto flex w-56 flex-col gap-2', className)}>{children}</div>
+}
+
 /** A tour page: a title up top, one illustration, and stacked buttons below. */
 function TourPage({
   back,
@@ -132,28 +160,83 @@ function TourPage({
   title: string
 }) {
   return (
-    <main className="relative flex min-h-screen flex-col items-center bg-background px-6 text-foreground">
-      <div aria-hidden className="hex-drag absolute inset-x-0 top-0 h-11" />
-      <div className="hex-rise flex w-full max-w-[520px] flex-1 flex-col items-center" key={title}>
-        <h1 className="pt-[13vh] text-center text-[22px] leading-snug font-medium">{title}</h1>
-        <div className="grid w-full flex-1 place-items-center py-8">{children}</div>
-        <div className="flex w-56 flex-col gap-2 pb-[12vh]">
-          <Button
-            className="h-9 w-full rounded-full"
-            data-testid="onboarding-next"
-            onClick={next}
-            variant="primary"
-          >
-            Next
+    <SetupFrame title={title}>
+      <div className="grid w-full flex-1 place-items-center py-8">{children}</div>
+      <SetupActions className="pb-[12vh]">
+        <Button className={PILL} data-testid="onboarding-next" onClick={next} variant="primary">
+          Next
+        </Button>
+        {back ? (
+          <Button className={PILL} onClick={back} variant="secondary">
+            Back
           </Button>
-          {back ? (
-            <Button className="h-9 w-full rounded-full" onClick={back} variant="secondary">
-              Back
-            </Button>
-          ) : null}
-        </div>
+        ) : null}
+      </SetupActions>
+    </SetupFrame>
+  )
+}
+
+const STAGE_LABELS: Record<string, string> = {
+  dependencies: 'Installing dependencies',
+  done: 'Starting the daemon',
+  git: 'Checking Git',
+  python: 'Installing Python',
+  ripgrep: 'Adding file search',
+  source: 'Unpacking Hexbot',
+  starting: 'Starting the daemon',
+  uv: 'Fetching the installer',
+  venv: 'Preparing the environment'
+}
+
+function useElapsedSeconds(): number {
+  const [seconds, setSeconds] = useState(0)
+
+  useEffect(() => {
+    const started = Date.now()
+    const timer = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000)
+
+    return () => clearInterval(timer)
+  }, [])
+
+  return seconds
+}
+
+/** Hexbot at work: the mark bobbing, what it is doing, and for how long. */
+export function WorkingMark({ label }: { label: string }) {
+  const seconds = useElapsedSeconds()
+
+  return (
+    <div className="flex flex-col items-center gap-5">
+      <HexbotMark className="hex-think" mood="working" size={64} />
+      <p role="status">{label}</p>
+      <p
+        aria-label={`${seconds} seconds elapsed`}
+        className="-mt-3 text-secondary text-muted tabular-nums"
+        role="timer"
+      >
+        {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, '0')}
+      </p>
+    </div>
+  )
+}
+
+export function InstallStep({ progress }: { progress: DaemonProgress[] }) {
+  const last = progress.at(-1)
+
+  return (
+    <SetupFrame title="Setting up Hexbot">
+      <div className="grid w-full flex-1 place-items-center py-8">
+        <WorkingMark
+          label={last ? (STAGE_LABELS[last.stage] ?? last.message) : 'Preparing the local runtime'}
+        />
       </div>
-    </main>
+      <details className="w-full pb-10 text-center text-secondary text-muted">
+        <summary className="cursor-pointer">Install log</summary>
+        <pre className="mt-2 max-h-40 overflow-y-auto text-left whitespace-pre-wrap font-mono text-meta">
+          {progress.map(item => item.detail ?? item.message).join('\n')}
+        </pre>
+      </details>
+    </SetupFrame>
   )
 }
 
@@ -264,43 +347,6 @@ export function JobsStep({ back, next }: { back: () => void; next: () => void })
   )
 }
 
-const STEPS: { id: OnboardingStep; label: string }[] = [
-  { id: 'providers', label: 'Providers' },
-  { id: 'defaults', label: 'Defaults' },
-  { id: 'bot', label: 'First bot' }
-]
-
-function Stepper({ current }: { current: OnboardingStep }) {
-  const index = STEPS.findIndex(step => step.id === current)
-
-  if (index < 0) {
-    return null
-  }
-
-  return (
-    <ol className="flex items-center justify-center gap-2 text-[length:var(--text-meta)] text-muted">
-      {STEPS.map((step, position) => (
-        <li className="flex items-center gap-2" key={step.id}>
-          <span
-            className={cn(
-              'grid size-5 place-items-center rounded-full border text-[10px] font-semibold',
-              position < index
-                ? 'border-accent bg-accent text-accent-fg'
-                : position === index
-                  ? 'border-accent text-accent'
-                  : 'border-border'
-            )}
-          >
-            {position < index ? <Check size={11} /> : position + 1}
-          </span>
-          <span className={position === index ? 'text-foreground' : undefined}>{step.label}</span>
-          {position < STEPS.length - 1 ? <span className="mx-1 h-px w-6 bg-border" /> : null}
-        </li>
-      ))}
-    </ol>
-  )
-}
-
 function ProvidersStep({
   onContinue,
   onError
@@ -308,7 +354,7 @@ function ProvidersStep({
   onContinue: (configured: Provider[]) => void
   onError: (message: string) => void
 }) {
-  const [providers, setProviders] = useState<Provider[]>([])
+  const [providers, setProviders] = useState<Provider[] | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const [search, setSearch] = useState('')
 
@@ -325,18 +371,21 @@ function ProvidersStep({
     void refresh()
   }, [refresh])
 
-  const configured = providers.filter(item => item.configured === true)
+  const configured = (providers ?? []).filter(item => item.configured === true)
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase()
 
-    return providers.filter(
-      item => !query || `${item.label} ${item.id}`.toLowerCase().includes(query)
-    )
+    // Connected first, then subscription sign-ins, then the long tail of keys.
+    const rank = (item: Provider) => (item.configured ? 0 : isSubscription(item) ? 1 : 2)
+
+    return (providers ?? [])
+      .filter(item => !query || `${item.label} ${item.id}`.toLowerCase().includes(query))
+      .sort((left, right) => rank(left) - rank(right))
   }, [providers, search])
 
   return (
-    <div className="space-y-4">
+    <div className="w-full space-y-4 py-8">
       <Input
         aria-label="Search providers"
         data-testid="onboarding-provider-search"
@@ -344,7 +393,7 @@ function ProvidersStep({
         placeholder="Search providers"
         value={search}
       />
-      <ul className="max-h-[46vh] divide-y divide-border overflow-y-auto rounded-panel border border-border">
+      <ul className="max-h-[42vh] divide-y divide-border overflow-y-auto rounded-panel border border-border">
         {filtered.map(item => {
           const open = selected === item.id
 
@@ -382,16 +431,19 @@ function ProvidersStep({
           )
         })}
         {filtered.length === 0 ? (
-          <li className="px-4 py-6 text-center text-secondary text-muted">No providers match.</li>
+          <li className="px-4 py-6 text-center text-secondary text-muted">
+            {providers ? 'No providers match.' : 'Loading providers'}
+          </li>
         ) : null}
       </ul>
-      <div className="flex items-center justify-between">
-        <span className="text-secondary text-muted">
-          {configured.length === 0
-            ? 'Connect at least one provider to continue.'
-            : `${configured.length} connected. Add more now, or later in Settings.`}
-        </span>
+      <p className="text-center text-secondary text-muted">
+        {configured.length === 0
+          ? 'Connect at least one provider to continue.'
+          : `${configured.length} connected. Add more now, or later in Settings.`}
+      </p>
+      <SetupActions>
         <Button
+          className={PILL}
           data-testid="onboarding-continue"
           disabled={configured.length === 0}
           onClick={() => onContinue(configured)}
@@ -399,7 +451,7 @@ function ProvidersStep({
         >
           Continue
         </Button>
-      </div>
+      </SetupActions>
     </div>
   )
 }
@@ -468,7 +520,7 @@ function DefaultsStep({
   const fallbackChoices = (choices ?? []).filter(item => item.value !== defaultModel)
 
   return (
-    <div className="space-y-5">
+    <div className="w-full space-y-5 py-8">
       <label className="block space-y-2">
         <span className="font-medium">Default model</span>
         <span className="block text-secondary text-muted">
@@ -497,16 +549,10 @@ function DefaultsStep({
           value={fallback || '__none__'}
         />
       </label>
-      <div className="flex justify-end gap-2">
-        <Button
-          data-testid="onboarding-defaults-skip"
-          onClick={() => onContinue(null)}
-          variant="ghost"
-        >
-          Skip
-        </Button>
+      <SetupActions className="pt-3">
         <Button
           busy={busy}
+          className={PILL}
           data-testid="onboarding-defaults-continue"
           disabled={!defaultModel}
           onClick={() => void save()}
@@ -514,7 +560,15 @@ function DefaultsStep({
         >
           Continue
         </Button>
-      </div>
+        <Button
+          className={PILL}
+          data-testid="onboarding-defaults-skip"
+          onClick={() => onContinue(null)}
+          variant="secondary"
+        >
+          Skip
+        </Button>
+      </SetupActions>
     </div>
   )
 }
@@ -522,12 +576,14 @@ function DefaultsStep({
 function BotStep({
   configured,
   defaultModel,
+  onBack,
   onCreated,
   onCreating,
   onError
 }: {
   configured: Provider[]
   defaultModel: string | null
+  onBack: () => void
   onCreated: (bot: string, section: Section, displayName: string) => void
   /** The page shows a full-screen "getting ready" state while this is true. */
   onCreating?: (creating: boolean) => void
@@ -613,7 +669,7 @@ function BotStep({
   }
 
   return (
-    <div className="space-y-6">
+    <div className="w-full space-y-6 py-8">
       <AvatarBuilder onChange={setStyle} value={style} />
       <label className="block space-y-2">
         <span className="font-medium">Name</span>
@@ -649,28 +705,24 @@ function BotStep({
         </span>
       </label>
       <div className="space-y-2">
-        <span className="block text-[length:var(--text-meta)] text-muted">Suggestions</span>
-        <div className="-mx-1 flex snap-x gap-2 overflow-x-auto px-1 pb-1">
+        <span className="block text-[length:var(--text-meta)] text-muted">Start from a role</span>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           {BOT_TEMPLATES.map(item => (
             <button
               aria-pressed={template === item.id}
               className={cn(
-                'flex w-[220px] shrink-0 snap-start items-start gap-3 rounded-panel border p-3 text-left transition-colors hover:bg-surface-2',
+                'flex items-center gap-2 rounded-panel border px-3 py-2 text-left transition-colors hover:bg-surface-2',
                 template === item.id ? 'border-accent bg-accent/8' : 'border-border'
               )}
               key={item.id}
               onClick={() => pickTemplate(item.id)}
+              title={item.description}
               type="button"
             >
-              <span className="hex-face mt-0.5 size-8 shrink-0">
+              <span className="hex-face size-6 shrink-0">
                 <Face style={styleForName(item.id)} />
               </span>
-              <span className="min-w-0">
-                <span className="block font-medium">{item.title}</span>
-                <span className="mt-0.5 line-clamp-2 block text-[length:var(--text-meta)] text-muted">
-                  {item.description}
-                </span>
-              </span>
+              <span className="min-w-0 truncate font-medium">{item.title}</span>
             </button>
           ))}
         </div>
@@ -723,17 +775,23 @@ function BotStep({
           </div>
         </label>
       </div>
-      <div className="flex justify-end" data-testid="onboarding-create">
-        <Button
-          busy={busy}
-          data-testid="onboarding-create-button"
-          disabled={!valid}
-          onClick={() => void create()}
-          variant="primary"
-        >
-          Create bot
+      <SetupActions className="pt-3">
+        <span data-testid="onboarding-create">
+          <Button
+            busy={busy}
+            className={PILL}
+            data-testid="onboarding-create-button"
+            disabled={!valid}
+            onClick={() => void create()}
+            variant="primary"
+          >
+            Create bot
+          </Button>
+        </span>
+        <Button className={PILL} onClick={onBack} variant="secondary">
+          Back
         </Button>
-      </div>
+      </SetupActions>
     </div>
   )
 }
@@ -827,9 +885,8 @@ function OnboardingPage() {
   if (creating) {
     return (
       <main className="grid min-h-screen place-items-center bg-background text-foreground">
-        <div className="hex-rise flex flex-col items-center gap-4" role="status">
-          <Spinner label="Creating bot" />
-          <p className="text-muted">Getting your bot ready…</p>
+        <div className="hex-rise">
+          <WorkingMark label="Getting your bot ready" />
         </div>
       </main>
     )
@@ -852,100 +909,86 @@ function OnboardingPage() {
     return <JobsStep back={() => setStep('meet')} next={start} />
   }
 
-  const copy = {
-    bot: [
-      'Meet your first bot',
-      'Give it a face, a name and a role. You can change all of it later.'
-    ],
-    choice: ['Where should Hexbot run?', 'Choose a daemon on another device or install one here.'],
-    defaults: [
-      'Pick your defaults',
-      'The model new bots start with, and where to go when it fails.'
-    ],
-    install: ['Setting up Hexbot', 'Installing the local runtime and its dependencies.'],
-    providers: ['Connect a provider', 'Sign in with a subscription or paste an API key.']
-  }[step]
+  if (step === 'install') {
+    return <InstallStep progress={progress} />
+  }
+
+  const copy = (
+    {
+      bot: [
+        'Meet your first bot',
+        'Give it a face, a name and a role. You can change all of it later.'
+      ],
+      choice: [
+        'Where should Hexbot run?',
+        'Choose a daemon on another device or install one here.'
+      ],
+      defaults: [
+        'Pick your defaults',
+        'The model new bots start with, and where to go when it fails.'
+      ],
+      providers: ['Connect a provider', 'Sign in with a subscription or paste an API key.']
+    } as const
+  )[step]
 
   return (
-    <main className="relative flex min-h-screen justify-center bg-background px-6 pt-[10vh] pb-10 text-foreground">
-      <div aria-hidden className="hex-drag absolute inset-x-0 top-0 h-11" />
-      <section className="hex-rise w-full max-w-[600px] space-y-6" key={step}>
-        <Stepper current={step} />
-        <header className="text-center">
-          <h1 className="text-[22px] leading-snug font-medium">{copy[0]}</h1>
-          <p className="mt-1 text-secondary text-muted">{copy[1]}</p>
-        </header>
-
-        {step === 'choice' ? (
+    <SetupFrame subtitle={copy[1]} title={copy[0]}>
+      {step === 'choice' ? (
+        <div className="w-full py-8">
           <OnboardingChoiceCards
             onConnect={() => void navigate({ to: '/connect' })}
             onLocal={() => setStep('install')}
           />
-        ) : null}
+          <SetupActions className="pt-8">
+            <Button className={PILL} onClick={() => setStep('jobs')} variant="secondary">
+              Back
+            </Button>
+          </SetupActions>
+        </div>
+      ) : null}
 
-        {step === 'install' ? (
-          <div>
-            <p className="flex items-center gap-2.5 text-muted" role="status">
-              <Spinner label="Installing" size="sm" />
-              {progress.at(-1)?.message ?? 'Preparing the local runtime…'}
-            </p>
-            <div className="mt-4 h-1 overflow-hidden rounded-full bg-surface-2">
-              <div
-                className="h-full rounded-full bg-foreground transition-[width] duration-[var(--hex-motion-enter)] ease-[var(--hex-ease-out)]"
-                style={{ width: `${Math.round((progress.at(-1)?.fraction ?? 0) * 100)}%` }}
-              />
-            </div>
-            <details className="mt-3 text-secondary text-muted">
-              <summary>Install log</summary>
-              <pre className="mt-2 whitespace-pre-wrap font-mono text-meta">
-                {progress.map(item => item.detail ?? item.message).join('\n')}
-              </pre>
-            </details>
-          </div>
-        ) : null}
+      {step === 'providers' ? (
+        <ProvidersStep
+          onContinue={list => {
+            setConfigured(list)
+            setStep('defaults')
+          }}
+          onError={onError}
+        />
+      ) : null}
 
-        {step === 'providers' ? (
-          <ProvidersStep
-            onContinue={list => {
-              setConfigured(list)
-              setStep('defaults')
-            }}
-            onError={onError}
-          />
-        ) : null}
+      {step === 'defaults' ? (
+        <DefaultsStep
+          configured={configured}
+          onContinue={model => {
+            setDefaultModel(model)
+            setStep('bot')
+          }}
+          onError={onError}
+        />
+      ) : null}
 
-        {step === 'defaults' ? (
-          <DefaultsStep
-            configured={configured}
-            onContinue={model => {
-              setDefaultModel(model)
-              setStep('bot')
-            }}
-            onError={onError}
-          />
-        ) : null}
+      {step === 'bot' ? (
+        <BotStep
+          configured={configured}
+          defaultModel={defaultModel}
+          onBack={() => setStep('defaults')}
+          onCreated={(bot, section, displayName) => {
+            const last = { bot, section: section.id }
+            uiActions().setLastSection(last)
+            void navigate({ to: '/b/$bot/s/$section', params: last })
+            void introduceBot(section, displayName)
+          }}
+          onCreating={setCreating}
+          onError={onError}
+        />
+      ) : null}
 
-        {step === 'bot' ? (
-          <BotStep
-            configured={configured}
-            defaultModel={defaultModel}
-            onCreated={(bot, section, displayName) => {
-              const last = { bot, section: section.id }
-              uiActions().setLastSection(last)
-              void navigate({ to: '/b/$bot/s/$section', params: last })
-              void introduceBot(section, displayName)
-            }}
-            onCreating={setCreating}
-            onError={onError}
-          />
-        ) : null}
-
-        {error ? (
-          <p className="text-secondary text-danger" role="alert">
-            {error}
-          </p>
-        ) : null}
-      </section>
-    </main>
+      {error ? (
+        <p className="pb-10 text-center text-secondary text-danger" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </SetupFrame>
   )
 }

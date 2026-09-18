@@ -1,7 +1,8 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 
 import {
   initialOnboardingStep,
+  InstallStep,
   JobsStep,
   MeetStep,
   OnboardingChoiceCards,
@@ -53,5 +54,21 @@ describe('onboarding', () => {
     expect(screen.getByRole('button', { name: /Run Hexbot on this machine/ })).toHaveTextContent(
       'Install the runtime on this computer and run bots here.'
     )
+  })
+
+  it('shows what the install is doing and for how long', () => {
+    vi.useFakeTimers()
+    render(
+      <InstallStep
+        progress={[{ message: 'downloading uv 0.12.16 aarch64-apple-darwin', stage: 'uv' }]}
+      />
+    )
+
+    expect(screen.getByRole('status')).toHaveTextContent('Fetching the installer')
+    expect(screen.getByRole('timer')).toHaveTextContent('0:00')
+    act(() => void vi.advanceTimersByTime(65_000))
+    expect(screen.getByRole('timer')).toHaveTextContent('1:05')
+    expect(screen.getByText(/downloading uv 0\.12\.16/)).toBeInTheDocument()
+    vi.useRealTimers()
   })
 })
