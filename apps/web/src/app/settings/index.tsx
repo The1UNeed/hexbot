@@ -25,8 +25,9 @@ import {
 import {
   defaultDeviceName,
   getBridge,
+  updateAction,
   type UpdateChannel,
-  type UpdateStatus
+  type UpdateState
 } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { pairWithDaemon, targetOrigin } from '../../lib/connection'
@@ -37,10 +38,17 @@ import type {
   PairingCode,
   Provider
 } from '../../lib/types'
+import { daemonBehind } from '../../lib/version-skew'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useSettings } from '../../stores/settings'
 import { type ThemePreference, useUi } from '../../stores/ui'
+import {
+  type DaemonUpdate,
+  dismissDaemonUpdate,
+  updateDaemon,
+  useUpdates
+} from '../../stores/updates'
 import { useUsers } from '../../stores/users'
 import { MemorySectionEditor } from '../bot-settings/memory'
 
@@ -1068,95 +1076,197 @@ const UPDATE_CHANNELS: { label: string; value: UpdateChannel }[] = [
   { label: 'Nightly', value: 'nightly' }
 ]
 
-function updateLabel(status: UpdateStatus): string {
-  switch (status.state) {
+function checkedAtLabel(at: null | string): string {
+  const time = at ? new Date(at) : null
+
+  if (!time || Number.isNaN(time.getTime())) {
+    return ''
+  }
+
+  return ` Checked at ${time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`
+}
+
+export function updateLabel(state: null | UpdateState): string {
+  if (!state) {
+    return 'Not checked yet.'
+  }
+
+  switch (state.status) {
+    case 'disabled':
+      return state.message ?? 'Updates are off.'
+
     case 'checking':
       return 'Checking for updates…'
 
     case 'available':
-      return status.version ? `Version ${status.version} is available.` : 'An update is available.'
+      return `Version ${state.availableVersion} is available.`
 
     case 'downloading':
-      return `Downloading… ${Math.round(status.percent ?? 0)}%`
+      return `Downloading version ${state.availableVersion}… ${state.percent ?? 0}%`
 
     case 'downloaded':
-      return 'Update downloaded. Restart to install it.'
+      return `Version ${state.downloadedVersion} is downloaded. Restart to install it.`
 
     case 'error':
-      return status.message ? `Update check failed: ${status.message}` : 'Update check failed.'
+      return `${state.errorContext === 'download' ? 'Download' : state.errorContext === 'install' ? 'Install' : 'Update check'} failed: ${state.message ?? 'unknown error'}`
+
+    case 'up-to-date':
+      return `Up to date.${checkedAtLabel(state.checkedAt)}`
 
     default:
-      return status.message ?? 'Up to date'
+      return 'Not checked yet.'
   }
+}
+
+const DAEMON_STAGES: Record<DaemonUpdate['status'], string> = {
+  checking: 'Checking for the update…',
+  downloading: 'Downloading…',
+  failed: 'Failed.',
+  idle: 'Waiting…',
+  installing: 'Installing…',
+  requested: 'Asking the daemon…',
+  restarting: 'Restarting the daemon…',
+  'up-to-date': 'Nothing to install.'
+}
+
+export function daemonUpdateLabel(update: DaemonUpdate): string {
+  if (update.status === 'failed') {
+    return `Daemon update failed: ${update.message ?? 'unknown error'}`
+  }
+
+  const stage = DAEMON_STAGES[update.status]
+
+  return update.status === 'downloading' && update.percent !== null
+    ? `${stage} ${update.percent}%`
+    : stage
+}
+
+function DaemonUpdates({ appVersion }: { appVersion: null | string }): React.JSX.Element {
+  const daemon = useConnection(state => state.daemon)
+  const update = useUpdates(state => state.daemon)
+
+  if (!daemon) {
+    return <p className="text-muted">Not connected to a daemon.</p>
+  }
+
+  const behind = daemonBehind(appVersion, daemon.version)
+  const canUpdate = Boolean(daemon.update_capability)
+
+  return (
+    <>
+      <p>
+        {daemon.daemon_name} runs <strong>{daemon.version}</strong>.
+      </p>
+      {update ? (
+        <>
+          <p className="mt-2 text-muted" role="status">
+            {daemonUpdateLabel(update)}
+          </p>
+          {update.status === 'failed' ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {canUpdate && appVersion ? (
+                <Button onClick={() => void updateDaemon(appVersion)} variant="primary">
+                  Try again
+                </Button>
+              ) : null}
+              <Button onClick={dismissDaemonUpdate}>Dismiss</Button>
+            </div>
+          ) : null}
+        </>
+      ) : !appVersion ? (
+        <p className="mt-2 text-muted">Updates are handled by the app running this browser.</p>
+      ) : !behind ? (
+        <p className="mt-2 text-muted">The daemon is up to date with this app.</p>
+      ) : canUpdate ? (
+        <>
+          <p className="mt-2 text-muted">
+            This app is {appVersion}. The daemon can update itself to match
+            {daemon.update_capability === 'desktop'
+              ? `: the Hexbot app on ${daemon.daemon_name} downloads the update, then closes and reopens on the new version.`
+              : `: it downloads the new version, installs it, and restarts.`}{' '}
+            Bots stop while it restarts.
+          </p>
+          <div className="mt-3">
+            <Button onClick={() => void updateDaemon(appVersion)} variant="primary">
+              Update daemon
+            </Button>
+          </div>
+        </>
+      ) : (
+        <p className="mt-2 text-muted">
+          This app is {appVersion}. This daemon cannot update itself; update Hexbot on{' '}
+          {daemon.daemon_name} by hand.
+        </p>
+      )}
+    </>
+  )
 }
 
 export function UpdatesSettings(): React.JSX.Element {
   const bridge = getBridge()
-  const [version, setVersion] = useState<string>('—')
-  const [status, setStatus] = useState<UpdateStatus>({ state: 'idle' })
-  const [channel, setChannel] = useState<UpdateChannel>()
-  useEffect(() => {
-    void daemonInfo().then(info => setVersion(info.version))
+  const app = useUpdates(state => state.app)
+  const [pending, setPending] = useState(false)
+  const action = app ? updateAction(app) : 'check'
+  const busy = pending || app?.status === 'checking' || app?.status === 'downloading'
 
-    if (!bridge) {
-      return
-    }
-
-    void bridge.updater.channel().then(setChannel)
-
-    return bridge.updater.onStatus(setStatus)
-  }, [bridge])
-  const busy = status.state === 'checking' || status.state === 'downloading'
+  const run = (call: () => Promise<unknown>) => {
+    setPending(true)
+    void call()
+      .catch(() => undefined)
+      .finally(() => setPending(false))
+  }
 
   return (
     <>
       <Heading description="Version and release status for Hexbot.">Updates</Heading>
-      <p>
-        Daemon version: <strong>{version}</strong>
-        {bridge && bridge.version !== version ? (
-          <>
-            {' · '}App version: <strong>{bridge.version}</strong>
-          </>
-        ) : null}
-      </p>
       {bridge ? (
-        <div className="mt-4">
-          <p className="text-muted" role="status">
-            {updateLabel(status)}
+        <div>
+          <p>
+            App version: <strong>{bridge.version}</strong>
+            {app ? ` · ${app.channel === 'nightly' ? 'Nightly' : 'Stable'} track` : ''}
           </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Button
-              busy={status.state === 'checking'}
-              disabled={busy}
-              onClick={() => {
-                setStatus({ state: 'checking' })
-                void bridge.updater.check().then(setStatus)
-              }}
-            >
-              Check now
-            </Button>
-            {status.state === 'available' ? (
-              <Button onClick={() => void bridge.updater.install()} variant="primary">
-                Download update
+          <p className="mt-2 text-muted" role="status">
+            {updateLabel(app)}
+          </p>
+          {app?.status !== 'disabled' ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {action === 'download' ? (
+                <Button
+                  disabled={busy}
+                  onClick={() => run(() => bridge.updater.download())}
+                  variant="primary"
+                >
+                  {app?.errorContext === 'download' ? 'Retry download' : 'Download update'}
+                </Button>
+              ) : null}
+              {action === 'install' ? (
+                <Button
+                  disabled={busy}
+                  onClick={() => run(() => bridge.updater.install())}
+                  variant="primary"
+                >
+                  Restart and install
+                </Button>
+              ) : null}
+              <Button
+                busy={app?.status === 'checking'}
+                disabled={busy}
+                onClick={() => run(() => bridge.updater.check())}
+              >
+                Check now
               </Button>
-            ) : null}
-            {status.state === 'downloaded' ? (
-              <Button onClick={() => void bridge.updater.install()} variant="primary">
-                Restart and install
-              </Button>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
           <label className="mt-6 block max-w-xs space-y-2">
             <span className="font-medium">Update track</span>
             <Select
+              disabled={busy || !app || app.status === 'disabled'}
               label="Update track"
-              onValueChange={value => {
-                const next = value === 'nightly' ? 'nightly' : 'stable'
-                setChannel(next)
-                void bridge.updater.setChannel(next)
-              }}
+              onValueChange={value =>
+                run(() => bridge.updater.setChannel(value === 'nightly' ? 'nightly' : 'stable'))
+              }
               options={UPDATE_CHANNELS}
-              value={channel}
+              value={app?.channel}
             />
             <span className="block text-muted">
               Stable is tagged releases. Nightly is built from main every day and may break;
@@ -1164,9 +1274,11 @@ export function UpdatesSettings(): React.JSX.Element {
             </span>
           </label>
         </div>
-      ) : (
-        <p className="mt-3 text-muted">Updates are handled by the app running this browser.</p>
-      )}
+      ) : null}
+      <h3 className={cn('font-medium', bridge ? 'mt-8' : '')}>Daemon</h3>
+      <div className="mt-2">
+        <DaemonUpdates appVersion={bridge?.version ?? null} />
+      </div>
     </>
   )
 }

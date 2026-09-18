@@ -236,7 +236,28 @@ export interface DaemonInfo {
   install_id: null | string
   lan_enabled: boolean
   platform: string
+  /** How the daemon can update itself when asked; absent on older daemons. */
+  update_capability?: 'desktop' | 'service' | null
   version: string
+}
+
+/** `hexbot.update.status` (docs/api.md, "Updates"). */
+export interface DaemonUpdateStatus {
+  at: null | string
+  capability: 'desktop' | 'service' | null
+  message: null | string
+  percent: null | number
+  requested: null | string
+  status:
+    | 'checking'
+    | 'downloading'
+    | 'failed'
+    | 'idle'
+    | 'installing'
+    | 'requested'
+    | 'restarting'
+    | 'up-to-date'
+  version: null | string
 }
 
 export interface Device {

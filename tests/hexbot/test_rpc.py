@@ -56,6 +56,7 @@ def test_every_documented_method_is_registered(ctx):
         "hexbot.providers.login_start", "hexbot.providers.login_poll",
         "hexbot.providers.login_cancel",
         "hexbot.network.get", "hexbot.network.set",
+        "hexbot.update.request", "hexbot.update.status",
         "hexbot.pairing.code", "hexbot.devices.list", "hexbot.devices.revoke",
         "hexbot.connect.status", "hexbot.connect.disconnect",
         "hexbot.connect.register_start", "hexbot.connect.register_poll",
@@ -114,7 +115,7 @@ def test_info_frame(ctx):
     assert isinstance(result["addresses"], list)
     assert set(result) == {"version", "hermes_version", "daemon_name", "install_id",
                            "auth_required", "pairing_supported", "lan_enabled", "addresses",
-                           "platform", "home"}
+                           "platform", "home", "update_capability"}
 
 
 def test_missing_parameter_is_4200(ctx):

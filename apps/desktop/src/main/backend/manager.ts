@@ -23,6 +23,12 @@ export function parseReadyLine(line: string): number | undefined {
   const port = Number(match[1])
   return port > 0 && port <= 65_535 ? port : undefined
 }
+// A newer client asked the daemon to update, and the daemon (hexbot/update.py)
+// hands that to the app that runs it by printing this line.
+export function parseUpdateRequestLine(line: string): string | undefined {
+  const match = /(?:^|\s)HEXBOT_UPDATE_REQUESTED version=([0-9A-Za-z.-]{1,64})(?:\s|$)/.exec(line)
+  return match?.[1]
+}
 
 export async function findFreePort(
   start = 9119,
@@ -95,6 +101,8 @@ export class DaemonManager extends EventEmitter {
       env: {
         ...process.env,
         HEXBOT_HOME: hexbotHome(),
+        // Tells the daemon it may ask this app to update it (hexbot/update.py).
+        HEXBOT_SUPERVISOR: 'desktop',
         PATH: [binDir(), join(venvDir(), 'bin'), process.env.PATH ?? ''].join(delimiter)
       }
     })
@@ -107,6 +115,8 @@ export class DaemonManager extends EventEmitter {
       for (const line of lines) {
         const readyPort = parseReadyLine(line)
         if (readyPort) this.setStatus({ state: 'running', port: readyPort, pid: child.pid })
+        const requested = parseUpdateRequestLine(line)
+        if (requested) this.emit('update-requested', requested)
       }
     }
     child.stdout.on('data', chunk => consume(child.stdout, chunk))

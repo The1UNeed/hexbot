@@ -10,8 +10,9 @@
 #            Always a prerelease; the last 14 are kept.
 #
 # Both channels: six packages (full and client, for macOS arm64, macOS x64,
-# Linux x64), the update feed on updates.hexbot.app when the R2 secrets are
-# present, and a GitHub release with every package. Signing and notarization
+# Linux x64) plus the daemon source archive, the update feed on
+# updates.hexbot.app when the R2 secrets are present, and a GitHub release
+# with every package. Signing and notarization
 # happen when the Apple secrets are present and are skipped otherwise.
 #
 # Secrets (all optional; docs/release.md, "One-time setup"):
@@ -180,6 +181,18 @@ jobs:
         run: node scripts/desktop/dist.mjs ${{ matrix.target }} --channel "$CHANNEL" ${{ matrix.edition == 'client' && '--client' || '' }}
       - name: List the output
         run: ls -l apps/desktop/release
+      # The daemon source the full package stages (scripts/desktop/stage-python-src.mjs),
+      # as one archive a daemon downloads to update itself when a newer client
+      # asks (hexbot/update.py). Platform-independent, so one job makes it.
+      - name: Archive the daemon source
+        if: matrix.edition == 'full' && matrix.build == 'linux-x64'
+        run: tar -czf "hexbot-src-$VERSION.tar.gz" -C apps/desktop/resources hexbot-src
+      - uses: actions/upload-artifact@v7
+        if: matrix.edition == 'full' && matrix.build == 'linux-x64'
+        with:
+          name: daemon-src
+          path: hexbot-src-*.tar.gz
+          if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.edition }}-${{ matrix.build }}
@@ -218,15 +231,18 @@ jobs:
       - name: Collect the packages
         run: |
           set -euo pipefail
-          mkdir -p release/full release/client
+          mkdir -p release/full release/client release/daemon
           cp artifacts/full-*/* release/full/
           cp artifacts/client-*/* release/client/
-          ls -l release/full release/client
+          cp artifacts/daemon-src/*.tar.gz release/daemon/
+          ls -l release/full release/client release/daemon
       - name: Build the update feed
         run: |
           set -euo pipefail
           node scripts/desktop/make-update-feed.mjs --channel "$CHANNEL" --version "$VERSION" release/full
           node scripts/desktop/make-update-feed.mjs --channel "$CHANNEL" --version "$VERSION" --client release/client
+          mkdir -p dist/updates/daemon
+          cp "release/daemon/hexbot-src-$VERSION.tar.gz" dist/updates/daemon/
           find dist/updates -type f | sort
       - name: Publish the update feed to updates.hexbot.app
         if: env.HAS_R2 == 'true'
@@ -276,6 +292,13 @@ jobs:
               exit 1
             fi
           done
+          url="https://updates.hexbot.app/daemon/hexbot-src-$VERSION.tar.gz"
+          if curl -fsSI --retry 5 --retry-delay 5 "$url" > /dev/null; then
+            echo "ok  $url"
+          else
+            echo "::error::$url is missing; daemons cannot update themselves to $VERSION."
+            exit 1
+          fi
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -308,7 +331,7 @@ jobs:
           fi
           # The feed files stay on updates.hexbot.app; both editions write a
           # latest-linux.yml and GitHub asset names must be unique.
-          assets=(release/full/*.{dmg,zip,AppImage,deb,blockmap} release/client/*.{dmg,zip,AppImage,deb,blockmap})
+          assets=(release/full/*.{dmg,zip,AppImage,deb,blockmap} release/client/*.{dmg,zip,AppImage,deb,blockmap} release/daemon/*.tar.gz)
           if [ "${#assets[@]}" -eq 0 ]; then echo '::error::No packages to upload'; exit 1; fi
           echo "Uploading ${#assets[@]} assets"
           gh release create "$TAG" --target "$GITHUB_SHA" --title "$title" "${notes_args[@]}" \

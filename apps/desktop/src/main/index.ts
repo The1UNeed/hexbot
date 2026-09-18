@@ -26,10 +26,13 @@ import { installService, serviceStatus, uninstallService } from './service'
 import { createTray } from './tray'
 import { setCrashReports, startCrashReports } from './crash-reports'
 import { readDesktopState, updateDesktopState } from './desktop-state'
+import { handleDaemonUpdateRequest } from './remote-update'
 import {
   checkForUpdates,
-  getUpdateChannel,
+  downloadUpdate,
+  getUpdateState,
   installUpdate,
+  readUpdateChannelSetting,
   setUpdateChannel,
   updaterEvents
 } from './updater'
@@ -151,7 +154,7 @@ async function createWindow(): Promise<BrowserWindow> {
   return window
 }
 function navigate(url: string): void {
-  if (url !== '/settings/providers' && !parseDeepLink(url)) return
+  if (!/^\/settings\/[a-z]+$/.test(url) && !parseDeepLink(url)) return
   if (!app.isReady()) {
     pendingLink = url
     return
@@ -243,9 +246,11 @@ function registerIpc(): void {
     async () =>
       (await dialog.showOpenDialog({ properties: ['openFile', 'multiSelections'] })).filePaths
   )
-  ipcMain.handle('hexbot:updater:check', () => checkForUpdates())
+  ipcMain.handle('hexbot:updater:state', () => getUpdateState())
+  ipcMain.handle('hexbot:updater:check', () => checkForUpdates('settings'))
+  ipcMain.handle('hexbot:updater:download', () => downloadUpdate())
   ipcMain.handle('hexbot:updater:install', () => installUpdate())
-  ipcMain.handle('hexbot:updater:channel', () => getUpdateChannel())
+  ipcMain.handle('hexbot:updater:channel', () => readUpdateChannelSetting())
   ipcMain.handle('hexbot:updater:set-channel', (_event, channel: unknown) => {
     if (channel !== 'stable' && channel !== 'nightly') throw new TypeError('Invalid update channel')
     return setUpdateChannel(channel)
@@ -285,26 +290,28 @@ else {
           applicationMenuTemplate(
             {
               openSettings: () => navigate('/settings/providers'),
-              checkForUpdates: () => void checkForUpdates(),
+              checkForUpdates: () => {
+                navigate('/settings/updates')
+                void checkForUpdates('menu')
+              },
               quit: () => app.quit()
             },
             app.name
           )
         )
       )
-    updaterEvents.on('status', status => {
+    updaterEvents.on('state', state => {
       for (const window of BrowserWindow.getAllWindows())
-        window.webContents.send('hexbot:updater:status', status)
+        window.webContents.send('hexbot:updater:status', state)
     })
+    daemon.on('update-requested', (version: string) => void handleDaemonUpdateRequest(version))
     await createWindow()
     createTray(daemon, () => {
       void createWindow()
       return mainWindow!
     })
-    // The full package checks only once its runtime is installed; the client
-    // package has nothing to install first.
-    if (app.isPackaged && (!hasRuntime || existsSync(join(hexbotHome(), 'runtime'))))
-      void checkForUpdates().catch(error => console.error('Update check failed', error))
+    // Starts the startup check and the poller (updater.ts); dev builds stay off.
+    void getUpdateState()
     app.on('activate', () => void createWindow())
   })
 }

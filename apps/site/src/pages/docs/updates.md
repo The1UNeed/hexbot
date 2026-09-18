@@ -4,9 +4,19 @@ title: Updates
 description: Choose a Hexbot update track and control crash reports.
 ---
 
-The packaged desktop app checks `updates.hexbot.app` for signed updates after it starts. Development builds do not check. You can also choose "Check for Updates" from the application menu on macOS, or open Settings, Updates.
+The packaged desktop app checks `updates.hexbot.app` for signed updates 15 seconds after it starts and every 4 minutes while it runs. Development builds do not check. You can also choose "Check for Updates" from the application menu on macOS, or open Settings, Updates.
 
-Hexbot does not download an update during the check. When an update is available, the app shows its progress after you choose to download and install it. It does not install an update automatically when you quit.
+Hexbot does not download an update during the check. When one is available, a pill at the bottom of the roster says "Download update"; once the download is done it says "Restart to update". Settings, Updates shows the same state, the time of the last check, and any error. The app does not install an update on its own when you quit. On Linux only the AppImage updates itself.
+
+## Updating a daemon from another computer
+
+The app and the daemon it talks to can be on different computers. When the daemon runs an older Hexbot than the app, the pill says "Update daemon" and Settings, Updates offers to update it. What happens depends on how the daemon runs on its computer:
+
+- **The Hexbot app runs the daemon.** That app downloads the update on its own track, then closes and reopens on the new version. The daemon comes back with it.
+- **The daemon runs at login** (Settings, Network, "Start the daemon at login"). The daemon downloads the new version, installs it, and restarts itself.
+- **Started by hand** or from a source checkout. Update Hexbot on that computer yourself.
+
+Bots stop while the daemon restarts; sections and memory stay. The client waits for the daemon to come back and reports a failure if it does not. Only an administrator can start a daemon update.
 
 ## Stable and nightly
 
