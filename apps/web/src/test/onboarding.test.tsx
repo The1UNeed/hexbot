@@ -1,7 +1,11 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 
+import { Avatar } from '../components/ui/avatar'
+import { HEXBOT_ACT_NAMES } from '../components/ui/hexbot-act'
+import { HexbotMark } from '../components/ui/wordmark'
 import {
   initialOnboardingStep,
+  installPercent,
   InstallStep,
   JobsStep,
   MeetStep,
@@ -56,19 +60,72 @@ describe('onboarding', () => {
     )
   })
 
-  it('shows what the install is doing and for how long', () => {
-    vi.useFakeTimers()
-    render(
-      <InstallStep
-        progress={[{ message: 'downloading uv 0.12.16 aarch64-apple-darwin', stage: 'uv' }]}
-      />
-    )
+  it('shows the install stage, its act, the live line, and a percentage', () => {
+    const uv = { message: 'downloading uv 0.12.16 aarch64-apple-darwin', stage: 'uv' }
+    const { rerender } = render(<InstallStep progress={[uv]} />)
 
     expect(screen.getByRole('status')).toHaveTextContent('Fetching the installer')
-    expect(screen.getByRole('timer')).toHaveTextContent('0:00')
-    act(() => void vi.advanceTimersByTime(65_000))
-    expect(screen.getByRole('timer')).toHaveTextContent('1:05')
-    expect(screen.getByText(/downloading uv 0\.12\.16/)).toBeInTheDocument()
+    expect(screen.getAllByText(/downloading uv 0\.12\.16/).length).toBeGreaterThan(0)
+    expect(document.querySelector('[data-act]')).toHaveAttribute('data-act', 'catch')
+
+    const before = Number(screen.getByRole('progressbar').getAttribute('aria-valuenow'))
+    rerender(
+      <InstallStep
+        progress={[uv, { message: 'Installing locked dependencies', stage: 'dependencies' }]}
+      />
+    )
+    expect(screen.getByRole('status')).toHaveTextContent('Installing dependencies')
+    expect(document.querySelector('[data-act]')).toHaveAttribute('data-act', 'type')
+    expect(Number(screen.getByRole('progressbar').getAttribute('aria-valuenow'))).toBeGreaterThan(
+      before
+    )
+  })
+
+  it('works through the acts of a long stage', () => {
+    vi.useFakeTimers()
+    render(<InstallStep progress={[{ message: 'resolving', stage: 'dependencies' }]} />)
+
+    const seen = new Set<string>()
+
+    for (let turn = 0; turn < 11; turn += 1) {
+      seen.add(document.querySelector('[data-act]')!.getAttribute('data-act')!)
+      act(() => void vi.advanceTimersByTime(6000))
+    }
+
+    expect(seen.size).toBe(11)
     vi.useRealTimers()
+  })
+
+  it('has at least twenty acts, and each one renders', () => {
+    expect(HEXBOT_ACT_NAMES.length).toBeGreaterThanOrEqual(20)
+
+    for (const name of HEXBOT_ACT_NAMES) {
+      const { container, unmount } = render(<HexbotMark act={name} />)
+
+      expect(container.querySelector(`[data-act="${name}"]`)?.childElementCount).toBeGreaterThan(0)
+      unmount()
+    }
+  })
+
+  it('plays a random act when any Hexbot is clicked, then stops', () => {
+    vi.useFakeTimers()
+    const { container } = render(<Avatar name="Scout" />)
+
+    expect(container.querySelector('[data-act]')).toBeNull()
+    fireEvent.click(screen.getByRole('img', { name: 'Scout' }))
+    expect(container.querySelector('[data-act]')).not.toBeNull()
+    act(() => void vi.advanceTimersByTime(4000))
+    expect(container.querySelector('[data-act]')).toBeNull()
+    vi.useRealTimers()
+  })
+
+  it('moves the install percentage forward and never back', () => {
+    const line = (stage: string, percent?: number) => ({ message: stage, percent, stage })
+
+    expect(installPercent([])).toBe(0)
+    expect(installPercent([line('uv', 50)])).toBe(3)
+    expect(installPercent([line('uv', 50), line('python')])).toBeGreaterThanOrEqual(5)
+    expect(installPercent([line('dependencies'), line('error')])).toBeGreaterThanOrEqual(30)
+    expect(installPercent([line('done', 100)])).toBe(95)
   })
 })
