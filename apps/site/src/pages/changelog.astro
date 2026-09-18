@@ -1,0 +1,20 @@
+---
+import Base from '../layouts/Base.astro'
+import { demoteHeadings, newestFirst } from '../lib/changelog'
+import { releasesUrl } from '../lib/downloads'
+
+const files = import.meta.glob<{ compiledContent: () => Promise<string> }>('../../../../docs/releases/*.md', { eager: true })
+const notes = await Promise.all(
+  Object.entries(files)
+    .map(([path, note]) => ({ version: path.split('/').pop()!.replace(/\.md$/, ''), note }))
+    .sort((a, b) => newestFirst(a.version, b.version))
+    .map(async ({ version, note }) => ({ version, html: demoteHeadings(await note.compiledContent()) })),
+)
+---
+<Base title="Changelog" description="What changed in every Hexbot version.">
+  <article class="prose mx-auto px-5 py-12 sm:px-8 lg:py-20">
+    <h1 class="display-sm">Changelog</h1>
+    <p class="text-mute">What changed in every version, newest first. Nightly builds are listed on <a href={`${releasesUrl}?q=nightly`}>GitHub</a>.</p>
+    {notes.map(({ version, html }) => <section id={`v${version}`} set:html={html} />)}
+  </article>
+</Base>

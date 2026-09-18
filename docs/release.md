@@ -44,6 +44,7 @@ a broken release script fails before tag day.
    `apps/desktop/package.json` and `hexbot/__init__.py`.
 3. Write `docs/releases/0.x.y-alpha.N.md`: user-visible changes, upgrade
    concerns, known issues. Without it GitHub generates notes from commits.
+   hexbot.app renders every file in that directory at `/changelog/`.
 4. If `apps/desktop/build/Hexbot.icon` changed, run
    `./venv/bin/python scripts/desktop/make-icons.py` and commit the icons.
 5. Run the desktop suite and the script tests (`docs/testing.md`). Build one
