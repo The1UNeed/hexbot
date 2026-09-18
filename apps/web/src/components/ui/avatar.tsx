@@ -3,6 +3,8 @@ import { cva, type VariantProps } from 'class-variance-authority'
 import { type AvatarStyle, resolveStyle, styleForName } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 
+import { ActProps, type HexbotActName, useAct } from './hexbot-act'
+
 const avatarVariants = cva('relative inline-flex shrink-0 items-center justify-center', {
   defaultVariants: { size: 'md' },
   variants: {
@@ -65,6 +67,8 @@ export function FaceEyes({ fill = '#151517', mood = 'idle' }: { fill?: string; m
 }
 
 export interface AvatarProps extends VariantProps<typeof avatarVariants> {
+  /** An act to keep playing, such as typing while the bot works. A click plays a random one. */
+  act?: HexbotActName | null
   className?: string
   /** Data URL or `data:<mime>;base64,...` from the bot's profile asset. */
   image?: null | string
@@ -98,18 +102,27 @@ export function Face({
  * Uploaded image when there is one, otherwise a generated face on a shape
  * and colour derived from the name, so every bot has a face.
  */
-export function Avatar({ className, image, mood, name, size, style }: AvatarProps) {
+export function Avatar({ act, className, image, mood, name, size, style }: AvatarProps) {
+  const playing = useAct(act)
+  const face = style ?? styleForName(name)
+
   return (
     <span
       aria-label={name}
       className={cn(avatarVariants({ size }), 'hex-face', className)}
+      onClick={playing.play}
       role="img"
     >
-      {image ? (
-        <img alt="" className="size-full rounded-full object-cover" src={image} />
-      ) : (
-        <Face mood={mood} style={style ?? styleForName(name)} />
-      )}
+      <span className={cn('size-full', playing.act?.body)}>
+        {image ? (
+          <img alt="" className="size-full rounded-full object-cover" src={image} />
+        ) : (
+          <Face mood={playing.act?.mood ?? mood} style={face} />
+        )}
+      </span>
+      {playing.name ? (
+        <ActProps color={image ? undefined : resolveStyle(face).color.value} name={playing.name} />
+      ) : null}
     </span>
   )
 }

@@ -1,7 +1,7 @@
 import { AVATAR_COLORS, AVATAR_SHAPES, type AvatarStyle } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 
-import { Face } from './avatar'
+import { Avatar, Face } from './avatar'
 
 export interface AvatarBuilderProps {
   className?: string
@@ -19,8 +19,13 @@ export function AvatarBuilder({ className, onChange, preview = true, value }: Av
   return (
     <div className={cn('flex flex-col items-center gap-4', className)}>
       {preview ? (
-        <div className="hex-face size-24" data-testid="avatar-preview">
-          <Face className="hex-pop-in" key={`${value.shape}-${value.color}`} style={value} />
+        <div data-testid="avatar-preview">
+          <Avatar
+            className="hex-pop-in size-24"
+            key={`${value.shape}-${value.color}`}
+            name="Preview"
+            style={value}
+          />
         </div>
       ) : null}
       <fieldset>

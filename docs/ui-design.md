@@ -34,8 +34,11 @@ own visual identity. Read `CLAUDE.md` for the words.
   danger #F4645B, success #34C759, warning #F7B24A.
 - Bot faces: every bot has a face, a shape and a colour with two eyes
   (`lib/avatar-builder.ts`). Uploaded images replace it; otherwise the face
-  is derived from the bot's name. Faces wiggle on hover, blink at rest, and
-  bob while the bot is working.
+  is derived from the bot's name. Faces wiggle on hover and blink at rest.
+  Click any face, or the Hexbot mark, and it plays a random act for a few
+  seconds: typing with its two round hands, juggling, blowing a horn
+  (`components/ui/hexbot-act.tsx`, 21 acts). A working bot plays work acts
+  in turn, and the install screen gives each stage its own.
 - Shadows only on floating layers (menus, dialogs): a hairline border plus
   one soft shadow. Nothing in-panel.
 - Motion: 120ms ease-out for hover and open, 200ms for panel slide. Respect
@@ -82,7 +85,7 @@ Three columns, resizable, min widths 240 / 480 / 300.
   avatars in a direct message; rooms show a small face and name. Copy and retry icons appear beside a bubble on hover.
   Markdown body with code blocks (copy button), tables, images. Time
   separators ("Today 9:13 PM") between days and after 20 quiet minutes.
-  While a reply is pending the bot's face bobs, alone, where the next
+  While a reply is pending the bot's face plays work acts, alone, where the next
   bubble will land (under the last one once text has arrived). No spinner,
   no ring; a muted step label ("Searching the web for apple") sits beside
   it only while a tool runs.

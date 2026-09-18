@@ -5,11 +5,9 @@
  */
 
 export interface DaemonProgress {
-  /** Free-form log line for the disclosure panel. */
-  detail?: string
-  /** 0..1 when known. */
-  fraction?: number
   message: string
+  /** 0..100 within the stage, sent only while it downloads something. */
+  percent?: number
   stage:
     | 'dependencies'
     | 'done'
@@ -17,8 +15,9 @@ export interface DaemonProgress {
     | 'git'
     | 'python'
     | 'ripgrep'
-    | 'starting'
+    | 'source'
     | 'uv'
+    | 'venv'
     | (string & {})
 }
 

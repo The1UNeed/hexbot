@@ -3,10 +3,11 @@ import { ArrowRight, ArrowUp, Plus } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 
 import { isSubscription, ProviderPanel, supportsApiKey } from '../components/provider-panel'
-import { Face } from '../components/ui/avatar'
+import { Avatar } from '../components/ui/avatar'
 import { AvatarBuilder } from '../components/ui/avatar-builder'
 import { Button } from '../components/ui/button'
 import { Chip } from '../components/ui/chip'
+import type { HexbotActName } from '../components/ui/hexbot-act'
 import { Input } from '../components/ui/input'
 import { Select } from '../components/ui/select'
 import { Textarea } from '../components/ui/textarea'
@@ -176,64 +177,139 @@ function TourPage({
   )
 }
 
-const STAGE_LABELS: Record<string, string> = {
-  dependencies: 'Installing dependencies',
-  done: 'Starting the daemon',
-  git: 'Checking Git',
-  python: 'Installing Python',
-  ripgrep: 'Adding file search',
-  source: 'Unpacking Hexbot',
-  starting: 'Starting the daemon',
-  uv: 'Fetching the installer',
-  venv: 'Preparing the environment'
+/** Install stages in order, with a rough share of the total time each takes. */
+const STAGES: { acts: HexbotActName[]; id: string; label: string; weight: number }[] = [
+  { acts: ['catch', 'download', 'fish'], id: 'uv', label: 'Fetching the installer', weight: 5 },
+  {
+    acts: ['type', 'read', 'tinker'],
+    id: 'python',
+    label: 'Installing Python',
+    weight: 15
+  },
+  { acts: ['catch', 'download'], id: 'source', label: 'Unpacking Hexbot', weight: 5 },
+  {
+    acts: ['hammer', 'sweep', 'paint', 'grow'],
+    id: 'venv',
+    label: 'Preparing the environment',
+    weight: 5
+  },
+  {
+    acts: [
+      'type',
+      'tinker',
+      'juggle',
+      'hammer',
+      'coffee',
+      'lift',
+      'drum',
+      'read',
+      'dance',
+      'wand',
+      'balloon'
+    ],
+    id: 'dependencies',
+    label: 'Installing dependencies',
+    weight: 55
+  },
+  { acts: ['inspect', 'read'], id: 'git', label: 'Checking Git', weight: 2 },
+  { acts: ['inspect', 'fish'], id: 'ripgrep', label: 'Adding file search', weight: 8 },
+  { acts: ['horn', 'flag', 'rocket'], id: 'done', label: 'Starting the daemon', weight: 5 }
+]
+
+/** Space around a 132px mark for an act's props, which reach past the face. */
+const ACT_ROOM = 'mx-[46px] mt-[53px] mb-[13px]'
+
+/** How long Hexbot keeps one act up before trying the next in the stage. */
+const ACT_MS = 6000
+
+/**
+ * Overall install percentage. A stage that reports its own percent uses it;
+ * one that only logs lines creeps toward its end, so the bar never sits still
+ * and never runs backwards.
+ */
+export function installPercent(progress: DaemonProgress[]): number {
+  const last = progress.findLast(item => STAGES.some(stage => stage.id === item.stage))
+
+  if (!last) {
+    return 0
+  }
+
+  const index = STAGES.findIndex(stage => stage.id === last.stage)
+
+  const lines = progress.filter(item => item.stage === last.stage)
+  const reported = Math.max(0, ...lines.map(item => item.percent ?? 0)) / 100
+  const within = last.stage === 'done' ? 0 : Math.max(reported, 1 - 1 / (1 + lines.length / 40))
+  const before = STAGES.slice(0, index).reduce((sum, stage) => sum + stage.weight, 0)
+
+  return Math.round(before + STAGES[index]!.weight * within)
 }
 
-function useElapsedSeconds(): number {
-  const [seconds, setSeconds] = useState(0)
+/**
+ * The install: Hexbot plays the act for the current stage, a bar shows how
+ * far along it is, and under the bar is the stage and the line the installer
+ * just printed. Each stage has its own acts, and a long stage works through
+ * them so the page never looks stuck.
+ */
+export function InstallStep({
+  error,
+  progress
+}: {
+  error?: null | string
+  progress: DaemonProgress[]
+}) {
+  const last = progress.at(-1)
+  const stage = STAGES.find(item => item.id === last?.stage)
+  const label = stage?.label ?? last?.message ?? 'Preparing the local runtime'
+  const percent = installPercent(progress)
+  const [turn, setTurn] = useState(0)
 
   useEffect(() => {
-    const started = Date.now()
-    const timer = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000)
+    setTurn(0)
+    const timer = setInterval(() => setTurn(value => value + 1), ACT_MS)
 
     return () => clearInterval(timer)
-  }, [])
+  }, [stage])
 
-  return seconds
-}
-
-/** Hexbot at work: the mark bobbing, what it is doing, and for how long. */
-export function WorkingMark({ label }: { label: string }) {
-  const seconds = useElapsedSeconds()
-
-  return (
-    <div className="flex flex-col items-center gap-5">
-      <HexbotMark className="hex-think" mood="working" size={64} />
-      <p role="status">{label}</p>
-      <p
-        aria-label={`${seconds} seconds elapsed`}
-        className="-mt-3 text-secondary text-muted tabular-nums"
-        role="timer"
-      >
-        {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, '0')}
-      </p>
-    </div>
-  )
-}
-
-export function InstallStep({ progress }: { progress: DaemonProgress[] }) {
-  const last = progress.at(-1)
+  const acts = stage?.acts ?? STAGES[0]!.acts
 
   return (
     <SetupFrame title="Setting up Hexbot">
-      <div className="grid w-full flex-1 place-items-center py-8">
-        <WorkingMark
-          label={last ? (STAGE_LABELS[last.stage] ?? last.message) : 'Preparing the local runtime'}
-        />
+      <div className="flex w-full flex-1 flex-col items-center justify-center gap-10 py-8">
+        <HexbotMark act={acts[turn % acts.length]!} className={ACT_ROOM} size={132} />
+        <div className="w-full max-w-[360px]">
+          <div
+            aria-label="Install progress"
+            aria-valuemax={100}
+            aria-valuemin={0}
+            aria-valuenow={percent}
+            className="h-1.5 overflow-hidden rounded-full bg-surface-2"
+            role="progressbar"
+          >
+            <div
+              className="h-full rounded-full bg-foreground transition-[width] duration-[var(--hex-motion-enter)] ease-[var(--hex-ease-out)]"
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+          <div className="mt-3 flex items-baseline justify-between gap-3">
+            <p className="hex-rise min-w-0 truncate" key={label} role="status">
+              {label}
+            </p>
+            <p className="shrink-0 text-secondary text-muted tabular-nums">{percent}%</p>
+          </div>
+          <p className="mt-1 h-[1.4em] truncate font-mono text-meta text-muted">
+            {last && last.message !== label ? last.message : ''}
+          </p>
+          {error ? (
+            <p className="mt-3 text-secondary text-danger" role="alert">
+              {error}
+            </p>
+          ) : null}
+        </div>
       </div>
       <details className="w-full pb-10 text-center text-secondary text-muted">
         <summary className="cursor-pointer">Install log</summary>
         <pre className="mt-2 max-h-40 overflow-y-auto text-left whitespace-pre-wrap font-mono text-meta">
-          {progress.map(item => item.detail ?? item.message).join('\n')}
+          {progress.map(item => item.message).join('\n')}
         </pre>
       </details>
     </SetupFrame>
@@ -336,9 +412,7 @@ export function JobsStep({ back, next }: { back: () => void; next: () => void })
             key={job.label}
             style={{ animationDelay: `${index * 140}ms` }}
           >
-            <span className="hex-face size-16">
-              <Face style={job.style} />
-            </span>
+            <Avatar className="size-16" name={job.label} style={job.style} />
             <Chip>{job.label}</Chip>
           </div>
         ))}
@@ -719,9 +793,7 @@ function BotStep({
               title={item.description}
               type="button"
             >
-              <span className="hex-face size-6 shrink-0">
-                <Face style={styleForName(item.id)} />
-              </span>
+              <Avatar name={item.title} size="sm" style={styleForName(item.id)} />
               <span className="min-w-0 truncate font-medium">{item.title}</span>
             </button>
           ))}
@@ -886,7 +958,10 @@ function OnboardingPage() {
     return (
       <main className="grid min-h-screen place-items-center bg-background text-foreground">
         <div className="hex-rise">
-          <WorkingMark label="Getting your bot ready" />
+          <div className="flex flex-col items-center gap-5">
+            <HexbotMark act="type" className={ACT_ROOM} size={132} />
+            <p role="status">Getting your bot ready</p>
+          </div>
         </div>
       </main>
     )
@@ -910,7 +985,7 @@ function OnboardingPage() {
   }
 
   if (step === 'install') {
-    return <InstallStep progress={progress} />
+    return <InstallStep error={error} progress={progress} />
   }
 
   const copy = (
