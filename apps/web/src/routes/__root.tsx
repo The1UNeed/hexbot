@@ -6,6 +6,7 @@ import { getBridge, hasLocalRuntime } from '../lib/bridge'
 import { getSupervisor, setLocalDaemonPort } from '../lib/connection'
 import { useConnection } from '../stores/connection'
 import { applyTheme, useUi } from '../stores/ui'
+import { bindAppUpdates } from '../stores/updates'
 
 export const Route = createRootRoute({
   component: RootLayout
@@ -40,9 +41,26 @@ function RootLayout() {
 
       void startLocal.then(() => getSupervisor().start(target))
     }
-
   }, [target])
   useEffect(() => () => getSupervisor().stop(), [])
+  useEffect(() => bindAppUpdates(), [])
+  useEffect(() => {
+    // The app menu's "Settings…" and "Check for Updates…" items land here;
+    // pairing links are handled by the connect route.
+    const bridge = getBridge()
+
+    if (!bridge?.onNavigate) {
+      return
+    }
+
+    return bridge.onNavigate(url => {
+      const tab = /^\/settings\/([a-z]+)$/.exec(url)?.[1]
+
+      if (tab) {
+        void navigate({ to: '/settings/$tab', params: { tab } })
+      }
+    })
+  }, [navigate])
 
   return (
     <>

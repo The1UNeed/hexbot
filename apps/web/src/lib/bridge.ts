@@ -72,10 +72,12 @@ export interface HexbotBridge {
   setCrashReports(enabled: boolean): Promise<void>
   updater: {
     channel(): Promise<UpdateChannel>
-    check(): Promise<UpdateStatus>
-    install(): Promise<void>
-    onStatus(callback: (status: UpdateStatus) => void): () => void
-    setChannel(channel: UpdateChannel): Promise<void>
+    check(): Promise<UpdateState>
+    download(): Promise<UpdateState>
+    install(): Promise<UpdateState>
+    onStatus(callback: (state: UpdateState) => void): () => void
+    setChannel(channel: UpdateChannel): Promise<UpdateState>
+    state(): Promise<UpdateState>
   }
   version: string
 }
@@ -102,12 +104,51 @@ export interface ServiceStatus {
   running?: boolean
 }
 
-/** What the desktop updater reports (apps/desktop/src/main/updater.ts). */
-export interface UpdateStatus {
-  message?: string
-  percent?: number
-  state: 'available' | 'checking' | 'downloaded' | 'downloading' | 'error' | 'idle' | 'none'
-  version?: string
+/** The desktop updater's state (apps/desktop/src/main/update-state.ts). */
+export interface UpdateState {
+  availableVersion: null | string
+  channel: UpdateChannel
+  checkedAt: null | string
+  currentVersion: string
+  downloadedVersion: null | string
+  errorContext: 'check' | 'download' | 'install' | null
+  /** Why updates are off, or the last error. */
+  message: null | string
+  percent: null | number
+  status:
+    | 'available'
+    | 'checking'
+    | 'disabled'
+    | 'downloaded'
+    | 'downloading'
+    | 'error'
+    | 'idle'
+    | 'up-to-date'
+}
+
+/** The one thing the user can do with an update state, if anything. */
+export function updateAction(state: UpdateState): 'check' | 'download' | 'install' | null {
+  if (
+    state.downloadedVersion &&
+    (state.status === 'downloaded' ||
+      (state.status === 'error' && state.errorContext === 'install'))
+  ) {
+    return 'install'
+  }
+
+  if (state.status === 'available') {
+    return 'download'
+  }
+
+  if (state.status === 'error' && state.errorContext === 'download' && state.availableVersion) {
+    return 'download'
+  }
+
+  if (state.status === 'idle' || state.status === 'up-to-date' || state.status === 'error') {
+    return 'check'
+  }
+
+  return null
 }
 
 declare global {

@@ -13,30 +13,26 @@ const listen = <T>(channel: string, callback: (value: T) => void): (() => void) 
   ipcRenderer.on(channel, listener)
   return () => ipcRenderer.removeListener(channel, listener)
 }
-const updateStates = new Set([
+const updateStatuses = new Set([
+  'disabled',
   'idle',
   'checking',
   'available',
   'downloading',
   'downloaded',
-  'none',
+  'up-to-date',
   'error'
 ])
-interface UpdateStatus {
-  state: string
-  percent?: number
-  message?: string
-  version?: string
-}
-function validUpdateStatus(value: unknown): value is UpdateStatus {
+// The updater state (src/main/update-state.ts); the renderer only ever sees
+// a well-formed one.
+function validUpdateState(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false
   const item = value as Record<string, unknown>
   return (
-    typeof item.state === 'string' &&
-    updateStates.has(item.state) &&
-    (item.percent === undefined || typeof item.percent === 'number') &&
-    (item.message === undefined || typeof item.message === 'string') &&
-    (item.version === undefined || typeof item.version === 'string')
+    typeof item.status === 'string' &&
+    updateStatuses.has(item.status) &&
+    (item.channel === 'stable' || item.channel === 'nightly') &&
+    typeof item.currentVersion === 'string'
   )
 }
 const hexbot = Object.freeze({
@@ -77,13 +73,15 @@ const hexbot = Object.freeze({
   openExternal: (url: string) => ipcRenderer.invoke('hexbot:open-external', url),
   pickFiles: () => ipcRenderer.invoke('hexbot:pick-files'),
   updater: Object.freeze({
+    state: () => ipcRenderer.invoke('hexbot:updater:state'),
     channel: () => ipcRenderer.invoke('hexbot:updater:channel'),
     check: () => ipcRenderer.invoke('hexbot:updater:check'),
-    onStatus: (callback: (value: UpdateStatus) => void) =>
-      listen<unknown>('hexbot:updater:status', value => {
-        if (validUpdateStatus(value)) callback(value)
-      }),
+    download: () => ipcRenderer.invoke('hexbot:updater:download'),
     install: () => ipcRenderer.invoke('hexbot:updater:install'),
+    onStatus: (callback: (value: unknown) => void) =>
+      listen<unknown>('hexbot:updater:status', value => {
+        if (validUpdateState(value)) callback(value)
+      }),
     setChannel: (channel: 'stable' | 'nightly') =>
       ipcRenderer.invoke('hexbot:updater:set-channel', channel)
   }),

@@ -51,7 +51,10 @@ user. Get and mutation methods always check ownership.
 ### Daemon
 
 - `hexbot.info {}` → `{version, hermes_version, daemon_name, install_id,
-  auth_required, lan_enabled, addresses: [string], platform, home}`
+  auth_required, lan_enabled, addresses: [string], platform, home,
+  update_capability}`. `update_capability` is `desktop` when the Hexbot app
+  on that machine runs the daemon, `service` when launchd or systemd does,
+  and `null` for a checkout or a hand-started daemon.
 - `hexbot.settings.get {}` → `{approval_mode, auto_approver_model, lan_enabled,
   service_installed, workspace_dir, billing_notice_ack, dream_time, dream_enabled}`
 - `hexbot.settings.set {patch}` → same shape; only whitelisted keys.
@@ -243,6 +246,24 @@ or a clear.
 - `hexbot.devices.list {}` → `{devices: [{id, name, platform, created_at,
   last_seen_at, current: bool}]}`
 - `hexbot.devices.revoke {id}` → `{revoked: true}`
+
+### Updates
+
+A client newer than the daemon asks the daemon to update itself
+(`docs/channels.md`, "Updating a daemon from a client").
+
+- `hexbot.update.request {version}` (admin) → `{accepted: true, method,
+  version}`. `method` is the daemon's `update_capability`. With `desktop` the
+  app running the daemon downloads and installs its own update and relaunches;
+  with `service` the daemon fetches `daemon/hexbot-src-<version>.tar.gz`
+  from the update server, syncs its runtime, and restarts itself. Errors: 4210
+  no capability, 4211 an update is already running, 4212 already on that
+  version.
+- `hexbot.update.status {}` → `{capability, status, requested, version,
+  percent, message, at}`. `status` is `idle`, `requested`, `checking`,
+  `downloading`, `installing`, `restarting`, `up-to-date`, or `failed`.
+  A successful update ends with the connection dropping and the daemon
+  coming back on the requested version.
 
 ### Users and usage
 

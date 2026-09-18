@@ -15,7 +15,7 @@ describe('service files', () => {
 <plist version="1.0"><dict>
   <key>Label</key><string>app.hexbot.daemon</string>
   <key>ProgramArguments</key><array><string>/home/me/.hexbot/runtime/venv/bin/hexbot</string><string>serve</string></array>
-  <key>EnvironmentVariables</key><dict><key>HEXBOT_HOME</key><string>/home/me/.hexbot</string><key>PATH</key><string>/home/me/.hexbot/bin:/usr/bin</string></dict>
+  <key>EnvironmentVariables</key><dict><key>HEXBOT_HOME</key><string>/home/me/.hexbot</string><key>HEXBOT_SUPERVISOR</key><string>service</string><key>PATH</key><string>/home/me/.hexbot/bin:/usr/bin</string></dict>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>/home/me/.hexbot/logs/service.log</string>
   <key>StandardErrorPath</key><string>/home/me/.hexbot/logs/service-error.log</string>
@@ -33,6 +33,7 @@ After=network.target
 Type=simple
 ExecStart="/home/me/.hexbot/runtime/venv/bin/hexbot" serve
 Environment=HEXBOT_HOME="/home/me/.hexbot"
+Environment=HEXBOT_SUPERVISOR=service
 Environment=PATH="/home/me/.hexbot/bin:/usr/bin"
 Restart=always
 StandardOutput=append:/home/me/.hexbot/logs/service.log

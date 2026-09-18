@@ -40,7 +40,9 @@ behaviour lives in a small set of files:
 | `scripts/dev/run.mjs` | dev | `npm run dev`: daemon and web bundle (or Electron) from the checkout with a per-checkout home and ports |
 | `.devcontainer/devcontainer.json` | dev | One-command development environment with Python 3.11, uv, and Node 26 |
 | `apps/desktop/electron-builder.yml`, `electron-builder.client.yml` | all | Full and client-only package definitions and their feed URLs; channel flags override `productName` and `appId` |
-| `apps/desktop/src/main/updater.ts`, `desktop-state.ts` | stable, nightly | The in-app updater. The track defaults to the one the build came from and can be switched in Settings, Updates |
+| `apps/desktop/src/main/updater.ts`, `update-state.ts`, `desktop-state.ts` | stable, nightly | The in-app updater: a check 15 s after launch and every 4 minutes, one action at a time, logged to `<home>/logs/desktop.log`. The track defaults to the one the build came from and can be switched in Settings, Updates |
+| `apps/desktop/src/main/remote-update.ts`, `hexbot/update.py` | stable, nightly | A daemon updating on a client's request: the app that runs it updates itself, or a service-run daemon fetches `daemon/hexbot-src-<v>.tar.gz` and restarts |
+| `apps/web/src/app/update-pill.tsx`, `stores/updates.ts` | all | The roster pill and the Settings, Updates page: download, restart, and "Update daemon" |
 | `apps/site/public/downloads/manifest.json` | stable | Names the downloadable artifacts on hexbot.app; written by `finalize` |
 | `scripts/desktop/update-nightly-index.mjs` | nightly | Prepends each nightly to `nightlies.json` on `updates.hexbot.app` (last 30) so hexbot.app can list earlier builds. Tested in `packaging.test.mjs` |
 | `apps/site/src/lib/nightly.ts` | nightly | Reads the `nightly-*.yml` feed on `updates.hexbot.app` while the site builds, so the download page can offer the current nightly before the first stable release |
@@ -122,6 +124,7 @@ full/mac/arm64/Hexbot-<v>-mac-arm64.zip|.dmg
 full/mac/x64/...
 full/linux/x64/latest-linux.yml, nightly-linux.yml, Hexbot-<v>-linux-x64.AppImage|.deb
 client/...                          the same for HexbotClient-*
+daemon/hexbot-src-<v>.tar.gz        the daemon source the full package stages, for daemons updating themselves
 ```
 
 Artifacts are immutable (their names carry the version); the `.yml` files are
@@ -130,6 +133,47 @@ served with `no-cache` and rewritten each release. After uploading,
 fails if one does not announce the new version. The download page and the
 Homebrew casks link to the same files. The feed files are not attached to
 the GitHub release; the packages are.
+
+## Updating
+
+The packaged app checks its track 15 seconds after launch and every 4
+minutes after that (`apps/desktop/src/main/updater.ts`). It never downloads
+on its own: when a version is available, a pill in the roster footer and the
+Settings, Updates page offer "Download update", then "Restart to update".
+Every check, download, and failure is written to `<home>/logs/desktop.log`.
+A nightly install ignores a stable version in the bucket and the other way
+round; switching tracks in Settings runs a check on the new track at once,
+with downgrades allowed.
+
+### Updating a daemon from a client
+
+The app and the daemon it talks to can run on different machines and drift
+apart. When the daemon is behind the app (two nightlies compare their whole
+version, everything else compares `major.minor.patch`), the roster pill says
+"Update daemon" and Settings, Updates offers to update it without a shell on
+its machine. The daemon says how, through `update_capability` in
+`hexbot.info`, read from `HEXBOT_SUPERVISOR`:
+
+- `desktop`: the full package on that machine spawned the daemon
+  (`backend/manager.ts` sets the variable). The daemon prints
+  `HEXBOT_UPDATE_REQUESTED version=<v>`; the app checks its own track,
+  downloads, and installs, writing progress to
+  `<home>/runtime/update-status.json` for `hexbot.update.status`, then
+  relaunches and starts the new daemon. The app's track decides what is
+  installed, so an app on the stable track cannot be pushed a nightly.
+- `service`: launchd or systemd runs the daemon (`service-files.ts` sets the
+  variable). The daemon downloads `daemon/hexbot-src-<v>.tar.gz` from
+  `updates.hexbot.app` into `<home>/runtime/src/<v>`, runs
+  `uv sync --extra all --locked` into the shared runtime venv the way the
+  app's bootstrap does, checks that `hexbot version` prints `<v>`, and
+  restarts itself. `HEXBOT_UPDATE_URL` points a daemon at another server.
+- unset: a checkout or a hand-started daemon. The page says to update by
+  hand.
+
+The client polls `hexbot.update.status` every two seconds and treats the
+connection dropping and coming back on the requested version as success,
+the same proof T3 Code uses. A failure, including "nothing to install",
+stays on the page until dismissed.
 
 ## Borrowed from T3 Code
 
@@ -150,7 +194,9 @@ reference for Hexbot's. Kept as-is:
 - Concurrency is per channel and never cancels a running publisher.
 - The updater's track defaults to the one the build came from (a nightly
   version means the nightly track) and downgrades are allowed only when the
-  user switches tracks.
+  user switches tracks. The check cadence (15 s after launch, then every
+  4 minutes), the single-action updater, the sidebar pill, and the
+  "server behind the client, update it from here" flow are T3 Code's.
 - Signing and notarization are optional and detected from secrets. The
   `.p8` key is stored as text and written to a file on the runner.
 - Release notes compare against the previous release in the same channel.

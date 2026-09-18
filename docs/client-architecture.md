@@ -110,7 +110,9 @@ Exposed by the preload with contextIsolation on:
 - `notify({title, body, sectionId})` shows a native notification; clicking
   focuses the window and navigates.
 - `openExternal(url)`, `pickFiles()`.
-- `updater.check()`, `updater.onStatus(cb)`, `updater.install()`.
+- `updater.state()`, `updater.check()`, `updater.download()`, `updater.install()`,
+  `updater.setChannel(track)`, `updater.onStatus(cb)`. `stores/updates.ts`
+  mirrors the state; `app/update-pill.tsx` shows it in the roster.
 - `service.install()`, `service.status()` for launchd or systemd.
 
 In a plain browser `window.hexbot` is undefined and the UI hides the

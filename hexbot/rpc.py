@@ -17,7 +17,7 @@ import socket
 import sys
 
 from hexbot import (activity, bots, connect, connectors, dreaming, memory, network, pairing,
-                    provider_login, providers, sections, settings, usage, users)
+                    provider_login, providers, sections, settings, update, usage, users)
 from hexbot.rooms import get_engine
 from hexbot.rooms import store as rooms
 from hexbot.errors import HexbotError
@@ -88,7 +88,7 @@ def info(_params) -> dict:
     return {"version": __version__, "hermes_version": hermes_version,
             "daemon_name": socket.gethostname(), "install_id": install_id,
             "auth_required": serve_state()["auth_required"],
-            "pairing_supported": True,
+            "pairing_supported": True, "update_capability": update.capability(),
             "lan_enabled": net["lan_enabled"], "addresses": net["addresses"],
             "platform": platform.system().lower(), "home": str(hexbot_home())}
 
@@ -253,6 +253,8 @@ METHODS = {
     "hexbot.providers.login_cancel": _admin(lambda p: provider_login.cancel(_required(p, "login_id"))),
     "hexbot.models.list": _list_models,
     "hexbot.network.get": _admin(lambda p: network.get_network()),
+    "hexbot.update.request": _admin(lambda p: update.request(_required(p, "version"))),
+    "hexbot.update.status": lambda p: update.status(),
     "hexbot.network.set": _admin(lambda p: network.set_network(_required(p, "lan_enabled"))),
     "hexbot.pairing.code": _admin(_pairing_code),
     "hexbot.devices.list": _devices_list,

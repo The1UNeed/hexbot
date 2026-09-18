@@ -17,6 +17,7 @@ import type {
   CoreMemory,
   CoreMemorySection,
   DaemonInfo,
+  DaemonUpdateStatus,
   Device,
   Message,
   ModelOption,
@@ -64,6 +65,17 @@ export interface ModelList {
 
 export function daemonInfo(): Promise<DaemonInfo> {
   return rpcCall<DaemonInfo>('hexbot.info')
+}
+
+/** Ask the daemon to update itself to `version` (docs/api.md, "Updates"). */
+export function updateRequest(
+  version: string
+): Promise<{ accepted: boolean; method: 'desktop' | 'service'; version: string }> {
+  return rpcCall('hexbot.update.request', { version })
+}
+
+export function updateStatus(): Promise<DaemonUpdateStatus> {
+  return rpcCall<DaemonUpdateStatus>('hexbot.update.status')
 }
 
 export function settingsGet(): Promise<Settings> {

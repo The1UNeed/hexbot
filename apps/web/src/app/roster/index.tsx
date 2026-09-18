@@ -49,6 +49,7 @@ import {
 import { useSettings } from '../../stores/settings'
 import { useTranscripts } from '../../stores/transcripts'
 import { useUsers } from '../../stores/users'
+import { UpdatePill } from '../update-pill'
 
 const DAY = 86_400_000
 
@@ -743,6 +744,7 @@ export function RosterColumn() {
             ) : null}
           </>
         ) : null}
+        <UpdatePill className="mb-1 w-full" />
         <div className={cn(footerRow, 'hover:bg-transparent')}>
           <span className="relative">
             <PersonAvatar name={currentUser?.display_name ?? 'You'} />
