@@ -7,10 +7,11 @@ page is the procedure and the one-time setup. Modelled on T3 Code's
 ## What `release.yml` does
 
 - Triggers: a `v*` tag push (stable), the 09:00 UTC schedule (nightly), or a
-  manual dispatch (nightly).
+  manual dispatch (either channel).
 - `preflight` picks the channel, checks that a stable tag matches
-  `apps/desktop/package.json`, computes the nightly version, and stops a
-  scheduled nightly when `main` has not moved.
+  `apps/desktop/package.json` (a manual stable run takes the version from
+  that file and refuses one that is already tagged), computes the nightly
+  version, and stops a scheduled nightly when `main` has not moved.
 - `check` runs `ci.yml`: Python, web, desktop, site, Connect, and the
   desktop script tests. Nothing is built until it passes.
 - `build` makes six packages in parallel: full and client for macOS arm64,
@@ -50,11 +51,13 @@ a broken release script fails before tag day.
 5. Run the desktop suite and the script tests (`docs/testing.md`). Build one
    package locally if the packaging changed:
    `node scripts/desktop/dist.mjs --mac --channel stable`.
-6. Commit, then tag and push:
+6. Commit and push `main`, then start the release one of two ways:
 
-   ```sh
-   git tag v0.x.y-alpha.N && git push origin main v0.x.y-alpha.N
-   ```
+   - Actions, Release, "Run workflow" on `main`, channel `stable` (or
+     `gh workflow run release.yml --ref main -f channel=stable`). The run
+     releases the version in `apps/desktop/package.json` and creates the
+     `v0.x.y-alpha.N` tag on the commit it built.
+   - Or tag and push: `git tag v0.x.y-alpha.N && git push origin v0.x.y-alpha.N`.
 
 7. Watch the run: preflight, check, six builds, publish, finalize. Confirm
    the GitHub release lists 6 DMGs, 4 ZIPs, 2 AppImages, 2 debs, and that
@@ -68,8 +71,8 @@ a broken release script fails before tag day.
 Actions, Release, "Run workflow", channel `nightly`. This publishes a real
 nightly (GitHub prerelease and the nightly feed) even when `main` has not
 moved. Use it to exercise the whole release graph without touching the
-stable track; there is no dry-run mode, and a test tag such as
-`v0.0.0-test.1` would be a real stable release.
+stable track; there is no dry-run mode, and channel `stable` or a test tag
+such as `v0.0.0-test.1` would be a real stable release.
 
 ## One-time setup
 
@@ -182,6 +185,11 @@ On Linux x86_64:
 
 ## Troubleshooting
 
+- `preflight` fails with "already exists" on a manual stable run: that
+  version was released before. Set the next one with `set-version.mjs`,
+  commit, and run again.
+- `preflight` fails with "needs a v* tag or a manual run on main": a manual
+  stable run was started from another branch. Run it on `main`.
 - `preflight` fails with "does not match": the tag and
   `apps/desktop/package.json` disagree. Delete the tag, fix the version with
   `set-version.mjs`, commit, re-tag.

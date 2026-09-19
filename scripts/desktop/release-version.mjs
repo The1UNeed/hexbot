@@ -1,7 +1,9 @@
 // Resolve the channel and version of one release, the way T3 Code's preflight
 // job does (docs/channels.md, "Borrowed from T3 Code").
 //
-//   stable   a v<version> tag. The version must match apps/desktop/package.json.
+//   stable   a v<version> tag, or a manual run on main, which releases the
+//            version in apps/desktop/package.json and lets the workflow
+//            create the tag. A pushed tag must match package.json.
 //            A plain X.Y.Z is a full release (GitHub "latest"); a version with a
 //            suffix such as 0.1.5-alpha.1 is a GitHub prerelease.
 //   nightly  <base>-nightly.<YYYYMMDD>.<run number>, where <base> is the next
@@ -11,6 +13,7 @@
 //
 // As a CLI it prints GitHub Actions outputs:
 //   node scripts/desktop/release-version.mjs --channel stable --ref refs/tags/v0.1.5-alpha.1
+//   node scripts/desktop/release-version.mjs --channel stable --ref refs/heads/main
 //   node scripts/desktop/release-version.mjs --channel nightly --run-number 42
 import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
@@ -34,8 +37,10 @@ export function resolveRelease({ channel, packageVersion, ref, date = new Date()
     return { channel, version, tag: `v${version}`, prerelease: true, latest: false }
   }
   if (channel !== 'stable') throw new Error(`Unknown channel "${channel}". Use stable or nightly.`)
-  const tag = ref?.replace(/^refs\/tags\//, '')
-  if (!tag?.startsWith('v')) throw new Error(`A stable release needs a v* tag, got "${ref}"`)
+  // A manual run on main releases whatever package.json says.
+  const tag = ref === 'refs/heads/main' ? `v${packageVersion}` : ref?.replace(/^refs\/tags\//, '')
+  if (!tag?.startsWith('v'))
+    throw new Error(`A stable release needs a v* tag or a manual run on main, got "${ref}"`)
   const version = tag.slice(1)
   const match = SEMVER.exec(version)
   if (!match) throw new Error(`Tag ${tag} is not v<SemVer>`)

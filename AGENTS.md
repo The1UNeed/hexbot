@@ -164,6 +164,8 @@ nightly, and a finalize step that commits bookkeeping back to `main`.
   push and pull request and publishes nothing.
 - A **stable** release is a `v<version>` tag on `main` where `<version>`
   equals `apps/desktop/package.json` (`preflight` refuses anything else).
+  Push the tag, or dispatch `release.yml` on `main` with channel `stable`
+  and the run creates it.
   `release.yml` runs CI, builds six packages, uploads the feed to
   `updates.hexbot.app`, creates the GitHub release (prerelease while the
   version has a suffix, "latest" for a plain `X.Y.Z`), then `finalize`
