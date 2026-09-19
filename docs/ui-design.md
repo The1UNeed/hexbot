@@ -194,7 +194,8 @@ The composer pill takes the same colour with a one-line notice above it
 
 ### First launch
 
-1. Choice: "Connect to a Hexbot daemon" or "Run Hexbot on this machine".
+1. Choice: "Where should Hexbot run?" with "On this computer" or "On another
+   device".
 2. Connect: address field (host:port or URL) and pairing code field, or
    paste a hexbot:// link. Shows daemon name after a successful probe.
 3. Run locally: runtime install progress (uv, Python, Git, ripgrep,
