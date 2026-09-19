@@ -1267,11 +1267,12 @@ ensure_pnpm() {
 
     # Package scripts call `pnpm` by name, so it has to resolve on PATH. When
     # the managed Node is not the active one, its bin dir stays off PATH (it
-    # may hold a Node check_node passed over); expose pnpm alone instead.
+    # may hold a Node check_node passed over); expose pnpm alone instead, from
+    # a fixed directory so repeated runs leave nothing behind.
     if [ "$(command -v pnpm 2>/dev/null)" != "$managed_pnpm" ]; then
-        local shim_dir
-        shim_dir="$(mktemp -d)"
-        ln -s "$managed_pnpm" "$shim_dir/pnpm"
+        local shim_dir="$HERMES_HOME/node/pnpm-shim"
+        mkdir -p "$shim_dir"
+        ln -sf "$managed_pnpm" "$shim_dir/pnpm"
         export PATH="$shim_dir:$PATH"
     fi
 }

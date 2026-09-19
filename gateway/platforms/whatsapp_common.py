@@ -538,11 +538,13 @@ def resolve_whatsapp_bridge_dir() -> Path:
     # Install dir is read-only, mirror to HERMES_HOME if needed
     if hermes_home_bridge.exists():
         # A mirror made before the bridge moved to pnpm has no lockfile, and
-        # the frozen install refuses to run without one.
-        lockfile = hermes_home_bridge / "pnpm-lock.yaml"
-        if not lockfile.exists():
+        # the frozen install refuses to run without one. Its package.json
+        # goes with it: the lockfile records `pnpm.overrides`, and a frozen
+        # install rejects a manifest whose overrides differ.
+        if not (hermes_home_bridge / "pnpm-lock.yaml").exists():
             try:
-                shutil.copy2(install_bridge / "pnpm-lock.yaml", lockfile)
+                for name in ("package.json", "pnpm-lock.yaml"):
+                    shutil.copy2(install_bridge / name, hermes_home_bridge / name)
             except OSError:
                 pass
         return hermes_home_bridge

@@ -70,7 +70,7 @@ def test_existing_mirror_without_lockfile_gets_one(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes_home"
     mirror = hermes_home / "scripts" / "whatsapp-bridge"
     mirror.mkdir(parents=True)
-    (mirror / "package.json").write_text('{"name": "whatsapp-bridge"}\n')
+    (mirror / "package.json").write_text('{"name": "whatsapp-bridge", "overrides": {}}\n')
 
     monkeypatch.setattr(
         whatsapp_common, "__file__",
@@ -89,3 +89,5 @@ def test_existing_mirror_without_lockfile_gets_one(tmp_path, monkeypatch):
 
     assert whatsapp_common.resolve_whatsapp_bridge_dir() == mirror
     assert (mirror / "pnpm-lock.yaml").read_text() == "lockfileVersion: '9.0'\n"
+    # The manifest travels with the lockfile that records its overrides.
+    assert (mirror / "package.json").read_text() == (install_bridge / "package.json").read_text()

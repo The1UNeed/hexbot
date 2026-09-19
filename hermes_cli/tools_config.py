@@ -2171,15 +2171,16 @@ def _run_post_setup(post_setup_key: str):
             # Absolute pnpm path so .cmd shim executes on Windows.
             result = subprocess.run(
                 # --filter . installs the root package only, without
-                # resolving apps/desktop. See #38772.
-                [_pnpm_bin, "install", "--filter", "."],
+                # resolving apps/desktop. See #38772. Frozen, so the install
+                # never rewrites the committed lockfile.
+                [_pnpm_bin, "install", "--frozen-lockfile", "--filter", "."],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(PROJECT_ROOT),
                 creationflags=_post_setup_no_window_flags(),
             )
             if result.returncode == 0:
                 _print_success("    Camofox installed")
             else:
-                _print_warning("    pnpm install failed - run manually: pnpm install --filter .")
+                _print_warning("    pnpm install failed - run manually: pnpm install --frozen-lockfile --filter .")
                 # pnpm reports ERR_PNPM_* errors on stdout; stderr is usually empty.
                 for line in (result.stderr or result.stdout or "").strip().splitlines()[-5:]:
                     _print_info(f"    {line}")

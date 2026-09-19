@@ -57,7 +57,7 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 | `hexbot/` | Hexbot Python package: CLI, daemon plugin, pairing, bots, sections, rooms, memory, dreaming, users, Connect client | all |
 | `apps/web/` | React bundle (Vite, Tailwind). Used by the app and served to browsers | all |
 | `apps/desktop/` | Electron shell, updater, runtime bootstrap, two electron-builder configs | all |
-| `apps/shared/` | Hermes `@hermes/shared`, used only by the upstream `web/` dashboard. Hexbot code does not import it | |
+| `apps/shared/` | Hermes `@hermes/shared`. `apps/web` imports its gateway client and event types; the upstream `web/` dashboard uses the rest | all |
 | `apps/site/` | Astro site at hexbot.app: landing page, docs, pairing page | stable |
 | `apps/connect/` | Next.js Connect service at connect.hexbot.app | all |
 | `tests/hexbot/` | Hexbot Python tests. Upstream suites stay under `tests/` | all |

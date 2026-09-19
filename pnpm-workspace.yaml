@@ -17,6 +17,11 @@ onlyBuiltDependencies:
 ignoredBuiltDependencies:
   - unicode-animations
 
+# Build results are never restored from the store. The store keeps regular
+# files only, so a cached Electron `dist/` comes back with the macOS framework
+# symlinks flattened into copies, and codesign rejects the bundle.
+sideEffectsCache: false
+
 overrides:
   lodash: 4.18.1
   yauzl: ^3.3.1
@@ -60,14 +65,6 @@ minimumReleaseAgeExclude:
   - minimatch
   # brace-expansion 5.0.9 includes fixes for vulns. remove this when 5.0.9 is > 2wks old
   - brace-expansion
-  # js-yaml 4.3.1 includes fixes for GHSA-5p4m-2wfm-xmqj. remove when > 2wks old (rel 2026-07-31)
-  - js-yaml
-  # nanoid 3.3.17 includes fixes for GHSA-2v37-7h3g-55p8. remove when > 2wks old (rel 2026-08-03)
-  - nanoid
-  # mermaid 11.16.1 includes fixes for 5 GHSAs. remove when > 2wks old (rel 2026-08-04)
-  - mermaid
-  # dompurify 3.4.13 includes fixes for GHSA-55q2-fjhq-7xh7. remove when > 2wks old (rel 2026-08-03)
-  - dompurify
   # vite 8.2.0 is the first release depending on rolldown >= 1.2.1, which fixes
   # a rolldown panic that breaks `pnpm run build` in apps/desktop
   # (rolldown/rolldown#10337 — a regression in 1.1.5, the version vite 8.1.5
