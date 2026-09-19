@@ -4,12 +4,12 @@ import { Avatar } from '../components/ui/avatar'
 import { HEXBOT_ACT_NAMES } from '../components/ui/hexbot-act'
 import { HexbotMark } from '../components/ui/wordmark'
 import {
+  ChoiceStep,
   initialOnboardingStep,
   installPercent,
   InstallStep,
   JobsStep,
   MeetStep,
-  OnboardingChoiceCards,
   WelcomeStep
 } from '../routes/onboarding'
 
@@ -49,15 +49,16 @@ describe('onboarding', () => {
     expect(back).toHaveBeenCalledOnce()
   })
 
-  it('renders the two Electron choices as descriptive cards', () => {
-    render(<OnboardingChoiceCards onConnect={vi.fn()} onLocal={vi.fn()} />)
+  it('offers this computer, another device, and a way back', () => {
+    const [back, onConnect, onLocal] = [vi.fn(), vi.fn(), vi.fn()]
+    render(<ChoiceStep back={back} onConnect={onConnect} onLocal={onLocal} />)
 
-    expect(screen.getByRole('button', { name: /Connect to a Hexbot daemon/ })).toHaveTextContent(
-      'Pair with a daemon on your network or a Tailscale address.'
-    )
-    expect(screen.getByRole('button', { name: /Run Hexbot on this machine/ })).toHaveTextContent(
-      'Install the runtime on this computer and run bots here.'
-    )
+    fireEvent.click(screen.getByRole('button', { name: 'On this computer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'On another device' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    expect(onLocal).toHaveBeenCalledOnce()
+    expect(onConnect).toHaveBeenCalledOnce()
+    expect(back).toHaveBeenCalledOnce()
   })
 
   it('shows the install stage, its act, the live line, and a percentage', () => {

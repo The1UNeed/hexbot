@@ -63,37 +63,6 @@ export function initialOnboardingStep(input: {
   return 'providers'
 }
 
-export function OnboardingChoiceCards(props: { onConnect: () => void; onLocal: () => void }) {
-  const choices = [
-    {
-      description: 'Install the runtime on this computer and run bots here.',
-      onClick: props.onLocal,
-      title: 'Run Hexbot on this machine'
-    },
-    {
-      description: 'Pair with a daemon on your network or a Tailscale address.',
-      onClick: props.onConnect,
-      title: 'Connect to a Hexbot daemon'
-    }
-  ]
-
-  return (
-    <div className="grid gap-3 sm:grid-cols-2">
-      {choices.map(choice => (
-        <button
-          className="rounded-panel border border-border bg-background p-4 text-left outline-none transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent"
-          key={choice.title}
-          onClick={choice.onClick}
-          type="button"
-        >
-          <span className="block font-semibold">{choice.title}</span>
-          <span className="mt-1 block text-secondary text-muted">{choice.description}</span>
-        </button>
-      ))}
-    </div>
-  )
-}
-
 /**
  * The first thing a new install shows: the mark, the name, one line on what
  * Hexbot is, and one way forward. Everything else waits behind that button.
@@ -418,6 +387,50 @@ export function JobsStep({ back, next }: { back: () => void; next: () => void })
         ))}
       </div>
     </TourPage>
+  )
+}
+
+/** Full package only: install a daemon here, or pair with one elsewhere. */
+export function ChoiceStep({
+  back,
+  onConnect,
+  onLocal
+}: {
+  back: () => void
+  onConnect: () => void
+  onLocal: () => void
+}) {
+  return (
+    <SetupFrame
+      subtitle="Install it here, or pair with a daemon you already run."
+      title="Where should Hexbot run?"
+    >
+      <div className="grid w-full flex-1 place-items-center py-8">
+        <HexbotMark size={64} />
+      </div>
+      <SetupActions className="pb-[12vh]">
+        <Button
+          autoFocus
+          className={PILL}
+          data-testid="onboarding-choice-local"
+          onClick={onLocal}
+          variant="primary"
+        >
+          On this computer
+        </Button>
+        <Button
+          className={PILL}
+          data-testid="onboarding-choice-connect"
+          onClick={onConnect}
+          variant="secondary"
+        >
+          On another device
+        </Button>
+        <Button className={PILL} onClick={back} variant="ghost">
+          Back
+        </Button>
+      </SetupActions>
+    </SetupFrame>
   )
 }
 
@@ -984,6 +997,16 @@ function OnboardingPage() {
     return <JobsStep back={() => setStep('meet')} next={start} />
   }
 
+  if (step === 'choice') {
+    return (
+      <ChoiceStep
+        back={() => setStep('jobs')}
+        onConnect={() => void navigate({ to: '/connect' })}
+        onLocal={() => setStep('install')}
+      />
+    )
+  }
+
   if (step === 'install') {
     return <InstallStep error={error} progress={progress} />
   }
@@ -993,10 +1016,6 @@ function OnboardingPage() {
       bot: [
         'Meet your first bot',
         'Give it a face, a name and a role. You can change all of it later.'
-      ],
-      choice: [
-        'Where should Hexbot run?',
-        'Choose a daemon on another device or install one here.'
       ],
       defaults: [
         'Pick your defaults',
@@ -1008,20 +1027,6 @@ function OnboardingPage() {
 
   return (
     <SetupFrame subtitle={copy[1]} title={copy[0]}>
-      {step === 'choice' ? (
-        <div className="w-full py-8">
-          <OnboardingChoiceCards
-            onConnect={() => void navigate({ to: '/connect' })}
-            onLocal={() => setStep('install')}
-          />
-          <SetupActions className="pt-8">
-            <Button className={PILL} onClick={() => setStep('jobs')} variant="secondary">
-              Back
-            </Button>
-          </SetupActions>
-        </div>
-      ) : null}
-
       {step === 'providers' ? (
         <ProvidersStep
           onContinue={list => {
