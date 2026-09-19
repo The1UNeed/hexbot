@@ -10,6 +10,7 @@ import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
     agent_browser_runnable,
+    ensure_hermes_pnpm,
     find_hermes_node_executable,
     find_node_executable,
     find_node_executable_on_path,
@@ -23,6 +24,7 @@ from hermes_constants import (
     is_container,
     node_tool_runnable,
     parse_reasoning_effort,
+    pinned_pnpm_spec,
     reset_hermes_home_override,
     secure_parent_dir,
     set_hermes_home_override,
@@ -206,6 +208,131 @@ class TestHermesManagedNode:
         assert find_node_executable("npm") != str(path_npm)
 
 
+
+    def test_windows_pnpm_candidates_match_npm_shim_ordering(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        candidates = hermes_constants._candidate_node_command_names
+        assert candidates("pnpm") == ["pnpm.cmd", "pnpm.exe", "pnpm"]
+        assert candidates("npm") == ["npm.cmd", "npm.exe", "npm"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell stubs; Windows uses .cmd shims")
+class TestEnsureHermesPnpm:
+    """ensure_hermes_pnpm(): managed pnpm, else PATH pnpm, else install the pin."""
+
+    def _stub(self, directory, name, body="#!/bin/sh\necho 10.0.0\n"):
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / name
+        path.write_text(body)
+        path.chmod(0o755)
+        return path
+
+    @pytest.fixture
+    def home(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+        monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", True)
+        return home
+
+    def test_pin_comes_from_the_root_manifest(self):
+        import json
+
+        manifest = json.loads(
+            (Path(hermes_constants.__file__).parent / "package.json").read_text()
+        )
+        spec = pinned_pnpm_spec()
+        assert spec.startswith("pnpm@") and spec[len("pnpm@")][0].isdigit()
+        assert manifest["packageManager"].startswith(spec)
+
+    def test_unreadable_manifest_falls_back_to_bare_pnpm(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hermes_constants, "_INSTALL_ROOT", tmp_path)
+        assert pinned_pnpm_spec() == "pnpm"
+
+    def test_integrity_suffix_is_dropped_from_the_pin(self, tmp_path, monkeypatch):
+        (tmp_path / "package.json").write_text(
+            '{"packageManager": "pnpm@10.29.3+sha512.abc"}'
+        )
+        monkeypatch.setattr(hermes_constants, "_INSTALL_ROOT", tmp_path)
+        assert pinned_pnpm_spec() == "pnpm@10.29.3"
+
+    def test_managed_pnpm_wins_over_path(self, home, tmp_path, monkeypatch):
+        managed = self._stub(home / "node" / "bin", "pnpm")
+        self._stub(home / "node" / "bin", "node", "#!/bin/sh\necho v99.0.0\n")
+        system = self._stub(tmp_path / "system-bin", "pnpm")
+        monkeypatch.setenv("PATH", str(system.parent))
+
+        assert find_hermes_node_executable("pnpm") == str(managed)
+        assert ensure_hermes_pnpm() == str(managed)
+
+    def test_path_pnpm_is_used_when_the_managed_tree_has_none(
+        self, home, tmp_path, monkeypatch
+    ):
+        # A managed tree without pnpm is the normal state of an existing
+        # install; that alone must not force a second pnpm onto the machine.
+        self._stub(home / "node" / "bin", "npm")
+        system = self._stub(tmp_path / "system-bin", "pnpm")
+        monkeypatch.setenv("PATH", str(system.parent))
+        monkeypatch.setattr(
+            hermes_constants,
+            "install_managed_pnpm",
+            lambda npm, prefix: pytest.fail("must not install when PATH has pnpm"),
+        )
+
+        assert ensure_hermes_pnpm() == str(system)
+
+    def test_installs_the_pin_into_the_managed_tree_with_its_own_npm(
+        self, home, monkeypatch
+    ):
+        import subprocess
+
+        npm = self._stub(home / "node" / "bin", "npm")
+        monkeypatch.setattr(
+            hermes_constants, "bootstrap_hermes_managed_node", lambda: str(npm)
+        )
+        real_run = subprocess.run
+        installs = []
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] != str(npm) or "install" not in cmd:
+                return real_run(cmd, **kwargs)
+            installs.append((cmd, kwargs))
+            self._stub(home / "node" / "bin", "pnpm")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        assert ensure_hermes_pnpm() == str(home / "node" / "bin" / "pnpm")
+        (cmd, kwargs), = installs
+        assert cmd[1:3] == ["install", "--global"]
+        assert pinned_pnpm_spec() in cmd
+        assert Path(cmd[cmd.index("--prefix") + 1]) == home / "node"
+        # Outside the checkout, so no project-level npm config applies.
+        repo_root = Path(hermes_constants.__file__).parent
+        assert repo_root not in Path(kwargs["cwd"]).resolve().parents
+
+    def test_returns_none_when_no_managed_node_can_be_provisioned(
+        self, home, monkeypatch
+    ):
+        monkeypatch.setattr(
+            hermes_constants, "bootstrap_hermes_managed_node", lambda: None
+        )
+        assert ensure_hermes_pnpm() is None
+
+    def test_returns_none_when_the_install_fails(self, home, monkeypatch):
+        import subprocess
+
+        npm = self._stub(home / "node" / "bin", "npm")
+        monkeypatch.setattr(
+            hermes_constants, "bootstrap_hermes_managed_node", lambda: str(npm)
+        )
+        monkeypatch.setattr(
+            hermes_constants,
+            "install_managed_pnpm",
+            lambda npm, prefix: subprocess.CompletedProcess([], 1, "", "boom"),
+        )
+        assert ensure_hermes_pnpm() is None
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell stubs; Windows uses .cmd shims")
 class TestNodeToolRunnable:

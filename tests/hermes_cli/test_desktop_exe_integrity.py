@@ -294,12 +294,11 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
     make_pe(exe, PE_AMD64, truncate_to=0x300)  # what the failed pack produced
     make_pe(desktop_dir / "release" / "win-unpacked.bak" / "Hermes.exe", PE_AMD64)
 
-    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
-    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+    install_ok = subprocess.CompletedProcess(["pnpm", "install", "--frozen-lockfile"], 0)
+    pack_ok = subprocess.CompletedProcess(["pnpm", "run", "pack"], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._resolve_node_runtime_npm", return_value="npm.cmd"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+    with patch("hermes_cli.main._resolve_node_runtime_pnpm", return_value="pnpm.cmd"), \
+         patch("hermes_cli.main._run_pnpm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]), \
          patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \

@@ -8,6 +8,7 @@ import os
 import shutil
 import stat
 import sys
+import tempfile
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -465,7 +466,7 @@ _INSTALL_ROOT = Path(__file__).resolve().parent
 
 
 def node_tool_runnable(path: str | None) -> bool:
-    """Return True only when *path* is a Node/npm/npx binary that actually runs.
+    """Return True only when *path* is a Node/npm/npx/pnpm binary that actually runs.
 
     Hermes-managed Node trees live under ``$HERMES_HOME/node`` (or a profile's
     ``HERMES_HOME``). A partial upgrade or interrupted install can leave
@@ -495,6 +496,9 @@ def node_tool_runnable(path: str | None) -> bool:
             [path, "--version"],
             capture_output=True,
             timeout=10,
+            # Outside any project: under a package.json whose `packageManager`
+            # names another pnpm, `pnpm --version` downloads that pnpm first.
+            cwd=tempfile.gettempdir(),
             env=with_hermes_node_path(),
             creationflags=windows_hide_flags(),
         )
@@ -922,7 +926,7 @@ def _managed_node_tree_outdated(home: Path | None = None) -> bool:
 
 
 def find_hermes_node_executable(command: str) -> str | None:
-    """Return a Hermes-managed Node/npm executable path, healing broken trees.
+    """Return a Hermes-managed Node/npm/pnpm executable path, healing broken trees.
 
     Outdated trees (node major below ``_HERMES_NODE_TARGET_MAJOR``) heal the
     same way broken ones do — the once-per-process heal redownloads the target
@@ -958,7 +962,7 @@ def find_hermes_node_executable(command: str) -> str | None:
 
 
 def find_node_executable_on_path(command: str) -> str | None:
-    """Return a Node/npm executable from PATH with Windows shim ordering.
+    """Return a Node/npm/pnpm executable from PATH with Windows shim ordering.
 
     ``shutil.which("npm")`` can resolve an extensionless npm shim before the
     ``.cmd`` shim on Windows. Python's CreateProcess cannot execute that shim
@@ -999,6 +1003,96 @@ def find_node_executable(command: str) -> str | None:
     if hermes_managed_node_tree_present():
         return None
     return find_node_executable_on_path(command)
+
+
+def pinned_pnpm_spec() -> str:
+    """Return the ``packageManager`` pin (``pnpm@X.Y.Z``) from the root ``package.json``.
+
+    Falls back to a bare ``pnpm`` when the manifest is unreadable or pins
+    something else, so an install still has a package spec to ask for.
+    """
+    import json
+
+    try:
+        data = json.loads((_INSTALL_ROOT / "package.json").read_text(encoding="utf-8"))
+        spec = str(data.get("packageManager") or "")
+    except (OSError, ValueError, AttributeError):
+        spec = ""
+    # corepack may append an integrity hash: pnpm@X.Y.Z+sha512.<hex>
+    spec = spec.split("+", 1)[0].strip()
+    return spec if spec.startswith("pnpm@") else "pnpm"
+
+
+def install_managed_pnpm(npm: str, prefix: Path):
+    """Install the pinned pnpm into the managed Node tree at *prefix* with *npm*.
+
+    npm's only remaining job for this repository is bootstrapping pnpm.
+    ``--prefix`` targets the managed tree explicitly: a managed install writes
+    ``prefix=~/.local`` into ``$HERMES_HOME/node/etc/npmrc`` so that global
+    installs land on PATH, and without the override pnpm would land outside
+    the tree Hermes resolves from.
+
+    Returns the finished ``CompletedProcess``, or ``None`` when npm could not
+    be started.
+    """
+    import subprocess
+    import tempfile
+
+    env = with_hermes_node_path()
+    # The pin is an exact version; a user-level min-release-age must not gate it.
+    env["npm_config_min_release_age"] = "0"
+    try:
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        # A temp cwd keeps any project-level npm config out of scope.
+        with tempfile.TemporaryDirectory(prefix="hermes-pnpm-install-") as tmp:
+            return subprocess.run(
+                [
+                    npm,
+                    "install",
+                    "--global",
+                    "--prefix",
+                    str(prefix),
+                    pinned_pnpm_spec(),
+                    "--no-fund",
+                    "--no-audit",
+                    "--progress=false",
+                ],
+                cwd=tmp,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=300,
+                check=False,
+                creationflags=windows_hide_flags(),
+            )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def ensure_hermes_pnpm() -> str | None:
+    """Return a usable pnpm, installing the pinned one when none exists.
+
+    Order: pnpm in the Hermes-managed Node tree; else pnpm on PATH; else
+    install the ``packageManager`` pin into the managed tree with that tree's
+    own npm (provisioning the tree first when there is none). Hermes never
+    installs pnpm into a system/nvm/brew Node.
+    """
+    existing = find_hermes_node_executable("pnpm") or find_node_executable_on_path(
+        "pnpm"
+    )
+    if existing:
+        return existing
+
+    npm = bootstrap_hermes_managed_node()
+    if not npm:
+        return None
+    result = install_managed_pnpm(npm, get_hermes_home() / "node")
+    if result is None or result.returncode != 0:
+        return None
+    return find_hermes_node_executable("pnpm")
 
 
 def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:

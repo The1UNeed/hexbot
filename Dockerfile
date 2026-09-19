@@ -156,8 +156,8 @@ COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/loc
 # symlinks in the source image (and need to live on PATH).
 #
 # No corepack: Node unbundled it upstream, so node:26 ships only npm in
-# /usr/local/lib/node_modules.  Nothing here needs it — no package.json
-# declares a `packageManager`, and no build step shells out to yarn or pnpm.
+# /usr/local/lib/node_modules.  npm's one job here is to bootstrap pnpm,
+# the repo's package manager.
 #
 # See node_source stage at the top of the file for the version-bump
 # rationale (#4977).
@@ -166,58 +166,63 @@ COPY --from=node_source /usr/local/lib/node_modules/npm /usr/local/lib/node_modu
 RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
     ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
+# Keep in sync with the `packageManager` field of the root package.json.
+ARG PNPM_VERSION=10.29.3
+RUN npm install -g "pnpm@${PNPM_VERSION}" && \
+    npm cache clean --force
+
 WORKDIR /opt/hermes
 
 # ---------- Layer-cached dependency install ----------
-# Copy only package manifests first so npm install + Playwright are cached
+# Copy only package manifests first so pnpm install + Playwright are cached
 # unless the lockfiles themselves change.
 #
 # ui-tui/packages/hermes-ink/ is copied IN FULL (not just its manifests)
 # because it is referenced as a `file:` workspace dependency from
-# ui-tui/package.json.  Copying the tree up front lets npm resolve the
+# ui-tui/package.json.  Copying the tree up front lets pnpm resolve the
 # workspace to real content instead of stopping at a bare package.json.
-COPY package.json package-lock.json ./
+#
+# Every workspace member's manifest is copied because a frozen install checks
+# each importer in pnpm-lock.yaml against its package.json; only `web` and the
+# workspace packages it depends on are actually installed below.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY web/package.json web/
+COPY apps/connect/package.json apps/connect/
+COPY apps/desktop/package.json apps/desktop/
+COPY apps/site/package.json apps/site/
+COPY apps/web/package.json apps/web/
 COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 # apps/shared/ is copied IN FULL because web/package.json references it as a
-# `file:` workspace dependency (same pattern as hermes-ink above).
+# `workspace:` dependency (same pattern as hermes-ink above).
 COPY apps/shared/ apps/shared/
 
-# `npm_config_install_links=false` forces npm to install `file:` deps as
-# symlinks instead of copies.  This is the default since npm 10+, which is
-# what the image ships now (via the node:22 source stage).  We set it
-# explicitly anyway as defense-in-depth: the previous Debian-bundled npm
-# 9.x defaulted to install-as-copy, which produced a hidden
-# node_modules/.package-lock.json that permanently disagreed with the root
-# lock on the @hermes/ink entry, tripped the TUI launcher's
-# `_tui_need_npm_install()` check on every startup, and triggered a
-# runtime `npm install` that then failed with EACCES.  Keeping the env
-# guards against a future regression if the source npm version changes.
-ENV npm_config_install_links=false
-
-RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
+RUN pnpm install --frozen-lockfile --filter web... --fetch-retries=5 && \
     for i in 1 2 3; do \
         npx playwright install --with-deps chromium --only-shell && break || \
         { [ "$i" = 3 ] && exit 1; echo "playwright install failed (attempt $i); retrying in 10s"; sleep 10; }; \
     done && \
-    npm cache clean --force
+    npm cache clean --force && \
+    rm -rf "$(pnpm store path)"
 
 # ---------- Photon iMessage sidecar deps (baked, NS-606) ----------
 # The photon plugin's Node sidecar needs its own node_modules
 # (spectrum-ts). The install tree is immutable at runtime, so a lazy
-# `npm ci` on first connect would hit EROFS — bake the deps here instead
+# `pnpm install` on first connect would hit EROFS — bake the deps here instead
 # (deterministic installs, NS-559). The patch script is copied alongside
 # the manifests because package.json's postinstall runs it, which also
-# means the spectrum-ts patch is applied at build time. Layer-cached:
-# only re-runs when the sidecar manifests/patch change.
+# means the spectrum-ts patch is applied at build time; .npmrc gives the
+# flat, copied node_modules that patch needs. The sidecar is not a
+# workspace member, hence --ignore-workspace. Layer-cached: only re-runs
+# when the sidecar manifests/patch change.
 COPY plugins/platforms/photon/sidecar/package.json \
-     plugins/platforms/photon/sidecar/package-lock.json \
+     plugins/platforms/photon/sidecar/pnpm-lock.yaml \
+     plugins/platforms/photon/sidecar/.npmrc \
      plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs \
      plugins/platforms/photon/sidecar/
 RUN cd plugins/platforms/photon/sidecar && \
-    npm ci --no-audit --fetch-retries=5 && \
-    npm cache clean --force
+    pnpm install --frozen-lockfile --ignore-workspace --fetch-retries=5 && \
+    rm -rf "$(pnpm store path)"
 
 # ---------- Layer-cached Python dependency install ----------
 # Copy only pyproject.toml + uv.lock so the Python dep resolve + wheel
@@ -272,8 +277,8 @@ RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra 
 COPY web/ web/
 COPY ui-tui/ ui-tui/
 COPY apps/shared/ apps/shared/
-RUN cd web && npm run build && \
-    cd ../ui-tui && npm run build
+RUN cd web && pnpm run build && \
+    cd ../ui-tui && pnpm run build
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
@@ -292,7 +297,7 @@ COPY --link --chmod=a+rX,go-w . .
 RUN uv pip install --no-cache-dir --no-deps -e "."
 
 # Wire the exec shim and install-method stamp.  Files under /opt/hermes are
-# already root-owned (COPY, uv sync, npm install all run as root) and
+# already root-owned (COPY, uv sync, pnpm install all run as root) and
 # read-only for the hermes user (go-w from the --chmod above).
 
 USER root
@@ -367,21 +372,16 @@ COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-r
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 # Point the TUI launcher at the prebuilt bundle baked at build time (Layer 8:
-# `ui-tui && npm run build`). This makes _make_tui_argv take the prebuilt-bundle
+# `ui-tui && pnpm run build`). This makes _make_tui_argv take the prebuilt-bundle
 # fast path (`node --expose-gc /opt/hermes/ui-tui/dist/entry.js`) and skip the
-# _tui_need_npm_install / runtime `npm install` branch entirely — exactly the
-# nix/packaged-release path the launcher was designed for.
+# launcher's dependency-staleness check and runtime `pnpm install` branch
+# entirely — exactly the nix/packaged-release path the launcher was designed for.
 #
-# Why this is required (not just an optimization): the root package-lock.json
-# describes the WHOLE monorepo workspace set (root + web + ui-tui + apps/*),
-# but the image only installs root/web/ui-tui (apps/* — the desktop app — is
-# never `npm install`ed here). So the actualized node_modules permanently
-# disagrees with the canonical lock, _tui_need_npm_install() returns True on
-# every launch, and the runtime `npm install` it triggers (a) can never
-# converge against the partial monorepo and (b) races itself across concurrent
-# embedded-chat (/api/pty) connections → ENOTEMPTY → the chat tab dies with a
-# 502 / "[session ended]". Pointing at the prebuilt bundle sidesteps the whole
-# check. (A separate launcher hardening is tracked independently.)
+# Why this is required (not just an optimization): the install tree is
+# immutable, so a runtime install can never succeed, and concurrent
+# embedded-chat (/api/pty) connections would race each other attempting it →
+# the chat tab dies with a 502 / "[session ended]". Pointing at the prebuilt
+# bundle sidesteps the whole check.
 ENV HERMES_TUI_DIR=/opt/hermes/ui-tui
 ENV HERMES_HOME=/opt/data
 ENV HERMES_WRITE_SAFE_ROOT=/opt/data

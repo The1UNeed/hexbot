@@ -46,7 +46,7 @@ let
 
   # node-pty ships no Electron-tagged prebuild we can trust to match this
   # exact nixpkgs electron version, so it's always compiled from source
-  # against Electron's own headers (not whatever Node ran `npm`).
+  # against Electron's own headers (not whatever Node ran `pnpm`).
   targetPlatform =
     if stdenv.hostPlatform.isDarwin then
       "darwin"
@@ -64,7 +64,7 @@ let
       throw "hermes-desktop: unsupported host arch for node-pty staging";
 
   # Build the renderer (dist/ + electron/ + package.json).
-  renderer = hermesNpmLib.buildNpmPackage {
+  renderer = hermesNpmLib.buildPnpmPackage {
     dirs = [
       "apps/desktop"
       "apps/shared"
@@ -82,12 +82,12 @@ let
 
       pushd apps/desktop
         # typecheck :3
-        npm exec -- tsc -b
+        pnpm exec tsc -b
 
         # build the renderer bundle
         # vite's emptyOutDir wipes dist/ on every run
         # so it has to be first
-        npm exec -- vite build
+        pnpm exec vite build
 
         # build the electron bundle
         node scripts/bundle-electron-main.mjs
@@ -100,7 +100,7 @@ let
         tar -xzf ${electronHeaders} -C "$TMPDIR/electron-headers" --strip-components=1
 
         ${lib.getExe hermesNpmLib.node-gyp} rebuild \
-          --directory=../../node_modules/node-pty \
+          --directory=node_modules/node-pty \
           --build-from-source \
           --runtime=electron \
           --target=${electron.version} \
@@ -121,7 +121,7 @@ let
 
       pushd apps/desktop
 
-        npm run postbuild
+        pnpm run postbuild
 
         # validate staged node-pty native binary is present.
         STAGED_PTY_NODE="./dist/node_modules/node-pty/build/Release/pty.node"

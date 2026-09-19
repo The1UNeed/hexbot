@@ -93,55 +93,103 @@ def _patch_gateway_discovery():
         yield
 
 
-class TestCmdUpdateNpmLockfileCache:
+class TestCmdUpdatePnpmLockfileCache:
     @staticmethod
     def _cache_file(hermes_root, project_root):
         cache_key = hashlib.sha256(str(project_root).encode()).hexdigest()[:12]
-        return hermes_root / f".npm_lock_hash_{cache_key}"
+        return hermes_root / f".pnpm_lock_hash_{cache_key}"
 
-
-
-    def test_record_npm_lockfile_hash(self, tmp_path, monkeypatch):
+    def test_record_pnpm_lockfile_hash(self, tmp_path, monkeypatch):
         from hermes_cli import main as hm
 
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
+        (tmp_path / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n")
 
-        hm._record_npm_lockfile_hash(tmp_path)
+        hm._record_pnpm_lockfile_hash(tmp_path)
 
         assert (
             self._cache_file(tmp_path, tmp_path).read_text()
-            == hm._npm_manifests_digest()
+            == hm._pnpm_manifests_digest()
         )
 
     def test_package_json_only_edit_defeats_skip(self, tmp_path, monkeypatch):
         """Reviewer scenario (#61580): dev edits package.json WITHOUT running
-        npm — lockfile unchanged. `hermes update` must still install (the
-        npm-install fallback is what syncs node_modules in that state)."""
+        pnpm — lockfile unchanged. `hermes update` must still install (the
+        --no-lockfile fallback is what syncs node_modules in that state)."""
         from hermes_cli import main as hm
 
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
+        (tmp_path / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n")
         (tmp_path / "package.json").write_text('{"dependencies": {}}')
         (tmp_path / "node_modules").mkdir()
-        hm._record_npm_lockfile_hash(tmp_path)
-        assert hm._npm_lockfile_changed(tmp_path) is False
+        hm._record_pnpm_lockfile_hash(tmp_path)
+        assert hm._pnpm_lockfile_changed(tmp_path) is False
 
         (tmp_path / "package.json").write_text(
             '{"dependencies": {"left-pad": "^1.0.0"}}'
         )
-        assert hm._npm_lockfile_changed(tmp_path) is True
+        assert hm._pnpm_lockfile_changed(tmp_path) is True
 
-
-
-
-
-
-
-    def test_update_uses_one_shared_npm_cache_across_profiles(
+    def test_workspace_member_manifests_come_from_pnpm_workspace_yaml(
         self, tmp_path, monkeypatch
     ):
-        """The npm cache describes checkout-global node_modules, not a profile."""
+        """The skip key covers every member pnpm-workspace.yaml globs in, and
+        the workspace file itself (it holds overrides and the build allowlist)."""
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n")
+        (tmp_path / "package.json").write_text("{}")
+        (tmp_path / "pnpm-workspace.yaml").write_text(
+            "packages:\n  - apps/*\n  - web\n  - '!apps/ignored'\n"
+        )
+        for member in ("apps/desktop", "web"):
+            (tmp_path / member).mkdir(parents=True)
+            (tmp_path / member / "package.json").write_text("{}")
+        (tmp_path / "node_modules").mkdir()
+        # A web workspace without its build toolchain never skips.
+        web_bin = tmp_path / "web" / "node_modules" / ".bin"
+        web_bin.mkdir(parents=True)
+        for tool in ("tsc", "vite"):
+            (web_bin / tool).touch()
+
+        assert set(hm._pnpm_manifest_paths()) == {
+            tmp_path / "pnpm-lock.yaml",
+            tmp_path / "package.json",
+            tmp_path / "pnpm-workspace.yaml",
+            tmp_path / "apps" / "desktop" / "package.json",
+            tmp_path / "web" / "package.json",
+        }
+
+        hm._record_pnpm_lockfile_hash(tmp_path)
+        assert hm._pnpm_lockfile_changed(tmp_path) is False
+        (tmp_path / "apps" / "desktop" / "package.json").write_text('{"name":"x"}')
+        assert hm._pnpm_lockfile_changed(tmp_path) is True
+
+        hm._record_pnpm_lockfile_hash(tmp_path)
+        (tmp_path / "pnpm-workspace.yaml").write_text(
+            "packages:\n  - apps/*\n  - web\noverrides:\n  lodash: 4.18.1\n"
+        )
+        assert hm._pnpm_lockfile_changed(tmp_path) is True
+
+    def test_unreadable_workspace_yaml_falls_back_to_root_manifests(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "pnpm-workspace.yaml").write_text("packages: [unclosed\n")
+
+        assert hm._pnpm_manifest_paths() == (
+            tmp_path / "pnpm-lock.yaml",
+            tmp_path / "package.json",
+            tmp_path / "pnpm-workspace.yaml",
+        )
+
+    def test_update_uses_one_shared_pnpm_cache_across_profiles(
+        self, tmp_path, monkeypatch
+    ):
+        """The pnpm cache describes checkout-global node_modules, not a profile."""
         from hermes_cli import main as hm
         import hermes_constants
 
@@ -154,14 +202,12 @@ class TestCmdUpdateNpmLockfileCache:
 
         monkeypatch.setattr(hm, "PROJECT_ROOT", checkout)
         monkeypatch.setattr(hermes_constants.Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            hermes_constants, "find_node_executable", lambda _name: "/usr/bin/npm"
-        )
+        monkeypatch.setattr(hermes_constants, "ensure_hermes_pnpm", lambda: "/usr/bin/pnpm")
 
         cache_roots = []
         with patch.object(
             hm,
-            "_npm_lockfile_changed",
+            "_pnpm_lockfile_changed",
             side_effect=lambda root: cache_roots.append(root) or False,
         ):
             monkeypatch.setenv("HERMES_HOME", str(shared_root))
@@ -1054,8 +1100,8 @@ termux = ["rich>=14"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
 
 
-class TestNodeRuntimeNpmResolution:
-    """Regression tests for #30271 — WSL must not run Windows npm against the
+class TestNodeRuntimePnpmResolution:
+    """Regression tests for #30271 — WSL must not run Windows pnpm against the
     Linux checkout, and a failed Node refresh must not report success."""
 
 
@@ -1070,10 +1116,10 @@ class TestNodeRuntimeNpmResolution:
 
         (tmp_path / "package.json").write_text("{}")
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(hm, "_resolve_node_runtime_npm", lambda: "/usr/bin/npm")
+        monkeypatch.setattr(hm, "_resolve_node_runtime_pnpm", lambda: "/usr/bin/pnpm")
         monkeypatch.setattr(
             hm,
-            "_run_npm_install_deterministic",
+            "_run_pnpm_install_deterministic",
             lambda *a, **k: subprocess.CompletedProcess([], 1, stdout="", stderr=""),
         )
 
@@ -1085,23 +1131,19 @@ class TestNodeRuntimeNpmResolution:
         out = capsys.readouterr().out
         assert "mixed state" in out
 
-    def test_wsl_update_skips_windows_npm_build_paths(self, mock_args, monkeypatch):
-        """A Windows-only npm on WSL must not reach web or desktop builds."""
+    def test_wsl_update_skips_windows_pnpm_build_paths(self, mock_args, monkeypatch):
+        """A Windows-only pnpm on WSL must not reach web or desktop builds."""
         from hermes_cli import main as hm
         import hermes_constants
 
-        windows_npm = "/mnt/c/Program Files/nodejs/npm"
+        windows_pnpm = "/mnt/c/Program Files/nodejs/pnpm"
         monkeypatch.setattr(hm, "_is_windows", lambda: False)
         monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
-        monkeypatch.setattr(
-            hermes_constants,
-            "find_node_executable",
-            lambda command: windows_npm if command == "npm" else None,
-        )
+        monkeypatch.setattr(hermes_constants, "ensure_hermes_pnpm", lambda: windows_pnpm)
         monkeypatch.setattr(
             hm.shutil,
             "which",
-            lambda command, path=None: windows_npm if command == "npm" else "/usr/bin/uv",
+            lambda command, path=None: windows_pnpm if command == "pnpm" else "/usr/bin/uv",
         )
         monkeypatch.setenv("PATH", "/mnt/c/Program Files/nodejs")
 
@@ -1109,7 +1151,7 @@ class TestNodeRuntimeNpmResolution:
              patch.object(hm, "_web_ui_build_needed", return_value=True), \
              patch.object(hm, "_desktop_packaged_executable", return_value=None), \
              patch.object(hm, "_desktop_dist_exists", return_value=True), \
-             patch.object(hm, "_run_npm_install_deterministic") as mock_npm_install, \
+             patch.object(hm, "_run_pnpm_install_deterministic") as mock_pnpm_install, \
              patch.object(hm, "_run_with_idle_timeout") as mock_idle_build, \
              patch.object(hm, "_run_logged_subprocess") as mock_desktop_build:
             mock_run.side_effect = _make_run_side_effect(
@@ -1117,11 +1159,11 @@ class TestNodeRuntimeNpmResolution:
             )
             cmd_update(mock_args)
 
-        mock_npm_install.assert_not_called()
+        mock_pnpm_install.assert_not_called()
         mock_idle_build.assert_not_called()
         mock_desktop_build.assert_not_called()
         assert all(
-            not call.args or not call.args[0] or call.args[0][0] != windows_npm
+            not call.args or not call.args[0] or call.args[0][0] != windows_pnpm
             for call in mock_run.call_args_list
         )
 
@@ -1139,7 +1181,7 @@ class TestNodeRuntimeNpmResolution:
                 hm, "_desktop_packaged_executable", side_effect=[packaged_exe, None]
             ) as packaged,
             patch.object(hm, "_desktop_dist_exists", return_value=False),
-            patch.object(hm, "_resolve_node_runtime_npm", return_value="npm.cmd"),
+            patch.object(hm, "_resolve_node_runtime_pnpm", return_value="pnpm.cmd"),
             patch.object(hm, "_desktop_build_needed", return_value=True),
             patch.object(hm, "_run_logged_subprocess", return_value=build_ok) as desktop_build,
         ):
@@ -1205,7 +1247,7 @@ class TestNodeRuntimeNpmResolution:
             lambda _desktop_dir: packaged_exe if packaged_exe.exists() else None,
         )
         monkeypatch.setattr(hm, "_desktop_dist_exists", lambda _desktop_dir: False)
-        monkeypatch.setattr(hm, "_resolve_node_runtime_npm", lambda: "npm.cmd")
+        monkeypatch.setattr(hm, "_resolve_node_runtime_pnpm", lambda: "pnpm.cmd")
         monkeypatch.setattr(hm, "_desktop_build_needed", lambda *_args, **_kwargs: True)
         monkeypatch.setattr(hm, "_run_logged_subprocess", rebuild_desktop)
         monkeypatch.setattr(hm, "_clear_bytecode_cache", lambda *_args: 0)
@@ -1216,7 +1258,6 @@ class TestNodeRuntimeNpmResolution:
         )
         monkeypatch.setattr(hm, "_refresh_active_memory_provider_dependencies", lambda: None)
         monkeypatch.setattr(hm, "_build_web_ui", lambda *_args: None)
-        monkeypatch.setattr(update_cmd, "_discard_lockfile_churn", lambda *_args: None)
         monkeypatch.setattr(update_cmd, "_normalize_managed_eol", lambda *_args: None)
         monkeypatch.setattr(
             update_cmd,
@@ -1266,12 +1307,12 @@ class TestUpdateNodeDependencies:
     Root package.json has no dependencies of its own: agent-browser
     resolves at runtime via npx (tools/browser_tool.py), and @streamdown/math
     moved to apps/desktop/package.json since it's a desktop-only import.
-    With nothing root-only left to protect, a single workspace-scoped
-    install (ui-tui, web) is safe — apps/desktop is simply never named, so
-    its ~200 MB Electron devDependency is never resolved. Skipping is
-    governed by _npm_lockfile_changed (content hash over the lockfile +
-    every workspace package.json), tested separately in
-    TestNpmLockfileChanged.
+    A single filtered install (ui-tui, web) covers the workspace root too —
+    apps/desktop is simply never selected, so its ~200 MB Electron
+    devDependency is never resolved. Skipping is governed by
+    _pnpm_lockfile_changed (content hash over the lockfile,
+    pnpm-workspace.yaml + every workspace package.json), tested separately in
+    TestCmdUpdatePnpmLockfileCache.
     Uses a tmp_path root so tests never touch real node_modules.
     """
 
@@ -1283,25 +1324,33 @@ class TestUpdateNodeDependencies:
         with patch("tools.browser_tool.warm_agent_browser_npx_cache", return_value=True):
             yield
 
-    def _npm_calls(self, mock_run):
+    @pytest.fixture(autouse=True)
+    def _stub_pnpm(self, monkeypatch):
+        """pnpm resolves through ensure_hermes_pnpm(); never reach the real
+        bootstrap from a test."""
+        import hermes_constants
+
+        monkeypatch.setattr(hermes_constants, "ensure_hermes_pnpm", lambda: "/usr/bin/pnpm")
+
+    def _pnpm_calls(self, mock_run):
         return [
             call.args[0]
             for call in mock_run.call_args_list
-            if call.args and "npm" in str(call.args[0][0])
+            if call.args and "pnpm" in str(call.args[0][0])
         ]
 
-    def _make_popen(self, calls, returncode=0, stderr_lines=()):
+    def _make_popen(self, calls, returncode=0, stdout_lines=()):
         """Fake subprocess.Popen recording each invocation's cmd/kwargs.
 
-        _update_node_dependencies always runs npm with capture_output=False,
-        which routes through the Popen-based stderr-teeing path in
-        _run_npm_watching_for_engine_failure rather than subprocess.run.
+        _update_node_dependencies always runs pnpm with capture_output=False,
+        which routes through the Popen-based stdout-teeing path in
+        _run_pnpm_watching_for_engine_failure rather than subprocess.run.
         """
 
         class _FakeProc:
             def __init__(self, cmd, **kwargs):
                 calls.append({"cmd": cmd, "kwargs": kwargs})
-                self.stderr = iter(stderr_lines)
+                self.stdout = iter(stdout_lines)
 
             def __enter__(self):
                 return self
@@ -1314,158 +1363,157 @@ class TestUpdateNodeDependencies:
 
         return _FakeProc
 
-    def _popen_npm_calls(self, calls):
-        return [c["cmd"] for c in calls if c["cmd"] and "npm" in str(c["cmd"][0])]
+    def _popen_pnpm_calls(self, calls):
+        return [c["cmd"] for c in calls if c["cmd"] and "pnpm" in str(c["cmd"][0])]
 
     @patch("subprocess.Popen")
-    @patch("shutil.which", return_value="/usr/bin/npm")
-    def test_install_names_ui_tui_and_web_workspaces(self, _which, mock_popen, tmp_path, monkeypatch):
+    def test_install_filters_to_ui_tui_and_web_workspaces(self, mock_popen, tmp_path, monkeypatch):
         """Regression for #43564: install ui-tui + web directly. apps/desktop
         must never appear, so its Electron postinstall is never triggered.
+        The install is frozen, keeps devDependencies, and carries no npm-only
+        flags.
         """
         from hermes_cli import main as hm
 
         (tmp_path / "package.json").write_text("{}")
-        (tmp_path / "package-lock.json").write_text("{}")
+        (tmp_path / "pnpm-lock.yaml").write_text("")
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(hm, "_npm_lockfile_changed", lambda root: True)
+        monkeypatch.setattr(hm, "_pnpm_lockfile_changed", lambda root: True)
         popen_calls = []
         mock_popen.side_effect = self._make_popen(popen_calls)
 
         hm._update_node_dependencies()
 
-        calls = self._popen_npm_calls(popen_calls)
-        assert len(calls) == 1, f"expected exactly 1 npm call, got: {calls}"
-        joined = " ".join(str(a) for a in calls[0])
-        assert "--workspace ui-tui" in joined and "--workspace web" in joined, (
-            f"expected ui-tui + web workspace selectors; actual: {calls[0]}"
-        )
-        assert "desktop" not in joined, (
-            f"apps/desktop must not appear (avoids ~200 MB Electron download); actual: {calls[0]}"
-        )
-        assert "--workspaces=false" not in joined, (
-            f"no root-only deps remain to protect; --workspaces=false is unnecessary now; actual: {calls[0]}"
-        )
+        calls = self._popen_pnpm_calls(popen_calls)
+        assert calls == [
+            [
+                "/usr/bin/pnpm",
+                "install",
+                "--frozen-lockfile",
+                "--prod=false",
+                "--prefer-offline",
+                "--filter",
+                "{ui-tui}...",
+                "--filter",
+                "{web}...",
+            ]
+        ]
 
     @patch("subprocess.Popen")
-    @patch("shutil.which", return_value="/usr/bin/npm")
-    def test_install_includes_workspace_root_to_protect_root_devdependencies(
-        self, _which, mock_popen, tmp_path, monkeypatch
+    def test_out_of_sync_lockfile_falls_back_without_touching_it(
+        self, mock_popen, tmp_path, monkeypatch
     ):
-        """Root package.json still owns devDependencies (the shared ESLint
-        flat config every workspace's own eslint.config.mjs imports) even
-        though agent-browser and @streamdown/math were removed from root
-        `dependencies` (#43564). --include-workspace-root keeps them from
-        being pruned by this scoped install, while --workspace ui-tui
-        --workspace web still excludes the unnamed apps/desktop workspace
-        (confirmed empirically against npm 10.9.8 and 11.9.0 in PR #44772
-        review)."""
+        """A failed frozen install retries with --no-lockfile, which neither
+        reads nor writes pnpm-lock.yaml — never --no-frozen-lockfile, which
+        would rewrite the tracked lockfile."""
         from hermes_cli import main as hm
 
         (tmp_path / "package.json").write_text("{}")
-        (tmp_path / "package-lock.json").write_text("{}")
+        (tmp_path / "pnpm-lock.yaml").write_text("")
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(hm, "_npm_lockfile_changed", lambda root: True)
+        monkeypatch.setattr(hm, "_pnpm_lockfile_changed", lambda root: True)
         popen_calls = []
-        mock_popen.side_effect = self._make_popen(popen_calls)
+        mock_popen.side_effect = self._make_popen(
+            popen_calls, returncode=1, stdout_lines=[" ERR_PNPM_OUTDATED_LOCKFILE  out of date\n"]
+        )
 
         hm._update_node_dependencies()
 
-        calls = self._popen_npm_calls(popen_calls)
-        assert len(calls) == 1
-        joined = " ".join(str(a) for a in calls[0])
-        assert "--include-workspace-root" in joined
-        assert "desktop" not in joined
-
-    @patch("subprocess.Popen")
-    @patch("shutil.which", return_value="/usr/bin/npm")
-    def test_install_preserves_standard_flags(self, _which, mock_popen, tmp_path, monkeypatch):
-        """--no-fund, --no-audit, --progress=false must survive."""
-        from hermes_cli import main as hm
-
-        (tmp_path / "package.json").write_text("{}")
-        (tmp_path / "package-lock.json").write_text("{}")
-        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(hm, "_npm_lockfile_changed", lambda root: True)
-        popen_calls = []
-        mock_popen.side_effect = self._make_popen(popen_calls)
-
-        hm._update_node_dependencies()
-
-        calls = self._popen_npm_calls(popen_calls)
-        assert len(calls) == 1
-        joined = " ".join(str(a) for a in calls[0])
-        for flag in ("--no-fund", "--no-audit", "--progress=false"):
-            assert flag in joined, f"{flag} missing from npm call; actual: {calls[0]}"
+        calls = self._popen_pnpm_calls(popen_calls)
+        assert [c[2] for c in calls] == ["--frozen-lockfile", "--no-lockfile"]
+        assert all("--no-frozen-lockfile" not in c for c in calls)
+        assert all("--prod=false" in c for c in calls)
 
     @patch("subprocess.run")
-    @patch("shutil.which", return_value="/usr/bin/npm")
-    def test_skips_install_when_deps_up_to_date(self, _which, mock_run, tmp_path, monkeypatch):
-        """When _npm_lockfile_changed reports no change, npm must not be called."""
+    def test_skips_install_when_deps_up_to_date(self, mock_run, tmp_path, monkeypatch):
+        """When _pnpm_lockfile_changed reports no change, pnpm must not be called."""
         from hermes_cli import main as hm
 
         (tmp_path / "package.json").write_text("{}")
-        (tmp_path / "package-lock.json").write_text("{}")
+        (tmp_path / "pnpm-lock.yaml").write_text("")
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(hm, "_npm_lockfile_changed", lambda root: False)
+        monkeypatch.setattr(hm, "_pnpm_lockfile_changed", lambda root: False)
 
         hm._update_node_dependencies()
 
-        assert not self._npm_calls(mock_run), (
-            "npm must not run when _npm_lockfile_changed reports no change"
+        assert not self._pnpm_calls(mock_run), (
+            "pnpm must not run when _pnpm_lockfile_changed reports no change"
         )
 
     @patch("subprocess.Popen")
-    @patch("shutil.which", return_value="/usr/bin/npm")
-    def test_runs_install_when_lockfile_changed(self, _which, mock_popen, tmp_path, monkeypatch):
-        """When _npm_lockfile_changed reports a change, npm must run."""
+    def test_runs_install_when_lockfile_changed(self, mock_popen, tmp_path, monkeypatch):
+        """When _pnpm_lockfile_changed reports a change, pnpm must run."""
         from hermes_cli import main as hm
 
         (tmp_path / "package.json").write_text("{}")
-        (tmp_path / "package-lock.json").write_text("{}")
+        (tmp_path / "pnpm-lock.yaml").write_text("")
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(hm, "_npm_lockfile_changed", lambda root: True)
+        monkeypatch.setattr(hm, "_pnpm_lockfile_changed", lambda root: True)
         popen_calls = []
         mock_popen.side_effect = self._make_popen(popen_calls)
 
         hm._update_node_dependencies()
 
-        calls = self._popen_npm_calls(popen_calls)
-        assert len(calls) == 1, f"expected npm to run when lockfile changed; got: {calls}"
+        calls = self._popen_pnpm_calls(popen_calls)
+        assert len(calls) == 1, f"expected pnpm to run when lockfile changed; got: {calls}"
 
     @patch("subprocess.Popen")
-    @patch("shutil.which", return_value="/usr/bin/npm")
-    def test_records_lockfile_hash_only_on_success(self, _which, mock_popen, tmp_path, monkeypatch):
+    def test_records_lockfile_hash_only_on_success(self, mock_popen, tmp_path, monkeypatch):
         """A failed install must not record the lockfile hash (so the next
         run retries instead of wrongly believing deps are up to date)."""
         from hermes_cli import main as hm
 
         (tmp_path / "package.json").write_text("{}")
-        (tmp_path / "package-lock.json").write_text("{}")
+        (tmp_path / "pnpm-lock.yaml").write_text("")
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(hm, "_npm_lockfile_changed", lambda root: True)
+        monkeypatch.setattr(hm, "_pnpm_lockfile_changed", lambda root: True)
         recorded = []
-        monkeypatch.setattr(hm, "_record_npm_lockfile_hash", lambda root: recorded.append(root))
-        mock_popen.side_effect = self._make_popen([], returncode=1, stderr_lines=["npm ERR!\n"])
+        monkeypatch.setattr(hm, "_record_pnpm_lockfile_hash", lambda root: recorded.append(root))
+        mock_popen.side_effect = self._make_popen(
+            [], returncode=1, stdout_lines=[" ERR_PNPM_FETCH_404  Not Found\n"]
+        )
 
         hm._update_node_dependencies()
 
-        assert not recorded, "lockfile hash must not be recorded when npm install fails"
+        assert not recorded, "lockfile hash must not be recorded when pnpm install fails"
 
     @patch("subprocess.Popen")
-    @patch("shutil.which", return_value="/usr/bin/npm")
+    def test_failed_install_reports_the_error_pnpm_wrote_to_stdout(
+        self, mock_popen, tmp_path, monkeypatch, capsys
+    ):
+        """pnpm reports ERR_PNPM_* on stdout with an empty stderr."""
+        from hermes_cli import main as hm
+
+        (tmp_path / "package.json").write_text("{}")
+        (tmp_path / "pnpm-lock.yaml").write_text("")
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(hm, "_pnpm_lockfile_changed", lambda root: True)
+        mock_popen.side_effect = self._make_popen(
+            [], returncode=1, stdout_lines=[" ERR_PNPM_FETCH_404  Not Found\n"]
+        )
+
+        failed = hm._update_node_dependencies()
+
+        assert failed == ["ui-tui, web workspaces"]
+        out = capsys.readouterr().out
+        assert "pnpm install failed" in out
+        assert "    ERR_PNPM_FETCH_404  Not Found" in out
+
+    @patch("subprocess.Popen")
     def test_warms_npx_agent_browser_cache_regardless_of_install_result(
-        self, _which, mock_popen, tmp_path, monkeypatch
+        self, mock_popen, tmp_path, monkeypatch
     ):
         """The npx warm-up must fire even when the workspace install fails —
         it's independent of ui-tui/web dependency state (#43564)."""
         from hermes_cli import main as hm
 
         (tmp_path / "package.json").write_text("{}")
-        (tmp_path / "package-lock.json").write_text("{}")
+        (tmp_path / "pnpm-lock.yaml").write_text("")
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(hm, "_npm_lockfile_changed", lambda root: True)
-        mock_popen.side_effect = self._make_popen([], returncode=1, stderr_lines=["npm ERR!\n"])
+        monkeypatch.setattr(hm, "_pnpm_lockfile_changed", lambda root: True)
+        mock_popen.side_effect = self._make_popen(
+            [], returncode=1, stdout_lines=[" ERR_PNPM_FETCH_404  Not Found\n"]
+        )
 
         with patch(
             "tools.browser_tool.warm_agent_browser_npx_cache", return_value=True
@@ -1476,21 +1524,22 @@ class TestUpdateNodeDependencies:
 
     @patch("subprocess.run")
     @patch("shutil.which", return_value=None)
-    def test_returns_silently_when_npm_not_found(self, _which, mock_run, tmp_path, monkeypatch):
-        """No npm on PATH → return without calling subprocess."""
+    def test_returns_silently_when_pnpm_not_found(self, _which, mock_run, tmp_path, monkeypatch):
+        """No pnpm available → return without calling subprocess."""
         from hermes_cli import main as hm
+        import hermes_constants
 
         (tmp_path / "package.json").write_text("{}")
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(hermes_constants, "ensure_hermes_pnpm", lambda: None)
 
-        hm._update_node_dependencies()
+        assert hm._update_node_dependencies() == []
 
         mock_run.assert_not_called()
 
     @patch("subprocess.run")
-    @patch("shutil.which", return_value="/usr/bin/npm")
-    def test_returns_silently_when_package_json_absent(self, _which, mock_run, tmp_path, monkeypatch):
-        """No package.json → return without calling npm."""
+    def test_returns_silently_when_package_json_absent(self, mock_run, tmp_path, monkeypatch):
+        """No package.json → return without calling pnpm."""
         from hermes_cli import main as hm
 
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
@@ -1500,13 +1549,12 @@ class TestUpdateNodeDependencies:
         mock_run.assert_not_called()
 
     @patch("subprocess.Popen")
-    @patch("shutil.which", return_value="/usr/bin/npm")
-    def test_install_runs_from_project_root(self, _which, mock_popen, tmp_path, monkeypatch):
-        """npm install must execute from PROJECT_ROOT, not a workspace subdir."""
+    def test_install_runs_from_project_root(self, mock_popen, tmp_path, monkeypatch):
+        """pnpm install must execute from PROJECT_ROOT, not a workspace subdir."""
         from hermes_cli import main as hm
 
         (tmp_path / "package.json").write_text("{}")
-        (tmp_path / "package-lock.json").write_text("{}")
+        (tmp_path / "pnpm-lock.yaml").write_text("")
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
 
         popen_calls = []
@@ -1517,11 +1565,11 @@ class TestUpdateNodeDependencies:
         cwd_calls = [
             c["kwargs"].get("cwd")
             for c in popen_calls
-            if c["cmd"] and "npm" in str(c["cmd"][0])
+            if c["cmd"] and "pnpm" in str(c["cmd"][0])
         ]
-        assert cwd_calls, "expected at least one npm call"
+        assert cwd_calls, "expected at least one pnpm call"
         for cwd in cwd_calls:
-            assert cwd == tmp_path, f"npm must run from PROJECT_ROOT; got cwd={cwd}"
+            assert cwd == tmp_path, f"pnpm must run from PROJECT_ROOT; got cwd={cwd}"
 
 
 class TestGitTrampolineSelfHeal:

@@ -39,8 +39,8 @@ def desktop_env(tmp_path, monkeypatch):
         PROJECT_ROOT = tmp_path
 
         @staticmethod
-        def _resolve_node_runtime_npm():
-            return "/fake/npm"
+        def _resolve_node_runtime_pnpm():
+            return "/fake/pnpm"
 
         @staticmethod
         def _desktop_build_needed(*_a, **_kw):
@@ -107,7 +107,7 @@ def test_desktop_never_installed_returns_true(tmp_path, monkeypatch):
             (),
             {
                 "PROJECT_ROOT": tmp_path,
-                "_resolve_node_runtime_npm": staticmethod(lambda: "/fake/npm"),
+                "_resolve_node_runtime_pnpm": staticmethod(lambda: "/fake/pnpm"),
                 "_run_logged_subprocess": staticmethod(
                     lambda *a, **k: spawned.append(1) or _Result(0)
                 ),

@@ -220,3 +220,13 @@ test('update-nightly-index puts the new nightly first, replaces reruns, and keep
   assert.equal(index.nightlies.length, keep)
   assert.throws(() => updateNightlyIndex({}, { version: '0.1.5', commit: 'c0ffee0' }), /not a nightly/)
 })
+
+test('the devcontainer and the Dockerfile install the pnpm that packageManager pins', async () => {
+  const root = new URL('../../', import.meta.url)
+  const { packageManager } = JSON.parse(await readFile(new URL('package.json', root), 'utf8'))
+  const version = packageManager.replace(/^pnpm@/, '').split('+')[0]
+  assert.ok(
+    (await readFile(new URL('.devcontainer/devcontainer.json', root), 'utf8')).includes(`pnpm@${version} `)
+  )
+  assert.ok((await readFile(new URL('Dockerfile', root), 'utf8')).includes(`ARG PNPM_VERSION=${version}\n`))
+})

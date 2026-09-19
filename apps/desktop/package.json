@@ -6,8 +6,8 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "node ../../scripts/dev/desktop.mjs dev",
-    "build": "npm run build --workspace @hexbot/web && node ../../scripts/desktop/stage-python-src.mjs && electron-vite build && node scripts/copy-web.mjs",
-    "build:client": "npm run build --workspace @hexbot/web && HEXBOT_EDITION=client electron-vite build && node scripts/copy-web.mjs",
+    "build": "pnpm --filter @hexbot/web run build && node ../../scripts/desktop/stage-python-src.mjs && electron-vite build && node scripts/copy-web.mjs",
+    "build:client": "pnpm --filter @hexbot/web run build && HEXBOT_EDITION=client electron-vite build && node scripts/copy-web.mjs",
     "dist:mac": "node ../../scripts/desktop/dist.mjs --mac",
     "dist:linux": "node ../../scripts/desktop/dist.mjs --linux",
     "dist:mac:client": "node ../../scripts/desktop/dist.mjs --client --mac",

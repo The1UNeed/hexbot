@@ -76,7 +76,7 @@ function resolveOriginTarget(): ConnectionTarget | null {
     return { kind: 'local', origin: e2eTarget }
   }
 
-  // `npm run dev` serves the bundle from Vite and points it at a loopback
+  // `pnpm dev` serves the bundle from Vite and points it at a loopback
   // daemon through VITE_HEXBOT_ORIGIN (scripts/dev/run.mjs): no pairing.
   if (typeof window !== 'undefined' && !window.hexbot && import.meta.env?.VITE_HEXBOT_ORIGIN) {
     return { kind: 'local' }

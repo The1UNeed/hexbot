@@ -45,7 +45,7 @@ def _add_server_runtime_args(parser) -> None:
         help=(
             "Skip the web UI build step and serve the existing dist directly. "
             "Useful for non-interactive contexts (Windows Scheduled Tasks, CI) "
-            "where npm may not be available. Pre-build with: cd web && npm run build"
+            "where pnpm may not be available. Pre-build with: cd web && pnpm run build"
         ),
     )
     parser.add_argument(

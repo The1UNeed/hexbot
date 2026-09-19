@@ -5,7 +5,6 @@
     {
       pkgs,
       lib,
-      inputs',
       ...
     }:
     let
@@ -14,7 +13,6 @@
 
       minimal = pkgs.callPackage ./hermes-agent.nix {
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
-        npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
         # Only embed clean revs — dirtyRev doesn't represent any upstream
         # commit, so comparing it would always claim "update available".
         rev = inputs.self.rev or null;
@@ -48,10 +46,7 @@
     in
     {
       packages = {
-        node-gyp =
-          (pkgs.callPackage ./lib.nix {
-            inherit (pkgs) npm-lockfile-fix;
-          }).node-gyp;
+        node-gyp = (pkgs.callPackage ./lib.nix { }).node-gyp;
         default = full;
 
         inherit sandbox;
@@ -69,7 +64,7 @@
         web = full.hermesWeb;
         desktop = full.hermesDesktop;
 
-        update-npm-lockfile = full.hermesNpmLib.updateNpmLockfile;
+        update-pnpm-lockfile = full.hermesNpmLib.updateNpmLockfile;
       };
     };
 }

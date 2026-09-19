@@ -105,12 +105,12 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     packaged_exe = _make_packaged_executable(root, monkeypatch)
 
-    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
-    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+    install_ok = subprocess.CompletedProcess(["pnpm", "install", "--frozen-lockfile"], 0)
+    pack_ok = subprocess.CompletedProcess(["pnpm", "run", "pack"], 0)
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
+    with patch("hermes_constants.ensure_hermes_pnpm", return_value="/usr/bin/pnpm"), \
+         patch("hermes_cli.main._run_pnpm_install_deterministic", return_value=install_ok) as mock_install, \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
@@ -122,13 +122,13 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
 
     assert exc.value.code == 0
     # The install now runs with a resolved env (managed-Node PATH), never a bare
-    # ``env=None`` that would leave npm's child scripts unable to find ``node``.
+    # ``env=None`` that would leave pnpm's child scripts unable to find ``node``.
     mock_install.assert_called_once()
-    assert mock_install.call_args.args == ("/usr/bin/npm", root)
+    assert mock_install.call_args.args == ("/usr/bin/pnpm", root)
     assert mock_install.call_args.kwargs["capture_output"] is False
     install_env = mock_install.call_args.kwargs["env"]
     assert install_env is not None and "PATH" in install_env
-    assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
+    assert mock_run.call_args_list[0].args[0] == ["/usr/bin/pnpm", "run", "pack"]
     assert mock_run.call_args_list[0].kwargs["cwd"] == desktop_dir
     launched = mock_run.call_args_list[1].args[0]
     if sys.platform.startswith("linux"):
@@ -139,7 +139,7 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
 
 
 def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatch):
-    """Regression: npm's child scripts (electron-winstaller's select-7z-arch.js)
+    """Regression: pnpm's child scripts (electron-winstaller's select-7z-arch.js)
     shell out to bare ``node``. When Desktop is launched from the updater chain
     the parent PATH is stripped, so the install env MUST carry the Hermes-managed
     Node ahead of that bare PATH or the install dies with ``node: not found``.
@@ -159,17 +159,17 @@ def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatc
     # Simulate the stripped PATH the desktop updater chain hands us.
     monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
 
-    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    install_ok = subprocess.CompletedProcess(["pnpm", "install", "--frozen-lockfile"], 0)
     launch_ok = subprocess.CompletedProcess(["hermes"], 0)
 
     # A plain return_value rather than a fixed side_effect list: this test only
-    # cares about the env handed to the npm install, and pinning an exact
+    # cares about the env handed to the pnpm install, and pinning an exact
     # sequence of subprocess.run calls makes it fail (StopIteration) whenever
     # cmd_gui legitimately shells out one extra time — e.g. the Linux sandbox
     # fixup, which fires on hosts where chrome-sandbox isn't already
     # root-owned+4755. Assert on the install env, not on a call count.
-    with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
+    with patch("hermes_cli.main._resolve_node_runtime_pnpm", return_value="/usr/bin/pnpm"), \
+         patch("hermes_cli.main._run_pnpm_install_deterministic", return_value=install_ok) as mock_install, \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
@@ -262,11 +262,11 @@ def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypat
     _make_packaged_executable(root, monkeypatch)
     monkeypatch.delenv("ELECTRON_MIRROR", raising=False)
 
-    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
-    pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
+    install_ok = subprocess.CompletedProcess(["pnpm", "install", "--frozen-lockfile"], 0)
+    pack_fail = subprocess.CompletedProcess(["pnpm", "run", "pack"], 1)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+    with patch("hermes_constants.ensure_hermes_pnpm", return_value="/usr/bin/pnpm"), \
+         patch("hermes_cli.main._run_pnpm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main._purge_electron_build_cache", return_value=[Path("/c/electron.zip")]) as mock_purge, \
          patch("hermes_cli.main._redownload_electron_dist", return_value=True) as mock_dl, \
@@ -740,7 +740,7 @@ def test_cmd_gui_setup_tcc_identity_exits_before_build(tmp_path, monkeypatch):
     _make_packaged_executable(root, monkeypatch)
 
     with patch("hermes_cli.main._desktop_macos_setup_tcc_identity", return_value=True) as mock_setup, \
-         patch("hermes_cli.main._run_npm_install_deterministic") as mock_install, \
+         patch("hermes_cli.main._run_pnpm_install_deterministic") as mock_install, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(setup_tcc_identity=True, identity="Hermes Local Signing"))
 
@@ -940,7 +940,7 @@ def test_gui_registers_linux_desktop_entry_before_launch(tmp_path, monkeypatch):
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
     with patch("hermes_cli.main._desktop_build_needed", return_value=False), \
-         patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._resolve_node_runtime_pnpm", return_value="/usr/bin/pnpm"), \
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.main.subprocess.run", return_value=launch_ok), \
          pytest.raises(SystemExit):
@@ -965,7 +965,7 @@ def test_gui_launches_even_when_desktop_entry_install_fails(tmp_path, monkeypatc
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
     with patch("hermes_cli.main._desktop_build_needed", return_value=False), \
-         patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._resolve_node_runtime_pnpm", return_value="/usr/bin/pnpm"), \
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
          pytest.raises(SystemExit) as exc:
@@ -995,7 +995,7 @@ def test_gui_skips_desktop_entry_off_linux(tmp_path, monkeypatch):
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
     with patch("hermes_cli.main._desktop_build_needed", return_value=False), \
-         patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._resolve_node_runtime_pnpm", return_value="/usr/bin/pnpm"), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main.subprocess.run", return_value=launch_ok), \
          pytest.raises(SystemExit) as exc:
@@ -1054,8 +1054,8 @@ def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
     ok = subprocess.CompletedProcess([], 0)
     cfg = {"desktop": {"ozone_platform_hint": "x11"}}
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+    with patch("hermes_constants.ensure_hermes_pnpm", return_value="/usr/bin/pnpm"), \
+         patch("hermes_cli.main._run_pnpm_install_deterministic", return_value=ok), \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
@@ -1070,8 +1070,8 @@ def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
     assert launch_env.get("ELECTRON_OZONE_PLATFORM_HINT") == "x11"
 
     monkeypatch.setenv("ELECTRON_OZONE_PLATFORM_HINT", "wayland")
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+    with patch("hermes_constants.ensure_hermes_pnpm", return_value="/usr/bin/pnpm"), \
+         patch("hermes_cli.main._run_pnpm_install_deterministic", return_value=ok), \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
@@ -1151,8 +1151,8 @@ def test_gui_linux_packaged_launch_bridges_detected_password_store(tmp_path, mon
 
     ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+    with patch("hermes_constants.ensure_hermes_pnpm", return_value="/usr/bin/pnpm"), \
+         patch("hermes_cli.main._run_pnpm_install_deterministic", return_value=ok), \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
@@ -1176,8 +1176,8 @@ def test_gui_linux_source_launch_bridges_detected_password_store(tmp_path, monke
 
     ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+    with patch("hermes_constants.ensure_hermes_pnpm", return_value="/usr/bin/pnpm"), \
+         patch("hermes_cli.main._run_pnpm_install_deterministic", return_value=ok), \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.config.load_config", return_value={}), \
@@ -1187,7 +1187,7 @@ def test_gui_linux_source_launch_bridges_detected_password_store(tmp_path, monke
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns(source=True))
 
-    assert mock_run.call_args_list[1].args[0] == ["/usr/bin/npm", "exec", "--", "electron", "."]
+    assert mock_run.call_args_list[1].args[0] == ["/usr/bin/pnpm", "exec", "electron", "."]
     launch_env = mock_run.call_args_list[1].kwargs["env"]
     assert launch_env["HERMES_DESKTOP_PASSWORD_STORE"] == "kwallet6"
 
@@ -1202,8 +1202,8 @@ def test_gui_config_password_store_skips_detection(tmp_path, monkeypatch):
     ok = subprocess.CompletedProcess([], 0)
     cfg = {"desktop": {"password_store": "kwallet6"}}
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+    with patch("hermes_constants.ensure_hermes_pnpm", return_value="/usr/bin/pnpm"), \
+         patch("hermes_cli.main._run_pnpm_install_deterministic", return_value=ok), \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
@@ -1231,8 +1231,8 @@ def test_gui_explicit_password_store_env_wins_over_config_and_detection(tmp_path
     ok = subprocess.CompletedProcess([], 0)
     cfg = {"desktop": {"password_store": "kwallet6"}}
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+    with patch("hermes_constants.ensure_hermes_pnpm", return_value="/usr/bin/pnpm"), \
+         patch("hermes_cli.main._run_pnpm_install_deterministic", return_value=ok), \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
@@ -1258,8 +1258,8 @@ def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
 
     ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+    with patch("hermes_constants.ensure_hermes_pnpm", return_value="/usr/bin/pnpm"), \
+         patch("hermes_cli.main._run_pnpm_install_deterministic", return_value=ok), \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \

@@ -11,7 +11,7 @@
 - Prefer a `hexbot/` module, a Hermes plugin hook, or `apps/` over editing a
   root-level Hermes file. If a core edit is unavoidable, add a `CORE_EDITS.md`
   row in the same change.
-- Run Hexbot from the checkout with `npm run dev` (state in
+- Run Hexbot from the checkout with `pnpm dev` (state in
   `<checkout>/.hexbot`). If you start a daemon by hand, set `HEXBOT_HOME` to a
   temp directory. Never point a dev daemon at `~/.hexbot`.
 - Never push a `v*` tag or dispatch the Release workflow unless asked; both

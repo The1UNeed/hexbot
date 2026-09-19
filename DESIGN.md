@@ -99,7 +99,7 @@ more freedom and more capability than a hosted product can offer.
 ## 3. Client
 
 - Electron, React 19, TanStack Router, Tailwind v4, Base UI. Plain Vite,
-  npm workspaces (the Hermes root already uses them). No Effect.
+  a pnpm workspace shared with the Hermes root. No Effect.
 - Talks directly to the daemon's JSON-RPC WebSocket at `/api/ws`, extended by
   `hexbot.*` methods (bots, sections, rooms add-member, core memory, pairing).
   No middle server.

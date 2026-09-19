@@ -14299,7 +14299,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if enabled_platform_count > 0:
                 if startup_retryable_errors:
                     # All enabled platforms hit retryable failures (network
-                    # blip, bridge not paired, npm install timeout, etc.).
+                    # blip, bridge not paired, pnpm install timeout, etc.).
                     # Keep the gateway alive so:
                     #   • cron jobs still run
                     #   • the reconnect watcher gets a chance to recover the

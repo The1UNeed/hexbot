@@ -20,7 +20,7 @@ import globals from 'globals'
 
 export default [
   {
-    ignores: ['**/node_modules/**', '**/dist/**', 'src/**/*.js', '**/package-lock.json']
+    ignores: ['**/node_modules/**', '**/dist/**', 'src/**/*.js', '**/pnpm-lock.yaml']
   },
   js.configs.recommended,
   {

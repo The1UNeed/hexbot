@@ -132,14 +132,13 @@ jobs:
       VERSION: ${{ needs.preflight.outputs.version }}
     steps:
       - uses: actions/checkout@v7
+      # Installs the pnpm pinned by `packageManager` in the root package.json.
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v7
         with:
           node-version: 26
-          cache: npm
-      # The npm that wrote package-lock.json; see the web job in ci.yml.
-      - run: npm install -g npm@11.17.0
-      - run: npm ci
-      - run: npm approve-scripts electron esbuild @tailwindcss/oxide
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - name: Set the release version
         run: node scripts/desktop/set-version.mjs "$VERSION"
       - name: Prepare macOS signing

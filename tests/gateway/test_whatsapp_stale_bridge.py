@@ -12,7 +12,7 @@ The fix: bridge.js reports a hash of its own source in ``/health``
 and restarts the bridge on mismatch.  Bridges that predate the handshake
 report no hash and are treated as stale by definition.
 
-Also covers the npm dependency-refresh stamp: deps are reinstalled when
+Also covers the dependency-refresh stamp: deps are reinstalled when
 package.json changes, not only when node_modules is missing.
 """
 

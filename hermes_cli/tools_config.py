@@ -2023,7 +2023,7 @@ def _ensure_browser_use_cli(*, verbose_hints: bool = False) -> None:
 
 def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
-    from hermes_constants import find_node_executable
+    from hermes_constants import ensure_hermes_pnpm
 
     if post_setup_key == "lightpanda":
         # Browser Use mode drives Lightpanda directly (Hermes spawns
@@ -2162,29 +2162,34 @@ def _run_post_setup(post_setup_key: str):
 
     elif post_setup_key == "camofox":
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
-        _npm_bin = find_node_executable("npm")
+        _pnpm_bin = None if camofox_dir.exists() else ensure_hermes_pnpm()
         if camofox_dir.exists():
             _print_success("    Camofox already installed, nothing to do")
-        elif _npm_bin:
+        elif _pnpm_bin:
             _print_info("    Installing Camofox browser server...")
             import subprocess
-            # Absolute npm path so .cmd shim executes on Windows.
+            # Absolute pnpm path so .cmd shim executes on Windows.
             result = subprocess.run(
-                # --workspaces=false avoids resolving apps/desktop. See #38772.
-                [_npm_bin, "install", "--silent", "--workspaces=false"],
+                # --filter . installs the root package only, without
+                # resolving apps/desktop. See #38772. Frozen, so the install
+                # never rewrites the committed lockfile.
+                [_pnpm_bin, "install", "--frozen-lockfile", "--filter", "."],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(PROJECT_ROOT),
                 creationflags=_post_setup_no_window_flags(),
             )
             if result.returncode == 0:
                 _print_success("    Camofox installed")
             else:
-                _print_warning("    npm install failed - run manually: npm install --workspaces=false")
+                _print_warning("    pnpm install failed - run manually: pnpm install --frozen-lockfile --filter .")
+                # pnpm reports ERR_PNPM_* errors on stdout; stderr is usually empty.
+                for line in (result.stderr or result.stdout or "").strip().splitlines()[-5:]:
+                    _print_info(f"    {line}")
         if camofox_dir.exists():
             _print_info("    Start the Camofox server:")
             _print_info("      npx @askjo/camofox-browser")
             _print_info("    First run downloads the Camoufox engine (~300MB)")
             _print_info("    Or use Docker: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
-        elif not _npm_bin:
+        elif not _pnpm_bin:
             _print_warning("    Node.js not found. Install Camofox via Docker:")
             _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
 

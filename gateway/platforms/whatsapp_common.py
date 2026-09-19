@@ -508,7 +508,7 @@ def resolve_whatsapp_bridge_dir() -> Path:
 
     When the install tree is read-only (e.g., Docker /opt/hermes), this function
     mirrors the bridge source to a writable HERMES_HOME location and returns that
-    path. This ensures npm install works in Docker environments.
+    path. This ensures pnpm install works in Docker environments.
 
     Returns the resolved bridge directory path.
     """
@@ -537,6 +537,16 @@ def resolve_whatsapp_bridge_dir() -> Path:
 
     # Install dir is read-only, mirror to HERMES_HOME if needed
     if hermes_home_bridge.exists():
+        # A mirror made before the bridge moved to pnpm has no lockfile, and
+        # the frozen install refuses to run without one. Its package.json
+        # goes with it: the lockfile records `pnpm.overrides`, and a frozen
+        # install rejects a manifest whose overrides differ.
+        if not (hermes_home_bridge / "pnpm-lock.yaml").exists():
+            try:
+                for name in ("package.json", "pnpm-lock.yaml"):
+                    shutil.copy2(install_bridge / name, hermes_home_bridge / name)
+            except OSError:
+                pass
         return hermes_home_bridge
 
     # Mirror the bridge source to HERMES_HOME

@@ -401,7 +401,7 @@ def check_whatsapp_requirements() -> bool:
     
     WhatsApp requires a Node.js bridge for most implementations.
     """
-    # Prefer Hermes-managed Node/npm so Windows installs are not broken by a
+    # Prefer Hermes-managed Node so Windows installs are not broken by a
     # bad or elevation-triggering system Node on PATH.
     _node = find_node_executable("node")
     if not _node:
@@ -605,7 +605,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
 
         try:
-            # Auto-install npm dependencies when node_modules is missing OR
+            # Auto-install the bridge dependencies when node_modules is missing OR
             # package.json changed since the last install (e.g. after
             # `hermes update` bumps the Baileys pin).  The stamp file records
             # the package.json hash of the last successful install.
@@ -623,15 +623,21 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     _deps_fresh = False
             if not _deps_fresh:
                 print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
-                # Resolve npm path so Windows uses npm.cmd from the
-                # Hermes-managed portable Node before falling back to PATH.
-                _npm_bin = find_node_executable("npm") or "npm"
+                # The bridge has its own lockfile and is not a member of the
+                # repository's pnpm workspace, hence --ignore-workspace.
+                _install_args = ["install", "--frozen-lockfile", "--ignore-workspace"]
+                _manual_install = f"cd {bridge_dir} && pnpm {' '.join(_install_args)}"
                 try:
+                    from hermes_constants import ensure_hermes_pnpm
+
+                    _pnpm_bin = ensure_hermes_pnpm()
+                    if not _pnpm_bin:
+                        raise RuntimeError("pnpm is not available")
                     # Read timeout from environment variable, default to 300 seconds (5 minutes)
                     # to accommodate slower systems like Unraid NAS
                     npm_install_timeout = env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300)
                     install_result = subprocess.run(
-                        [_npm_bin, "install", "--silent"],
+                        [_pnpm_bin, *_install_args],
                         cwd=str(bridge_dir),
                         capture_output=True,
                         text=True, encoding='utf-8', errors='replace',
@@ -639,10 +645,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         env=with_hermes_node_path(),
                     )
                     if install_result.returncode != 0:
-                        print(f"[{self.name}] npm install failed: {install_result.stderr}")
+                        # pnpm reports ERR_PNPM_* failures on stdout.
+                        print(f"[{self.name}] pnpm install failed: {install_result.stderr or install_result.stdout}")
                         self._set_fatal_error(
                             "whatsapp_npm_install_failed",
-                            f"WhatsApp bridge npm install failed. Run `cd {bridge_dir} && {_npm_bin} install` manually, then restart `hermes gateway`.",
+                            f"WhatsApp bridge pnpm install failed. Run `{_manual_install}` manually, then restart `hermes gateway`.",
                             retryable=False,
                         )
                         return False
@@ -656,7 +663,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     print(f"[{self.name}] Failed to install dependencies: {e}")
                     self._set_fatal_error(
                         "whatsapp_npm_install_failed",
-                        f"WhatsApp bridge npm install failed ({e}). Run `cd {bridge_dir} && {_npm_bin} install` manually, then restart `hermes gateway`.",
+                        f"WhatsApp bridge pnpm install failed ({e}). Run `{_manual_install}` manually, then restart `hermes gateway`.",
                         retryable=False,
                     )
                     return False

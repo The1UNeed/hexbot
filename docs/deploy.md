@@ -14,7 +14,7 @@ Vercel deploys from Git. Nobody runs `vercel deploy` by hand.
 - **Production**: every push to `main` builds both projects and moves `hexbot.app` and `connect.hexbot.app` to the new build once it is ready. A failed build leaves the previous deployment in place.
 - **Preview**: every push to any other branch builds both projects at a preview URL, and Vercel comments the URLs on the pull request. A preview is `<project>-git-<branch>-the1uneeds-projects.vercel.app` and is public.
 
-Each `vercel.json` pins the install command to `npm install`, run inside the root directory; npm resolves that package against the workspace root, so a site build installs a few hundred packages, not Electron or the web bundle. Vercel's monorepo skipping for npm workspaces cancels the project a commit did not touch: a change under `apps/site/` only builds the site, a change under `apps/connect/` only builds Connect, and a change outside `apps/` builds both. Project settings (root directory, Git connection, domains, environment variables) live in the Vercel dashboard; `vercel.json` in each directory holds what can be versioned (headers, install and build commands).
+Each `vercel.json` pins the install command to `pnpm install --frozen-lockfile --filter <package>...`, run inside the root directory; pnpm finds the workspace root above it and installs only that package and its dependencies, so a site build installs a few hundred packages, not Electron or the web bundle. Vercel picks pnpm from `pnpm-lock.yaml`; set `ENABLE_EXPERIMENTAL_COREPACK=1` on both projects so it uses the exact version pinned by `packageManager` in the root `package.json`. Vercel's monorepo skipping for pnpm workspaces cancels the project a commit did not touch: a change under `apps/site/` only builds the site, a change under `apps/connect/` only builds Connect, and a change outside `apps/` builds both. Project settings (root directory, Git connection, domains, environment variables) live in the Vercel dashboard; `vercel.json` in each directory holds what can be versioned (headers, install and build commands).
 
 Rolling back is a Vercel action: Deployments, pick the previous production deployment, Promote to Production.
 
@@ -22,7 +22,7 @@ Both projects use Vercel Web Analytics and Speed Insights. The code side is the 
 
 ## Site
 
-The site has no secrets. `apps/site/vercel.json` sets the security headers and marks hashed assets immutable. CI runs `npm run check -w apps/site` on every push, and Vercel builds the same commit.
+The site has no secrets. `apps/site/vercel.json` sets the security headers and marks hashed assets immutable. CI runs `pnpm --filter ./apps/site run check` on every push, and Vercel builds the same commit.
 
 Downloads: `apps/site/public/downloads/manifest.json` names the stable artifacts and has a `published` flag. While it is `false` the download page (`apps/site/src/pages/download.astro`) says stable is coming soon and offers the current nightly instead: `apps/site/src/lib/nightly.ts` reads the `nightly-*.yml` feed files on `updates.hexbot.app` during the build and links the files they name, or falls back to the GitHub nightly listing if the feed is unreachable. The same page lists earlier nightlies from `nightlies.json` in the bucket, written by the nightly workflow; until that file exists it lists the current build alone.
 
@@ -45,7 +45,7 @@ Order of operations for the first real deployment:
 1. Move the `hexbot.app` nameservers to Cloudflare (free plan). Recreate the Vercel records there as DNS-only: `hexbot.app` A `76.76.21.21`, `www` and `connect` CNAME `cname.vercel-dns.com`. Confirm the Vercel domains show as verified afterwards.
 2. Create a Cloudflare API token with Account: Cloudflare Tunnel: Edit and Zone: DNS: Edit for the zone. Note the account id and zone id.
 3. Create a Clerk application with a production instance on `connect.hexbot.app` and add its DNS records in Cloudflare (DNS-only).
-4. Create a Neon project and run `DATABASE_URL=... npm run migrate -w apps/connect`.
+4. Create a Neon project and run `DATABASE_URL=... pnpm --filter ./apps/connect run migrate`.
 5. Generate the signing key: `node apps/connect/scripts/make-signing-key.mjs`.
 6. Add every variable to the `hexbot-connect` project for Production, redeploy the current production deployment from the Vercel dashboard, and check `/api/health` says `ready: true`.
 7. Register a daemon with `hexbot connect`, then sign in from a client-only app on another network.

@@ -23,7 +23,7 @@ Lanes:
 * ``uv_lock``     — ``uv lock --check``. Re-resolves the whole graph against
   PyPI, so a diff that touches neither ``pyproject.toml`` nor ``uv.lock``
   must not run it.
-* ``npm_lock``    — semantic package-lock.json diff PR comment.
+* ``npm_lock``    — semantic pnpm-lock.yaml diff PR comment.
 * ``installer``   — PowerShell installer tests (Windows runner).
 * ``desktop_updater`` — the Windows desktop-update hand-off script and the
   tests that drive the REAL ``windows.ps1`` (``-SelfTestUi`` / pipe drain /
@@ -67,7 +67,7 @@ import subprocess
 import sys
 
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
-_ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
+_ROOT_NPM = {"package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"}  # shifts every package's tree
 _DOCKER_META = ("docker/", ".hadolint.yml", "Dockerfile") # docker setup
 _NIX_PATHS = ("nix/",) # nix files
 _NIX_FILES = {"flake.nix", "flake.lock"} # base nix files
@@ -94,7 +94,7 @@ _PY_RELEVANT_SITE = (
 # Changes here can influence what code the autofix job executes and pushes to
 # main, so they require explicit maintainer review (ci-reviewed label).
 #
-# package.json is deliberately NOT listed here: npm scripts only execute on the
+# package.json is deliberately NOT listed here: package scripts only execute on the
 # unprivileged generate-patch runner (contents: read), never on the privileged
 # apply-patch job. The two-job split means a malicious package.json script
 # can't get push access — it runs on an ephemeral runner with zero write perms.
@@ -216,7 +216,7 @@ def classify(files: list[str]) -> dict[str, bool]:
     python_prod = any(not _py_irrelevant(f) and not _py_test_only(f) for f in files)
     frontend = any(f.startswith(_FRONTEND) or f in _ROOT_NPM for f in files)
     deps = any(f == "pyproject.toml" for f in files)
-    npm_lock = any(f.split("/")[-1] == "package-lock.json" for f in files)
+    npm_lock = any(f.split("/")[-1] == "pnpm-lock.yaml" for f in files)
     docker_meta = any(f.startswith(_DOCKER_META) for f in files)
     
     ret = {

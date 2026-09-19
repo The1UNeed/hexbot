@@ -6,7 +6,7 @@ install-mode run — including the retry the desktop's "Update didn't finish"
 screen kicks off. The repository stage used to ``git checkout --detach`` that
 SHA unconditionally, so an installer built months earlier rewound a current
 managed checkout to its build commit (observed: ~9k commits back), leaving
-ancient source against a current venv — npm workspaces and Python deps that no
+ancient source against a current venv — Node workspaces and Python deps that no
 longer match, and every subsequent update failing against the wrong tree.
 
 The pin is skipped when its target is already an ancestor of HEAD, unless the

@@ -3,7 +3,7 @@ Resolve where the Photon sidecar runs from and where its Node deps live.
 
 The sidecar source ships inside the installed plugin tree
 (``plugins/platforms/photon/sidecar/``). On dev/source installs that tree is
-writable and everything — ``npm ci``, the spectrum patch, the sidecar itself —
+writable and everything — ``pnpm install``, the spectrum patch, the sidecar itself —
 happens in place. Hosted/managed images instead keep the whole install tree
 under an immutable ``/opt/hermes`` (read-only for the hermes user), which
 broke every install/self-heal path with EROFS (NS-606).
@@ -15,8 +15,8 @@ bridge, which hit the same wall):
 2. Source dir writable → run in place (dev installs, unchanged behavior).
 3. Source dir read-only but ``node_modules`` is baked and current → run in
    place. This is the managed-image happy path: the Dockerfile bakes the
-   sidecar deps with ``npm ci`` at build time (deterministic installs,
-   NS-559), so no runtime install is ever needed.
+   sidecar deps with a frozen-lockfile ``pnpm install`` at build time
+   (deterministic installs, NS-559), so no runtime install is ever needed.
 4. Source dir read-only and deps missing or stale → mirror the sidecar
    source files to ``$HERMES_HOME/photon/sidecar`` (the durable data volume,
    e.g. ``/opt/data`` on hosted) and return that. The caller's normal
@@ -25,7 +25,7 @@ bridge, which hit the same wall):
 The mirror is refreshed on every resolve: when an image update changes a
 sidecar source file, the changed file is re-copied (content compare, not
 mtime) while ``node_modules`` is left in place — the adapter's existing
-lockfile-vs-install-marker staleness check then triggers the ``npm ci``
+lockfile-vs-install-marker staleness check then triggers the ``pnpm install``
 self-heal inside the mirror.
 
 This module is import-light on purpose: both ``adapter.py`` (gateway) and
@@ -47,13 +47,19 @@ SOURCE_SIDECAR_DIR = Path(__file__).parent / "sidecar"
 
 # The files that define the sidecar. Mirrored into the writable runtime dir
 # when the install tree is read-only. node_modules is deliberately absent —
-# it is either baked (managed image) or installed by npm in the mirror.
+# it is either baked (managed image) or installed by pnpm in the mirror.
+# .npmrc carries the linker settings the postinstall patch depends on.
 _MIRROR_FILES = (
     "index.mjs",
     "package.json",
-    "package-lock.json",
+    "pnpm-lock.yaml",
+    ".npmrc",
     "patch-spectrum-mixed-attachments.mjs",
 )
+
+# The sidecar has its own lockfile and is not a member of the repository's
+# pnpm workspace; without --ignore-workspace pnpm resolves against the root.
+PNPM_INSTALL_ARGS = ("install", "--ignore-workspace")
 
 
 def dir_writable(path: Path) -> bool:
@@ -76,20 +82,22 @@ def dir_writable(path: Path) -> bool:
 _dir_writable = dir_writable
 
 
-def _lock_newer_than_install(sidecar_dir: Path) -> bool:
-    """True when the committed lockfile postdates npm's install marker.
+def lock_newer_than_install(sidecar_dir: Path) -> bool:
+    """True when the committed lockfile postdates pnpm's install marker.
 
-    Same signal as ``adapter._sidecar_deps_stale`` — duplicated here (three
-    lines) rather than imported so this module stays import-light for the
-    CLI. Returns False on any stat failure so an odd filesystem never forces
-    the mirror path.
+    pnpm writes ``node_modules/.modules.yaml`` on every successful install, so
+    a missing marker also means the deps are not a current pnpm install.
+    Returns False when the lockfile itself cannot be read so an odd
+    filesystem never forces a reinstall or the mirror path.
     """
-    lockfile = sidecar_dir / "package-lock.json"
-    marker = sidecar_dir / "node_modules" / ".package-lock.json"
     try:
-        return lockfile.stat().st_mtime > marker.stat().st_mtime
+        lock_mtime = (sidecar_dir / "pnpm-lock.yaml").stat().st_mtime
     except OSError:
         return False
+    try:
+        return lock_mtime > (sidecar_dir / "node_modules" / ".modules.yaml").stat().st_mtime
+    except OSError:
+        return True
 
 
 def resolve_sidecar_dir(source_dir: Optional[Path] = None) -> Path:
@@ -111,7 +119,7 @@ def resolve_sidecar_dir(source_dir: Optional[Path] = None) -> Path:
     # Read-only install tree (hosted/managed image). If the image baked the
     # deps at build time and they match the lockfile, run in place — the
     # sidecar itself never writes inside its own directory.
-    if (source / "node_modules").exists() and not _lock_newer_than_install(source):
+    if (source / "node_modules").exists() and not lock_newer_than_install(source):
         return source
 
     # Deps missing or stale inside a read-only tree: mirror to the durable

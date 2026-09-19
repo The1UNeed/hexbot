@@ -2221,7 +2221,8 @@ def _default_export_ignore(root_dir: Path):
       first and proved unable to anticipate every non-Hermes file the
       user may have lying alongside HERMES_HOME (#58394).
     * **Universal exclusions at any depth** — ``__pycache__``, sockets,
-      temp files; plus npm lockfiles, which may appear at the root.
+      temp files; plus Node manifests and lockfiles, which may appear at
+      the root.
 
     Surviving text files are later force-redacted by
     :func:`_scrub_export_secrets` before the archive is written.
@@ -2233,8 +2234,13 @@ def _default_export_ignore(root_dir: Path):
             # Universal exclusions (any depth)
             if entry == "__pycache__" or entry.endswith((".sock", ".tmp")):
                 ignored.add(entry)
-            # npm lockfiles can appear at root
-            elif entry in {"package.json", "package-lock.json"}:
+            # Node manifests and lockfiles can appear at root
+            elif entry in {
+                "package.json",
+                "package-lock.json",
+                "pnpm-lock.yaml",
+                "pnpm-workspace.yaml",
+            }:
                 ignored.add(entry)
         # Root-level allow-list: drop everything that isn't a known
         # Hermes profile artifact.

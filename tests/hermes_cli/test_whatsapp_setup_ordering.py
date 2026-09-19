@@ -1,7 +1,7 @@
 """Regression tests for ``cmd_whatsapp`` env-var write ordering.
 
 Before the fix, ``hermes whatsapp`` wrote ``WHATSAPP_ENABLED=true`` at
-step 2 — before npm install (step 4) and before QR pairing (step 6).
+step 2 — before the bridge dependency install (step 4) and before QR pairing (step 6).
 If the user Ctrl+C'd at any later step, ``.env`` claimed WhatsApp was
 ready when the bridge still had no ``creds.json``.  Every subsequent
 ``hermes gateway`` then paid a 30s bridge-bootstrap timeout and queued
@@ -111,15 +111,15 @@ def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatc
 
     monkeypatch.setattr("builtins.input", fake_input)
     monkeypatch.setattr("hermes_cli.main._require_tty", lambda *_a, **_kw: None)
-    # Skip the bridge npm install — we're testing setup-ordering, not bridge
+    # Skip the bridge pnpm install — we're testing setup-ordering, not bridge
     # bootstrapping.  Pretend node_modules exists (Path.exists -> True for that
-    # specific check is hard to scope, so instead pretend npm install would
+    # specific check is hard to scope, so instead pretend pnpm install would
     # succeed silently if reached).
     monkeypatch.setattr(
         "subprocess.run",
         lambda *_a, **_kw: MagicMock(returncode=0, stderr=""),
     )
-    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/npm")
+    monkeypatch.setattr("hermes_constants.ensure_hermes_pnpm", lambda: "/usr/bin/pnpm")
     # Patch (bridge_dir / "node_modules").exists() by stubbing Path.exists
     # to True for that one specific subpath.  Easier: pre-create it as a
     # symlink to /tmp.  But we can't write to the repo.  Instead, stub
@@ -138,3 +138,54 @@ def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatc
 
     # The skip-rebar branch should have set the env var on its way out.
     assert _env_value(isolated_home, "WHATSAPP_ENABLED") == "true"
+
+
+def test_bridge_install_is_frozen_and_surfaces_pnpm_stdout_errors(
+    isolated_home, monkeypatch, tmp_path
+):
+    """The bridge has its own lockfile and is not a workspace member, so the
+    install is frozen and ignores the root workspace. pnpm reports ERR_PNPM_*
+    on stdout, so stdout must be captured and shown when the install fails.
+    """
+    import subprocess
+
+    from hermes_cli.main import cmd_whatsapp
+
+    bridge_dir = tmp_path / "whatsapp-bridge"
+    bridge_dir.mkdir()
+    (bridge_dir / "bridge.js").write_text("// bridge")
+    monkeypatch.setattr(
+        "gateway.platforms.whatsapp_common.resolve_whatsapp_bridge_dir",
+        lambda: bridge_dir,
+    )
+    monkeypatch.setenv("WHATSAPP_MODE", "bot")
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+    monkeypatch.setattr("hermes_cli.main._require_tty", lambda *_a, **_kw: None)
+    monkeypatch.setattr("hermes_constants.ensure_hermes_pnpm", lambda: "/usr/bin/pnpm")
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return MagicMock(
+            returncode=1,
+            stdout=" ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with frozen-lockfile",
+            stderr="",
+        )
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cmd_whatsapp(MagicMock())
+
+    assert len(calls) == 1
+    cmd, kwargs = calls[0]
+    assert cmd == ["/usr/bin/pnpm", "install", "--frozen-lockfile", "--ignore-workspace"]
+    assert kwargs["cwd"] == str(bridge_dir)
+    assert kwargs["stdout"] == subprocess.PIPE
+    out = buf.getvalue()
+    assert "pnpm install failed" in out
+    assert "ERR_PNPM_OUTDATED_LOCKFILE" in out
+    assert _env_value(isolated_home, "WHATSAPP_ENABLED") is None

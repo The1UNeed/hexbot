@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
-"""Semantic diff of npm ``package-lock.json`` files for PR comments.
+"""Semantic diff of pnpm ``pnpm-lock.yaml`` files for PR comments.
 
-``git diff`` on a lockfile is unreadable: npm reorders entries, rewrites
-integrity hashes, and moves packages between nesting levels, so a one-line
-``package.json`` bump can produce a thousand-line textual diff. This script
-ignores the text entirely — it parses the ``packages`` map out of both
-versions of each lockfile (lockfileVersion 2/3), reduces each to
-``{install path: version}``, and set-diffs the two dicts. Reordering and
-hash churn vanish; what's left is the actual dependency change.
+``git diff`` on a lockfile is unreadable: integrity hashes, peer-dependency
+suffixes in ``snapshots``, and per-importer specifiers all churn, so a
+one-line ``package.json`` bump can produce a thousand-line textual diff.
+This script ignores the text entirely — it reads the keys of the
+``packages`` map (``name@version``) out of both versions of each lockfile
+(lockfileVersion 9), reduces each to ``{name: versions}``, and set-diffs
+the two dicts. Reordering and hash churn vanish; what's left is the actual
+dependency change.
 
 Usage (from a checkout that still has the base ref available):
 
     python scripts/ci/lockfile_diff.py --base <ref> --head <ref> \
         --output diff.md [--repo-root .]
 
-Reads every ``package-lock.json`` tracked at either ref (top-level and
+Reads every ``pnpm-lock.yaml`` tracked at either ref (top-level and
 nested — the repo has several), diffs each, and writes a Markdown fragment
 to ``--output``. Exits 0 always; an empty output file means "no version
 changes" (the caller uses that to decide whether to include the section).
@@ -25,54 +26,54 @@ which wraps it in a section with a header and action note.
 from __future__ import annotations
 
 import argparse
-import json
 import subprocess
 import sys
 
 
-def parse_lockfile(text: str) -> dict[str, str]:
-    """Reduce lockfile JSON to ``{install path: version}``.
+def parse_lockfile(text: str) -> dict[str, set[str]]:
+    """Reduce lockfile YAML to ``{package name: {versions}}``.
 
-    Keys are the ``packages`` map's keys (e.g. ``node_modules/react`` or
-    ``node_modules/foo/node_modules/react``), so the same package deduped
-    at two versions shows up as two distinct entries. The root entry
-    (``""``, the workspace itself) is skipped, as are versionless link
-    entries.
+    Only the keys of the top-level ``packages`` map are read: one
+    ``name@version`` per line at two-space indent, quoted when the name is
+    scoped. That is a fixed, machine-written shape, so it is matched by
+    line rather than with a YAML parser (CI runs this without the project
+    venv). One package locked at two versions yields two versions under
+    one name.
     """
-    data = json.loads(text)
-    out: dict[str, str] = {}
-    for path, meta in data.get("packages", {}).items():
-        if not path:
-            continue  # root project entry, not a dependency
-        version = meta.get("version")
-        if version:
-            out[path] = version
+    out: dict[str, set[str]] = {}
+    in_packages = False
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if not line.startswith(" "):
+            in_packages = line.rstrip() == "packages:"
+            continue
+        if not in_packages or line.startswith("   ") or not line.startswith("  "):
+            continue
+        key = line.strip().split(": ", 1)[0].rstrip(":").strip("'\"")
+        name, sep, version = key.rpartition("@")
+        if sep and name:
+            out.setdefault(name, set()).add(version)
     return out
 
 
-def diff_locks(base: dict[str, str], head: dict[str, str]) -> dict[str, list]:
-    """Set-diff two ``{path: version}`` maps.
+def diff_locks(base: dict[str, set[str]], head: dict[str, set[str]]) -> dict[str, list]:
+    """Set-diff two ``{name: versions}`` maps.
 
-    Returns ``added`` / ``removed`` as ``[(path, version)]`` and
-    ``updated`` as ``[(path, base_version, head_version)]``, each sorted
-    by path.
+    Returns ``added`` / ``removed`` as ``[(name, version)]`` and
+    ``updated`` as ``[(name, base_version, head_version)]``, each sorted.
+    A name that loses one version and gains another is an update; versions
+    gained or lost beyond that pairing are additions or removals.
     """
-    added = sorted((p, v) for p, v in head.items() if p not in base)
-    removed = sorted((p, v) for p, v in base.items() if p not in head)
-    updated = sorted(
-        (p, base[p], head[p]) for p in base.keys() & head.keys() if base[p] != head[p]
-    )
+    added, removed, updated = [], [], []
+    for name in sorted(base.keys() | head.keys()):
+        gone = sorted(base.get(name, set()) - head.get(name, set()))
+        new = sorted(head.get(name, set()) - base.get(name, set()))
+        paired = min(len(gone), len(new))
+        updated += [(name, old, cur) for old, cur in zip(gone, new)]
+        added += [(name, v) for v in new[paired:]]
+        removed += [(name, v) for v in gone[paired:]]
     return {"added": added, "removed": removed, "updated": updated}
-
-
-def _display_name(path: str) -> str:
-    """``node_modules/foo/node_modules/@scope/bar`` → ``@scope/bar (nested under foo)``."""
-    parts = path.split("node_modules/")
-    name = parts[-1].rstrip("/")
-    if len(parts) > 2:
-        parents = " → ".join(p.rstrip("/") for p in parts[1:-1])
-        return f"{name} *(nested under {parents})*"
-    return name
 
 
 def render_markdown(diffs: dict[str, dict[str, list]]) -> str:
@@ -96,12 +97,12 @@ def render_markdown(diffs: dict[str, dict[str, list]]) -> str:
         lines = [f"#### `{lockfile}`", ""]
         lines.append("| Package | Before | After |")
         lines.append("| --- | --- | --- |")
-        for path, old, new in updated:
-            lines.append(f"| {_display_name(path)} | `{old}` | `{new}` |")
-        for path, version in added:
-            lines.append(f"| ➕ {_display_name(path)} | — | `{version}` |")
-        for path, version in removed:
-            lines.append(f"| ➖ {_display_name(path)} | `{version}` | — |")
+        for name, old, new in updated:
+            lines.append(f"| {name} | `{old}` | `{new}` |")
+        for name, version in added:
+            lines.append(f"| ➕ {name} | — | `{version}` |")
+        for name, version in removed:
+            lines.append(f"| ➖ {name} | `{version}` | — |")
         sections.append("\n".join(lines))
 
     if not sections:
@@ -132,12 +133,12 @@ def _tracked_lockfiles(ref: str, repo_root: str) -> set[str]:
     return {
         line
         for line in proc.stdout.splitlines()
-        if line.split("/")[-1] == "package-lock.json"
+        if line.split("/")[-1] == "pnpm-lock.yaml"
     }
 
 
 def diff_refs(base: str, head: str, repo_root: str = ".") -> dict[str, dict[str, list]]:
-    """Diff every package-lock.json tracked at either ref."""
+    """Diff every pnpm-lock.yaml tracked at either ref."""
     lockfiles = _tracked_lockfiles(base, repo_root) | _tracked_lockfiles(head, repo_root)
     diffs = {}
     for path in sorted(lockfiles):

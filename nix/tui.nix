@@ -1,6 +1,6 @@
 # nix/tui.nix — Hermes TUI (Ink/React) compiled with tsc and bundled
 { hermesNpmLib, ... }:
-hermesNpmLib.buildNpmPackage {
+hermesNpmLib.buildPnpmPackage {
   dirs = [
     "ui-tui"
     "apps/shared"
@@ -10,7 +10,7 @@ hermesNpmLib.buildNpmPackage {
 
   buildPhase = ''
     # esbuild bundles everything — no need for tsc or vite.
-    # Run from the workspace root where node_modules/ lives.
+    # Run from the workspace root.
     node ui-tui/scripts/build.mjs
   '';
 

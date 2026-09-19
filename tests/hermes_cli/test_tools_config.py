@@ -670,7 +670,7 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
         browser-use harness cannot drive it, so its setup must not pull
         the CLI in."""
         with patch("hermes_cli.tools_config._ensure_browser_use_cli") as ensure, patch(
-            "hermes_constants.find_node_executable", return_value=None
+            "hermes_constants.ensure_hermes_pnpm", return_value=None
         ), patch("subprocess.run"):
             _run_post_setup("camofox")
         ensure.assert_not_called()

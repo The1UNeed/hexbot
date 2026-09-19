@@ -249,26 +249,11 @@ json_escape() {
         -e 's/"/\\"/g'
 }
 
-# npm rewrites tracked package-lock.json files non-deterministically during
-# `npm install` / `npm run pack`. On a managed install those diffs are never
-# intentional, but they leave the checkout dirty — which forces `hermes update`
-# to autostash on every run and makes branch switches fragile. Restore them so
-# a fresh install ends with a clean tree. Best-effort; only touches lockfiles.
-restore_dirty_lockfiles() {
-    local repo="${1:-$INSTALL_DIR}"
-    [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
-    command -v git >/dev/null 2>&1 || return 0
-    local dirty
-    dirty=$(git -C "$repo" diff --name-only 2>/dev/null | grep 'package-lock\.json$' || true)
-    [ -z "$dirty" ] && return 0
-    echo "$dirty" | while IFS= read -r f; do
-        [ -n "$f" ] && git -C "$repo" checkout -- "$f" 2>/dev/null || true
-    done
-}
-
-# npm rewrites tracked package-lock.json files non-deterministically during
-# local builds. On a managed install those diffs are usually runtime churn, not
-# intentional user edits, so discard them before the repository-stage stash.
+# A checkout installed while this repo still used npm can carry rewritten
+# package-lock.json files: npm rewrote them non-deterministically during local
+# builds. Those diffs are runtime churn, not intentional user edits, so discard
+# them before the repository-stage stash. pnpm installs run with
+# --frozen-lockfile and never touch pnpm-lock.yaml, so it needs no such pass.
 # If package.json in the same directory is also dirty we keep both changes.
 discard_update_lockfile_churn() {
     local repo="${1:-$INSTALL_DIR}"
@@ -834,7 +819,7 @@ check_git() {
 # toolchain (make + a compiler); Python and make are already covered by
 # check_python/check_node's prerequisites, but the compiler itself was never
 # checked, so a missing g++/clang++ only surfaced as a wall of node-gyp/make
-# output deep inside `npm install`, with no earlier, actionable warning.
+# output deep inside `pnpm install`, with no earlier, actionable warning.
 # Best-effort like install_system_packages: warns and lets the caller decide
 # whether to proceed rather than aborting the whole install (unlike git,
 # which is hard-required much earlier for clone_repo).
@@ -928,7 +913,7 @@ check_cxx_compiler() {
 # The dependency tree supports Node 22.22+, 24.11+, and 26+. nanoid 6 excludes
 # Node 23 and 25 while its >=26 arm accepts later releases, and @babel/* 8.x
 # requires ^22.18.0 || >=24.11.0 — so accepting 23/25 or an early Node 24
-# here only defers the failure to `npm ci` under engine-strict. Keep this in
+# here only defers the failure to `pnpm install` under engineStrict. Keep this in
 # sync with the root package.json. Anything outside the supported lines is
 # replaced with the Hermes-managed Node $NODE_VERSION.
 node_satisfies_build() {
@@ -952,26 +937,6 @@ node_satisfies_build() {
     return 1
 }
 
-# npm 11.10.0–11.16.x honor `min-release-age` but ignore
-# `min-release-age-exclude`, both of which `.npmrc` sets. That combination
-# applies the 14-day age gate to packages we deliberately exempted, so every
-# install fails ETARGET on a freshly published dependency. The root
-# package.json excludes that band via `engines.npm`, and `engine-strict=true`
-# makes it fatal — so a system npm in the band cannot install this repo, no
-# matter how new its Node is. Returns 0 when the npm is usable.
-npm_supports_npmrc() {
-    local ver="${1#v}"
-    local major="${ver%%.*}"
-    local minor="${ver#*.}"; minor="${minor%%.*}"
-    case "$major" in ''|*[!0-9]*) return 1 ;; esac
-    case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
-    # The bad band is 11.10.0 through 11.16.x.
-    if [ "$major" -eq 11 ] && [ "$minor" -ge 10 ] && [ "$minor" -le 16 ]; then
-        return 1
-    fi
-    return 0
-}
-
 check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
@@ -980,28 +945,17 @@ check_node() {
     # every install — including re-runs that skip the Node (re)install below.
     configure_managed_node_npm_prefix
 
-    # The system toolchain is only usable when BOTH halves work: a Node new
-    # enough for the desktop build AND an npm that can read our .npmrc. A
-    # bad-band npm (see npm_supports_npmrc) fails `npm ci` outright, and the
-    # managed Node we install instead bundles one that works.
-    #
-    # npm must actually be reachable, not just node: a stray `node` symlink
-    # without a sibling npm (leftover from a node version manager) makes
-    # `command -v node` succeed while every later `npm install` silently
-    # fails and the desktop build dies with an opaque "Node.js / npm
+    # npm must actually be reachable, not just node: ensure_pnpm bootstraps
+    # pnpm with it, and a stray `node` symlink without a sibling npm (leftover
+    # from a node version manager) makes `command -v node` succeed while that
+    # bootstrap fails and the desktop build dies with an opaque "Node.js / npm
     # unavailable" (#77003). Node only counts as found when npm resolves on
     # the same PATH.
     if command -v node &> /dev/null && command -v npm &> /dev/null \
         && node_satisfies_build "$(node --version)"; then
-        if npm_supports_npmrc "$(npm --version 2>/dev/null)"; then
-            log_success "Node.js $(node --version) found"
-            HAS_NODE=true
-            return 0
-        fi
-        log_warn "npm $(npm --version) cannot honor this repo's .npmrc (npm 11.10-11.16 ignore"
-        log_warn "min-release-age-exclude) — installing Hermes-managed Node $NODE_VERSION instead..."
-        install_node
-        return
+        log_success "Node.js $(node --version) found"
+        HAS_NODE=true
+        return 0
     fi
 
     # Prefer a Hermes-managed Node from a previous run over a too-old system one.
@@ -1216,6 +1170,111 @@ install_node() {
     log_info "Install manually: https://nodejs.org/en/download/"
     HAS_NODE=false
     return 0
+}
+
+# The pnpm version the checkout pins: `packageManager` in the root package.json
+# is "pnpm@X.Y.Z", optionally followed by a "+sha…" integrity suffix. sed, not
+# node, to match scripts/lib/node-bootstrap.sh.
+pinned_pnpm_version() {
+    local spec
+    spec=$(sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$INSTALL_DIR/package.json" 2>/dev/null | head -1)
+    case "$spec" in
+        pnpm@*) spec="${spec#pnpm@}"; printf '%s\n' "${spec%%+*}" ;;
+    esac
+}
+
+# True when version $1 is at least version $2 (both X.Y.Z). A pre-release or
+# unparseable $1 never qualifies.
+version_at_least() {
+    local have="$1" want="$2" i
+    [[ "$have" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    [[ "$want" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    local IFS=.
+    local -a h=($have) w=($want)
+    for i in 0 1 2; do
+        [ "${h[i]}" -gt "${w[i]}" ] && return 0
+        [ "${h[i]}" -lt "${w[i]}" ] && return 1
+    done
+    return 0
+}
+
+# True when pnpm version $1 can install the checkout. `engines.pnpm` is
+# authored as ">=X.Y.Z" and pnpm-workspace.yaml sets `engineStrict`, so a pnpm
+# below the floor dies with ERR_PNPM_UNSUPPORTED_ENGINE. Any other range shape
+# only accepts the pin itself. Mirrors _nb_pnpm_version_ok() in
+# scripts/lib/node-bootstrap.sh.
+pnpm_satisfies_engines() {
+    local range
+    range=$(sed -n 's/.*"pnpm"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$INSTALL_DIR/package.json" 2>/dev/null | head -1)
+    if [[ "$range" =~ ^\>=([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+        version_at_least "$1" "${BASH_REMATCH[1]}"
+    else
+        [ "$1" = "$(pinned_pnpm_version)" ]
+    fi
+}
+
+# Put a pnpm that can install the checkout first on PATH. Needs the clone (the
+# pin lives in its package.json) and a check_node that found npm.
+#
+# A pnpm the user already has is reused when it satisfies `engines.pnpm`.
+# Otherwise npm installs the pinned pnpm under $HERMES_HOME/node — where
+# hermes_constants.ensure_hermes_pnpm() looks for it — with an explicit
+# --prefix, so nothing lands in a system, nvm, or Homebrew Node even when
+# that Node's npm does the work. Node 25+ ships without corepack, so npm is
+# the one bootstrapper every Node carries.
+ensure_pnpm() {
+    local pin
+    pin="$(pinned_pnpm_version)"
+    if [ -z "$pin" ]; then
+        log_error "No pnpm version pinned by packageManager in $INSTALL_DIR/package.json"
+        return 1
+    fi
+
+    if command -v pnpm >/dev/null 2>&1 \
+        && pnpm_satisfies_engines "$(pnpm --version 2>/dev/null)"; then
+        log_success "pnpm $(pnpm --version) found"
+        return 0
+    fi
+
+    local managed_pnpm="$HERMES_HOME/node/bin/pnpm"
+    if ! { [ -x "$managed_pnpm" ] \
+        && pnpm_satisfies_engines "$("$managed_pnpm" --version 2>/dev/null)"; }; then
+        if ! command -v npm >/dev/null 2>&1; then
+            log_error "Cannot install pnpm: npm unavailable"
+            return 1
+        fi
+        log_info "Installing pnpm $pin..."
+        # A temp cwd keeps any project .npmrc out of a global install, and
+        # min-release-age=0 keeps a user ~/.npmrc age gate from refusing an
+        # exact, reviewed pin.
+        local tmp_cwd log_file
+        tmp_cwd="$(mktemp -d)"
+        log_file="$(mktemp)"
+        if ! ( cd "$tmp_cwd" && CI=1 npm_config_min_release_age=0 \
+                run_with_timeout "$NODE_DEPS_TIMEOUT" npm install -g --prefix "$HERMES_HOME/node" \
+                    --no-fund --no-audit --progress=false "pnpm@$pin" ) >"$log_file" 2>&1; then
+            log_error "pnpm install failed or timed out:"
+            cat "$log_file" >&2
+            rm -rf "$tmp_cwd" "$log_file"
+            log_info "Fix manually: npm install -g --prefix \"$HERMES_HOME/node\" pnpm@$pin"
+            return 1
+        fi
+        rm -rf "$tmp_cwd" "$log_file"
+        log_success "pnpm $pin installed to ~/.hermes/node/"
+    fi
+
+    # Package scripts call `pnpm` by name, so it has to resolve on PATH. When
+    # the managed Node is not the active one, its bin dir stays off PATH (it
+    # may hold a Node check_node passed over); expose pnpm alone instead, from
+    # a fixed directory so repeated runs leave nothing behind.
+    if [ "$(command -v pnpm 2>/dev/null)" != "$managed_pnpm" ]; then
+        local shim_dir="$HERMES_HOME/node/pnpm-shim"
+        mkdir -p "$shim_dir"
+        ln -sf "$managed_pnpm" "$shim_dir/pnpm"
+        export PATH="$shim_dir:$PATH"
+    fi
 }
 
 check_network_prerequisites() {
@@ -2459,7 +2518,7 @@ run_with_timeout() {
     fi
 
     # Pure-shell fallback: run in a new process group so we can kill the whole
-    # subtree (npm spawns node + the Electron downloader as children).
+    # subtree (pnpm spawns node + the Electron downloader as children).
     set -m
     ( "$@" ) &
     local cmd_pid=$!
@@ -2619,34 +2678,33 @@ configure_browser_env_from_system_browser() {
     log_success "Configured browser tools to use $browser_path"
 }
 
-# Select the npm workspaces a CLI install actually needs, into the
+# Select the workspace members a CLI install actually needs, into the
 # NODE_DEPS_WORKSPACE_ARGS array.
 #
-# A bare `npm install` at the repo root resolves package.json's `apps/*`
-# glob, which materializes apps/desktop — and with it node-pty, which ships
-# no Linux prebuild and falls back to `node-gyp rebuild`. On a host without
-# make/gcc that rebuild fails, and since #85297 made a failed npm install
+# A bare `pnpm install` at the repo root resolves pnpm-workspace.yaml's
+# `apps/*` glob, which materializes apps/desktop — and with it node-pty, which
+# ships no Linux prebuild and falls back to `node-gyp rebuild`. On a host
+# without make/gcc that rebuild fails, and since #85297 made a failed install
 # fatal it aborts the whole install of a machine that will never launch
 # Electron or a PTY addon (#38311, #38772). Desktop dependencies are
 # installed by install_desktop(), reachable only via --include-desktop.
 #
-# Naming ui-tui/web excludes the unnamed apps/* workspaces, and
-# --include-workspace-root keeps the root's own devDependencies (the shared
-# ESLint flat config each workspace imports) from being pruned by the scoped
-# install — the same closure `hermes update` installs
-# (hermes_cli/main.py::_update_node_dependencies). Prebuilt/partial checkouts
-# can lack a workspace, and naming a missing one makes npm fail hard, so fall
-# back to a root-only install that still skips apps/*.
+# `--filter <member>...` installs the member, the workspace packages it
+# depends on, and the workspace root (the shared ESLint flat config each
+# member imports) — the same closure `hermes update` installs
+# (hermes_cli/main.py::_update_node_dependencies). pnpm silently installs
+# nothing for a filter that matches no project, so a prebuilt/partial checkout
+# that lacks both members falls back to the root alone, which still skips
+# apps/*.
 node_deps_workspace_args() {
     local install_dir="$1"
     NODE_DEPS_WORKSPACE_ARGS=()
-    [ -f "$install_dir/ui-tui/package.json" ] && NODE_DEPS_WORKSPACE_ARGS+=(--workspace ui-tui)
-    [ -f "$install_dir/web/package.json" ] && NODE_DEPS_WORKSPACE_ARGS+=(--workspace web)
+    [ -f "$install_dir/ui-tui/package.json" ] && NODE_DEPS_WORKSPACE_ARGS+=(--filter ui-tui...)
+    [ -f "$install_dir/web/package.json" ] && NODE_DEPS_WORKSPACE_ARGS+=(--filter web...)
     if [ "${#NODE_DEPS_WORKSPACE_ARGS[@]}" -eq 0 ]; then
-        NODE_DEPS_WORKSPACE_ARGS=(--workspaces=false)
-        return 0
+        NODE_DEPS_WORKSPACE_ARGS=(--filter .)
     fi
-    NODE_DEPS_WORKSPACE_ARGS+=(--include-workspace-root)
+    return 0
 }
 
 install_node_deps() {
@@ -2658,36 +2716,37 @@ install_node_deps() {
     if [ "$DISTRO" = "termux" ]; then
         log_info "Skipping automatic Node/browser dependency setup on Termux"
         log_info "Browser automation is not part of the tested Termux install path yet."
-        log_info "If you want to experiment manually later, run: cd $INSTALL_DIR && npm install"
+        log_info "If you want to experiment manually later, run: cd $INSTALL_DIR && pnpm install"
         return 0
     fi
+
+    ensure_pnpm || return 1
 
     if [ -f "$INSTALL_DIR/package.json" ]; then
         log_info "Installing Node.js dependencies (browser tools)..."
         cd "$INSTALL_DIR"
         # Time-boxed: a stalled registry fetch would otherwise hang here with no
         # progress (same #39219 stall class as the desktop build below).
-        # A failed npm install used to still print "✓ Node.js dependencies
+        # A failed install used to still print "✓ Node.js dependencies
         # installed", hiding the degradation from the user (#77003). Now it
         # fails the install outright instead of burying the warning (#85297).
-        # Capture npm output so failures are diagnosable (#87340).
+        # Capture pnpm output so failures are diagnosable (#87340).
         # Scoped to the workspaces a CLI install needs so apps/desktop's
         # node-pty is never built here — see node_deps_workspace_args().
         node_deps_workspace_args "$INSTALL_DIR"
-        local npm_log
-        npm_log="$(mktemp)"
-        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install "${NODE_DEPS_WORKSPACE_ARGS[@]}" --silent \
-                >"$npm_log" 2>&1; then
-            log_error "npm install failed or timed out; Node.js dependencies were not installed"
-            if [ -s "$npm_log" ]; then
-                log_error "npm output:"
-                cat "$npm_log" >&2
+        local pnpm_log
+        pnpm_log="$(mktemp)"
+        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" pnpm install --frozen-lockfile "${NODE_DEPS_WORKSPACE_ARGS[@]}" --reporter=append-only \
+                >"$pnpm_log" 2>&1; then
+            log_error "pnpm install failed or timed out; Node.js dependencies were not installed"
+            if [ -s "$pnpm_log" ]; then
+                log_error "pnpm output:"
+                cat "$pnpm_log" >&2
             fi
-            rm -f "$npm_log"
-            restore_dirty_lockfiles "$INSTALL_DIR"
+            rm -f "$pnpm_log"
             return 1
         fi
-        rm -f "$npm_log"
+        rm -f "$pnpm_log"
         log_success "Node.js dependencies installed"
 
         # Install Playwright browser + system dependencies.
@@ -2789,26 +2848,22 @@ install_node_deps() {
         # Time-boxed: a stalled registry fetch would otherwise hang here (#39219).
         # Report success only on actual success, same as node-deps above
         # (#77003) — and fail the install outright (#85297).
-        # Capture npm output so failures are diagnosable (#87340).
-        local tui_npm_log
-        tui_npm_log="$(mktemp)"
-        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent \
-                >"$tui_npm_log" 2>&1; then
-            log_error "TUI npm install failed or timed out; TUI dependencies were not installed"
-            if [ -s "$tui_npm_log" ]; then
-                log_error "npm output:"
-                cat "$tui_npm_log" >&2
+        # Capture pnpm output so failures are diagnosable (#87340).
+        local tui_pnpm_log
+        tui_pnpm_log="$(mktemp)"
+        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" pnpm install --frozen-lockfile --reporter=append-only \
+                >"$tui_pnpm_log" 2>&1; then
+            log_error "TUI pnpm install failed or timed out; TUI dependencies were not installed"
+            if [ -s "$tui_pnpm_log" ]; then
+                log_error "pnpm output:"
+                cat "$tui_pnpm_log" >&2
             fi
-            rm -f "$tui_npm_log"
-            restore_dirty_lockfiles "$INSTALL_DIR"
+            rm -f "$tui_pnpm_log"
             return 1
         fi
-        rm -f "$tui_npm_log"
+        rm -f "$tui_pnpm_log"
         log_success "TUI dependencies installed"
     fi
-
-    # Keep the checkout clean so `hermes update` doesn't autostash every run.
-    restore_dirty_lockfiles "$INSTALL_DIR"
 }
 
 install_browser_use_cli() {
@@ -3276,7 +3331,7 @@ ensure_mode() {
 
 
 # Clear the cached Electron download + any half-written unpacked output so the
-# next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
+# next `pnpm run pack` re-downloads and re-stages from scratch. A corrupt zip in
 # the per-user Electron download cache - most often a partial/resumed download
 # that leaves concatenated junk - makes electron-builder's `unpack-electron`
 # extract a tree MISSING the electron binary, so the `electron`->`Hermes` rename
@@ -3336,7 +3391,7 @@ EOF
     printf '%s' "$removed"
 }
 
-# Run the desktop pack in $1 (the apps/desktop dir). `npm run pack` = tsc +
+# Run the desktop pack in $1 (the apps/desktop dir). `pnpm run pack` = tsc +
 # vite build + electron-builder --dir, producing an unpacked app for the
 # current OS. Signing auto-discovery is disabled so electron-builder falls back
 # to an ad-hoc signature instead of grabbing an unrelated Developer ID from the
@@ -3347,35 +3402,31 @@ _desktop_pack() {
     local desktop_dir="$1"
     local mirror="${2:-}"
     if [ -n "$mirror" ]; then
-        ( cd "$desktop_dir" && ELECTRON_MIRROR="$mirror" CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
+        ( cd "$desktop_dir" && ELECTRON_MIRROR="$mirror" CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run pack )
     else
-        ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
+        ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run pack )
     fi
 }
 
 # Last-resort Electron mirror after GitHub download fails (#47266).
 DESKTOP_ELECTRON_FALLBACK_MIRROR="https://npmmirror.com/mirrors/electron/"
 
-# Per-attempt wall-clock cap for the desktop npm install / electron-builder pack
+# Per-attempt wall-clock cap for the desktop pnpm install / electron-builder pack
 # (#39219). A stalled (not failed) Electron download on a throttled/blocked link
 # never returns, so without this the installer hangs forever on "Build desktop
 # app". 900s is generous enough for a slow-but-progressing ~150MB fetch + build;
 # override with DESKTOP_BUILD_TIMEOUT for very slow links.
 DESKTOP_BUILD_TIMEOUT="${DESKTOP_BUILD_TIMEOUT:-900}"
 
-# Wall-clock cap for the plain registry `npm install`s (browser-tools + TUI
+# Wall-clock cap for the plain registry `pnpm install`s (browser-tools + TUI
 # deps). Same #39219 stall class but no ~150MB Electron binary, so a shorter
 # default; override with NODE_DEPS_TIMEOUT for very slow links.
 NODE_DEPS_TIMEOUT="${NODE_DEPS_TIMEOUT:-600}"
 
-# Electron package dir — workspace-local nest first, then root hoist.
+# Electron package dir. pnpm links a member's dependencies into the member's
+# own node_modules and hoists nothing to the root.
 _electron_dir() {
-    local install_dir="$1"
-    if [ -d "$install_dir/apps/desktop/node_modules/electron" ]; then
-        printf '%s\n' "$install_dir/apps/desktop/node_modules/electron"
-    else
-        printf '%s\n' "$install_dir/node_modules/electron"
-    fi
+    printf '%s\n' "$1/apps/desktop/node_modules/electron"
 }
 
 # True when dist/ holds a usable Electron binary (#38673 / run-electron-builder.mjs).
@@ -3426,8 +3477,8 @@ _restore_electron_dist_with_fallback() {
 }
 
 # Build apps/desktop into a launchable native app. Mirrors install.ps1's
-# Install-Desktop: a root-level npm install so the apps/* workspace resolves
-# the desktop's own deps (Electron ~150MB), then `npm run pack`
+# Install-Desktop: a root-level pnpm install so the apps/* workspace resolves
+# the desktop's own deps (Electron ~150MB), then `pnpm run pack`
 # (electron-builder --dir) which emits an unpacked app for the current OS. Only invoked
 # via the 'desktop' stage / --include-desktop, which the Electron app's own
 # first-launch bootstrap never requests (it must not rebuild itself).
@@ -3477,9 +3528,10 @@ install_desktop() {
     check_node
     if ! command -v npm >/dev/null 2>&1; then
         log_error "Cannot build desktop app: Node.js / npm unavailable"
-        log_info "Install Node.js and retry: cd $desktop_dir && npm run pack"
+        log_info "Install Node.js and retry: cd $desktop_dir && pnpm run pack"
         return 1
     fi
+    ensure_pnpm || return 1
     if [ ! -f "$desktop_dir/package.json" ]; then
         log_warn "Skipping desktop build (apps/desktop not present in checkout)"
         return 0
@@ -3489,57 +3541,53 @@ install_desktop() {
     #    node-pty prebuilds) resolve. The browser-tools install runs in the
     #    repo-root package workspace, which does not pull apps/* deps.
     #
-    #    Prefer `npm ci`: it deletes node_modules and reinstalls from the
-    #    lockfile, so it always produces a complete tree. Bare `npm install`
-    #    can report "up to date" against a stale node_modules/.package-lock.json
-    #    marker while node_modules is actually empty (Windows workspace-hoisting
-    #    flake) — leaving tsc/typescript unresolved and `npm run pack`'s
-    #    `tsc -b` failing with no obvious cause. Fall back to `npm install`
-    #    only if `npm ci` is unavailable or the lockfile is out of sync.
+    #    Install from the lockfile: `--frozen-lockfile` fails rather than
+    #    rewriting pnpm-lock.yaml when it is out of sync with a package.json.
+    #    Only then fall back to `--no-lockfile`, which resolves fresh without
+    #    reading or writing the lockfile, so the checkout stays clean.
     #
     #    Both the install and the build below are wrapped in a hard wall-clock
     #    timeout (#39219): the Electron binary (~150MB) is fetched from GitHub,
-    #    and on a throttled/blocked connection that download can *stall* — npm
+    #    and on a throttled/blocked connection that download can *stall* — pnpm
     #    neither errors nor exits, so the installer sits on "Build desktop app"
-    #    forever with only `npm warn deprecated` lines visible. A stall now
-    #    converts to a non-zero exit, which feeds the existing self-heal /
-    #    mirror-fallback escalation instead of hanging the whole install.
+    #    forever. A stall now converts to a non-zero exit, which feeds the
+    #    existing self-heal / mirror-fallback escalation instead of hanging the
+    #    whole install.
     #
-    #    The `npm ci` and its `npm install` fallback SHARE one budget: a stalled
-    #    link wedges both identically, so giving each a full DESKTOP_BUILD_TIMEOUT
+    #    The frozen install and its fallback SHARE one budget: a stalled link
+    #    wedges both identically, so giving each a full DESKTOP_BUILD_TIMEOUT
     #    would double the worst-case hang. We compute a single deadline and pass
     #    the remaining seconds to the fallback (min 30s so it still gets a real
-    #    attempt if `npm ci` failed fast rather than stalling).
+    #    attempt if the frozen install failed fast rather than stalling).
     log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
     local _deps_start _deps_remaining
     _deps_start=$(date +%s)
-    if run_with_timeout "$DESKTOP_BUILD_TIMEOUT" bash -c 'cd "$1" && npm ci' _ "$INSTALL_DIR"; then
+    if run_with_timeout "$DESKTOP_BUILD_TIMEOUT" bash -c 'cd "$1" && pnpm install --frozen-lockfile' _ "$INSTALL_DIR"; then
         log_success "Desktop workspace dependencies installed"
     elif _deps_remaining=$(( DESKTOP_BUILD_TIMEOUT - ($(date +%s) - _deps_start) )); \
          [ "$_deps_remaining" -lt 30 ] && _deps_remaining=30; \
-         run_with_timeout "$_deps_remaining" bash -c 'cd "$1" && npm install' _ "$INSTALL_DIR"; then
+         run_with_timeout "$_deps_remaining" bash -c 'cd "$1" && pnpm install --no-lockfile' _ "$INSTALL_DIR"; then
         log_success "Desktop workspace dependencies installed"
     elif _electron_pkg_staged_missing_dist "$INSTALL_DIR"; then
         log_warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
         _restore_electron_dist_with_fallback "$INSTALL_DIR" || true
     else
-        log_error "Desktop workspace npm install failed"
-        # Common cause: a previous 'sudo npm'/'sudo npx' left root-owned files in
-        # ~/.npm, so this non-root install can't write the shared cache. npm hides
-        # it behind a confusing EEXIST / "File exists" message while the real errno
-        # is EACCES (-13). Point the user at the fix instead of a raw npm trace.
-        log_info "If the errors above mention EACCES / 'permission denied' / EEXIST while"
-        log_info "writing the npm cache, your ~/.npm likely holds root-owned files from an"
-        log_info "earlier 'sudo npm' or 'sudo npx'. Reclaim ownership and retry:"
-        log_info "  sudo chown -R \"\$(id -un)\" ~/.npm && npm cache verify"
+        log_error "Desktop workspace pnpm install failed"
+        # Common cause: a previous 'sudo pnpm' left root-owned files in the
+        # pnpm store, so this non-root install can't write it. Point the user
+        # at the fix instead of a raw pnpm trace.
+        log_info "If the errors above mention EACCES / 'permission denied', your pnpm store"
+        log_info "likely holds root-owned files from an earlier 'sudo pnpm'. Reclaim"
+        log_info "ownership and retry:"
+        log_info "  sudo chown -R \"\$(id -un)\" \"\$(pnpm store path)\""
         log_info "Then re-run this installer, or build manually:"
-        log_info "  cd \"$INSTALL_DIR\" && npm ci && cd apps/desktop && npm run pack"
+        log_info "  cd \"$INSTALL_DIR\" && pnpm install --frozen-lockfile && cd apps/desktop && pnpm run pack"
         return 1
     fi
 
     # 2. Build, with up to three escalating attempts so a transient/blocked
     #    Electron download self-heals instead of failing the whole install:
-    #      a) plain `npm run pack` (downloads Electron from GitHub),
+    #      a) plain `pnpm run pack` (downloads Electron from GitHub),
     #      b) on failure, purge a corrupt cached zip + stale unpacked dir and
     #         retry (matches install.ps1 / `hermes desktop`),
     #      c) on still-failing, fall back to a public Electron mirror — this is
@@ -3582,8 +3630,8 @@ install_desktop() {
         # trust and rebuild (@electron/get honors ELECTRON_MIRROR):
         log_info "If the log shows Electron download retries, rebuild via a reachable mirror:"
         log_info "  ELECTRON_MIRROR=<mirror-base-url> \\"
-        log_info "    bash -c 'cd \"$desktop_dir\" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack'"
-        log_info "Otherwise build manually: cd $desktop_dir && npm run pack"
+        log_info "    bash -c 'cd \"$desktop_dir\" && CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run pack'"
+        log_info "Otherwise build manually: cd $desktop_dir && pnpm run pack"
         return 1
     fi
 
@@ -3671,10 +3719,6 @@ PYEOF
             codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
         fi
     fi
-
-    # `npm install` + `npm run pack` rewrite lockfiles; restore them so the
-    # checkout stays clean for the next `hermes update`.
-    restore_dirty_lockfiles "$INSTALL_DIR"
 }
 
 # Each --stage runs in its own process, so (unlike the monolithic main() where

@@ -274,12 +274,12 @@ def test_assemble_with_lockfile_status():
     """Lockfile no-changes status renders as visible info."""
     statuses = _status("lockfile-diff", [{
         "kind": "info",
-        "title": "package-lock.json",
+        "title": "pnpm-lock.yaml",
         "summary": "No lockfile changes — locked versions match the target branch.",
     }])
     body = _mod.assemble(review_statuses_json=statuses)
     assert "## ℹ️ Info" in body
-    assert "### package-lock.json" in body
+    assert "### pnpm-lock.yaml" in body
     assert "No lockfile changes" in body
 
 

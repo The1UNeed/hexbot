@@ -1,5 +1,6 @@
 """Tests for hermes_cli.doctor."""
 
+import json
 import os
 import subprocess
 import sys
@@ -1701,3 +1702,102 @@ def test_run_doctor_warns_when_lightpanda_binary_missing(monkeypatch, tmp_path):
     monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: None)
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
     assert "Lightpanda selected but binary not found" in out
+
+
+class TestCheckPnpm:
+    """pnpm installs and builds the checkout; doctor checks it against the
+    root ``engines.pnpm`` floor."""
+
+    @staticmethod
+    def _project(monkeypatch, tmp_path, pnpm_range=">=10.16.0"):
+        (tmp_path / "package.json").write_text(
+            json.dumps({"packageManager": "pnpm@10.29.3", "engines": {"pnpm": pnpm_range}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr("hermes_constants.pinned_pnpm_spec", lambda: "pnpm@10.29.3")
+
+    @staticmethod
+    def _pnpm_reports(monkeypatch, version):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return types.SimpleNamespace(returncode=0, stdout=f"{version}\n", stderr="")
+
+        monkeypatch.setattr(doctor_mod.subprocess, "run", fake_run)
+        return calls
+
+    def test_missing_pnpm_warns_with_pinned_install_hint(self, monkeypatch, tmp_path, capsys):
+        self._project(monkeypatch, tmp_path)
+        doctor_mod._check_pnpm(None)
+        out = capsys.readouterr().out
+        assert "pnpm not found" in out
+        assert "npm install -g pnpm@10.29.3" in out
+
+    def test_pnpm_below_engines_floor_warns_with_pinned_install_hint(self, monkeypatch, tmp_path, capsys):
+        self._project(monkeypatch, tmp_path)
+        calls = self._pnpm_reports(monkeypatch, "9.15.4")
+        doctor_mod._check_pnpm("/opt/bin/pnpm")
+        out = capsys.readouterr().out
+        assert calls == [["/opt/bin/pnpm", "--version"]]
+        assert "pnpm 9.15.4" in out
+        assert ">=10.16.0" in out
+        assert "npm install -g pnpm@10.29.3" in out
+
+    @pytest.mark.parametrize("version", ["10.16.0", "10.29.3", "11.0.0"])
+    def test_pnpm_at_or_above_engines_floor_is_ok(self, monkeypatch, tmp_path, capsys, version):
+        self._project(monkeypatch, tmp_path)
+        self._pnpm_reports(monkeypatch, version)
+        doctor_mod._check_pnpm("/opt/bin/pnpm")
+        out = capsys.readouterr().out
+        assert f"({version})" in out
+        assert "npm install -g" not in out
+
+
+def test_run_doctor_audits_the_workspace_and_the_bridge_with_pnpm(monkeypatch, tmp_path):
+    """One root `pnpm audit` covers every workspace member; the WhatsApp
+    bridge has its own lockfile and is audited with --ignore-workspace."""
+    _doctor_env_for_agent_browser(monkeypatch, tmp_path)
+    project = tmp_path / "project"
+    bridge = tmp_path / "bridge"
+    (project / "node_modules").mkdir()
+    (bridge / "node_modules").mkdir(parents=True)
+
+    import hermes_constants
+    import gateway.platforms.whatsapp_common as whatsapp_common
+    monkeypatch.setattr(hermes_constants, "find_hermes_node_executable", lambda cmd: None)
+    monkeypatch.setattr(
+        hermes_constants,
+        "find_node_executable_on_path",
+        lambda cmd: "/opt/bin/pnpm" if cmd == "pnpm" else None,
+    )
+    monkeypatch.setattr(whatsapp_common, "resolve_whatsapp_bridge_dir", lambda: bridge)
+
+    real_run = subprocess.run
+    audits = []
+
+    def fake_run(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and cmd[:2] == ["/opt/bin/pnpm", "audit"]:
+            audits.append((cmd, kwargs["cwd"]))
+            high = 1 if "--ignore-workspace" in cmd else 0
+            report = {"metadata": {"vulnerabilities": {"critical": 0, "high": high, "moderate": 0}}}
+            return SimpleNamespace(returncode=high, stdout=json.dumps(report), stderr="")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(doctor_mod.subprocess, "run", fake_run)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert audits == [
+        (["/opt/bin/pnpm", "audit", "--json"], str(project)),
+        (["/opt/bin/pnpm", "audit", "--json", "--ignore-workspace"], str(bridge)),
+    ]
+    assert "Node workspace deps" in out
+    assert "(no known vulnerabilities)" in out
+    assert "WhatsApp bridge deps" in out
+    assert "pnpm audit --fix --ignore-workspace && pnpm install --ignore-workspace" in out
+    assert "WhatsApp bridge has 1 Node package vulnerability" in out
