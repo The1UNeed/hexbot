@@ -10,6 +10,7 @@ import {
   onDownloadStart,
   onDownloaded,
   onInstallError,
+  onInstallStart,
   onProgress,
   onUpToDate,
   versionChannel
@@ -58,6 +59,10 @@ describe('update transitions', () => {
     const downloaded = onDownloaded(downloading, '0.1.5-nightly.20260916.9')
     expect(downloaded).toMatchObject({ status: 'downloaded', percent: 100 })
     expect(nextAction(downloaded)).toBe('install')
+    // Installing offers nothing: the app is about to close and reopen.
+    const installing = onInstallStart(downloaded)
+    expect(installing).toMatchObject({ status: 'installing', downloadedVersion: downloaded.downloadedVersion })
+    expect(nextAction(installing)).toBeNull()
     // A later poll finds the same version again: still ready to install.
     expect(onAvailable(onCheckStart(downloaded), '0.1.5-nightly.20260916.9', at).status).toBe(
       'downloaded'

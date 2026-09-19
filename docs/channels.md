@@ -141,6 +141,8 @@ The packaged app checks its track 15 seconds after launch and every 4
 minutes after that (`apps/desktop/src/main/updater.ts`). It never downloads
 on its own: when a version is available, a pill in the roster footer and the
 Settings, Updates page offer "Download update", then "Restart to update".
+Restarting shows an "Installing update" notice with no buttons until the app
+closes and reopens on the new version.
 Every check, download, and failure is written to `<home>/logs/desktop.log`.
 A nightly install ignores a stable version in the bucket and the other way
 round; switching tracks in Settings runs a check on the new track at once,

@@ -19,6 +19,7 @@ import {
   onDownloadStart,
   onDownloaded,
   onInstallError,
+  onInstallStart,
   onProgress,
   onUpToDate,
   versionChannel,
@@ -181,6 +182,9 @@ export async function installUpdate(): Promise<UpdateState> {
   if (nextAction(current) !== 'install' || active) return current
   active = 'install'
   log.info(`installing ${current.downloadedVersion}`)
+  // Tells the windows to show the restart notice, and the main process to let
+  // them close: quitAndInstall closes every window before `before-quit` fires.
+  setState(onInstallStart(current))
   try {
     autoUpdater.quitAndInstall(true, true)
   } catch (error) {

@@ -34,7 +34,8 @@ import {
   installUpdate,
   readUpdateChannelSetting,
   setUpdateChannel,
-  updaterEvents
+  updaterEvents,
+  type UpdateState
 } from './updater'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
@@ -300,7 +301,11 @@ else {
           )
         )
       )
-    updaterEvents.on('state', state => {
+    updaterEvents.on('state', (state: UpdateState) => {
+      // quitAndInstall closes the windows before `before-quit`; without this
+      // the close handler hides the window instead and the app never restarts.
+      if (state.status === 'installing') quitting = true
+      else if (state.errorContext === 'install') quitting = false
       for (const window of BrowserWindow.getAllWindows())
         window.webContents.send('hexbot:updater:status', state)
     })

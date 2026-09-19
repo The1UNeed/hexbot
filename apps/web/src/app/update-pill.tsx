@@ -41,6 +41,15 @@ export function describePill(
       }
     }
 
+    if (app.status === 'installing') {
+      return {
+        action: null,
+        busy: true,
+        label: 'Installing update',
+        title: `Installing Hexbot ${app.downloadedVersion ?? ''}`.trim()
+      }
+    }
+
     if (action === 'install') {
       return {
         action: 'install',
