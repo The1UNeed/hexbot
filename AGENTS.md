@@ -62,7 +62,7 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 | `apps/connect/` | Next.js Connect service at connect.hexbot.app | all |
 | `tests/hexbot/` | Hexbot Python tests. Upstream suites stay under `tests/` | all |
 | `scripts/desktop/` | Version, build, icon, update feed, and cask scripts, each with tests | stable, nightly |
-| `scripts/dev/` | `run.mjs` (`npm run dev`) and the live smoke scripts | dev |
+| `scripts/dev/` | `run.mjs` (`pnpm dev`) and the live smoke scripts | dev |
 | `.github/workflows/` | `ci.yml` (tests, also called by release), `release.yml` (stable and nightly) | see file |
 | `.devcontainer/` | Dev environment | dev |
 | `docs/` | Design and operations docs. `docs/upstream/` is Hermes material kept for reference | |
@@ -79,7 +79,7 @@ Install once:
 
 ```sh
 uv venv venv --python 3.11 && UV_PROJECT_ENVIRONMENT=venv uv sync --extra all --extra dev --locked
-npm ci && npm approve-scripts electron esbuild @tailwindcss/oxide
+pnpm install --frozen-lockfile
 ```
 
 Or open the repository in the dev container (`.devcontainer/`), which runs
@@ -88,11 +88,11 @@ those two lines for you.
 Run Hexbot from the checkout (the Dev channel):
 
 ```sh
-npm run dev                    # daemon + web bundle; open the printed URL
-npm run dev -- --desktop       # web bundle + Electron app (the app runs the daemon)
-npm run dev -- --home DIR      # daemon state elsewhere; --port N fixes the daemon port
-npm run dev -w apps/site       # hexbot.app on 4321
-npm run connect:dev            # Connect on 3000
+pnpm dev                # daemon + web bundle; open the printed URL
+pnpm dev --desktop      # web bundle + Electron app (the app runs the daemon)
+pnpm dev --home DIR     # daemon state elsewhere; --port N fixes the daemon port
+pnpm site:dev           # hexbot.app on 4321
+pnpm connect:dev        # Connect on 3000
 ```
 
 `scripts/dev/run.mjs` keeps daemon state in `<checkout>/.hexbot` (gitignored)
@@ -106,13 +106,13 @@ Starting pieces by hand is fine too, with the same rule:
 
 ```sh
 HEXBOT_HOME=$(mktemp -d) ./venv/bin/hexbot serve --port 9119
-VITE_HEXBOT_ORIGIN=http://127.0.0.1:9119 npm run dev -w apps/web
+VITE_HEXBOT_ORIGIN=http://127.0.0.1:9119 pnpm --filter ./apps/web run dev
 ```
 
 Three ways to hurt yourself:
 
 1. **Writing to the live install.** `~/.hexbot` is the developer's real
-   daemon state. Use `npm run dev`, or run daemons with `HEXBOT_HOME` pointing
+   daemon state. Use `pnpm dev`, or run daemons with `HEXBOT_HOME` pointing
    at a temp directory. Read and copy from `~/.hexbot` if you need real data;
    never start a server against it.
 2. **Killing by pattern.** Do not `pkill -f hexbot` or `pkill -f python`;
@@ -127,10 +127,10 @@ Run the suite that covers what you touched, not everything:
 
 ```sh
 ./venv/bin/pytest tests/hexbot -q
-npm run typecheck -w apps/web && npm run test -w apps/web -- --run && npm run lint -w apps/web
-npm run typecheck -w apps/desktop && npm run test -w apps/desktop -- --run
-npm run check -w apps/site
-npm run typecheck -w apps/connect && npm run test -w apps/connect -- --run
+pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint
+pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run
+pnpm --filter ./apps/site run check
+pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run
 node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs
 ```
 
@@ -171,7 +171,7 @@ nightly, and a finalize step that commits bookkeeping back to `main`.
 - A **nightly** is built by the same workflow every day `main` moved, as
   `<next>-nightly.<YYYYMMDD>.<run>`, published as a prerelease and to the
   nightly feed. Nightly versions are never committed. The last 14 are kept.
-- **Dev** is your checkout (`npm run dev`). `node scripts/desktop/dist.mjs
+- **Dev** is your checkout (`pnpm dev`). `node scripts/desktop/dist.mjs
   --mac` produces a `Hexbot (dev)` package with its own app id.
 - Versions live in two files and change together through
   `node scripts/desktop/set-version.mjs <version>`.

@@ -23,7 +23,7 @@ from hermes_cli.main import (
     _build_web_ui,
     _compute_web_ui_content_hash,
     _missing_web_build_tool,
-    _run_npm_install_deterministic,
+    _run_pnpm_install_deterministic,
     _web_build_toolchain_ready,
     _web_toolchain_roots,
     _web_ui_stamp_path,
@@ -123,54 +123,55 @@ class TestBuildWebUISkipsWhenFresh:
 
 
 
-    def test_web_install_omits_workspace_and_scrubs_esbuild_override(
+    def test_web_install_omits_filter_and_scrubs_esbuild_override(
         self, tmp_path, monkeypatch
     ):
         """web/ with its own lockfile => _workspace_root returns web_dir, so
-        --workspace web would fail (npm can't find that workspace from inside
-        web/). The flag must be dropped and the install run plainly from web_dir.
-        Symmetric to the TUI fix in test_tui_npm_install.py. See #42973.
+        there is no workspace to filter and the install runs plainly from
+        web_dir. Symmetric to the TUI case in test_tui_pnpm_install.py.
+        See #42973.
 
-        With web's own lockfile present at cwd, _run_npm_install_deterministic
-        uses ``npm ci`` (not ``npm install``). The shared installer must also
+        With web's own lockfile present at cwd, _run_pnpm_install_deterministic
+        uses ``pnpm install --frozen-lockfile``. The shared installer must also
         remove an inherited esbuild binary override so package/binary versions
         cannot diverge (#87405).
         """
         web_dir, _ = _make_web_dir(tmp_path)
-        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
-        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        (web_dir / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+        (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - web\n", encoding="utf-8")
+        (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
         monkeypatch.delenv("TERMUX_VERSION", raising=False)
         monkeypatch.setenv("PREFIX", "/usr")
         monkeypatch.setenv("ESBUILD_BINARY_PATH", "/opt/esbuild-0.28.2")
 
         install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+        with patch("hermes_constants.ensure_hermes_pnpm", return_value="/usr/bin/pnpm"), \
              patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
              patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp) as mock_build:
             result = _build_web_ui(web_dir)
 
         assert result is True
         args, kwargs = mock_run.call_args
-        assert "--workspace" not in args[0]
-        assert Path(args[0][0]).name in {"npm", "npm.cmd"}
-        assert args[0][1:] == ["ci", "--include=dev", "--silent", "--prefer-offline"]
+        assert args[0] == [
+            "/usr/bin/pnpm", "install", "--frozen-lockfile", "--prod=false", "--prefer-offline",
+        ]
         assert kwargs["cwd"] == web_dir
         assert "ESBUILD_BINARY_PATH" not in kwargs["env"]
         assert "ESBUILD_BINARY_PATH" not in mock_build.call_args.kwargs["env"]
 
-    def test_workspace_root_install_names_update_closure(self, tmp_path, monkeypatch):
-        """From the workspace root, _build_web_ui must install the SAME
-        closure as `hermes update` (ui-tui + web + --include-workspace-root).
+    def test_workspace_root_install_filters_to_web(self, tmp_path, monkeypatch):
+        """From the workspace root, _build_web_ui installs only the web
+        workspace and the workspace packages it depends on, so apps/desktop
+        (Electron + node-pty) is never resolved. See #38772.
 
-        The install helper prefers `npm ci`, which deletes node_modules before
-        reifying the requested tree — a narrower `--workspace web`-only pass
-        right after the update step silently pruned root devDependencies and
-        the ui-tui workspace while exiting 0. See #43564/#64354.
+        A filtered pnpm install covers the workspace root and leaves the
+        node_modules of unselected workspaces in place, so other workspaces
+        need not be named to survive it.
         """
         web_dir, _ = _make_web_dir(tmp_path)
-        # Root lockfile only => _workspace_root(web_dir) == tmp_path.
-        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - web\n", encoding="utf-8")
+        (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
         (tmp_path / "ui-tui").mkdir()
         (tmp_path / "ui-tui" / "package.json").write_text("{}", encoding="utf-8")
         monkeypatch.delenv("TERMUX_VERSION", raising=False)
@@ -178,42 +179,38 @@ class TestBuildWebUISkipsWhenFresh:
 
         install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+        with patch("hermes_constants.ensure_hermes_pnpm", return_value="/usr/bin/pnpm"), \
              patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
              patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp):
             result = _build_web_ui(web_dir)
 
         assert result is True
         args, kwargs = mock_run.call_args
-        cmd = args[0]
-        assert "--include-workspace-root" in cmd
-        assert cmd.count("--workspace") == 2
-        assert "ui-tui" in cmd and "web" in cmd
+        assert args[0] == [
+            "/usr/bin/pnpm", "install", "--frozen-lockfile", "--prod=false",
+            "--filter", "{web}...", "--prefer-offline",
+        ]
         assert kwargs["cwd"] == tmp_path
 
-    def test_workspace_root_install_skips_missing_ui_tui(self, tmp_path, monkeypatch):
-        """A checkout without the ui-tui workspace must not name it — npm
-        fails hard on a --workspace that doesn't exist."""
+    def test_failed_install_relays_pnpm_stdout_and_pnpm_hint(self, tmp_path, capsys):
+        """pnpm reports ERR_PNPM_* on stdout; the user must see it, plus the
+        pnpm command to run by hand."""
         web_dir, _ = _make_web_dir(tmp_path)
-        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
-        monkeypatch.delenv("TERMUX_VERSION", raising=False)
-        monkeypatch.setenv("PREFIX", "/usr")
+        install_fail = __import__("subprocess").CompletedProcess(
+            [], 1, stdout=" ERR_PNPM_FETCH_404  GET https://x/foo: Not Found", stderr=""
+        )
+        with patch("hermes_constants.ensure_hermes_pnpm", return_value="/usr/bin/pnpm"), \
+             patch("hermes_cli.main.subprocess.run", return_value=install_fail):
+            result = _build_web_ui(web_dir, fatal=True)
 
-        install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-             patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
-             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp):
-            result = _build_web_ui(web_dir)
-
-        assert result is True
-        cmd = mock_run.call_args[0][0]
-        assert "ui-tui" not in cmd
-        assert "--include-workspace-root" in cmd
-        assert "web" in cmd
+        assert result is False
+        out = capsys.readouterr().out
+        assert "Web UI pnpm install failed" in out
+        assert "ERR_PNPM_FETCH_404" in out
+        assert "pnpm install --filter web... && pnpm --filter web run build" in out
 
     def test_web_build_uses_idle_timeout_helper(self, tmp_path):
-        """npm run build now goes through _run_with_idle_timeout (issue #33788).
+        """pnpm run build now goes through _run_with_idle_timeout (issue #33788).
 
         The install step keeps its capture_output behavior (the existing
         retry-on-EPERM contract depends on it); only the long-running build
@@ -223,7 +220,7 @@ class TestBuildWebUISkipsWhenFresh:
 
         install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+        with patch("hermes_constants.ensure_hermes_pnpm", return_value="/usr/bin/pnpm"), \
              patch("hermes_cli.main.subprocess.run", return_value=install_cp), \
              patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp) as mock_idle:
             result = _build_web_ui(web_dir)
@@ -232,8 +229,8 @@ class TestBuildWebUISkipsWhenFresh:
         # Build was invoked through the idle-timeout helper, not subprocess.run.
         mock_idle.assert_called_once()
         args, kwargs = mock_idle.call_args
-        # Positional: [npm, "run", "build"]; cwd passed as kwarg.
-        assert args[0] == ["/usr/bin/npm", "run", "build"]
+        # Positional: [pnpm, "run", "build"]; cwd passed as kwarg.
+        assert args[0] == ["/usr/bin/pnpm", "run", "build"]
         assert kwargs["cwd"] == web_dir
 
 
@@ -247,7 +244,7 @@ class TestBuildWebUIRetryAndStaleFallback:
         # build attempt 1: fail; build attempt 2: success.
         build_fail = Subprocess.CompletedProcess([], 1, stdout="EPERM", stderr="")
         build_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+        with patch("hermes_constants.ensure_hermes_pnpm", return_value="/usr/bin/pnpm"), \
              patch("hermes_cli.main._time.sleep") as mock_sleep, \
              patch("hermes_cli.main.subprocess.run", return_value=install_ok), \
              patch("hermes_cli.main._run_with_idle_timeout",
@@ -267,7 +264,7 @@ class TestBuildWebUIRetryAndStaleFallback:
         Subprocess = __import__("subprocess")
         install_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
         build_fail = Subprocess.CompletedProcess([], 1, stdout="vite ENOMEM", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+        with patch("hermes_constants.ensure_hermes_pnpm", return_value="/usr/bin/pnpm"), \
              patch("hermes_cli.main._time.sleep"), \
              patch("hermes_cli.main.subprocess.run", return_value=install_ok), \
              patch("hermes_cli.main._run_with_idle_timeout",
@@ -317,7 +314,7 @@ class TestBuildWebUIFlock:
         t = threading.Timer(0.2, release_after_building)
         t.start()
         try:
-            with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+            with patch("hermes_constants.ensure_hermes_pnpm", return_value="/usr/bin/pnpm"), \
                  patch("hermes_cli.main.subprocess.run") as mock_run:
                 result = build(web_dir)
         finally:
@@ -340,8 +337,8 @@ def _link_shims(bin_dir: Path, *names: str) -> None:
 class TestWebBuildToolchainReady:
     """A tree is ready when the build can resolve tsc AND vite from any root.
 
-    ``npm run build`` searches ``node_modules/.bin`` from the script's own
-    package up through every ancestor, so a shim in either place counts.
+    ``pnpm run build`` searches ``node_modules/.bin`` of the script's own
+    package and of the workspace root, so a shim in either place counts.
     """
 
     def test_missing_toolchain_is_not_ready(self, tmp_path):
@@ -349,7 +346,13 @@ class TestWebBuildToolchainReady:
         assert _web_build_toolchain_ready(web_dir, tmp_path) is False
 
 
-    def test_hoisted_shims_at_workspace_root_are_ready(self, tmp_path):
+    def test_shims_linked_into_the_member_are_ready(self, tmp_path):
+        """pnpm links a member's binaries into its own node_modules/.bin."""
+        web_dir, _ = _make_web_dir(tmp_path)
+        _link_shims(web_dir / "node_modules" / ".bin", "tsc", "vite")
+        assert _web_build_toolchain_ready(web_dir, tmp_path) is True
+
+    def test_shims_at_workspace_root_are_ready(self, tmp_path):
         web_dir, _ = _make_web_dir(tmp_path)
         _link_shims(tmp_path / "node_modules" / ".bin", "tsc", "vite")
         assert _web_build_toolchain_ready(web_dir, tmp_path) is True
@@ -374,7 +377,7 @@ class TestMissingWebBuildTool:
     @pytest.mark.parametrize(
         "output,expected",
         [
-            ("sh: 1: tsc: not found\nnpm error code 127", "tsc"),
+            ("sh: 1: tsc: not found\n ELIFECYCLE  Command failed with exit code 127.", "tsc"),
             ("bash: line 1: vite: command not found", "vite"),
             ("'tsc' is not recognized as an internal or external command", "tsc"),
             ("error TS2307: Cannot find module './x'", None),
@@ -389,15 +392,15 @@ class TestBuildRecoversFromMissingToolchain:
     def test_reinstalls_and_retries_when_the_build_cannot_resolve_tsc(self, tmp_path):
         """The generic retry reruns the same command, so it can't fix this alone."""
         web_dir, _ = _make_web_dir(tmp_path)
-        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
         install_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_fail = __import__("subprocess").CompletedProcess(
             [], 127, stdout="sh: 1: tsc: not found\n", stderr=""
         )
         build_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
 
-        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
-             patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
+        with patch("hermes_cli.main._resolve_node_runtime_pnpm", return_value="/usr/bin/pnpm"), \
+             patch("hermes_cli.main._run_pnpm_install_deterministic", return_value=install_ok) as mock_install, \
              patch("hermes_cli.main._run_with_idle_timeout", side_effect=[build_fail, build_ok]) as mock_build, \
              patch("hermes_cli.main._web_ui_build_needed", return_value=True), \
              patch("hermes_cli.main._write_web_ui_build_stamp"), \
@@ -411,13 +414,13 @@ class TestBuildRecoversFromMissingToolchain:
     def test_healthy_tree_builds_without_an_extra_install(self, tmp_path):
         """No pre-build probing: a build that works is never second-guessed."""
         web_dir, _ = _make_web_dir(tmp_path)
-        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
         _link_shims(web_dir / "node_modules" / ".bin", "tsc", "vite")
         install_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
 
-        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
-             patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
+        with patch("hermes_cli.main._resolve_node_runtime_pnpm", return_value="/usr/bin/pnpm"), \
+             patch("hermes_cli.main._run_pnpm_install_deterministic", return_value=install_ok) as mock_install, \
              patch("hermes_cli.main._run_with_idle_timeout", return_value=build_ok) as mock_build, \
              patch("hermes_cli.main._web_ui_build_needed", return_value=True), \
              patch("hermes_cli.main._write_web_ui_build_stamp"):

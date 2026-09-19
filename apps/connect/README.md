@@ -7,7 +7,7 @@ This workspace runs the identity and tunnel broker described in `docs/connect.md
 Copy `.env.example` to `.env.local`, set `DEV_USER_ID=local-user`, then run:
 
 ```bash
-npm run connect:dev
+pnpm connect:dev
 ```
 
 With no `DATABASE_URL`, the process uses an in-memory store. With incomplete Cloudflare credentials, it uses deterministic fake tunnels. With no `CONNECT_SIGNING_KEY_JWK`, it creates an ephemeral ES256 key and prints a warning. Data and signing keys reset when the process restarts.
@@ -33,7 +33,7 @@ Each daemon gets `<slug>.<CONNECT_DOMAIN>`, for example `amber-otter-1234.hexbot
 Set `DATABASE_URL` to a Neon Postgres connection string, then run:
 
 ```bash
-npm run migrate -w apps/connect
+pnpm --filter ./apps/connect run migrate
 ```
 
 The migration is idempotent. Run it before the first deployment and after schema changes.
@@ -61,7 +61,7 @@ DNS for `hexbot.app` must be a Cloudflare zone, because tunnel hostnames are Clo
 CI runs the same checks Vercel builds against:
 
 ```bash
-npm run typecheck -w apps/connect
-npm run test -w apps/connect -- --run
-npm run build -w apps/connect
+pnpm --filter ./apps/connect run typecheck
+pnpm --filter ./apps/connect run test --run
+pnpm --filter ./apps/connect run build
 ```

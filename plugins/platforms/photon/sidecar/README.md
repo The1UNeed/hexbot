@@ -17,11 +17,12 @@ The sidecar:
 
 ```bash
 cd plugins/platforms/photon/sidecar
-npm install
+pnpm install --frozen-lockfile --ignore-workspace
 ```
 
-The Hermes plugin's `hermes photon setup` command runs `npm install`
-here automatically.
+`--ignore-workspace` is required: the sidecar has its own lockfile and is not
+a member of the repository's pnpm workspace. The Hermes plugin's
+`hermes photon setup` command runs this install here automatically.
 
 ## Run standalone
 

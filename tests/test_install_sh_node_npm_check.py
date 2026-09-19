@@ -2,9 +2,8 @@
 
 A stray `node` symlink without a sibling `npm` (leftover from a node
 version manager) made the installer report "✓ Node.js found" and then fail
-opaquely at the desktop stage. Node must only count as found when npm
-resolves on the same PATH, and npm install stages must not report success
-when the install actually failed.
+opaquely at the desktop stage. npm is what bootstraps pnpm, so Node must only
+count as found when npm resolves on the same PATH.
 """
 
 from pathlib import Path
@@ -17,8 +16,8 @@ def test_check_node_requires_npm_alongside_node() -> None:
     """check_node must not report success when only `node` resolves.
 
     Before the fix, `command -v node` succeeding was enough — a stray node
-    symlink (no sibling npm) passed the check, every later `npm install`
-    failed silently, and the desktop build died with an opaque
+    symlink (no sibling npm) passed the check, nothing could install Node
+    dependencies, and the desktop build died with an opaque
     "Node.js / npm unavailable" (#77003).
     """
     text = INSTALL_SH.read_text()

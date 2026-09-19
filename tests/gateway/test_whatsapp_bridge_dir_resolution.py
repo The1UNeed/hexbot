@@ -1,7 +1,7 @@
 """Tests for resolve_whatsapp_bridge_dir() — read-only install tree handling.
 
 Regression coverage for #49561: in the Docker image the install tree
-(/opt/hermes/scripts/whatsapp-bridge) is read-only, so `npm install` fails
+(/opt/hermes/scripts/whatsapp-bridge) is read-only, so `pnpm install` fails
 with EACCES. The resolver must detect the read-only install dir and mirror the
 bridge source into a writable HERMES_HOME location instead.
 """
@@ -58,3 +58,34 @@ def test_readonly_install_mirrors_to_hermes_home(tmp_path, monkeypatch):
     assert (expected / "package.json").exists()
 
 
+
+
+def test_existing_mirror_without_lockfile_gets_one(tmp_path, monkeypatch):
+    """A mirror made before the bridge moved to pnpm is given the lockfile."""
+    install_root = tmp_path / "install"
+    install_bridge = install_root / "scripts" / "whatsapp-bridge"
+    _seed_install_tree(install_bridge)
+    (install_bridge / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n")
+
+    hermes_home = tmp_path / "hermes_home"
+    mirror = hermes_home / "scripts" / "whatsapp-bridge"
+    mirror.mkdir(parents=True)
+    (mirror / "package.json").write_text('{"name": "whatsapp-bridge"}\n')
+
+    monkeypatch.setattr(
+        whatsapp_common, "__file__",
+        str(install_root / "gateway" / "platforms" / "whatsapp_common.py"),
+    )
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+
+    _real_touch = Path.touch
+
+    def _fake_touch(self, *a, **kw):
+        if self.name == ".write_test" and install_bridge in self.parents:
+            raise PermissionError("read-only install tree")
+        return _real_touch(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "touch", _fake_touch)
+
+    assert whatsapp_common.resolve_whatsapp_bridge_dir() == mirror
+    assert (mirror / "pnpm-lock.yaml").read_text() == "lockfileVersion: '9.0'\n"

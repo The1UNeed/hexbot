@@ -1,9 +1,11 @@
 """Regression: installer update should discard pure npm lockfile churn.
 
-Desktop/bootstrap installs update an existing managed checkout in place. Local
-build steps often rewrite tracked ``package-lock.json`` without touching the
-matching ``package.json``; treating that churn as a real local edit forces an
-autostash and can abort the repository stage before the desktop comes back up.
+Desktop/bootstrap installs update an existing managed checkout in place. A
+checkout installed while the repo still used npm can carry a tracked
+``package-lock.json`` that npm rewrote without touching the matching
+``package.json``; treating that churn as a real local edit forces an autostash
+and can abort the repository stage before the desktop comes back up. (pnpm
+installs are frozen and never rewrite ``pnpm-lock.yaml``.)
 
 The installer should discard that generated churn before its stash/checkout
 logic, while still preserving intentional package edits where ``package.json``

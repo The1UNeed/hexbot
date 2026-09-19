@@ -43,26 +43,20 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      # Installs the pnpm pinned by `packageManager` in the root package.json.
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v7
         with:
           node-version: 26
-          cache: npm
-      # package-lock.json was written by npm 11.17. Newer npm releases apply
-      # the root `brace-expansion` override to nested copies as well, which
-      # drops the brace-expansion@1 that eslint's minimatch@3 needs and breaks
-      # `npm run lint` (root package.json `engines.npm` records the same
-      # problem for 11.10 to 11.16). Install with the version the lockfile
-      # came from.
-      - run: npm install -g npm@11.17.0
-      - run: npm ci
-      - run: npm approve-scripts electron esbuild @tailwindcss/oxide
-      - run: npm run typecheck -w apps/web
-      - run: npm run test -w apps/web -- --run
-      - run: npm run lint -w apps/web
-      - run: npm run build -w apps/web
-      - run: npm run typecheck -w apps/desktop
-      - run: npm run test -w apps/desktop -- --run
-      - run: npm run build -w apps/desktop
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter ./apps/web run typecheck
+      - run: pnpm --filter ./apps/web run test --run
+      - run: pnpm --filter ./apps/web run lint
+      - run: pnpm --filter ./apps/web run build
+      - run: pnpm --filter ./apps/desktop run typecheck
+      - run: pnpm --filter ./apps/desktop run test --run
+      - run: pnpm --filter ./apps/desktop run build
       - name: Release script tests
         run: node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs
       # Runs the exact commands release.yml runs after a build (version
@@ -77,14 +71,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+      # Installs the pnpm pinned by `packageManager` in the root package.json.
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v7
         with:
           node-version: 26
-          cache: npm
-      # The npm that wrote package-lock.json; see the web job in ci.yml.
-      - run: npm install -g npm@11.17.0
-      - run: npm ci
-      - run: npm approve-scripts electron esbuild @tailwindcss/oxide
-      - run: npm run check -w apps/site
-      - run: npm run typecheck -w apps/connect
-      - run: npm run test -w apps/connect -- --run
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter ./apps/site run check
+      - run: pnpm --filter ./apps/connect run typecheck
+      - run: pnpm --filter ./apps/connect run test --run

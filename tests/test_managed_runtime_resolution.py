@@ -12,8 +12,9 @@ code has two failure modes:
   keep resolving it across reboots.
 
 The fix per call site is one of ``find_node_executable()``,
-``iter_hermes_node_dirs()``, ``resolve_uv()``, or ``ensure_uv()``. This test is
-the ratchet that stops a new bare lookup from being added back.
+``ensure_hermes_pnpm()``, ``iter_hermes_node_dirs()``, ``resolve_uv()``, or
+``ensure_uv()``. This test is the ratchet that stops a new bare lookup from
+being added back.
 
 Reading source is normally banned (see AGENTS.md). It is the right tool here and
 only here: the property under test is "no call site anywhere in the tree spells
@@ -36,7 +37,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Runtimes Hermes provisions into HERMES_HOME and must therefore resolve
 # through a managed-aware helper rather than PATH.
-_MANAGED_COMMANDS = frozenset({"uv", "node", "npm", "npx"})
+_MANAGED_COMMANDS = frozenset({"uv", "node", "npm", "npx", "pnpm"})
 
 # Directories that are not Hermes-owned subprocess code: plugins ship their own
 # resolution policy, tests assert against PATH deliberately, and skills/scripts
@@ -68,9 +69,10 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "Termux fallback: a pkg-installed uv lands on PATH but not in the "
         "managed bin dir, and it is checked only after resolve_uv() misses."
     ),
-    ("hermes_cli/update_cmd.py", "npm"): (
+    ("hermes_cli/update_cmd.py", "pnpm"): (
         "WSL diagnostic: deliberately inspects what PATH resolves so it can "
-        "warn that the only reachable npm is the Windows one."
+        "warn that the only reachable pnpm is the Windows one. Runs only "
+        "after _resolve_node_runtime_pnpm() (ensure_hermes_pnpm()) misses."
     ),
     ("tools/lazy_deps.py", "uv"): (
         "Fallback after resolve_uv(), plus the except-branch for the "
@@ -91,6 +93,11 @@ _ALLOWED: dict[tuple[str, str], str] = {
     ),
     ("hermes_cli/main.py", "npm"): (
         "Same _ensure_tui_node() gate as node."
+    ),
+    ("hermes_cli/main.py", "pnpm"): (
+        "_resolve_node_runtime_pnpm()'s WSL re-scan: runs only after "
+        "ensure_hermes_pnpm() handed back a Windows pnpm, and asks each "
+        "non-/mnt PATH directory in turn for a Linux-native one."
     ),
     ("tools/browser_tool.py", "npx"): (
         "agent-browser runs via `npx`, resolved against the extended browser "
@@ -191,6 +198,7 @@ def test_no_unreviewed_bare_managed_runtime_lookups():
         "Use instead:\n"
         "  uv       -> managed_uv.resolve_uv() (lookup) or ensure_uv() (may install)\n"
         "  node/npm -> hermes_constants.find_node_executable()\n"
+        "  pnpm     -> hermes_constants.ensure_hermes_pnpm() (may install)\n"
         "  PATH env -> hermes_constants.iter_hermes_node_dirs()\n"
         "If PATH really is the right question, add the site to _ALLOWED with a "
         "reason."
@@ -214,6 +222,7 @@ def test_allowlist_has_no_stale_entries():
     [
         "find_node_executable",
         "find_hermes_node_executable",
+        "ensure_hermes_pnpm",
         "iter_hermes_node_dirs",
         "with_hermes_node_path",
     ],

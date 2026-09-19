@@ -27,13 +27,14 @@ def _run_node_deps_stage(
     bin_dir = tmp_path / "bin"
     hermes_home = tmp_path / "home"
     managed_bin = hermes_home / "bin"
-    npm_calls = tmp_path / "npm-calls"
+    pnpm_calls = tmp_path / "pnpm-calls"
 
     tui_dir.mkdir(parents=True)
     bin_dir.mkdir()
     managed_bin.mkdir(parents=True)
     (install_dir / "package.json").write_text(
-        '{"name":"installer-regression-probe","private":true}\n',
+        '{"name":"installer-regression-probe","private":true,'
+        '"packageManager":"pnpm@10.29.3"}\n',
         encoding="utf-8",
     )
     (tui_dir / "package.json").write_text(
@@ -41,16 +42,18 @@ def _run_node_deps_stage(
         encoding="utf-8",
     )
     _write_executable(bin_dir / "node", "#!/bin/sh\necho v26.0.0\n")
+    _write_executable(bin_dir / "npm", "#!/bin/sh\necho 12.0.0\n")
     _write_executable(
-        bin_dir / "npm",
+        bin_dir / "pnpm",
         """#!/bin/sh
 if [ "${1:-}" = "--version" ]; then
-    echo 12.0.0
+    echo 10.29.3
     exit 0
 fi
-printf '%s\\n' "$PWD" >> "$NPM_CALLS"
-if [ -n "${NPM_FAIL_DIRECTORY:-}" ] && [ "$PWD" = "$NPM_FAIL_DIRECTORY" ]; then
-    echo "simulated npm lifecycle failure" >&2
+printf '%s\\n' "$PWD" >> "$PNPM_CALLS"
+printf '%s\\n' "$*" >> "$PNPM_CALLS.args"
+if [ -n "${PNPM_FAIL_DIRECTORY:-}" ] && [ "$PWD" = "$PNPM_FAIL_DIRECTORY" ]; then
+    echo "simulated pnpm lifecycle failure" >&2
     exit 37
 fi
 exit 0
@@ -63,8 +66,8 @@ exit 0
         {
             "HERMES_HOME": str(hermes_home),
             "HERMES_INSTALL_DIR": str(install_dir),
-            "NPM_CALLS": str(npm_calls),
-            "NPM_FAIL_DIRECTORY": fail_directory or "",
+            "PNPM_CALLS": str(pnpm_calls),
+            "PNPM_FAIL_DIRECTORY": fail_directory or "",
             "PATH": f"{bin_dir}:{env['PATH']}",
         }
     )
@@ -84,7 +87,7 @@ exit 0
         text=True,
         check=False,
     )
-    calls = npm_calls.read_text(encoding="utf-8").splitlines()
+    calls = pnpm_calls.read_text(encoding="utf-8").splitlines()
     return proc, install_dir, calls
 
 
@@ -143,3 +146,10 @@ def test_node_dependency_success_remains_successful(tmp_path: Path) -> None:
     assert calls == [str(install_dir), str(install_dir / "ui-tui")]
     assert "Node.js dependencies installed" in proc.stdout
     assert "TUI dependencies installed" in proc.stdout
+    # Every install is frozen, so the tracked lockfile is never rewritten, and
+    # the root one is scoped away from apps/*.
+    args = (tmp_path / "pnpm-calls.args").read_text(encoding="utf-8").splitlines()
+    assert args == [
+        "install --frozen-lockfile --filter ui-tui... --reporter=append-only",
+        "install --frozen-lockfile --reporter=append-only",
+    ]

@@ -3,32 +3,23 @@
   "version": "1.0.0",
   "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
   "private": true,
-  "workspaces": [
-    "apps/*",
-    "web"
-  ],
+  "packageManager": "pnpm@10.29.3",
   "scripts": {
     "postinstall": "echo '✅ Node dependencies installed. Run: python run_agent.py --help'",
-    "install:root": "npm install --workspaces=false",
-    "install:web": "npm install --workspace web",
-    "audit:root": "npm audit --workspaces=false",
-    "audit:web": "npm audit --workspace web",
-    "audit:fix:root": "npm audit fix --workspaces=false",
-    "audit:fix:web": "npm audit fix --workspace web",
     "dev": "node scripts/dev/run.mjs",
-    "web:dev": "npm run dev --workspace @hexbot/web",
-    "web:build": "npm run build --workspace @hexbot/web",
-    "web:test": "npm run test --workspace @hexbot/web",
-    "desktop:dev": "npm run dev --workspace @hexbot/desktop",
-    "desktop:build": "npm run build --workspace @hexbot/desktop",
-    "desktop:e2e": "npm run e2e --workspace @hexbot/desktop",
-    "connect:dev": "npm run dev --workspace @hexbot/connect",
-    "connect:build": "npm run build --workspace @hexbot/connect",
-    "connect:test": "npm run test --workspace @hexbot/connect",
-    "site:dev": "npm run dev --workspace @hexbot/site",
-    "site:build": "npm run build --workspace @hexbot/site",
-    "check": "npm run --ws check",
-    "fix": "npm run --ws fix",
+    "web:dev": "pnpm --filter @hexbot/web run dev",
+    "web:build": "pnpm --filter @hexbot/web run build",
+    "web:test": "pnpm --filter @hexbot/web run test",
+    "desktop:dev": "pnpm --filter @hexbot/desktop run dev",
+    "desktop:build": "pnpm --filter @hexbot/desktop run build",
+    "desktop:e2e": "pnpm --filter @hexbot/desktop run e2e",
+    "connect:dev": "pnpm --filter @hexbot/connect run dev",
+    "connect:build": "pnpm --filter @hexbot/connect run build",
+    "connect:test": "pnpm --filter @hexbot/connect run test",
+    "site:dev": "pnpm --filter @hexbot/site run dev",
+    "site:build": "pnpm --filter @hexbot/site run build",
+    "check": "pnpm -r run check",
+    "fix": "pnpm -r run fix",
     "format": "prettier --write \"apps/web/src/**/*.{ts,tsx,css}\" \"apps/desktop/src/**/*.ts\" \"scripts/desktop/*.{mjs,cjs}\"",
     "format:check": "prettier --check \"apps/web/src/**/*.{ts,tsx,css}\" \"apps/desktop/src/**/*.ts\""
   },
@@ -43,6 +34,7 @@
   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
   "devDependencies": {
     "@eslint/js": "9.39.5",
+    "eslint": "10.8.0",
     "eslint-plugin-perfectionist": "5.10.0",
     "eslint-plugin-react-hooks": "7.1.1",
     "eslint-plugin-unused-imports": "4.4.1",
@@ -50,36 +42,8 @@
     "prettier": "3.9.6",
     "typescript-eslint": "8.64.0"
   },
-  "overrides": {
-    "lodash": "4.18.1",
-    "yauzl": "^3.3.1",
-    "protobufjs": "^8.7.1",
-    "brace-expansion": "5.0.9",
-    "mermaid": "11.16.1",
-    "dompurify": "3.4.13",
-    "ip-address": "10.3.1",
-    "nanoid@^3": "3.3.18",
-    "nanoid@^6": "6.0.0",
-    "js-yaml@^4": "4.3.1",
-    "undici@^6": "6.28.0",
-    "undici@^7": "7.29.0",
-    "postcss": "8.5.23",
-    "tar": "7.5.22"
-  },
   "engines": {
     "node": "^22.22.0 || ^24.11.0 || >=26.0.0",
-    "npm": "<11.10.0 || >=11.17.0"
-  },
-  "allowScripts": {
-    "unicode-animations": false,
-    "esbuild@0.28.1": true,
-    "node-pty@1.1.0": true,
-    "electron-winstaller@5.4.0": true,
-    "electron@40.10.2": true,
-    "fsevents@2.3.2": true,
-    "fsevents@2.3.3": true,
-    "get-windows@9.3.0": true,
-    "esbuild@0.25.12": true,
-    "@tailwindcss/oxide@4.3.3": true
+    "pnpm": ">=10.16.0"
   }
 }

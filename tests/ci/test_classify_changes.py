@@ -87,8 +87,9 @@ CASES = {
     "ts package → frontend": (["apps/desktop/src/app.tsx"], _lanes(frontend=True)),
     "ui-tui → frontend": (["ui-tui/src/entry.ts"], _lanes(frontend=True)),
     # Lockfile bump shifts every TS package's tree, but not the Python suite.
-    "root lockfile → frontend, not python": (["package-lock.json"], _lanes(frontend=True, npm_lock=True)),
-    "nested lockfile → npm_lock": (["website/package-lock.json"], _lanes(site=True, npm_lock=True)),
+    "root lockfile → frontend, not python": (["pnpm-lock.yaml"], _lanes(frontend=True, npm_lock=True)),
+    "workspace config → frontend, not python": (["pnpm-workspace.yaml"], _lanes(frontend=True)),
+    "nested lockfile → npm_lock": (["website/pnpm-lock.yaml"], _lanes(site=True, npm_lock=True)),
     # A website file the Python suite cannot read stays site-only.
     "website config → site": (["website/docusaurus.config.ts"], _lanes(site=True)),
     # uv lock --check re-resolves against PyPI, so it must stay off for any

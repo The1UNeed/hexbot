@@ -3,12 +3,12 @@
 ## Hexbot suites
 
 - Python: `./venv/bin/pytest tests/hexbot -q`
-- Web bundle: `npm run typecheck -w apps/web && npm run test -w apps/web -- --run && npm run lint -w apps/web && npm run build -w apps/web`
-- Desktop: `npm run typecheck -w apps/desktop && npm run test -w apps/desktop -- --run && npm run build -w apps/desktop`
+- Web bundle: `pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint && pnpm --filter ./apps/web run build`
+- Desktop: `pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run && pnpm --filter ./apps/desktop run build`
 - Packaging and release scripts: `node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs`
-- Site: `npm run check -w apps/site`
-- Connect (unit): `npm run typecheck -w apps/connect && npm run test -w apps/connect -- --run`
-- End to end: `npm run e2e -w apps/desktop` (Playwright driving the built Electron app against a daemon in a temp home).
+- Site: `pnpm --filter ./apps/site run check`
+- Connect (unit): `pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run`
+- End to end: `pnpm --filter ./apps/desktop run e2e` (Playwright driving the built Electron app against a daemon in a temp home).
 - Connect: `HEXBOT_CONNECT_E2E=1 ./venv/bin/pytest tests/hexbot/test_connect_e2e.py -q` (a real Connect service with the in-memory store, a real daemon, and the CLI, web, and desktop HTTP calls; no Cloudflare).
 
 ## Upstream Hermes suites
@@ -37,9 +37,9 @@ isolation. Treat any new failure outside that list as a regression.
 
 ## Dev daemon
 
-`npm run dev` starts a daemon and the web bundle from the checkout with
+`pnpm dev` starts a daemon and the web bundle from the checkout with
 `HEXBOT_HOME=<checkout>/.hexbot` (gitignored) and ports derived from the
-checkout path, so worktrees do not collide. `npm run dev -- --desktop` starts
+checkout path, so worktrees do not collide. `pnpm dev --desktop` starts
 the Electron app instead. The smoke scripts below take the printed daemon
 port. Never point a dev daemon at `~/.hexbot`.
 
@@ -60,8 +60,8 @@ HERMES_HOME=$HEXBOT_HOME ./venv/bin/python -c \
 Build the Electron app, then run its Playwright test against a temporary daemon:
 
 ```bash
-npm run desktop:build
-npm run desktop:e2e
+pnpm desktop:build
+pnpm desktop:e2e
 ```
 
 The test imports Codex CLI OAuth tokens into a temporary daemon home, creates the `scout`

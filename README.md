@@ -68,19 +68,19 @@ which installs everything. By hand:
 
 ```sh
 uv venv venv --python 3.11 && UV_PROJECT_ENVIRONMENT=venv uv sync --extra all --extra dev --locked
-npm ci && npm approve-scripts electron esbuild @tailwindcss/oxide
+pnpm install --frozen-lockfile
 ```
 
 Then run Hexbot from the checkout:
 
 ```sh
-npm run dev                  # daemon + web bundle; open the printed URL
-npm run dev -- --desktop     # web bundle + Electron app (the app runs the daemon)
-npm run dev -w apps/site     # hexbot.app on 4321
-npm run connect:dev          # Connect on 3000
+pnpm dev              # daemon + web bundle; open the printed URL
+pnpm dev --desktop    # web bundle + Electron app (the app runs the daemon)
+pnpm site:dev         # hexbot.app on 4321
+pnpm connect:dev      # Connect on 3000
 ```
 
-`npm run dev` keeps daemon state in `<checkout>/.hexbot` (gitignored) and
+`pnpm dev` keeps daemon state in `<checkout>/.hexbot` (gitignored) and
 picks ports from the checkout path, so worktrees run side by side and nothing
 touches `~/.hexbot`, your real install. `scripts/dev/run.mjs` has the flags.
 
@@ -88,11 +88,11 @@ Tests:
 
 ```sh
 ./venv/bin/pytest tests/hexbot -q
-npm run typecheck -w apps/web && npm run test -w apps/web -- --run && npm run lint -w apps/web
-npm run typecheck -w apps/desktop && npm run test -w apps/desktop -- --run
+pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint
+pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run
 node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs
-npm run check -w apps/site
-npm run typecheck -w apps/connect && npm run test -w apps/connect -- --run
+pnpm --filter ./apps/site run check
+pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run
 ```
 
 `docs/testing.md` lists everything, including the upstream Hermes suites and

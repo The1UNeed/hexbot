@@ -59,7 +59,7 @@ The desktop app checks `updates.hexbot.app` for signed updates. The update serve
 
 ## Development app
 
-From a source checkout, run `npm run dev -- --desktop` to launch
+From a source checkout, run `pnpm dev --desktop` to launch
 `Hexbot (dev)` with its blue Dev icon. On macOS it has its own app identity in
 the Dock and app switcher, so you can distinguish it from Stable and Nightly.
 The source app keeps its data in the checkout's `.hexbot` directory.

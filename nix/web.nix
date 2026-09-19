@@ -1,10 +1,10 @@
 # nix/web.nix — Hermes Web Dashboard (Vite/React) frontend build
 { hermesNpmLib, ... }:
-hermesNpmLib.buildNpmPackage {
+hermesNpmLib.buildPnpmPackage {
   dirs = [
     "web"
 
-    # @hermes/shared ships as a file: workspace dep of web, so its source
+    # @hermes/shared ships as a workspace: dep of web, so its source
     # must be in the filtered src tree too.
     "apps/shared"
   ];
@@ -13,12 +13,12 @@ hermesNpmLib.buildNpmPackage {
 
   buildPhase = ''
     # Build from web/ so vite.config.ts and tsconfig resolve correctly.
-    # The workspace root's node_modules/ is at ../node_modules/.
+    # pnpm links web's own dependencies into web/node_modules/.
     cd web
-    node ../node_modules/typescript/bin/tsc -b
+    node node_modules/typescript/bin/tsc -b
     # outDir in vite.config.ts points to ../hermes_cli/web_dist for the
     # monorepo layout.  Override with --outDir dist for the nix build.
-    node ../node_modules/vite/bin/vite.js build --outDir dist
+    node node_modules/vite/bin/vite.js build --outDir dist
 
     # Return to source root so installPhase paths are correct.
     cd ..

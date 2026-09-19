@@ -67,11 +67,13 @@ function run(command, commandArgs) {
   })
 }
 
-await run(process.platform === 'win32' ? 'npm.cmd' : 'npm', [
-  'run',
-  client ? 'build:client' : 'build'
-])
-await run(resolve(repositoryRoot, 'node_modules/.bin/electron-builder'), [
+const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+await run(pnpm, ['run', client ? 'build:client' : 'build'])
+// Through pnpm so electron-builder detects pnpm and the workspace root; the
+// lockfile is at the repository root, not next to apps/desktop/package.json.
+await run(pnpm, [
+  'exec',
+  'electron-builder',
   ...builderArgs,
   ...channelArgs,
   ...iconArgs,

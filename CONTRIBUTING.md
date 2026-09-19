@@ -112,6 +112,7 @@ A well-built third-party-product plugin can clear automated review and still be 
 | **Python 3.11–3.13** | uv will install it if missing |
 | **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
 | **Node.js 20+** | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
+| **pnpm** | Optional — installs the Node workspace; the installer provisions the version pinned by `packageManager` in the root `package.json` |
 
 ### Install with the standard installer
 
@@ -131,7 +132,7 @@ cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
 uv pip install -e ".[all,dev]"
 
 # Optional: docs site + workspace dependencies.
-npm install
+pnpm install
 ```
 
 After that, create branches and run tests from that checkout:
@@ -168,7 +169,7 @@ export PATH="$VIRTUAL_ENV/bin:$PATH"
 uv pip install -e ".[all,dev]"
 
 # Optional: workspace / docs dependencies
-npm install
+pnpm install
 ```
 
 ### Configure for development

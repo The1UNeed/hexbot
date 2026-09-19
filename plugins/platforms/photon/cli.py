@@ -6,7 +6,7 @@ Subcommands:
 
     setup              full first-time setup (device login + project + user + sidecar)
     status             show login + project + sidecar dep state
-    install-sidecar    npm install inside plugins/platforms/photon/sidecar/
+    install-sidecar    pnpm install inside plugins/platforms/photon/sidecar/
     telemetry          show or toggle Spectrum SDK telemetry (on/off)
 
 The device-code login runs automatically as the first step of ``setup``;
@@ -29,20 +29,20 @@ from pathlib import Path
 from hermes_cli.colors import Colors, color
 
 from . import auth as photon_auth
-from .adapter import _NPM_ERROR_LOG_MAX_CHARS, sidecar_deps_installed
-from .sidecar_paths import resolve_sidecar_dir
+from .adapter import _PNPM_ERROR_LOG_MAX_CHARS, sidecar_deps_installed
+from .sidecar_paths import PNPM_INSTALL_ARGS, resolve_sidecar_dir
 
 # Writable sidecar runtime dir (mirrors to HERMES_HOME on immutable
-# installs — NS-606). All npm/setup work happens here. Resolved lazily on
+# installs — NS-606). All pnpm/setup work happens here. Resolved lazily on
 # first use — resolve_sidecar_dir() probes the filesystem and may mirror
 # files, side effects that must not fire at import time (e.g. when argparse
 # wiring imports this module for `hermes --help`).
 # Tests monkeypatch these module globals directly; the accessors honor a
 # non-None value and only resolve/derive when unset.
 _SIDECAR_DIR: Path | None = None
-# Written on npm failure so check_requirements() can surface the root cause
+# Written on pnpm failure so check_requirements() can surface the root cause
 # when called later (gateway start, hermes status). Cleared on success.
-_NPM_ERROR_LOG: Path | None = None
+_PNPM_ERROR_LOG: Path | None = None
 
 
 def _sidecar_dir() -> Path:
@@ -53,11 +53,11 @@ def _sidecar_dir() -> Path:
     return _SIDECAR_DIR
 
 
-def _npm_error_log() -> Path:
-    """Path of the persisted npm-failure log (derived from the sidecar dir)."""
-    if _NPM_ERROR_LOG is not None:
-        return _NPM_ERROR_LOG
-    return _sidecar_dir() / ".photon-npm-error.log"
+def _pnpm_error_log() -> Path:
+    """Path of the persisted pnpm-failure log (derived from the sidecar dir)."""
+    if _PNPM_ERROR_LOG is not None:
+        return _PNPM_ERROR_LOG
+    return _sidecar_dir() / ".photon-pnpm-error.log"
 
 
 # ---------------------------------------------------------------------------
@@ -81,10 +81,10 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     p_setup.add_argument("--no-browser", action="store_true",
                          help="Don't try to open a browser for device login; print the URL only")
     p_setup.add_argument("--skip-sidecar-install", action="store_true",
-                         help="Skip `npm install` inside the sidecar directory")
+                         help="Skip `pnpm install` inside the sidecar directory")
 
     subs.add_parser("status", help="Show login + project + sidecar dep state")
-    subs.add_parser("install-sidecar", help="Run npm install inside the sidecar directory")
+    subs.add_parser("install-sidecar", help="Run pnpm install inside the sidecar directory")
 
     p_telemetry = subs.add_parser(
         "telemetry",
@@ -328,7 +328,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 
     # 6. Sidecar deps (spectrum-ts).
     if args.skip_sidecar_install:
-        print("[5/5] Skipping sidecar npm install (--skip-sidecar-install)")
+        print("[5/5] Skipping sidecar pnpm install (--skip-sidecar-install)")
     else:
         print("[5/5] Installing Node sidecar deps (spectrum-ts)...")
         rc = _install_sidecar()
@@ -441,63 +441,78 @@ def _cmd_telemetry(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_pnpm(cmd: list[str]) -> tuple[int, str]:
+    """Run pnpm in the sidecar dir, echoing its output live and returning it.
+
+    pnpm reports failures (``ERR_PNPM_*``) on stdout and writes no debug log
+    file, so both streams are captured for the failure reason.
+    """
+    proc = subprocess.Popen(  # noqa: S603
+        cmd,
+        cwd=str(_sidecar_dir()),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    lines = []
+    for line in proc.stdout or ():
+        print(line, end="", flush=True)
+        lines.append(line)
+    return proc.wait(), "".join(lines)
+
+
+def _pnpm_error(output: str) -> str:
+    """The failure reason in pnpm's output: from its ERR_PNPM_ line onward.
+
+    Everything before that line is progress output, which would read as a
+    misleading "error" when surfaced later by check_requirements().
+    """
+    start = output.find("ERR_PNPM_")
+    # Bound to the same length check_requirements() truncates to on read, so
+    # the log file never holds more than what's ever surfaced.
+    return output[max(start, 0):].strip()[:_PNPM_ERROR_LOG_MAX_CHARS]
+
+
 def _install_sidecar() -> int:
-    npm = shutil.which("npm") or "npm"
-    if not shutil.which(npm):
+    from hermes_constants import ensure_hermes_pnpm
+
+    pnpm = ensure_hermes_pnpm()
+    if not pnpm:
         print(
-            "npm is not on PATH. Install Node.js 18+ (https://nodejs.org/) "
+            "pnpm is not available. Install Node.js 18+ (https://nodejs.org/) "
             "and re-run.",
             file=sys.stderr,
         )
         return 1
-    # spectrum-ts is pinned exactly in package.json/package-lock.json because
+    # spectrum-ts is pinned exactly in package.json/pnpm-lock.yaml because
     # the SDK ships breaking majors (v2 removed defineFusorPlatform; v3
     # reworked space construction; v5 split it into @spectrum-ts/* packages).
     # Upgrades are deliberate: bump the pin, migrate sidecar/index.mjs, re-run
     # the photon tests — never `@latest` (see README "Upgrading spectrum-ts").
-    # `npm ci` installs the committed lockfile verbatim; fall back to
-    # `npm install` when the lockfile is missing or drifted (e.g. a dev
-    # checkout mid-upgrade).
-    print(f"  $ cd {_sidecar_dir()} && {npm} ci")
-    # stdout is not captured so npm progress prints to the terminal in real
-    # time. stderr is captured so we can persist the failure reason for
-    # check_requirements() to surface after the process exits.
-    proc = subprocess.run(  # noqa: S603
-        [npm, "ci"],
-        cwd=str(_sidecar_dir()),
-        check=False,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if proc.stderr:
-        print(proc.stderr, end="", file=sys.stderr)
-    if proc.returncode != 0:
-        print(f"  npm ci failed — falling back to:  {npm} install")
-        proc = subprocess.run(  # noqa: S603
-            [npm, "install"],
-            cwd=str(_sidecar_dir()),
-            check=False,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        if proc.stderr:
-            print(proc.stderr, end="", file=sys.stderr)
-    if proc.returncode != 0:
-        print("npm install failed", file=sys.stderr)
-        # Bound to the same length check_requirements() truncates to on
-        # read, so the log file never holds more than what's ever surfaced.
-        error = (proc.stderr or "").strip()[:_NPM_ERROR_LOG_MAX_CHARS]
+    # A frozen-lockfile install uses the committed lockfile verbatim; fall
+    # back to a plain `pnpm install` when the lockfile is missing or drifted
+    # (e.g. a dev checkout mid-upgrade).
+    frozen = [pnpm, *PNPM_INSTALL_ARGS, "--frozen-lockfile"]
+    print(f"  $ cd {_sidecar_dir()} && {' '.join(frozen)}")
+    returncode, output = _run_pnpm(frozen)
+    if returncode != 0:
+        fallback = [pnpm, *PNPM_INSTALL_ARGS]
+        print(f"  frozen-lockfile install failed — falling back to:  {' '.join(fallback)}")
+        returncode, output = _run_pnpm(fallback)
+    if returncode != 0:
+        print("pnpm install failed", file=sys.stderr)
+        error = _pnpm_error(output)
         if error:
             try:
-                _npm_error_log().write_text(error, encoding="utf-8")
+                _pnpm_error_log().write_text(error, encoding="utf-8")
             except OSError:
                 pass
     else:
         try:
-            _npm_error_log().unlink()
+            _pnpm_error_log().unlink()
         except OSError:
             pass
-    return proc.returncode
+    return returncode
 
 
 # ---------------------------------------------------------------------------

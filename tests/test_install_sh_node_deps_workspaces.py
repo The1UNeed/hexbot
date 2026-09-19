@@ -1,11 +1,12 @@
 """A CLI install must never resolve the desktop workspace.
 
 ``apps/desktop`` declares ``node-pty``, which ships no Linux prebuild and so
-falls back to ``node-gyp rebuild``. A bare ``npm install`` at the repo root
-resolves the root ``apps/*`` workspace glob and drags it in, so a host with no
-make/gcc cannot finish an install for a machine that will never launch Electron
-or a PTY addon (#38311, #38772). Since #85297 a failed npm install aborts the
-whole install, so this is the difference between a working CLI install and none.
+falls back to ``node-gyp rebuild``. A bare ``pnpm install`` at the repo root
+resolves the ``apps/*`` glob in ``pnpm-workspace.yaml`` and drags it in, so a
+host with no make/gcc cannot finish an install for a machine that will never
+launch Electron or a PTY addon (#38311, #38772). Since #85297 a failed install
+aborts the whole install, so this is the difference between a working CLI
+install and none.
 
 These exercise the real ``node_deps_workspace_args`` from ``scripts/install.sh``.
 ``--manifest`` makes the installer print its stage manifest and stop before
@@ -25,7 +26,7 @@ pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash
 
 
 def workspace_args(install_dir: Path) -> list[str]:
-    """Return the npm arguments install.sh would use for ``install_dir``."""
+    """Return the pnpm arguments install.sh would use for ``install_dir``."""
     script = (
         f'source "{INSTALL_SH}" --manifest >/dev/null\n'
         f'node_deps_workspace_args "{install_dir}"\n'
@@ -42,7 +43,10 @@ def workspace_args(install_dir: Path) -> list[str]:
 
 def make_checkout(root: Path, workspaces: tuple[str, ...]) -> Path:
     """Lay out a checkout with a root package and the given workspace dirs."""
-    (root / "package.json").write_text('{"workspaces": ["apps/*", "ui-tui", "web"]}')
+    (root / "package.json").write_text("{}")
+    (root / "pnpm-workspace.yaml").write_text(
+        "packages:\n  - apps/*\n  - ui-tui\n  - web\n"
+    )
     for workspace in ("apps/desktop", *workspaces):
         directory = root / workspace
         directory.mkdir(parents=True)
@@ -51,7 +55,7 @@ def make_checkout(root: Path, workspaces: tuple[str, ...]) -> Path:
 
 
 def selected_workspaces(args: list[str]) -> list[str]:
-    return [value for flag, value in zip(args, args[1:]) if flag == "--workspace"]
+    return [value for flag, value in zip(args, args[1:]) if flag == "--filter"]
 
 
 @pytest.mark.parametrize(
@@ -64,31 +68,32 @@ def test_desktop_workspace_is_never_selected(tmp_path, workspaces):
     args = workspace_args(make_checkout(tmp_path, workspaces))
 
     assert "desktop" not in " ".join(args)
-    # Constraining npm is the whole point: an empty argument list would leave
-    # npm resolving every workspace, including apps/*.
-    assert args, "npm must be constrained, otherwise apps/* resolves"
-    assert "--workspaces=false" in args or selected_workspaces(args)
+    # Constraining pnpm is the whole point: an empty argument list would leave
+    # pnpm resolving every workspace member, including apps/*.
+    assert args, "pnpm must be constrained, otherwise apps/* resolves"
+    assert selected_workspaces(args)
+    assert len(args) == 2 * len(selected_workspaces(args)), "only --filter pairs"
 
 
 def test_present_workspaces_are_installed_alongside_the_root(tmp_path):
-    """ui-tui and web are what a CLI install needs; the root owns shared
-    devDependencies that a scoped install would otherwise prune."""
+    """ui-tui and web are what a CLI install needs. The trailing ``...``
+    pulls in the workspace packages each depends on (web needs
+    ``@hermes/shared``); pnpm always installs the root alongside a filter."""
     args = workspace_args(make_checkout(tmp_path, ("ui-tui", "web")))
 
-    assert selected_workspaces(args) == ["ui-tui", "web"]
-    assert "--include-workspace-root" in args
+    assert selected_workspaces(args) == ["ui-tui...", "web..."]
 
 
 def test_absent_workspace_is_not_named(tmp_path):
-    """npm fails hard on a workspace it cannot find, so a partial checkout
-    must only name the workspaces that exist."""
+    """A partial checkout must only name the workspace members that exist."""
     args = workspace_args(make_checkout(tmp_path, ("ui-tui",)))
 
-    assert selected_workspaces(args) == ["ui-tui"]
+    assert selected_workspaces(args) == ["ui-tui..."]
 
 
 def test_bare_checkout_installs_the_root_only(tmp_path):
-    """With no installable workspace, npm still must not walk apps/*."""
+    """With no installable member, pnpm still must not walk apps/*: a filter
+    that matches nothing installs nothing, so the root is named itself."""
     args = workspace_args(make_checkout(tmp_path, ()))
 
-    assert args == ["--workspaces=false"]
+    assert args == ["--filter", "."]

@@ -393,7 +393,7 @@ async def _lifespan(app: "FastAPI"):
     app.state.event_lock = asyncio.Lock()
     app.state.pty_active_session_files = {}  # dict[str, Path]
     # Serializes chat-argv resolution so concurrent /api/pty connections
-    # don't trigger overlapping ``npm install`` / ``npm run build`` work.
+    # don't trigger overlapping ``pnpm install`` / ``pnpm run build`` work.
     # On app.state (not a module global) so the Lock binds to the running
     # event loop during lifespan startup — see _get_event_state's docstring.
     app.state.chat_argv_lock = asyncio.Lock()
@@ -9986,24 +9986,25 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
     if (bridge_dir / "node_modules").exists():
         return
 
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_constants import ensure_hermes_pnpm, with_hermes_node_path
     from utils import env_int
 
-    npm = find_node_executable("npm")
-    if not npm:
+    pnpm = ensure_hermes_pnpm()
+    if not pnpm:
         raise HTTPException(
             status_code=500,
-            detail="npm was not found. WhatsApp setup needs Node.js and npm.",
+            detail="pnpm was not found and could not be installed. WhatsApp setup needs Node.js and pnpm.",
         )
 
     timeout = env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300)
     try:
         result = subprocess.run(
-            [npm, "install", "--silent"],
+            # The bridge has its own lockfile and is not a workspace member.
+            [pnpm, "install", "--frozen-lockfile", "--ignore-workspace"],
             cwd=str(bridge_dir),
             capture_output=True,
             text=True,
-            # npm output is UTF-8; guard the Windows ANSI-code-page default
+            # pnpm output is UTF-8; guard the Windows ANSI-code-page default
             # against undefined bytes crashing the reader thread (#52649).
             encoding="utf-8",
             errors="replace",
@@ -10023,12 +10024,13 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
         ) from exc
 
     if result.returncode != 0:
+        # pnpm reports ERR_PNPM_* errors on stdout; stderr is usually empty.
         detail = (result.stderr or result.stdout or "").strip()
         if detail:
             detail = "\n".join(detail.splitlines()[-10:])
         raise HTTPException(
             status_code=500,
-            detail=f"npm install failed for WhatsApp bridge: {detail or 'no output'}",
+            detail=f"pnpm install failed for WhatsApp bridge: {detail or 'no output'}",
         )
 
 
@@ -16838,7 +16840,7 @@ async def _resolve_chat_argv_async(
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve chat argv without blocking the dashboard event loop.
 
-    ``_resolve_chat_argv`` may run ``npm install`` / ``npm run build`` through
+    ``_resolve_chat_argv`` may run ``pnpm install`` / ``pnpm run build`` through
     ``_make_tui_argv``.  Keep that synchronous work off the WebSocket event
     loop so reverse proxies and existing dashboard connections can continue
     to exchange keepalives while the TUI launch command is prepared.  The
@@ -17624,7 +17626,7 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=1011)
         return
     except SystemExit as exc:
-        # _make_tui_argv calls sys.exit(1) when node/npm is missing.
+        # _make_tui_argv calls sys.exit(1) when node/pnpm is missing.
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
@@ -17986,7 +17988,7 @@ def mount_spa(application: FastAPI):
     # survives a `git pull` (or starts before the first build) used to
     # install a permanent no_frontend catch-all here and could never
     # recover — every route answered 404 "Frontend not built" until the
-    # process was restarted, even after `npm run build` completed. The SPA
+    # process was restarted, even after `pnpm run build` completed. The SPA
     # routes below all cope with a missing dist per-request (`_serve_index`
     # returns the same 404 JSON when index.html is unreadable; the asset
     # mounts use check_dir=False and 404 on missing files), so mounting
@@ -18016,7 +18018,7 @@ def mount_spa(application: FastAPI):
             # the same JSON 404 payload mount_spa uses for a fully-missing
             # dist so clients get a clear, consistent signal.
             return JSONResponse(
-                {"error": "Frontend not built. Run: cd web && npm run build"},
+                {"error": "Frontend not built. Run: cd web && pnpm run build"},
                 status_code=404,
             )
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"

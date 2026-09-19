@@ -37,7 +37,7 @@ behaviour lives in a small set of files:
 | `scripts/desktop/make-update-feed.mjs` | stable, nightly | Builds the `updates.hexbot.app` directory tree from a build output: artifacts plus `latest-*.yml` or `nightly-*.yml` |
 | `scripts/desktop/finalize-release.mjs` | stable | Rewrites `apps/site/public/downloads/manifest.json` and both Homebrew casks for a version |
 | `scripts/desktop/release-smoke.mjs` | stable, nightly | Runs the scripts above the way `release.yml` does, against synthetic packages. CI runs it on every push |
-| `scripts/dev/run.mjs` | dev | `npm run dev`: daemon and web bundle (or Electron) from the checkout with a per-checkout home and ports |
+| `scripts/dev/run.mjs` | dev | `pnpm dev`: daemon and web bundle (or Electron) from the checkout with a per-checkout home and ports |
 | `.devcontainer/devcontainer.json` | dev | One-command development environment with Python 3.11, uv, and Node 26 |
 | `apps/desktop/electron-builder.yml`, `electron-builder.client.yml` | all | Full and client-only package definitions and their feed URLs; channel flags override `productName` and `appId` |
 | `apps/desktop/src/main/updater.ts`, `update-state.ts`, `desktop-state.ts` | stable, nightly | The in-app updater: a check 15 s after launch and every 4 minutes, one action at a time, logged to `<home>/logs/desktop.log`. The track defaults to the one the build came from and can be switched in Settings, Updates |
@@ -89,9 +89,9 @@ otherwise. They are notarized only when the Apple secrets are set.
 
 ## Dev
 
-The dev channel is the source tree. `npm run dev` starts the daemon and the
+The dev channel is the source tree. `pnpm dev` starts the daemon and the
 web bundle from the checkout with `HEXBOT_HOME=<checkout>/.hexbot` and ports
-derived from the checkout path; `npm run dev -- --desktop` starts the Electron
+derived from the checkout path; `pnpm dev --desktop` starts the Electron
 app as `Hexbot (dev)` instead (it runs the daemon itself). Its window, app
 menus, Dock, and app switcher use this name and the blue icon from the
 `apps/desktop/build/icon-dev.icon` bundle. Its data stays in the checkout's

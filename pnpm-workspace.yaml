@@ -1,0 +1,95 @@
+packages:
+  - apps/*
+  - web
+
+# `engines` in package.json is a hard gate on every install.
+engineStrict: true
+
+# Packages allowed to run install scripts. Everything else is skipped.
+onlyBuiltDependencies:
+  - '@tailwindcss/oxide'
+  - electron
+  - electron-winstaller
+  - esbuild
+  - fsevents
+  - get-windows
+  - node-pty
+ignoredBuiltDependencies:
+  - unicode-animations
+
+overrides:
+  lodash: 4.18.1
+  yauzl: ^3.3.1
+  protobufjs: ^8.7.1
+  # Scoped: minimatch 3 and 5 need brace-expansion 1.x and 2.x.
+  brace-expansion@^5: 5.0.9
+  mermaid: 11.16.1
+  dompurify: 3.4.13
+  ip-address: 10.3.1
+  nanoid@^3: 3.3.18
+  nanoid@^6: 6.0.0
+  js-yaml@^4: 4.3.2
+  undici@^6: 6.28.0
+  undici@^7: 7.29.0
+  postcss: 8.5.23
+  tar: 7.5.22
+
+# Refuse releases younger than 14 days (the value is in minutes).
+minimumReleaseAge: 20160
+minimumReleaseAgeExclude:
+  # assistant-ui packages & a couple specific deps since they update a LOT.
+  # remove this when we stabilize (or we haven't updated in 2 wks)
+  - '@assistant-ui/*'
+  - assistant-cloud
+  - assistant-stream
+  - '@radix-ui/*'
+  - radix-ui
+  - safe-content-frame
+  # react-router 8.3.0 includes fixes for vulns. remove this when 8.3.0 is > 2wks old.
+  - react-router
+  # eslint 10.8.0 includes fixes for vulns. remove this when 10.8.0 is > 2wks old.
+  - eslint
+  - '@eslint/*'
+  # tar 7.5.21 includes fixes for vulns. remove this when 7.5.21 is > 2wks old
+  - tar
+  # concurrently 10.0.4 includes fixes for vulns. remove this when 10.0.4 is > 2wks old
+  - concurrently
+  # fast-uri 3.1.4 includes fixes for vulns. remove this when 3.1.4 is > 2wks old
+  - fast-uri
+  # minimatch 10.2.6 includes fixes for vulns. remove this when 10.2.6 is > 2wks old
+  - minimatch
+  # brace-expansion 5.0.9 includes fixes for vulns. remove this when 5.0.9 is > 2wks old
+  - brace-expansion
+  # js-yaml 4.3.1 includes fixes for GHSA-5p4m-2wfm-xmqj. remove when > 2wks old (rel 2026-07-31)
+  - js-yaml
+  # nanoid 3.3.17 includes fixes for GHSA-2v37-7h3g-55p8. remove when > 2wks old (rel 2026-08-03)
+  - nanoid
+  # mermaid 11.16.1 includes fixes for 5 GHSAs. remove when > 2wks old (rel 2026-08-04)
+  - mermaid
+  # dompurify 3.4.13 includes fixes for GHSA-55q2-fjhq-7xh7. remove when > 2wks old (rel 2026-08-03)
+  - dompurify
+  # vite 8.2.0 is the first release depending on rolldown >= 1.2.1, which fixes
+  # a rolldown panic that breaks `pnpm run build` in apps/desktop
+  # (rolldown/rolldown#10337 — a regression in 1.1.5, the version vite 8.1.5
+  # pins as ~1.1.5). @oxc-project/types is here because rolldown 1.2.1 pins it
+  # as `=0.142.0` — an exact pin, so no older release satisfies it and the age
+  # gate would fail the whole install.
+  # remove these once vite 8.2.0 is > 2wks old.
+  - vite
+  - rolldown
+  - '@rolldown/*'
+  - '@oxc-project/types'
+  # ink needs
+  - lightningcss
+  - postcss
+  # electron-builder 26.16.1 passes the keychain's own password to
+  # `security set-key-partition-list`; 26.15.3 passed the .p12 password, which
+  # the macos-26 runner image rejects and every signed macOS build fails.
+  # remove these when 26.16.1 is > 2wks old (rel 2026-09-07; builder-util and
+  # electron-publish 26.16.0 rel 2026-09-02)
+  - electron-builder
+  - app-builder-lib
+  - dmg-builder
+  - electron-builder-squirrel-windows
+  - builder-util
+  - electron-publish

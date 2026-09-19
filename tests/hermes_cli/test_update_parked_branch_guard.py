@@ -256,8 +256,6 @@ def _patch_update_flow(monkeypatch, repo, run_real_git=True):
         lambda *a, **k: "https://github.com/NousResearch/hermes-agent.git",
     )
     monkeypatch.setattr(hermes_main, "_is_fork", lambda *a, **k: False)
-    monkeypatch.setattr(hermes_main, "_discard_lockfile_churn", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_discard_lockfile_churn", lambda *a, **k: None)
     monkeypatch.setattr(update_cmd, "_normalize_managed_eol", lambda *a, **k: None)
     monkeypatch.setattr(hermes_main, "_clear_bytecode_cache", lambda *a, **k: 0)
     monkeypatch.setattr(hermes_main, "_record_bytecode_fingerprint", lambda *a, **k: None)

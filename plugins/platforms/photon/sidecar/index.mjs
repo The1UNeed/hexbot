@@ -280,7 +280,7 @@ if (!projectId || !projectSecret || !sharedToken) {
 // Lazy-load spectrum-ts so a missing install fails with a clear message
 // instead of a cryptic module-resolution error during import. Apply Hermes'
 // pinned-sdk compatibility patch first so existing installs self-heal at
-// runtime, not only during npm postinstall.
+// runtime, not only during the postinstall script.
 try {
   const patchResult = patchSpectrumTs();
   if (patchResult.patched) {
@@ -291,7 +291,7 @@ try {
 } catch (e) {
   console.error(
     "photon-sidecar: spectrum mixed attachment patch failed. " +
-      "Run `npm install` inside plugins/platforms/photon/sidecar/ or " +
+      "Run `hermes photon install-sidecar` or " +
       "upgrade the Photon sidecar patch for the pinned spectrum-ts version. " +
       "Original error: " +
       (e && e.stack ? e.stack : String(e))
@@ -321,8 +321,8 @@ try {
   ({ imessage, effect: imessageEffect } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
   console.error(
-    "photon-sidecar: spectrum-ts is not installed. Run `npm install` " +
-      "inside plugins/platforms/photon/sidecar/. Original error: " +
+    "photon-sidecar: spectrum-ts is not installed. Run " +
+      "`hermes photon install-sidecar`. Original error: " +
       (e && e.stack ? e.stack : String(e))
   );
   process.exit(3);

@@ -1,9 +1,9 @@
 // The dev channel: run Hexbot from this checkout (docs/channels.md, "Dev").
 //
-//   npm run dev                daemon + web bundle, open the printed URL
-//   npm run dev -- --desktop   web bundle + Electron app (the app runs the daemon)
-//   npm run dev -- --home DIR  daemon state somewhere other than <checkout>/.hexbot
-//   npm run dev -- --port N    fixed daemon port instead of one derived from the path
+//   pnpm dev                daemon + web bundle, open the printed URL
+//   pnpm dev --desktop      web bundle + Electron app (the app runs the daemon)
+//   pnpm dev --home DIR     daemon state somewhere other than <checkout>/.hexbot
+//   pnpm dev --port N       fixed daemon port instead of one derived from the path
 //
 // Like T3 Code's dev runner, state lives inside the checkout (gitignored
 // `.hexbot/`), never in ~/.hexbot, and the ports derive from the checkout
@@ -79,7 +79,7 @@ function waitForPort(port, label, timeoutMs = 60_000) {
 const children = []
 function start(label, command, commandArgs, env) {
   // Each child leads its own process group, so stopping it also stops what
-  // it spawned (npm -> electron-vite -> Electron -> daemon) instead of leaving
+  // it spawned (pnpm -> electron-vite -> Electron -> daemon) instead of leaving
   // an orphaned app holding the single-instance lock.
   const child = spawn(command, commandArgs, {
     cwd: repositoryRoot,
@@ -128,24 +128,23 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const derived = derivePorts(repositoryRoot)
     const daemonPort = Number(option('--port') ?? (await freePortFrom(derived.daemon)))
     const webPort = await freePortFrom(derived.web)
-    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+    const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
 
     console.log(`[dev] home ${home}`)
     if (desktop) {
       // The Electron app starts and owns its daemon; it needs the web dev server.
-      start('web', npm, [
+      start('web', pnpm, [
+        '--filter',
+        './apps/web',
         'run',
         'dev',
-        '-w',
-        'apps/web',
-        '--',
         '--port',
         String(webPort),
         '--strictPort'
       ])
       await waitForPort(webPort, 'web bundle')
       console.log(`[dev] web http://localhost:${webPort}`)
-      start('desktop', npm, ['run', 'dev', '-w', 'apps/desktop'], {
+      start('desktop', pnpm, ['--filter', './apps/desktop', 'run', 'dev'], {
         HEXBOT_HOME: home,
         HEXBOT_WEB_DEV_URL: `http://localhost:${webPort}`
       })
@@ -155,8 +154,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       console.log(`[dev] daemon http://127.0.0.1:${daemonPort}`)
       start(
         'web',
-        npm,
-        ['run', 'dev', '-w', 'apps/web', '--', '--port', String(webPort), '--strictPort'],
+        pnpm,
+        ['--filter', './apps/web', 'run', 'dev', '--port', String(webPort), '--strictPort'],
         {
           VITE_HEXBOT_ORIGIN: `http://127.0.0.1:${daemonPort}`
         }

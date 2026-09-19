@@ -242,6 +242,39 @@ def _safe_which(cmd: str) -> str | None:
         return None
 
 
+def _check_pnpm(pnpm_bin: str | None) -> None:
+    """Check that pnpm exists and satisfies the root ``engines.pnpm`` floor."""
+    import json
+    import re
+
+    from hermes_constants import pinned_pnpm_spec
+
+    fix_hint = f"Fix: npm install -g {pinned_pnpm_spec()}"
+    if not pnpm_bin:
+        check_warn("pnpm not found", "(needed to install and build the web UI from source)")
+        check_info(fix_hint)
+        return
+    try:
+        version = subprocess.run(
+            [pnpm_bin, "--version"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        ).stdout.strip()
+        engines = json.loads((PROJECT_ROOT / "package.json").read_text(encoding="utf-8"))
+        required = str((engines.get("engines") or {}).get("pnpm") or "").strip()
+    except Exception:
+        return
+    got = re.fullmatch(r"(\d+)\.(\d+)\.(\d+).*", version)
+    if not got:
+        return
+    # engines.pnpm is a plain ``>=X.Y.Z`` floor; anything else is left to pnpm.
+    floor = re.fullmatch(r">=\s*(\d+)\.(\d+)\.(\d+)", required)
+    if floor and tuple(map(int, got.groups())) < tuple(map(int, floor.groups())):
+        check_warn(f"pnpm {version}", f"(this checkout needs {required})")
+        check_info(fix_hint)
+    else:
+        check_ok("pnpm", f"({version})")
+
+
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     steps: list[str] = []
     step = 1
@@ -2622,42 +2655,41 @@ def run_doctor(args):
                 )
                 check_info(LIGHTPANDA_INSTALL_HINT)
 
-    # npm audit for all Node.js packages
-    _npm_bin = _safe_which("npm")
-    if _npm_bin:
+    # pnpm installs, builds, and audits this checkout's Node packages.
+    # Same lookup order as ensure_hermes_pnpm(), minus the install.
+    from hermes_constants import find_hermes_node_executable, find_node_executable_on_path
+    _pnpm_bin = find_hermes_node_executable("pnpm") or find_node_executable_on_path("pnpm")
+    if (PROJECT_ROOT / "pnpm-workspace.yaml").exists():
+        _check_pnpm(_pnpm_bin)
+
+    # pnpm audit for all Node.js packages
+    if _pnpm_bin:
         # Each entry: (cwd, label, extra_audit_args)
-        # PROJECT_ROOT is audited with --workspaces=false so that the apps/*
-        # glob (which pulls in Electron, node-pty, etc.) is never resolved
-        # for a routine security check. The web and ui-tui workspaces are
-        # audited separately via --workspace flags. See #38772.
+        # One root audit covers every workspace member: pnpm audits the
+        # lockfile and has no per-member filter.
         # The WhatsApp bridge may live under a writable HERMES_HOME mirror
         # instead of the (possibly read-only) install tree in Docker — resolve
         # it through the shared helper so we audit the dir that actually holds
-        # node_modules. See #49561.
+        # node_modules. See #49561. It has its own lockfile and is not a
+        # workspace member, hence --ignore-workspace.
         try:
             from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
             _whatsapp_bridge_dir = resolve_whatsapp_bridge_dir()
         except Exception:
             _whatsapp_bridge_dir = PROJECT_ROOT / "scripts" / "whatsapp-bridge"
-        npm_audit_targets = [
-            (PROJECT_ROOT, "Browser tools (agent-browser)", ["--workspaces=false"]),
-            (PROJECT_ROOT, "web workspace", ["--workspace", "web"]),
-            (PROJECT_ROOT, "ui-tui workspace", ["--workspace", "ui-tui"]),
-            (_whatsapp_bridge_dir, "WhatsApp bridge", []),
+        pnpm_audit_targets = [
+            (PROJECT_ROOT, "Node workspace", []),
+            (_whatsapp_bridge_dir, "WhatsApp bridge", ["--ignore-workspace"]),
         ]
-        for npm_dir, label, audit_extra in npm_audit_targets:
-            # For workspace-scoped audits run from PROJECT_ROOT the
-            # node_modules check must use the workspace root; standalone dirs
-            # (whatsapp-bridge) check their own node_modules.
-            check_dir = PROJECT_ROOT if audit_extra else npm_dir
-            if not (check_dir / "node_modules").exists():
+        for pnpm_dir, label, audit_extra in pnpm_audit_targets:
+            if not (pnpm_dir / "node_modules").exists():
                 continue
             try:
                 # Use resolved absolute path so Windows can execute
-                # npm.cmd (CreateProcessW can't run bare .cmd names).
+                # pnpm.cmd (CreateProcessW can't run bare .cmd names).
                 audit_result = subprocess.run(
-                    [_npm_bin, "audit", "--json", *audit_extra],
-                    cwd=str(npm_dir),
+                    [_pnpm_bin, "audit", "--json", *audit_extra],
+                    cwd=str(pnpm_dir),
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
                 )
                 import json as _json
@@ -2667,20 +2699,16 @@ def run_doctor(args):
                 high = vuln_count.get("high", 0)
                 moderate = vuln_count.get("moderate", 0)
                 total = critical + high + moderate
-                # Determine a scoped fix command for the remediation hint.
-                if audit_extra and audit_extra[0] == "--workspace":
-                    # Detection (`npm audit --workspace <name>`) is read-only and
-                    # safe, but `npm audit fix --workspace <name>` crashes on
-                    # current npm with "Cannot read properties of null (reading
-                    # 'edgesOut')" — an arborist bug with workspace-filtered
-                    # audit fix. The root-level `npm audit fix` can crash on the
-                    # same tree with "isDescendantOf", so do not hand the user a
-                    # manual fix command for these build-tool advisories.
-                    fix_cmd = None
-                elif audit_extra == ["--workspaces=false"]:
-                    fix_cmd = f"cd {npm_dir} && npm audit fix --workspaces=false"
+                # `pnpm audit --fix` writes overrides into the manifest, which
+                # would dirty the checkout's workspace files, so only the
+                # standalone bridge gets a manual fix command.
+                if audit_extra:
+                    fix_cmd = (
+                        f"cd {pnpm_dir} && pnpm audit --fix --ignore-workspace "
+                        "&& pnpm install --ignore-workspace"
+                    )
                 else:
-                    fix_cmd = f"cd {npm_dir} && npm audit fix"
+                    fix_cmd = None
                 if total == 0:
                     check_ok(f"{label} deps", "(no known vulnerabilities)")
                 elif critical > 0 or high > 0:
@@ -2691,25 +2719,14 @@ def run_doctor(args):
                     else:
                         vuln_detail = (
                             f"{critical} critical, {high} high, {moderate} moderate — "
-                            "build-tool advisory; clears via lockfile bump"
+                            "clears via lockfile bump"
                         )
                     check_warn(
                         f"{label} deps",
                         f"({vuln_detail})"
                     )
-                    if audit_extra and audit_extra[0] == "--workspace":
-                        # The web/ui-tui workspace advisories are in build-time
-                        # tooling (esbuild/vite, etc.), not runtime code that ships
-                        # to users. Manual npm remediation may error with a known
-                        # arborist crash (edgesOut / isDescendantOf) on this monorepo
-                        # tree — in that case it is an npm bug, not a Hermes one.
-                        check_info(
-                            "  ^ build-time tooling (not runtime); if manual npm remediation "
-                            "errors with an arborist crash it's a known npm bug — clears "
-                            "via a lockfile bump"
-                        )
                     issues.append(
-                        f"{label} has {total} npm "
+                        f"{label} has {total} Node package "
                         f"{'vulnerability' if total == 1 else 'vulnerabilities'}"
                     )
                 else:

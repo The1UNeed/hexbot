@@ -2057,326 +2057,101 @@ def _print_tui_exit_summary(
     )
 
 
-_NPM_LOCK_RUNTIME_KEYS = frozenset(
-    {
-        "ideallyInert",
-        "peer",
-        # npm writes these boolean annotation fields non-deterministically
-        # between the declarative package-lock.json and the hidden actualized
-        # .package-lock.json.  The intersection comparison (see
-        # _tui_need_npm_install) already handles the "field present in root
-        # but absent in hidden" case for structured fields like version,
-        # dependencies, license, etc.  These boolean flags need explicit
-        # exclusion because when present in *both* lockfiles they may still
-        # differ (e.g. dev: true → stripped in hidden).
-        "dev",
-        "extraneous",
-        "hasInstallScript",
-        "optional",
-    }
-)
-"""Lockfile fields npm writes non-deterministically at install time.
-
-``ideallyInert`` is npm's runtime annotation for packages it skipped installing
-(per-platform opt-outs).  ``peer`` is dropped from the hidden ``.package-lock.json``
-on dev-dependencies that are *also* declared as peers — the canonical
-``package-lock.json`` records the dual role, but npm 9's actualized tree strips
-it.  Neither key represents a real skew between what was declared and what was
-installed, so we exclude them from the comparison in :func:`_tui_need_npm_install`
-to avoid false-positive reinstalls on every launch.
-
-``dev``, ``optional``, ``extraneous``, and ``hasInstallScript`` are boolean
-annotations that npm populates differently in the hidden lock (npm >= 10/11
-writes ``extraneous`` into the hidden lock only, and ``dev: true`` from the
-root lock may be absent or ``false`` in the hidden actualized tree).
-They never indicate a changed dependency — the authoritative check is the
-``resolved``/``integrity`` pair, which the intersection comparison always
-catches.
-"""
-
-
 def _workspace_root(dir: Path) -> Path:
-    """Return the npm workspace root for *dir*.
+    """Return the pnpm workspace root for *dir*.
 
-    In a workspace checkout the single ``package-lock.json`` and hoisted
-    ``node_modules/`` live at the workspace root (the parent of the
-    sub-package directory).  Heuristic: if *dir* has a ``package.json``
-    but **no** ``package-lock.json``, and its **parent** has a
-    ``package-lock.json``, the parent is the workspace root.
-    Otherwise *dir* itself is the root (standalone project or
-    prebuilt-bundle layout).
+    In a workspace checkout the single ``pnpm-lock.yaml`` and the virtual
+    store (``node_modules/.pnpm``) live at the workspace root: the nearest
+    ancestor holding ``pnpm-workspace.yaml``.  A *dir* with its own
+    ``pnpm-lock.yaml``, or with no workspace above it, is itself the root
+    (standalone project or prebuilt-bundle layout).
 
-    Used by ``_tui_need_npm_install``, ``_make_tui_argv``, and
+    Used by ``_tui_need_pnpm_install``, ``_make_tui_argv``, and
     ``_build_web_ui`` so that lockfile/node_modules resolution and
-    ``npm install`` cwd stay consistent — a single helper prevents
-    the checks from diverging if someone accidentally creates a
-    sub-package lockfile (e.g. running ``npm install`` in the wrong
-    directory).
+    ``pnpm install`` cwd stay consistent.
     """
-    if (
-        (dir / "package.json").is_file()
-        and not (dir / "package-lock.json").is_file()
-        and (dir.parent / "package-lock.json").is_file()
-    ):
-        return dir.parent
+    if (dir / "package.json").is_file() and not (dir / "pnpm-lock.yaml").is_file():
+        for candidate in (dir, *dir.parents):
+            if (candidate / "pnpm-workspace.yaml").is_file():
+                return candidate
     return dir
+
+
+def _pnpm_filter_args(ws_root: Path, *dirs: Path) -> tuple[str, ...]:
+    """Return ``--filter`` args selecting *dirs* and their workspace dependencies.
+
+    A filtered install covers the workspace root and leaves every unselected
+    member alone.  *ws_root* itself (a standalone project has no workspace to
+    filter) and directories outside it are skipped.
+    """
+    args: list[str] = []
+    for dir in dirs:
+        if dir == ws_root:
+            continue
+        try:
+            rel = dir.relative_to(ws_root).as_posix()
+        except ValueError:
+            continue
+        args.extend(["--filter", f"{{{rel}}}..."])
+    return tuple(args)
 
 
 def _termux_workspace_install_context(
     dir: Path, *, include_child_workspaces: bool = False
 ) -> tuple[Path, tuple[str, ...]]:
-    """Return Termux-only ``(cwd, npm_args)`` for installing deps for *dir* only."""
+    """Return Termux-only ``(cwd, pnpm_args)`` for installing deps for *dir* only."""
     ws_root = _workspace_root(dir)
     if ws_root == dir:
         return dir, ()
 
-    try:
-        workspace = dir.relative_to(ws_root).as_posix()
-    except ValueError:
-        return ws_root, ()
-
-    workspace_args: list[str] = ["--workspace", workspace]
+    selected = [dir]
     if include_child_workspaces:
         packages_dir = dir / "packages"
         if packages_dir.is_dir():
-            for child in sorted(packages_dir.iterdir()):
-                if child.is_dir() and (child / "package.json").is_file():
-                    workspace_args.extend(
-                        ["--workspace", child.relative_to(ws_root).as_posix()]
-                    )
-    workspace_args.append("--include-workspace-root=false")
-    return ws_root, tuple(workspace_args)
+            selected.extend(
+                child
+                for child in sorted(packages_dir.iterdir())
+                if child.is_dir() and (child / "package.json").is_file()
+            )
+    return ws_root, _pnpm_filter_args(ws_root, *selected)
 
 
-def _npm_lock_workspace_closure(packages: dict, starts) -> Optional[set]:
-    """Package-map keys reachable from the selected workspaces via npm resolution.
-
-    *starts* is the set of workspace keys the launch install explicitly scopes
-    to (a single str is accepted for convenience).  ``devDependencies`` are
-    followed for **each** of those workspaces, since ``npm install`` installs
-    the dev toolchain for every workspace it selects.  Returns ``None`` when
-    none of *starts* are present in *packages* so callers fall back to the
-    full-lockfile comparison.
-
-    The launch install is scoped with ``npm install --workspace ui-tui`` (see
-    ``_make_tui_argv``), so only the ui-tui workspace's dependency closure is
-    written to the hidden ``.package-lock.json``.  On Termux it additionally
-    selects ui-tui's child ``packages/*`` workspaces, so their devDependencies
-    join the closure too.  The shared root ``package-lock.json`` additionally
-    lists every *other* workspace's deps (``apps/desktop``, ``web``, …);
-    comparing the two in full reports those unrelated packages as "missing" and
-    reinstalls on every launch (#66978).
-
-    Keys follow npm's v3 ``packages`` map (``""`` root, ``ui-tui`` /
-    ``apps/desktop`` workspace members, ``node_modules/<name>`` hoisted deps,
-    ``<dir>/node_modules/<name>`` nested deps).  Dependency names resolve to a
-    key by walking up ``node_modules`` ancestors, mirroring node resolution, and
-    workspace symlinks (``link: true``) are followed to their real entry so a
-    linked workspace's own deps join the closure.
-    """
-    start_set = {starts} if isinstance(starts, str) else {s for s in starts if s}
-    present = [s for s in start_set if s in packages]
-    if not present:
-        return None
-
-    def resolve(from_key: str, dep: str) -> Optional[str]:
-        base = from_key
-        while True:
-            prefix = f"{base}/" if base else ""
-            candidate = f"{prefix}node_modules/{dep}"
-            if candidate in packages:
-                return candidate
-            if not base:
-                return None
-            base = base.rsplit("/", 1)[0] if "/" in base else ""
-
-    seen: set = set()
-    stack = list(present)
-    while stack:
-        key = stack.pop()
-        if key in seen:
-            continue
-        seen.add(key)
-        entry = packages.get(key)
-        if not isinstance(entry, dict):
-            continue
-        # Workspace symlink (e.g. node_modules/@hermes/ink → ui-tui/packages/…):
-        # follow to the real package entry so its dependencies join the closure.
-        resolved = entry.get("resolved")
-        if entry.get("link") and isinstance(resolved, str) and resolved in packages:
-            stack.append(resolved)
-        # devDependencies are installed for each explicitly-selected workspace
-        # (its build toolchain), but not for transitive deps.
-        fields = ["dependencies", "optionalDependencies", "peerDependencies"]
-        if key in start_set:
-            fields.append("devDependencies")
-        for field in fields:
-            deps = entry.get(field)
-            if not isinstance(deps, dict):
-                continue
-            for dep in deps:
-                target = resolve(key, dep)
-                if target is not None:
-                    stack.append(target)
-    return seen
-
-
-def _tui_selected_workspace_keys(tui_dir: Path, ws_root: Path) -> set:
-    """Lock-map keys for the workspaces the launch install scopes to.
-
-    Mirrors ``_make_tui_argv``: always the ui-tui workspace, plus its child
-    ``packages/*`` workspaces on Termux (where ``include_child_workspaces=True``
-    in ``_termux_workspace_install_context``).  ``npm install`` installs the
-    devDependencies of every workspace it selects, so the freshness closure must
-    treat each as a dev-included root — otherwise a devDependency unique to a
-    selected child is dropped from the closure and a genuine missing package
-    slips past the check.  Returns an empty set when ui-tui can't be located
-    under *ws_root*, so the caller falls back to the full comparison.
-    """
-    try:
-        primary = tui_dir.relative_to(ws_root).as_posix()
-    except ValueError:
-        return set()
-    keys = {primary}
-    if _is_termux_startup_environment():
-        packages_dir = tui_dir / "packages"
-        if packages_dir.is_dir():
-            for child in sorted(packages_dir.iterdir()):
-                if child.is_dir() and (child / "package.json").is_file():
-                    try:
-                        keys.add(child.relative_to(ws_root).as_posix())
-                    except ValueError:
-                        continue
-    return keys
-
-
-def _tui_need_npm_install(root: Path) -> bool:
-    """True when @hermes/ink is missing or node_modules is behind package-lock.json.
+def _tui_need_pnpm_install(root: Path) -> bool:
+    """True when @hermes/ink is missing or node_modules is behind pnpm-lock.yaml.
 
     Prebuilt bundle mode: when ``dist/entry.js`` exists and there is no
-    ``package-lock.json`` (nix install layout only ships ``dist/`` +
+    ``pnpm-lock.yaml`` (nix install layout only ships ``dist/`` +
     ``package.json``), skip reinstall entirely — the bundle is self-contained
     and there is nothing to install.
 
-    With npm workspaces the single ``package-lock.json`` and the hoisted
-    ``node_modules/`` live at the workspace root (the parent of the
-    ``ui-tui/`` directory).  The lockfile / ink / marker checks use that
-    workspace root; only the prebuilt-bundle sentinel stays relative to
-    *root* (``ui-tui/dist/entry.js``).
+    In a workspace the single ``pnpm-lock.yaml`` and pnpm's install marker
+    ``node_modules/.modules.yaml`` live at the workspace root.  pnpm does not
+    hoist, so ``@hermes/ink`` is linked into the TUI's own ``node_modules``,
+    and the prebuilt-bundle sentinel stays relative to *root*
+    (``ui-tui/dist/entry.js``).
 
-    Compares ``package-lock.json`` against ``node_modules/.package-lock.json``
-    (npm's hidden lockfile) by **content**, not mtime: git checkouts and npm
-    rewrites can bump the root lockfile's timestamp even when installed deps
-    already match, which used to trigger a spurious "Installing TUI
-    dependencies" on every launch.
-
-    For each entry in the root lock's ``packages`` map:
-      - missing from hidden lock → reinstall (unless the entry is marked
-        ``optional`` or ``peer``, which npm may intentionally skip per platform)
-      - present in both → compare only the **intersection** of fields (after
-        stripping ``_NPM_LOCK_RUNTIME_KEYS``).  npm's hidden lock
-        intentionally omits many metadata fields (version, license, engines,
-        dependencies, funding, etc.) — those one-side-only fields are normal
-        npm artefacts, not real skew.  A real version/dependency change will
-        change ``resolved``/``integrity``, which are present in both locks
-        and will be caught by the intersection comparison.
-
-    Extra entries that exist only in the hidden lock are ignored — stale
-    transitives left over from a removed dependency don't break runtime and
-    we'd rather not force a reinstall for them. Falls back to mtime
-    comparison if either lockfile is unparseable.
+    pnpm rewrites ``.modules.yaml`` on every successful install, so the
+    install is stale exactly when the marker is missing or older than the
+    lockfile.
     """
     # Prebuilt self-contained bundle (nix / packaged release): no lockfile
     # shipped, dist/entry.js is the single runtime artefact.
     entry = root / "dist" / "entry.js"
-    # With npm workspaces the lockfile lives at the workspace root.
     ws_root = _workspace_root(root)
-    lock = ws_root / "package-lock.json"
+    lock = ws_root / "pnpm-lock.yaml"
     if entry.is_file() and not lock.is_file():
         return False
 
-    ink = ws_root / "node_modules" / "@hermes" / "ink" / "package.json"
+    ink = root / "node_modules" / "@hermes" / "ink" / "package.json"
     if not ink.is_file():
         return True
     if not lock.is_file():
         return False
-    marker = ws_root / "node_modules" / ".package-lock.json"
-    if not marker.is_file():
-        return True
-
-    # Compare lockfile contents, not mtimes: git checkouts and npm rewrites
-    # can bump the root lockfile timestamp even when installed deps already
-    # match. Fall back to mtime when either file is unparseable.
+    marker = ws_root / "node_modules" / ".modules.yaml"
     try:
-        wanted = json.loads(lock.read_text(encoding="utf-8")).get("packages") or {}
-        installed = json.loads(marker.read_text(encoding="utf-8")).get("packages") or {}
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return lock.stat().st_mtime > marker.stat().st_mtime
-
-    def entries_differ(pkg: dict, installed_pkg: dict) -> bool:
-        # Only compare keys present in *both* lockfiles with non-null values.
-        # npm's hidden .package-lock.json intentionally omits many metadata
-        # fields the root lock records (version, dependencies, license,
-        # engines, bin, ...), and npm >= 10/11 writes a further *reduced*
-        # hidden lockfile that stores some of them as null.  Missing- or
-        # null-on-one-side is a normal npm artefact, not a real skew.  The
-        # authoritative fields "resolved" and "integrity" are present in both
-        # locks for installed packages, so a genuinely stale install (root
-        # lockfile bumped while node_modules is behind) still differs on them.
-        a = {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
-        b = {
-            k: v
-            for k, v in installed_pkg.items()
-            if k not in _NPM_LOCK_RUNTIME_KEYS
-        }
-        for k in a.keys() & b.keys():
-            if a[k] is None or b[k] is None:
-                continue
-            if a[k] != b[k]:
-                return True
-        return False
-
-    # In a shared workspace checkout the launch install is scoped to the ui-tui
-    # workspace (plus its child packages/* workspaces on Termux), so only that
-    # dependency closure lands in the hidden lock.  Limit the comparison to the
-    # same selected-workspace closure so unrelated workspace deps (apps/desktop,
-    # web, …) don't force a reinstall every launch (#66978).  Standalone /
-    # own-lockfile layouts (ws_root == root) do a full install, so keep the full
-    # comparison; a missing/unlocatable workspace falls back to it too.
-    closure: Optional[set] = None
-    if ws_root != root:
-        selected = _tui_selected_workspace_keys(root, ws_root)
-        if selected:
-            closure = _npm_lock_workspace_closure(wanted, selected)
-
-    for name, pkg in wanted.items():
-        if not name:
-            continue
-
-        if closure is not None and name not in closure:
-            continue
-
-        if not isinstance(pkg, dict):
-            continue
-
-        if name not in installed:
-            # Workspace link entries (`"link": true`, paths outside
-            # node_modules/ like `apps/desktop`, `node_modules/web`) are never
-            # materialized by a partial `npm install --workspace ui-tui` —
-            # they're deliberately skipped (see #38772) and would otherwise
-            # force a reinstall on every launch.
-            if pkg.get("optional") or pkg.get("peer") or pkg.get("link"):
-                continue
-            if not name.startswith("node_modules/"):
-                continue
-            return True
-
-        if isinstance(installed[name], dict) and entries_differ(
-            pkg, installed[name]
-        ):
-            return True
-
-    return False
+    except OSError:
+        return True
 
 
 _TUI_BUILD_INPUT_DIRS = (
@@ -2386,7 +2161,7 @@ _TUI_BUILD_INPUT_DIRS = (
 
 _TUI_BUILD_INPUT_FILES = (
     "package.json",
-    "package-lock.json",
+    "pnpm-lock.yaml",
     "tsconfig.json",
     "tsconfig.build.json",
     "babel.compiler.config.cjs",
@@ -2541,7 +2316,7 @@ def _restore_tui_workspace(tui_dir: Path) -> bool:
 
 
 def _ensure_tui_workspace(tui_dir: Path) -> None:
-    """Ensure ``ui-tui/`` exists before any npm/node subprocess uses it as cwd.
+    """Ensure ``ui-tui/`` exists before any pnpm/node subprocess uses it as cwd.
 
     Without this, a missing workspace falls through to ``subprocess.run(...,
     cwd=<missing ui-tui>)``, which crashes with ``NotADirectoryError``
@@ -2563,7 +2338,7 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
         "This usually means `hermes update` left tracked ui-tui files deleted.\n"
         "Recovery:\n"
         "  1. From the Hermes checkout, run `git restore -- ui-tui`\n"
-        "  2. Run `npm install --silent --no-fund --no-audit --progress=false`\n"
+        "  2. Run `pnpm install`\n"
         "  3. Retry `hermes --tui`\n"
         "If the checkout is still inconsistent, run `hermes update --force`.",
         file=sys.stderr,
@@ -2571,9 +2346,14 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
     sys.exit(1)
 
 
-def _npm_lifecycle_env(env: dict[str, str] | None = None) -> dict[str, str]:
+def _pnpm_lifecycle_env(env: dict[str, str] | None = None) -> dict[str, str]:
     """Build a clean environment for the pinned UI toolchain lifecycle."""
     run_env = {**os.environ, **(env or {}), "CI": "1"}
+    # pnpm 10.0-10.8 tries to switch itself to the `packageManager` pin before
+    # checking `engines`; that switch fails (some releases then hang) without
+    # ever printing ERR_PNPM_UNSUPPORTED_ENGINE. Off, every pnpm reports the
+    # engine mismatch the recovery in pnpm_engine.py reacts to.
+    run_env["npm_config_manage_package_manager_versions"] = "false"
     # esbuild treats this as an executable override. If a shell points it at a
     # different release, the pinned package's postinstall rejects that binary.
     run_env.pop("ESBUILD_BINARY_PATH", None)
@@ -2608,6 +2388,15 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             sys.exit(1)
         return path
 
+    def _pnpm_bin() -> str:
+        from hermes_constants import ensure_hermes_pnpm
+
+        path = ensure_hermes_pnpm()
+        if not path:
+            print("pnpm not found — install Node.js to use the TUI.")
+            sys.exit(1)
+        return path
+
     # Footgun: --dev against a prebuilt bundle that has no source/node_modules.
     ext_dir = os.environ.get("HERMES_TUI_DIR")
     if tui_dev and ext_dir:
@@ -2622,7 +2411,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     # 1. Prebuilt bundle (nix / packaged release / Docker image): just run it.
     #
     # This must run BEFORE _ensure_tui_workspace() below. A prebuilt install
-    # (Docker image, Nix build, or prior `npm run build`) ships
+    # (Docker image, Nix build, or prior `pnpm run build`) ships
     # hermes_cli/tui_dist/entry.js but never ships ui-tui/ at all (that
     # directory only exists in a git checkout) — so requiring the workspace
     # to exist first made every prebuilt dashboard Chat tab connection
@@ -2635,22 +2424,22 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 node = _node_bin("node")
                 return [node, "--expose-gc", str(p / "dist" / "entry.js")], p
 
-        # 1b. Bundled prebuilt TUI (Docker image, Nix build, or prior npm build)
+        # 1b. Bundled prebuilt TUI (Docker image, Nix build, or prior pnpm build)
         bundled = _find_bundled_tui()
         if bundled is not None:
             node = _node_bin("node")
             return [node, "--expose-gc", str(bundled)], bundled.parent
 
     # No prebuilt bundle available (or --dev, which never uses one) — we're
-    # about to npm install/build from source, so the workspace must exist.
+    # about to pnpm install/build from source, so the workspace must exist.
     if not ext_dir:
         _ensure_tui_workspace(tui_dir)
 
-    # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
-    #    --dev flow: npm install if needed, then tsx src/entry.tsx.
-    #    Existing desktop behaviour runs npm from the workspace root.  Termux
-    #    scopes the install to ui-tui so launch does not pull desktop/web
-    #    dependencies into the hot path.
+    # 2. Normal flow: pnpm install if needed, always esbuild, then node dist/entry.js.
+    #    --dev flow: pnpm install if needed, then tsx src/entry.tsx.
+    #    The install runs from the workspace root, filtered to ui-tui so launch
+    #    does not pull desktop/web dependencies into the hot path.  Termux also
+    #    selects ui-tui's child packages/* workspaces.
     did_install = False
     termux_startup = _is_termux_startup_environment()
     termux_need_rebuild = False
@@ -2662,75 +2451,37 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     )
     if (
         not skip_install_for_fresh_termux_bundle
-        and _tui_need_npm_install(tui_dir)
+        and _tui_need_pnpm_install(tui_dir)
     ):
-        npm = _node_bin("npm")
+        pnpm = _pnpm_bin()
         if not os.environ.get("HERMES_QUIET"):
             print("Installing TUI dependencies…")
-        npm_cwd = _workspace_root(tui_dir)
-        # --workspace ui-tui avoids resolving apps/desktop (Electron + node-pty).
-        # See #38772.
-        # When ui-tui/ has its own package-lock.json (e.g. curl install),
-        # _workspace_root() returns tui_dir itself.  Passing --workspace in
-        # that case fails because npm cannot find a workspace named "ui-tui"
-        # inside ui-tui/.  See #42973.
-        npm_workspace_args: tuple[str, ...] = () if npm_cwd == tui_dir else ("--workspace", "ui-tui")
+        pnpm_cwd = _workspace_root(tui_dir)
+        # Filtering to ui-tui avoids resolving apps/desktop (Electron +
+        # node-pty).  See #38772.
+        # When ui-tui/ has its own pnpm-lock.yaml (e.g. curl install),
+        # _workspace_root() returns tui_dir itself and there is no workspace
+        # to filter.  See #42973.
+        pnpm_filter_args = _pnpm_filter_args(pnpm_cwd, tui_dir)
         if termux_startup:
-            npm_cwd, npm_workspace_args = _termux_workspace_install_context(
+            pnpm_cwd, pnpm_filter_args = _termux_workspace_install_context(
                 tui_dir,
                 include_child_workspaces=True,
             )
-        npm_install_cmd = [
-            npm,
-            "install",
-            *npm_workspace_args,
-            # --include=dev: ui-tui's build toolchain (esbuild, typescript)
-            # lives in devDependencies. An inherited NODE_ENV=production
-            # (e.g. from a container shell or a parent TUI launch) or an
-            # npm `omit=dev` config would silently skip them and the TUI
-            # build would fail. See _run_npm_install_deterministic.
-            "--include=dev",
-            "--silent",
-            "--no-fund",
-            "--no-audit",
-            "--progress=false",
-        ]
+        from hermes_constants import with_hermes_node_path
 
-        def _run_tui_install() -> subprocess.CompletedProcess:
-            from hermes_constants import with_hermes_node_path
-
-            # Managed tree first on PATH: if the EBADENGINE repair below
-            # provisioned a managed Node, npm's shebang/lifecycle scripts must
-            # resolve that node, not the mismatched system one.
-            return subprocess.run(
-                npm_install_cmd,
-                cwd=str(npm_cwd),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=_npm_lifecycle_env(with_hermes_node_path()),
-            )
-
-        result = _run_tui_install()
-        if result.returncode != 0:
-            # An npm outside the root package.json's `engines.npm` range fails
-            # here before doing any work; repair once (upgrade a Hermes-managed
-            # npm in place, or provision a managed runtime when the npm belongs
-            # to the user) and retry rather than dumping EBADENGINE at the user.
-            from hermes_cli.npm_engine import maybe_repair_npm_engine
-
-            combined_output = f"{result.stdout or ''}\n{result.stderr or ''}"
-            repaired_npm = maybe_repair_npm_engine(npm, combined_output)
-            if repaired_npm:
-                npm = repaired_npm
-                npm_install_cmd[0] = repaired_npm
-                result = _run_tui_install()
+        # Managed tree first on PATH so pnpm's shebang/lifecycle scripts
+        # resolve the managed Node when there is one.
+        result = _run_pnpm_install_deterministic(
+            pnpm,
+            pnpm_cwd,
+            extra_args=pnpm_filter_args,
+            env=with_hermes_node_path(),
+        )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
             preview = "\n".join(combined.splitlines()[-30:])
-            print("npm install failed.")
+            print("pnpm install failed.")
             if preview:
                 print(preview)
             sys.exit(1)
@@ -2742,16 +2493,16 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         # packages/hermes-ink/dist/entry-exports.js. If that dist bundle is
         # stale after a pull, newer hooks/components can exist in src while
         # being missing at runtime (e.g. useCursorAdvance). Prebuild it here.
-        npm = _node_bin("npm")
+        pnpm = _pnpm_bin()
         ink_dir = tui_dir / "packages" / "hermes-ink"
         result = subprocess.run(
-            [npm, "run", "build"],
+            [pnpm, "run", "build"],
             cwd=str(ink_dir),
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            env=_npm_lifecycle_env(),
+            env=_pnpm_lifecycle_env(),
         )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
@@ -2764,7 +2515,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         tsx = tui_dir / "node_modules" / ".bin" / "tsx"
         if tsx.exists():
             return [str(tsx), "src/entry.tsx"], tui_dir
-        return [npm, "start"], tui_dir
+        return [pnpm, "start"], tui_dir
 
     # Desktop/dev launches retain the historical "always rebuild" behaviour.
     # Termux cold starts use the freshness check because esbuild startup is
@@ -2774,15 +2525,15 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         should_build = did_install or termux_need_rebuild
 
     if should_build:
-        npm = _node_bin("npm")
+        pnpm = _pnpm_bin()
         result = subprocess.run(
-            [npm, "run", "build"],
+            [pnpm, "run", "build"],
             cwd=str(tui_dir),
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            env=_npm_lifecycle_env(),
+            env=_pnpm_lifecycle_env(),
         )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
@@ -3552,7 +3303,11 @@ def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
     _require_tty("whatsapp")
     from hermes_cli.config import get_env_value, save_env_value
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_constants import (
+        ensure_hermes_pnpm,
+        find_node_executable,
+        with_hermes_node_path,
+    )
 
     print()
     print("⚕ WhatsApp Setup")
@@ -3610,7 +3365,7 @@ def cmd_whatsapp(args):
 
     # ── Step 2: Mode is selected, will enable WhatsApp only after pairing ──
     # We intentionally don't write WHATSAPP_ENABLED=true here.  If the user
-    # aborts the wizard later (Ctrl+C, failed npm install, missed QR scan),
+    # aborts the wizard later (Ctrl+C, failed pnpm install, missed QR scan),
     # we'd otherwise leave .env claiming WhatsApp is ready when the bridge
     # has no creds.json.  Every subsequent `hermes gateway` then paid a 30s
     # bridge-bootstrap timeout and queued WhatsApp for indefinite retries.
@@ -3667,15 +3422,16 @@ def cmd_whatsapp(args):
         print(
             "\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)..."
         )
-        npm = find_node_executable("npm")
-        if not npm:
-            print("  ✗ npm not found on PATH — install Node.js first")
+        pnpm = ensure_hermes_pnpm()
+        if not pnpm:
+            print("  ✗ pnpm not found and could not be installed — install Node.js first")
             return
         try:
             result = subprocess.run(
-                [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
+                # The bridge has its own lockfile and is not a workspace member.
+                [pnpm, "install", "--frozen-lockfile", "--ignore-workspace"],
                 cwd=str(bridge_dir),
-                stdout=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
@@ -3686,9 +3442,10 @@ def cmd_whatsapp(args):
             print("\n  ✗ Install cancelled")
             return
         if result.returncode != 0:
-            err = (result.stderr or "").strip()
+            # pnpm reports ERR_PNPM_* errors on stdout.
+            err = (result.stderr or result.stdout or "").strip()
             preview = "\n".join(err.splitlines()[-30:]) if err else "(no output)"
-            print("  ✗ npm install failed:")
+            print("  ✗ pnpm install failed:")
             print(preview)
             return
         print("  ✓ Dependencies installed")
@@ -5143,7 +4900,6 @@ _LAZY_COMMAND_EXPORTS = {
         "_detect_venv_python_processes",
         "_desktop_owns_gateway_lifecycle",
         "_defer_update_for_self_lock",
-        "_discard_lockfile_churn",
         "_discard_stashed_changes",
         "_park_stashed_changes",
         "_ensure_acp_launcher",
@@ -5176,10 +4932,10 @@ _LAZY_COMMAND_EXPORTS = {
         "_serve_relaunch_commands",
         "_log_only_write",
         "_mark_skip_upstream_prompt",
-        "_npm_bin_exists",
-        "_npm_lockfile_changed",
-        "_npm_manifest_paths",
-        "_npm_manifests_digest",
+        "_pnpm_bin_exists",
+        "_pnpm_lockfile_changed",
+        "_pnpm_manifest_paths",
+        "_pnpm_manifests_digest",
         "_ORPHAN_RESCUE_REF_MAX_AGE_DAYS",
         "_ORPHAN_RESCUE_REFS_TO_KEEP",
         "_orphaned_desktop_backend_pids",
@@ -5193,7 +4949,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_print_parked_branch_skip_warning",
         "_print_stash_cleanup_guidance",
         "_print_update_completion",
-        "_record_npm_lockfile_hash",
+        "_record_pnpm_lockfile_hash",
         "_refresh_active_lazy_features",
         "_refresh_active_memory_provider_dependencies",
         "_refresh_bootstrap_cache_scripts",
@@ -6192,8 +5948,8 @@ def _compute_web_ui_content_hash(project_root: Path, web_dir: Path) -> str:
     """Return a SHA-256 hex digest of the web UI source tree.
 
     Covers ``web_dir`` (the dashboard frontend source) plus the root
-    ``package.json`` / ``package-lock.json`` (workspace config that
-    determines dependency resolution). Mirrors
+    ``package.json`` / ``pnpm-workspace.yaml`` / ``pnpm-lock.yaml``
+    (workspace config that determines dependency resolution). Mirrors
     ``_compute_desktop_content_hash()``: ignored paths (``node_modules/``,
     ``dist/``, ``*.pyc``, ...) are skipped via the repo-root ``.gitignore``
     so build output never feeds back into its own staleness check.
@@ -6220,8 +5976,8 @@ def _compute_web_ui_content_hash(project_root: Path, web_dir: Path) -> str:
         lines = gitignore.read_text(encoding="utf-8").splitlines()
     spec = PathSpec.from_lines("gitignore", lines)
 
-    # Root workspace config (single package-lock.json covers all workspaces).
-    for name in ("package.json", "package-lock.json"):
+    # Root workspace config (single pnpm-lock.yaml covers all workspaces).
+    for name in ("package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml"):
         p = project_root / name
         if p.is_file():
             rel = str(p.relative_to(project_root))
@@ -6277,7 +6033,7 @@ def _run_with_idle_timeout(
 ) -> subprocess.CompletedProcess:
     """Run a subprocess that streams output, with an idle-output timeout.
 
-    Issue #33788: ``npm run build`` (Vite) was invoked with
+    Issue #33788: the web UI build (Vite) was invoked with
     ``capture_output=True`` and no timeout. On low-memory hosts (notably
     WSL2 with the default 4 GB cap) the build can stall or sit silent for
     minutes; users see a frozen terminal, assume the update is hung, and
@@ -6311,7 +6067,7 @@ def _run_with_idle_timeout(
             env=env,
         )
     except OSError as exc:
-        # E.g. npm not on PATH between the which() check and now.
+        # E.g. the executable vanished between resolution and now.
         return subprocess.CompletedProcess(cmd, 127, stdout="", stderr=str(exc))
 
     def _reader() -> None:
@@ -6420,104 +6176,102 @@ def _nixos_build_env() -> dict[str, str] | None:
         pass  # nix-shell not available — caller will get None
 
     return None
-def _run_npm_install_deterministic(
-    npm: str,
+def _run_pnpm_install_deterministic(
+    pnpm: str,
     cwd: Path,
     *,
     extra_args: tuple[str, ...] = (),
     capture_output: bool = True,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run a deterministic npm install that does not mutate ``package-lock.json``.
+    """Run a deterministic pnpm install that does not mutate ``pnpm-lock.yaml``.
 
-    Prefers ``npm ci`` (strict, lockfile-preserving) when a lockfile is present;
-    falls back to ``npm install`` only if ``npm ci`` fails (e.g. lockfile out of
-    sync on a WIP checkout).  Without this, ``npm install`` on npm ≥ 10 silently
-    rewrites committed lockfiles (stripping ``"peer": true`` etc.), which leaves
-    the working tree dirty and causes the next ``hermes update`` to stash the
-    lockfile — repeatedly.
+    Prefers ``pnpm install --frozen-lockfile`` (strict, lockfile-preserving)
+    when a lockfile is present; falls back to ``pnpm install --no-lockfile``
+    only if that fails (e.g. lockfile out of sync on a WIP checkout).  A plain
+    ``pnpm install`` would rewrite the committed lockfile instead, which
+    leaves the working tree dirty and causes the next ``hermes update`` to
+    stash the lockfile — repeatedly.
 
-    ``--include=dev`` is forced on every invocation: the callers are frontend
+    ``--prod=false`` is forced on every invocation: the callers are frontend
     builds (web UI / TUI / desktop workspaces), and those builds need the dev
     toolchain (``tsc``, ``vite``, ``electron-builder`` — all
     ``devDependencies``).  If the caller's environment has
-    ``NODE_ENV=production`` (or npm config ``omit=dev``) — which leaks in from
-    a shell profile, a container image, or the bundled TUI launcher that sets
-    ``NODE_ENV=production`` on its subprocess env — npm silently omits
-    devDependencies (exit 0, no error), so the build toolchain never installs
-    and the subsequent build dies with ``tsc: command not found`` (exit 127).
-    The flag overrides both the env var and npm config, unlike scrubbing
-    ``NODE_ENV`` from the environment which only fixes the env-leak case.
+    ``NODE_ENV=production`` — which leaks in from a shell profile, a container
+    image, or the bundled TUI launcher that sets ``NODE_ENV=production`` on
+    its subprocess env — pnpm silently omits devDependencies (exit 0, no
+    error), so the build toolchain never installs and the subsequent build
+    dies with ``tsc: command not found`` (exit 127).
 
-    ``--no-save`` on the ``npm install`` fallback keeps it true to this
-    function's contract: never mutate ``package-lock.json``.  Without it, an
-    out-of-sync lockfile gets rewritten by the fallback, which drifts the
-    committed lockfile and makes every future ``npm ci`` fail — a
-    self-reinforcing cycle where web devDeps never install and a stale dist
-    is served on every update (PR #65595).
+    ``--no-lockfile`` on the fallback keeps it true to this function's
+    contract: it neither reads nor writes ``pnpm-lock.yaml``, so an
+    out-of-sync lockfile is never rewritten and the committed lockfile cannot
+    drift (PR #65595).
     """
     # unicode-animations' postinstall animates to /dev/tty (bypasses
-    # --silent/capture_output). It no-ops when CI is set — same as the TUI
-    # install path and nix/lib.nix npm ci hooks.
-    run_env = _npm_lifecycle_env(env)
+    # capture_output). It no-ops when CI is set — same as the TUI install
+    # path and the nix/lib.nix install hooks.
+    run_env = _pnpm_lifecycle_env(env)
 
     def _run(cmd: list[str]) -> subprocess.CompletedProcess:
-        return _run_npm_watching_for_engine_failure(
+        return _run_pnpm_watching_for_engine_failure(
             cmd,
             cwd=cwd,
             env=run_env,
             capture_output=capture_output,
         )
 
-    def _attempt(npm_exe: str) -> subprocess.CompletedProcess:
-        lockfile = cwd / "package-lock.json"
+    def _attempt(pnpm_exe: str) -> subprocess.CompletedProcess:
+        lockfile = cwd / "pnpm-lock.yaml"
         if lockfile.exists():
-            ci_result = _run([npm_exe, "ci", "--include=dev", *extra_args])
-            if ci_result.returncode == 0:
-                return ci_result
-            # Fall through to `npm install` — lockfile may be out of sync on a
-            # WIP fork/branch, or `npm ci` may not be available on very old npm.
-        return _run([npm_exe, "install", "--no-save", "--include=dev", *extra_args])
+            frozen_result = _run(
+                [pnpm_exe, "install", "--frozen-lockfile", "--prod=false", *extra_args]
+            )
+            if frozen_result.returncode == 0:
+                return frozen_result
+            # Fall through — the lockfile may be out of sync on a WIP
+            # fork/branch.
+        return _run([pnpm_exe, "install", "--no-lockfile", "--prod=false", *extra_args])
 
-    result = _attempt(npm)
+    result = _attempt(pnpm)
     if result.returncode == 0:
         return result
 
-    # An npm outside the root package.json's `engines.npm` range fails every
-    # command here identically (the `npm install` fallback included), so the
-    # failure is worth exactly one repair attempt. `maybe_repair_npm_engine`
-    # returns the npm to retry with — the same one after an in-place upgrade
-    # of a Hermes-managed install, or a freshly provisioned managed npm when
-    # the failing npm belongs to the user's own toolchain.
-    from hermes_cli.npm_engine import maybe_repair_npm_engine
+    # A pnpm outside the root package.json's `engines.pnpm` range fails every
+    # command here identically (the `--no-lockfile` fallback included), so the
+    # failure is worth exactly one repair attempt. `maybe_repair_pnpm_engine`
+    # returns the pnpm to retry with — the same one after an in-place upgrade
+    # of a Hermes-managed install, or a freshly provisioned managed pnpm when
+    # the failing pnpm belongs to the user's own toolchain.
+    from hermes_cli.pnpm_engine import maybe_repair_pnpm_engine
 
     combined = f"{result.stdout or ''}\n{result.stderr or ''}"
-    repaired_npm = maybe_repair_npm_engine(npm, combined)
-    if not repaired_npm:
+    repaired_pnpm = maybe_repair_pnpm_engine(pnpm, combined)
+    if not repaired_pnpm:
         return result
-    # The repaired npm may be a freshly provisioned managed one whose shebang
+    # The repaired pnpm may be a freshly provisioned managed one whose shebang
     # and lifecycle scripts resolve `node` from PATH — put the managed tree
     # first so they find the managed Node, not the mismatched system one.
     from hermes_constants import with_hermes_node_path
 
     run_env["PATH"] = with_hermes_node_path(run_env)["PATH"]
-    return _attempt(repaired_npm)
+    return _attempt(repaired_pnpm)
 
 
-def _run_npm_watching_for_engine_failure(
+def _run_pnpm_watching_for_engine_failure(
     cmd: list[str],
     *,
     cwd: Path,
     env: dict[str, str],
     capture_output: bool,
 ) -> subprocess.CompletedProcess:
-    """Run *cmd*, always retaining stderr so ``EBADENGINE`` stays detectable.
+    """Run *cmd*, always retaining stdout so ``ERR_PNPM_UNSUPPORTED_ENGINE`` stays detectable.
 
-    ``capture_output=False`` callers stream npm's progress live and would
-    otherwise hand back a ``CompletedProcess`` with ``stderr=None``, leaving the
-    engine-failure recovery nothing to read. Tee stderr instead: each line is
-    forwarded to this process's stderr as it arrives (so live output is
-    unchanged) and accumulated for the caller.
+    pnpm reports its errors on stdout. ``capture_output=False`` callers stream
+    pnpm's progress live and would otherwise hand back a ``CompletedProcess``
+    with ``stdout=None``, leaving the engine-failure recovery nothing to read.
+    Tee stdout instead: each line is forwarded to this process's stdout as it
+    arrives (so live output is unchanged) and accumulated for the caller.
     """
     if capture_output:
         return subprocess.run(
@@ -6536,22 +6290,22 @@ def _run_npm_watching_for_engine_failure(
         cmd,
         cwd=cwd,
         env=env,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
     ) as proc:
-        if proc.stderr is not None:
-            for line in proc.stderr:
+        if proc.stdout is not None:
+            for line in proc.stdout:
                 captured.append(line)
-                sys.stderr.write(line)
-            sys.stderr.flush()
+                sys.stdout.write(line)
+            sys.stdout.flush()
         returncode = proc.wait()
-    return subprocess.CompletedProcess(cmd, returncode, None, "".join(captured))
+    return subprocess.CompletedProcess(cmd, returncode, "".join(captured), None)
 
 
 def _missing_web_build_tool(output: str) -> str | None:
-    """Return the build tool a failed ``npm run build`` could not resolve.
+    """Return the build tool a failed ``pnpm run build`` could not resolve.
 
     Each shell words this differently: ``sh: 1: tsc: not found`` (dash),
     ``vite: command not found`` (bash/zsh), and ``'tsc' is not recognized as
@@ -6572,10 +6326,10 @@ def _missing_web_build_tool(output: str) -> str | None:
 
 
 def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
-    """Build the web UI frontend if npm is available, serializing across processes.
+    """Build the web UI frontend if pnpm is available, serializing across processes.
 
     Concurrent dashboard boots (e.g. the desktop app's retry loop after a
-    readiness timeout) used to each spawn their own ``npm install`` +
+    readiness timeout) used to each spawn their own ``pnpm install`` +
     ``vite build`` over the same tree; the parallel builds starved each
     other, none finished, the dist sentinel never advanced, and every new
     boot re-triggered the build. One process builds under an exclusive
@@ -6615,7 +6369,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
 
 
 def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
-    """Build the web UI frontend if npm is available.
+    """Build the web UI frontend if pnpm is available.
 
     Args:
         web_dir: Path to the dashboard frontend source directory.
@@ -6644,22 +6398,22 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
 
     from hermes_constants import with_hermes_node_path
 
-    npm = _resolve_node_runtime_npm()
-    if not npm:
+    pnpm = _resolve_node_runtime_pnpm()
+    if not pnpm:
         if fatal:
-            _say("Web UI frontend not built and npm is not available.")
-            _say("Install Node.js, then run:  cd web && npm install && npm run build")
+            _say("Web UI frontend not built and pnpm is not available.")
+            _say("Install Node.js, then run:  pnpm install --filter web... && pnpm --filter web run build")
         return not fatal
-    build_env = _npm_lifecycle_env(with_hermes_node_path())
+    build_env = _pnpm_lifecycle_env(with_hermes_node_path())
     _say("→ Building web UI...")
 
     def _relay(result: "subprocess.CompletedProcess") -> None:
-        """Print captured npm output so users can see *why* a step failed.
+        """Print captured pnpm output so users can see *why* a step failed.
 
         Windows users hitting `rm -rf` / `cp -r` errors (or any other
         sync-assets / Vite failure) would otherwise see only ``Web UI
         build failed`` with no hint of the underlying cause, because
-        the npm calls run with ``capture_output=True``.
+        the pnpm calls run with ``capture_output=True``.
         """
         for blob in (result.stdout, result.stderr):
             if not blob:
@@ -6668,76 +6422,59 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             if text:
                 _say(text)
 
-    npm_cwd = _workspace_root(web_dir)
-    # Scope the install to the web workspace only so that the full workspace
-    # graph (including apps/desktop with its Electron + node-pty deps) is never
-    # resolved here.  Without --workspace the root package.json's apps/* glob
-    # would pull in desktop on every web build. See #38772.
-    # When web/ has its own package-lock.json, _workspace_root() returns
-    # web_dir itself and --workspace would fail.  See #42973.
-    #
-    # When running from the workspace root, this must name the SAME closure
-    # as `hermes update`'s _update_node_dependencies() (ui-tui + web +
-    # --include-workspace-root): the helper prefers `npm ci`, which deletes
-    # node_modules before reifying the requested tree, so a narrower closure
-    # here silently prunes everything the update step just installed (root
-    # devDependencies and the ui-tui workspace) while still exiting 0 —
-    # and since the manifests digest was already recorded, later no-op
-    # updates skip the repair. See #43564/#64354.
-    npm_workspace_args: tuple[str, ...]
-    if npm_cwd == web_dir:
-        npm_workspace_args = ()
-    else:
-        npm_workspace_args = ("--workspace", "web", "--include-workspace-root")
-        # Prebuilt/partial checkouts can lack the ui-tui workspace; naming a
-        # missing workspace makes npm fail hard, so only include it when
-        # present (same guard as _update_node_dependencies()).
-        if (npm_cwd / "ui-tui" / "package.json").exists():
-            npm_workspace_args = ("--workspace", "ui-tui", *npm_workspace_args)
+    pnpm_cwd = _workspace_root(web_dir)
+    # Filter the install to the web workspace (and the workspace packages it
+    # depends on) so that the full workspace graph (including apps/desktop
+    # with its Electron + node-pty deps) is never resolved here.  See #38772.
+    # A filtered pnpm install always covers the workspace root and leaves the
+    # node_modules of unselected workspaces in place.
+    # When web/ has its own pnpm-lock.yaml, _workspace_root() returns web_dir
+    # itself and there is no workspace to filter.  See #42973.
+    pnpm_filter_args = _pnpm_filter_args(pnpm_cwd, web_dir)
     if _is_termux_startup_environment():
-        npm_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
+        pnpm_cwd, pnpm_filter_args = _termux_workspace_install_context(web_dir)
 
-    def _install_web_deps(*, silent: bool) -> "subprocess.CompletedProcess":
-        return _run_npm_install_deterministic(
-            npm,
-            npm_cwd,
-            extra_args=(*npm_workspace_args, "--silent", "--prefer-offline") if silent else (*npm_workspace_args, "--prefer-offline"),
+    def _install_web_deps() -> "subprocess.CompletedProcess":
+        return _run_pnpm_install_deterministic(
+            pnpm,
+            pnpm_cwd,
+            extra_args=(*pnpm_filter_args, "--prefer-offline"),
             env=build_env,
         )
 
-    r1 = _install_web_deps(silent=True)
+    r1 = _install_web_deps()
     if r1.returncode != 0:
         _say(
-            f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
+            f"  {'✗' if fatal else '⚠'} Web UI pnpm install failed"
             + ("" if fatal else " (hermes web will not be available)")
         )
         _relay(r1)
         if fatal:
-            _say("  Run manually:  npm install --workspace web && npm run build -w web")
+            _say("  Run manually:  pnpm install --filter web... && pnpm --filter web run build")
         return False
     # First attempt — stream output via idle-timeout helper (issue #33788).
     # capture_output=True on a long Vite build looks identical to a hang;
     # users react by rebooting, which leaves the editable install in a
     # half-state. Streaming + idle-kill makes failures observable AND
     # recoverable (the stale-dist fallback below handles the kill path).
-    r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
+    r2 = _run_with_idle_timeout([pnpm, "run", "build"], cwd=web_dir, env=build_env)
     if r2.returncode != 0:
         # The install above can exit 0 while leaving the tree without a build
         # toolchain — a lockfile-hash skip over a half-installed tree, or an
         # interrupted link step. The generic retry below just reruns the same
         # command, so `tsc: not found` survives it and the stale dist is
-        # served forever. Reinstall (non-silent, so the user sees it) first.
+        # served forever. Reinstall first.
         missing_tool = _missing_web_build_tool((r2.stdout or "") + (r2.stderr or ""))
         if missing_tool:
             _say(f"  ⚠ Build could not resolve {missing_tool} — reinstalling web dependencies...")
-            _install_web_deps(silent=False)
-            r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
+            _install_web_deps()
+            r2 = _run_with_idle_timeout([pnpm, "run", "build"], cwd=web_dir, env=build_env)
         if r2.returncode != 0:
             # Retry once after a short delay — covers boot-time races on Windows
-            # (antivirus scanning Node.js binaries, npm cache not ready, transient
+            # (antivirus scanning Node.js binaries, pnpm store not ready, transient
             # I/O when launched via Scheduled Task at logon). See issue #23817.
             _time.sleep(3)
-            r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
+            r2 = _run_with_idle_timeout([pnpm, "run", "build"], cwd=web_dir, env=build_env)
 
     if r2.returncode != 0:
         # _run_with_idle_timeout merges stderr into stdout; older callers
@@ -6766,7 +6503,7 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         )
         _relay(r2)
         if fatal:
-            _say("  Run manually:  npm install --workspace web && npm run build -w web")
+            _say("  Run manually:  pnpm install --filter web... && pnpm --filter web run build")
         return False
     _say("  ✓ Web UI built")
     project_root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
@@ -6804,7 +6541,8 @@ def _compute_desktop_content_hash(project_root: Path) -> str:
     """Return a SHA-256 hex digest of all source files that feed the desktop build.
 
     Covers ``apps/desktop/`` (excluding anything matched by .gitignore)
-    plus the root ``package.json`` / ``package-lock.json`` (workspace config
+    plus the root ``package.json`` / ``pnpm-workspace.yaml`` /
+    ``pnpm-lock.yaml`` (workspace config
     that determines dependency resolution for the desktop workspace).
 
     Parses the repo-root ``.gitignore`` via *pathspec* so we automatically
@@ -6835,7 +6573,7 @@ def _compute_desktop_content_hash(project_root: Path) -> str:
     spec = PathSpec.from_lines("gitignore", lines)
 
     # Root workspace config
-    for name in ("package.json", "package-lock.json"):
+    for name in ("package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml"):
         p = project_root / name
         if p.is_file():
             rel = str(p.relative_to(project_root))
@@ -7468,14 +7206,12 @@ _ELECTRON_FALLBACK_MIRROR = "https://npmmirror.com/mirrors/electron/"
 def _electron_dir(project_root: Path) -> Path:
     """Return the Electron package directory the desktop workspace installs.
 
-    npm may keep workspace-only dev dependencies under
-    ``apps/desktop/node_modules`` instead of hoisting them to the repo root.
-    Which layout you get depends on the npm version and what else is installed,
-    so a build path that assumes one or the other breaks intermittently across
-    machines. ``apps/desktop/package.json`` points electron-builder's
-    ``electronDist`` at ``node_modules/electron/dist`` relative to the desktop
-    project, so prefer the workspace-local package and fall back to the root
-    hoist when that's where npm landed it.
+    pnpm links a workspace member's dependencies into its own
+    ``apps/desktop/node_modules`` and does not hoist them to the repo root.
+    ``apps/desktop/package.json`` points electron-builder's ``electronDist``
+    at ``node_modules/electron/dist`` relative to the desktop project, so
+    prefer the workspace-local package and fall back to the root
+    ``node_modules`` for a hoisted layout.
     """
     desktop_local = project_root / "apps" / "desktop" / "node_modules" / "electron"
     if desktop_local.exists():
@@ -8469,30 +8205,30 @@ def cmd_gui(args: argparse.Namespace):
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
     if source_mode or not skip_build:
-        npm = _resolve_node_runtime_npm()
-        if not npm:
-            print("Desktop GUI requires Node.js/npm, but npm was not found on PATH.")
+        pnpm = _resolve_node_runtime_pnpm()
+        if not pnpm:
+            print("Desktop GUI requires Node.js/pnpm, but pnpm was not found and could not be installed.")
             print("Install Node.js, then run:  hermes gui")
             sys.exit(1)
     else:
-        npm = None
+        pnpm = None
 
     if skip_build:
         if source_mode:
             if not _desktop_dist_exists(desktop_dir):
                 print(f"✗ --skip-build --source was passed but no desktop dist found at: {desktop_dir / 'dist'}")
-                print("  Pre-build first:  cd apps/desktop && npm run build")
+                print("  Pre-build first:  cd apps/desktop && pnpm run build")
                 print("  Or drop --skip-build to install dependencies and build automatically.")
                 sys.exit(1)
             if not (_electron_dir(PROJECT_ROOT) / "package.json").exists():
                 print("✗ --skip-build --source requires existing desktop workspace dependencies.")
-                print(f"  Install first:  cd {PROJECT_ROOT} && npm ci")
+                print(f"  Install first:  cd {PROJECT_ROOT} && pnpm install --frozen-lockfile")
                 print("  Or drop --skip-build to install dependencies and build automatically.")
                 sys.exit(1)
             print(f"→ Skipping desktop source build (--skip-build --source); using dist at {desktop_dir / 'dist'}")
         elif packaged_executable is None:
             print(f"✗ --skip-build was passed but no packaged desktop app was found at: {desktop_dir / 'release'}")
-            print("  Pre-build first:  cd apps/desktop && npm run pack")
+            print("  Pre-build first:  cd apps/desktop && pnpm run pack")
             print("  Or drop --skip-build to package automatically.")
             sys.exit(1)
         else:
@@ -8500,7 +8236,7 @@ def cmd_gui(args: argparse.Namespace):
     else:
         # Check the content-hash stamp before doing any build work.
         # If the source tree hasn't changed since the last successful build,
-        # skip the npm install + build entirely (saves a ton of useless work).
+        # skip the pnpm install + build entirely (saves a ton of useless work).
         # --force-build overrides the stamp and always rebuilds.
         build_needed = force_build or _desktop_build_needed(
             desktop_dir, PROJECT_ROOT, source_mode=source_mode
@@ -8510,7 +8246,7 @@ def cmd_gui(args: argparse.Namespace):
             print(f"✓ Desktop {build_label} is up to date (content stamp matches)")
         else:
             print("→ Installing desktop workspace dependencies...")
-            # Put the Hermes-managed Node on PATH so npm's child scripts (which
+            # Put the Hermes-managed Node on PATH so pnpm's child scripts (which
             # shell out to bare `node`, e.g. electron-winstaller's
             # select-7z-arch.js) resolve it even when the parent PATH is
             # stripped — the desktop updater chain (Desktop → hermes-setup →
@@ -8518,11 +8254,11 @@ def cmd_gui(args: argparse.Namespace):
             # NixOS build env keeps its PYTHON hint while restoring managed Node
             # ahead of a bare PATH (same idiom as the `hermes update` path).
             nixos_env = with_hermes_node_path(_nixos_build_env())
-            install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
+            install_result = _run_pnpm_install_deterministic(pnpm, PROJECT_ROOT, capture_output=False, env=nixos_env)
             if install_result.returncode != 0:
                 if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
                     print("✗ Desktop dependency install failed")
-                    print(f"  Run manually:  cd {PROJECT_ROOT} && npm ci")
+                    print(f"  Run manually:  cd {PROJECT_ROOT} && pnpm install --frozen-lockfile")
                     sys.exit(install_result.returncode or 1)
                 repaired = _try_redownload_electron_dist(PROJECT_ROOT, env)
                 if repaired:
@@ -8539,7 +8275,7 @@ def cmd_gui(args: argparse.Namespace):
             if _force_adhoc_macos_signing(env, source_mode=source_mode):
                 print("  → No Developer ID configured; ad-hoc signing this local rebuild "
                       "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
-            npm_build_env = _npm_lifecycle_env(env)
+            pnpm_build_env = _pnpm_lifecycle_env(env)
             if not source_mode:
                 # A running desktop instance launched from release/win-unpacked
                 # holds Hermes.exe locked on Windows, so the pack can't replace
@@ -8550,7 +8286,7 @@ def cmd_gui(args: argparse.Namespace):
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
             build_result = subprocess.run(
-                [npm, "run", build_script], cwd=desktop_dir, env=npm_build_env, check=False
+                [pnpm, "run", build_script], cwd=desktop_dir, env=pnpm_build_env, check=False
             )
             if (
                 build_result.returncode != 0
@@ -8579,7 +8315,7 @@ def cmd_gui(args: argparse.Namespace):
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
                     build_result = subprocess.run(
-                        [npm, "run", build_script], cwd=desktop_dir, env=npm_build_env, check=False
+                        [pnpm, "run", build_script], cwd=desktop_dir, env=pnpm_build_env, check=False
                     )
             if (
                 build_result.returncode != 0
@@ -8591,15 +8327,15 @@ def cmd_gui(args: argparse.Namespace):
                       "GitHub looks blocked. Re-downloading via a public mirror "
                       "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
                 mirror = _ELECTRON_FALLBACK_MIRROR
-                mirror_env = dict(npm_build_env)
+                mirror_env = dict(pnpm_build_env)
                 mirror_env["ELECTRON_MIRROR"] = mirror
                 if not _electron_dist_ok(PROJECT_ROOT):
                     _redownload_electron_dist(PROJECT_ROOT, env, mirror=mirror)
                 _stop_desktop_processes_locking_build(desktop_dir)
-                build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
+                build_result = subprocess.run([pnpm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
-                print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
+                print(f"  Run manually:  cd apps/desktop && pnpm run {build_script}")
                 if sys.platform == "win32":
                     print("  If this says \"Access is denied\" on Hermes.exe, close any")
                     print("  running Hermes desktop window and retry.")
@@ -8659,7 +8395,7 @@ def cmd_gui(args: argparse.Namespace):
 
     if source_mode:
         print("→ Launching Hermes Desktop from source build...")
-        electron_argv = [npm, "exec", "--", "electron", "."]
+        electron_argv = [pnpm, "exec", "electron", "."]
         if getattr(args, "local", False):
             electron_argv.append("--local")
         launch_result = subprocess.run(electron_argv, cwd=desktop_dir, env=env, check=False)
@@ -10620,59 +10356,60 @@ def _is_termux_env(env: dict[str, str] | None = None) -> bool:
     return _is_termux_startup_environment(env)
 
 
-def _is_windows_npm_path(npm_path: str) -> bool:
-    """Return True if ``npm_path`` points at a Windows npm shim.
+def _is_windows_pnpm_path(pnpm_path: str) -> bool:
+    """Return True if ``pnpm_path`` points at a Windows pnpm shim.
 
     On WSL the Windows install dir is exposed through the ``/mnt/c`` drive
-    mount and PATH interop, so ``shutil.which("npm")`` can hand back
-    ``/mnt/c/Program Files/nodejs/npm`` (or the ``npm.cmd`` / ``npm.exe``
+    mount and PATH interop, so a PATH lookup can hand back
+    ``/mnt/c/Program Files/nodejs/pnpm`` (or the ``pnpm.cmd`` / ``pnpm.exe``
     shim). Those are detected here by their ``.exe``/``.cmd``/``.bat``
     suffix, a ``/mnt/`` drive-mount prefix, or an embedded backslash (a UNC
-    path). Callers use this only on a POSIX host — on native Windows an
-    ``npm.cmd`` shim is the correct executable.
+    path). Callers use this only on a POSIX host — on native Windows a
+    ``pnpm.cmd`` shim is the correct executable.
     """
-    low = npm_path.lower()
+    low = pnpm_path.lower()
     return (
         low.endswith((".exe", ".cmd", ".bat"))
         or low.startswith("/mnt/")
-        or "\\" in npm_path
+        or "\\" in pnpm_path
     )
 
 
-def _resolve_node_runtime_npm() -> str | None:
-    """Resolve an npm executable that belongs to the host's Node runtime.
+def _resolve_node_runtime_pnpm() -> str | None:
+    """Resolve a pnpm executable that belongs to the host's Node runtime.
 
-    On WSL/Linux ``shutil.which("npm")`` may resolve a Windows npm exposed
-    through PATH interop. Running that Windows npm against the Linux checkout
-    operates over ``\\wsl.localhost\\...`` UNC paths and fails with EISDIR /
-    symlink errors in symlink-heavy trees like ``ui-tui`` (#30271). Refuse a
-    Windows npm on a POSIX host and re-scan PATH (skipping ``/mnt/*`` interop
-    entries) for a Linux-native npm. Returns the npm path, or ``None`` when
-    no suitable npm is reachable.
+    ``ensure_hermes_pnpm()`` prefers the Hermes-managed pnpm and installs the
+    pinned one when none exists. On WSL/Linux its PATH rung may resolve a
+    Windows pnpm exposed through PATH interop. Running that Windows pnpm
+    against the Linux checkout operates over ``\\wsl.localhost\\...`` UNC
+    paths and fails with EISDIR / symlink errors in symlink-heavy trees like
+    ``ui-tui`` (#30271). Refuse a Windows pnpm on a POSIX host and re-scan
+    PATH (skipping ``/mnt/*`` interop entries) for a Linux-native pnpm.
+    Returns the pnpm path, or ``None`` when no suitable pnpm is reachable.
     """
-    from hermes_constants import find_node_executable
+    from hermes_constants import ensure_hermes_pnpm
 
-    npm = find_node_executable("npm")
+    pnpm = ensure_hermes_pnpm()
 
-    # On native Windows the platform npm (``npm.cmd``) is exactly what we
+    # On native Windows the platform pnpm (``pnpm.cmd``) is exactly what we
     # want — only reject Windows shims when we're a POSIX/WSL process.
     if _is_windows():
-        return npm
+        return pnpm
 
-    if not npm:
+    if not pnpm:
         return None
 
-    if not _is_windows_npm_path(npm):
-        return npm
+    if not _is_windows_pnpm_path(pnpm):
+        return pnpm
 
-    # The first resolution was a Windows npm. Re-scan PATH skipping the
-    # ``/mnt/*`` Windows drive mounts WSL injects, so a Linux-native npm that
+    # The first resolution was a Windows pnpm. Re-scan PATH skipping the
+    # ``/mnt/*`` Windows drive mounts WSL injects, so a Linux-native pnpm that
     # came later on PATH is still found.
     for directory in os.environ.get("PATH", "").split(os.pathsep):
         if not directory or directory.lower().startswith("/mnt/"):
             continue
-        candidate = shutil.which("npm", path=directory)
-        if candidate and not _is_windows_npm_path(candidate):
+        candidate = shutil.which("pnpm", path=directory)
+        if candidate and not _is_windows_pnpm_path(candidate):
             return candidate
     return None
 
@@ -12339,7 +12076,7 @@ def cmd_dashboard(args):
                 print(f"✗ --skip-build was passed but no web dist found at: {_dist_root}")
                 if _recoverable:
                     print("  The recovery build did not produce a usable dist.")
-                print("  Pre-build first:  npm install --workspace web && npm run build -w web")
+                print("  Pre-build first:  pnpm install --filter web... && pnpm --filter web run build")
                 print("  Or drop --skip-build to build automatically.")
                 sys.exit(1)
             print("  ✓ Recovery build produced a web dist")
@@ -12353,7 +12090,7 @@ def cmd_dashboard(args):
         _dist_root = Path(os.environ["HERMES_WEB_DIST"]).expanduser()
         if not (_dist_root / "index.html").exists():
             print(f"✗ HERMES_WEB_DIST is set but no web dist found at: {_dist_root}")
-            print("  Pre-build first:  npm install --workspace web && npm run build -w web")
+            print("  Pre-build first:  pnpm install --filter web... && pnpm --filter web run build")
             print("  Or unset HERMES_WEB_DIST to build and use the default web UI dist.")
             sys.exit(1)
         # Write the expanded path back: web_server reads HERMES_WEB_DIST raw

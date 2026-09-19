@@ -57,7 +57,7 @@ renders the 256px fallback with the macOS padding and shadow. The source
 launcher, Linux, and older build machines use these files; macOS packages
 built with Xcode 26 use the layered `.icon` directly.
 
-`npm run dev -- --desktop` prepares a separate `Hexbot (dev).app` inside the
+`pnpm dev --desktop` prepares a separate `Hexbot (dev).app` inside the
 ignored `apps/desktop/.electron-runtime/` directory. The launcher refreshes it
 when Electron or the icon changes and leaves the installed dependency intact.
 

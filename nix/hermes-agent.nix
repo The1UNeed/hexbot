@@ -28,7 +28,6 @@
   uv2nix,
   pyproject-nix,
   pyproject-build-systems,
-  npm-lockfile-fix,
   # Locked git revision of the flake source — embedded so banner.py can
   # check for updates without needing a local .git directory. Null for
   # impure / dirty builds where flakes can't determine a rev.
@@ -48,9 +47,7 @@ let
 
   hermesVenv = (mkHermesVenv extraDependencyGroups).venv;
 
-  hermesNpmLib = callPackage ./lib.nix {
-    inherit npm-lockfile-fix;
-  };
+  hermesNpmLib = callPackage ./lib.nix { };
 
   hermesTui = callPackage ./tui.nix {
     inherit hermesNpmLib;

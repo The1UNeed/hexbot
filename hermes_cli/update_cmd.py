@@ -959,8 +959,8 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     print(f"  (no response after {int(timeout)}s, using default: {default!r})")
     return default
 
-def _npm_bin_exists(bin_dir: Path, name: str) -> bool:
-    """True when an npm bin shim for *name* exists (POSIX or Windows)."""
+def _pnpm_bin_exists(bin_dir: Path, name: str) -> bool:
+    """True when a pnpm bin shim for *name* exists (POSIX or Windows)."""
     return any(
         (bin_dir / candidate).exists()
         for candidate in (name, f"{name}.cmd", f"{name}.ps1", f"{name}.exe")
@@ -978,16 +978,16 @@ def _web_build_toolchain_ready(*roots: Path) -> bool:
         if bin_dir.is_dir()
     ]
     return bool(bin_dirs) and all(
-        any(_npm_bin_exists(bin_dir, tool) for bin_dir in bin_dirs)
+        any(_pnpm_bin_exists(bin_dir, tool) for bin_dir in bin_dirs)
         for tool in ("tsc", "vite")
     )
 
 def _web_toolchain_roots(web_dir: Path) -> tuple[Path, ...]:
     """Roots whose ``node_modules/.bin`` can satisfy the web build.
 
-    ``npm run build`` prepends ``node_modules/.bin`` for the package and each
-    of its ancestors, so shims hoisted to the workspace root and shims nested
-    under a package that owns its lockfile (#42973) are equally valid.
+    ``pnpm run build`` prepends ``node_modules/.bin`` for the package and for
+    the workspace root, so the shims pnpm links into ``web/node_modules/.bin``
+    and shims at the workspace root are equally valid.
     """
     return (web_dir, web_dir.parent)
 
@@ -4205,51 +4205,57 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
     # After pip install, check managed path first, then PATH
     return resolve_uv() or shutil.which("uv")
 
-def _npm_manifest_paths() -> tuple[Path, ...]:
+def _pnpm_manifest_paths() -> tuple[Path, ...]:
     """Manifests whose changes must defeat the update-skip.
 
     The lockfile alone is NOT a sufficient key: on a local checkout a dev
-    can edit package.json (root or a workspace) without running npm — the
+    can edit package.json (root or a workspace) without running pnpm — the
     lockfile is then unchanged but `hermes update` is exactly the step
-    expected to sync node_modules (via the `npm install` fallback in
-    _run_npm_install_deterministic).
+    expected to sync node_modules (via the `--no-lockfile` fallback in
+    _run_pnpm_install_deterministic).
 
-    The workspace list is pulled from the root package.json's `workspaces`
-    globs (npm's own source of truth) rather than hardcoded, so adding a
+    The workspace list is pulled from ``pnpm-workspace.yaml``'s ``packages``
+    globs (pnpm's own source of truth) rather than hardcoded, so adding a
     workspace can never silently escape the skip key. Every workspace
     manifest belongs in the key — desktop included, even though the
     install only names ui-tui and web — because the single lockfile spans
     the whole workspace graph, so any manifest edit can put the lockfile
     out of sync and change what the install must do. Falls back to hashing
-    just root manifests if package.json is unreadable (never skips more
-    than main would have installed).
+    just root manifests if pnpm-workspace.yaml is unreadable (never skips
+    more than main would have installed).
     """
-    root_pkg = _m().PROJECT_ROOT / "package.json"
-    paths = [_m().PROJECT_ROOT / "package-lock.json", root_pkg]
+    workspace_yaml = _m().PROJECT_ROOT / "pnpm-workspace.yaml"
+    paths = [
+        _m().PROJECT_ROOT / "pnpm-lock.yaml",
+        _m().PROJECT_ROOT / "package.json",
+        workspace_yaml,
+    ]
+    import yaml
+
     try:
-        workspaces = json.loads(root_pkg.read_text(encoding="utf-8")).get(
-            "workspaces", []
+        packages = (yaml.safe_load(workspace_yaml.read_text(encoding="utf-8")) or {}).get(
+            "packages", []
         )
-        if isinstance(workspaces, dict):  # legacy {"packages": [...]} form
-            workspaces = workspaces.get("packages", [])
-        for pattern in workspaces:
+        for pattern in packages or []:
+            if str(pattern).startswith("!"):
+                continue
             for match in sorted(_m().PROJECT_ROOT.glob(str(pattern))):
                 manifest = match / "package.json"
                 if manifest.is_file():
                     paths.append(manifest)
-    except (OSError, json.JSONDecodeError, TypeError):
+    except (OSError, yaml.YAMLError, AttributeError, TypeError, ValueError):
         pass
     return tuple(paths)
 
-def _npm_manifests_digest() -> str | None:
-    """Combined sha256 over the lockfile + all workspace package.json files.
+def _pnpm_manifests_digest() -> str | None:
+    """Combined sha256 over the lockfile, workspace config + all workspace package.json files.
 
     Returns None when the lockfile is missing (never skip then).
     """
-    if not (_m().PROJECT_ROOT / "package-lock.json").exists():
+    if not (_m().PROJECT_ROOT / "pnpm-lock.yaml").exists():
         return None
     h = hashlib.sha256()
-    for p in _npm_manifest_paths():
+    for p in _pnpm_manifest_paths():
         h.update(str(p.relative_to(_m().PROJECT_ROOT)).encode())
         try:
             h.update(p.read_bytes())
@@ -4257,8 +4263,8 @@ def _npm_manifests_digest() -> str | None:
             h.update(b"<missing>")
     return h.hexdigest()
 
-def _npm_lockfile_changed(hermes_root: Path) -> bool:
-    current = _npm_manifests_digest()
+def _pnpm_lockfile_changed(hermes_root: Path) -> bool:
+    current = _pnpm_manifests_digest()
     if current is None:
         return True
     # Also check that node_modules exists; a matching hash with missing
@@ -4277,23 +4283,23 @@ def _npm_lockfile_changed(hermes_root: Path) -> bool:
     try:
         # Key the cache by PROJECT_ROOT so parallel worktrees don't collide.
         cache_key = hashlib.sha256(str(_m().PROJECT_ROOT).encode()).hexdigest()[:12]
-        cache_file = hermes_root / f".npm_lock_hash_{cache_key}"
+        cache_file = hermes_root / f".pnpm_lock_hash_{cache_key}"
         if not cache_file.exists():
             return True
         return cache_file.read_text(encoding="utf-8").strip() != current
     except OSError:
         return True
 
-def _record_npm_lockfile_hash(hermes_root: Path) -> None:
-    digest = _npm_manifests_digest()
+def _record_pnpm_lockfile_hash(hermes_root: Path) -> None:
+    digest = _pnpm_manifests_digest()
     if digest is None:
         return
     try:
         cache_key = hashlib.sha256(str(_m().PROJECT_ROOT).encode()).hexdigest()[:12]
-        cache_file = hermes_root / f".npm_lock_hash_{cache_key}"
+        cache_file = hermes_root / f".pnpm_lock_hash_{cache_key}"
         cache_file.write_text(digest, encoding="utf-8")
     except OSError:
-        logger.debug("Could not write npm lockfile hash cache")
+        logger.debug("Could not write pnpm lockfile hash cache")
 
 def _repair_node_deps_on_current_checkout(
     print_completion,
@@ -4306,20 +4312,20 @@ def _repair_node_deps_on_current_checkout(
 ) -> bool:
     """Repair Node deps on the ``commit_count == 0`` path (#77211).
 
-    A current checkout does not imply healthy Node deps: a previous npm
-    install may have failed (EBADENGINE from a node/npm mismatch, network
+    A current checkout does not imply healthy Node deps: a previous pnpm
+    install may have failed (an engine mismatch, network
     timeout, interrupted install) and its error message says to "re-run
     hermes update" — but the early return never reached the Node refresh,
     so that repair advice could never work. ``_update_node_dependencies``
     self-gates on the lockfile hash, which is only recorded after a
-    SUCCESSFUL npm install (and re-trips when node_modules is missing or
+    SUCCESSFUL pnpm install (and re-trips when node_modules is missing or
     the web toolchain never landed), so this is a cheap no-op on healthy
     installs and a real repair after a failed one.
     """
     node_failures = _update_node_dependencies()
     if node_failures:
         print(f"  ⚠ Node.js refresh failed for: {', '.join(node_failures)}")
-        print("    Fix npm and re-run `hermes update`.")
+        print("    Fix pnpm and re-run `hermes update`.")
         print_completion(
             "⚠ Checkout is current, but Node.js dependencies could not be repaired."
         )
@@ -4356,24 +4362,24 @@ def _repair_node_deps_on_current_checkout(
 def _update_node_dependencies() -> list[str]:
     """Refresh Node deps for the ui-tui and web workspaces.
 
-    Returns the list of labels whose npm install failed (empty on success),
+    Returns the list of labels whose pnpm install failed (empty on success),
     so the caller can treat a Node refresh failure as a partial update rather
     than silently reporting ``Update complete!`` (#30271).
     """
     if not (_m().PROJECT_ROOT / "package.json").exists():
         return []
 
-    npm = _m()._resolve_node_runtime_npm()
-    if not npm:
-        # If the only npm reachable inside this WSL shell is the Windows one,
+    pnpm = _m()._resolve_node_runtime_pnpm()
+    if not pnpm:
+        # If the only pnpm reachable inside this WSL shell is the Windows one,
         # flag it loudly: silently skipping leaves ui-tui deps stale while the
         # rest of the update proceeds, and running it would corrupt the tree.
         from hermes_constants import is_wsl
 
-        path_npm = shutil.which("npm")
-        if is_wsl() and path_npm and _m()._is_windows_npm_path(path_npm):
+        path_pnpm = shutil.which("pnpm")
+        if is_wsl() and path_pnpm and _m()._is_windows_pnpm_path(path_pnpm):
             print("→ Updating Node.js dependencies...")
-            print("  ⚠ Skipped: only a Windows npm is reachable from this WSL shell.")
+            print("  ⚠ Skipped: only a Windows pnpm is reachable from this WSL shell.")
             print("    Install Node.js inside the WSL distro (nvm, or your distro's")
             print("    package manager), then re-run `hermes update`.")
             failed = []
@@ -4389,7 +4395,7 @@ def _update_node_dependencies() -> list[str]:
 
     # This cache describes PROJECT_ROOT/node_modules, which is shared by every
     # Hermes profile using this checkout. Keep one per-checkout cache under the
-    # shared Hermes root rather than rerunning npm once per named profile.
+    # shared Hermes root rather than rerunning pnpm once per named profile.
     shared_hermes_root = get_default_hermes_root()
 
     # Best-effort: warm npx's cache for agent-browser (#43564). Runs before
@@ -4403,39 +4409,34 @@ def _update_node_dependencies() -> list[str]:
     except Exception:
         pass
 
-    if not _m()._npm_lockfile_changed(shared_hermes_root):
-        logger.info("npm lockfile unchanged, skipping npm install")
+    if not _m()._pnpm_lockfile_changed(shared_hermes_root):
+        logger.info("pnpm lockfile unchanged, skipping pnpm install")
         return []
 
-    # Root package.json has no dependencies of its own (agent-browser and
-    # @streamdown/math were moved out — see #43564): agent-browser resolves
-    # at runtime via `npx agent-browser` (tools/browser_tool.py), and
-    # @streamdown/math is a desktop-only import now declared in
-    # apps/desktop/package.json. That means a plain workspace-scoped install
-    # can never prune anything root-only, so we only need to name the
-    # workspaces the CLI/TUI/web build actually requires. apps/desktop pulls
-    # in Electron as a devDependency with a ~200MB postinstall download, so
-    # it's deliberately never named here — desktop deps install on demand
-    # (see _desktop_build_needed).
+    # Only the workspaces the CLI/TUI/web build actually requires are
+    # selected. A filtered pnpm install still covers the workspace root (its
+    # devDependencies hold the shared ESLint flat config every workspace's
+    # eslint.config.mjs imports) and never prunes an unselected workspace.
+    # apps/desktop pulls in Electron as a devDependency with a ~200MB
+    # postinstall download, so it's deliberately never selected here —
+    # desktop deps install on demand (see _desktop_build_needed). A filter
+    # that matches no project (no ui-tui/ in this checkout) is ignored.
     print("→ Updating Node.js dependencies...")
 
     def _partial_update_failure(*labels: str) -> list[str]:
         print()
         print("  ⚠ Node.js dependency refresh did not complete cleanly; the")
         print("    installation may be in a mixed state (updated code, stale Node")
-        print("    deps). Fix npm and re-run `hermes update`.")
+        print("    deps). Fix pnpm and re-run `hermes update`.")
         return list(labels)
 
     install_args = [
-        "--no-fund", "--no-audit", "--prefer-offline", "--progress=false",
-        "--workspace", "ui-tui", "--workspace", "web",
-        # Root package.json's own devDependencies (the shared ESLint flat
-        # config every workspace's eslint.config.mjs imports) are otherwise
-        # pruned by this scoped install, same as agent-browser/@streamdown
-        # math used to be before they moved out of root entirely (#43564).
-        # Unlike those, root's devDependencies have nowhere else to live —
-        # this flag still excludes apps/desktop, which is never named above.
-        "--include-workspace-root",
+        "--prefer-offline",
+        *_m()._pnpm_filter_args(
+            _m().PROJECT_ROOT,
+            _m().PROJECT_ROOT / "ui-tui",
+            _m().PROJECT_ROOT / "web",
+        ),
     ]
 
     from hermes_constants import with_hermes_node_path
@@ -4444,25 +4445,26 @@ def _update_node_dependencies() -> list[str]:
 
     # NOTE: capture_output=False here is deliberate (#18840) — optional
     # postinstall scripts print download progress, and capturing it makes a
-    # long download look hung. The chatty npm-deprecation noise during
+    # long download look hung. The chatty deprecation noise during
     # `hermes update` comes from the *desktop* build, not this step; that
     # one is captured to update.log.
-    result = _m()._run_npm_install_deterministic(
-        npm,
+    result = _m()._run_pnpm_install_deterministic(
+        pnpm,
         _m().PROJECT_ROOT,
         extra_args=tuple(install_args),
         capture_output=False,
         env=nixos_env,
     )
     if result.returncode == 0:
-        _record_npm_lockfile_hash(shared_hermes_root)
+        _record_pnpm_lockfile_hash(shared_hermes_root)
         print("  ✓ ui-tui, web workspaces installed (desktop skipped)")
         failures: list[str] = []
     else:
-        print("  ⚠ npm install failed")
-        stderr = (result.stderr or "").strip() if result.stderr else ""
-        if stderr:
-            print(f"    {stderr.splitlines()[-1]}")
+        print("  ⚠ pnpm install failed")
+        # pnpm reports ERR_PNPM_* errors on stdout.
+        detail = (result.stderr or result.stdout or "").strip()
+        if detail:
+            print(f"    {detail.splitlines()[-1]}")
         failures = _partial_update_failure("ui-tui, web workspaces")
 
     return failures
@@ -4472,7 +4474,7 @@ def _log_only_write(text: str) -> None:
 
     During ``hermes update`` ``sys.stdout`` is an ``_UpdateOutputStream`` that
     mirrors to both the terminal and ``update.log``. Loud, low-signal
-    subprocess output (npm installs, the Electron/vite build, the cua-driver
+    subprocess output (pnpm installs, the Electron/vite build, the cua-driver
     installer's "Next steps" wall) should be captured and tucked into the log
     so failures stay debuggable, without flooding the user's terminal. This
     reaches past the mirroring stream straight to the underlying log handle.
@@ -7735,48 +7737,6 @@ def _ensure_non_trampoline_git(git_cmd: list) -> list:
     return [str(real_git)] + list(git_cmd[1:])
 
 
-def _discard_lockfile_churn(git_cmd, repo_root):
-    """Restore tracked ``package-lock.json`` files that npm dirtied locally.
-
-    npm rewrites lockfiles non-deterministically at install/build time. On a
-    managed install those diffs are never intentional, so we discard them so
-    ``hermes update`` sees a clean tree instead of autostashing every run.
-    Best-effort; only ever touches files named ``package-lock.json``.
-    """
-    try:
-        diff = subprocess.run(
-            git_cmd + ["diff", "--name-only"],
-            cwd=repo_root,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-        )
-        if diff.returncode != 0:
-            return
-        dirty_package_dirs = {
-            Path(line.strip()).parent
-            for line in diff.stdout.splitlines()
-            if line.strip().endswith("package.json")
-        }
-        dirty = [
-            line.strip()
-            for line in diff.stdout.splitlines()
-            if line.strip().endswith("package-lock.json")
-            and Path(line.strip()).parent not in dirty_package_dirs
-        ]
-        if not dirty:
-            return
-        subprocess.run(
-            git_cmd + ["checkout", "--", *dirty],
-            cwd=repo_root,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            check=False,
-        )
-        print(f"→ Discarded npm lockfile churn ({len(dirty)} file(s))")
-    except Exception:
-        # Never let lockfile cleanup block an update.
-        pass
-
 def _normalize_managed_eol(git_cmd, repo_root):
     """Take a managed checkout off ``core.autocrlf=true`` without leaving it dirty.
 
@@ -7914,7 +7874,7 @@ def _rebuild_desktop_after_update(
     has_desktop_app = had_desktop_app_before_update or _desktop_app_present(desktop_dir)
     if not (
         (desktop_dir / "package.json").exists()
-        and _m()._resolve_node_runtime_npm()
+        and _m()._resolve_node_runtime_pnpm()
         and has_desktop_app
     ):
         return True
@@ -8522,17 +8482,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # (#87876).
     git_cmd = _ensure_non_trampoline_git(git_cmd)
 
-    # Discard npm lockfile churn before any stash/branch logic. npm rewrites
-    # tracked package-lock.json files non-deterministically at install/build
-    # time (platform-specific optional deps, ideallyInert annotations, etc.),
-    # which is never an intentional edit on a managed install but leaves the
-    # tree dirty — forcing an autostash on every update and making branch
-    # switches fragile. Restoring them first lets the common case (only
-    # lockfile churn) update with a clean tree.
-    _discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT)
-    # Same rationale, different generator: line-ending churn is machine-made
-    # dirt on a managed checkout, so clear it (and stop generating it) before
-    # the stash/branch logic rather than autostashing the entire tree.
+    # Line-ending churn is machine-made dirt on a managed checkout, so clear
+    # it (and stop generating it) before the stash/branch logic rather than
+    # autostashing the entire tree.
     _normalize_managed_eol(git_cmd, _m().PROJECT_ROOT)
 
     # Detect if we're updating from a fork (before any branch logic)

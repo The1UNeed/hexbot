@@ -5033,7 +5033,7 @@ class TestServeIndexMissingIndex:
             resp = client.get(route)
             assert resp.status_code == 404
             assert resp.json()["error"] == (
-                "Frontend not built. Run: cd web && npm run build"
+                "Frontend not built. Run: cd web && pnpm run build"
             )
 
     def test_index_deleted_after_mount_returns_json_404(self, tmp_path, monkeypatch):
@@ -5353,7 +5353,7 @@ def test_mount_spa_dynamic_web_dist_recheck(tmp_path, monkeypatch):
     # 1. missing build -> 404
     res1 = client.get("/")
     assert res1.status_code == 404
-    assert res1.json()["error"] == "Frontend not built. Run: cd web && npm run build"
+    assert res1.json()["error"] == "Frontend not built. Run: cd web && pnpm run build"
 
     # 2. build created dynamically -> 200
     dist.mkdir(parents=True, exist_ok=True)
@@ -5361,3 +5361,66 @@ def test_mount_spa_dynamic_web_dist_recheck(tmp_path, monkeypatch):
     res2 = client.get("/")
     assert res2.status_code == 200
     assert "Test" in res2.text
+
+
+class TestWhatsAppBridgeDependencies:
+    """The dashboard WhatsApp setup installs the bridge with pnpm. The bridge
+    has its own lockfile and is not a workspace member."""
+
+    def test_installs_from_the_bridge_lockfile_outside_the_workspace(self, monkeypatch, tmp_path):
+        from hermes_cli import web_server
+
+        monkeypatch.setattr("hermes_constants.ensure_hermes_pnpm", lambda: "/opt/bin/pnpm")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs["cwd"]))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+
+        web_server._ensure_whatsapp_bridge_dependencies(tmp_path)
+
+        assert calls == [
+            (["/opt/bin/pnpm", "install", "--frozen-lockfile", "--ignore-workspace"], str(tmp_path))
+        ]
+
+    def test_installed_bridge_needs_no_pnpm(self, monkeypatch, tmp_path):
+        from hermes_cli import web_server
+
+        (tmp_path / "node_modules").mkdir()
+        monkeypatch.setattr(
+            "hermes_constants.ensure_hermes_pnpm",
+            lambda: pytest.fail("pnpm must not be resolved for an installed bridge"),
+        )
+
+        web_server._ensure_whatsapp_bridge_dependencies(tmp_path)
+
+    def test_missing_pnpm_is_reported(self, monkeypatch, tmp_path):
+        from fastapi import HTTPException
+        from hermes_cli import web_server
+
+        monkeypatch.setattr("hermes_constants.ensure_hermes_pnpm", lambda: None)
+
+        with pytest.raises(HTTPException) as exc:
+            web_server._ensure_whatsapp_bridge_dependencies(tmp_path)
+        assert "pnpm was not found" in exc.value.detail
+
+    def test_failure_detail_comes_from_stdout(self, monkeypatch, tmp_path):
+        """pnpm prints ERR_PNPM_* errors on stdout and leaves stderr empty."""
+        from fastapi import HTTPException
+        from hermes_cli import web_server
+
+        monkeypatch.setattr("hermes_constants.ensure_hermes_pnpm", lambda: "/opt/bin/pnpm")
+        monkeypatch.setattr(
+            web_server.subprocess,
+            "run",
+            lambda cmd, **kwargs: SimpleNamespace(
+                returncode=1, stdout=" ERR_PNPM_OUTDATED_LOCKFILE  Cannot install\n", stderr=""
+            ),
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            web_server._ensure_whatsapp_bridge_dependencies(tmp_path)
+        assert "pnpm install failed for WhatsApp bridge" in exc.value.detail
+        assert "ERR_PNPM_OUTDATED_LOCKFILE" in exc.value.detail

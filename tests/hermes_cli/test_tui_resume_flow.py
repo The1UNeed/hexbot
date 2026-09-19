@@ -265,7 +265,8 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
     tsx.write_text("#!/usr/bin/env node\n", encoding="utf-8")
 
     monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
-    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _tui_dir: False)
+    monkeypatch.setattr(main_mod, "_tui_need_pnpm_install", lambda _tui_dir: False)
+    monkeypatch.setattr("hermes_constants.ensure_hermes_pnpm", lambda: "/usr/bin/pnpm")
     monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
     monkeypatch.setattr(main_mod.shutil, "which", lambda bin_name: f"/usr/bin/{bin_name}")
 
@@ -281,7 +282,7 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
 
     assert argv == [str(tsx), "src/entry.tsx"]
     assert cwd == tui_dir
-    assert calls == [(["/usr/bin/npm", "run", "build"], str(ink_dir))]
+    assert calls == [(["/usr/bin/pnpm", "run", "build"], str(ink_dir))]
 
 
 
