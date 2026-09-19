@@ -1,7 +1,9 @@
 # Stable and nightly releases from one workflow, modelled on T3 Code's
 # release.yml (docs/channels.md, docs/release.md).
 #
-#   stable   push a v<version> tag that matches apps/desktop/package.json.
+#   stable   push a v<version> tag that matches apps/desktop/package.json, or
+#            dispatch by hand on main with channel `stable`; the run then
+#            creates the tag for the version in package.json.
 #            Plain X.Y.Z is the repository's "latest" release; a suffix such as
 #            -alpha.1 makes a GitHub prerelease. The finalize job then commits
 #            the website downloads manifest and the Homebrew casks to main.
@@ -34,7 +36,7 @@ on:
       channel:
         description: Channel
         type: choice
-        options: [nightly]
+        options: [nightly, stable]
         default: nightly
 
 # Jobs that publish ask for more below.
@@ -44,7 +46,7 @@ permissions:
 # One publisher per channel at a time. A queued run waits; it never cancels a
 # running one, so a half-published release cannot happen.
 concurrency:
-  group: release-${{ startsWith(github.ref, 'refs/tags/v') && 'stable' || 'nightly' }}
+  group: release-${{ (startsWith(github.ref, 'refs/tags/v') || inputs.channel == 'stable') && 'stable' || 'nightly' }}
   cancel-in-progress: false
 
 jobs:
@@ -69,9 +71,10 @@ jobs:
         name: Resolve the channel and version
         env:
           GH_TOKEN: ${{ github.token }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/v* || "$INPUT_CHANNEL" == stable ]]; then
             channel=stable
             # Release notes compare against the previous stable release.
             previous=$(gh release list --limit 200 --json tagName,isPrerelease,isDraft \
@@ -94,7 +97,15 @@ jobs:
           fi
           echo "build=true" >> "$GITHUB_OUTPUT"
           echo "previous_tag=$previous" >> "$GITHUB_OUTPUT"
-          node scripts/desktop/release-version.mjs --channel "$channel" | tee -a "$GITHUB_OUTPUT"
+          node scripts/desktop/release-version.mjs --channel "$channel" | tee release.env
+          cat release.env >> "$GITHUB_OUTPUT"
+          # A manual stable run creates its own tag, so the version must be new.
+          tag=$(sed -n 's/^tag=//p' release.env)
+          if [[ "$channel" == stable && "$GITHUB_REF" != refs/tags/* ]] &&
+            git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+            echo "::error::$tag already exists. Set the next version with scripts/desktop/set-version.mjs and commit it first."
+            exit 1
+          fi
 
   check:
     name: Check

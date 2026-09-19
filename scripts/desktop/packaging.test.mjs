@@ -80,7 +80,7 @@ test('feed metadata is named after the channel', async () => {
   )
 })
 
-test('stable releases come from a matching v* tag', () => {
+test('stable releases come from a matching v* tag or a manual run on main', () => {
   const full = resolveRelease({
     channel: 'stable',
     packageVersion: '1.2.3',
@@ -100,6 +100,21 @@ test('stable releases come from a matching v* tag', () => {
   })
   assert.equal(alpha.prerelease, true)
   assert.equal(alpha.latest, false)
+  const manual = resolveRelease({
+    channel: 'stable',
+    packageVersion: '0.1.5-alpha.1',
+    ref: 'refs/heads/main'
+  })
+  assert.deepEqual(manual, alpha)
+  assert.throws(
+    () =>
+      resolveRelease({
+        channel: 'stable',
+        packageVersion: '0.1.5-alpha.1',
+        ref: 'refs/heads/feature'
+      }),
+    /manual run on main/
+  )
   assert.throws(
     () =>
       resolveRelease({

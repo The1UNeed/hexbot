@@ -11,7 +11,7 @@ its desktop app (see "Borrowed from T3 Code" at the end).
 | App name | `Hexbot [alpha]`, `Hexbot Client [alpha]` until 1.0, then `Hexbot`, `Hexbot Client` | `Hexbot Nightly`, `Hexbot Client Nightly` | `Hexbot (dev)` (packaged) or the source tree |
 | Version | `X.Y.Z` or `X.Y.Z-alpha.N`, from `apps/desktop/package.json` | `X.Y.Z-nightly.YYYYMMDD.<run>` | whatever `apps/desktop/package.json` says |
 | App id | `app.hexbot.desktop`, `app.hexbot.client` | `app.hexbot.desktop.nightly`, `app.hexbot.client.nightly` | `app.hexbot.desktop.dev`, `app.hexbot.client.dev` |
-| Trigger | Push of a `v<version>` tag | 09:00 UTC daily when `main` moved, or by hand | You |
+| Trigger | Push of a `v<version>` tag, or by hand on `main` | 09:00 UTC daily when `main` moved, or by hand | You |
 | GitHub release | `v<version>`; "latest" for a plain `X.Y.Z`, prerelease otherwise | `v<version>` prerelease, last 14 kept | None |
 | Update feed | `latest-*.yml` on `updates.hexbot.app` | `nightly-*.yml` and `nightlies.json` on `updates.hexbot.app` | None |
 | Auto-updates | Yes, stable track | Yes, nightly track | No |
@@ -61,8 +61,9 @@ release and drops the suffix from the app name; `productName()` in
 
 Release steps are in `docs/release.md`. In short: `node
 scripts/desktop/set-version.mjs 0.x.y-alpha.N`, write
-`docs/releases/0.x.y-alpha.N.md`, commit, tag `v0.x.y-alpha.N`, push the tag.
-The workflow does the rest, including the update feed, the website manifest,
+`docs/releases/0.x.y-alpha.N.md`, commit, then either run the Release
+workflow on `main` with channel `stable` (it creates the tag) or push the
+`v0.x.y-alpha.N` tag yourself. The workflow does the rest, including the update feed, the website manifest,
 and the casks.
 
 ## Nightly
@@ -77,7 +78,7 @@ after a plain `X.Y.Z` in `package.json`, or the same `X.Y.Z` when
 nightly always sorts above the stable build it was cut from and the nightly
 track never sees a downgrade.
 
-A manual run (`workflow_dispatch`) builds even when nothing changed. Only the
+A manual nightly run (`workflow_dispatch`) builds even when nothing changed. Only the
 last 14 nightlies are kept on GitHub; the update feed keeps every artifact.
 
 Nightly packages carry the purple icon from
