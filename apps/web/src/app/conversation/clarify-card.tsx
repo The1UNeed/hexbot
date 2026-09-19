@@ -26,7 +26,7 @@ export function encodeAnswer(question: ClarifyQuestion, chosen: string[], typed:
 }
 
 const rowClass =
-  'flex w-full items-center gap-3 px-3 py-2.5 text-left text-[length:var(--text-body)] transition-colors hover:bg-surface-3/60 disabled:pointer-events-none'
+  'flex w-full items-center gap-3 px-3 py-2.5 text-left text-[length:var(--text-body)] transition-colors hover:bg-surface-3/50 disabled:pointer-events-none'
 
 const letterClass =
   'grid size-5 shrink-0 place-items-center rounded-[5px] bg-surface-3 text-[11px] font-semibold text-muted'
@@ -91,7 +91,7 @@ function Question({
       <div className="font-medium">{question.question}</div>
       {question.choices.length ? (
         <div
-          className="divide-y divide-border overflow-hidden rounded-control border border-border bg-surface-2/60"
+          className="divide-y divide-border overflow-hidden rounded-control bg-background/70"
           role={question.multiSelect ? 'group' : 'listbox'}
         >
           {question.choices.map((choice, index) => {
@@ -179,7 +179,7 @@ export function ClarifyCard({ clarify }: { clarify: ClarifyRequest }) {
 
   return (
     <div
-      className="hex-bubble my-2 grid max-w-[80%] gap-4 rounded-bubble bg-surface-2 px-4 py-3"
+      className="hex-bubble grid min-w-0 max-w-[80%] flex-1 gap-4 rounded-bubble bg-surface-2 px-3.5 py-2.5"
       data-testid="clarify-card"
     >
       {clarify.questions.map(question => (

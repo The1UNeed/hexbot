@@ -811,7 +811,7 @@ export function RosterColumn() {
                 setBotDialog(false)
                 setNewBot(value => ({ ...value, name: '' }))
                 open(bot.name, section.id)
-                await introduceBot(section, displayName)
+                await introduceBot(section, bot)
               })
               .catch(error =>
                 setNewBotError(error instanceof Error ? error.message : String(error))

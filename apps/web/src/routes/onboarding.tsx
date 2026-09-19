@@ -24,7 +24,7 @@ import { BOT_TEMPLATES } from '../lib/bot-templates'
 import { type DaemonProgress, getBridge, hasLocalRuntime, isElectron } from '../lib/bridge'
 import { cn } from '../lib/cn'
 import { connectTo, setLocalDaemonPort } from '../lib/connection'
-import type { ModelOption, Provider, Section } from '../lib/types'
+import type { Bot, ModelOption, Provider, Section } from '../lib/types'
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
 import { introduceBot } from '../stores/sections'
@@ -671,7 +671,7 @@ function BotStep({
   configured: Provider[]
   defaultModel: string | null
   onBack: () => void
-  onCreated: (bot: string, section: Section, displayName: string) => void
+  onCreated: (bot: Bot, section: Section) => void
   /** The page shows a full-screen "getting ready" state while this is true. */
   onCreating?: (creating: boolean) => void
   onError: (message: string) => void
@@ -746,7 +746,7 @@ function BotStep({
         title: title.trim()
       })
 
-      onCreated(result.bot.name, result.section, displayName.trim())
+      onCreated(result.bot, result.section)
     } catch (reason) {
       onCreating?.(false)
       onError(String(reason))
@@ -1053,11 +1053,11 @@ function OnboardingPage() {
           configured={configured}
           defaultModel={defaultModel}
           onBack={() => setStep('defaults')}
-          onCreated={(bot, section, displayName) => {
-            const last = { bot, section: section.id }
+          onCreated={(bot, section) => {
+            const last = { bot: bot.name, section: section.id }
             uiActions().setLastSection(last)
             void navigate({ to: '/b/$bot/s/$section', params: last })
-            void introduceBot(section, displayName)
+            void introduceBot(section, bot)
           }}
           onCreating={setCreating}
           onError={onError}

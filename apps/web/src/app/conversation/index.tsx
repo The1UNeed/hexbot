@@ -354,7 +354,7 @@ export function MessageRow({
   const hasBody = Boolean(message.text || message.attachments.length)
   const name = bot?.display_name ?? 'Bot'
 
-  // Same row as the room view: the bot's face beside its bubble, its name on top.
+  // The bot's face beside its bubble. No name: the header already says whose chat this is.
   // The column reads in order: the work that produced the reply, the reply, then its actions.
   return (
     <article
@@ -378,11 +378,6 @@ export function MessageRow({
         ) : null}
         {hasBody ? (
           <div className={assistant ? bubbleClass : userBubbleClass}>
-            {assistant ? (
-              <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
-                {name}
-              </div>
-            ) : null}
             {message.text ? (
               <div className="hex-prose">
                 <Markdown text={message.text} />
@@ -397,6 +392,16 @@ export function MessageRow({
   )
 }
 
+/** A card the bot is waiting on, in the same row as its bubbles: face, then card. */
+function CardRow({ bot, children }: { bot?: Bot; children: React.ReactNode }) {
+  return (
+    <div className="flex gap-2 py-1">
+      <Avatar className="mt-1" image={avatarData(bot)} name={bot?.display_name ?? 'Bot'} size="sm" />
+      {children}
+    </div>
+  )
+}
+
 function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
   const choose = async (choice: ApprovalChoice) => {
     await approvalRespond(approval.sessionId, approval.requestId, choice)
@@ -404,7 +409,7 @@ function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
   }
 
   return (
-    <div className="hex-bubble my-2 max-w-[80%] rounded-bubble border border-warning/40 bg-surface-2 px-4 py-3">
+    <div className="hex-bubble min-w-0 max-w-[80%] flex-1 rounded-bubble border border-warning/40 bg-surface-2 px-3.5 py-2.5">
       <div className="font-semibold">Approval needed</div>
       {approval.command ? (
         <pre className="my-2 overflow-auto rounded-control bg-background/70 p-2 font-mono text-[length:var(--text-secondary)]">
@@ -1020,11 +1025,19 @@ function BotConversation() {
             ) : null}
             {timeline.map(item => {
               if (item.kind === 'clarify') {
-                return <ClarifyCard clarify={item.clarify} key={item.clarify.requestId} />
+                return (
+                  <CardRow bot={bot} key={item.clarify.requestId}>
+                    <ClarifyCard clarify={item.clarify} />
+                  </CardRow>
+                )
               }
 
               if (item.kind === 'approval') {
-                return <ApprovalCard approval={item.approval} key={item.approval.requestId} />
+                return (
+                  <CardRow bot={bot} key={item.approval.requestId}>
+                    <ApprovalCard approval={item.approval} />
+                  </CardRow>
+                )
               }
 
               const { index, message } = item
