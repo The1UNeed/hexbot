@@ -24,6 +24,7 @@ export function remoteStatus(state: UpdateState): RemoteStatus | null {
     case 'downloading':
       return 'downloading'
     case 'downloaded':
+    case 'installing':
       return 'installing'
     case 'error':
       return 'failed'

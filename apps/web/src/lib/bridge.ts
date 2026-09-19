@@ -122,6 +122,7 @@ export interface UpdateState {
     | 'downloading'
     | 'error'
     | 'idle'
+    | 'installing'
     | 'up-to-date'
 }
 

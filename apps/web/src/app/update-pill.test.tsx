@@ -49,6 +49,14 @@ describe('describePill', () => {
     ).toMatchObject({ action: 'install', label: 'Restart to update' })
     expect(
       describePill(
+        { ...available, downloadedVersion: available.availableVersion, status: 'installing' },
+        null,
+        null,
+        null
+      )
+    ).toMatchObject({ action: null, busy: true, label: 'Installing update' })
+    expect(
+      describePill(
         { ...available, errorContext: 'download', message: 'disk full', status: 'error' },
         null,
         null,

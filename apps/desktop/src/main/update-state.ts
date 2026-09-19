@@ -11,6 +11,7 @@ export type UpdateStatus =
   | 'available'
   | 'downloading'
   | 'downloaded'
+  | 'installing'
   | 'up-to-date'
   | 'error'
 
@@ -131,6 +132,14 @@ export const onDownloadError = (state: UpdateState, message: string): UpdateStat
   message,
   percent: null,
   errorContext: 'download'
+})
+
+/** Install was asked for: the app is about to close and reopen on the new version. */
+export const onInstallStart = (state: UpdateState): UpdateState => ({
+  ...state,
+  status: 'installing',
+  message: null,
+  errorContext: null
 })
 
 export const onInstallError = (state: UpdateState, message: string): UpdateState => ({
