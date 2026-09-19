@@ -218,12 +218,15 @@ export function useLiveSessionId(sectionId: null | string): null | string {
 }
 
 /** Hand a fresh bot its hidden first prompt so it greets you and asks its questions. */
-export async function introduceBot(section: Section, displayName: string): Promise<void> {
+export async function introduceBot(
+  section: Section,
+  bot: Pick<Bot, 'description' | 'display_name' | 'title'>
+): Promise<void> {
   try {
     const live = section.live_session_id ?? (await sectionsActions().open(section.id)).liveSessionId
 
     if (live) {
-      await promptSubmit(live, kickoffPrompt(displayName), { display_kind: 'hidden' })
+      await promptSubmit(live, kickoffPrompt(bot), { display_kind: 'hidden' })
     }
   } catch {
     // The bot exists either way; the user can just start typing.
