@@ -65,6 +65,11 @@ def test_create_bot_mirrors_credentials_and_settings(gw, profiles, isolated_home
     assert bot["sections_total"] == 1
     assert [item["id"] for item in bot["sections_recent"]] == [section["id"]]
 
+    from hexbot.bots import get_bot
+    from hexbot.sections import create_section
+    create_section("scout", "Dreams")
+    assert [item["id"] for item in get_bot("scout")["sections_recent"]] == [section["id"]]
+
     params = gw.params_for("profiles.create")[0]
     assert params["mirror_credentials"] is True
     assert params["soul"] == "Careful"

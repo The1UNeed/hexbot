@@ -545,6 +545,11 @@ function Composer({
       }))
 
       transcriptActions().appendUserMessage(sessionId, text.trim(), attachments)
+
+      if (sectionId) {
+        sectionsActions().markTouched(sectionId)
+      }
+
       await submitOrReopen(sessionId, sectionId, text.trim())
       setText('')
       setFiles([])
@@ -999,8 +1004,9 @@ function BotConversation() {
                 <Button
                   key={prompt}
                   onClick={() => {
-                    if (liveId) {
+                    if (liveId && section) {
                       transcriptActions().appendUserMessage(liveId, prompt)
+                      sectionsActions().markTouched(section.id)
                       void promptSubmit(liveId, prompt)
                     }
                   }}

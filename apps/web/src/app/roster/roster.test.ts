@@ -25,12 +25,17 @@ describe('sections under a bot', () => {
     expect(visibleRecentSections(bot, false, all).map(item => item.id)).toEqual(['b', 'c'])
   })
 
-  it('keeps the open section visible even when untouched', async () => {
+  it('hides the open section until it has a message', async () => {
     const { visibleRecentSections } = await import('./index')
-    expect(visibleRecentSections(bot, false, all, 'blank').map(item => item.id)).toEqual([
-      'blank',
+    expect(visibleRecentSections(bot, false, all, 'blank').map(item => item.id)).toEqual(['b', 'c'])
+  })
+
+  it('keeps an older open section visible', async () => {
+    const { visibleRecentSections } = await import('./index')
+    expect(visibleRecentSections(bot, false, all, 'old').map(item => item.id)).toEqual([
       'b',
-      'c'
+      'c',
+      'old'
     ])
   })
 
@@ -41,14 +46,13 @@ describe('sections under a bot', () => {
     ).toEqual(['blank', 'b'])
   })
 
-  it('expanded shows everything with untouched sections last', async () => {
+  it('expanded shows every touched section and never the Dreams one', async () => {
     const { visibleRecentSections } = await import('./index')
-    expect(visibleRecentSections(bot, true, all).map(item => item.id)).toEqual([
+    const dreams = { ...section('dreams', 10, 4), title: 'Dreams' }
+    expect(visibleRecentSections(bot, true, [...all, dreams]).map(item => item.id)).toEqual([
       'b',
       'c',
-      'old',
-      'blank'
+      'old'
     ])
   })
 })
-
