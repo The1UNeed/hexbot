@@ -67,6 +67,43 @@ def test_build_digest_uses_time_window_and_caps(isolated_home, monkeypatch):
     assert "recent answer" in transcript
 
 
+def test_record_dream_posts_a_bot_message_without_a_turn(isolated_home, monkeypatch):
+    from hermes_state import SessionDB
+    from hexbot import db
+    from hexbot.dreaming import record_dream
+
+    _bot_row()
+    now = time.time()
+    with db.transaction() as conn:
+        conn.execute("INSERT INTO sections(id,bot,title,created_at,updated_at) VALUES (?,?,?,?,?)",
+                     ("dreams-1", "scout", "Dreams", now, now))
+    profile = isolated_home / "profiles" / "scout"
+    profile.mkdir(parents=True)
+    # No stored Hermes session: a section that never had a prompt has none.
+    calls = []
+
+    def gateway_call(method, params=None):
+        calls.append(method)
+        return {"sessions": []}
+
+    monkeypatch.setattr("hexbot.sections.gateway.call", gateway_call)
+
+    record_dream("scout", "Kept two notes.")
+
+    store = SessionDB(db_path=profile / "state.db")
+    rows = store.get_messages("dreams-1")
+    store.close()
+    assert [(row["role"], row["content"]) for row in rows] == [("assistant", "Kept two notes.")]
+    # A prompt would make the bot answer its own dream, and resume the section.
+    assert "prompt.submit" not in calls and "session.resume" not in calls
+
+    # A dream with nothing to report posts nothing.
+    assert record_dream("scout", "[SILENT]")["summary"] == ""
+    store = SessionDB(db_path=profile / "state.db")
+    assert len(store.get_messages("dreams-1")) == 1
+    store.close()
+
+
 def test_memory_tag_and_section_purge(isolated_home):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.memory_tool import load_on_disk_store
