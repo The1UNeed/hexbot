@@ -140,6 +140,24 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[0]["timestamp"] == 1781976577.0
 
+    def test_convert_messages_strips_tool_result_name(self, transport):
+        """``name`` on a tool result is only meaningful to Gemini. Strict
+        gateways reject it with 'messages[N]: "name" is not supported by this
+        endpoint', so it is dropped unless the target model is Gemini-family.
+        """
+        msgs = [
+            {"role": "user", "content": "hi", "name": "alex"},
+            {"role": "tool", "name": "clarify", "content": "ok", "tool_call_id": "c1"},
+        ]
+        result = transport.convert_messages(msgs, model="glm-5.3-flash")
+        assert "name" not in result[1]
+        assert result[1]["tool_call_id"] == "c1"
+        assert result[0]["name"] == "alex"
+        assert msgs[1]["name"] == "clarify"
+
+        kept = transport.convert_messages(msgs, model="gemini-3-pro")
+        assert kept[1]["name"] == "clarify"
+
     def test_convert_messages_strips_provider_replay_sidecars(self, transport):
         """Native-provider replay channels must not cross a provider boundary.
 
