@@ -171,16 +171,17 @@ function RoomRow({
 
 type Drafts = Record<string, string>
 
-/**
- * A section the user has sent or typed something in. New, untouched ones sort last and
- * stay hidden.
- */
+/** A section the user has sent or typed something in. Until then it stays off the roster. */
 export const touched = (section: Section, drafts: Drafts = {}) =>
   section.message_count > 0 || Boolean(section.preview) || Boolean(drafts[section.id])
 
+/** Sections the roster lists: touched ones, minus the bot's background Dreams section. */
+export const listed = (section: Section, drafts: Drafts = {}) =>
+  touched(section, drafts) && section.title !== 'Dreams'
+
 /**
- * The sections listed under a bot: touched ones, newest first. Folded, only the two most
- * recent from the last 14 days plus the open section; expanded, every unarchived one.
+ * The sections listed under a bot, newest first. Folded, only the two most recent from
+ * the last 14 days plus the open section; expanded, every unarchived one.
  */
 export function visibleRecentSections(
   bot: Bot,
@@ -189,20 +190,17 @@ export function visibleRecentSections(
   active?: string,
   drafts: Drafts = {}
 ): Section[] {
-  const byActivity = (a: Section, b: Section) =>
-    Number(touched(b, drafts)) - Number(touched(a, drafts)) || sectionTime(b) - sectionTime(a)
-
   // Prefer the live sections store; the bot row's recent list can lag behind.
   const sections = [...(all.length ? all : bot.sections_recent)]
-    .filter(section => !section.archived_at)
-    .sort(byActivity)
+    .filter(section => !section.archived_at && listed(section, drafts))
+    .sort((a, b) => sectionTime(b) - sectionTime(a))
 
   if (expanded) {
     return sections
   }
 
   const recent = sections
-    .filter(section => touched(section, drafts) && Date.now() - sectionTime(section) < 14 * DAY)
+    .filter(section => Date.now() - sectionTime(section) < 14 * DAY)
     .slice(0, 2)
 
   const current = sections.find(section => section.id === active)
@@ -229,7 +227,7 @@ interface BotRowsProps {
 }
 
 /** Which of a bot's rows match the roster search: the bot itself, or section titles. */
-function matchBot(bot: Bot, sections: Section[], query: string) {
+function matchBot(bot: Bot, sections: Section[], query: string, drafts: Drafts = {}) {
   const matchesBot = `${bot.display_name} ${bot.name}`.toLowerCase().includes(query)
 
   const available = [
@@ -237,7 +235,9 @@ function matchBot(bot: Bot, sections: Section[], query: string) {
     ...bot.sections_recent.filter(recent => !sections.some(section => section.id === recent.id))
   ]
 
-  const matching = available.filter(section => section.title.toLowerCase().includes(query))
+  const matching = available.filter(
+    section => listed(section, drafts) && section.title.toLowerCase().includes(query)
+  )
 
   return { available, matchesBot, matching }
 }
@@ -257,7 +257,7 @@ function BotRows({
   query,
   sections
 }: BotRowsProps) {
-  const { available, matchesBot, matching } = matchBot(bot, sections, query)
+  const { available, matchesBot, matching } = matchBot(bot, sections, query, drafts)
 
   if (query && !matchesBot && matching.length === 0) {
     return null
@@ -268,10 +268,15 @@ function BotRows({
   const canExpand =
     !query &&
     (expanded ||
-      available.filter(section => !section.archived_at).length > rows.length ||
-      bot.sections_total > rows.length)
+      available.filter(section => !section.archived_at && listed(section, drafts)).length >
+        rows.length ||
+      // The daemon's total counts empty and archived sections: trust it only until ours load.
+      (sections.length === 0 && bot.sections_total > rows.length))
 
-  const selected = rows.length === 0 && bot.sections_recent.some(section => section.id === active)
+  // An open section with no row of its own (untouched, or Dreams) selects the bot row.
+  const selected =
+    available.some(section => section.id === active) && !rows.some(row => row.id === active)
+
   const label = bot.title || bot.description
 
   return (
@@ -476,7 +481,7 @@ export function RosterColumn() {
 
       const bot = entry.item as Bot
       const own = Object.values(sectionMap).filter(section => section.bot === bot.name)
-      const { matchesBot, matching } = matchBot(bot, own, query)
+      const { matchesBot, matching } = matchBot(bot, own, query, drafts)
 
       return matchesBot || matching.length > 0
     })
@@ -500,11 +505,17 @@ export function RosterColumn() {
     }
 
     const next = Object.values(useSections.getState().byId)
-      .filter(item => item.bot === bot && !item.archived_at && item.id !== sectionId)
+      .filter(
+        item =>
+          item.bot === bot && !item.archived_at && item.id !== sectionId && listed(item, drafts)
+      )
       .sort((a, b) => toMillis(b.updated_at) - toMillis(a.updated_at))[0]
 
-    const target = next ?? (await sectionsActions().create(bot))
-    open(bot, target.id)
+    if (next) {
+      open(bot, next.id)
+    } else {
+      await createSection(bot)
+    }
   }
 
   const archiveSection = async (section: Section) => {
@@ -521,26 +532,34 @@ export function RosterColumn() {
     await leaveSection(section.bot, section.id)
   }
 
+  /**
+   * A fresh section: the bot's untouched one if it has any, else a new one. It stays off
+   * the roster until the first message, so asking twice never piles up empty sections.
+   */
   const createSection = async (bot = params.bot ?? ordered[0]?.name) => {
     if (!bot) {
       return
     }
 
-    const section = await sectionsActions().create(bot)
-    open(bot, section.id)
-  }
-
-  /** Clicking a bot lands on a fresh section: an untouched one if it has any, else a new one. */
-  const startSection = async (bot: string) => {
     const blank = Object.values(useSections.getState().byId)
       .filter(item => item.bot === bot && !item.archived_at && !touched(item, drafts))
       .sort((a, b) => toMillis(b.updated_at) - toMillis(a.updated_at))[0]
 
-    if (blank) {
-      open(bot, blank.id)
-    } else {
-      await createSection(bot)
+    // An empty section has no stored session, so it does not survive a daemon restart.
+    const alive =
+      blank &&
+      (await sectionsActions()
+        .open(blank.id)
+        .then(() => true)
+        .catch(() => false))
+
+    if (blank && !alive) {
+      await sectionsActions()
+        .remove(blank.id)
+        .catch(() => undefined)
     }
+
+    open(bot, (blank && alive ? blank : await sectionsActions().create(bot)).id)
   }
 
   const expandBot = async (name: string) => {
@@ -700,7 +719,7 @@ export function RosterColumn() {
               onDelete={section => void deleteSection(section)}
               onExpand={() => void expandBot((entry.item as Bot).name)}
               onOpen={open}
-              onStart={name => void startSection(name)}
+              onStart={name => void createSection(name)}
               query={query}
               sections={Object.values(sectionMap).filter(
                 section => section.bot === (entry.item as Bot).name

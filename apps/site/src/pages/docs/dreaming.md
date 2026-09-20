@@ -16,7 +16,7 @@ Dreaming must be enabled for the daemon and for the individual bot. You can also
 
 ## Read the result
 
-Hexbot posts each summary in that bot's `Dreams` section. The section appears after the first dream. Open it to inspect what the bot recorded instead of treating the background job as invisible.
+Hexbot posts each summary in that bot's `Dreams` section. The section stays out of the sidebar. Open the bot's settings, Memory, and pick a dream under Recent dreams to read what the bot recorded.
 
 A dream reads only that bot's sections and the rooms it belongs to. Long transcripts are capped, with the newest part kept for review.
 

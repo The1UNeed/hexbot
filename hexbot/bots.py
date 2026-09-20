@@ -208,7 +208,9 @@ def _shape(row, *, all_users=False, live=None, incidents=None) -> dict:
     model = detail.get("model") or {}
     all_sections = sections.list_sections(
         row["name"], include_archived=True, all_users=all_users)
-    recent = [item for item in all_sections if item["archived_at"] is None][:2]
+    # Dreams is a background section: never the one a client lands on or lists.
+    recent = [item for item in all_sections
+              if item["archived_at"] is None and item["title"] != "Dreams"][:2]
     if live is None:
         live = sections.live_statuses()
     if incidents is None:

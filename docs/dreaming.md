@@ -24,7 +24,8 @@ summarises them into its section memory. Facts about Hermes cron in
   then only through the explicit core action.
 - Output delivery: `deliver: bot-chat:<profile>` is not used; instead the
   job's markdown output is posted by `hexbot/dreaming.py` into the bot's
-  section titled `Dreams` (created on first use) as a message from the bot,
+  section titled `Dreams` (created on first use, hidden from the roster and
+  reached from the bot's Memory settings) as a message from the bot,
   so the human can read and edit what was recorded. Memory entries created
   during the dream are tagged with the dream id in a `memory_entries`
   table (`bot, section_id null, room_id null, dream_id, target, text`) so
@@ -61,9 +62,10 @@ two-tier model to work; it improves recall over long histories.
 - The digest tool starts the dream row and associates its id with the cron
   turn. The stream-end hook records the final summary, updates room memory for
   room dreams, and clears the association.
-- Hermes currently accepts `display_kind: "hidden"` on `prompt.submit`. If an
-  older daemon rejects it, Hexbot appends an assistant row to the Dreams
-  section's profile `state.db`; it never resubmits the summary as user input.
+- Hexbot appends the summary as an assistant row to the Dreams section's
+  profile `state.db`. It never sends it through `prompt.submit`: a hidden
+  prompt is still a user prompt, and the bot would spend a turn answering its
+  own dream.
 - Transcript caps keep the newest 12,000 characters and prepend
   `[earlier messages omitted]`. Room prompt memory keeps its first 3,000
   characters.

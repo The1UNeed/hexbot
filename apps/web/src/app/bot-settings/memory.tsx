@@ -14,7 +14,7 @@ import {
 } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import type { Bot } from '../../lib/types'
-import { useSectionsForBot } from '../../stores/sections'
+import { sectionsActions, useSectionsForBot } from '../../stores/sections'
 import { Markdown } from '../conversation'
 
 import { cardClass, errorText, formatTimestamp, Heading, type SaveBot } from './shared'
@@ -193,6 +193,8 @@ export function DreamingBlock({
 
     setStatus(nextStatus)
     setDreams(result.dreams)
+    // The daemon creates the Dreams section on its own, without a sections event.
+    void sectionsActions().refresh()
   }, [bot.name])
 
   useEffect(() => {

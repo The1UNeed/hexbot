@@ -34,6 +34,8 @@ export interface SectionsState {
   idsByBot: Record<string, string[]>
   liveSessionId: Record<string, string>
   loading: boolean
+  /** The user just sent a message: list the section now, ahead of the daemon's count. */
+  markTouched: (id: string) => void
   open: (id: string) => Promise<{ liveSessionId: null | string; section: Section }>
   refresh: (options?: { bot?: string; include_archived?: boolean }) => Promise<void>
   remove: (id: string, purgeMemory?: boolean) => Promise<void>
@@ -122,6 +124,16 @@ export const useSections = create<SectionsState>((set, get) => ({
     }
 
     return { liveSessionId: live, section }
+  },
+
+  markTouched(id) {
+    set(state => {
+      const section = state.byId[id]
+
+      return section && !section.message_count
+        ? { byId: { ...state.byId, [id]: { ...section, message_count: 1 } } }
+        : state
+    })
   },
 
   async create(bot, title) {

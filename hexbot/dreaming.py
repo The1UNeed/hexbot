@@ -10,8 +10,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from hexbot import db, gateway, sections
-from hexbot.errors import GatewayError, HexbotError
+from hexbot import db, sections
+from hexbot.errors import HexbotError
 from hexbot.home import hexbot_home
 
 logger = logging.getLogger(__name__)
@@ -215,14 +215,18 @@ def current_dream(**kwargs) -> dict | None:
 
 def record_dream(bot: str, output: str, *, room_id: str | None = None,
                  dream_id: str | None = None, status: str = "complete") -> dict:
-    """Persist a completed dream and expose normal bot dreams in a Dreams section.
+    """Persist a completed dream and post it in the bot's Dreams section.
 
-    Current Hermes accepts ``display_kind='hidden'`` on ``prompt.submit``. On
-    older builds the fallback writes an assistant row directly to ``state.db``;
-    this avoids turning the dream summary into a new user prompt.
+    The summary is written to ``state.db`` as a message from the bot. It is
+    never sent through ``prompt.submit``: even with ``display_kind='hidden'``
+    that is a user prompt, so the bot would spend a turn answering its own
+    dream, and could ask the human a question from a section nobody opens.
     """
     dream_id = dream_id or uuid.uuid4().hex
     now = time.time()
+    # Hermes cron lets a job answer "[SILENT]" when it has nothing to report.
+    if output.strip() == "[SILENT]":
+        output = ""
     with db.transaction() as conn:
         exists = conn.execute("SELECT 1 FROM dreams WHERE id=?", (dream_id,)).fetchone()
         if exists:
@@ -241,18 +245,17 @@ def record_dream(bot: str, output: str, *, room_id: str | None = None,
         dream_section = next((item for item in sections.list_sections(bot, True)
                               if item["title"] == "Dreams"), None)
         dream_section = dream_section or sections.create_section(bot, "Dreams")
-        opened = sections.open_section(dream_section["id"])
-        live = opened["section"].get("live_session_id")
+        # A live session keeps its own history; close it so the next open reads the store.
+        sections.close_section(dream_section["id"])
+        from hermes_state import SessionDB
+        store = SessionDB(db_path=_profile_home(bot) / "state.db")
         try:
-            gateway.call("prompt.submit", {"session_id": live, "text": output,
-                                            "display_kind": "hidden"})
-        except GatewayError:
-            from hermes_state import SessionDB
-            store = SessionDB(db_path=_profile_home(bot) / "state.db")
-            try:
-                store.append_message(dream_section["id"], "assistant", output)
-            finally:
-                store.close()
+            # Hermes stores a session on its first prompt, and this one never gets one.
+            if store.get_session(dream_section["id"]) is None:
+                store.create_session(dream_section["id"], "tui")
+            store.append_message(dream_section["id"], "assistant", output)
+        finally:
+            store.close()
     return {"id": dream_id, "bot": bot, "room_id": room_id, "started_at": now,
             "finished_at": now, "status": status, "summary": output}
 
