@@ -332,8 +332,8 @@ function BotRows({
                   onClick={() => onOpen(bot.name, section.id)}
                   type="button"
                 >
-                  <span className="relative grid size-3 shrink-0 place-items-center">
-                    {status === 'idle' && drafts[section.id] ? (
+                  <span className="relative grid size-[12px] shrink-0 place-items-center">
+                    {dot === 'idle' && drafts[section.id] ? (
                       <SquarePen aria-label="Draft" size={12} />
                     ) : (
                       <StatusDot className="static size-2 border-0" status={dot} />
