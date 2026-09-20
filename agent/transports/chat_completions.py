@@ -368,6 +368,12 @@ class ChatCompletionsTransport(ProviderTransport):
           ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
           Permissive providers (OpenRouter, MiniMax) silently ignore the
           field, which masked the bug for months.
+        - ``name`` on tool-result messages — also written by
+          ``make_tool_result_message()``. Only Gemini-family models use it
+          (function-response pairing); the Chat Completions schema has no
+          ``name`` on ``role: tool``, and strict gateways reject it with
+          ``messages[N]: "name" is not supported by this endpoint``. Kept for
+          Gemini targets, dropped for everyone else.
         - Hermes-internal scaffolding markers — any top-level message key
           starting with ``_`` (e.g. ``_empty_recovery_synthetic``,
           ``_empty_terminal_sentinel``, ``_thinking_prefill``). These are
@@ -386,6 +392,8 @@ class ChatCompletionsTransport(ProviderTransport):
         strip_extra_content = not _model_consumes_thought_signature(
             kwargs.get("model")
         )
+        # Same Gemini-family test: those models pair function responses by name.
+        strip_tool_result_name = strip_extra_content
         needs_sanitize = False
         for msg in messages:
             if not isinstance(msg, dict):
@@ -404,6 +412,9 @@ class ChatCompletionsTransport(ProviderTransport):
                 needs_sanitize = True
                 break
             if any(isinstance(k, str) and k.startswith("_") for k in msg):
+                needs_sanitize = True
+                break
+            if strip_tool_result_name and msg.get("role") == "tool" and "name" in msg:
                 needs_sanitize = True
                 break
             tool_calls = msg.get("tool_calls")
@@ -486,6 +497,9 @@ class ChatCompletionsTransport(ProviderTransport):
                 out_msg.pop("anthropic_content_blocks", None)
                 out_msg.pop("bedrock_content_blocks", None)
 
+
+            if strip_tool_result_name and msg.get("role") == "tool" and "name" in msg:
+                mutable_msg().pop("name", None)
 
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
             # OpenAI's message schema has no ``_``-prefixed fields, so this

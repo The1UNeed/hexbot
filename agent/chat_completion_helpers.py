@@ -35,6 +35,7 @@ from agent.error_classifier import (
 )
 from agent.errors import EmptyStreamError
 from agent.turn_context import substitute_api_content
+from agent.transports.chat_completions import _model_consumes_thought_signature
 from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
@@ -3244,6 +3245,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # and every Hermes-internal underscore-prefixed scaffolding key.
             for schema_foreign in ("tool_name", "codex_reasoning_items", "codex_message_items", "timestamp", "platform_message_id"):
                 api_msg.pop(schema_foreign, None)
+            # ``name`` on a tool result: Gemini-only, rejected by strict gateways.
+            if api_msg.get("role") == "tool" and not _model_consumes_thought_signature(agent.model):
+                api_msg.pop("name", None)
             # api_content (the persist-what-you-send sidecar) carries the
             # exact bytes every main-loop call sent for this message —
             # substitute it before dropping the key (Hermes bookkeeping,
