@@ -33,8 +33,10 @@ export interface ComposerShellProps {
 /**
  * The floating pill that wraps a message field: attach on the left, send or
  * stop on the right. The 32px buttons sit 10px from the pill's outer edge on
- * every side, so they stay concentric with its 26px corners as the field grows. The field itself is passed as children so the bot and
- * room composers share one look.
+ * every side, so they stay concentric with its 26px corners as the field
+ * grows. They are sized in px because the root font is 14px, which makes
+ * `size-8` 28px. The field itself is passed as children so the bot and room
+ * composers share one look.
  */
 export function ComposerShell({
   above,
@@ -77,7 +79,7 @@ export function ComposerShell({
         {onAttach ? (
           <button
             aria-label="Attach files"
-            className="grid size-8 shrink-0 place-items-center rounded-full border border-border text-foreground transition-colors hover:bg-surface-2"
+            className="grid size-[32px] shrink-0 place-items-center rounded-full border border-border text-foreground transition-colors hover:bg-surface-2"
             onClick={onAttach}
             type="button"
           >
@@ -90,7 +92,7 @@ export function ComposerShell({
         {streaming ? (
           <button
             aria-label="Stop"
-            className="grid size-8 shrink-0 place-items-center rounded-full bg-foreground text-background transition-opacity hover:opacity-85"
+            className="grid size-[32px] shrink-0 place-items-center rounded-full bg-foreground text-background transition-opacity hover:opacity-85"
             onClick={onStop}
             type="button"
           >
@@ -100,7 +102,7 @@ export function ComposerShell({
           <button
             aria-label="Send"
             className={cn(
-              'grid size-8 shrink-0 place-items-center rounded-full transition-all duration-[var(--hex-motion-fast)]',
+              'grid size-[32px] shrink-0 place-items-center rounded-full transition-all duration-[var(--hex-motion-fast)]',
               canSend ? 'bg-foreground text-background hover:opacity-85' : 'bg-surface-2 text-muted'
             )}
             disabled={!canSend || sending}
