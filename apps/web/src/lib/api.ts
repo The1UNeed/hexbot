@@ -352,6 +352,10 @@ export function sectionsDelete(id: string, purgeMemory = true): Promise<{ delete
   return rpcCall<{ deleted: boolean }>('hexbot.sections.delete', { id, purge_memory: purgeMemory })
 }
 
+export function sectionsMarkRead(id: string): Promise<{ section: Section }> {
+  return rpcCall<{ section: Section }>('hexbot.sections.mark_read', { id })
+}
+
 export function sectionsTouch(id: string): Promise<{ section: Section }> {
   return rpcCall<{ section: Section }>('hexbot.sections.touch', { id })
 }

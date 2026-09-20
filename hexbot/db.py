@@ -11,7 +11,7 @@ from hexbot.home import DATABASE_NAME, ensure_layout
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);
@@ -55,6 +55,7 @@ _ADDED_COLUMNS: dict[int, list[tuple[str, str, str]]] = {
         ("bots", "approval_mode", "TEXT NOT NULL DEFAULT 'inherit'"),
         ("bots", "workdir", "TEXT"),
     ],
+    7: [("sections", "done_at", "REAL")],
 }
 
 _MIGRATION_DDL: dict[int, str] = {

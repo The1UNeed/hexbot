@@ -39,7 +39,8 @@ BUSY_STATUSES = frozenset({"working", "waiting"})
 def _row_shape(row, session=None) -> dict:
     return {"id": row["id"], "bot": row["bot"], "title": row["title"],
             "created_at": row["created_at"], "updated_at": row["updated_at"],
-            "archived_at": row["archived_at"], "preview": (session or {}).get("preview", ""),
+            "archived_at": row["archived_at"], "done_at": row["done_at"],
+            "preview": (session or {}).get("preview", ""),
             "message_count": (session or {}).get("message_count", 0),
             "live_session_id": _LIVE.get(row["id"])}
 
@@ -323,10 +324,22 @@ def _touch_bot(bot: str, when: float | None = None) -> None:
 
 
 def touch_section(section_id: str) -> dict:
-    """Stamp activity on a section and its bot (fired on turn completion)."""
+    """Stamp activity on a section and its bot (fired on turn completion).
+
+    ``done_at`` marks the finished work as unseen until :func:`mark_read`.
+    """
     row = _get(section_id)
     now = time.time()
     with db.transaction() as conn:
-        conn.execute("UPDATE sections SET updated_at=? WHERE id=?", (now, section_id))
+        conn.execute("UPDATE sections SET updated_at=?,done_at=? WHERE id=?",
+                     (now, now, section_id))
     _touch_bot(row["bot"], now)
+    return _row_shape(_get(section_id))
+
+
+def mark_read(section_id: str) -> dict:
+    """The user has seen the section's finished work, on every device."""
+    _get(section_id)
+    with db.transaction() as conn:
+        conn.execute("UPDATE sections SET done_at=NULL WHERE id=?", (section_id,))
     return _row_shape(_get(section_id))

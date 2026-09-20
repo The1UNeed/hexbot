@@ -39,7 +39,7 @@ def test_migration_upgrades_a_v1_database(isolated_home):
     db.migrate()
     db.migrate()
     with db.transaction() as conn:
-        assert conn.execute("select version from schema_version").fetchone()[0] == 6
+        assert conn.execute("select version from schema_version").fetchone()[0] == db.SCHEMA_VERSION
         row = conn.execute("select title, title_dirty from sections where id='s1'").fetchone()
         assert {"notify", "approval_mode", "workdir"} <= db._columns(conn, "bots")
         assert "bot_incidents" in {

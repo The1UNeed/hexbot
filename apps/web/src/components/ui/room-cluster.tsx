@@ -1,9 +1,9 @@
 import { avatarSrc } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
-import type { Bot, BotStatus, Room } from '../../lib/types'
+import type { Bot, Room } from '../../lib/types'
 
 import { Avatar } from './avatar'
-import { StatusDot } from './status-dot'
+import { type DotStatus, StatusDot } from './status-dot'
 
 /** A room's active bot members, in the order they joined. */
 export const activeBots = (room: Pick<Room, 'members'>) =>
@@ -26,7 +26,7 @@ export function RoomCluster({
   room: Pick<Room, 'members' | 'name'>
   /** `sm` is 24px (headers), `lg` 40px (rows), `xl` 72px (settings). */
   size?: 'lg' | 'sm' | 'xl'
-  status?: BotStatus
+  status?: DotStatus
 }) {
   const members = activeBots(room)
   const box = size === 'sm' ? 'size-6' : size === 'xl' ? 'size-[72px]' : 'size-10'

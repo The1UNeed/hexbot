@@ -344,6 +344,8 @@ export interface Section {
   archived_at: null | number
   bot: string
   created_at: null | number
+  /** When the bot last finished a turn here that the user has not seen yet. */
+  done_at?: null | number
   id: string
   live_session_id: null | string
   message_count: number

@@ -103,7 +103,7 @@ null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
 ### Sections
 
 Section shape: `{id, bot, title, created_at, updated_at, archived_at | null,
-preview, message_count, live_session_id | null}`
+done_at | null, preview, message_count, live_session_id | null}`
 
 - `hexbot.sections.list {bot?, include_archived?}` → `{sections: [Section]}`
 - `hexbot.sections.create {bot, title?}` → `{section: Section}` (calls
@@ -118,7 +118,10 @@ preview, message_count, live_session_id | null}`
   memory entries tagged with the section id). With `purge_memory: false`
   only the Hexbot row goes and the Hermes transcript is left in place.
 - `hexbot.sections.touch {id}` is internal; activity is stamped by the plugin
-  on `message.complete`.
+  on `message.complete`. It also sets the section's `done_at`.
+- `hexbot.sections.mark_read {id}` → `{section: Section}` clears `done_at`:
+  the user has seen the finished work. Broadcasts `hexbot.sections.changed`,
+  so the green dot clears on every device.
 
 ### Memory
 

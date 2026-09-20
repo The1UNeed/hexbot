@@ -213,7 +213,7 @@ def test_unknown_section_is_4204(gw):
     from hexbot import sections
 
     for call in (sections.open_section, sections.archive_section,
-                 sections.touch_section, sections.delete_section):
+                 sections.touch_section, sections.mark_read, sections.delete_section):
         with pytest.raises(HexbotError) as caught:
             call("nope")
         assert caught.value.code == 4204
@@ -234,6 +234,19 @@ def test_touch_stamps_the_section_and_its_bot(gw):
     with db.transaction() as conn:
         assert conn.execute(
             "select last_activity_at from bots where name='scout'").fetchone()[0] > 0
+
+
+def test_a_finished_turn_is_done_until_marked_read(gw):
+    from hexbot import db, sections
+
+    db.migrate()
+    with db.transaction() as conn:
+        conn.execute("INSERT INTO bots(name) VALUES ('scout')")
+    assert sections.create_section("scout", "General")["done_at"] is None
+
+    assert sections.touch_section("stored1")["done_at"] > 0
+    assert sections.list_sections("scout")[0]["done_at"] > 0
+    assert sections.mark_read("stored1")["done_at"] is None
 
 
 def test_section_for_session_accepts_either_id(gw):

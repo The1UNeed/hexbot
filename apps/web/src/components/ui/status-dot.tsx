@@ -3,10 +3,14 @@ import type { BotStatus } from '../../lib/types'
 
 /**
  * One colour per state, everywhere a bot or room shows one: blue while it
- * works, purple (the accent) when it needs you, red when it stopped. The
- * same three colours back the transcript banners and the composer border.
+ * works, purple (the accent) when it needs you, red when it stopped, green
+ * when it finished and you have not looked yet. The first three colours back
+ * the transcript banners and the composer border.
  */
-export const STATUS_TONES: Record<Exclude<BotStatus, 'idle'>, { dot: string; label: string }> = {
+export type DotStatus = 'done' | BotStatus
+
+export const STATUS_TONES: Record<Exclude<DotStatus, 'idle'>, { dot: string; label: string }> = {
+  done: { dot: 'bg-success', label: 'Done' },
   needs_you: { dot: 'bg-accent', label: 'Needs you' },
   stopped: { dot: 'bg-danger', label: 'Stopped' },
   working: { dot: 'bg-info', label: 'Working' }
@@ -20,7 +24,7 @@ export function StatusDot({
   className?: string
   /** `sm` sits on a 24px face, `md` on a 40px one. */
   size?: 'md' | 'sm'
-  status?: BotStatus
+  status?: DotStatus
 }) {
   if (!status || status === 'idle') {
     return null
