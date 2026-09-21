@@ -57,7 +57,7 @@ Three columns, resizable, min widths 240 / 480 / 300.
   on the face (see "Status colours"). No message preview: a bot has many
   sections, so one message says little. A room row is the room's cluster
   (one face, or up to four in a 2x2 grid), name, latest message, and the
-  same status dot; a neutral dot on the right means unread.
+  same status dot.
 - Under each bot: its two most recent touched sections from the last 14
   days, newest first, plus the open one. A section is touched once the user
   has sent something in it, or typed a draft in its composer; drafts are
@@ -122,8 +122,10 @@ Three columns, resizable, min widths 240 / 480 / 300.
 
 One colour per state, used everywhere a bot or room shows one: blue while
 it works (the dot pulses), purple (the accent) when it needs you, red when
-it stopped. The dot sits on the face in the roster, on the section row it
-is about, on the face in the conversation header, and on the room cluster.
+it stopped, green when it finished and you have not opened it yet on any device. The dot
+sits on the face in the roster, at the start of the section row it is about,
+on the face in the conversation header, and on the room cluster. A section
+row with an unsent draft and no status shows a draft icon in the same slot.
 The composer pill takes the same colour with a one-line notice above it
 ("Waiting on you", or the error). Working and idle draw the plain pill.
 

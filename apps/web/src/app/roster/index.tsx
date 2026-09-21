@@ -20,7 +20,7 @@ import { Menu } from '../../components/ui/menu'
 import { RoomCluster } from '../../components/ui/room-cluster'
 import { Select } from '../../components/ui/select'
 import { StatusDot } from '../../components/ui/status-dot'
-import { modelsList } from '../../lib/api'
+import { modelsList, sectionsMarkRead } from '../../lib/api'
 import {
   avatarPng,
   avatarSrc,
@@ -64,6 +64,9 @@ const NO_EVENTS: RoomEvent[] = []
 const avatarData = (bot?: Bot) => avatarSrc(bot?.avatar)
 
 const sectionTime = (section: Section) => toMillis(section.updated_at ?? section.created_at)
+
+/** A section whose bot finished a turn the user has not seen on any device. */
+const unseen = (section: Section, active?: string) => section.id !== active && !!section.done_at
 
 export function relativeTime(raw: number | null): string {
   const value = toMillis(raw)
@@ -137,7 +140,7 @@ function RoomRow({
   const active_ = room.members.filter(member => member.member_kind === 'bot' && !member.left_at)
   const latest = events.at(-1)
   const status = roomStatus(events, turns)
-  const unread = status === 'idle' && roomUnread(room, events)
+  const dot = status === 'idle' && roomUnread(room, events) ? 'done' : status
 
   return (
     <button
@@ -146,7 +149,7 @@ function RoomRow({
       onClick={() => onOpen(room.id)}
       type="button"
     >
-      <RoomCluster bots={bots} room={room} status={status} />
+      <RoomCluster bots={bots} room={room} status={dot} />
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-2">
           <span className="min-w-0 flex-1 truncate font-semibold">{room.name}</span>
@@ -154,15 +157,10 @@ function RoomRow({
             {relativeTime(room.last_activity_at)}
           </span>
         </span>
-        <span className="flex items-center gap-2">
-          <span className="min-w-0 flex-1 truncate text-[length:var(--text-secondary)] text-muted">
-            {typeof latest?.payload.text === 'string'
-              ? latest.payload.text
-              : `${active_.length} bot${active_.length === 1 ? '' : 's'}`}
-          </span>
-          {unread ? (
-            <span aria-label="Unread" className="size-2 shrink-0 rounded-full bg-foreground/60" />
-          ) : null}
+        <span className="block truncate text-[length:var(--text-secondary)] text-muted">
+          {typeof latest?.payload.text === 'string'
+            ? latest.payload.text
+            : `${active_.length} bot${active_.length === 1 ? '' : 's'}`}
         </span>
       </span>
     </button>
@@ -278,6 +276,12 @@ function BotRows({
     available.some(section => section.id === active) && !rows.some(row => row.id === active)
 
   const label = bot.title || bot.description
+  const status = botStatusWithLive(bot, available, live)
+
+  const dot =
+    status === 'idle' && available.some(section => !section.archived_at && unseen(section, active))
+      ? 'done'
+      : status
 
   return (
     <div data-testid="bot-group">
@@ -293,7 +297,7 @@ function BotRows({
       >
         <span className="relative shrink-0">
           <Avatar image={avatarData(bot)} name={bot.display_name} size="lg" />
-          <StatusDot status={botStatusWithLive(bot, available, live)} />
+          <StatusDot status={dot} />
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
@@ -313,11 +317,7 @@ function BotRows({
         <div className="mb-1 ml-5 flex flex-col gap-px border-l border-border pr-1 pl-1.5">
           {rows.map(section => {
             const status = sectionStatusOf(bot, section.id, live)
-
-            const unread =
-              status === 'idle' &&
-              section.id !== active &&
-              sectionTime(section) > Number(localStorage.getItem(`hexbot.read.${section.id}`) ?? 0)
+            const dot = status === 'idle' && unseen(section, active) ? 'done' : status
 
             return (
               <div
@@ -337,17 +337,14 @@ function BotRows({
                   onClick={() => onOpen(bot.name, section.id)}
                   type="button"
                 >
+                  <span className="relative grid size-[12px] shrink-0 place-items-center">
+                    {dot === 'idle' && drafts[section.id] ? (
+                      <SquarePen aria-label="Draft" size={12} />
+                    ) : (
+                      <StatusDot className="static size-2 border-0" status={dot} />
+                    )}
+                  </span>
                   <span className="min-w-0 flex-1 truncate">{section.title}</span>
-                  {drafts[section.id] ? (
-                    <SquarePen aria-label="Draft" className="shrink-0" size={12} />
-                  ) : null}
-                  {status !== 'idle' ? (
-                    <span className="relative size-2 shrink-0">
-                      <StatusDot className="inset-0 border-0" status={status} />
-                    </span>
-                  ) : unread ? (
-                    <span aria-label="Unread" className="size-1.5 rounded-full bg-foreground/60" />
-                  ) : null}
                   <span className="text-[length:var(--text-meta)] text-muted">
                     {relativeTime(section.updated_at)}
                   </span>
@@ -459,12 +456,19 @@ export function RosterColumn() {
       void useRooms.getState().refresh()
     }
   }, [])
-  const activeSectionUpdatedAt = params.section ? sectionMap[params.section]?.updated_at : null
+
+  // The store only learns a section once it opens; the bot's own list knows it sooner.
+  const activeSectionDoneAt = params.section
+    ? (sectionMap[params.section] ??
+        bots.flatMap(bot => bot.sections_recent).find(section => section.id === params.section)
+      )?.done_at
+    : null
+
   useEffect(() => {
-    if (params.section) {
-      localStorage.setItem(`hexbot.read.${params.section}`, String(Date.now()))
+    if (params.section && activeSectionDoneAt) {
+      void sectionsMarkRead(params.section).catch(() => undefined)
     }
-  }, [activeSectionUpdatedAt, params.section])
+  }, [activeSectionDoneAt, params.section])
   const streamingSessions = useTranscripts(state => state.bySession)
 
   const liveSections = useMemo(() => liveSectionsOf(streamingSessions), [streamingSessions])
@@ -489,7 +493,6 @@ export function RosterColumn() {
   const archived = Object.values(sectionMap).filter(section => section.archived_at)
 
   const open = (bot: string, section: string) => {
-    localStorage.setItem(`hexbot.read.${section}`, String(Date.now()))
     void sectionsActions()
       .open(section)
       .catch(() => undefined)

@@ -6,13 +6,15 @@ import { RoomCluster } from './room-cluster'
 import { StatusDot } from './status-dot'
 
 describe('status dot', () => {
-  it('is blue while working, purple when it needs you, red when stopped, and gone when idle', () => {
+  it('is blue while working, purple when it needs you, red when stopped, green when done, and gone when idle', () => {
     const { rerender } = render(<StatusDot status="working" />)
     expect(screen.getByRole('img', { name: 'Working' })).toHaveClass('bg-info', 'hex-pulse')
     rerender(<StatusDot status="needs_you" />)
     expect(screen.getByRole('img', { name: 'Needs you' })).toHaveClass('bg-accent')
     rerender(<StatusDot status="stopped" />)
     expect(screen.getByRole('img', { name: 'Stopped' })).toHaveClass('bg-danger')
+    rerender(<StatusDot status="done" />)
+    expect(screen.getByRole('img', { name: 'Done' })).toHaveClass('bg-success')
     rerender(<StatusDot status="idle" />)
     expect(screen.queryByRole('img')).not.toBeInTheDocument()
   })

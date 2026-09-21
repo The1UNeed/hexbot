@@ -49,6 +49,7 @@ def test_every_documented_method_is_registered(ctx):
         "hexbot.sections.list", "hexbot.sections.create", "hexbot.sections.open",
         "hexbot.sections.rename", "hexbot.sections.archive",
         "hexbot.sections.unarchive", "hexbot.sections.delete", "hexbot.sections.touch",
+        "hexbot.sections.mark_read",
         "hexbot.memory.core.get", "hexbot.memory.core.set",
         "hexbot.memory.bot.get", "hexbot.memory.bot.set",
         "hexbot.providers.list", "hexbot.providers.set_key",

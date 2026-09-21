@@ -238,6 +238,7 @@ METHODS = {
     "hexbot.sections.delete": lambda p: {"deleted": sections.delete_section(
         _required(p, "id"), bool(p.get("purge_memory", True)))},
     "hexbot.sections.touch": lambda p: {"section": sections.touch_section(_required(p, "id"))},
+    "hexbot.sections.mark_read": lambda p: {"section": sections.mark_read(_required(p, "id"))},
     "hexbot.memory.core.get": lambda p: memory.get_core_memory(),
     "hexbot.memory.core.set": lambda p: memory.set_core_memory(
         _required(p, "section"), p.get("text", "")),
@@ -309,6 +310,7 @@ MUTATION_EVENTS = {
     "hexbot.sections.unarchive": "hexbot.sections.changed",
     "hexbot.sections.delete": "hexbot.sections.changed",
     "hexbot.sections.touch": "hexbot.sections.changed",
+    "hexbot.sections.mark_read": "hexbot.sections.changed",
     "hexbot.memory.core.set": "hexbot.memory.core.changed",
     "hexbot.network.set": "hexbot.network.changed",
     "hexbot.connect.disconnect": "hexbot.connect.changed",
