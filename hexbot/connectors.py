@@ -83,7 +83,11 @@ CATALOG: tuple[Spec, ...] = (
              Provider("keenable", "Keenable", ("KEENABLE_API_KEY",),
                       ("web", "backend", "keenable")),
              Provider("searxng", "SearXNG (self-hosted)", ("SEARXNG_URL",),
-                      ("web", "backend", "searxng")))),
+                      ("web", "backend", "searxng"))),
+         # Hermes calls these two keys optional (keyless tiers); Hexbot needs them.
+         extra_help={
+             "TAVILY_API_KEY": (None, "Tavily API key for web search and extract.", None, None),
+             "KEENABLE_API_KEY": (None, "Keenable API key for web search and page fetch.", None, None)}),
     Spec("cloud_browser", "Cloud browser", "Hosted browser sessions for sites that block local Chrome.",
          "search", "glyph:globe", toolsets=("browser",),
          mentions=("browserbase", "browser use", "browser-use"),
@@ -564,6 +568,47 @@ def _required_keys(spec: Spec) -> tuple[str, ...]:
     return provider.keys if provider else spec.keys
 
 
+def _is_ready(spec: Spec, *, bot: str | None = None) -> bool:
+    required = _required_keys(spec)
+    return bool(required) and all(_value(k, bot=bot) for k in required)
+
+
+def _scoped_bot() -> str | None:
+    """The bot whose profile Hermes is resolving tools for, if any."""
+    from hermes_constants import get_hermes_home
+    home = Path(get_hermes_home())
+    return home.name if home.parent.name == "profiles" else None
+
+
+def gate_tools() -> None:
+    """Hide every connector tool from the model until its connector is set up.
+
+    Hermes's own checks pass without one (keyless web search, another
+    provider's credential), so each tool in ``Spec.tools`` also has to pass
+    ``_is_ready``. Runs once, when the plugin registers; built-in tools are
+    in the registry by then.
+    """
+    from tools.registry import registry
+    for spec in CATALOG:
+        gates = {}
+        for name in spec.tools:
+            entry = registry.get_entry(name)
+            if entry is None or getattr(entry.check_fn, "hexbot_gate", False):
+                continue
+            inner = entry.check_fn
+            if inner not in gates:
+                def gate(spec=spec, inner=inner):
+                    return _is_ready(spec, bot=_scoped_bot()) and (inner is None or bool(inner()))
+                gate.hexbot_gate = True
+                gates[inner] = gate
+            entry.check_fn = gates[inner]
+
+
+def _tools_changed() -> None:
+    from tools.registry import invalidate_check_fn_cache
+    invalidate_check_fn_cache()
+
+
 def test_connector(connector_id: str, *, bot: str | None = None) -> dict:
     if connector_id.startswith("mcp:"):
         entry = _root_mcp_servers().get(connector_id[4:])
@@ -618,8 +663,7 @@ def _field(spec: Spec, key: str, *, bot: str | None, provider: str | None = None
 
 def _shape(spec: Spec, *, bot: str | None, details: dict[str, dict], open_errors: dict) -> dict:
     provider = _selected_provider(spec)
-    required = provider.keys if provider else spec.keys
-    ready = bool(required) and all(_value(k, bot=bot) for k in required)
+    ready = _is_ready(spec, bot=bot)
     error = open_errors.get(spec.id)
     last = _last_test(spec.id) if ready else None
     if error:
@@ -766,6 +810,7 @@ def setup(connector_id: str, values: dict | None, *, provider=None, bot=None,
     if chosen is not None:
         section, key, value = chosen.selection
         _write_config(section, key, value)
+    _tools_changed()
     result = test_connector(spec.id, bot=bot)
     if result["ok"]:
         from hexbot.incidents import resolve
@@ -794,6 +839,7 @@ def clear(connector_id: str, *, bot=None, bot_only=False) -> dict:
     if spec.providers and not bot_only:
         section, key, _ = spec.providers[0].selection
         _write_config(section, key, None)
+    _tools_changed()
     if not bot_only:
         for name in _bot_names():
             try:

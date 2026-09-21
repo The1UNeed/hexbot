@@ -2,17 +2,27 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { ArrowRight, ArrowUp, Plus } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 
+import { ConnectorFields, connectorValues } from '../components/connector-fields'
 import { isSubscription, ProviderPanel, supportsApiKey } from '../components/provider-panel'
 import { Avatar } from '../components/ui/avatar'
 import { AvatarBuilder } from '../components/ui/avatar-builder'
 import { Button } from '../components/ui/button'
 import { Chip } from '../components/ui/chip'
+import { ConnectorIcon } from '../components/ui/connector-icon'
 import type { HexbotActName } from '../components/ui/hexbot-act'
 import { Input } from '../components/ui/input'
 import { Select } from '../components/ui/select'
 import { Textarea } from '../components/ui/textarea'
 import { HexbotMark, Wordmark } from '../components/ui/wordmark'
-import { botsCreate, modelsList, providersList, settingsGet, settingsSet } from '../lib/api'
+import {
+  botsCreate,
+  connectorsList,
+  connectorsSetup,
+  modelsList,
+  providersList,
+  settingsGet,
+  settingsSet
+} from '../lib/api'
 import {
   avatarPng,
   type AvatarStyle,
@@ -24,7 +34,7 @@ import { BOT_TEMPLATES } from '../lib/bot-templates'
 import { type DaemonProgress, getBridge, hasLocalRuntime, isElectron } from '../lib/bridge'
 import { cn } from '../lib/cn'
 import { connectTo, setLocalDaemonPort } from '../lib/connection'
-import type { Bot, ModelOption, Provider, Section } from '../lib/types'
+import type { Bot, Connector, ModelOption, Provider, Section } from '../lib/types'
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
 import { introduceBot } from '../stores/sections'
@@ -42,6 +52,7 @@ type OnboardingStep =
   | 'jobs'
   | 'meet'
   | 'providers'
+  | 'tools'
   | 'welcome'
 
 export function initialOnboardingStep(input: {
@@ -660,6 +671,166 @@ function DefaultsStep({
   )
 }
 
+/** Set up one tool: pick a provider, paste its key, save and test. */
+function ToolPanel({
+  connector,
+  onSaved
+}: {
+  connector: Connector
+  onSaved: (connector: Connector) => void
+}) {
+  const [values, setValues] = useState<Record<string, string>>({})
+  const [provider, setProvider] = useState(connector.provider ?? connector.providers?.[0]?.id)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const sending = connectorValues(connector, provider, values)
+
+  const save = async () => {
+    setBusy(true)
+    setError(null)
+
+    try {
+      const result = await connectorsSetup({
+        id: connector.id,
+        ...(provider ? { provider } : {}),
+        values: sending
+      })
+
+      onSaved(result.connector)
+
+      if (result.test.ok) {
+        setValues({})
+      } else {
+        setError(result.test.message)
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form
+      className="grid gap-4"
+      onSubmit={event => {
+        event.preventDefault()
+        void save()
+      }}
+    >
+      <ConnectorFields
+        connector={connector}
+        invalid={Boolean(error)}
+        onProviderChange={setProvider}
+        onValuesChange={setValues}
+        provider={provider}
+        values={values}
+      />
+      {error ? (
+        <p className="text-secondary text-danger" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <Button
+        busy={busy}
+        className="justify-self-end"
+        data-testid={`onboarding-tool-save-${connector.id}`}
+        disabled={Object.keys(sending).length === 0}
+        type="submit"
+        variant="primary"
+      >
+        Save and test
+      </Button>
+    </form>
+  )
+}
+
+/** The tools that need an account: a bot can only use the ones set up here. */
+const SETUP_TOOL_GROUPS = new Set(['media', 'search'])
+
+export function ToolsStep({
+  onContinue,
+  onError
+}: {
+  onContinue: () => void
+  onError: (message: string) => void
+}) {
+  const [tools, setTools] = useState<Connector[] | null>(null)
+  const [selected, setSelected] = useState<string | null>('web_search')
+
+  useEffect(() => {
+    connectorsList()
+      .then(result => setTools(result.connectors.filter(item => SETUP_TOOL_GROUPS.has(item.group))))
+      .catch(reason => onError(String(reason)))
+  }, [onError])
+
+  const ready = (tools ?? []).filter(item => item.state === 'ready')
+
+  return (
+    <div className="w-full space-y-4 py-8">
+      <ul className="max-h-[52vh] divide-y divide-border overflow-y-auto rounded-panel border border-border">
+        {(tools ?? []).map(item => {
+          const open = selected === item.id
+
+          return (
+            <li key={item.id}>
+              <button
+                aria-expanded={open}
+                className={cn(
+                  'flex w-full items-center gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent',
+                  open && 'bg-surface-2'
+                )}
+                data-testid={`onboarding-tool-item-${item.id}`}
+                onClick={() => setSelected(open ? null : item.id)}
+                type="button"
+              >
+                <ConnectorIcon icon={item.icon} />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-medium">{item.name}</span>
+                  <span className="block text-secondary text-muted">{item.description}</span>
+                </span>
+                <Chip tone={item.state === 'ready' ? 'success' : 'neutral'}>
+                  {item.state_text}
+                </Chip>
+              </button>
+              {open ? (
+                <div className="border-t border-border bg-background px-4 py-4">
+                  <ToolPanel
+                    connector={item}
+                    onSaved={saved =>
+                      setTools(current =>
+                        (current ?? []).map(tool => (tool.id === saved.id ? saved : tool))
+                      )
+                    }
+                  />
+                </div>
+              ) : null}
+            </li>
+          )
+        })}
+        {tools === null ? (
+          <li className="px-4 py-6 text-center text-secondary text-muted">Loading tools</li>
+        ) : null}
+      </ul>
+      <p className="text-center text-secondary text-muted">
+        {ready.length === 0
+          ? 'Bots cannot use a tool until it is set up. You can do it later in a bot\'s Connectors.'
+          : `${ready.length} set up. Add more now, or later in a bot's Connectors.`}
+      </p>
+      <SetupActions>
+        <Button
+          className={PILL}
+          data-testid="onboarding-tools-continue"
+          onClick={onContinue}
+          variant={ready.length ? 'primary' : 'secondary'}
+        >
+          {ready.length ? 'Continue' : 'Skip for now'}
+        </Button>
+      </SetupActions>
+    </div>
+  )
+}
+
 function BotStep({
   configured,
   defaultModel,
@@ -1021,7 +1192,8 @@ function OnboardingPage() {
         'Pick your defaults',
         'The model new bots start with, and where to go when it fails.'
       ],
-      providers: ['Connect a provider', 'Sign in with a subscription or paste an API key.']
+      providers: ['Connect a provider', 'Sign in with a subscription or paste an API key.'],
+      tools: ['Set up tools', 'Web search and the other tools that need their own account.']
     } as const
   )[step]
 
@@ -1042,17 +1214,19 @@ function OnboardingPage() {
           configured={configured}
           onContinue={model => {
             setDefaultModel(model)
-            setStep('bot')
+            setStep('tools')
           }}
           onError={onError}
         />
       ) : null}
 
+      {step === 'tools' ? <ToolsStep onContinue={() => setStep('bot')} onError={onError} /> : null}
+
       {step === 'bot' ? (
         <BotStep
           configured={configured}
           defaultModel={defaultModel}
-          onBack={() => setStep('defaults')}
+          onBack={() => setStep('tools')}
           onCreated={(bot, section) => {
             const last = { bot: bot.name, section: section.id }
             uiActions().setLastSection(last)

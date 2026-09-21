@@ -188,6 +188,15 @@ A connector is an outside service a bot can reach (web search, image
 generation, Notion, X search, Home Assistant, an MCP server, ...). Credentials
 are stored once for the daemon; each bot has its own on/off switch.
 
+A tool that belongs to a connector (`web_search`, `web_extract`,
+`image_generate`, `video_generate`, `x_search`, the Home Assistant tools) is
+left out of every session's tool schema until that connector is `ready`.
+Hermes alone would offer some of them without a key (its keyless web search
+tier, or an xAI model key); `connectors.gate_tools` adds the "set up" condition
+to each tool's Hermes availability check when the plugin registers. Onboarding
+offers the search and media connectors before the first bot is created
+(`hexbot.connectors.setup` without a `bot`).
+
 Connector shape: `{id, name, description, group, icon, scope, state, state_text,
 providers | null, provider | null, fields: [{key, provider, label, help, url,
 secret, advanced, set, hint}], enabled_for_bot | null, enabled_bots: [string],

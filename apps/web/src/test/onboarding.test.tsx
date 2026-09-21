@@ -1,8 +1,9 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { Avatar } from '../components/ui/avatar'
 import { HEXBOT_ACT_NAMES } from '../components/ui/hexbot-act'
 import { HexbotMark } from '../components/ui/wordmark'
+import { setActiveRpc } from '../lib/rpc'
 import {
   ChoiceStep,
   initialOnboardingStep,
@@ -10,6 +11,7 @@ import {
   InstallStep,
   JobsStep,
   MeetStep,
+  ToolsStep,
   WelcomeStep
 } from '../routes/onboarding'
 
@@ -128,5 +130,72 @@ describe('onboarding', () => {
     expect(installPercent([line('uv', 50), line('python')])).toBeGreaterThanOrEqual(5)
     expect(installPercent([line('dependencies'), line('error')])).toBeGreaterThanOrEqual(30)
     expect(installPercent([line('done', 100)])).toBe(95)
+  })
+
+  it('sets up web search before the first bot, and lets you skip', async () => {
+    const tool = (patch: object) => ({
+      description: 'Search the web and read pages.',
+      enabled_bots: [],
+      enabled_for_bot: null,
+      fields: [
+        {
+          advanced: false,
+          help: '',
+          hint: null,
+          key: 'TAVILY_API_KEY',
+          label: 'Tavily API key',
+          provider: 'tavily',
+          secret: true,
+          set: false,
+          url: null
+        }
+      ],
+      group: 'search',
+      icon: 'glyph:search',
+      id: 'web_search',
+      last_error: null,
+      name: 'Web search',
+      provider: null,
+      providers: [{ configured: false, id: 'tavily', label: 'Tavily' }],
+      scope: 'daemon',
+      state: 'not_set_up',
+      state_text: 'Not set up',
+      ...patch
+    })
+
+    const call = vi.fn((method: string) =>
+      Promise.resolve(
+        method === 'hexbot.connectors.list'
+          ? { connectors: [tool({}), tool({ group: 'work', id: 'notion', name: 'Notion' })] }
+          : {
+              connector: tool({ state: 'ready', state_text: 'Key saved · Tavily' }),
+              test: { message: 'Key saved.', ok: true }
+            }
+      )
+    )
+
+    setActiveRpc({ call } as never)
+
+    const onContinue = vi.fn()
+    render(<ToolsStep onContinue={onContinue} onError={vi.fn()} />)
+
+    // Web search is open already; work connectors wait for bot settings.
+    const key = await screen.findByLabelText('Tavily API key')
+    expect(screen.queryByText('Notion')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Skip for now' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Save and test' })).toBeDisabled()
+
+    fireEvent.change(key, { target: { value: ' tvly-1 ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save and test' }))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('hexbot.connectors.setup', {
+        id: 'web_search',
+        provider: 'tavily',
+        values: { TAVILY_API_KEY: 'tvly-1' }
+      })
+    )
+    expect(await screen.findByText('Key saved · Tavily')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(onContinue).toHaveBeenCalledOnce()
   })
 })
