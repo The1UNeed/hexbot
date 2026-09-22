@@ -46,6 +46,7 @@ import { uiActions, useUi } from '../../stores/ui'
 
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
+import { MemoryMarks } from './memory-marks'
 import { RoomConversation } from './room'
 import { WorkStatus } from './work-status'
 
@@ -386,6 +387,7 @@ export function MessageRow({
             <Attachments attachments={message.attachments} onImage={onImage} />
           </div>
         ) : null}
+        {assistant ? <MemoryMarks message={message} /> : null}
         {message.streaming || !hasBody ? null : <BubbleActions actions={actions} />}
       </div>
     </article>
