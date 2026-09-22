@@ -65,17 +65,18 @@ class TestGuidanceConstants:
         declarative-form rule and the staleness/skills routing."""
         from agent.prompt_builder import MEMORY_GUIDANCE
 
-        assert "declarative facts" in MEMORY_GUIDANCE
-        assert "imperative phrasing" in MEMORY_GUIDANCE
+        # Hexbot wording (CORE_EDITS.md row 7); the contract is the same.
+        assert "facts, not instructions to yourself" in MEMORY_GUIDANCE
+        assert "re-read as an order" in MEMORY_GUIDANCE
         assert "stale within a week" in MEMORY_GUIDANCE
-        assert "Save proactively" in MEMORY_GUIDANCE  # positive posture leads
-        assert "workflows belong" in MEMORY_GUIDANCE
+        assert "Save as you learn" in MEMORY_GUIDANCE  # positive posture leads
+        assert "procedures belong in skills" in MEMORY_GUIDANCE
         # The category/SKIP curricula must NOT be re-taught here.
         assert "PR numbers" not in MEMORY_GUIDANCE
         assert "tool quirks" not in MEMORY_GUIDANCE
 
     def test_session_search_guidance_is_simple_cross_session_recall(self):
-        assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
+        assert "talked about it before" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
 
 

@@ -279,12 +279,12 @@ class TestNamedProfileHintIntegration:
         with patch("agent.coding_context._coding_mode", return_value="off"):
             prompt = "\n\n".join(_prompt_parts(agent).values())
 
-        assert "Active Hermes profile: coder." in prompt
-        assert f"reads and writes {profile_home}/." in prompt
+        # Hexbot wording (CORE_EDITS.md row 7).
+        assert f"Your own files (skills, memory, scheduled jobs) live under {profile_home}/." in prompt
         # The doubled form must not appear anywhere.
         assert f"{profile_home}/profiles/coder" not in prompt
-        # Default-profile pointers belong at the root, not inside the profile.
-        assert f"The default profile's data lives at {root}/skills/" in prompt
+        # Other bots' files are pointed at from the root, not inside the profile.
+        assert f"Other bots' files live under {root}/profiles/<name>/" in prompt
         assert f"{profile_home}/skills/" not in prompt
 
     def test_real_default_home_renders_default_branch(self, tmp_path, monkeypatch):
@@ -304,8 +304,8 @@ class TestNamedProfileHintIntegration:
         with patch("agent.coding_context._coding_mode", return_value="off"):
             prompt = "\n\n".join(_prompt_parts(agent).values())
 
-        assert "Active Hermes profile: default." in prompt
-        assert f"under {root}/profiles/<name>/." in prompt
+        assert f"Your own files (skills, memory, scheduled jobs) live under {root}/." in prompt
+        assert f"Each bot's files live under {root}/profiles/<name>/" in prompt
 
 
 def test_build_system_prompt_records_stable_prefix():
@@ -340,11 +340,9 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
     # build the expectation the same way instead of hardcoding "/hermes".
     _home_str = str(Path("/hermes"))
     expected_profile = (
-        "Active Hermes profile: default. Other profiles (if any) live "
-        f"under {_home_str}/profiles/<name>/. Each profile has its own skills/, "
-        "plugins/, cron/, and memories/ that affect a different session than "
-        "this one. Do not modify another profile's skills/plugins/cron/memories "
-        "unless the user explicitly directs you to."
+        "Your own files (skills, memory, scheduled jobs) live under "
+        f"{_home_str}/. Each bot's files live under {_home_str}/profiles/<name>/ "
+        "and are not yours to change unless the user asks."
     )
     expected = "\n\n".join((
         "IDENTITY",

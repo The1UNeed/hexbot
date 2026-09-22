@@ -35,6 +35,16 @@ optional module `hindsight_client_api`),
 order-dependent case in `tests/plugins/test_a2a_plugin.py` that passes in
 isolation. Treat any new failure outside that list as a regression.
 
+The universal prompt text is Hexbot's (`CORE_EDITS.md` row 7). The upstream
+suites that pin that wording were updated with it and must stay green:
+
+```
+./venv/bin/pytest tests/agent/test_system_prompt.py tests/agent/test_prompt_builder.py \
+  tests/run_agent/test_steer.py tests/agent/test_bot_profile_prompt_isolation.py \
+  tests/agent/test_profile_home_override_precedence.py tests/agent/test_phantom_tool_references.py \
+  tests/tools/test_cross_profile_guard.py -q -p no:cacheprovider
+```
+
 ## Dev daemon
 
 `pnpm dev` starts a daemon and the web bundle from the checkout with

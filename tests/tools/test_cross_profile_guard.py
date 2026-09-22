@@ -221,9 +221,10 @@ class TestSystemPromptActiveProfile:
         # explicit user direction.
         from pathlib import Path
         src = Path("agent/system_prompt.py").read_text()
-        assert "Active Hermes profile" in src
+        # Hexbot wording (CORE_EDITS.md row 7).
+        assert "Your own files (skills, memory, scheduled jobs) live under" in src
         assert "cross_profile=True" not in src  # guard retired
         assert "~/.hermes/profiles/" in src
         # Both branches present (default and named profile).
-        assert "Active Hermes profile: default" in src
-        assert "Active Hermes profile: {active_profile}" in src
+        assert "Each bot's files live under" in src
+        assert "Other bots' files live under" in src
