@@ -92,6 +92,8 @@ def test_mirror_preserves_unrelated_yaml(tmp_path):
     assert data["approvals"] == {"timeout": 42, "mode": "smart"}
     assert data["auxiliary"]["approval"] == {"provider": "openai", "model": "gpt-5"}
     assert data["terminal"]["cwd"] == str(tmp_path / "work")
+    assert (tmp_path / "work").is_dir()
+    assert data["platform_hints"]["cli"]["replace"].startswith("You are chatting in Hexbot")
     assert "# keep me" in text
 
 

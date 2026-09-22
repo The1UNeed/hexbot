@@ -28,6 +28,17 @@ DEFAULTS = {"approval_mode": "manual", "auto_approver_model": None,
 #: Hermes calls the auto-approval mode ``smart``; the Hexbot UI labels it "Auto".
 APPROVAL_MODES = ("manual", "smart", "off")
 
+#: Replaces the Hermes ``cli`` platform hint, which tells the bot that markdown
+#: does not render and that there is no way to hand over a file. Sessions run
+#: under the ``cli`` platform only to resolve their tools (``SESSION_PLATFORM``
+#: in ``hexbot/bots.py``); what the user actually sees is the Hexbot chat.
+PLATFORM_HINT = (
+    "You are chatting in Hexbot, a desktop app. Markdown renders with GitHub "
+    "flavor: headings, lists, tables and fenced code. To hand over a file, give "
+    "its absolute path or URL; the user opens it themselves. Scheduled jobs run "
+    "on their own and their output is not delivered back into this conversation."
+)
+
 
 def get_settings() -> dict:
     db.migrate()
@@ -103,8 +114,16 @@ def mirror_deployment_config(profile_dir: Path) -> None:
     data = data if isinstance(data, dict) else {}
     mode = override.get("approval_mode") or settings["approval_mode"]
     data.setdefault("approvals", {})["mode"] = mode
-    workdir = override.get("workdir") or settings["workspace_dir"]
-    data.setdefault("terminal", {})["cwd"] = str(Path(workdir).expanduser())
+    workdir = Path(override.get("workdir") or settings["workspace_dir"]).expanduser()
+    # A missing cwd makes Hermes fall back to the daemon's launch directory and
+    # load whatever AGENTS.md it finds there as project context.
+    try:
+        workdir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        logger.warning("could not create working directory %s", workdir)
+    data.setdefault("terminal", {})["cwd"] = str(workdir)
+    from hexbot.bots import SESSION_PLATFORM
+    data.setdefault("platform_hints", {})[SESSION_PLATFORM] = {"replace": PLATFORM_HINT}
     choice = settings["auto_approver_model"]
     if choice:
         provider, _, model = str(choice).partition("/")
