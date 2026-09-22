@@ -31,6 +31,8 @@ The full package asks where Hexbot should run:
 
 The client-only package opens straight on the connect screen.
 
+Setup then asks for a model provider, your default models, and the tools that need their own account: web search, cloud browser, image and video generation, and premium voice. Pick a provider for a tool and paste its key, or skip it. A bot cannot use a tool that is not set up; add it later under a bot's Connectors.
+
 ## macOS
 
 Open the DMG and drag Hexbot to Applications. Public releases are signed and notarized. If macOS reports a damaged or unidentified app, verify that you downloaded it from `hexbot.app` and try the current release again.

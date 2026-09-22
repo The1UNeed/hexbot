@@ -274,3 +274,29 @@ def test_incident_heuristics():
     assert classify_tool_result("terminal", "rm: cannot remove", status="error") is None
     assert classify_tool_result("web_search", {"results": []}, status="success") is None
     assert classify_tool_result("ha_get_state", "connection refused", status="error")[0] == "home_assistant"
+
+
+def _offered(*names):
+    """Which of these tools Hermes would put in a session's schema right now."""
+    from tools.registry import registry
+    return {d["function"]["name"] for d in registry.get_definitions(set(names), quiet=True)}
+
+
+def test_connector_tools_stay_hidden_until_set_up(home, gw, monkeypatch):
+    """Hermes alone would offer web search here: its keyless tier is on and an
+    xAI model key counts as a web backend. Hexbot offers it only after setup."""
+    import tools.image_generation_tool  # noqa: F401  (importing registers the tools)
+    import tools.web_tools  # noqa: F401
+    from tools.registry import invalidate_check_fn_cache
+    from hexbot.connectors import clear, gate_tools, setup
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("XAI_API_KEY", "xai-model-key")
+    gate_tools()
+    gate_tools()  # registering twice must not stack gates
+    invalidate_check_fn_cache()
+    tools = ("web_search", "web_extract", "image_generate")
+    assert _offered(*tools) == set()
+    setup("web_search", {"TAVILY_API_KEY": "tvly-0123456789"}, provider="tavily")
+    assert _offered(*tools) == {"web_search", "web_extract"}
+    clear("web_search")
+    assert _offered(*tools) == set()

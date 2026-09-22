@@ -1,16 +1,19 @@
 import { useState } from 'react'
 
+import {
+  ConnectorFields,
+  connectorFieldsFor,
+  connectorValues
+} from '../../components/connector-fields'
 import { Button } from '../../components/ui/button'
 import { ConnectorIcon } from '../../components/ui/connector-icon'
 import { Dialog } from '../../components/ui/dialog'
-import { Input } from '../../components/ui/input'
-import { Select } from '../../components/ui/select'
 import { Switch } from '../../components/ui/switch'
 import { cn } from '../../lib/cn'
 import type { Bot, Connector, ConnectorTest } from '../../lib/types'
 import { useConnectors } from '../../stores/connectors'
 
-import { cardClass, errorText, fieldLabel } from './shared'
+import { cardClass, errorText } from './shared'
 
 /**
  * The set-up sheet: fields from the catalog entry, saved once for the daemon
@@ -37,20 +40,12 @@ export function ConnectorSetupSheet({
   )
 
   const [botOnly, setBotOnly] = useState(false)
-  const [showAdvanced, setShowAdvanced] = useState(false)
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<ConnectorTest | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // Fields belong to one provider or to all of them (provider null).
-  const forProvider = connector.fields.filter(
-    field => !field.provider || !provider || field.provider === provider
-  )
-
-  const fields = forProvider.filter(field => showAdvanced || !field.advanced)
-  const hasAdvanced = forProvider.some(field => field.advanced)
+  const forProvider = connectorFieldsFor(connector, provider)
   const failed = result && !result.ok
-  const visibleKeys = new Set(forProvider.map(field => field.key))
   const changed = forProvider.some(field => values[field.key]?.trim())
   const alreadySet = forProvider.some(field => field.set)
   const providerChanged = Boolean(provider && provider !== connector.provider)
@@ -67,12 +62,7 @@ export function ConnectorSetupSheet({
         enable_for_bot: enable,
         id: connector.id,
         ...(provider ? { provider } : {}),
-        values: Object.fromEntries(
-          Object.entries(values)
-            .filter(([key]) => visibleKeys.has(key))
-            .map(([key, value]) => [key, value.trim()])
-            .filter(([, value]) => value)
-        )
+        values: connectorValues(connector, provider, values)
       })
 
       setResult(test)
@@ -110,65 +100,14 @@ export function ConnectorSetupSheet({
           void submit()
         }}
       >
-        {connector.providers?.length ? (
-          <label className="block">
-            <span className={fieldLabel}>Provider</span>
-            <Select
-              label="Provider"
-              onValueChange={setProvider}
-              options={connector.providers.map(item => ({
-                label: item.configured ? `${item.label} · connected` : item.label,
-                value: item.id
-              }))}
-              placeholder="Choose a provider"
-              value={provider}
-            />
-          </label>
-        ) : null}
-        {fields.map(field => (
-          <label className="block" key={field.key}>
-            <span className={fieldLabel}>{field.label}</span>
-            <Input
-              aria-label={field.label}
-              autoComplete="off"
-              className={cn(field.secret && 'font-mono text-[length:var(--text-secondary)]')}
-              invalid={Boolean(failed)}
-              onChange={event =>
-                setValues(current => ({ ...current, [field.key]: event.target.value }))
-              }
-              placeholder={field.set && field.hint ? `Saved ${field.hint}` : undefined}
-              type={field.secret ? 'password' : 'text'}
-              value={values[field.key] ?? ''}
-            />
-            {failed && connector.last_error ? (
-              <span className="mt-1 block text-[length:var(--text-meta)] text-danger">
-                {connector.last_error.text}
-              </span>
-            ) : null}
-            {field.help ? (
-              <span className="mt-1 block text-[length:var(--text-meta)] text-muted">
-                {field.help}
-                {field.url ? (
-                  <>
-                    {' '}
-                    <a className="underline" href={field.url} rel="noreferrer" target="_blank">
-                      Where to get it
-                    </a>
-                  </>
-                ) : null}
-              </span>
-            ) : null}
-          </label>
-        ))}
-        {hasAdvanced ? (
-          <button
-            className="justify-self-start text-[length:var(--text-secondary)] text-muted hover:text-foreground"
-            onClick={() => setShowAdvanced(value => !value)}
-            type="button"
-          >
-            {showAdvanced ? 'Hide advanced' : 'Show advanced'}
-          </button>
-        ) : null}
+        <ConnectorFields
+          connector={connector}
+          invalid={Boolean(failed)}
+          onProviderChange={setProvider}
+          onValuesChange={setValues}
+          provider={provider}
+          values={values}
+        />
         <div className={cn(cardClass, 'divide-y divide-border')}>
           <div className="flex items-center gap-3 px-3 py-2.5">
             <span className="min-w-0 flex-1">

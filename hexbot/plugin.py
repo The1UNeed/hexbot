@@ -140,6 +140,8 @@ def register(ctx):
         from hexbot.dreaming import DIGEST_SCHEMA, dream_digest
         ctx.register_tool(name="hexbot_dream_digest", toolset="hexbot",
                           schema=DIGEST_SCHEMA, handler=dream_digest)
+    from hexbot.connectors import gate_tools
+    gate_tools()
     # Constructing the singleton performs restart reconciliation, then starts
     # the room supervisor. No Hermes lifecycle code needs to know about it.
     from hexbot.rooms import get_engine

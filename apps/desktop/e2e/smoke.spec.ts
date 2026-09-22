@@ -65,6 +65,8 @@ test('creates a bot, chats, and creates another section', async () => {
     await expect(page.getByTestId('onboarding-continue')).toBeEnabled()
     await page.getByTestId('onboarding-continue').click()
     await page.getByTestId('onboarding-defaults-skip').click()
+    await expect(page.getByTestId('onboarding-tool-item-web_search')).toBeVisible()
+    await page.getByTestId('onboarding-tools-continue').click()
 
     await page.getByTestId('onboarding-bot-display-input').fill('Scout')
     await page.getByTestId('onboarding-bot-name-input').fill('scout')
