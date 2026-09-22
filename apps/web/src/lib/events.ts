@@ -113,7 +113,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
       return
 
-    case 'hexbot.memory.core.changed':
+    case 'hexbot.memory.user.changed':
       return
 
     case 'hexbot.connectors.changed':

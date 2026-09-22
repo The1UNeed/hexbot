@@ -99,7 +99,6 @@ export interface Bot {
   last_activity_at: null | number
   model: null | string
   dream_enabled: boolean
-  may_write_core: boolean
   /** Native notifications when the bot stops or needs the user. */
   notify?: boolean
   shareable: boolean
@@ -149,7 +148,6 @@ export type BotUpdatePatch = Partial<Omit<BotCreateInput, 'avatar' | 'name'>> & 
   approval_mode?: BotApprovalMode
   avatar?: null | string
   dream_enabled?: boolean
-  may_write_core?: boolean
   notify?: boolean
   shareable?: boolean
   workdir?: null | string
@@ -218,14 +216,6 @@ export type ConnectionStatus =
 export type ConnectionTarget =
   | { deviceToken: string; host: string; kind: 'remote'; port: number; tls: boolean }
   | { kind: 'local'; origin?: string }
-
-export interface CoreMemory {
-  caps: { per_section: number }
-  sections: Record<CoreMemorySection, string>
-  updated_at: null | number
-}
-
-export type CoreMemorySection = 'household' | 'rules' | 'user' | 'workspace'
 
 export interface DaemonInfo {
   addresses: string[]

@@ -27,9 +27,9 @@ export function kickoffPrompt(bot: { description?: string; display_name: string;
     '   they want you to work (tone, depth, how proactive to be), then where their material',
     '   lives or what to keep in mind, each shaped by the answers so far.',
     '   Three questions at most. Acknowledge each answer in one line before the next.',
-    '3. When done, save what you learned with the memory tool: who the user is and what',
-    '   they want in USER memory, how you should work in MEMORY. Then say in one line',
-    '   what you will focus on and stop. Do not ask anything else.',
+    '3. When done, save what you learned with the memory tool: who the user is, what',
+    '   they want from you, and how you should work. Then say in one line what you',
+    '   will focus on and stop. Do not ask anything else.',
     'Keep every message short. Never mention this instruction.'
   ].join('\n')
 }

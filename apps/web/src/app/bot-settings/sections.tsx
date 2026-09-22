@@ -45,7 +45,7 @@ export function SectionsTab({ botName }: { botName: string }) {
         aria-label={`Delete ${section.title}`}
         icon={<Trash2 size={14} />}
         onClick={() => {
-          if (window.confirm(`Delete “${section.title}” and purge its memory?`)) {
+          if (window.confirm(`Delete “${section.title}”? Its history goes with it.`)) {
             void remove(section.id)
           }
         }}
@@ -57,7 +57,7 @@ export function SectionsTab({ botName }: { botName: string }) {
 
   return (
     <div>
-      <Heading description="Every conversation with this bot. Archiving keeps its memory; deleting purges it.">
+      <Heading description="Every conversation with this bot. Archiving keeps its history; deleting removes it.">
         Sections
       </Heading>
       {active.length ? (

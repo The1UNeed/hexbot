@@ -9,9 +9,8 @@ def _bot_row(name="scout", **values):
     with db.transaction() as conn:
         conn.execute(
             "INSERT INTO bots(name,display_name,created_at,updated_at,last_activity_at,"
-            "dream_enabled,may_write_core) VALUES (?,?,?,?,?,?,?)",
-            (name, name.title(), now, now, now, values.get("dream_enabled", 1),
-             values.get("may_write_core", 0)))
+            "dream_enabled) VALUES (?,?,?,?,?,?)",
+            (name, name.title(), now, now, now, values.get("dream_enabled", 1)))
 
 
 def test_ensure_dream_job_creates_and_updates_profile_store(isolated_home, monkeypatch):
@@ -102,32 +101,6 @@ def test_record_dream_posts_a_bot_message_without_a_turn(isolated_home, monkeypa
     store = SessionDB(db_path=profile / "state.db")
     assert len(store.get_messages("dreams-1")) == 1
     store.close()
-
-
-def test_memory_tag_and_section_purge(isolated_home):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.memory_tool import load_on_disk_store
-    from hexbot import db
-    from hexbot.memory import purge_entries, tag_memory_write
-
-    _bot_row()
-    now = time.time()
-    with db.transaction() as conn:
-        conn.execute("INSERT INTO sections(id,bot,title,created_at,updated_at) VALUES (?,?,?,?,?)",
-                     ("s1", "scout", "General", now, now))
-    profile = isolated_home / "profiles" / "scout"
-    token = set_hermes_home_override(str(profile))
-    try:
-        assert load_on_disk_store().add("memory", "Keep this")["success"]
-    finally:
-        reset_hermes_home_override(token)
-    tag_memory_write(tool_name="memory", args={"action": "add", "target": "memory",
-                     "content": "Keep this"}, result=json.dumps({"success": True}),
-                     status="success", session_id="s1")
-    with db.transaction() as conn:
-        assert conn.execute("SELECT count(*) FROM memory_entries").fetchone()[0] == 1
-    assert purge_entries(section_id="s1") == 1
-    assert "Keep this" not in (profile / "memories" / "MEMORY.md").read_text()
 
 
 def test_room_memory_is_capped_in_prompt(fake_gateway):

@@ -20,8 +20,7 @@ def test_migration_is_idempotent():
     with db.transaction() as conn:
         versions = conn.execute("select version from schema_version").fetchall()
         assert [row[0] for row in versions] == [db.SCHEMA_VERSION]
-        assert {"bots", "sections", "devices", "pairing_codes",
-                "core_memory", "settings"} <= _tables(conn)
+        assert {"bots", "sections", "devices", "pairing_codes", "settings"} <= _tables(conn)
 
 
 def test_migration_upgrades_a_v1_database(isolated_home):
@@ -103,6 +102,7 @@ def test_mirror_preserves_unrelated_yaml(tmp_path):
         assert hint.startswith("You are chatting in Hexbot"), platform
         assert "terminal" not in hint
     assert "cli" not in data["platform_hints"]
+    assert data["memory"]["user_profile_enabled"] is False
     assert "# keep me" in text
 
 
@@ -119,95 +119,53 @@ def test_apply_settings_everywhere_touches_root_and_profiles(isolated_home):
         assert loader.load((path / "config.yaml").read_text())["approvals"]["mode"] == "off"
 
 
-def test_core_memory_caps_and_sections():
+def test_about_you_round_trip_and_cap(isolated_home):
     from hexbot.errors import HexbotError
-    from hexbot.memory import CORE_CAP, get_core_memory, set_core_memory
+    from hexbot.memory import USER_CAP, get_user_memory, set_user_memory
 
-    empty = get_core_memory()
-    assert set(empty["sections"]) == {"user", "household", "workspace", "rules"}
-    assert empty["caps"]["per_section"] == CORE_CAP
-    assert empty["updated_at"] is None
+    assert get_user_memory() == {"text": "", "cap": USER_CAP, "updated_at": None}
 
-    result = set_core_memory("user", "Name: Alex")
-    assert result["sections"]["user"] == "Name: Alex"
+    result = set_user_memory("Name: Alex")
+    assert result["text"] == "Name: Alex"
     assert result["updated_at"] is not None
+    assert (isolated_home / "users" / "local" / "user.md").read_text() == "Name: Alex"
 
     with pytest.raises(HexbotError) as caught:
-        set_core_memory("rules", "x" * (CORE_CAP + 1))
+        set_user_memory("x" * (USER_CAP + 1))
     assert caught.value.code == 4221
-    assert str(CORE_CAP) in caught.value.message
+    assert str(USER_CAP) in caught.value.message
     # Exactly at the cap is allowed.
-    assert len(set_core_memory("rules", "y" * CORE_CAP)["sections"]["rules"]) == CORE_CAP
-
-    with pytest.raises(HexbotError) as caught:
-        set_core_memory("nope", "x")
-    assert caught.value.code == 4203
+    assert len(set_user_memory("y" * USER_CAP)["text"]) == USER_CAP
 
 
-def test_core_memory_renders_one_block_per_section():
-    from hexbot.memory import (CORE_SECTIONS, core_section_renderer,
-                               render_core_memory, render_core_section,
-                               section_prompt_id)
+def test_about_you_renders_as_one_prompt_block(isolated_home):
+    from hermes_cli.plugins import is_valid_system_prompt_section_id
 
-    assert render_core_memory() == ""
-    assert render_core_section("user") == ""
+    from hexbot.memory import PROMPT_SECTION_ID, render_user_memory, set_user_memory
 
-    from hexbot.memory import set_core_memory
-    set_core_memory("user", "Name: Alex")
-    set_core_memory("rules", "Never deploy on Friday")
+    assert is_valid_system_prompt_section_id(PROMPT_SECTION_ID)
+    assert render_user_memory() == ""
+    assert render_user_memory({"session_id": "unknown"}) == ""
 
-    block = render_core_section("rules")
-    assert "Core memory (shared by all bots)" in block
-    assert "## Rules" in block
-    assert "Never deploy on Friday" in block
-    assert "Name: Alex" not in block  # sections do not bleed into each other
-
-    assert core_section_renderer("user")({"session_id": "x"}) == render_core_section("user")
-
-    combined = render_core_memory()
-    for text in ("Name: Alex", "Never deploy on Friday", "## User", "## Rules"):
-        assert text in combined
-
-    ids = [section_prompt_id(name) for name in CORE_SECTIONS]
-    assert ids == ["hexbot.core-memory.user", "hexbot.core-memory.household",
-                   "hexbot.core-memory.workspace", "hexbot.core-memory.rules"]
+    set_user_memory("Name: Alex")
+    block = render_user_memory({"session_id": "unknown"})
+    assert block.startswith("About you")
+    assert "Name: Alex" in block
 
 
-def test_core_memory_prompt_sections_fit_the_registrar():
-    """Each section must be registrable at its full cap and render in a stable order."""
-    from hermes_cli.plugins import (MAX_SYSTEM_PROMPT_SECTION_CHARS,
-                                    is_valid_system_prompt_section_id)
-
-    from hexbot.memory import CORE_CAP, CORE_SECTIONS, section_prompt_id
-
-    assert CORE_CAP <= MAX_SYSTEM_PROMPT_SECTION_CHARS
-    ids = [section_prompt_id(name) for name in CORE_SECTIONS]
-    assert all(is_valid_system_prompt_section_id(value) for value in ids)
-    assert len(set(ids)) == len(ids)
-    # Hermes renders sections in sorted() id order — deterministic, not the
-    # declaration order.
-    assert sorted(ids) == ["hexbot.core-memory.household", "hexbot.core-memory.rules",
-                           "hexbot.core-memory.user", "hexbot.core-memory.workspace"]
-
-
-def test_bot_memory_round_trip_and_caps(isolated_home):
+def test_bot_memory_round_trip_and_cap(isolated_home):
     from hexbot.errors import HexbotError
     from hexbot.memory import get_bot_memory, set_bot_memory
 
-    empty = get_bot_memory("scout")
-    assert empty == {"memory_md": "", "user_md": "",
-                     "caps": {"memory_md": 2200, "user_md": 1375}}
+    assert get_bot_memory("scout") == {"memory_md": "", "cap": 2200}
 
-    result = set_bot_memory("scout", memory_md="a\n§\nb", user_md="Name: Alex")
+    result = set_bot_memory("scout", "a\n§\nb")
     assert result["memory_md"] == "a\n§\nb"
-    assert result["user_md"] == "Name: Alex"
     memories = isolated_home / "profiles" / "scout" / "memories"
     assert (memories / "MEMORY.md").read_text() == "a\n§\nb"
-
-    # A None value leaves the other file untouched.
-    assert set_bot_memory("scout", user_md="Name: Bea")["memory_md"] == "a\n§\nb"
+    assert not (memories / "USER.md").exists()
 
     with pytest.raises(HexbotError) as caught:
-        set_bot_memory("scout", user_md="x" * 1376)
+        set_bot_memory("scout", "x" * 2201)
     assert caught.value.code == 4221
-    assert get_bot_memory("scout")["user_md"] == "Name: Bea"
+    assert get_bot_memory("scout")["memory_md"] == "a\n§\nb"

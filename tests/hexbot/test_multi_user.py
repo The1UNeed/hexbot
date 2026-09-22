@@ -36,14 +36,14 @@ def add_user_and_device(user_id="member", role="member"):
     return f"d-{user_id}"
 
 
-def test_v5_seeds_admin_and_changes_core_key():
+def test_v5_seeds_admin_and_v8_drops_core_memory():
     from hexbot import db
     db.migrate()
     with db.transaction() as conn:
         admin = conn.execute("SELECT * FROM users WHERE id='local'").fetchone()
         assert (admin["display_name"], admin["role"]) == ("Admin", "admin")
-        assert {row[1] for row in conn.execute("PRAGMA table_info(core_memory)")} >= {
-            "owner_id", "section"}
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+        assert not tables & {"core_memory", "memory_entries"}
         assert {row[1] for row in conn.execute("PRAGMA table_info(bots)")} >= {"shareable"}
         assert {row[1] for row in conn.execute("PRAGMA table_info(pairing_codes)")} >= {"user_id"}
 

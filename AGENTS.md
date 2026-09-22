@@ -38,13 +38,14 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Channel**: how a build is named and published. **Stable** (tagged `v<version>`, updatable; named `Hexbot [alpha]` while the version is `0.x`), **Nightly** (`Hexbot Nightly`, daily from `main`, updatable on its own track), **Dev** (the source tree). See `docs/channels.md`.
 - **Track**: the channel an installed app takes updates from, Stable or Nightly. Defaults to the channel the build came from; the user switches it in Settings, Updates.
 - **Update server**: `updates.hexbot.app`, a Cloudflare R2 bucket holding every package and the electron-updater feed files. Written only by `release.yml`.
-- **Bot**: a named agent with its own persona, model, skills, and section memory. One Hermes profile, multiplexed in one daemon process.
+- **Bot**: a named agent with its own soul, model, skills, and memory. One Hermes profile, multiplexed in one daemon process.
 - **Section** = **conversation** = **thread**: one persistent chat with a bot or inside a room. A section lives until the user archives or deletes it. Each section is its own Hermes session with its own context window.
 - **Room**: a group chat with one or more humans and any number of bots. May have a **main bot** that responds when nobody is @-mentioned.
 - **Turn**: one user message and everything the bots do in response. The room turn engine (`hexbot/rooms/`) decides who speaks.
-- **Core memory**: memory shared by all of a user's bots. Bots write to it only through an explicit action.
-- **Section memory**: a bot's private memory, including notes and searchable history over its own sections and rooms. Archiving keeps it; deleting purges it and the derived entries.
-- **Dreaming**: a bot's daily pass over that day's conversations that summarises them into its section memory.
+- **Soul**: a bot's persona, the `SOUL.md` in its profile. The user and the bot both edit it; the bot says so when it does.
+- **Memory**: a bot's own notes, the `MEMORY.md` in its profile. The bot writes it during chat, dreaming curates it, the user can edit it. Deleting a section removes its history and leaves memory alone.
+- **About you**: one text per user, written only by the user and read by every bot they own (`users/<id>/user.md`).
+- **Dreaming**: a bot's daily pass over that day's conversations that folds what matters into its memory.
 - **Auto mode**: the approval mode that lets a small model auto-approve low-risk tool actions. Hermes calls it `smart`. The other modes are Manual (default) and Off.
 - **Pairing**: connecting an app to a daemon with a one-time code or link over LAN. Never depends on Connect.
 - **Hex Connect**: the optional cloud service at connect.hexbot.app (Clerk auth, Cloudflare tunnels) for reaching a daemon from outside the LAN. Brokers identity and a hostname; chat traffic never passes through it.

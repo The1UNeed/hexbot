@@ -59,5 +59,5 @@ def test_rpc_frames_and_real_dispatch(monkeypatch):
     ok = server.handle_request({"jsonrpc": "2.0", "id": 1, "method": "hexbot.info", "params": {}})
     from hexbot import __version__
     assert ok["result"]["version"] == __version__
-    bad = server.handle_request({"jsonrpc": "2.0", "id": 2, "method": "hexbot.memory.core.set", "params": {"section": "rules", "text": "x" * 4001}})
+    bad = server.handle_request({"jsonrpc": "2.0", "id": 2, "method": "hexbot.memory.user.set", "params": {"text": "x" * 2001}})
     assert bad["error"]["code"] == 4221

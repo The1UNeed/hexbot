@@ -50,7 +50,7 @@ def test_every_documented_method_is_registered(ctx):
         "hexbot.sections.rename", "hexbot.sections.archive",
         "hexbot.sections.unarchive", "hexbot.sections.delete", "hexbot.sections.touch",
         "hexbot.sections.mark_read",
-        "hexbot.memory.core.get", "hexbot.memory.core.set",
+        "hexbot.memory.user.get", "hexbot.memory.user.set",
         "hexbot.memory.bot.get", "hexbot.memory.bot.set",
         "hexbot.providers.list", "hexbot.providers.set_key",
         "hexbot.providers.clear_key", "hexbot.models.list",
@@ -77,24 +77,19 @@ def test_every_documented_method_is_registered(ctx):
     assert set(ctx.methods) == expected
 
 
-def test_core_memory_is_registered_as_four_prompt_sections(ctx):
+def test_about_you_is_registered_as_one_prompt_section(ctx):
     from hermes_cli.plugins import (MAX_SYSTEM_PROMPT_SECTION_CHARS,
                                     SYSTEM_PROMPT_SECTION_POSITIONS)
 
-    assert len(ctx.prompt_sections) == 4
-    ids = [entry[0] for entry in ctx.prompt_sections]
-    assert ids == ["hexbot.core-memory.user", "hexbot.core-memory.household",
-                   "hexbot.core-memory.workspace", "hexbot.core-memory.rules"]
-    for _id, content, position, max_chars in ctx.prompt_sections:
-        assert callable(content)
-        assert position in SYSTEM_PROMPT_SECTION_POSITIONS
-        assert max_chars == MAX_SYSTEM_PROMPT_SECTION_CHARS
+    from hexbot.memory import USER_CAP, set_user_memory
 
-    from hexbot.memory import set_core_memory
-    set_core_memory("workspace", "Repo: /srv/hexbot")
-    renderer = dict((entry[0], entry[1]) for entry in ctx.prompt_sections)
-    assert "Repo: /srv/hexbot" in renderer["hexbot.core-memory.workspace"]({})
-    assert renderer["hexbot.core-memory.rules"]({}) == ""
+    [(section_id, render, position, max_chars)] = ctx.prompt_sections
+    assert section_id == "hexbot.about-you"
+    assert position in SYSTEM_PROMPT_SECTION_POSITIONS
+    assert USER_CAP < max_chars <= MAX_SYSTEM_PROMPT_SECTION_CHARS
+    assert render({}) == ""
+    set_user_memory("Repo: /srv/hexbot")
+    assert "Repo: /srv/hexbot" in render({})
 
 
 def test_dream_digest_tool_is_registered(ctx):
@@ -130,15 +125,10 @@ def test_unknown_parameter_is_4201(ctx):
     assert frame["error"]["code"] == 4201
 
 
-def test_core_memory_cap_surfaces_as_4221(ctx):
-    frame = call(ctx, "hexbot.memory.core.set", {"section": "rules", "text": "x" * 4001})
+def test_about_you_cap_surfaces_as_4221(ctx):
+    frame = call(ctx, "hexbot.memory.user.set", {"text": "x" * 2001})
     assert frame["error"]["code"] == 4221
-    assert "4000" in frame["error"]["message"]
-
-
-def test_unknown_core_memory_section_is_4203(ctx):
-    frame = call(ctx, "hexbot.memory.core.set", {"section": "nope", "text": ""})
-    assert frame["error"]["code"] == 4203
+    assert "2000" in frame["error"]["message"]
 
 
 def test_unknown_section_is_4204(ctx):
@@ -199,10 +189,10 @@ def test_mutations_broadcast_events(ctx, fake_gateway):
     })
     call(ctx, "hexbot.sections.create", {"bot": "scout"})
     call(ctx, "hexbot.sections.rename", {"id": "stored1", "title": "Renamed"})
-    call(ctx, "hexbot.memory.core.set", {"section": "user", "text": "Name: Alex"})
+    call(ctx, "hexbot.memory.user.set", {"text": "Name: Alex"})
 
     assert [name for name, _ in fake_gateway.events] == [
-        "hexbot.sections.changed", "hexbot.sections.changed", "hexbot.memory.core.changed"]
+        "hexbot.sections.changed", "hexbot.sections.changed", "hexbot.memory.user.changed"]
     assert fake_gateway.events[0][1]["id"] == "stored1"
     assert fake_gateway.events[0][1]["bot"] == "scout"
     assert fake_gateway.events[1][1]["id"] == "stored1"
@@ -210,7 +200,7 @@ def test_mutations_broadcast_events(ctx, fake_gateway):
 
 
 def test_a_failed_mutation_emits_nothing(ctx, fake_gateway):
-    call(ctx, "hexbot.memory.core.set", {"section": "rules", "text": "x" * 4001})
+    call(ctx, "hexbot.memory.user.set", {"text": "x" * 2001})
     assert fake_gateway.events == []
 
 
@@ -237,7 +227,7 @@ def test_activity_hook_resolves_the_stored_session_id(ctx, fake_gateway):
         conn.execute("UPDATE sections SET updated_at=0 WHERE id='stored1'")
 
     assert [name for name, _ in ctx.hooks] == [
-        "on_stream_end", "post_tool_call", "post_tool_call", "post_llm_call", "on_session_end"]
+        "on_stream_end", "post_tool_call", "post_llm_call", "on_session_end"]
     hook = ctx.hooks[0][1]
 
     hook(session_id="stored1", finished=False)
@@ -272,8 +262,7 @@ def test_post_tool_call_hook_opens_connector_incidents(ctx, fake_gateway):
         "session.list": {"sessions": []},
     })
     sections.create_section("scout", "General")
-    hooks = [fn for name, fn in ctx.hooks if name == "post_tool_call"]
-    hook = hooks[1]
+    [hook] = [fn for name, fn in ctx.hooks if name == "post_tool_call"]
 
     hook(tool_name="terminal", result="ok", status="success", session_id="stored1")
     assert open_incidents() == {}
@@ -319,8 +308,8 @@ def test_register_against_the_real_gateway_and_dispatch(monkeypatch):
         assert ok["result"]["home"]
 
         bad = server.handle_request({"jsonrpc": "2.0", "id": 2,
-                                     "method": "hexbot.memory.core.set",
-                                     "params": {"section": "rules", "text": "x" * 4001}})
+                                     "method": "hexbot.memory.user.set",
+                                     "params": {"text": "x" * 2001}})
         assert bad["error"]["code"] == 4221
 
         missing = server.handle_request({"jsonrpc": "2.0", "id": 3,

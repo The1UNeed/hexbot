@@ -7,29 +7,16 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def _register_core_memory(ctx) -> None:
-    """Register one prompt section per core memory section.
+def _register_about_you(ctx) -> None:
+    """Inject the session owner's About you text as one prompt section.
 
-    Hermes caps a *single* plugin system-prompt section at 4000 characters
-    (``hermes_cli.plugins.MAX_SYSTEM_PROMPT_SECTION_CHARS``), so the whole of
-    core memory registered as one section was silently truncated to a quarter
-    of its budget. Four sections, one per core memory section, each get their
-    own 4000-char allowance.
-
-    Order is stable: ``PluginManager.render_system_prompt_sections`` iterates
-    ``sorted(section_ids)``, so the blocks always render as household, rules,
-    user, workspace. Each block repeats the "Core memory" title so a reader can
-    place it regardless of where it lands.
+    The text is capped at ``USER_CAP`` (2000), well inside the registrar's
+    4000-character section allowance.
     """
-    from hexbot.memory import CORE_CAP, CORE_SECTIONS, core_section_renderer, section_prompt_id
+    from hexbot.memory import PROMPT_SECTION_ID, render_user_memory
 
-    for section in CORE_SECTIONS:
-        ctx.register_system_prompt_section(
-            section_prompt_id(section),
-            core_section_renderer(section),
-            position="after_memory",
-            max_chars=CORE_CAP,
-        )
+    ctx.register_system_prompt_section(PROMPT_SECTION_ID, render_user_memory,
+                                       position="after_memory")
 
 
 def _register_activity_hook(ctx) -> None:
@@ -101,9 +88,7 @@ def connector_incident(*, tool_name="", result=None, status=None, error_message=
 
 def _register_dream_hooks(ctx) -> None:
     from hexbot.dreaming import current_dream, finish_turn
-    from hexbot.memory import tag_memory_write
 
-    ctx.register_hook("post_tool_call", tag_memory_write)
     ctx.register_hook("post_tool_call", connector_incident)
 
     def finish_dream(*, assistant_response="", **kwargs):
@@ -129,7 +114,7 @@ def register(ctx):
         return
     from hexbot.rpc import register as register_rpc
 
-    _register_core_memory(ctx)
+    _register_about_you(ctx)
     if hasattr(ctx, "register_hook"):
         _register_activity_hook(ctx)
         _register_dream_hooks(ctx)

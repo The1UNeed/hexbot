@@ -37,7 +37,7 @@ export const TAB_LABELS: Record<BotSettingsTab, string> = {
   connectors: 'Connectors',
   memory: 'Memory',
   model: 'Model',
-  persona: 'Persona',
+  persona: 'Soul',
   profile: 'Profile',
   sections: 'Sections',
   skills: 'Skills',
@@ -120,4 +120,4 @@ export function BotSettingsPanel({
   )
 }
 
-export { DreamingBlock, MemorySectionEditor, MemoryTab } from './memory'
+export { DreamingBlock, MemoryEditor, MemoryTab } from './memory'

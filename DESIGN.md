@@ -37,19 +37,20 @@ more freedom and more capability than a hosted product can offer.
 
 ### Memory
 
-- Core memory: a structured store with sections (user, household, workspace,
-  rules), each capped near 4,000 characters, injected in full every turn.
-  Humans edit it freely. Bots write it only through an explicit action that
-  is visible in the transcript.
-- Section memory: per bot. Its notes plus searchable history over its own
-  sections and the rooms it belongs to.
+- Each bot has two files: its soul (persona; the user and the bot both edit
+  it, and the bot says so when it does) and its memory (short entries the
+  bot writes during chat, capped at 2,200 characters, injected every turn).
+  Searchable history over its own sections and rooms sits beside them.
+- About you: one text per user, capped at 2,000 characters, written only by
+  the user and injected into every bot they own. Nothing else is shared
+  between bots.
 - A room is a shared section for its members. Late joiners see the full
   transcript. A bot that leaves keeps history up to that point.
-- Archive keeps a section in memory. Delete purges the section and the memory
-  entries derived from it.
+- Archive keeps a section. Delete removes the section and its history; what
+  the bot wrote to its memory stays until the user or dreaming edits it.
 - Dreaming: every bot, daily at a configurable time (default 03:00), reads
-  that day's conversations and summarises them into its section memory using
-  its own model. It writes core only if enabled for that bot. It posts a
+  that day's conversations and folds what matters into its memory using
+  its own model. It never touches the soul or About you. It posts a
   report in its direct message thread. A "dream now" action exists. Rooms
   dream through their main bot into the room's section.
 
@@ -101,7 +102,7 @@ more freedom and more capability than a hosted product can offer.
 - Electron, React 19, TanStack Router, Tailwind v4, Base UI. Plain Vite,
   a pnpm workspace shared with the Hermes root. No Effect.
 - Talks directly to the daemon's JSON-RPC WebSocket at `/api/ws`, extended by
-  `hexbot.*` methods (bots, sections, rooms add-member, core memory, pairing).
+  `hexbot.*` methods (bots, sections, rooms add-member, memory, pairing).
   No middle server.
 - The same bundle is served to LAN browsers by the daemon with a cookie
   session.

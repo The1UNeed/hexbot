@@ -4,23 +4,29 @@ title: Memory
 description: Learn what Hexbot remembers and where that memory belongs.
 ---
 
-Hexbot separates shared facts from a bot's own history. This keeps one bot's private context out of another bot unless you choose to share it.
+Each bot keeps two files of its own. One text about you is shared by all of your bots. That is the whole system.
 
-## Core memory
+## Soul
 
-Core memory belongs to the user and is available to all of that user's bots. It has sections for the user, household, workspace, and standing rules. Bots write to core memory only through an explicit action.
+A bot's soul is who it is: how it behaves and speaks. You edit it in the bot's settings under Soul. The bot may edit it too, when you ask it to change or when it learns how you want it to work, and it tells you when it does.
 
-Put durable facts there, such as preferred units or a workspace convention. Do not use memory as a password store.
+## Memory
 
-## Section memory
+A bot's memory is what it has learned: facts, preferences, and lessons about working with you. The bot writes it on its own during a conversation. It is short by design, so the bot keeps it dense rather than long. You can read and edit it in the bot's settings under Memory.
 
-Each bot has private notes and searchable history from its own sections and the rooms it belongs to. Other bots do not inherit those notes. Starting a new section gives the conversation a new context window without erasing the bot's searchable history.
+Other bots do not see it. Each bot also has searchable history over its own sections and the rooms it belongs to. Starting a new section gives the conversation a new context window without erasing that history.
 
-Archiving a section hides it from the active list but keeps it in memory. Deleting a section removes the conversation and can purge memory entries derived from it. Treat deletion as permanent.
+Archiving a section hides it from the active list. Deleting a section removes the conversation and its history. The bot's memory stays as it is; edit it yourself if something should go. Treat deletion as permanent.
+
+## About you
+
+About you is one text that every bot you own reads: your name, what you do, and how you like to be spoken to. Only you write it, in Settings under Memory. Onboarding asks for it once.
+
+Put durable facts there, such as preferred units or a standing rule. Do not use memory as a password store.
 
 ## Dreaming
 
-Dreaming is a daily pass that summarizes a bot's recent conversations into its section memory. Read [Dreaming](/docs/dreaming/) for scheduling, permissions, and room memory.
+Dreaming is a daily pass that folds a bot's recent conversations into its memory. Read [Dreaming](/docs/dreaming/) for scheduling and room memory.
 
 ## Backups
 

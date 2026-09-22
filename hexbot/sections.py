@@ -294,9 +294,9 @@ def delete_section(section_id: str, purge_memory=True) -> bool:
 
     Closes the live session first (``session.delete`` refuses with 4023 while
     the stored key is bound to a live record). With ``purge_memory`` the stored
-    Hermes session is deleted too, which drops its transcript and every section
-    memory entry derived from it; with ``purge_memory=False`` only the Hexbot
-    row goes and the Hermes transcript is left behind.
+    Hermes session is deleted too, which drops its transcript; with
+    ``purge_memory=False`` only the Hexbot row goes and the Hermes transcript
+    is left behind. What the bot wrote to its memory stays either way.
     """
     row = _get(section_id)
     close_section(section_id)
@@ -309,8 +309,6 @@ def delete_section(section_id: str, purge_memory=True) -> bool:
             # purge. session.delete says 4007 for that; 4001 is the live-id form.
             if exc.code not in (4001, 4007):
                 raise
-        from hexbot.memory import purge_entries
-        purge_entries(section_id=section_id)
     with db.transaction() as conn:
         conn.execute("DELETE FROM sections WHERE id=?", (section_id,))
     _touch_bot(row["bot"])

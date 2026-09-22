@@ -13,12 +13,12 @@ import {
   connectRegisterPoll,
   connectRegisterStart,
   connectStatus,
-  coreMemoryGet,
-  coreMemorySet,
   daemonInfo,
   modelsList,
   pairingCode,
   usageSummary,
+  userMemoryGet,
+  userMemorySet,
   usersInvite,
   usersUpdate
 } from '../../lib/api'
@@ -31,13 +31,7 @@ import {
 } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { pairWithDaemon, targetOrigin } from '../../lib/connection'
-import type {
-  ApprovalMode,
-  CoreMemorySection,
-  ModelOption,
-  PairingCode,
-  Provider
-} from '../../lib/types'
+import type { ApprovalMode, ModelOption, PairingCode, Provider } from '../../lib/types'
 import { daemonBehind } from '../../lib/version-skew'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
@@ -50,7 +44,7 @@ import {
   useUpdates
 } from '../../stores/updates'
 import { useUsers } from '../../stores/users'
-import { MemorySectionEditor } from '../bot-settings/memory'
+import { MemoryEditor } from '../bot-settings/memory'
 
 export const SETTINGS_TABS = [
   'providers',
@@ -84,43 +78,39 @@ export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
   )
 }
 
-const MEMORY_SECTIONS: CoreMemorySection[] = ['user', 'household', 'workspace', 'rules']
-
 export function MemorySettings() {
   const settings = useSettings(state => state.settings)
   const refresh = useSettings(state => state.refresh)
   const patch = useSettings(state => state.patch)
-  const [core, setCore] = useState<Awaited<ReturnType<typeof coreMemoryGet>> | null>(null)
-  const [coreError, setCoreError] = useState<string | null>(null)
+  const [about, setAbout] = useState<Awaited<ReturnType<typeof userMemoryGet>> | null>(null)
+  const [aboutError, setAboutError] = useState<string | null>(null)
   useEffect(() => {
     void refresh()
-    void coreMemoryGet()
-      .then(setCore)
-      .catch(cause => setCoreError(errorText(cause)))
+    void userMemoryGet()
+      .then(setAbout)
+      .catch(cause => setAboutError(errorText(cause)))
   }, [refresh])
 
   return (
     <>
-      <Heading description="Core memory is shared by every bot and injected each turn. Dreaming is each bot's daily review.">
+      <Heading description="About you goes to every bot you own. Each bot keeps its own memory in its settings.">
         Memory
       </Heading>
-      <h3 className="mb-3 font-semibold">Core memory</h3>
-      {coreError ? (
+      <h3 className="mb-1 font-semibold">About you</h3>
+      <p className="mb-3 text-muted">
+        Your name, what you do, and how you like to be spoken to. Only you write this.
+      </p>
+      {aboutError ? (
         <p className="text-danger" role="alert">
-          {coreError}
+          {aboutError}
         </p>
-      ) : core ? (
-        <div className="space-y-4">
-          {MEMORY_SECTIONS.map(section => (
-            <MemorySectionEditor
-              cap={core.caps.per_section}
-              key={section}
-              label={section}
-              onSave={async text => setCore(await coreMemorySet(section, text))}
-              value={core.sections[section]}
-            />
-          ))}
-        </div>
+      ) : about ? (
+        <MemoryEditor
+          cap={about.cap}
+          label="About you"
+          onSave={async text => setAbout(await userMemorySet(text))}
+          value={about.text}
+        />
       ) : (
         <SkeletonLines label="Loading memory" />
       )}

@@ -20,14 +20,10 @@ Hexbot posts each summary in that bot's `Dreams` section. The section stays out 
 
 A dream reads only that bot's sections and the rooms it belongs to. Long transcripts are capped, with the newest part kept for review.
 
-## Memory permissions
+## What a dream may change
 
-Dreams may write to the bot's private section memory. They can write to your core memory only when the bot has the `may write core memory` permission. Core writes still use the explicit core-memory action.
-
-Leave that permission off for bots that should keep their conclusions private. You can review and edit core memory separately.
+A dream writes only to the bot's own memory. It never edits the bot's soul or your About you text, so who the bot is and what it knows about you stay in your hands.
 
 ## Room memory
 
-A room with a main bot gets its own daily room dream. Its summary becomes shared room memory, which Hexbot includes in later prompts for every bot in that room. Each bot may also keep private notes about the room in its own section memory.
-
-Deleting a section or room can purge memory entries that came from it.
+A room with a main bot gets its own daily room dream. Its summary becomes shared room memory, which Hexbot includes in later prompts for every bot in that room. Each bot may also keep private notes about the room in its own memory.

@@ -527,7 +527,7 @@ export function RosterColumn() {
   }
 
   const deleteSection = async (section: Section) => {
-    if (!window.confirm(`Delete “${section.title}”? This also purges its memory.`)) {
+    if (!window.confirm(`Delete “${section.title}”? Its history goes with it.`)) {
       return
     }
 

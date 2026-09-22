@@ -127,6 +127,9 @@ def mirror_deployment_config(profile_dir: Path) -> None:
     hints = data.setdefault("platform_hints", {})
     for platform in HINT_PLATFORMS:
         hints[platform] = {"replace": PLATFORM_HINT}
+    # A bot keeps one memory file. Facts about the user live in the shared
+    # About you text, so the Hermes USER.md target stays off.
+    data.setdefault("memory", {})["user_profile_enabled"] = False
     choice = settings["auto_approver_model"]
     if choice:
         provider, _, model = str(choice).partition("/")
