@@ -14,7 +14,7 @@ const notes = await Promise.all(
 <Base title="Changelog" description="What changed in every Hexbot version.">
   <article class="prose mx-auto px-5 py-12 sm:px-8 lg:py-20">
     <h1 class="display-sm">Changelog</h1>
-    <p class="text-mute">What changed in every version, newest first. Nightly builds are listed on <a href={`${releasesUrl}?q=nightly`}>GitHub</a>.</p>
+    <p class="text-mute">What changed in every version, newest first. Individual nightly builds are listed on <a href={`${releasesUrl}?q=nightly`}>GitHub</a>.</p>
     {notes.map(({ version, html }) => <section id={`v${version}`} set:html={html} />)}
   </article>
 </Base>
