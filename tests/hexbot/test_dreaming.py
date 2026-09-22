@@ -1,6 +1,8 @@
 import json
 import time
 
+import pytest
+
 
 def _bot_row(name="scout", **values):
     from hexbot import db
@@ -101,6 +103,41 @@ def test_record_dream_posts_a_bot_message_without_a_turn(isolated_home, monkeypa
     store = SessionDB(db_path=profile / "state.db")
     assert len(store.get_messages("dreams-1")) == 1
     store.close()
+
+
+def test_dream_snapshots_memory_and_can_restore_it(isolated_home, monkeypatch):
+    from hexbot import db
+    from hexbot.dreaming import dream_digest, list_dreams, record_dream, restore_dream
+    from hexbot.errors import HexbotError
+    from hexbot.memory import get_bot_memory, set_bot_memory
+
+    _bot_row()
+    monkeypatch.setattr("hexbot.bots._profile_details", lambda name: {})
+    monkeypatch.setattr("hexbot.bots.sections.list_sections", lambda *a, **k: [])
+    monkeypatch.setattr("hexbot.bots._avatar", lambda name: None)
+    monkeypatch.setattr("hexbot.sections.gateway.call", lambda *a, **k: {"sessions": []})
+    set_bot_memory("scout", "User likes tea")
+
+    digest = json.loads(dream_digest({"bot": "scout"}, session_id="cron-1"))
+    # The dream rewrote memory, as its curation pass does.
+    set_bot_memory("scout", "User likes tea\n§\nUser works in Auckland")
+    record_dream("scout", "[SILENT]", dream_id=digest["dream_id"])
+
+    [dream] = list_dreams("scout")["dreams"]
+    assert dream["memory_before"] == "User likes tea"
+    assert dream["memory_after"] == "User likes tea\n§\nUser works in Auckland"
+
+    assert restore_dream(dream["id"])["memory_md"] == "User likes tea"
+    assert get_bot_memory("scout")["memory_md"] == "User likes tea"
+
+    with pytest.raises(HexbotError) as caught:
+        restore_dream("nope")
+    assert caught.value.code == 4241
+    with db.transaction() as conn:
+        conn.execute("UPDATE dreams SET memory_before=NULL WHERE id=?", (dream["id"],))
+    with pytest.raises(HexbotError) as caught:
+        restore_dream(dream["id"])
+    assert caught.value.code == 4242
 
 
 def test_room_memory_is_capped_in_prompt(fake_gateway):

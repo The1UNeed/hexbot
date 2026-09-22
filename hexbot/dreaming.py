@@ -37,11 +37,21 @@ def _cron_expression(value: str) -> str:
 def _job_prompt(bot: dict) -> str:
     return (
         f"This is the daily dream for Hexbot bot {bot['name']}. Call "
-        f"hexbot_dream_digest with bot={json.dumps(bot['name'])}. Read its JSON digest, "
-        "then use the memory tool to save only durable facts, preferences, and unfinished "
-        "work in your notes. Do not save transient chatter or duplicate existing notes. "
-        "Finish with a concise markdown summary of what you kept."
+        f"hexbot_dream_digest with bot={json.dumps(bot['name'])} and read its JSON digest. "
+        "Then curate your memory with the memory tool, comparing the digest with the "
+        "entries you already have: merge duplicates, replace vague entries with sharper "
+        "ones, remove entries that are stale or wrong, and add durable facts, preferences "
+        "and lessons about how to work with the user. Memory is short on purpose, so keep "
+        "it dense. Do not record unfinished work or what happened on a given day; section "
+        "history keeps that. Never write the soul. Finish with a short markdown summary of "
+        "what changed, or [SILENT] if nothing did."
     )
+
+
+def _memory_text(bot: str) -> str:
+    from hexbot.memory import _memory_path
+    path = _memory_path(bot)
+    return path.read_text() if path.exists() else ""
 
 
 def ensure_dream_job(bot: dict | str) -> dict:
@@ -185,9 +195,10 @@ def dream_digest(args: dict, **kwargs) -> str:
                "session_id": str(kwargs.get("session_id") or ""),
                "task_id": str(kwargs.get("task_id") or "")}
     with db.transaction() as conn:
-        conn.execute("INSERT INTO dreams(id,bot,room_id,started_at,status,summary,owner_id) "
-                     "VALUES (?,?,?,?,?,?,?)", (dream_id, bot, room_id, now, "running", "",
-                     bot_row["owner_id"]))
+        conn.execute("INSERT INTO dreams(id,bot,room_id,started_at,status,summary,owner_id,"
+                     "memory_before) VALUES (?,?,?,?,?,?,?,?)",
+                     (dream_id, bot, room_id, now, "running", "", bot_row["owner_id"],
+                      _memory_text(bot)))
     _dream_context.set(context)
     for key in (context["session_id"], context["task_id"]):
         if key:
@@ -224,17 +235,19 @@ def record_dream(bot: str, output: str, *, room_id: str | None = None,
     # Hermes cron lets a job answer "[SILENT]" when it has nothing to report.
     if output.strip() == "[SILENT]":
         output = ""
+    after = _memory_text(bot)
     with db.transaction() as conn:
         exists = conn.execute("SELECT 1 FROM dreams WHERE id=?", (dream_id,)).fetchone()
         if exists:
-            conn.execute("UPDATE dreams SET finished_at=?,status=?,summary=? WHERE id=?",
-                         (now, status, output, dream_id))
+            conn.execute("UPDATE dreams SET finished_at=?,status=?,summary=?,memory_after=? "
+                         "WHERE id=?", (now, status, output, after, dream_id))
         else:
             owner = conn.execute("SELECT owner_id FROM bots WHERE name=?", (bot,)).fetchone()
-            conn.execute("INSERT INTO dreams(id,bot,room_id,started_at,finished_at,status,summary,owner_id) "
-                         "VALUES (?,?,?,?,?,?,?,?)",
+            conn.execute("INSERT INTO dreams(id,bot,room_id,started_at,finished_at,status,"
+                         "summary,owner_id,memory_before,memory_after) "
+                         "VALUES (?,?,?,?,?,?,?,?,?,?)",
                          (dream_id, bot, room_id, now, now, status, output,
-                          owner[0] if owner else "local"))
+                          owner[0] if owner else "local", after, after))
         if room_id and status == "complete":
             conn.execute("INSERT OR REPLACE INTO room_memory(room_id,text,updated_at) VALUES (?,?,?)",
                          (room_id, output, now))
@@ -254,7 +267,7 @@ def record_dream(bot: str, output: str, *, room_id: str | None = None,
         finally:
             store.close()
     return {"id": dream_id, "bot": bot, "room_id": room_id, "started_at": now,
-            "finished_at": now, "status": status, "summary": output}
+            "finished_at": now, "status": status, "summary": output, "memory_after": after}
 
 
 def finish_turn(output: str, *, status: str = "complete", **kwargs) -> None:
@@ -324,6 +337,20 @@ def list_dreams(bot: str, limit: int = 20, *, all_users=False) -> dict:
         rows = conn.execute("SELECT * FROM dreams WHERE bot=? ORDER BY started_at DESC LIMIT ?",
                             (bot, limit)).fetchall()
     return {"dreams": [dict(row) for row in rows]}
+
+
+def restore_dream(dream_id: str) -> dict:
+    """Put the bot's memory back to what it was before ``dream_id`` ran."""
+    from hexbot.memory import set_bot_memory
+    with db.transaction() as conn:
+        row = conn.execute("SELECT bot,memory_before FROM dreams WHERE id=?",
+                           (dream_id,)).fetchone()
+    if row is None:
+        raise HexbotError(4241, f"dream not found: {dream_id}")
+    if row["memory_before"] is None:
+        raise HexbotError(4242, "this dream did not record the memory it started from")
+    memory = set_bot_memory(row["bot"], row["memory_before"])
+    return {"bot": row["bot"], "memory_md": memory["memory_md"]}
 
 
 DIGEST_SCHEMA = {"type": "function", "function": {"name": "hexbot_dream_digest",

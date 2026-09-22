@@ -4,9 +4,9 @@ title: Dreaming
 description: Let bots review recent conversations and update their memory.
 ---
 
-A dream is a normal bot turn that reviews conversations since the bot's last dream. It looks for durable facts, preferences, decisions, and unfinished work, then records useful items in the bot's section memory.
+A dream is a normal bot turn that reads the conversations since the bot's last dream and tidies its memory: it merges duplicates, sharpens vague entries, drops what is stale, and adds durable facts and lessons about working with you. Memory is short on purpose, so a dream keeps it dense rather than long. Unfinished work and what happened on a given day stay in section history.
 
-The dream uses the bot's configured model, persona, memory, and skills. Model provider charges apply as they do for any other turn.
+The dream uses the bot's configured model, soul, memory, and skills. Model provider charges apply as they do for any other turn.
 
 ## When dreams run
 
@@ -16,7 +16,7 @@ Dreaming must be enabled for the daemon and for the individual bot. You can also
 
 ## Read the result
 
-Hexbot posts each summary in that bot's `Dreams` section. The section stays out of the sidebar. Open the bot's settings, Memory, and pick a dream under Recent dreams to read what the bot recorded.
+Hexbot posts each summary in that bot's `Dreams` section. The section stays out of the sidebar. Open the bot's settings, Memory, and find the dream log at the bottom. Each dream that changed memory shows what it looked like before and after, with a button to restore the memory from before that dream.
 
 A dream reads only that bot's sections and the rooms it belongs to. Long transcripts are capped, with the newest part kept for review.
 

@@ -283,6 +283,7 @@ METHODS = {
     "hexbot.dreaming.status": lambda p: dreaming.status(_required(p, "bot")),
     "hexbot.dreaming.run_now": lambda p: dreaming.run_now(_required(p, "bot")),
     "hexbot.dreaming.list": _dreams_list,
+    "hexbot.dreaming.restore": lambda p: dreaming.restore_dream(_required(p, "id")),
     "hexbot.users.me": lambda p: users.me(),
     "hexbot.users.list": _admin(lambda p: {"users": users.list_users()}),
     "hexbot.users.invite": _admin(lambda p: users.invite(
@@ -321,6 +322,7 @@ MUTATION_EVENTS = {
     "hexbot.rooms.archive": "hexbot.rooms.changed",
     "hexbot.rooms.delete": "hexbot.rooms.changed",
     "hexbot.dreaming.run_now": "hexbot.dreaming.changed",
+    "hexbot.dreaming.restore": "hexbot.dreaming.changed",
 }
 
 

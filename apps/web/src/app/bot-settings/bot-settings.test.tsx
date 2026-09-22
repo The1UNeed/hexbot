@@ -116,6 +116,53 @@ describe('dreaming block', () => {
     expect(save).toHaveBeenCalledWith({ dream_enabled: false })
     setActiveRpc(null)
   })
+
+  it('shows what a dream changed and restores the memory from before it', async () => {
+    const call = fakeRpc({
+      'hexbot.dreaming.list': () => ({
+        dreams: [
+          {
+            bot: 'scout',
+            id: 'd1',
+            memory_after: 'Likes tea\n§\nWorks in Auckland',
+            memory_before: 'Likes tea',
+            started_at: 1,
+            status: 'complete',
+            summary: 'Added where the user works.'
+          },
+          {
+            bot: 'scout',
+            id: 'd2',
+            memory_after: 'Likes tea',
+            memory_before: 'Likes tea',
+            started_at: 0,
+            status: 'complete',
+            summary: 'Nothing new.'
+          }
+        ]
+      }),
+      'hexbot.dreaming.restore': () => ({ bot: 'scout', memory_md: 'Likes tea' }),
+      'hexbot.dreaming.status': () => ({
+        enabled: true,
+        last_error: null,
+        last_run_at: 1,
+        last_status: 'complete',
+        next_run_at: 2
+      })
+    })
+
+    const restored = vi.fn()
+    render(<DreamingBlock bot={bot} onRestored={restored} onSave={vi.fn()} />)
+    expect(await screen.findByText('Dream log')).toBeVisible()
+    // Only the dream that changed memory offers a diff.
+    expect(screen.getAllByRole('button', { name: 'What changed' })).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'What changed' }))
+    expect(screen.getByText('Likes tea')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: /Restore memory/ }))
+    await waitFor(() => expect(restored).toHaveBeenCalledWith('Likes tea'))
+    expect(call).toHaveBeenCalledWith('hexbot.dreaming.restore', { id: 'd1' })
+    setActiveRpc(null)
+  })
 })
 
 describe('connectors page', () => {

@@ -18,9 +18,15 @@ summarises them into its section memory. Facts about Hermes cron in
   and rooms with activity since the last dream, includes for each a
   transcript digest (Hermes session search over the profile's `state.db`
   by time range; capped at 12k characters per section, older parts
-  summarised first), and instructs the bot to write durable facts,
-  preferences and unfinished work into its memory with the memory tool. It
-  never writes the soul or About you.
+  summarised first), and instructs the bot to curate its memory with the
+  memory tool: merge duplicates, sharpen vague entries, drop stale ones, add
+  durable facts and lessons about working with the user, and keep it dense.
+  Unfinished work and day-by-day events stay in section history. It never
+  writes the soul or About you.
+- `hexbot_dream_digest` records the bot's `MEMORY.md` on the dream row
+  (`memory_before`); the stream-end hook records it again (`memory_after`).
+  The Memory tab's dream log shows the two side by side and
+  `hexbot.dreaming.restore {id}` writes `memory_before` back.
 - Output delivery: `deliver: bot-chat:<profile>` is not used; instead the
   job's markdown output is posted by `hexbot/dreaming.py` into the bot's
   section titled `Dreams` (created on first use, hidden from the roster and

@@ -8,7 +8,9 @@ import { Textarea } from '../../components/ui/textarea'
 import {
   botMemoryGet,
   botMemorySet,
+  type Dream,
   dreamingList,
+  dreamingRestore,
   dreamingRunNow,
   dreamingStatus
 } from '../../lib/api'
@@ -119,16 +121,112 @@ export function MemoryTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           </Button>
         </Link>
       </div>
-      <DreamingBlock bot={bot} onSave={onSave} />
+      <DreamingBlock
+        bot={bot}
+        onRestored={memoryMd => setMemory(current => current && { ...current, memory_md: memoryMd })}
+        onSave={onSave}
+      />
     </div>
+  )
+}
+
+/** One dream in the log: its summary, and when it changed memory, the before and after with a way back. */
+function DreamEntry({
+  bot,
+  dream,
+  onRestored,
+  sectionId
+}: {
+  bot: string
+  dream: Dream
+  onRestored: (memoryMd: string) => void
+  sectionId?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const changed =
+    typeof dream.memory_before === 'string' &&
+    typeof dream.memory_after === 'string' &&
+    dream.memory_before !== dream.memory_after
+
+  const summary = (
+    <>
+      <div className="line-clamp-2">
+        <Markdown text={dream.summary || dream.status} />
+      </div>
+      <time className="text-[length:var(--text-meta)] text-muted">
+        {formatTimestamp(dream.started_at)}
+      </time>
+    </>
+  )
+
+  return (
+    <li className="py-2">
+      {sectionId ? (
+        <Link
+          className="block hover:text-accent"
+          params={{ bot, section: sectionId }}
+          to="/b/$bot/s/$section"
+        >
+          {summary}
+        </Link>
+      ) : (
+        <div>{summary}</div>
+      )}
+      {changed ? (
+        <div className="mt-1">
+          <button
+            aria-expanded={open}
+            className="text-[length:var(--text-meta)] text-muted hover:text-foreground"
+            onClick={() => setOpen(!open)}
+            type="button"
+          >
+            {open ? 'Hide what changed' : 'What changed'}
+          </button>
+          {open ? (
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              {(['Before', 'After'] as const).map(label => (
+                <div key={label}>
+                  <span className="mb-1 block text-[length:var(--text-meta)] text-muted">{label}</span>
+                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-control bg-surface-2 p-2 font-mono text-[length:var(--text-meta)]">
+                    {(label === 'Before' ? dream.memory_before : dream.memory_after) || '(empty)'}
+                  </pre>
+                </div>
+              ))}
+              <div className="sm:col-span-2">
+                <Button
+                  onClick={() =>
+                    void dreamingRestore(dream.id)
+                      .then(result => onRestored(result.memory_md))
+                      .catch(cause => setError(errorText(cause)))
+                  }
+                  size="sm"
+                  variant="secondary"
+                >
+                  Restore memory from before this dream
+                </Button>
+                {error ? (
+                  <span className="ml-2 text-[length:var(--text-meta)] text-danger" role="alert">
+                    {error}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </li>
   )
 }
 
 export function DreamingBlock({
   bot,
+  onRestored = () => undefined,
   onSave
 }: {
   bot: Bot
+  onRestored?: (memoryMd: string) => void
   onSave: (patch: { dream_enabled?: boolean }) => Promise<void> | void
 }) {
   const [status, setStatus] = useState<Awaited<ReturnType<typeof dreamingStatus>> | null>(null)
@@ -183,7 +281,8 @@ export function DreamingBlock({
     <div className="border-t border-border pt-4">
       <h3 className="font-semibold">Dreaming</h3>
       <p className="mt-1 text-[length:var(--text-secondary)] text-muted">
-        Each day, this bot reviews recent conversations and updates its memory.
+        Each day, this bot reads its recent conversations and tidies its memory: merging,
+        sharpening, dropping what is stale. Every dream keeps the memory it started from.
       </p>
       <div className={cn(cardClass, 'mt-4 flex items-center justify-between gap-3 px-3 py-2.5')}>
         <span>Enabled for this bot</span>
@@ -214,27 +313,19 @@ export function DreamingBlock({
       ) : null}
       {dreams.length ? (
         <div className="mt-5">
-          <h4 className="font-medium">Recent dreams</h4>
+          <h4 className="font-medium">Dream log</h4>
           <ul className="mt-2 divide-y divide-border">
             {dreams.map(dream => (
-              <li className="py-2" key={dream.id}>
-                {dreamsSection ? (
-                  <Link
-                    className="block hover:text-accent"
-                    params={{ bot: bot.name, section: dreamsSection.id }}
-                    to="/b/$bot/s/$section"
-                  >
-                    <div className="line-clamp-2">
-                      <Markdown text={dream.summary || dream.status} />
-                    </div>
-                    <time className="text-[length:var(--text-meta)] text-muted">
-                      {formatTimestamp(dream.started_at)}
-                    </time>
-                  </Link>
-                ) : (
-                  <span className="line-clamp-2">{dream.summary || dream.status}</span>
-                )}
-              </li>
+              <DreamEntry
+                bot={bot.name}
+                dream={dream}
+                key={dream.id}
+                onRestored={memoryMd => {
+                  onRestored(memoryMd)
+                  void load().catch(cause => setError(errorText(cause)))
+                }}
+                sectionId={dreamsSection?.id}
+              />
             ))}
           </ul>
         </div>
