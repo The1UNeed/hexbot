@@ -106,6 +106,17 @@ export function botsCreate(input: BotCreateInput): Promise<{ bot: Bot; section: 
   return rpcCall<{ bot: Bot; section: Section }>('hexbot.bots.create', { ...input })
 }
 
+/** Have the daemon submit a new bot's hidden first prompt into its section. */
+export function botsIntroduce(
+  name: string,
+  section: string
+): Promise<{ section: Section; submitted: boolean }> {
+  return rpcCall<{ section: Section; submitted: boolean }>('hexbot.bots.introduce', {
+    name,
+    section
+  })
+}
+
 export function botsUpdate(name: string, patch: BotUpdatePatch): Promise<{ bot: Bot }> {
   return rpcCall<{ bot: Bot }>('hexbot.bots.update', { name, ...patch })
 }

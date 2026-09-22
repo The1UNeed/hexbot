@@ -86,6 +86,12 @@ null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
   `config.yaml`, creates the first section titled "General").
   `display_name` defaults to the bot name in title case — never to `title`,
   which is free-form caller text stored verbatim.
+- `hexbot.bots.introduce {name, section}` → `{submitted: true, section}`.
+  Resumes the section on the calling transport, then submits the bot's
+  hidden first prompt (`hexbot/kickoff.py`): a one-line greeting and up to
+  three clarify questions about what the bot is for, whose answers it writes
+  into its soul and memory. Clients call it right after `hexbot.bots.create`,
+  once they have navigated to the section.
 - `hexbot.bots.update {name, display_name?, title?, description?, persona?,
   provider?, model?, avatar?, dream_enabled?, shareable?, tools?, skills?,
   notify?, approval_mode?, workdir?}` →

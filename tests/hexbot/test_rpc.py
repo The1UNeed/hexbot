@@ -45,7 +45,7 @@ def test_every_documented_method_is_registered(ctx):
     expected = {
         "hexbot.info", "hexbot.settings.get", "hexbot.settings.set",
         "hexbot.bots.list", "hexbot.bots.get", "hexbot.bots.create",
-        "hexbot.bots.update", "hexbot.bots.delete",
+        "hexbot.bots.update", "hexbot.bots.delete", "hexbot.bots.introduce",
         "hexbot.sections.list", "hexbot.sections.create", "hexbot.sections.open",
         "hexbot.sections.rename", "hexbot.sections.archive",
         "hexbot.sections.unarchive", "hexbot.sections.delete", "hexbot.sections.touch",

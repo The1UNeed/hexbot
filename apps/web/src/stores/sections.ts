@@ -8,8 +8,8 @@ import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 
 import {
+  botsIntroduce,
   messagesFromHistory,
-  promptSubmit,
   sectionsArchive,
   sectionsCreate,
   sectionsDelete,
@@ -18,7 +18,7 @@ import {
   sectionsRename,
   sectionsUnarchive
 } from '../lib/api'
-import { KICKOFF_MARKER, kickoffPrompt } from '../lib/bot-kickoff'
+import { KICKOFF_MARKER } from '../lib/bot-kickoff'
 import type { Bot, BotStatus, Section } from '../lib/types'
 
 import { draftsActions } from './drafts'
@@ -229,17 +229,14 @@ export function useLiveSessionId(sectionId: null | string): null | string {
   return useSections(state => (sectionId ? (state.liveSessionId[sectionId] ?? null) : null))
 }
 
-/** Hand a fresh bot its hidden first prompt so it greets you and asks its questions. */
-export async function introduceBot(
-  section: Section,
-  bot: Pick<Bot, 'description' | 'display_name' | 'title'>
-): Promise<void> {
+/**
+ * Ask the daemon to hand a fresh bot its hidden first prompt, so it greets
+ * you and asks its questions. The daemon attaches this client to the section
+ * before it submits, so the greeting streams here.
+ */
+export async function introduceBot(section: Section, bot: Pick<Bot, 'name'>): Promise<void> {
   try {
-    const live = section.live_session_id ?? (await sectionsActions().open(section.id)).liveSessionId
-
-    if (live) {
-      await promptSubmit(live, kickoffPrompt(bot), { display_kind: 'hidden' })
-    }
+    await botsIntroduce(bot.name, section.id)
   } catch {
     // The bot exists either way; the user can just start typing.
   }
