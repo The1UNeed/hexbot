@@ -7,6 +7,8 @@ only; the tool says so in its reply, and asks the bot to tell the user.
 
 from __future__ import annotations
 
+import json
+
 from hexbot import db, gateway
 from hexbot.errors import GatewayError
 
@@ -37,7 +39,12 @@ def _bot_for_session(session_id: str) -> str | None:
     return row["bot"] if row else None
 
 
-def soul_tool(args: dict, *, session_id: str = "", **_kwargs) -> dict:
+def soul_tool(args: dict, *, session_id: str = "", **_kwargs) -> str:
+    """Tool handler. Hermes accepts only strings, so the reply is JSON."""
+    return json.dumps(_soul(args, session_id), ensure_ascii=False)
+
+
+def _soul(args: dict, session_id: str) -> dict:
     bot = _bot_for_session(str(session_id)) if session_id else None
     if not bot:
         return {"error": "hexbot_soul could not identify the calling bot"}
@@ -56,9 +63,13 @@ def soul_tool(args: dict, *, session_id: str = "", **_kwargs) -> dict:
     if len(text) > SOUL_CAP:
         return {"error": f"the soul is {len(text)} characters; the cap is {SOUL_CAP}"}
     try:
-        gateway.call("profiles.configure", {"name": bot, "soul": text})
+        result = gateway.call("profiles.configure", {"name": bot, "soul": text})
     except GatewayError as exc:
         return {"error": exc.message}
+    # profiles.configure answers {ok, applied: {soul: bool}} and swallows the
+    # write error itself; a refused write must not read as a save.
+    if not (result.get("applied") or {}).get("soul", result.get("ok", True)):
+        return {"error": "the soul could not be written"}
     gateway.broadcast("hexbot.bots.changed", {"name": bot})
     return {"saved": True, "chars": len(text),
             "note": "Saved. It applies to new sections. Tell the user what you changed."}

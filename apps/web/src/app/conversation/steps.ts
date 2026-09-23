@@ -66,10 +66,31 @@ const record = (value: unknown): Record<string, unknown> =>
 
 const string = (value: unknown) => (typeof value === 'string' ? value : '')
 
-/** A memory tool call that Hermes rejected reports `success: false` in its JSON result. */
-const succeeded = (call: ToolCall) =>
-  call.status === 'ok' &&
-  !(typeof call.result === 'string' && /"success":\s*false/.test(call.result))
+/**
+ * Whether a call actually wrote. Restored history marks every tool row `ok`,
+ * so the result is read too: the memory tool reports `success: false`, the
+ * soul tool `error`, and both are JSON strings.
+ */
+function succeeded(call: ToolCall): boolean {
+  if (call.status !== 'ok') {
+    return false
+  }
+
+  const raw = typeof call.result === 'string' ? call.result : null
+  let body: unknown = raw ? null : call.result
+
+  if (raw) {
+    try {
+      body = JSON.parse(raw)
+    } catch {
+      return true
+    }
+  }
+
+  const result = record(body)
+
+  return result.success !== false && !('error' in result)
+}
 
 /** What one finished call wrote, in reading order for the mark's detail. */
 function markFor(call: ToolCall): MemoryMark | null {

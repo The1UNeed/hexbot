@@ -41,6 +41,13 @@ describe('memoryMarks', () => {
           toolId: 'c'
         }),
         call({ args: { action: 'add', content: 'Rejected' }, result: '{"success": false}', toolId: 'd' }),
+        // Restored history marks every row ok; the soul tool's error is in the result.
+        call({
+          args: { action: 'write', text: 'Refused' },
+          name: 'hexbot_soul',
+          result: '{"error": "the soul could not be written"}',
+          toolId: 'd2'
+        }),
         call({ args: { action: 'add', content: 'Still running' }, status: 'running', toolId: 'e' }),
         call({ args: { action: 'read' }, name: 'hexbot_soul', toolId: 'f' }),
         call({ args: { action: 'write', text: 'You are Scout, blunt.' }, name: 'hexbot_soul', toolId: 'g' })
