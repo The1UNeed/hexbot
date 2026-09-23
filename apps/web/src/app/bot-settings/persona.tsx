@@ -25,7 +25,7 @@ export function PersonaTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
     if (
       persona.trim() &&
       persona !== template.persona &&
-      !window.confirm(`Replace the persona with the ${template.title} template?`)
+      !window.confirm(`Replace the soul with the ${template.title} template?`)
     ) {
       return
     }
@@ -36,8 +36,8 @@ export function PersonaTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <Heading description="How this bot behaves and speaks. Saved when you leave the field.">
-        Persona
+      <Heading description="Who this bot is: how it behaves and speaks. The bot may edit this too, and tells you when it does. Saved when you leave the field.">
+        Soul
       </Heading>
       <div className="mb-2 flex items-center justify-between">
         <span className="text-[length:var(--text-secondary)] text-muted">
@@ -56,7 +56,7 @@ export function PersonaTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
         />
       </div>
       <Textarea
-        aria-label="Persona"
+        aria-label="Soul"
         className="min-h-[24rem] flex-1"
         onBlur={() => {
           if (persona !== bot.persona) {

@@ -14,8 +14,6 @@ import type {
   ClarifyRequestPayload,
   Connector,
   ConnectorTest,
-  CoreMemory,
-  CoreMemorySection,
   DaemonInfo,
   DaemonUpdateStatus,
   Device,
@@ -48,9 +46,15 @@ export interface HistoryRow {
 }
 
 export interface BotMemory {
-  caps: { memory_md: number; user_md: number }
+  cap: number
   memory_md: string
-  user_md: string
+}
+
+/** The About you text: written by the user, read by every one of their bots. */
+export interface UserMemory {
+  cap: number
+  text: string
+  updated_at: null | number
 }
 
 export interface ModelList {
@@ -364,23 +368,20 @@ export function sectionsTouch(id: string): Promise<{ section: Section }> {
 // Memory
 // ---------------------------------------------------------------------------
 
-export function coreMemoryGet(): Promise<CoreMemory> {
-  return rpcCall<CoreMemory>('hexbot.memory.core.get')
+export function userMemoryGet(): Promise<UserMemory> {
+  return rpcCall<UserMemory>('hexbot.memory.user.get')
 }
 
-export function coreMemorySet(section: CoreMemorySection, text: string): Promise<CoreMemory> {
-  return rpcCall<CoreMemory>('hexbot.memory.core.set', { section, text })
+export function userMemorySet(text: string): Promise<UserMemory> {
+  return rpcCall<UserMemory>('hexbot.memory.user.set', { text })
 }
 
 export function botMemoryGet(bot: string): Promise<BotMemory> {
   return rpcCall<BotMemory>('hexbot.memory.bot.get', { bot })
 }
 
-export function botMemorySet(
-  bot: string,
-  patch: { memory_md?: string; user_md?: string }
-): Promise<BotMemory> {
-  return rpcCall<BotMemory>('hexbot.memory.bot.set', { bot, ...patch })
+export function botMemorySet(bot: string, memoryMd: string): Promise<BotMemory> {
+  return rpcCall<BotMemory>('hexbot.memory.bot.set', { bot, memory_md: memoryMd })
 }
 
 // ---------------------------------------------------------------------------

@@ -35,9 +35,9 @@ The app follows the track it was installed from; switch in Settings, Updates.
 
 ## What it does
 
-- **Bots with memory.** Each bot keeps its own notes and a searchable history
-  of its conversations. A daily **dreaming** pass summarises the day. Bots
-  share a **core memory** only when you tell them to.
+- **Bots with memory.** Each bot has a soul, its own memory, and a searchable
+  history of its conversations. A daily **dreaming** pass tidies the memory.
+  One **About you** text, written by you, reaches every bot you own.
 - **Rooms.** Group chats with any number of bots and people. A **main bot**
   answers when nobody is @-mentioned; bots can address each other.
 - **Any model.** Bring keys for OpenAI, Anthropic, Google, OpenRouter, local

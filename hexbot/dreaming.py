@@ -35,14 +35,12 @@ def _cron_expression(value: str) -> str:
 
 
 def _job_prompt(bot: dict) -> str:
-    core = (" You may also write a genuinely shared fact to core memory because "
-            "your may_write_core permission is enabled." if bot.get("may_write_core") else "")
     return (
         f"This is the daily dream for Hexbot bot {bot['name']}. Call "
         f"hexbot_dream_digest with bot={json.dumps(bot['name'])}. Read its JSON digest, "
         "then use the memory tool to save only durable facts, preferences, and unfinished "
-        "work in your notes. Do not save transient chatter or duplicate existing notes."
-        f"{core} Finish with a concise markdown summary of what you kept."
+        "work in your notes. Do not save transient chatter or duplicate existing notes. "
+        "Finish with a concise markdown summary of what you kept."
     )
 
 
@@ -127,8 +125,7 @@ def build_digest(bot: dict | str, since: float) -> dict:
     from hexbot.rooms import store as rooms
 
     bot = get_bot(bot) if isinstance(bot, str) else bot
-    result = {"bot": bot["name"], "since": since, "sections": [], "rooms": [],
-              "may_write_core": bool(bot.get("may_write_core"))}
+    result = {"bot": bot["name"], "since": since, "sections": [], "rooms": []}
     state_path = _profile_home(bot["name"]) / "state.db"
     if state_path.exists():
         session_db = SessionDB(db_path=state_path, read_only=True)

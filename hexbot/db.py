@@ -7,11 +7,11 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Iterator
 
-from hexbot.home import DATABASE_NAME, ensure_layout
+from hexbot.home import DATABASE_NAME, ensure_layout, hexbot_home
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);
@@ -26,8 +26,6 @@ CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, name TEXT, platform TEXT
  last_seen_at REAL, revoked_at REAL);
 CREATE TABLE IF NOT EXISTS pairing_codes(code_hash TEXT PRIMARY KEY, created_at REAL,
  expires_at REAL, used_at REAL);
-CREATE TABLE IF NOT EXISTS core_memory(section TEXT PRIMARY KEY,
- text TEXT NOT NULL DEFAULT '', updated_at REAL);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_sections_bot ON sections(bot);
 """
@@ -41,7 +39,6 @@ _ADDED_COLUMNS: dict[int, list[tuple[str, str, str]]] = {
     2: [("sections", "title_dirty", "INTEGER NOT NULL DEFAULT 0")],
     4: [
         ("bots", "dream_enabled", "INTEGER NOT NULL DEFAULT 1"),
-        ("bots", "may_write_core", "INTEGER NOT NULL DEFAULT 0"),
         ("bots", "tools_json", "TEXT NOT NULL DEFAULT '[]'"),
         ("bots", "skills_json", "TEXT NOT NULL DEFAULT '[]'"),
     ],
@@ -95,16 +92,10 @@ CREATE INDEX IF NOT EXISTS idx_bot_messages_pair ON bot_messages(from_bot,to_bot
 CREATE TABLE IF NOT EXISTS dreams(
  id TEXT PRIMARY KEY, bot TEXT NOT NULL, room_id TEXT, started_at REAL NOT NULL,
  finished_at REAL, status TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '');
-CREATE TABLE IF NOT EXISTS memory_entries(
- id TEXT PRIMARY KEY, bot TEXT NOT NULL, section_id TEXT, room_id TEXT,
- dream_id TEXT, target TEXT NOT NULL, text TEXT NOT NULL, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS room_memory(
  room_id TEXT PRIMARY KEY, text TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL,
  FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);
 CREATE INDEX IF NOT EXISTS idx_dreams_bot_started ON dreams(bot,started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_memory_entries_section ON memory_entries(section_id);
-CREATE INDEX IF NOT EXISTS idx_memory_entries_room ON memory_entries(room_id);
-CREATE INDEX IF NOT EXISTS idx_memory_entries_dream ON memory_entries(dream_id);
 """,
     5: """
 CREATE TABLE IF NOT EXISTS users(
@@ -122,6 +113,12 @@ CREATE TABLE IF NOT EXISTS bot_incidents(
  kind TEXT NOT NULL CHECK(kind IN ('connector_error','turn_failed')), connector TEXT,
  text TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL, resolved_at REAL);
 CREATE INDEX IF NOT EXISTS idx_bot_incidents_bot_open ON bot_incidents(bot,resolved_at);
+""",
+    # v8: core memory became the per-user About you file; memory provenance
+    # tagging went away with the purge-on-delete promise.
+    8: """
+DROP TABLE IF EXISTS core_memory;
+DROP TABLE IF EXISTS memory_entries;
 """,
 }
 
@@ -153,10 +150,37 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
+def _fold_core_memory(conn: sqlite3.Connection) -> None:
+    """Write each owner's old core memory into their About you file (v8).
+
+    Runs only while the ``core_memory`` table still exists and never
+    overwrites an About you the user has already written.
+    """
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='core_memory'").fetchone():
+        return
+    columns = _columns(conn, "core_memory")
+    owner_col = "owner_id" if "owner_id" in columns else "'local'"
+    rows = conn.execute(f"SELECT {owner_col} AS owner_id, section, text FROM core_memory "
+                        "WHERE trim(text) != '' ORDER BY owner_id, section").fetchall()
+    texts: dict[str, list[str]] = {}
+    for row in rows:
+        texts.setdefault(str(row["owner_id"]), []).append(
+            f"## {str(row['section']).title()}\n{str(row['text']).strip()}")
+    for owner_id, chunks in texts.items():
+        path = hexbot_home() / "users" / owner_id / "user.md"
+        if path.exists():
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Same cap as hexbot.memory.USER_CAP; the file is the user's to trim.
+        path.write_text("\n\n".join(chunks)[:2000])
+        logger.info("hexbot db: folded core memory into About you for %s", owner_id)
+
+
 def migrate() -> None:
     """Create or upgrade the schema. Safe to call repeatedly."""
     with transaction() as conn:
         conn.executescript(_DDL)
+        _fold_core_memory(conn)
         row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
         current = int(row[0]) if row is not None else 0
         for version in range(max(current, 1) + 1, SCHEMA_VERSION + 1):
@@ -177,20 +201,6 @@ def migrate() -> None:
         # physical schema still receive every idempotent table migration.
         for ddl in _MIGRATION_DDL.values():
             conn.executescript(ddl)
-        # v5 changes core_memory's key from section to (owner_id, section).
-        # Rebuild once because SQLite cannot alter a primary key in place.
-        core_columns = _columns(conn, "core_memory")
-        if "owner_id" not in core_columns:
-            conn.executescript("""
-CREATE TABLE core_memory_v5(
- owner_id TEXT NOT NULL DEFAULT 'local', section TEXT NOT NULL,
- text TEXT NOT NULL DEFAULT '', updated_at REAL,
- PRIMARY KEY(owner_id, section));
-INSERT INTO core_memory_v5(owner_id,section,text,updated_at)
- SELECT 'local',section,text,updated_at FROM core_memory;
-DROP TABLE core_memory;
-ALTER TABLE core_memory_v5 RENAME TO core_memory;
-""")
         import time
         conn.execute(
             "INSERT OR IGNORE INTO users(id,display_name,role,limits_json,created_at) "

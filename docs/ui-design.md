@@ -162,10 +162,10 @@ The composer pill takes the same colour with a one-line notice above it
   Settings (left tabs, 208 px) over the three columns. Closing returns to
   the section that was open. `?connector=<id>` opens that connector's
   set-up sheet, which is how a "Fix Notion" action in the chat lands here.
-- Tabs: Profile (face, name, label, description, Shareable), Persona
+- Tabs: Profile (face, name, label, description, Shareable), Soul
   (full-height editor, template menu with a confirm, word count), Model
   (provider and model, curated group pinned on top, context and price
-  when known), Memory (this bot's notes and dreaming; core memory is
+  when known), Memory (this bot's memory and dreaming; About you is
   shared and links to Settings, Memory), Tools (switches grouped as
   Computer, Senses, Working with others, plus the working directory),
   Connectors (below), Skills (installed skills with switches, grouped by

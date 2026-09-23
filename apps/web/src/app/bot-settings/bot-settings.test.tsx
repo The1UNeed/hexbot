@@ -6,7 +6,7 @@ import type { Bot, Connector } from '../../lib/types'
 import { useConnectors } from '../../stores/connectors'
 
 import { ConnectorsTab } from './connectors'
-import { DreamingBlock, MemorySectionEditor } from './memory'
+import { DreamingBlock, MemoryEditor } from './memory'
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
@@ -20,7 +20,6 @@ const bot = {
   display_name: 'Scout',
   dream_enabled: true,
   last_activity_at: 0,
-  may_write_core: false,
   model: null,
   name: 'scout',
   owner_id: 'local',
@@ -76,16 +75,25 @@ function fakeRpc(handlers: Record<string, (params: Record<string, unknown>) => u
   return call
 }
 
-describe('core memory editor', () => {
-  it('shows the counter and refuses text over the section cap', () => {
+describe('memory editor', () => {
+  it('shows the counter and refuses text over the cap', () => {
     const save = vi.fn().mockResolvedValue(undefined)
-    render(<MemorySectionEditor cap={4_000} label="user" onSave={save} value="hello" />)
-    expect(screen.getByText('5 / 4000')).toBeVisible()
-    const input = screen.getByLabelText('user memory')
-    fireEvent.change(input, { target: { value: 'x'.repeat(4_001) } })
-    fireEvent.blur(input)
-    expect(screen.getByRole('alert')).toHaveTextContent('4000 characters or fewer')
+    render(<MemoryEditor cap={2_000} label="About you" onSave={save} value="hello" />)
+    expect(screen.getByText('5 / 2000')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    const input = screen.getByLabelText('About you')
+    fireEvent.change(input, { target: { value: 'x'.repeat(2_001) } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('2000 characters or fewer')
     expect(save).not.toHaveBeenCalled()
+  })
+
+  it('saves an edit', () => {
+    const save = vi.fn().mockResolvedValue(undefined)
+    render(<MemoryEditor cap={2_000} label="About you" onSave={save} value="hello" />)
+    fireEvent.change(screen.getByLabelText('About you'), { target: { value: 'Name: Alex' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(save).toHaveBeenCalledWith('Name: Alex')
   })
 })
 
@@ -104,8 +112,8 @@ describe('dreaming block', () => {
     const save = vi.fn().mockResolvedValue(undefined)
     render(<DreamingBlock bot={bot} onSave={save} />)
     expect(await screen.findByText('Dream now')).toBeEnabled()
-    fireEvent.click(screen.getByLabelText('May write core memory'))
-    expect(save).toHaveBeenCalledWith({ may_write_core: true })
+    fireEvent.click(screen.getByLabelText('Enable dreaming'))
+    expect(save).toHaveBeenCalledWith({ dream_enabled: false })
     setActiveRpc(null)
   })
 })

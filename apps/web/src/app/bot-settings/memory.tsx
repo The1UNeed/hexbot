@@ -19,83 +19,98 @@ import { Markdown } from '../conversation'
 
 import { cardClass, errorText, formatTimestamp, Heading, type SaveBot } from './shared'
 
-/** One capped core memory section, saved on blur. Used by Settings, Memory. */
-export function MemorySectionEditor({
+/** One capped memory text with a counter. Used for About you and a bot's memory. */
+export function MemoryEditor({
   cap,
   label,
   onSave,
+  rows = 6,
   value
 }: {
   cap: number
   label: string
   onSave: (value: string) => Promise<void>
+  rows?: number
   value: string
 }) {
   const [draft, setDraft] = useState(value)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => setDraft(value), [value])
   const tooLong = draft.length > cap
+  const dirty = draft !== value
+
+  const save = () => {
+    if (tooLong) {
+      return setError(`Keep this to ${cap} characters or fewer.`)
+    }
+
+    void onSave(draft).catch(cause => setError(errorText(cause)))
+  }
 
   return (
-    <label className="block">
-      <span className="mb-1.5 flex justify-between text-[length:var(--text-secondary)]">
-        <span className="font-medium capitalize">{label}</span>
+    <div>
+      <span className="mb-1.5 flex justify-end text-[length:var(--text-secondary)]">
         <span className={tooLong ? 'text-danger' : 'text-muted'}>
           {draft.length} / {cap}
         </span>
       </span>
       <Textarea
-        aria-label={`${label} memory`}
-        onBlur={() => {
-          if (tooLong) {
-            return setError(`Keep this section to ${cap} characters or fewer.`)
-          }
-
-          if (draft !== value) {
-            void onSave(draft).catch(cause => setError(errorText(cause)))
-          }
-        }}
+        aria-label={label}
         onChange={event => {
           setDraft(event.target.value)
           setError(null)
         }}
-        rows={3}
+        rows={rows}
         value={draft}
       />
-      {error && (
+      {error ? (
         <span className="mt-1 block text-[length:var(--text-meta)] text-danger" role="alert">
           {error}
         </span>
-      )}
-    </label>
+      ) : null}
+      {dirty ? (
+        <Button className="mt-3" onClick={save} variant="primary">
+          Save
+        </Button>
+      ) : null}
+    </div>
   )
 }
 
 export function MemoryTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const botName = bot.name
-  const [notes, setNotes] = useState<Awaited<ReturnType<typeof botMemoryGet>> | null>(null)
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState({ memory_md: '', user_md: '' })
+  const [memory, setMemory] = useState<Awaited<ReturnType<typeof botMemoryGet>> | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
     void botMemoryGet(botName)
-      .then(next => {
-        setNotes(next)
-        setDraft(next)
-      })
+      .then(setMemory)
       .catch(cause => setError(errorText(cause)))
   }, [botName])
 
   return (
     <div className="space-y-6">
-      <Heading description="What this bot remembers on its own. Core memory, shared by every bot, lives in Settings.">
+      <Heading description="What this bot has learned. It writes here on its own; dreaming tidies it up each day.">
         Memory
       </Heading>
+      {error ? (
+        <p className="text-danger" role="alert">
+          {error}
+        </p>
+      ) : memory ? (
+        <MemoryEditor
+          cap={memory.cap}
+          label="Bot memory"
+          onSave={async value => setMemory(await botMemorySet(botName, value))}
+          value={memory.memory_md}
+        />
+      ) : (
+        <SkeletonLines label="Loading memory" />
+      )}
       <div className={cn(cardClass, 'flex items-center justify-between gap-3 px-3 py-2.5')}>
         <span>
-          <span className="block font-medium">Core memory</span>
+          <span className="block font-medium">About you</span>
           <span className="block text-[length:var(--text-secondary)] text-muted">
-            Shared by all of your bots and injected every turn.
+            Written by you and read by all of your bots.
           </span>
         </span>
         <Link params={{ tab: 'memory' }} to="/settings/$tab">
@@ -103,70 +118,6 @@ export function MemoryTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
             Open in Settings
           </Button>
         </Link>
-      </div>
-      <div>
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="font-semibold">Bot notes</h3>
-          <Button
-            onClick={() => {
-              if (editing && notes) {
-                setDraft(notes)
-              }
-
-              setEditing(!editing)
-            }}
-            size="sm"
-            variant="ghost"
-          >
-            {editing ? 'Cancel' : 'Edit'}
-          </Button>
-        </div>
-        {error ? (
-          <p className="text-danger" role="alert">
-            {error}
-          </p>
-        ) : notes ? (
-          <>
-            <label className="mb-3 block">
-              <span className="mb-1 block text-muted">Memory</span>
-              <Textarea
-                aria-label="Bot memory notes"
-                disabled={!editing}
-                onChange={event => setDraft(value => ({ ...value, memory_md: event.target.value }))}
-                rows={6}
-                value={draft.memory_md}
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-muted">User notes</span>
-              <Textarea
-                aria-label="Bot user notes"
-                disabled={!editing}
-                onChange={event => setDraft(value => ({ ...value, user_md: event.target.value }))}
-                rows={4}
-                value={draft.user_md}
-              />
-            </label>
-            {editing && (
-              <Button
-                className="mt-3"
-                onClick={() =>
-                  void botMemorySet(botName, draft)
-                    .then(next => {
-                      setNotes(next)
-                      setEditing(false)
-                    })
-                    .catch(cause => setError(errorText(cause)))
-                }
-                variant="primary"
-              >
-                Save notes
-              </Button>
-            )}
-          </>
-        ) : (
-          <SkeletonLines label="Loading memory" />
-        )}
       </div>
       <DreamingBlock bot={bot} onSave={onSave} />
     </div>
@@ -178,7 +129,7 @@ export function DreamingBlock({
   onSave
 }: {
   bot: Bot
-  onSave: (patch: { dream_enabled?: boolean; may_write_core?: boolean }) => Promise<void> | void
+  onSave: (patch: { dream_enabled?: boolean }) => Promise<void> | void
 }) {
   const [status, setStatus] = useState<Awaited<ReturnType<typeof dreamingStatus>> | null>(null)
   const [dreams, setDreams] = useState<Awaited<ReturnType<typeof dreamingList>>['dreams']>([])
@@ -232,25 +183,15 @@ export function DreamingBlock({
     <div className="border-t border-border pt-4">
       <h3 className="font-semibold">Dreaming</h3>
       <p className="mt-1 text-[length:var(--text-secondary)] text-muted">
-        Each day, this bot reviews recent conversations and writes useful details to its notes.
+        Each day, this bot reviews recent conversations and updates its memory.
       </p>
-      <div className={cn(cardClass, 'mt-4 divide-y divide-border')}>
-        <div className="flex items-center justify-between gap-3 px-3 py-2.5">
-          <span>Enabled for this bot</span>
-          <Switch
-            aria-label="Enable dreaming"
-            checked={bot.dream_enabled ?? true}
-            onCheckedChange={checked => void onSave({ dream_enabled: checked })}
-          />
-        </div>
-        <div className="flex items-center justify-between gap-3 px-3 py-2.5">
-          <span>May write core memory</span>
-          <Switch
-            aria-label="May write core memory"
-            checked={bot.may_write_core ?? false}
-            onCheckedChange={checked => void onSave({ may_write_core: checked })}
-          />
-        </div>
+      <div className={cn(cardClass, 'mt-4 flex items-center justify-between gap-3 px-3 py-2.5')}>
+        <span>Enabled for this bot</span>
+        <Switch
+          aria-label="Enable dreaming"
+          checked={bot.dream_enabled ?? true}
+          onCheckedChange={checked => void onSave({ dream_enabled: checked })}
+        />
       </div>
       <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[length:var(--text-secondary)]">
         <dt className="text-muted">Last run</dt>

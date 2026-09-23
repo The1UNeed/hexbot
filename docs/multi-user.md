@@ -7,9 +7,9 @@ the provider keys. Owner ids exist on every row from milestone 1.
 
 - `users(id, display_name, role admin|member, created_at, disabled_at)`;
   the first user is created at onboarding as admin with id `local`.
-- Devices, bots, sections, rooms, memory rows and dreams carry `owner_id`.
-  Core memory becomes per user (`core_memory.owner_id`), and each user's
-  bots see only their owner's core memory.
+- Devices, bots, sections, rooms and dreams carry `owner_id`. About you is
+  a file per user (`users/<owner_id>/user.md`), and each user's bots see
+  only their owner's.
 - `bots.shareable` lets other members add that bot to their rooms. A shared
   bot in someone else's room keeps its owner's memory and skills; the room
   section and its usage are attributed to the inviter.

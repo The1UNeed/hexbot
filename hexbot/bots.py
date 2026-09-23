@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 _UPDATABLE = frozenset(
     {"display_name", "title", "description", "persona", "provider", "model", "avatar",
-     "dream_enabled", "may_write_core", "shareable", "tools", "skills",
+     "dream_enabled", "shareable", "tools", "skills",
      "notify", "approval_mode", "workdir"}
 )
 
@@ -225,7 +225,6 @@ def _shape(row, *, all_users=False, live=None, incidents=None) -> dict:
         "skills": json.loads(row["skills_json"] or "[]"),
         "tools": _tools(detail, row),
         "dream_enabled": bool(row["dream_enabled"]),
-        "may_write_core": bool(row["may_write_core"]),
         "shareable": bool(row["shareable"]),
         "notify": bool(row["notify"]),
         "approval_mode": row["approval_mode"] or "inherit",
@@ -384,7 +383,7 @@ def update_bot(name: str, **patch) -> dict:
     values["skills_json"] = json.dumps(list(dict.fromkeys(patch.get("skills", [])))) if "skills" in patch else None
     columns = [key for key in ("display_name", "title", "description", "dream_enabled",
                                "shareable", "notify", "approval_mode", "workdir",
-                               "may_write_core", "tools_json", "skills_json")
+                               "tools_json", "skills_json")
                if key in patch or key.removesuffix("_json") in patch]
     if columns:
         with db.transaction() as conn:

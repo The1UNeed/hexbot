@@ -10,7 +10,7 @@ One Hexbot daemon can serve a household or small group. The first user is the ad
 
 The admin manages users, provider credentials, network settings, system limits, and usage for the whole daemon. Members manage their own bots, sections, rooms, memory, and paired devices.
 
-Hexbot assigns every bot, section, room, dream, and device to a user. Members see their own items plus bots that another owner has made shareable. Each user has separate core memory, and only that user's bots receive it.
+Hexbot assigns every bot, section, room, dream, and device to a user. Members see their own items plus bots that another owner has made shareable. Each user has their own About you text, and only that user's bots receive it.
 
 ## Invite someone
 
@@ -20,7 +20,7 @@ The admin can rename or disable a user later. Disabling a user blocks their devi
 
 ## Shareable bots
 
-A bot owner can mark a bot as shareable. Other members may then add it to their rooms. The bot keeps its owner's persona, skills, and memory. It does not gain access to the room owner's core memory.
+A bot owner can mark a bot as shareable. Other members may then add it to their rooms. The bot keeps its owner's soul, skills, and memory. It does not gain access to the room owner's About you text.
 
 Usage in that room counts against the member who invited the shared bot. This keeps the cost attached to the person who started the work.
 

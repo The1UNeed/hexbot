@@ -21,7 +21,8 @@ import {
   modelsList,
   providersList,
   settingsGet,
-  settingsSet
+  settingsSet,
+  userMemorySet
 } from '../lib/api'
 import {
   avatarPng,
@@ -43,6 +44,7 @@ import { uiActions } from '../stores/ui'
 export const Route = createFileRoute('/onboarding')({ component: OnboardingPage })
 
 type OnboardingStep =
+  | 'about'
   | 'bot'
   | 'choice'
   | 'connect'
@@ -578,6 +580,81 @@ async function loadModelChoices(providers: Provider[]): Promise<ModelChoice[]> {
   })
 }
 
+/** The daemon's cap on About you (`hexbot.memory.USER_CAP`). */
+const ABOUT_CAP = 2000
+
+/** One optional text every bot will read: who the user is. Saved as About you. */
+export function AboutStep({
+  onContinue,
+  onError
+}: {
+  onContinue: () => void
+  onError: (message: string) => void
+}) {
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const save = async () => {
+    setBusy(true)
+
+    try {
+      await userMemorySet(text.trim())
+      onContinue()
+    } catch (reason) {
+      onError(String(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="w-full space-y-5 py-8">
+      <label className="block space-y-2">
+        <span className="font-medium">About you</span>
+        <span className="block text-secondary text-muted">
+          Your name, what you do, and how you like to be spoken to. Every bot you make reads
+          this. You can change it later in Settings, Memory.
+        </span>
+        <Textarea
+          aria-label="About you"
+          onChange={event => setText(event.target.value)}
+          placeholder="I'm Alex. I run a small design studio and prefer short, direct answers."
+          rows={4}
+          value={text}
+        />
+        <span
+          className={cn(
+            'block text-right text-[length:var(--text-meta)]',
+            text.length > ABOUT_CAP ? 'text-danger' : 'text-muted'
+          )}
+        >
+          {text.length} / {ABOUT_CAP}
+        </span>
+      </label>
+      <SetupActions className="pt-3">
+        <Button
+          busy={busy}
+          className={PILL}
+          data-testid="onboarding-about-continue"
+          disabled={!text.trim() || text.length > ABOUT_CAP}
+          onClick={() => void save()}
+          variant="primary"
+        >
+          Continue
+        </Button>
+        <Button
+          className={PILL}
+          data-testid="onboarding-about-skip"
+          onClick={onContinue}
+          variant="secondary"
+        >
+          Skip
+        </Button>
+      </SetupActions>
+    </div>
+  )
+}
+
 function DefaultsStep({
   configured,
   onContinue,
@@ -985,7 +1062,7 @@ function BotStep({
       </div>
       <details className="group">
         <summary className="cursor-pointer text-secondary text-muted">
-          Customise the persona
+          Customise the soul
         </summary>
         <div className="mt-3 space-y-3">
           <Input
@@ -1001,7 +1078,7 @@ function BotStep({
             value={description}
           />
           <Textarea
-            aria-label="Persona"
+            aria-label="Soul"
             onChange={event => setPersona(event.target.value)}
             placeholder="How should it think and talk?"
             value={persona}
@@ -1184,6 +1261,7 @@ function OnboardingPage() {
 
   const copy = (
     {
+      about: ['Tell your bots about you', 'A few lines every bot you make will know from the start.'],
       bot: [
         'Meet your first bot',
         'Give it a face, a name and a role. You can change all of it later.'
@@ -1220,13 +1298,17 @@ function OnboardingPage() {
         />
       ) : null}
 
-      {step === 'tools' ? <ToolsStep onContinue={() => setStep('bot')} onError={onError} /> : null}
+      {step === 'tools' ? (
+        <ToolsStep onContinue={() => setStep('about')} onError={onError} />
+      ) : null}
+
+      {step === 'about' ? <AboutStep onContinue={() => setStep('bot')} onError={onError} /> : null}
 
       {step === 'bot' ? (
         <BotStep
           configured={configured}
           defaultModel={defaultModel}
-          onBack={() => setStep('tools')}
+          onBack={() => setStep('about')}
           onCreated={(bot, section) => {
             const last = { bot: bot.name, section: section.id }
             uiActions().setLastSection(last)

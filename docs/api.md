@@ -17,9 +17,9 @@ data model. Reference for the Hermes subset: `/tmp/hexbot-notes/ws-api.md`
 | persona | profile `soul` (SOUL.md) |
 | bot model | profile `model` + `provider` |
 | avatar | profile asset `avatar` |
-| bot notes (section memory, notes part) | profile `memories/MEMORY.md` and `USER.md` |
-| section memory search | profile `state.db` FTS over its sessions |
-| core memory | per-user rows in `~/.hexbot/hexbot.db`, injected every turn by the hexbot plugin |
+| bot memory | profile `memories/MEMORY.md` (the Hermes `USER.md` target is off) |
+| history search | profile `state.db` FTS over its sessions |
+| About you | `~/.hexbot/users/<owner_id>/user.md`, injected every turn by the hexbot plugin |
 
 ## Hermes methods the client calls directly
 
@@ -66,7 +66,7 @@ user. Get and mutation methods always check ownership.
 
 Bot shape: `{name, display_name, title, description, persona, tools: [string], skills: [string], shareable,
 provider, model, avatar: {mime, data} | null, created_at, updated_at, last_activity_at,
-owner_id, dream_enabled, may_write_core, notify, approval_mode, workdir | null,
+owner_id, dream_enabled, notify, approval_mode, workdir | null,
 status, status_detail | null, sections_total, sections_recent: [Section]}`
 
 `status` is `idle`, `working`, `needs_you`, or `stopped` (priority in that
@@ -87,7 +87,7 @@ null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
   `display_name` defaults to the bot name in title case — never to `title`,
   which is free-form caller text stored verbatim.
 - `hexbot.bots.update {name, display_name?, title?, description?, persona?,
-  provider?, model?, avatar?, dream_enabled?, may_write_core?, shareable?, tools?, skills?,
+  provider?, model?, avatar?, dream_enabled?, shareable?, tools?, skills?,
   notify?, approval_mode?, workdir?}` →
   `{bot: Bot}`. `tools` accepts `terminal`, `files`, `code_execution`, `browser`,
   `computer_use`, `vision`, `voice`, `message_bots`, `delegate`, and
@@ -114,9 +114,9 @@ done_at | null, preview, message_count, live_session_id | null}`
 - `hexbot.sections.rename {id, title}` → `{section: Section}`
 - `hexbot.sections.archive {id}` / `hexbot.sections.unarchive {id}` → `{section}`
 - `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true}`
-  (closes the live session, `session.delete` on the stored row, removes
-  memory entries tagged with the section id). With `purge_memory: false`
-  only the Hexbot row goes and the Hermes transcript is left in place.
+  (closes the live session, `session.delete` on the stored row). With
+  `purge_memory: false` only the Hexbot row goes and the Hermes transcript
+  is left in place. The bot's memory is not touched either way.
 - `hexbot.sections.touch {id}` is internal; activity is stamped by the plugin
   on `message.complete`. It also sets the section's `done_at`.
 - `hexbot.sections.mark_read {id}` → `{section: Section}` clears `done_at`:
@@ -125,16 +125,13 @@ done_at | null, preview, message_count, live_session_id | null}`
 
 ### Memory
 
-- `hexbot.memory.core.get {}` → `{sections: {user, household, workspace,
-  rules}, caps: {per_section: 4000, prompt_total: 8000}, updated_at}`.
-  Each section is injected as its own Hermes plugin prompt section
-  (`hexbot.core-memory.<section>`), so each gets the registrar's full
-  4000-char allowance; `prompt_total` is Hermes'
-  `MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS` budget shared by every plugin
-  section, and sections past it are dropped in sorted-id order.
-- `hexbot.memory.core.set {section, text}` → same as get.
-- `hexbot.memory.bot.get {bot}` → `{memory_md, user_md, caps}`
-- `hexbot.memory.bot.set {bot, memory_md?, user_md?}` → same as get.
+- `hexbot.memory.user.get {}` → `{text, cap: 2000, updated_at}`. The caller's
+  About you text, injected as the Hermes plugin prompt section
+  `hexbot.about-you` into every session of a bot they own.
+- `hexbot.memory.user.set {text}` → same as get. Broadcasts
+  `hexbot.memory.user.changed`.
+- `hexbot.memory.bot.get {bot}` → `{memory_md, cap: 2200}`
+- `hexbot.memory.bot.set {bot, memory_md}` → same as get.
 
 ### Dreaming
 
@@ -308,7 +305,7 @@ budget gate.
 ### Events emitted by the plugin
 
 `hexbot.bots.changed {name}`, `hexbot.sections.changed {id, bot}`,
-`hexbot.memory.core.changed {}`, `hexbot.network.changed {}`. Session-less,
+`hexbot.memory.user.changed {}`, `hexbot.network.changed {}`. Session-less,
 broadcast to every connection.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
 Room mutations emit `hexbot.rooms.changed {id}`. Every persisted room event

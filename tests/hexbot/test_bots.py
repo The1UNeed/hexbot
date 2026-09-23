@@ -126,7 +126,7 @@ def test_bot_tools_and_skills_map_to_profile_config(gw, profiles):
         {"name": "alpha", "enabled": True}, {"name": "beta", "enabled": True}]}
     gw.calls.clear()
     bot = update_bot("scout", tools=["files", "vision"], skills=["beta"],
-                     dream_enabled=False, may_write_core=True)
+                     dream_enabled=False)
     calls = gw.params_for("profiles.configure")
     # The toolset pin is its own call (it also writes platform_toolsets.cli);
     # skills ride on the general configure call.
@@ -134,7 +134,8 @@ def test_bot_tools_and_skills_map_to_profile_config(gw, profiles):
     assert [c["disabled_skills"] for c in calls if "disabled_skills" in c] == [["alpha"]]
     assert bot["tools"] == ["files", "vision"]
     assert bot["skills"] == ["beta"]
-    assert bot["dream_enabled"] is False and bot["may_write_core"] is True
+    assert bot["dream_enabled"] is False
+    assert "may_write_core" not in bot
 
 
 def test_update_bot_rejects_unknown_fields(gw, profiles):

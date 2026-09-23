@@ -19,17 +19,13 @@ summarises them into its section memory. Facts about Hermes cron in
   transcript digest (Hermes session search over the profile's `state.db`
   by time range; capped at 12k characters per section, older parts
   summarised first), and instructs the bot to write durable facts,
-  preferences and unfinished work into its notes with the memory tool. Core
-  memory is mentioned only when the bot's `may_write_core` flag is on, and
-  then only through the explicit core action.
+  preferences and unfinished work into its memory with the memory tool. It
+  never writes the soul or About you.
 - Output delivery: `deliver: bot-chat:<profile>` is not used; instead the
   job's markdown output is posted by `hexbot/dreaming.py` into the bot's
   section titled `Dreams` (created on first use, hidden from the roster and
   reached from the bot's Memory settings) as a message from the bot,
-  so the human can read and edit what was recorded. Memory entries created
-  during the dream are tagged with the dream id in a `memory_entries`
-  table (`bot, section_id null, room_id null, dream_id, target, text`) so
-  deleting a section or room can purge derived entries.
+  so the human can read and edit what was recorded.
 - `hexbot.dreaming.run_now {bot}` triggers the job immediately through
   `cron.trigger_job`. `hexbot.dreaming.status {bot}` reports last run,
   next run and last error.
@@ -42,14 +38,7 @@ summarises them into its section memory. Facts about Hermes cron in
 The room section's shared memory is the room dream output stored in
 `room_memory(room_id, text, updated_at)` and injected into every member's
 room prompt header (capped at 3k characters). Members keep their own notes
-about the room in their section memory.
-
-## Vector memory (bundled plugin)
-
-Default-off bundled Hermes memory plugin (`plugins/memory/<choice>`), chosen
-per deployment in settings; the embedding model is a provider model from the
-configured providers or a local one. Enabled per bot. Not needed for the
-two-tier model to work; it improves recall over long histories.
+about the room in their memory.
 
 ## Milestone 4 implementation decisions
 

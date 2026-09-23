@@ -100,7 +100,7 @@ export function ProfilePanel(): React.JSX.Element {
             Bot settings
           </Button>
           <p className="mt-2 text-center text-[length:var(--text-meta)] text-muted">
-            Persona, Model, Memory, Tools, Connectors, Skills
+            Soul, Model, Memory, Tools, Connectors, Skills
           </p>
         </div>
       </div>

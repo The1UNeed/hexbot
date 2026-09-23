@@ -236,8 +236,6 @@ def delete(room_id):
             pass
     with db.transaction() as conn:
         conn.execute("DELETE FROM rooms WHERE id=?", (room_id,))
-    from hexbot.memory import purge_entries
-    purge_entries(room_id=room_id)
     return True
 
 

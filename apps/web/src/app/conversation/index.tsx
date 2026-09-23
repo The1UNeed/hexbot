@@ -824,7 +824,7 @@ function BotConversation() {
   }
 
   const remove = async () => {
-    if (!section || !window.confirm(`Delete “${section.title}”? This also purges its memory.`)) {
+    if (!section || !window.confirm(`Delete “${section.title}”? Its history goes with it.`)) {
       return
     }
 
