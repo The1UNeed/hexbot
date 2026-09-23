@@ -127,8 +127,16 @@ def test_dream_snapshots_memory_and_can_restore_it(isolated_home, monkeypatch):
     assert dream["memory_before"] == "User likes tea"
     assert dream["memory_after"] == "User likes tea\n§\nUser works in Auckland"
 
-    assert restore_dream(dream["id"])["memory_md"] == "User likes tea"
+    restored = restore_dream(dream["id"])
+    assert restored["memory_md"] == "User likes tea"
     assert get_bot_memory("scout")["memory_md"] == "User likes tea"
+    # The restore is a dream of its own, so it shows in the log and can be undone.
+    log = list_dreams("scout")["dreams"]
+    assert [entry["id"] for entry in log] == [restored["dream_id"], dream["id"]]
+    assert log[0]["summary"].startswith("Restored the memory from before the dream of")
+    assert log[0]["memory_before"] == "User likes tea\n§\nUser works in Auckland"
+    assert log[0]["memory_after"] == "User likes tea"
+    assert restore_dream(restored["dream_id"])["memory_md"] == log[0]["memory_before"]
 
     with pytest.raises(HexbotError) as caught:
         restore_dream("nope")
@@ -138,6 +146,18 @@ def test_dream_snapshots_memory_and_can_restore_it(isolated_home, monkeypatch):
     with pytest.raises(HexbotError) as caught:
         restore_dream(dream["id"])
     assert caught.value.code == 4242
+
+    # Another user's bot, and a bot that no longer exists, are refused.
+    with db.transaction() as conn:
+        conn.execute("UPDATE bots SET owner_id='u2' WHERE name='scout'")
+    with pytest.raises(HexbotError) as caught:
+        restore_dream(restored["dream_id"])
+    assert caught.value.code == 4302
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM bots WHERE name='scout'")
+    with pytest.raises(HexbotError) as caught:
+        restore_dream(restored["dream_id"])
+    assert caught.value.code == 4205
 
 
 def test_room_memory_is_capped_in_prompt(fake_gateway):

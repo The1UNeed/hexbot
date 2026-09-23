@@ -196,11 +196,17 @@ function DreamEntry({
               ))}
               <div className="sm:col-span-2">
                 <Button
-                  onClick={() =>
-                    void dreamingRestore(dream.id)
-                      .then(result => onRestored(result.memory_md))
-                      .catch(cause => setError(errorText(cause)))
-                  }
+                  onClick={() => {
+                    if (
+                      window.confirm(
+                        'Restore the memory from before this dream? The current memory is kept in the log, so you can come back to it.'
+                      )
+                    ) {
+                      void dreamingRestore(dream.id)
+                        .then(result => onRestored(result.memory_md))
+                        .catch(cause => setError(errorText(cause)))
+                    }
+                  }}
                   size="sm"
                   variant="secondary"
                 >

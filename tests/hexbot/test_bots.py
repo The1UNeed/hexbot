@@ -183,6 +183,9 @@ def test_delete_bot_closes_sessions_rows_and_profile(gw, profiles):
     from hexbot.bots import create_bot, delete_bot
 
     create_bot("scout")
+    with db.transaction() as conn:
+        conn.execute("INSERT INTO dreams(id,bot,started_at,status,summary) "
+                     "VALUES ('d1','scout',0,'complete','kept')")
     gw.calls.clear()
     assert delete_bot("scout") is True
 
@@ -192,6 +195,7 @@ def test_delete_bot_closes_sessions_rows_and_profile(gw, profiles):
     with db.transaction() as conn:
         assert conn.execute("select count(*) from bots").fetchone()[0] == 0
         assert conn.execute("select count(*) from sections").fetchone()[0] == 0
+        assert conn.execute("select count(*) from dreams").fetchone()[0] == 0
 
 
 def test_delete_bot_refuses_a_streaming_section(gw, profiles):

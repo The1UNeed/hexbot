@@ -109,9 +109,15 @@ def _memory_path(bot: str) -> Path:
     return hexbot_home() / "profiles" / bot / "memories" / "MEMORY.md"
 
 
-def _cap() -> int:
-    from tools.memory_tool import MemoryStore
-    return MemoryStore().memory_char_limit
+def _cap(bot: str) -> int:
+    """The bot's own memory limit: Hermes reads it from the profile's config."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.memory_tool import load_on_disk_store
+    token = set_hermes_home_override(str(hexbot_home() / "profiles" / bot))
+    try:
+        return load_on_disk_store().memory_char_limit
+    finally:
+        reset_hermes_home_override(token)
 
 
 def _check_bot(bot: str) -> None:
@@ -126,13 +132,13 @@ def _check_bot(bot: str) -> None:
 def get_bot_memory(bot: str) -> dict:
     _check_bot(bot)
     path = _memory_path(bot)
-    return {"memory_md": path.read_text() if path.exists() else "", "cap": _cap()}
+    return {"memory_md": path.read_text() if path.exists() else "", "cap": _cap(bot)}
 
 
 def set_bot_memory(bot: str, memory_md: str) -> dict:
     _check_bot(bot)
     memory_md = memory_md or ""
-    cap = _cap()
+    cap = _cap(bot)
     if len(memory_md) > cap:
         raise HexbotError(4221, f"memory is {len(memory_md)} characters; the cap is {cap}")
     _atomic_write(_memory_path(bot), memory_md)

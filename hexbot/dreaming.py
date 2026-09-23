@@ -340,17 +340,33 @@ def list_dreams(bot: str, limit: int = 20, *, all_users=False) -> dict:
 
 
 def restore_dream(dream_id: str) -> dict:
-    """Put the bot's memory back to what it was before ``dream_id`` ran."""
+    """Put the bot's memory back to what it was before ``dream_id`` ran.
+
+    Only the bot's owner may, and only while the bot exists. The restore is
+    logged as a dream of its own, with the memory it replaced as its
+    ``memory_before``, so the log shows it and it can be undone in turn.
+    """
+    from hexbot.bots import _row
     from hexbot.memory import set_bot_memory
     with db.transaction() as conn:
-        row = conn.execute("SELECT bot,memory_before FROM dreams WHERE id=?",
+        row = conn.execute("SELECT bot,started_at,memory_before FROM dreams WHERE id=?",
                            (dream_id,)).fetchone()
     if row is None:
         raise HexbotError(4241, f"dream not found: {dream_id}")
+    bot = _row(row["bot"])  # 4205 once the bot is gone, 4302 for another user's bot
     if row["memory_before"] is None:
         raise HexbotError(4242, "this dream did not record the memory it started from")
+    replaced = _memory_text(row["bot"])
     memory = set_bot_memory(row["bot"], row["memory_before"])
-    return {"bot": row["bot"], "memory_md": memory["memory_md"]}
+    when = datetime.fromtimestamp(row["started_at"]).strftime("%-d %B %Y, %H:%M")
+    restore_id, now = uuid.uuid4().hex, time.time()
+    with db.transaction() as conn:
+        conn.execute("INSERT INTO dreams(id,bot,room_id,started_at,finished_at,status,summary,"
+                     "owner_id,memory_before,memory_after) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     (restore_id, row["bot"], None, now, now, "complete",
+                      f"Restored the memory from before the dream of {when}.",
+                      bot["owner_id"], replaced, memory["memory_md"]))
+    return {"bot": row["bot"], "memory_md": memory["memory_md"], "dream_id": restore_id}
 
 
 DIGEST_SCHEMA = {"type": "function", "function": {"name": "hexbot_dream_digest",

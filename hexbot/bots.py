@@ -450,6 +450,8 @@ def delete_bot(name: str) -> bool:
                 conn.execute("DELETE FROM sections WHERE id=?", (item["id"],))
     with db.transaction() as conn:
         conn.execute("DELETE FROM sections WHERE bot=?", (name,))
+        # Dream rows carry two copies of the bot's memory; they go with it.
+        conn.execute("DELETE FROM dreams WHERE bot=?", (name,))
         conn.execute("DELETE FROM bots WHERE name=?", (name,))
     delete_profile(name, yes=True)
     return True
