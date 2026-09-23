@@ -235,9 +235,11 @@ The composer pill takes the same colour with a one-line notice above it
 - Empty roster: a single centred call to action to create a bot.
 - New bot: a dialog with a face and a name, nothing else (provider and
   model come from the defaults; "Change" reveals them). The bot then asks
-  the rest itself: a hidden first prompt makes it greet the user and ask
-  up to three clarify questions shaped by its name, and save the answers
-  to its memory. The room's "Room settings" (the info button in the
+  the rest itself: the client calls `hexbot.bots.introduce` once it has
+  opened the section, and the daemon's hidden first prompt
+  (`hexbot/kickoff.py`) makes the bot greet the user, ask up to three
+  clarify questions shaped by its name, and write the answers into its
+  soul and memory. The room's "Room settings" (the info button in the
   header, route `/r/$room/settings`) holds the name, the members with
   Make main and a two-step Remove, Add bot, approval mode, limits, and
   Delete room. Removing the last bot deletes the room, never the bot.

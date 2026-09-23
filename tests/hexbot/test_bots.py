@@ -343,3 +343,31 @@ def test_status_follows_live_sessions_and_incidents(gw, profiles):
 
     assert clear_status("scout")["status"] == "needs_you"
     assert incidents.open_incidents() == {}
+
+
+def test_introduce_submits_the_kickoff_hidden_into_the_bots_section(gw, profiles):
+    from hexbot.bots import create_bot
+    from hexbot.kickoff import KICKOFF_MARKER, introduce
+
+    _bot, section = create_bot("scout", display_name="Scout")
+    gw.responses["session.resume"] = {"session_id": "live1", "messages": []}
+    gw.calls.clear()
+
+    result = introduce("scout", section["id"])
+    assert result["submitted"] is True
+    [submitted] = gw.params_for("prompt.submit")
+    assert submitted["session_id"] == "live1"
+    assert submitted["display_kind"] == "hidden"
+    assert submitted["text"].startswith(f'{KICKOFF_MARKER} "Scout"')
+
+    create_bot("other")
+    with pytest.raises(HexbotError) as caught:
+        introduce("other", section["id"])
+    assert caught.value.code == 4204
+
+    # A section that already has messages is not a first run.
+    gw.responses["session.resume"] = {"session_id": "live1",
+                                      "messages": [{"role": "user", "content": "hi"}]}
+    with pytest.raises(HexbotError) as caught:
+        introduce("scout", section["id"])
+    assert caught.value.code == 4243

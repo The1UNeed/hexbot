@@ -16,7 +16,7 @@ import platform
 import socket
 import sys
 
-from hexbot import (activity, bots, connect, connectors, dreaming, memory, network, pairing,
+from hexbot import (activity, bots, connect, connectors, dreaming, kickoff, memory, network, pairing,
                     provider_login, providers, sections, settings, update, usage, users)
 from hexbot.rooms import get_engine
 from hexbot.rooms import store as rooms
@@ -209,6 +209,8 @@ METHODS = {
     "hexbot.bots.get": lambda p: {"bot": bots.get_bot(
         _required(p, "name"), all_users=bool(p.get("all")))},
     "hexbot.bots.create": _create_bot,
+    "hexbot.bots.introduce": lambda p: kickoff.introduce(
+        _required(p, "name"), _required(p, "section")),
     "hexbot.bots.update": lambda p: {"bot": bots.update_bot(
         _required(p, "name"), **_fields(p, _BOT_UPDATE_FIELDS))},
     "hexbot.bots.delete": lambda p: {"deleted": bots.delete_bot(_required(p, "name"))},
