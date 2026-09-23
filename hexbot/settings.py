@@ -28,6 +28,19 @@ DEFAULTS = {"approval_mode": "manual", "auto_approver_model": None,
 #: Hermes calls the auto-approval mode ``smart``; the Hexbot UI labels it "Auto".
 APPROVAL_MODES = ("manual", "smart", "off")
 
+#: Replaces the Hermes platform hint, which for a section (platform ``tui``,
+#: the gateway's default) tells the bot it is in a terminal where markdown does
+#: not render, and for a room (source ``hexbot_room``) says nothing. Tools are
+#: resolved under ``cli`` (``SESSION_PLATFORM``); that key plays no part in the
+#: prompt. What the user actually sees is the Hexbot chat.
+HINT_PLATFORMS = ("tui", "hexbot_room")
+PLATFORM_HINT = (
+    "You are chatting in Hexbot, a desktop app. Markdown renders with GitHub "
+    "flavor: headings, lists, tables and fenced code. To hand over a file, give "
+    "its absolute path or URL; the user opens it themselves. Scheduled jobs run "
+    "on their own and their output is not delivered back into this conversation."
+)
+
 
 def get_settings() -> dict:
     db.migrate()
@@ -103,8 +116,17 @@ def mirror_deployment_config(profile_dir: Path) -> None:
     data = data if isinstance(data, dict) else {}
     mode = override.get("approval_mode") or settings["approval_mode"]
     data.setdefault("approvals", {})["mode"] = mode
-    workdir = override.get("workdir") or settings["workspace_dir"]
-    data.setdefault("terminal", {})["cwd"] = str(Path(workdir).expanduser())
+    workdir = Path(override.get("workdir") or settings["workspace_dir"]).expanduser()
+    # A missing cwd makes Hermes fall back to the daemon's launch directory and
+    # load whatever AGENTS.md it finds there as project context.
+    try:
+        workdir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        logger.warning("could not create working directory %s", workdir)
+    data.setdefault("terminal", {})["cwd"] = str(workdir)
+    hints = data.setdefault("platform_hints", {})
+    for platform in HINT_PLATFORMS:
+        hints[platform] = {"replace": PLATFORM_HINT}
     choice = settings["auto_approver_model"]
     if choice:
         provider, _, model = str(choice).partition("/")

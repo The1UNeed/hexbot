@@ -92,6 +92,17 @@ def test_mirror_preserves_unrelated_yaml(tmp_path):
     assert data["approvals"] == {"timeout": 42, "mode": "smart"}
     assert data["auxiliary"]["approval"] == {"provider": "openai", "model": "gpt-5"}
     assert data["terminal"]["cwd"] == str(tmp_path / "work")
+    assert (tmp_path / "work").is_dir()
+    # Sections get the gateway's default platform (tui), rooms hexbot_room;
+    # the hint must land in the prompt for both.
+    from agent.system_prompt import _resolve_platform_hint
+    from types import SimpleNamespace
+    agent = SimpleNamespace(_platform_hint_overrides=data["platform_hints"])
+    for platform in ("tui", "hexbot_room"):
+        hint = _resolve_platform_hint(agent, platform, "terminal default")
+        assert hint.startswith("You are chatting in Hexbot"), platform
+        assert "terminal" not in hint
+    assert "cli" not in data["platform_hints"]
     assert "# keep me" in text
 
 
