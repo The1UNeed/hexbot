@@ -28,10 +28,12 @@ DEFAULTS = {"approval_mode": "manual", "auto_approver_model": None,
 #: Hermes calls the auto-approval mode ``smart``; the Hexbot UI labels it "Auto".
 APPROVAL_MODES = ("manual", "smart", "off")
 
-#: Replaces the Hermes ``cli`` platform hint, which tells the bot that markdown
-#: does not render and that there is no way to hand over a file. Sessions run
-#: under the ``cli`` platform only to resolve their tools (``SESSION_PLATFORM``
-#: in ``hexbot/bots.py``); what the user actually sees is the Hexbot chat.
+#: Replaces the Hermes platform hint, which for a section (platform ``tui``,
+#: the gateway's default) tells the bot it is in a terminal where markdown does
+#: not render, and for a room (source ``hexbot_room``) says nothing. Tools are
+#: resolved under ``cli`` (``SESSION_PLATFORM``); that key plays no part in the
+#: prompt. What the user actually sees is the Hexbot chat.
+HINT_PLATFORMS = ("tui", "hexbot_room")
 PLATFORM_HINT = (
     "You are chatting in Hexbot, a desktop app. Markdown renders with GitHub "
     "flavor: headings, lists, tables and fenced code. To hand over a file, give "
@@ -122,8 +124,9 @@ def mirror_deployment_config(profile_dir: Path) -> None:
     except OSError:
         logger.warning("could not create working directory %s", workdir)
     data.setdefault("terminal", {})["cwd"] = str(workdir)
-    from hexbot.bots import SESSION_PLATFORM
-    data.setdefault("platform_hints", {})[SESSION_PLATFORM] = {"replace": PLATFORM_HINT}
+    hints = data.setdefault("platform_hints", {})
+    for platform in HINT_PLATFORMS:
+        hints[platform] = {"replace": PLATFORM_HINT}
     choice = settings["auto_approver_model"]
     if choice:
         provider, _, model = str(choice).partition("/")
