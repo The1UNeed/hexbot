@@ -15,14 +15,19 @@ from pathlib import Path
 
 
 class TestHermesAgentHelpGuidance:
-    def test_skill_variant_used_when_skill_view_present(self):
-        from agent.prompt_builder import HERMES_AGENT_HELP_GUIDANCE
-        assert "skill_view(name='hermes-agent')" in HERMES_AGENT_HELP_GUIDANCE
+    # Hexbot (CORE_EDITS.md row 7): both slots carry HEXBOT_GUIDANCE, which
+    # names no tool the session might lack.
+    def test_both_slots_carry_the_hexbot_block(self):
+        from agent.prompt_builder import (HERMES_AGENT_HELP_GUIDANCE,
+                                          HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, HEXBOT_GUIDANCE)
+        assert HERMES_AGENT_HELP_GUIDANCE == HEXBOT_GUIDANCE
+        assert HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS == HEXBOT_GUIDANCE
 
     def test_no_skills_variant_has_no_skill_view_reference(self):
         from agent.prompt_builder import HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
         assert "skill_view" not in HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
-        assert "hermes-agent.nousresearch.com/docs" in HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
+        assert "hexbot.app/docs" in HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
+        assert "Hermes" not in HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
 
 
 class TestExecutionGuidanceText:

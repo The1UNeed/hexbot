@@ -795,14 +795,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         _root_str = str(get_default_hermes_root())
     else:
         _home_str = _root_str = str(get_hermes_home())
+    # Hexbot (CORE_EDITS.md row 7): a Hexbot user has bots, not profiles, and
+    # never a shell; the line keeps only the rule that matters, which is to
+    # leave other bots' files alone.
     if active_profile == "default":
         post_workspace_parts.append(
-            "Active Hermes profile: default. Other profiles (if any) live "
-            "under " + _root_str + "/profiles/<name>/. Each profile has its own "
-            "skills/, plugins/, cron/, and memories/ that affect a different "
-            "session than this one. Do not modify another profile's "
-            "skills/plugins/cron/memories unless the user explicitly directs "
-            "you to."
+            "Your own files (skills, memory, scheduled jobs) live under "
+            + _root_str + "/. Each bot's files live under " + _root_str
+            + "/profiles/<name>/ and are not yours to change unless the user "
+            "asks."
         )
     else:
         # A non-default name is only ever returned when the resolved home is
@@ -815,13 +816,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         profile_home = _home_str
         default_root = get_default_hermes_root()
         post_workspace_parts.append(
-            f"Active Hermes profile: {active_profile}. This session reads "
-            f"and writes {profile_home}/. The default "
-            f"profile's data lives at {default_root}/skills/, {default_root}/plugins/, "
-            f"{default_root}/cron/, {default_root}/memories/ — those belong to a "
-            f"different session run from a different shell. Do NOT modify "
-            f"another profile's skills/plugins/cron/memories unless the user "
-            f"explicitly directs you to."
+            f"Your own files (skills, memory, scheduled jobs) live under "
+            f"{profile_home}/. Other bots' files live under "
+            f"{default_root}/profiles/<name>/ and the daemon's under "
+            f"{default_root}/; neither is yours to change unless the user asks."
         )
 
     platform_key = (agent.platform or "").lower().strip()
