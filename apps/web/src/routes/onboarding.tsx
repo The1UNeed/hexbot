@@ -580,6 +580,9 @@ async function loadModelChoices(providers: Provider[]): Promise<ModelChoice[]> {
   })
 }
 
+/** The daemon's cap on About you (`hexbot.memory.USER_CAP`). */
+const ABOUT_CAP = 2000
+
 /** One optional text every bot will read: who the user is. Saved as About you. */
 export function AboutStep({
   onContinue,
@@ -619,13 +622,21 @@ export function AboutStep({
           rows={4}
           value={text}
         />
+        <span
+          className={cn(
+            'block text-right text-[length:var(--text-meta)]',
+            text.length > ABOUT_CAP ? 'text-danger' : 'text-muted'
+          )}
+        >
+          {text.length} / {ABOUT_CAP}
+        </span>
       </label>
       <SetupActions className="pt-3">
         <Button
           busy={busy}
           className={PILL}
           data-testid="onboarding-about-continue"
-          disabled={!text.trim()}
+          disabled={!text.trim() || text.length > ABOUT_CAP}
           onClick={() => void save()}
           variant="primary"
         >

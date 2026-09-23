@@ -143,14 +143,21 @@ def test_about_you_renders_as_one_prompt_block(isolated_home):
 
     from hexbot.memory import PROMPT_SECTION_ID, render_user_memory, set_user_memory
 
+    from hexbot import db
+    db.migrate()
+    with db.transaction() as conn:
+        conn.execute("INSERT INTO bots(name,created_at,updated_at,last_activity_at) "
+                     "VALUES ('scout',0,0,0)")
     assert is_valid_system_prompt_section_id(PROMPT_SECTION_ID)
     assert render_user_memory() == ""
-    assert render_user_memory({"session_id": "unknown"}) == ""
+    assert render_user_memory({"session_id": "unknown", "profile_name": "scout"}) == ""
 
     set_user_memory("Name: Alex")
-    block = render_user_memory({"session_id": "unknown"})
+    block = render_user_memory({"session_id": "unknown", "profile_name": "scout"})
     assert block.startswith("About you")
     assert "Name: Alex" in block
+    # A session on no bot of ours gets nothing.
+    assert render_user_memory({"session_id": "unknown", "profile_name": "default"}) == ""
 
 
 def test_bot_memory_round_trip_and_cap(isolated_home):
@@ -169,3 +176,51 @@ def test_bot_memory_round_trip_and_cap(isolated_home):
         set_bot_memory("scout", "x" * 2201)
     assert caught.value.code == 4221
     assert get_bot_memory("scout")["memory_md"] == "a\n§\nb"
+
+
+def test_v8_folds_old_core_memory_into_about_you(isolated_home):
+    from hexbot import db
+    from hexbot.memory import get_user_memory
+
+    db.migrate()
+    with db.transaction() as conn:
+        conn.executescript("""
+CREATE TABLE core_memory(owner_id TEXT NOT NULL DEFAULT 'local', section TEXT NOT NULL,
+ text TEXT NOT NULL DEFAULT '', updated_at REAL, PRIMARY KEY(owner_id, section));
+INSERT INTO core_memory VALUES ('local','user','Name: Alex',1), ('local','rules','',1),
+ ('local','workspace','Repo: /srv/hexbot',1), ('u2','user','Name: Bea',1);
+UPDATE schema_version SET version=7;
+""")
+    db.migrate()
+
+    assert get_user_memory(owner_id="local", _trusted=True)["text"] == (
+        "## User\nName: Alex\n\n## Workspace\nRepo: /srv/hexbot")
+    assert (isolated_home / "users" / "u2" / "user.md").read_text() == "## User\nName: Bea"
+    with db.transaction() as conn:
+        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='core_memory'").fetchone()
+
+    # A second run finds no table and leaves the files alone.
+    (isolated_home / "users" / "local" / "user.md").write_text("edited")
+    db.migrate()
+    assert get_user_memory(owner_id="local", _trusted=True)["text"] == "edited"
+
+
+def test_about_you_follows_the_bots_owner_outside_sections(isolated_home):
+    """A dream runs on the bot's profile with no section; the owner comes from the bot."""
+    from hexbot import db
+    from hexbot.memory import render_user_memory, set_user_memory
+
+    db.migrate()
+    with db.transaction() as conn:
+        conn.execute("INSERT INTO users(id,display_name,role,limits_json,created_at) "
+                     "VALUES ('u2','Bea','member','{}',0)")
+        conn.execute("INSERT INTO bots(name,owner_id,created_at,updated_at,last_activity_at) "
+                     "VALUES ('beabot','u2',0,0,0)")
+    set_user_memory("Name: Alex")
+    (isolated_home / "users" / "u2").mkdir(parents=True, exist_ok=True)
+    (isolated_home / "users" / "u2" / "user.md").write_text("Name: Bea")
+
+    dream = render_user_memory({"session_id": "cron-turn-1", "profile_name": "beabot"})
+    assert "Name: Bea" in dream and "Name: Alex" not in dream
+    # An unknown profile gets nothing rather than the admin's text.
+    assert render_user_memory({"session_id": "cron-turn-2", "profile_name": "ghost"}) == ""

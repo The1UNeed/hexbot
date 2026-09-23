@@ -87,9 +87,15 @@ def test_about_you_is_registered_as_one_prompt_section(ctx):
     assert section_id == "hexbot.about-you"
     assert position in SYSTEM_PROMPT_SECTION_POSITIONS
     assert USER_CAP < max_chars <= MAX_SYSTEM_PROMPT_SECTION_CHARS
-    assert render({}) == ""
+    from hexbot import db
+    with db.transaction() as conn:
+        conn.execute("INSERT INTO bots(name,created_at,updated_at,last_activity_at) "
+                     "VALUES ('scout',0,0,0)")
+    session = {"session_id": "s-1", "profile_name": "scout"}
+    assert render(session) == ""
     set_user_memory("Repo: /srv/hexbot")
-    assert "Repo: /srv/hexbot" in render({})
+    assert "Repo: /srv/hexbot" in render(session)
+    assert render({}) == ""
 
 
 def test_dream_digest_tool_is_registered(ctx):

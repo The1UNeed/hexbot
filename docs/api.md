@@ -305,7 +305,7 @@ budget gate.
 ### Events emitted by the plugin
 
 `hexbot.bots.changed {name}`, `hexbot.sections.changed {id, bot}`,
-`hexbot.memory.core.changed {}`, `hexbot.network.changed {}`. Session-less,
+`hexbot.memory.user.changed {}`, `hexbot.network.changed {}`. Session-less,
 broadcast to every connection.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
 Room mutations emit `hexbot.rooms.changed {id}`. Every persisted room event

@@ -63,26 +63,41 @@ def set_user_memory(text: str, *, owner_id=None) -> dict:
 
 
 def _session_owner(session_info) -> str | None:
-    """The owner of the bot behind a Hermes session, section or room."""
-    session_id = (session_info or {}).get("session_id") if isinstance(session_info, dict) else None
-    if not session_id:
+    """The owner of the bot behind a Hermes session: a section, a room, or
+    any other turn on a bot's profile (a dream)."""
+    if not isinstance(session_info, dict):
         return None
-    from hexbot.sections import section_for_session
-    row = section_for_session(str(session_id))
-    with db.transaction() as conn:
+    session_id = str(session_info.get("session_id") or "")
+    bot_name = None
+    if session_id:
+        from hexbot.sections import section_for_session
+        row = section_for_session(session_id)
         if row is not None:
-            bot = conn.execute("SELECT owner_id FROM bots WHERE name=?", (row["bot"],)).fetchone()
+            bot_name = row["bot"]
         else:
-            bot = conn.execute(
-                "SELECT b.owner_id FROM room_sessions rs JOIN bots b ON b.name=rs.bot "
-                "WHERE rs.stored_session_id=? OR rs.live_session_id=? LIMIT 1",
-                (session_id, session_id)).fetchone()
+            with db.transaction() as conn:
+                room = conn.execute(
+                    "SELECT bot FROM room_sessions WHERE stored_session_id=? "
+                    "OR live_session_id=? LIMIT 1", (session_id, session_id)).fetchone()
+            bot_name = room["bot"] if room else None
+    bot_name = bot_name or session_info.get("profile_name")
+    if not bot_name:
+        return None
+    with db.transaction() as conn:
+        bot = conn.execute("SELECT owner_id FROM bots WHERE name=?", (bot_name,)).fetchone()
     return bot[0] if bot else None
 
 
 def render_user_memory(session_info=None) -> str:
-    """Render the session owner's About you text as a prompt block, or ""."""
-    text = get_user_memory(owner_id=_session_owner(session_info), _trusted=True)["text"].strip()
+    """Render the session owner's About you text as a prompt block, or "".
+
+    A session that belongs to no bot (the root profile, an unknown one) gets
+    nothing rather than the admin's text.
+    """
+    owner_id = _session_owner(session_info)
+    if not owner_id:
+        return ""
+    text = get_user_memory(owner_id=owner_id, _trusted=True)["text"].strip()
     return f"{ABOUT_YOU_TITLE}\n\n{text}" if text else ""
 
 

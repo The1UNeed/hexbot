@@ -7,7 +7,7 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Iterator
 
-from hexbot.home import DATABASE_NAME, ensure_layout
+from hexbot.home import DATABASE_NAME, ensure_layout, hexbot_home
 
 logger = logging.getLogger(__name__)
 
@@ -150,10 +150,37 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
+def _fold_core_memory(conn: sqlite3.Connection) -> None:
+    """Write each owner's old core memory into their About you file (v8).
+
+    Runs only while the ``core_memory`` table still exists and never
+    overwrites an About you the user has already written.
+    """
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='core_memory'").fetchone():
+        return
+    columns = _columns(conn, "core_memory")
+    owner_col = "owner_id" if "owner_id" in columns else "'local'"
+    rows = conn.execute(f"SELECT {owner_col} AS owner_id, section, text FROM core_memory "
+                        "WHERE trim(text) != '' ORDER BY owner_id, section").fetchall()
+    texts: dict[str, list[str]] = {}
+    for row in rows:
+        texts.setdefault(str(row["owner_id"]), []).append(
+            f"## {str(row['section']).title()}\n{str(row['text']).strip()}")
+    for owner_id, chunks in texts.items():
+        path = hexbot_home() / "users" / owner_id / "user.md"
+        if path.exists():
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Same cap as hexbot.memory.USER_CAP; the file is the user's to trim.
+        path.write_text("\n\n".join(chunks)[:2000])
+        logger.info("hexbot db: folded core memory into About you for %s", owner_id)
+
+
 def migrate() -> None:
     """Create or upgrade the schema. Safe to call repeatedly."""
     with transaction() as conn:
         conn.executescript(_DDL)
+        _fold_core_memory(conn)
         row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
         current = int(row[0]) if row is not None else 0
         for version in range(max(current, 1) + 1, SCHEMA_VERSION + 1):
