@@ -17,6 +17,7 @@ import { roomFailure, roomStatus, useRooms } from '../../stores/rooms'
 import { useTranscripts } from '../../stores/transcripts'
 
 import { composerFieldClass, ComposerShell } from './composer'
+import { MemoryMarks } from './memory-marks'
 import { WorkStatus } from './work-status'
 
 import { bubbleClass, DaySeparator, Markdown, transcriptClass, userBubbleClass } from './index'
@@ -289,6 +290,7 @@ export function RoomConversation() {
                     </div>
                   </article>
                 ) : null}
+                {message ? <MemoryMarks message={message} /> : null}
               </div>
             )
           })}

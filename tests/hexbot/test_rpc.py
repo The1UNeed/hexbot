@@ -99,9 +99,11 @@ def test_about_you_is_registered_as_one_prompt_section(ctx):
 
 
 def test_dream_digest_tool_is_registered(ctx):
-    assert [tool["name"] for tool in ctx.tools] == ["message_bot", "hexbot_dream_digest"]
+    assert [tool["name"] for tool in ctx.tools] == [
+        "message_bot", "hexbot_dream_digest", "hexbot_soul"]
     dream = ctx.tools[1]
     assert dream["toolset"] == "hexbot"
+    assert ctx.tools[2]["toolset"] == "hexbot-soul"
     assert dream["schema"]["function"]["parameters"]["required"] == ["bot"]
 
 

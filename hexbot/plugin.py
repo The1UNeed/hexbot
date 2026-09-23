@@ -125,6 +125,11 @@ def register(ctx):
         from hexbot.dreaming import DIGEST_SCHEMA, dream_digest
         ctx.register_tool(name="hexbot_dream_digest", toolset="hexbot",
                           schema=DIGEST_SCHEMA, handler=dream_digest)
+        # Its own toolset, never listed in ``known_plugin_toolsets``, so Hermes
+        # keeps it on for every bot regardless of the Tools page.
+        from hexbot.soul import SCHEMA as SOUL_SCHEMA, soul_tool
+        ctx.register_tool(name="hexbot_soul", toolset="hexbot-soul", schema=SOUL_SCHEMA,
+                          handler=soul_tool)
     from hexbot.connectors import gate_tools
     gate_tools()
     # Constructing the singleton performs restart reconciliation, then starts

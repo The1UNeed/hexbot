@@ -9,6 +9,7 @@ const VERBS: Record<string, [live: string, done: string]> = {
   cronjob_manage: ['Scheduling', 'Scheduled'],
   delegate_task: ['Delegating', 'Delegated'],
   execute_code: ['Running code', 'Ran code'],
+  hexbot_soul: ['Updating soul', 'Updated soul'],
   image_generate: ['Generating an image', 'Generated an image'],
   memory: ['Updating memory', 'Updated memory'],
   patch: ['Editing', 'Edited'],
@@ -46,12 +47,88 @@ const PREVIEW: Record<string, string> = {
 export const QUIET_TOOLS = new Set([
   // The question card is the clarify tool's whole UI; a step row would repeat it.
   'clarify',
+  // Memory and soul writes get their own marks under the bubble (memoryMarks).
+  'hexbot_soul',
   'memory',
   'session_search',
   'skill_view',
   'skills_list',
   'todo_list'
 ])
+
+export interface MemoryMark {
+  kind: 'memory' | 'soul'
+  text: string
+}
+
+const record = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+
+const string = (value: unknown) => (typeof value === 'string' ? value : '')
+
+/**
+ * Whether a call actually wrote. Restored history marks every tool row `ok`,
+ * so the result is read too: the memory tool reports `success: false`, the
+ * soul tool `error`, and both are JSON strings.
+ */
+function succeeded(call: ToolCall): boolean {
+  if (call.status !== 'ok') {
+    return false
+  }
+
+  const raw = typeof call.result === 'string' ? call.result : null
+  let body: unknown = raw ? null : call.result
+
+  if (raw) {
+    try {
+      body = JSON.parse(raw)
+    } catch {
+      return true
+    }
+  }
+
+  const result = record(body)
+
+  return result.success !== false && !('error' in result)
+}
+
+/** What one finished call wrote, in reading order for the mark's detail. */
+function markFor(call: ToolCall): MemoryMark | null {
+  if (!succeeded(call)) {
+    return null
+  }
+
+  const args = record(call.args)
+
+  if (call.name === 'hexbot_soul') {
+    const text = string(args.text)
+
+    return args.action === 'write' && text ? { kind: 'soul', text } : null
+  }
+
+  if (call.name !== 'memory') {
+    return null
+  }
+
+  const operations = Array.isArray(args.operations) ? args.operations.map(record) : [args]
+
+  const lines = operations.flatMap(operation => {
+    const written = string(operation.content) || string(operation.new_text)
+    const removed = string(operation.old_text)
+
+    return written ? [written] : removed ? [`Removed: ${removed}`] : []
+  })
+
+  return lines.length ? { kind: 'memory', text: lines.join('\n') } : null
+}
+
+/** Every memory or soul write the turn made, in order. */
+export const memoryMarks = (message: Message): MemoryMark[] =>
+  message.toolCalls.flatMap(call => {
+    const mark = markFor(call)
+
+    return mark ? [mark] : []
+  })
 
 const humanize = (name: string) => name.replace(/[_-]+/g, ' ').trim() || 'tool'
 
