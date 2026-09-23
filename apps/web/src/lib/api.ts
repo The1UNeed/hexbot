@@ -268,6 +268,9 @@ export interface Dream {
   finished_at?: null | number
   status: string
   summary: string
+  /** The bot's memory file when the dream started and when it finished. */
+  memory_before?: null | string
+  memory_after?: null | string
 }
 export const dreamingStatus = (bot: string) =>
   rpcCall<DreamStatus>('hexbot.dreaming.status', { bot })
@@ -275,6 +278,9 @@ export const dreamingRunNow = (bot: string) =>
   rpcCall<{ job: unknown }>('hexbot.dreaming.run_now', { bot })
 export const dreamingList = (bot: string, limit = 10) =>
   rpcCall<{ dreams: Dream[] }>('hexbot.dreaming.list', { bot, limit })
+/** Put the bot's memory back to what it was before this dream. */
+export const dreamingRestore = (id: string) =>
+  rpcCall<{ bot: string; memory_md: string }>('hexbot.dreaming.restore', { id })
 
 export interface ConnectStatus {
   registered: boolean

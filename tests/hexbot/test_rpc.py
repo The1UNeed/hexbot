@@ -67,6 +67,7 @@ def test_every_documented_method_is_registered(ctx):
         "hexbot.rooms.stop", "hexbot.rooms.archive", "hexbot.rooms.delete",
             "hexbot.rooms.mark_read", "hexbot.activity.pairs", "hexbot.activity.list",
             "hexbot.dreaming.status", "hexbot.dreaming.run_now", "hexbot.dreaming.list",
+            "hexbot.dreaming.restore",
             "hexbot.users.me", "hexbot.users.list", "hexbot.users.invite",
             "hexbot.users.update", "hexbot.usage.summary",
             "hexbot.bots.clear_status", "hexbot.connectors.list", "hexbot.connectors.setup",

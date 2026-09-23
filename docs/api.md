@@ -139,8 +139,16 @@ done_at | null, preview, message_count, live_session_id | null}`
   last_status, last_error}`.
 - `hexbot.dreaming.run_now {bot}` → `{job}`. The profile's `hexbot-dream` job
   runs on the next cron tick.
-- `hexbot.dreaming.list {bot, limit?}` → `{dreams: [...]}`. `limit` defaults to
-  20 and is capped at 200.
+- `hexbot.dreaming.list {bot, limit?}` → `{dreams: [{id, bot, room_id,
+  started_at, finished_at, status, summary, memory_before, memory_after}]}`.
+  `limit` defaults to 20 and is capped at 200. `memory_before` and
+  `memory_after` are the bot's `MEMORY.md` when the dream started and
+  finished.
+- `hexbot.dreaming.restore {id}` → `{bot, memory_md, dream_id}` writes
+  `memory_before` back as the bot's memory. Owner only, and only while the
+  bot exists. The restore is logged as a dream of its own (`dream_id`) whose
+  `memory_before` is the memory it replaced, so it can be undone in turn.
+  Broadcasts `hexbot.dreaming.changed`.
 
 ### Rooms
 
