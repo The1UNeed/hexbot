@@ -91,7 +91,8 @@ null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
   hidden first prompt (`hexbot/kickoff.py`): a one-line greeting and up to
   three clarify questions about what the bot is for, whose answers it writes
   into its soul and memory. Clients call it right after `hexbot.bots.create`,
-  once they have navigated to the section.
+  once they have navigated to the section. Refused (4243) once the section
+  has messages.
 - `hexbot.bots.update {name, display_name?, title?, description?, persona?,
   provider?, model?, avatar?, dream_enabled?, shareable?, tools?, skills?,
   notify?, approval_mode?, workdir?}` →

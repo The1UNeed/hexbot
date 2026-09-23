@@ -364,3 +364,10 @@ def test_introduce_submits_the_kickoff_hidden_into_the_bots_section(gw, profiles
     with pytest.raises(HexbotError) as caught:
         introduce("other", section["id"])
     assert caught.value.code == 4204
+
+    # A section that already has messages is not a first run.
+    gw.responses["session.resume"] = {"session_id": "live1",
+                                      "messages": [{"role": "user", "content": "hi"}]}
+    with pytest.raises(HexbotError) as caught:
+        introduce("scout", section["id"])
+    assert caught.value.code == 4243

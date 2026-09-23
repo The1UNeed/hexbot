@@ -23,7 +23,7 @@ def kickoff_prompt(bot: dict) -> str:
     about = ". ".join(part.strip() for part in (bot.get("title"), bot.get("description"))
                       if part and part.strip())
     fit = "the name and that description" if about else "the name"
-    quoted = json.dumps(name)
+    quoted = json.dumps(name, ensure_ascii=False)
     lines = [
         f"{KICKOFF_MARKER} {quoted}. The user is meeting you for the first time.",
         *([f"The user described you as: {about}"] if about else []),
@@ -55,11 +55,14 @@ def introduce(name: str, section_id: str) -> dict:
     client that asked for the introduction is the one that sees it stream.
     """
     from hexbot.bots import get_bot
+    from hexbot.errors import HexbotError
     bot = get_bot(name)
-    row = sections.open_section(section_id)["section"]
+    opened = sections.open_section(section_id)
+    row = opened["section"]
     if row["bot"] != name:
-        from hexbot.errors import HexbotError
         raise HexbotError(4204, f"section {section_id} does not belong to {name}")
+    if opened["messages"]:
+        raise HexbotError(4243, "the section already has messages; the kickoff is for a new one")
     live = row.get("live_session_id") or sections.live_id(section_id)
     gateway.call("prompt.submit", {"session_id": live, "text": kickoff_prompt(bot),
                                    "display_kind": "hidden"})
