@@ -1,0 +1,65 @@
+---
+import Base from '../layouts/Base.astro'
+import { toolGroups } from '../lib/tools'
+
+const description = 'Every tool a Hexbot bot can use: terminal, files, code, browser, rooms, memory, web search, image generation, Notion, Home Assistant, MCP servers, and more.'
+const list = {
+  '@context': 'https://schema.org',
+  '@type': 'ItemList',
+  name: 'Hexbot tools',
+  itemListElement: toolGroups.flatMap(group => group.tools).map((tool, i) => ({ '@type': 'ListItem', position: i + 1, name: tool.name, description: tool.does })),
+}
+---
+<Base title="Tools" description={description} jsonLd={[list]}>
+  <section class="mx-auto max-w-[1120px] px-5 pt-10 sm:px-8 lg:pt-16">
+    <h1 class="display text-[clamp(2.75rem,7vw,4.25rem)]">What your bots can do</h1>
+    <p class="lede mt-4">Each bot runs on the machine you install Hexbot on, with real tools. Switch any of them off per bot in Bot settings, Tools.</p>
+    <nav aria-label="Tool groups" class="mt-8 flex flex-wrap gap-2">
+      {toolGroups.map(group => <a class="pill" href={`#${group.id}`}>{group.title}</a>)}
+      <a class="pill" href="#models">Models</a>
+      <a class="pill" href="#approvals">Approvals</a>
+    </nav>
+  </section>
+
+  <section class="mx-auto max-w-[1120px] px-5 pt-12 sm:px-8">
+    <figure class="shot"><img src="/screens/tools.webp" width="1800" height="1326" alt="Ledger's Tools settings in Hexbot: Terminal, Files, Code execution, Browser, Computer use, Vision, Voice, Message other bots, and Delegate, each with a switch." fetchpriority="high" /></figure>
+  </section>
+
+  {toolGroups.map(group => (
+    <section id={group.id} class="mx-auto grid max-w-[1120px] scroll-mt-8 gap-6 px-5 pt-20 sm:px-8 lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)] lg:gap-16">
+      <div>
+        <h2 class="display-sm text-[clamp(1.75rem,4vw,2.25rem)]">{group.title}</h2>
+        <p class="mt-3 text-mute">{group.summary}</p>
+      </div>
+      <dl class="border-t border-line">
+        {group.tools.map(tool => (
+          <div class="grid gap-1 border-b border-line py-4 sm:grid-cols-[11rem_1fr] sm:gap-6">
+            <dt class="font-semibold">{tool.name}</dt>
+            <dd>{tool.does}{tool.note && <span class="mt-0.5 block text-[15px] text-mute">{tool.note}</span>}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  ))}
+
+  <section id="models" class="mx-auto grid max-w-[1120px] scroll-mt-8 items-center gap-10 px-5 pt-24 sm:px-8 lg:grid-cols-2 lg:gap-16">
+    <div>
+      <h2 class="display-sm text-[clamp(1.75rem,4vw,2.25rem)]">Any model you already pay for</h2>
+      <p class="mt-4">More than 50 model providers. Sign in with a ChatGPT, SuperGrok, or Nous Portal subscription, or paste an API key for Anthropic, OpenAI, Google, xAI, OpenRouter, DeepSeek, and the rest. Run local models through Ollama or LM Studio.</p>
+      <p class="mt-4 text-mute">Each bot picks its own model, and a fallback model takes over when a provider is down. <a href="/docs/providers/">Providers and billing</a></p>
+    </div>
+    <figure class="shot bg-paper"><img src="/screens/providers.webp" width="1100" height="1113" alt="Hexbot's Connect a provider screen listing subscriptions and API key providers." loading="lazy" /></figure>
+  </section>
+
+  <section id="approvals" class="mx-auto max-w-[1120px] scroll-mt-8 px-5 pt-24 sm:px-8">
+    <div class="rounded-[20px] bg-wash p-6 sm:p-10">
+      <h2 class="display-sm text-[clamp(1.75rem,4vw,2.25rem)]">You decide what runs</h2>
+      <div class="mt-6 grid gap-6 sm:grid-cols-3">
+        <div><h3 class="font-semibold">Manual</h3><p class="mt-1 text-mute">The default. A risky command or script waits until you approve it.</p></div>
+        <div><h3 class="font-semibold">Auto</h3><p class="mt-1 text-mute">A small model approves the low-risk actions and asks you about the rest.</p></div>
+        <div><h3 class="font-semibold">Off</h3><p class="mt-1 text-mute">Nothing asks. For a machine where the bots can do no harm.</p></div>
+      </div>
+      <p class="mt-6 text-[15px] text-mute">Set it for the whole install, then override it per bot. <a href="/docs/approvals/">Approvals and Auto mode</a></p>
+    </div>
+  </section>
+</Base>

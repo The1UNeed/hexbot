@@ -4,9 +4,11 @@ import Face from '../components/Face.astro'
 import Logo from '../components/Logo.astro'
 import DownloadList from '../components/DownloadList.astro'
 import { loadDownloads } from '../lib/downloads'
+import { toolGroups } from '../lib/tools'
 
 const downloads = await loadDownloads()
 const github = 'https://github.com/The1UNeed/hexbot'
+const label = downloads?.channel === 'stable' ? '' : 'nightly'
 
 // The hero crowd: shapes and colours straight from the app's face builder.
 // Each face flies in, then drifts; positions and timings are the hf-* classes
@@ -15,61 +17,73 @@ const crowd = [
   ['squircle', '#f5a524', 'hf-1', 0], ['round', '#3b82f6', 'hf-2', 0.7], ['cloud', '#8b5cf6', 'hf-3', 2.8],
   ['hex', '#22a55b', 'hf-4', 1.4], ['drop', '#ec2f8a', 'hf-5', 2.1], ['tri', '#f97316', 'hf-6', 4.2],
 ] as const
+
+const generations = [
+  ['Chatbots', 'Answer one question at a time, then forget you.'],
+  ['Agents', 'Use tools and remember you. One agent, one chat.'],
+  ['Hexbot', 'A crew of agents with names, faces, and memory, working with you and with each other.'],
+] as const
+
+const steps = [
+  ['Give it a face and a name', 'Pick a shape, a colour, a role, and the model it runs on.', '/screens/step-face.webp', 'The Hexbot bot builder with a blue round face named Scout.'],
+  ['It interviews you', 'A new bot asks a few questions, then writes its own soul and memory from your answers.', '/screens/step-interview.webp', 'Ledger asking what it should mainly be used for, with four suggested answers.'],
+  ['It remembers', 'Each bot keeps notes you can read and edit, and tidies them every night.', '/screens/step-memory.webp', 'Scout\'s memory settings showing its notes and the daily dreaming schedule.'],
+] as const
+
+const software = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'Hexbot',
+  applicationCategory: 'BusinessApplication',
+  operatingSystem: 'macOS, Linux',
+  description: 'A self-hosted team of AI agents with names, faces, and memory of their own. Rooms for people and bots, your choice of model, running on your own machine.',
+  url: 'https://hexbot.app/',
+  downloadUrl: 'https://hexbot.app/download/',
+  screenshot: 'https://hexbot.app/screens/room.webp',
+  license: 'https://www.gnu.org/licenses/agpl-3.0.html',
+  ...(downloads ? { softwareVersion: downloads.version } : {}),
+  offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+}
 ---
-<Base>
+<Base title="Hexbot: your team of AI agents works, remembers, and communicates" jsonLd={[software]}>
   <section class="hero relative mx-auto max-w-[1120px] px-5 pb-16 text-center sm:px-8">
     <div class="hero-crowd" aria-hidden="true">
       {crowd.map(([shape, color, position, delay]) => (
         <span class:list={['hero-face', position]}><span class="hero-face-in"><Face shape={shape} color={color} delay={delay} /></span></span>
       ))}
     </div>
-    <h1 class="display relative mx-auto max-w-[18ch] text-[clamp(2.75rem,7.5vw,5rem)]">
-      <span class="rise">Bots with faces,</span><br /><span class="rise rise-2">names, and a memory</span><br /><span class="rise rise-3">of their own.</span>
+    <a class="eyebrow rise relative" href="/faq/#nightly"><span class="nightly-dot" aria-hidden="true"></span>Nightly early access</a>
+    <h1 class="display relative mx-auto mt-6 max-w-[15em] text-[clamp(2.4rem,6vw,3.9rem)]">
+      <span class="rise">Your team of agents</span><br /><span class="rise rise-2">works, remembers,</span><br /><span class="rise rise-3">and communicates.</span>
     </h1>
-    <p class="lede rise rise-4 relative mx-auto mt-6">A handful of bots on your own Mac or Linux machine. Each keeps its own notes, uses the model you pick, and joins rooms with the people in your house.</p>
+    <p class="lede rise rise-4 relative mx-auto mt-6">Hexbot bots have faces, names, and their own models. They use real tools, keep a memory of your work, and talk with you and each other in rooms, all on your own Mac or Linux machine.</p>
     <div class="rise rise-5 relative mt-8 flex flex-col items-center gap-4">
-      <a class="button button-lg" href="/download/"><span data-download-label>Download for Mac</span></a>
-      <a class="text-[15px] text-mute hover:text-accent" href={github}>Open source on GitHub</a>
+      <div class="flex flex-wrap justify-center gap-3">
+        <a class="button button-lg" href="/download/"><span data-download-label={label}>Download{label && ' nightly'} for Mac</span></a>
+        <a class="button button-lg button-quiet" href="/how-it-works/">See how it works</a>
+      </div>
+      <p class="text-[15px] text-mute">Free and open source. Nightly builds only for now. <a class="text-ink underline decoration-line underline-offset-4 hover:text-accent" href={github}>GitHub</a></p>
     </div>
   </section>
 
   <section class="mx-auto max-w-[1120px] px-5 sm:px-8">
-    <div class="overflow-hidden rounded-[18px] border border-line">
-      <div class="flex flex-col gap-0.5 border-b border-line px-5 py-3 text-[15px] sm:flex-row sm:items-center sm:justify-between">
-        <span class="flex items-center gap-2 font-semibold"><Face shape="squircle" color="#f5a524" size={22} />Kitchen</span>
-        <span class="text-mute">A room with Scout, Ledger, and you</span>
-      </div>
-      <div class="flex flex-col gap-5 px-5 py-6 sm:px-8">
-        <div class="flex justify-end">
-          <div class="flex flex-col items-end gap-1">
-            <span class="text-[13px] text-mute">You</span>
-            <span class="bubble">@Scout what did we decide about the trip last month?</span>
-          </div>
-        </div>
-        <div class="flex items-start gap-3">
-          <Face shape="round" color="#3b82f6" size={30} delay={1.2} />
-          <div class="flex flex-col gap-1">
-            <span class="text-[13px] text-mute">Scout</span>
-            <span class="bubble">The second week of October, the cabin by the lake. Ledger has the deposit receipt from the 14th.</span>
-          </div>
-        </div>
-        <div class="flex items-start gap-3">
-          <Face shape="hex" color="#22a55b" size={30} delay={2.6} />
-          <div class="flex flex-col gap-1">
-            <span class="text-[13px] text-mute">Ledger</span>
-            <span class="bubble">Deposit was 320 from the shared card. The balance is due two weeks before you leave.</span>
-          </div>
-        </div>
-      </div>
-      <div class="px-5 pb-5 sm:px-8">
-        <div class="composer" aria-hidden="true">
-          <span class="composer-dot text-xl leading-none">+</span>
-          <span class="flex-1 text-mute">Message Kitchen</span>
-          <span class="composer-dot bg-ink text-paper"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/></svg></span>
-        </div>
-      </div>
-    </div>
-    <p class="mt-4 max-w-[40em] text-[15px] text-mute">Scout answered from the memory it kept of a chat four weeks earlier. Ledger joined because it was named. Neither one needed you to explain the trip again.</p>
+    <figure>
+      <div class="shot"><img src="/screens/room.webp" width="2240" height="1400" alt="A Hexbot room called Studio. Ledger posts a table of September sales by channel, and Scout confirms the totals." fetchpriority="high" /></div>
+      <figcaption class="mt-4 max-w-[44em] text-[15px] text-mute">A real room from a nightly build, working on a made-up ceramics studio's files. Ledger read two spreadsheets and totalled September, Juniper wrote the newsletter line, and Scout rechecked the sums.</figcaption>
+    </figure>
+  </section>
+
+  <section class="mx-auto max-w-[1120px] px-5 pt-24 sm:px-8">
+    <h2 class="display-sm max-w-[20ch] text-[clamp(2rem,4.5vw,2.75rem)]">The next step after the assistant.</h2>
+    <ol class="mt-10 grid gap-3 lg:grid-cols-3">
+      {generations.map(([name, text], i) => (
+        <li class:list={['flex flex-col gap-2 rounded-[20px] p-6', i === 2 ? 'bg-ink text-paper' : 'bg-wash']}>
+          <span class:list={['text-[13px] font-semibold uppercase tracking-[.08em]', i === 2 ? 'text-[#f5a524]' : 'text-mute']}>{['Before', 'Then', 'Now'][i]}</span>
+          <span class="display-sm text-[1.6rem]">{name}</span>
+          <span class:list={[i === 2 ? 'text-paper/80' : 'text-mute']}>{text}</span>
+        </li>
+      ))}
+    </ol>
   </section>
 
   <section class="mx-auto grid max-w-[1120px] gap-10 px-5 pt-24 sm:px-8 lg:grid-cols-3 lg:gap-8">
@@ -90,14 +104,49 @@ const crowd = [
     </div>
   </section>
 
-  <section class="mx-auto grid max-w-[1120px] gap-10 px-5 pt-24 sm:px-8 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-16">
+  <section class="mx-auto max-w-[1120px] px-5 pt-28 sm:px-8">
+    <div class="flex flex-wrap items-end justify-between gap-4">
+      <h2 class="display-sm text-[clamp(2rem,4.5vw,2.75rem)]">From hello to a working crew.</h2>
+      <a class="text-[15px] font-medium hover:text-accent" href="/how-it-works/">How it works, step by step</a>
+    </div>
+    <ol class="mt-10 grid gap-8 lg:grid-cols-3">
+      {steps.map(([title, text, src, alt], i) => (
+        <li class="flex flex-col gap-4">
+          <div class="shot"><img src={src} width="1200" height="900" alt={alt} loading="lazy" /></div>
+          <div class="flex gap-3">
+            <span class="step-number shrink-0">{i + 1}</span>
+            <div><h3 class="font-semibold">{title}</h3><p class="mt-1 text-mute">{text}</p></div>
+          </div>
+        </li>
+      ))}
+    </ol>
+  </section>
+
+  <section class="mx-auto max-w-[1120px] px-5 pt-28 sm:px-8">
+    <div class="flex flex-wrap items-end justify-between gap-4">
+      <h2 class="display-sm max-w-[18ch] text-[clamp(2rem,4.5vw,2.75rem)]">Real tools, on your own computer.</h2>
+      <a class="text-[15px] font-medium hover:text-accent" href="/tools/">Every tool and connector</a>
+    </div>
+    <div class="mt-10 grid gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-4">
+      {toolGroups.map(group => (
+        <div>
+          <h3 class="border-b border-line pb-3 font-semibold"><a class="hover:text-accent" href={`/tools/#${group.id}`}>{group.title}</a></h3>
+          <ul class="mt-3 flex flex-col gap-1.5 text-mute">
+            {group.tools.slice(0, 6).map(tool => <li>{tool.name}</li>)}
+          </ul>
+        </div>
+      ))}
+    </div>
+  </section>
+
+  <section class="mx-auto grid max-w-[1120px] gap-10 px-5 pt-28 sm:px-8 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-16">
     <h2 class="display-sm text-[clamp(2rem,4.5vw,2.75rem)]">Your data stays on your hardware.</h2>
     <div class="flex flex-col gap-5 text-[1.0625rem]">
-      <p>Conversations, memory, files, and provider keys live in <code class="rounded-md bg-wash px-1.5 py-0.5 font-mono text-[.92em]">~/.hexbot</code> on the machine running the daemon. Bring your own API key or a subscription you already pay for.</p>
+      <p>Conversations, memory, files, and provider keys live in <code class="rounded-md bg-wash px-1.5 py-0.5 font-mono text-[.92em]">~/.hexbot</code> on the machine running the daemon. Bring your own API key or a subscription you already pay for, from more than 50 model providers.</p>
       <ul class="flex flex-col gap-3 border-t border-line pt-5">
-        <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Approvals</strong><span class="text-mute">Tools run only when you say so. Auto mode lets a small model wave through the low-risk ones.</span></li>
+        <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Approvals</strong><span class="text-mute">Risky actions wait for you. Auto mode lets a small model wave through the low-risk ones.</span></li>
         <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Devices you can revoke</strong><span class="text-mute">Every paired phone and laptop appears in settings with a revoke button.</span></li>
-        <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Delete means delete</strong><span class="text-mute">Removing a conversation also removes the memory a bot took from it.</span></li>
+        <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Delete means delete</strong><span class="text-mute">Removing a conversation removes its history for good.</span></li>
         <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Connect stays out of the way</strong><span class="text-mute">Hexbot Connect brokers your identity and a hostname. Chat traffic never passes through it.</span></li>
         <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Open source</strong><span class="text-mute">AGPL-3.0. Read it, fork it, run it yourself.</span></li>
       </ul>
@@ -106,10 +155,10 @@ const crowd = [
 
   <section class="mx-auto max-w-[720px] px-5 pt-28 text-center sm:px-8">
     <Logo tile size={88} class="mx-auto" />
-    <h2 class="display-sm mt-6 text-[clamp(2rem,5vw,3rem)]">Get Hexbot.</h2>
-    <p class="lede mx-auto mt-3">Free and open source, for Mac and Linux.</p>
+    <h2 class="display-sm mt-6 text-[clamp(2rem,5vw,3rem)]">Join the nightly early access.</h2>
+    <p class="lede mx-auto mt-3">For now Hexbot ships only as nightly builds: a new one each day the code changes, and your copy updates itself. Expect rough edges, and <a href={`${github}/issues`}>tell us what breaks</a>.</p>
     <div class="mt-7 flex flex-col items-center gap-3">
-      <a class="button" href="/download/"><span data-download-label>Download for Mac</span></a>
+      <a class="button" href="/download/"><span data-download-label={label}>Download{label && ' nightly'} for Mac</span></a>
       {downloads && (
         <details class="more w-full">
           <summary class="button button-quiet">More options<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></summary>

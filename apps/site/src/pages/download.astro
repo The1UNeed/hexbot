@@ -21,10 +21,11 @@ const linuxSteps = [
   'Add a model key, name your first bot, and say hello',
 ]
 ---
-<Base title="Download" description="Get Hexbot for Mac or Linux. Free and open source.">
+<Base title="Download" description="Download the Hexbot nightly for Mac or Linux. Nightly early access, free and open source.">
   <section class="mx-auto max-w-[720px] px-5 pt-14 text-center sm:px-8 lg:pt-20">
     <Logo tile size={112} class="mx-auto" />
-    <h1 id="dl-title" class="display-sm mx-auto mt-8 text-[clamp(2rem,5.5vw,3rem)]">Download Hexbot</h1>
+    <p class="mt-8"><span class="eyebrow"><span class="nightly-dot" aria-hidden="true"></span>Nightly early access</span></p>
+    <h1 id="dl-title" class="display-sm mx-auto mt-5 text-[clamp(2rem,5.5vw,3rem)]">Download Hexbot</h1>
     <p id="dl-sub" class="lede mx-auto mt-3">For Mac and Linux. Free and open source.</p>
     {downloads && first ? (
       <>
@@ -37,7 +38,7 @@ const linuxSteps = [
         </div>
         <p class="notice mx-auto mt-8">
           <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.5v4M8 5v.5" stroke-linecap="round"/></svg>
-          <span>{downloads.channel === 'nightly' ? 'Hexbot is in alpha and this is a nightly build, so things may break.' : 'Hexbot is in alpha, so things may break.'} <a href="https://github.com/The1UNeed/hexbot/issues">Report what you find</a>.</span>
+          <span>{downloads.channel === 'nightly' ? 'Hexbot is in nightly early access: nightly builds are the only ones for now, and things may break. Your copy updates itself each day the code changes.' : 'Hexbot is in alpha, so things may break.'} <a href="https://github.com/The1UNeed/hexbot/issues">Report what you find</a>.</span>
         </p>
       </>
     ) : (

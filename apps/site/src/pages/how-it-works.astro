@@ -1,0 +1,105 @@
+---
+import Base from '../layouts/Base.astro'
+
+type Step = { title: string; text: string[]; shot?: { src: string; width: number; height: number; alt: string }; link?: [string, string] }
+const steps: Step[] = [
+  {
+    title: 'Install one app',
+    text: [
+      'Download Hexbot for Mac or Linux and choose "Run on this machine". The app starts the daemon: the part that runs your bots, keeps their memory, and serves the app.',
+      'The daemon keeps working when you close the window, so scheduled jobs and long tasks carry on.',
+    ],
+    link: ['Install', '/docs/install/'],
+  },
+  {
+    title: 'Connect a model',
+    text: [
+      'Sign in with a subscription you already have, or paste an API key. More than 50 providers are listed, and local models work too.',
+      'Pick a default model for new bots and an optional fallback for when a provider is down.',
+    ],
+    shot: { src: '/screens/providers.webp', width: 1100, height: 1113, alt: 'The Connect a provider step, with OpenCode Go connected and subscription providers listed.' },
+    link: ['Providers and billing', '/docs/providers/'],
+  },
+  {
+    title: 'Make a bot',
+    text: [
+      'Give it a face, a name, and a starting role such as Research scout, Writer, Planner, Coder, Ops, or Chief of staff. Each bot can run on a different model.',
+    ],
+    shot: { src: '/screens/create-bot.webp', width: 1000, height: 1329, alt: 'The bot builder: a blue round face named Scout with the Chief of staff role selected.' },
+  },
+  {
+    title: 'It interviews you',
+    text: [
+      'A new bot asks you up to three questions about the job, often with suggested answers. Then it writes its own soul (who it is and how it works) and its first memories.',
+      'You can read and edit both later. When the bot changes its soul, it tells you.',
+    ],
+    shot: { src: '/screens/clarify.webp', width: 1400, height: 733, alt: 'Ledger asking what it should mainly be used for, offering four answers and a free-text box.' },
+    link: ['Memory', '/docs/memory/'],
+  },
+  {
+    title: 'Bring bots together in a room',
+    text: [
+      'A room is a group chat for people and bots. Mention a bot and it replies. Mention nobody and the room\'s main bot answers. Bots can mention each other, check each other\'s work, and hand off.',
+      'A room caps how many bot turns follow one human message (8 by default), and you can set a token budget per room.',
+    ],
+    shot: { src: '/screens/room.webp', width: 2240, height: 1400, alt: 'A room called Studio where Ledger posts September sales by channel and Scout confirms the totals.' },
+    link: ['Rooms', '/docs/rooms/'],
+  },
+  {
+    title: 'Bots remember and dream',
+    text: [
+      'Each bot keeps its own memory as it works. About you is one text you write that every bot reads.',
+      'Once a day, at 3 a.m. by default, each bot dreams: it reads the day\'s conversations and tidies its memory, merging notes, sharpening them, and dropping what went stale.',
+    ],
+    shot: { src: '/screens/memory.webp', width: 1800, height: 1326, alt: 'Scout\'s Memory settings with its notes, the About you link, and the dreaming schedule.' },
+    link: ['Dreaming', '/docs/dreaming/'],
+  },
+  {
+    title: 'You approve what matters',
+    text: [
+      'Risky terminal commands and scripts wait for you in Manual mode. Auto mode lets a small model approve the low-risk ones and ask you about the rest.',
+    ],
+    link: ['Approvals and Auto mode', '/docs/approvals/'],
+  },
+  {
+    title: 'Reach it from any device',
+    text: [
+      'Pair a phone or another laptop with a one-time code on your network. Away from home, use Tailscale or Hexbot Connect. Every paired device can be revoked in Settings.',
+    ],
+    link: ['Pairing and LAN', '/docs/pairing-and-lan/'],
+  },
+]
+---
+<Base title="How it works" description="How Hexbot works, from install to a working crew: connect a model, make bots that interview you, put them in rooms, and let them remember and dream.">
+  <section class="mx-auto max-w-[1120px] px-5 pt-10 sm:px-8 lg:pt-16">
+    <h1 class="display text-[clamp(2.75rem,7vw,4.25rem)]">How Hexbot works</h1>
+    <p class="lede mt-4">From install to a crew that knows your work, in eight steps. Every screenshot comes from a real nightly build.</p>
+  </section>
+
+  <ol class="mx-auto max-w-[1120px] px-5 sm:px-8">
+    {steps.map((step, i) => (
+      <li id={`step-${i + 1}`} class:list={['grid scroll-mt-8 gap-8 border-b border-line py-16 lg:gap-16', step.shot && 'lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]']}>
+        <div class="max-w-[34em]">
+          <span class="step-number">{i + 1}</span>
+          <h2 class="display-sm mt-4 text-[clamp(1.75rem,4vw,2.25rem)]">{step.title}</h2>
+          {step.text.map(paragraph => <p class="mt-4 text-mute">{paragraph}</p>)}
+          {step.link && <p class="mt-4"><a class="font-medium hover:text-accent" href={step.link[1]}>{step.link[0]}</a></p>}
+        </div>
+        {step.shot && <figure class="shot self-start bg-paper"><img src={step.shot.src} width={step.shot.width} height={step.shot.height} alt={step.shot.alt} loading={i < 2 ? 'eager' : 'lazy'} /></figure>}
+      </li>
+    ))}
+  </ol>
+
+  <section class="mx-auto max-w-[1120px] px-5 pt-16 sm:px-8">
+    <h2 class="display-sm text-[clamp(1.75rem,4vw,2.25rem)]">Under the hood</h2>
+    <div class="mt-6 grid gap-8 text-mute sm:grid-cols-3">
+      <p>Hexbot is built on <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>, an open-source agent core. Each bot is its own Hermes profile, and one daemon runs them all.</p>
+      <p>Every conversation is one long-lived session with its own context. The prompt is not rebuilt mid-conversation, so providers can reuse their cache and each turn stays cheaper.</p>
+      <p>Everything lives in <code class="rounded-md bg-wash px-1.5 py-0.5 font-mono text-[.92em]">~/.hexbot</code> on your machine. Hexbot Connect, if you use it, only brokers sign-in and a hostname.</p>
+    </div>
+    <div class="mt-12 flex flex-wrap gap-3">
+      <a class="button" href="/download/">Download nightly</a>
+      <a class="button button-quiet" href="/tools/">See every tool</a>
+    </div>
+  </section>
+</Base>

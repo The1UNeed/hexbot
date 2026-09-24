@@ -1,0 +1,48 @@
+---
+import Base from '../layouts/Base.astro'
+
+const github = 'https://github.com/The1UNeed/hexbot'
+// Answers are HTML so they can link; the same text feeds the FAQPage data.
+const faqs: [id: string, question: string, answer: string][] = [
+  ['what', 'What is Hexbot?', 'Hexbot is a desktop app that runs a crew of AI bots on your own Mac or Linux machine. Each bot has a face, a name, a model, tools, and its own memory. You chat with one bot at a time, or put people and several bots together in a room.'],
+  ['nightly', "What does 'nightly early access' mean?", 'For now Hexbot ships only as nightly builds. A new build is made each day the code changes, and an installed copy updates itself to the newest one. Nightlies get fixes and features first, and sometimes break. Back up <code>~/.hexbot</code> now and then, and <a href="' + github + '/issues">report what you find</a>. Earlier builds stay on the <a href="/download/#nightlies">download page</a> if you need to go back.'],
+  ['free', 'Is Hexbot free?', 'Yes. Hexbot is free and open source under AGPL-3.0. You pay your model provider for what your bots use, through an API key or a subscription you already have.'],
+  ['models', 'Which AI models can I use?', 'More than 50 providers, including Anthropic, OpenAI, Google, xAI, OpenRouter, and DeepSeek. You can sign in with a ChatGPT, SuperGrok, or Nous Portal subscription instead of pasting a key, and run local models through Ollama or LM Studio. Each bot can use a different model. See <a href="/docs/providers/">Providers and billing</a>.'],
+  ['tools', 'What can the bots actually do?', 'Run terminal commands, read and write files, run code, drive a browser, look at images, set reminders, message each other, and more. With your own accounts they can also search the web, make images, and work in Notion, Airtable, Home Assistant, or any MCP server. <a href="/tools/">Every tool</a>'],
+  ['privacy', 'Does my data leave my computer?', 'Conversations, memory, files, and keys stay in <code>~/.hexbot</code> on the machine running Hexbot. What a bot sends to its model goes to the provider you chose, as with any AI app. Hexbot Connect, if you use it, never sees your chats.'],
+  ['platforms', 'Which computers does it run on?', 'macOS on Apple Silicon or Intel, and Linux as an AppImage or a deb package. There is no Windows build yet. Phones and other computers connect to your Hexbot through a browser or the app after pairing.'],
+  ['rooms', 'How do bots work together?', 'In a room. Mention a bot and it replies; mention nobody and the room\'s main bot answers. Bots can mention each other to hand off or check work, up to a set number of bot turns per message. See <a href="/docs/rooms/">Rooms</a>.'],
+  ['approvals', 'Will a bot run commands without asking?', 'Not in Manual mode, the default: risky commands and scripts wait for your approval. Auto mode lets a small model approve low-risk actions and ask you about the rest. Off runs everything. See <a href="/docs/approvals/">Approvals and Auto mode</a>.'],
+  ['dreaming', 'What is dreaming?', 'Once a day each bot reads that day\'s conversations and tidies its memory: it merges notes, sharpens them, and drops what went stale. It never changes the bot\'s soul. See <a href="/docs/dreaming/">Dreaming</a>.'],
+  ['delete', 'What happens when I delete a conversation?', 'Its history is removed. Anything the bot already saved to memory stays until you edit it in Bot settings, Memory.'],
+  ['sharing', 'Can my family or team share one Hexbot?', 'Yes. One daemon can host several users, each with their own bots, About you text, and budgets. See <a href="/docs/multi-user/">Multi-user</a>.'],
+  ['remote', 'Can I use it away from home?', 'Yes, through Tailscale or Hexbot Connect. Pairing on your own network never needs Connect. See <a href="/docs/connect/">Hexbot Connect</a>.'],
+  ['hermes', 'How is Hexbot related to Hermes Agent?', 'Hexbot is built on <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a> by Nous Research. Hermes runs each bot; Hexbot adds the faces, rooms, memory and dreaming, pairing, and the app.'],
+  ['bugs', 'Where do I report a bug or ask for a feature?', 'On <a href="' + github + '/issues">GitHub Issues</a>. Include the nightly version from Settings, About.'],
+]
+const plain = (html: string) => html.replace(/<[^>]+>/g, '')
+const faqPage = {
+  '@context': 'https://schema.org',
+  '@type': 'FAQPage',
+  mainEntity: faqs.map(([, question, answer]) => ({ '@type': 'Question', name: question, acceptedAnswer: { '@type': 'Answer', text: plain(answer) } })),
+}
+---
+<Base title="FAQ" description="Answers about Hexbot: nightly early access, price, models, tools, privacy, rooms, approvals, dreaming, and platforms." jsonLd={[faqPage]}>
+  <section class="mx-auto max-w-[820px] px-5 pt-10 sm:px-8 lg:pt-16">
+    <h1 class="display text-[clamp(2.75rem,7vw,4.25rem)]">Questions</h1>
+    <p class="lede mt-4">Short answers. The <a href="/docs/">docs</a> have the long ones.</p>
+    <div class="faq mt-10 border-t border-line">
+      {faqs.map(([id, question, answer], i) => (
+        <details id={id} class="scroll-mt-8" open={i < 2}>
+          <summary>{question}</summary>
+          <div set:html={answer} />
+        </details>
+      ))}
+    </div>
+  </section>
+</Base>
+<script>
+  // Open the question a link points at, such as /faq/#nightly.
+  const target = location.hash && document.querySelector<HTMLDetailsElement>(`details${CSS.escape(location.hash)}`)
+  if (target) target.open = true
+</script>

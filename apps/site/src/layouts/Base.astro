@@ -7,17 +7,37 @@ import SpeedInsights from '@vercel/speed-insights/astro'
 // PostHog and Speed Insights report the full page URL, query string and fragment
 // included. PostHog also needs PUBLIC_POSTHOG_KEY at build time, so local and
 // preview builds without it show no cookie notice.
-interface Props { title?: string; description?: string; analytics?: boolean }
+// `jsonLd` adds page-specific structured data next to the site-wide
+// Organization, WebSite, and breadcrumb entries that search engines read.
+interface Props { title?: string; description?: string; analytics?: boolean; noindex?: boolean; type?: 'website' | 'article'; jsonLd?: object[] }
 const {
   title = 'Hexbot',
   analytics = true,
-  description = 'Self-hosted bots with faces, names, and a memory of their own. Rooms for people and bots, your choice of model, running on your own machine.',
+  noindex = false,
+  type = 'website',
+  jsonLd = [],
+  description = 'Self-hosted AI teammates with faces, names, and a memory of their own. Rooms for people and bots, your choice of model, running on your own machine.',
 } = Astro.props
-const pageTitle = title === 'Hexbot' ? 'Hexbot' : `${title} | Hexbot`
+const pageTitle = title.startsWith('Hexbot') ? title : `${title} | Hexbot`
 const canonical = new URL(Astro.url.pathname, Astro.site)
 const image = new URL('/og.png', Astro.site)
 const github = 'https://github.com/The1UNeed/hexbot'
 const posthog = analytics && Boolean(import.meta.env.PUBLIC_POSTHOG_KEY)
+const site = Astro.site!.href
+const crumbs = Astro.url.pathname.split('/').filter(Boolean)
+const structured = [
+  { '@context': 'https://schema.org', '@type': 'Organization', '@id': `${site}#org`, name: 'Hexbot', url: site, logo: new URL('/apple-touch-icon.png', site).href, sameAs: [github] },
+  { '@context': 'https://schema.org', '@type': 'WebSite', '@id': `${site}#site`, name: 'Hexbot', url: site, publisher: { '@id': `${site}#org` } },
+  ...(crumbs.length ? [{
+    '@context': 'https://schema.org', '@type': 'BreadcrumbList',
+    itemListElement: [{ name: 'Hexbot', path: '/' }, ...crumbs.map((part, i) => ({
+      name: i === crumbs.length - 1 ? title : part.replace(/-/g, ' ').replace(/^./, c => c.toUpperCase()),
+      path: `/${crumbs.slice(0, i + 1).join('/')}/`,
+    }))].map(({ name, path }, i) => ({ '@type': 'ListItem', position: i + 1, name, item: new URL(path, site).href })),
+  }] : []),
+  ...jsonLd,
+]
+const nav = [['Tools', '/tools/'], ['How it works', '/how-it-works/'], ['Docs', '/docs/'], ['Blog', '/blog/']]
 ---
 <!doctype html>
 <html lang="en">
@@ -29,7 +49,8 @@ const posthog = analytics && Boolean(import.meta.env.PUBLIC_POSTHOG_KEY)
     <link rel="canonical" href={canonical} />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <meta property="og:type" content="website" />
+    {noindex && <meta name="robots" content="noindex" />}
+    <meta property="og:type" content={type} />
     <meta property="og:site_name" content="Hexbot" />
     <meta property="og:title" content={pageTitle} />
     <meta property="og:description" content={description} />
@@ -42,14 +63,21 @@ const posthog = analytics && Boolean(import.meta.env.PUBLIC_POSTHOG_KEY)
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={image} />
     <title>{pageTitle}</title>
+    <link rel="alternate" type="application/rss+xml" title="Hexbot blog" href="/blog/rss.xml" />
+    <script is:inline type="application/ld+json" set:html={JSON.stringify(structured)} />
   </head>
   <body>
+    <a class="nightly-bar" href="/download/">
+      <span class="nightly-dot" aria-hidden="true"></span>
+      <span><strong class="font-semibold">Nightly early access.</strong> <span class="hidden sm:inline">Hexbot ships only as nightly builds for now, so expect rough edges.</span><span class="sm:hidden">Nightly builds only for now.</span></span>
+    </a>
     <header class="mx-auto flex max-w-[1120px] items-center justify-between gap-4 px-5 py-5 sm:px-8">
       <a class="flex items-center gap-2.5 text-[17px] font-semibold" href="/"><Logo size={28} />Hexbot</a>
       <nav aria-label="Main" class="flex items-center gap-4 text-[15px] font-medium sm:gap-7">
-        <a class="hover:text-accent" href="/docs/">Docs</a>
-        <a class="hover:text-accent" href="/docs/connect/">Connect</a>
-        <a class="hidden hover:text-accent md:inline" href={github}>GitHub</a>
+        {nav.map(([label, href], i) => (
+          <a class:list={['hover:text-accent', i === 1 || i === 3 ? 'hidden md:inline' : '']} aria-current={Astro.url.pathname.startsWith(href) ? 'page' : undefined} href={href}>{label}</a>
+        ))}
+        <a class="hidden hover:text-accent lg:inline" href={github}>GitHub</a>
         <a class="button button-sm" href="/download/">Download</a>
       </nav>
     </header>
@@ -58,10 +86,14 @@ const posthog = analytics && Boolean(import.meta.env.PUBLIC_POSTHOG_KEY)
       <div class="flex flex-wrap items-start justify-between gap-6">
         <div class="flex flex-col gap-3">
           <a class="flex items-center gap-2.5 text-[17px] font-semibold" href="/"><Logo size={28} />Hexbot</a>
-          <p class="max-w-[28em] text-[15px] text-mute">Self-hosted bots with memory, rooms, and your choice of model. AGPL-3.0 software, built on Hermes Agent.</p>
+          <p class="max-w-[28em] text-[15px] text-mute">Self-hosted AI teammates with memory, rooms, and your choice of model. AGPL-3.0 software, built on Hermes Agent. In nightly early access.</p>
         </div>
         <nav aria-label="Footer" class="grid grid-cols-2 gap-x-10 gap-y-2 text-[15px] sm:grid-cols-3">
           <a class="hover:text-accent" href="/download/">Download</a>
+          <a class="hover:text-accent" href="/tools/">Tools</a>
+          <a class="hover:text-accent" href="/how-it-works/">How it works</a>
+          <a class="hover:text-accent" href="/faq/">FAQ</a>
+          <a class="hover:text-accent" href="/blog/">Blog</a>
           <a class="hover:text-accent" href="/docs/">Docs</a>
           <a class="hover:text-accent" href="/docs/install/">Install</a>
           <a class="hover:text-accent" href="/docs/connect/">Connect</a>

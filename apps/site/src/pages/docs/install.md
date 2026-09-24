@@ -13,14 +13,12 @@ Both packages update independently and can be installed side by side.
 
 ## Download
 
-The [download page](/download/) picks the build for your computer and lists every other one. Stable releases are the default once they exist; nightly builds are also listed on [GitHub](https://github.com/The1UNeed/hexbot/releases?q=nightly) and described under [Updates](/docs/updates/):
+Hexbot is in nightly early access, so the [download page](/download/) offers the current nightly build. It picks the build for your computer and lists every other one. Every nightly is also listed on [GitHub](https://github.com/The1UNeed/hexbot/releases?q=nightly), and the two tracks are described under [Updates](/docs/updates/):
 
 - Apple Silicon for Macs with an M-series chip
 - Intel for older Macs
 - AppImage for a portable Linux app
 - deb for Debian, Ubuntu, and related distributions
-
-Until the first stable release the download page offers the current nightly build instead.
 
 ## First launch
 

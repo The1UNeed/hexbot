@@ -66,8 +66,8 @@ p a { color: var(--color-accent); text-decoration: underline; text-underline-off
   .hf-2 { --x: -13vw; --y: 8px; --s: 46px; }
   .hf-3 { --x: 13vw; --y: 8px; --s: 46px; }
   .hf-4 { --x: 37vw; --y: 24px; --s: 60px; }
-  .hf-5 { --x: -38vw; --y: 460px; --s: 56px; }
-  .hf-6 { --x: 38vw; --y: 470px; --s: 56px; }
+  .hf-5 { --x: -36vw; --y: 104px; --s: 44px; }
+  .hf-6 { --x: 36vw; --y: 112px; --s: 44px; }
 }
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 .rise { display: inline-block; animation: rise 700ms cubic-bezier(.2, .7, .2, 1) both; }
@@ -116,3 +116,24 @@ div.rise { display: flex; }
 /* The composer pill at the foot of the room demo, drawn like the app's. */
 .composer { display: flex; align-items: center; gap: .75rem; padding: .375rem .5rem .375rem .5rem; border-radius: 999px; border: 1px solid var(--color-line); background: var(--color-paper); box-shadow: 0 1px 2px rgb(0 0 0 / .04); font-size: 1rem; }
 .composer-dot { display: inline-flex; width: 32px; height: 32px; align-items: center; justify-content: center; border-radius: 999px; background: var(--color-wash); color: var(--color-mute); flex-shrink: 0; }
+
+/* Nightly early access: a thin bar on every page and an eyebrow in the hero. */
+.nightly-bar { display: flex; align-items: center; justify-content: center; gap: .55rem; padding: .5rem 1.25rem; background: var(--color-ink); color: var(--color-paper); font-size: .875rem; text-align: center; }
+.nightly-bar:hover { background: #2a2a2a; }
+.nightly-dot { width: 7px; height: 7px; flex-shrink: 0; border-radius: 999px; background: #f5a524; }
+.eyebrow { display: inline-flex; align-items: center; gap: .5rem; padding: .3rem .8rem; border-radius: 999px; background: var(--color-paper); box-shadow: inset 0 0 0 1px var(--color-line); font-size: .875rem; font-weight: 600; }
+
+/* Real screenshots of the app, framed like a window. */
+.shot { overflow: hidden; border-radius: 18px; border: 1px solid var(--color-line); background: var(--color-wash); box-shadow: 0 1px 2px rgb(0 0 0 / .04), 0 24px 60px -30px rgb(0 0 0 / .25); }
+.shot img { display: block; width: 100%; height: auto; }
+
+/* Question-and-answer lists on the FAQ page. */
+.faq > details { border-bottom: 1px solid var(--color-line); padding: 1.1rem 0; }
+.faq > details > summary { cursor: pointer; list-style: none; font-size: 1.125rem; font-weight: 600; }
+.faq > details > summary::-webkit-details-marker { display: none; }
+.faq > details > summary::after { content: "+"; float: right; color: var(--color-mute); font-weight: 400; }
+.faq > details[open] > summary::after { content: "−"; }
+.faq > details > div { margin-top: .6rem; color: var(--color-mute); max-width: 42em; }
+.faq > details > div a { color: var(--color-accent); text-decoration: underline; text-underline-offset: .18em; }
+.prose img { width: 100%; height: auto; border-radius: 14px; border: 1px solid var(--color-line); }
+.prose blockquote { border-left: 3px solid var(--color-line); padding-left: 1rem; color: var(--color-mute); }
