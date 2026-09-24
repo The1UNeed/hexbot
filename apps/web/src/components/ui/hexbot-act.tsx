@@ -24,7 +24,7 @@ function move(kind: Motion, t: number, vars: Record<string, number | string> = {
   }
 }
 
-/** Hexbot's hands: two circles that show up whenever it holds something. */
+/** Hexbot's hands: circles in the body's colour that show up whenever it holds something. */
 function Hand({ x, y }: { x: number; y: number }) {
   return <circle className="hex-prop hex-hand" cx={x} cy={y} r="7" />
 }
@@ -518,7 +518,7 @@ export function ActProps({ color, name }: { color?: string; name: HexbotActName 
       className="hex-pop-in pointer-events-none absolute top-[-40%] left-[-35%] z-10 h-[150%] w-[170%] max-w-none overflow-visible"
       data-act={name}
       key={name}
-      style={{ color }}
+      style={{ '--hex-hand': color } as CSSProperties}
       viewBox="0 0 170 150"
     >
       {HEXBOT_ACTS[name].props}

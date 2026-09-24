@@ -639,8 +639,9 @@ body {
   stroke-linejoin: round;
   stroke-width: 3;
 }
-/* A hand over the body is cut out of it by a wider ring. */
+/* A hand is the body's colour, cut out of the body by a wider ring. */
 .hex-hand {
+  fill: var(--hex-hand, currentColor);
   stroke-width: 4.5;
 }
 .hex-line {
