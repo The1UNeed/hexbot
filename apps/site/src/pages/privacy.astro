@@ -4,7 +4,7 @@ import Base from '../layouts/Base.astro'
 <Base title="Privacy" description="What hexbot.app and Hexbot Connect collect, and what they never see.">
   <article class="prose mx-auto px-5 py-12 sm:px-8 lg:py-20">
     <h1 class="display-sm">Privacy</h1>
-    <p class="text-mute">Last updated 23 September 2026.</p>
+    <p class="text-mute">Last updated 24 September 2026.</p>
     <p>Hexbot is built so that your data stays on your hardware. This policy explains the small amount that this website and Hexbot Connect handle, and the much larger amount they never see.</p>
 
     <h2 id="this-website">This website</h2>
@@ -17,6 +17,7 @@ import Base from '../layouts/Base.astro'
     </ul>
     <p>The legal basis is your consent. PostHog, Inc. stores this data in the United States and processes it on our behalf under its data processing agreement, which includes the EU Standard Contractual Clauses. We keep events for up to a year and recordings for up to 30 days, use them only to improve Hexbot and this site, and do not use them for advertising or sell them. If you decline, or later change your mind with Cookies at the foot of any page, PostHog stops recording and removes its ID. Your browser keeps only a note of your choice, so the notice does not ask again.</p>
     <p>Vercel Speed Insights measures how fast pages load, without cookies or a persistent identifier. The pairing page loads neither PostHog nor Speed Insights. It reads the daemon address from the query string and the pairing code from the URL fragment; browsers do not send fragments to web servers, and the page does not transmit or store the code.</p>
+    <p>The <a href="/contact/">contact page</a> embeds a form hosted by Youform. It loads from Youform's servers, and what you enter there, including any file you attach, goes to Youform, which stores it for us. We use it only to reply to you and improve Hexbot.</p>
 
     <h2>Hexbot Connect</h2>
     <p>Connect, the optional service at connect.hexbot.app, brokers your identity and a hostname so that your own devices can reach your own daemon from outside its network. To do that it stores:</p>
@@ -35,7 +36,7 @@ import Base from '../layouts/Base.astro'
     <p>Connect runs on Vercel, which also provides cookieless page view and load time measurements, stores its records in a Neon Postgres database, signs you in with Clerk, and creates tunnels and DNS records with Cloudflare. Each of these processes data on our behalf under its own privacy policy. Cloudflare carries your encrypted chat traffic as part of running the tunnel; the other providers see only the records listed above.</p>
 
     <h2>Retention and deletion</h2>
-    <p>Daemon and device records stay while you keep them registered. Revoking a daemon or device marks it revoked and deletes its tunnel. Running <code>hexbot connect disconnect</code> revokes the daemon and removes the credentials on your machine. To delete your account and every record tied to it, email <a href="mailto:hello@hexbot.app">hello@hexbot.app</a> from the address you signed in with, and we will remove it within 30 days.</p>
+    <p>Daemon and device records stay while you keep them registered. Revoking a daemon or device marks it revoked and deletes its tunnel. Running <code>hexbot connect disconnect</code> revokes the daemon and removes the credentials on your machine. To delete your account and every record tied to it, email <a href="mailto:alex.xinliu@hotmail.com">alex.xinliu@hotmail.com</a> from the address you signed in with, and we will remove it within 30 days.</p>
 
     <h2>The desktop app</h2>
     <p>The app talks only to the daemon you pair with, your chosen model provider, and Connect if you sign in to it. Crash reporting is off by default; if you turn it on in settings, Electron may upload a crash report when the desktop process crashes, as described in <a href="/docs/updates/">Updates</a>. Update checks fetch a small manifest from this site and send nothing about you.</p>
@@ -44,6 +45,6 @@ import Base from '../layouts/Base.astro'
     <p>If you run your own Connect instance, none of the above reaches us. That instance's operator is responsible for its data.</p>
 
     <h2>Changes and contact</h2>
-    <p>We may update this policy. The date at the top tells you when, and material changes will be announced on this site. Questions go to <a href="mailto:hello@hexbot.app">hello@hexbot.app</a>.</p>
+    <p>We may update this policy. The date at the top tells you when, and material changes will be announced on this site. Questions go to <a href="mailto:alex.xinliu@hotmail.com">alex.xinliu@hotmail.com</a>.</p>
   </article>
 </Base>
