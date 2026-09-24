@@ -42,8 +42,9 @@ function show(target: Target) {
   title.textContent = 'Thanks for downloading Hexbot'
   sub.textContent = `Your download for ${name} should begin automatically.`
   label.textContent = 'Download again'
-  // The file is served as a download, so the page stays put.
-  setTimeout(() => location.assign(build.href), 600)
+  // The file is served as a download, so the page stays put. A click, not
+  // location.assign, so analytics.ts counts it.
+  setTimeout(() => primary.click(), 600)
 }
 
 if (primary) architecture().then(arch => show(detectTarget({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints, architecture: arch, renderer: renderer() })))

@@ -1,11 +1,12 @@
 ---
 import '../styles/global.css'
 import Logo from '../components/Logo.astro'
-import Analytics from '@vercel/analytics/astro'
 import SpeedInsights from '@vercel/speed-insights/astro'
 
 // `analytics` is off on pages whose URL carries private data (the pairing page):
-// Vercel's script reports the full page URL, query string and fragment included.
+// PostHog and Speed Insights report the full page URL, query string and fragment
+// included. PostHog also needs PUBLIC_POSTHOG_KEY at build time, so local and
+// preview builds without it show no cookie notice.
 interface Props { title?: string; description?: string; analytics?: boolean }
 const {
   title = 'Hexbot',
@@ -16,6 +17,7 @@ const pageTitle = title === 'Hexbot' ? 'Hexbot' : `${title} | Hexbot`
 const canonical = new URL(Astro.url.pathname, Astro.site)
 const image = new URL('/og.png', Astro.site)
 const github = 'https://github.com/The1UNeed/hexbot'
+const posthog = analytics && Boolean(import.meta.env.PUBLIC_POSTHOG_KEY)
 ---
 <!doctype html>
 <html lang="en">
@@ -67,11 +69,21 @@ const github = 'https://github.com/The1UNeed/hexbot'
           <a class="hover:text-accent" href={github}>GitHub</a>
           <a class="hover:text-accent" href="/terms/">Terms</a>
           <a class="hover:text-accent" href="/privacy/">Privacy</a>
+          {posthog && <button type="button" class="text-left hover:text-accent" data-consent-open>Cookies</button>}
         </nav>
       </div>
     </footer>
+    {posthog && (
+      <div id="consent" hidden role="region" aria-label="Cookies" class="fixed inset-x-4 bottom-4 z-50 mx-auto max-w-[520px] rounded-[20px] bg-paper p-5 shadow-[0_8px_30px_rgb(0_0_0/0.12),inset_0_0_0_1px_var(--color-line)]">
+        <p class="text-[15px]">Can we count your visit? PostHog sets a cookie and records how you use this site, with anything you type hidden. <a href="/privacy/#this-website">Privacy</a></p>
+        <div class="mt-4 flex gap-2">
+          <button type="button" class="button button-sm" data-consent="granted">Accept</button>
+          <button type="button" class="button button-sm" data-consent="denied">Decline</button>
+        </div>
+      </div>
+      <script src="../scripts/analytics.ts"></script>
+    )}
     <script src="../scripts/faces.ts"></script>
-    {analytics && <Analytics />}
     {analytics && <SpeedInsights />}
   </body>
 </html>
