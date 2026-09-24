@@ -1,5 +1,6 @@
 // What a build link downloads, read from its path on the update server:
-// /<edition>/<os>/<arch>/<Hexbot|HexbotClient>-<version>-<os>-<arch>.<format>.
+// /<edition>/<os>/<arch>/<Hexbot|HexbotClient>-<version>-<os>-<file arch>.<format>.
+// The file arch is the packager's word (x86_64, amd64); the directory's is ours.
 // Stable and nightly builds share the layout. Null for any other link.
 export type DownloadInfo = {
   edition: 'full' | 'client'
@@ -12,7 +13,7 @@ export type DownloadInfo = {
 
 export function describeDownload(href: string): DownloadInfo | null {
   const { pathname } = new URL(href, 'https://hexbot.app')
-  const match = pathname.match(/^\/(full|client)\/(mac|linux)\/(arm64|x64)\/Hexbot(?:Client)?-(.+)-(?:mac|linux)-(?:arm64|x64)\.(\w+)$/)
+  const match = pathname.match(/^\/(full|client)\/(mac|linux)\/(arm64|x64)\/Hexbot(?:Client)?-(.+)-(?:mac|linux)-\w+\.(\w+)$/)
   if (!match) return null
   const [, edition, os, arch, version, format] = match
   return {

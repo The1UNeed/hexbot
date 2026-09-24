@@ -76,6 +76,7 @@ const posthog = analytics && Boolean(import.meta.env.PUBLIC_POSTHOG_KEY)
     {posthog && (
       <div id="consent" hidden role="region" aria-label="Cookies" class="fixed inset-x-4 bottom-4 z-50 mx-auto max-w-[520px] rounded-[20px] bg-paper p-5 shadow-[0_8px_30px_rgb(0_0_0/0.12),inset_0_0_0_1px_var(--color-line)]">
         <p class="text-[15px]">Can we count your visit? PostHog sets a cookie and records how you use this site, with anything you type hidden. <a href="/privacy/#this-website">Privacy</a></p>
+        <p id="consent-state" hidden class="mt-2 text-[15px] text-mute"></p>
         <div class="mt-4 flex gap-2">
           <button type="button" class="button button-sm" data-consent="granted">Accept</button>
           <button type="button" class="button button-sm" data-consent="denied">Decline</button>

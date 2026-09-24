@@ -8,14 +8,14 @@ import Base from '../layouts/Base.astro'
     <p>Hexbot is built so that your data stays on your hardware. This policy explains the small amount that this website and Hexbot Connect handle, and the much larger amount they never see.</p>
 
     <h2 id="this-website">This website</h2>
-    <p>hexbot.app uses PostHog to count visitors and downloads and to see how people use the site. PostHog loads only if you choose Accept in the cookie notice. If you do, it sets a first-party cookie holding a random ID and records:</p>
+    <p>hexbot.app uses PostHog to count visitors and downloads and to see how people use the site. PostHog loads only if you choose Accept in the cookie notice. If you do, it keeps a random ID in a first-party cookie and your browser's local storage, and records:</p>
     <ul>
       <li>the pages you view, the links and buttons you click, and which build you download;</li>
       <li>your browser, operating system, screen size, and the site that referred you;</li>
       <li>your approximate location, derived from your IP address;</li>
       <li>a recording of your visit, with anything you type into a field hidden before it leaves your browser.</li>
     </ul>
-    <p>The legal basis is your consent. PostHog, Inc. stores this data in the United States and processes it on our behalf under its data processing agreement, which includes the EU Standard Contractual Clauses. We keep events for up to a year and recordings for up to 30 days, use them only to improve Hexbot and this site, and do not use them for advertising or sell them. If you decline, or later change your mind with Cookies at the foot of any page, PostHog stops recording and its cookie is removed. The site stores your choice in your browser.</p>
+    <p>The legal basis is your consent. PostHog, Inc. stores this data in the United States and processes it on our behalf under its data processing agreement, which includes the EU Standard Contractual Clauses. We keep events for up to a year and recordings for up to 30 days, use them only to improve Hexbot and this site, and do not use them for advertising or sell them. If you decline, or later change your mind with Cookies at the foot of any page, PostHog stops recording and removes its ID. Your browser keeps only a note of your choice, so the notice does not ask again.</p>
     <p>Vercel Speed Insights measures how fast pages load, without cookies or a persistent identifier. The pairing page loads neither PostHog nor Speed Insights. It reads the daemon address from the query string and the pairing code from the URL fragment; browsers do not send fragments to web servers, and the page does not transmit or store the code.</p>
 
     <h2>Hexbot Connect</h2>
