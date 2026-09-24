@@ -5,9 +5,9 @@
   "outputDirectory": "dist",
   "cleanUrls": true,
   "rewrites": [
-    { "source": "/ingest/static/:path*", "destination": "https://us-assets.i.posthog.com/static/:path*" },
-    { "source": "/ingest/array/:path*", "destination": "https://us-assets.i.posthog.com/array/:path*" },
-    { "source": "/ingest/:path*", "destination": "https://us.i.posthog.com/:path*" }
+    { "source": "/ingest/static/(.*)", "destination": "https://us-assets.i.posthog.com/static/$1" },
+    { "source": "/ingest/array/(.*)", "destination": "https://us-assets.i.posthog.com/array/$1" },
+    { "source": "/ingest/(.*)", "destination": "https://us.i.posthog.com/$1" }
   ],
   "headers": [
     {
