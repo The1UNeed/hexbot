@@ -355,3 +355,18 @@ def test_open_section_previews_the_first_prompt(gw):
     preview = sections.open_section("stored1")["section"]["preview"]
     assert preview.startswith("Plan a three-day Lisbon trip on 600 euros") and preview.endswith("...")
     assert sections.open_section("stored1")["section"]["message_count"] == 2
+
+
+def test_adoption_yields_to_a_rename_that_lands_mid_listing(gw):
+    from hexbot import sections
+
+    sections.create_section("scout")
+
+    def list_and_rename_meanwhile(params):
+        # The user renames after the row was read and before it is written.
+        sections.rename_section("stored1", "Portugal")
+        return {"sessions": [{"id": "stored1", "title": "Lisbon trip budget"}]}
+
+    gw.responses["session.list"] = list_and_rename_meanwhile
+    row = sections.list_sections("scout")[0]
+    assert (row["title"], row["title_by"]) == ("Portugal", None)

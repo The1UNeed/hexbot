@@ -142,6 +142,8 @@ def list_sections(bot=None, include_archived=False, *, all_users=False) -> list[
                 "session.list", {"profile": profile, "include_hidden": True})["sessions"]})
         except (GatewayError, KeyError, TypeError):
             logger.debug("session.list unavailable for profile %s", profile, exc_info=True)
+    # A listing is where a Hermes auto-title lands on the row, so this read
+    # writes; the update is conditional and cheap (see _adopt_hermes_title).
     return [_row_shape(_adopt_hermes_title(row, history.get(row["id"])) or row,
                        history.get(row["id"])) for row in rows]
 
@@ -155,7 +157,11 @@ def _adopt_hermes_title(row, session):
     while the section is still ``DEFAULT_TITLE`` or was last named by the bot.
     A title the user typed (``title_by`` NULL and not the default) is never
     touched, and neither is a row whose own rename has not reached Hermes yet.
-    Returns the fresh row, or None when nothing changed.
+    The update repeats the checks in SQL so a rename that landed between the
+    read and the write is left alone (and is what gets listed). A rename the
+    bot made with its tool is safe here too: it went through ``session.title``
+    at user authority, which Hermes's auto-titler never overrides, so the two
+    titles stay equal. Returns the fresh row, or None when nothing changed.
     """
     title = str((session or {}).get("title") or "").strip()
     if not title or title == row["title"] or row["title_dirty"]:
@@ -164,7 +170,11 @@ def _adopt_hermes_title(row, session):
     if not untouched and row["title_by"] != "bot":
         return None
     with db.transaction() as conn:
-        conn.execute("UPDATE sections SET title=?,title_by='bot' WHERE id=?", (title, row["id"]))
+        conn.execute(
+            "UPDATE sections SET title=?,title_by='bot' WHERE id=? AND title=? AND title_dirty=0"
+            " AND (title_by='bot' OR (title_by IS NULL AND title=?))",
+            (title, row["id"], row["title"], DEFAULT_TITLE))
+    # Re-read either way: a rename that won the race is what the list shows.
     return _get(row["id"], enforce_owner=False)
 
 
@@ -242,11 +252,16 @@ def open_section(section_id: str) -> dict:
     return opened
 
 
+#: Hermes's ``session.list`` preview length; the shaping below matches it.
+PREVIEW_CHARS = 60
+
+
 def _preview(messages) -> str:
     """The first user message, shaped like Hermes's ``session.list`` preview."""
-    from hermes_state_common import _shape_preview
     first = next((m for m in messages if isinstance(m, dict) and m.get("role") == "user"), None)
-    return _shape_preview(first.get("text") or first.get("content")) if first else ""
+    text = str((first or {}).get("text") or (first or {}).get("content") or "").strip()
+    text = text.replace("\n", " ").replace("\r", " ")
+    return text[:PREVIEW_CHARS] + "..." if len(text) > PREVIEW_CHARS else text
 
 
 def _flush_pending_title(section_id: str, live: str, title: str) -> None:
@@ -399,12 +414,12 @@ TITLE_CAP = 60
 RENAME_SCHEMA = {
     "name": "hexbot_rename_section",
     "description": (
-        "Name the section (conversation) you are in after its topic, so it is "
-        "easy to find in the sidebar. Every section starts as 'New section': "
-        "call this once at the start of your first reply, as soon as the topic "
-        "is clear, and again later only if the topic changes. Use a short, "
-        "specific noun phrase of two to six words, like a document title. No "
-        "trailing punctuation, no quotes, not a sentence."),
+        "Rename the section (conversation) you are in. Hexbot names every "
+        "section from its first message on its own, so call this only when "
+        "the user asks for a rename or the conversation has moved to a topic "
+        "the current name no longer describes. Use a short, specific noun "
+        "phrase of two to six words, like a document title. No trailing "
+        "punctuation, no quotes, not a sentence."),
     "parameters": {"type": "object", "properties": {
         "title": {"type": "string", "description": "The new title, up to 60 characters."}},
         "required": ["title"], "additionalProperties": False}}
@@ -417,6 +432,10 @@ def rename_tool(args: dict, *, session_id: str = "", **_kwargs) -> str:
 
 
 def _rename_from_tool(args: dict, session_id: str) -> dict:
+    # Hermes hands tools the stored key, and the tool can only reach the
+    # section its own session belongs to, so no owner check applies here;
+    # ``rename_section(by="bot")`` skips it and nothing on the wire can pass
+    # ``by``.
     row = section_for_session(session_id) if session_id else None
     if row is None:
         return {"error": "hexbot_rename_section only works inside a section, not a room"}
