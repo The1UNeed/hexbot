@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
 from hexbot import db
@@ -65,7 +66,9 @@ def set_user_memory(text: str, *, owner_id=None) -> dict:
 def _session_owner(session_info) -> str | None:
     """The owner of the bot behind a Hermes session: a section, a room, or
     any other turn on a bot's profile (a dream)."""
-    if not isinstance(session_info, dict):
+    # Hermes renders prompt sections with a read-only mapping proxy, not a
+    # dict, so anything mapping-shaped must pass.
+    if not isinstance(session_info, Mapping):
         return None
     session_id = str(session_info.get("session_id") or "")
     bot_name = None

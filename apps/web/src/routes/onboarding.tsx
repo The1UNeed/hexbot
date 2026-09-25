@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { ArrowRight, ArrowUp, Plus } from 'lucide-react'
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ConnectorFields, connectorValues } from '../components/connector-fields'
 import { isSubscription, ProviderPanel, supportsApiKey } from '../components/provider-panel'
@@ -16,12 +16,15 @@ import { Textarea } from '../components/ui/textarea'
 import { HexbotMark, Wordmark } from '../components/ui/wordmark'
 import {
   botsCreate,
+  botsList,
   connectorsList,
   connectorsSetup,
   modelsList,
   providersList,
+  sectionsCreate,
   settingsGet,
   settingsSet,
+  userMemoryGet,
   userMemorySet
 } from '../lib/api'
 import {
@@ -39,7 +42,7 @@ import type { Bot, Connector, ModelOption, Provider, Section } from '../lib/type
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
 import { introduceBot } from '../stores/sections'
-import { uiActions } from '../stores/ui'
+import { type LastSection, uiActions } from '../stores/ui'
 
 export const Route = createFileRoute('/onboarding')({ component: OnboardingPage })
 
@@ -48,8 +51,8 @@ type OnboardingStep =
   | 'bot'
   | 'choice'
   | 'connect'
+  | 'deciding'
   | 'defaults'
-  | 'existing'
   | 'install'
   | 'jobs'
   | 'meet'
@@ -59,21 +62,45 @@ type OnboardingStep =
 
 export function initialOnboardingStep(input: {
   connected: boolean
-  hasBots: boolean
   hasLocalRuntime: boolean
   isElectron: boolean
 }): OnboardingStep {
-  if (input.hasBots) {
-    return 'existing'
-  }
-
   if (!input.connected && input.isElectron) {
     // The client-only package has nothing to install, so the only way in is
     // to pair with a daemon.
     return input.hasLocalRuntime ? 'choice' : 'connect'
   }
 
-  return 'providers'
+  // Connected: what comes next depends on the daemon (About you, bots), so
+  // the page reads both before it shows anything.
+  return 'deciding'
+}
+
+/**
+ * Where onboarding ends for someone who already has bots: the section they
+ * were in, else any bot's latest section, else a new section on the first
+ * bot. Null when there are no bots yet.
+ */
+export async function landingSection(bots: Bot[]): Promise<LastSection | null> {
+  if (!bots.length) {
+    return null
+  }
+
+  const last = uiActions().lastSection
+
+  if (last && bots.some(bot => bot.name === last.bot)) {
+    return last
+  }
+
+  const recent = bots.find(bot => bot.sections_recent.length)
+
+  if (recent) {
+    return { bot: recent.name, section: recent.sections_recent[0]!.id }
+  }
+
+  const { section } = await sectionsCreate(bots[0]!.name)
+
+  return { bot: bots[0]!.name, section: section.id }
 }
 
 /**
@@ -583,7 +610,32 @@ async function loadModelChoices(providers: Provider[]): Promise<ModelChoice[]> {
 /** The daemon's cap on About you (`hexbot.memory.USER_CAP`). */
 const ABOUT_CAP = 2000
 
-/** One optional text every bot will read: who the user is. Saved as About you. */
+export interface AboutYou {
+  name: string
+  preferences: string
+  work: string
+}
+
+/** The About you text the init page writes: one labelled line per answer. */
+export function compileAboutYou(input: AboutYou): string {
+  const lines: [string, string][] = [
+    ['Name', input.name],
+    ['What I do', input.work],
+    ['How to talk to me', input.preferences]
+  ]
+
+  return lines
+    .map(([label, value]) => ({ label, value: value.trim() }))
+    .filter(line => line.value)
+    .map(line => `${line.label}: ${line.value}`)
+    .join('\n')
+}
+
+/**
+ * The init page: who the user is and how they like to work, saved as About
+ * you so every bot they own knows it from the start. Skipping saves an empty
+ * text, so the page is asked once and not on every startup.
+ */
 export function AboutStep({
   onContinue,
   onError
@@ -591,14 +643,18 @@ export function AboutStep({
   onContinue: () => void
   onError: (message: string) => void
 }) {
-  const [text, setText] = useState('')
+  const [about, setAbout] = useState<AboutYou>({ name: '', preferences: '', work: '' })
   const [busy, setBusy] = useState(false)
+  const text = compileAboutYou(about)
 
-  const save = async () => {
+  const patch = (field: keyof AboutYou) => (event: { target: { value: string } }) =>
+    setAbout(current => ({ ...current, [field]: event.target.value }))
+
+  const save = async (value: string) => {
     setBusy(true)
 
     try {
-      await userMemorySet(text.trim())
+      await userMemorySet(value)
       onContinue()
     } catch (reason) {
       onError(String(reason))
@@ -610,17 +666,36 @@ export function AboutStep({
   return (
     <div className="w-full space-y-5 py-8">
       <label className="block space-y-2">
-        <span className="font-medium">About you</span>
+        <span className="font-medium">Your name</span>
+        <Input
+          autoFocus
+          data-testid="onboarding-about-name"
+          onChange={patch('name')}
+          placeholder="Alex"
+          value={about.name}
+        />
+      </label>
+      <label className="block space-y-2">
+        <span className="font-medium">What you do</span>
+        <Input
+          data-testid="onboarding-about-work"
+          onChange={patch('work')}
+          placeholder="I run a small design studio."
+          value={about.work}
+        />
+      </label>
+      <label className="block space-y-2">
+        <span className="font-medium">How your bots should talk to you</span>
         <span className="block text-secondary text-muted">
-          Your name, what you do, and how you like to be spoken to. Every bot you make reads
-          this. You can change it later in Settings, Memory.
+          Tone, length, language, anything a bot should keep in mind. You can change all of
+          this later in Settings, Memory.
         </span>
         <Textarea
-          aria-label="About you"
-          onChange={event => setText(event.target.value)}
-          placeholder="I'm Alex. I run a small design studio and prefer short, direct answers."
-          rows={4}
-          value={text}
+          data-testid="onboarding-about-preferences"
+          onChange={patch('preferences')}
+          placeholder="Short, direct answers. Casual tone. Metric units."
+          rows={3}
+          value={about.preferences}
         />
         <span
           className={cn(
@@ -636,8 +711,8 @@ export function AboutStep({
           busy={busy}
           className={PILL}
           data-testid="onboarding-about-continue"
-          disabled={!text.trim() || text.length > ABOUT_CAP}
-          onClick={() => void save()}
+          disabled={!about.name.trim() || text.length > ABOUT_CAP}
+          onClick={() => void save(text)}
           variant="primary"
         >
           Continue
@@ -645,7 +720,8 @@ export function AboutStep({
         <Button
           className={PILL}
           data-testid="onboarding-about-skip"
-          onClick={onContinue}
+          disabled={busy}
+          onClick={() => void save('')}
           variant="secondary"
         >
           Skip
@@ -1132,24 +1208,9 @@ function BotStep({
 function OnboardingPage() {
   const navigate = useNavigate()
   const connected = useConnection(state => state.status === 'connected')
-  const order = useBots(state => state.order)
-  const byName = useBots(state => state.byName)
-  const bots = useMemo(() => order.map(name => byName[name]).filter(Boolean), [byName, order])
+  const hasBots = useBots(state => state.order.length > 0)
 
   const [step, setStep] = useState<OnboardingStep>('welcome')
-
-  // Decided when the button is pressed, not when the page mounts, so a daemon
-  // that connected while the welcome screen was up is taken into account.
-  const start = () =>
-    setStep(
-      initialOnboardingStep({
-        connected,
-        hasBots: bots.length > 0,
-        hasLocalRuntime: hasLocalRuntime(),
-        isElectron: isElectron()
-      })
-    )
-
   const [progress, setProgress] = useState<DaemonProgress[]>([])
   const [configured, setConfigured] = useState<Provider[]>([])
   const [defaultModel, setDefaultModel] = useState<string | null>(null)
@@ -1157,25 +1218,85 @@ function OnboardingPage() {
   const [creating, setCreating] = useState(false)
   const onError = useCallback((message: string) => setError(message), [])
 
-  useEffect(() => {
-    const bot = bots[0]
-    const section = bot?.sections_recent[0]
+  const finish = useCallback(
+    (bots: Bot[]) =>
+      landingSection(bots)
+        .then(last => {
+          if (!last) {
+            setStep('providers')
 
-    if (!bot || !section) {
+            return
+          }
+
+          uiActions().setLastSection(last)
+          void navigate({ to: '/b/$bot/s/$section', params: last })
+        })
+        .catch(reason => {
+          setError(String(reason))
+          setStep('providers')
+        }),
+    [navigate]
+  )
+
+  // One decision per visit, taken once the daemon is connected and never
+  // revisited when the bot list refreshes: the init page when About you was
+  // never written (its Skip writes an empty text, so the form only mounts
+  // once the read says the file is absent), then the user's section, or
+  // provider setup when there are no bots yet.
+  const decided = useRef(false)
+  const afterAbout = useRef<() => void>(() => setStep('providers'))
+
+  const decide = useCallback(() => {
+    if (decided.current) {
       return
     }
 
-    setStep('existing')
-    const last = { bot: bot.name, section: section.id }
-    uiActions().setLastSection(last)
-    void navigate({ to: '/b/$bot/s/$section', params: last })
-  }, [bots, navigate])
+    decided.current = true
+    setStep('deciding')
+    void Promise.all([userMemoryGet(), botsList()])
+      .then(([memory, list]) => {
+        if (memory.updated_at === null) {
+          afterAbout.current = () => void finish(list.bots)
+          setStep('about')
+        } else {
+          void finish(list.bots)
+        }
+      })
+      .catch(reason => {
+        decided.current = false
+        setError(String(reason))
+        setStep('providers')
+      })
+  }, [finish])
+
+  // Decided when the button is pressed, not when the page mounts, so a daemon
+  // that connected while the welcome screen was up is taken into account.
+  const start = () => {
+    const next = initialOnboardingStep({
+      connected,
+      hasLocalRuntime: hasLocalRuntime(),
+      isElectron: isElectron()
+    })
+
+    if (next === 'deciding') {
+      decide()
+    } else {
+      setStep(next)
+    }
+  }
+
+  // An install that already has bots never sees the tour.
+  useEffect(() => {
+    if (connected && hasBots) {
+      decide()
+    }
+  }, [connected, decide, hasBots])
 
   useEffect(() => {
     if ((step === 'choice' || step === 'connect' || step === 'install') && connected) {
-      setStep('providers')
+      decide()
     }
-  }, [connected, step])
+  }, [connected, decide, step])
 
   useEffect(() => {
     if (step === 'connect') {
@@ -1211,7 +1332,7 @@ function OnboardingPage() {
 
   useEffect(() => setError(null), [step])
 
-  if (step === 'existing' || step === 'connect') {
+  if (step === 'deciding' || step === 'connect') {
     return null
   }
 
@@ -1261,7 +1382,7 @@ function OnboardingPage() {
 
   const copy = (
     {
-      about: ['Tell your bots about you', 'A few lines every bot you make will know from the start.'],
+      about: ['Tell your bots about you', 'Every bot you own reads this from the first message.'],
       bot: [
         'Meet your first bot',
         'Give it a face, a name and a role. You can change all of it later.'
@@ -1277,6 +1398,10 @@ function OnboardingPage() {
 
   return (
     <SetupFrame subtitle={copy[1]} title={copy[0]}>
+      {step === 'about' ? (
+        <AboutStep onContinue={() => afterAbout.current()} onError={onError} />
+      ) : null}
+
       {step === 'providers' ? (
         <ProvidersStep
           onContinue={list => {
@@ -1298,17 +1423,13 @@ function OnboardingPage() {
         />
       ) : null}
 
-      {step === 'tools' ? (
-        <ToolsStep onContinue={() => setStep('about')} onError={onError} />
-      ) : null}
-
-      {step === 'about' ? <AboutStep onContinue={() => setStep('bot')} onError={onError} /> : null}
+      {step === 'tools' ? <ToolsStep onContinue={() => setStep('bot')} onError={onError} /> : null}
 
       {step === 'bot' ? (
         <BotStep
           configured={configured}
           defaultModel={defaultModel}
-          onBack={() => setStep('about')}
+          onBack={() => setStep('tools')}
           onCreated={(bot, section) => {
             const last = { bot: bot.name, section: section.id }
             uiActions().setLastSection(last)

@@ -61,6 +61,8 @@ test('creates a bot, chats, and creates another section', async () => {
       'connected',
       { timeout: 30_000 }
     )
+    await page.getByTestId('onboarding-about-name').fill('Alex')
+    await page.getByTestId('onboarding-about-continue').click()
     await page.getByTestId('onboarding-provider-item-openai-codex').click()
     await expect(page.getByTestId('onboarding-continue')).toBeEnabled()
     await page.getByTestId('onboarding-continue').click()
