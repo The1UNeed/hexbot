@@ -22,6 +22,7 @@ import {
   providersList,
   settingsGet,
   settingsSet,
+  userMemoryGet,
   userMemorySet
 } from '../lib/api'
 import {
@@ -73,7 +74,7 @@ export function initialOnboardingStep(input: {
     return input.hasLocalRuntime ? 'choice' : 'connect'
   }
 
-  return 'providers'
+  return 'about'
 }
 
 /**
@@ -583,7 +584,32 @@ async function loadModelChoices(providers: Provider[]): Promise<ModelChoice[]> {
 /** The daemon's cap on About you (`hexbot.memory.USER_CAP`). */
 const ABOUT_CAP = 2000
 
-/** One optional text every bot will read: who the user is. Saved as About you. */
+export interface AboutYou {
+  name: string
+  preferences: string
+  work: string
+}
+
+/** The About you text the init page writes: one labelled line per answer. */
+export function compileAboutYou(input: AboutYou): string {
+  const lines: [string, string][] = [
+    ['Name', input.name],
+    ['What I do', input.work],
+    ['How to talk to me', input.preferences]
+  ]
+
+  return lines
+    .map(([label, value]) => ({ label, value: value.trim() }))
+    .filter(line => line.value)
+    .map(line => `${line.label}: ${line.value}`)
+    .join('\n')
+}
+
+/**
+ * The init page: who the user is and how they like to work, saved as About
+ * you so every bot they own knows it from the start. Skipping saves an empty
+ * text, so the page is asked once and not on every startup.
+ */
 export function AboutStep({
   onContinue,
   onError
@@ -591,14 +617,18 @@ export function AboutStep({
   onContinue: () => void
   onError: (message: string) => void
 }) {
-  const [text, setText] = useState('')
+  const [about, setAbout] = useState<AboutYou>({ name: '', preferences: '', work: '' })
   const [busy, setBusy] = useState(false)
+  const text = compileAboutYou(about)
 
-  const save = async () => {
+  const patch = (field: keyof AboutYou) => (event: { target: { value: string } }) =>
+    setAbout(current => ({ ...current, [field]: event.target.value }))
+
+  const save = async (value: string) => {
     setBusy(true)
 
     try {
-      await userMemorySet(text.trim())
+      await userMemorySet(value)
       onContinue()
     } catch (reason) {
       onError(String(reason))
@@ -610,17 +640,36 @@ export function AboutStep({
   return (
     <div className="w-full space-y-5 py-8">
       <label className="block space-y-2">
-        <span className="font-medium">About you</span>
+        <span className="font-medium">Your name</span>
+        <Input
+          autoFocus
+          data-testid="onboarding-about-name"
+          onChange={patch('name')}
+          placeholder="Alex"
+          value={about.name}
+        />
+      </label>
+      <label className="block space-y-2">
+        <span className="font-medium">What you do</span>
+        <Input
+          data-testid="onboarding-about-work"
+          onChange={patch('work')}
+          placeholder="I run a small design studio."
+          value={about.work}
+        />
+      </label>
+      <label className="block space-y-2">
+        <span className="font-medium">How your bots should talk to you</span>
         <span className="block text-secondary text-muted">
-          Your name, what you do, and how you like to be spoken to. Every bot you make reads
-          this. You can change it later in Settings, Memory.
+          Tone, length, language, anything a bot should keep in mind. You can change all of
+          this later in Settings, Memory.
         </span>
         <Textarea
-          aria-label="About you"
-          onChange={event => setText(event.target.value)}
-          placeholder="I'm Alex. I run a small design studio and prefer short, direct answers."
-          rows={4}
-          value={text}
+          data-testid="onboarding-about-preferences"
+          onChange={patch('preferences')}
+          placeholder="Short, direct answers. Casual tone. Metric units."
+          rows={3}
+          value={about.preferences}
         />
         <span
           className={cn(
@@ -636,8 +685,8 @@ export function AboutStep({
           busy={busy}
           className={PILL}
           data-testid="onboarding-about-continue"
-          disabled={!text.trim() || text.length > ABOUT_CAP}
-          onClick={() => void save()}
+          disabled={!about.name.trim() || text.length > ABOUT_CAP}
+          onClick={() => void save(text)}
           variant="primary"
         >
           Continue
@@ -645,7 +694,8 @@ export function AboutStep({
         <Button
           className={PILL}
           data-testid="onboarding-about-skip"
-          onClick={onContinue}
+          disabled={busy}
+          onClick={() => void save('')}
           variant="secondary"
         >
           Skip
@@ -1157,7 +1207,7 @@ function OnboardingPage() {
   const [creating, setCreating] = useState(false)
   const onError = useCallback((message: string) => setError(message), [])
 
-  useEffect(() => {
+  const openFirstSection = useCallback(() => {
     const bot = bots[0]
     const section = bot?.sections_recent[0]
 
@@ -1165,15 +1215,42 @@ function OnboardingPage() {
       return
     }
 
-    setStep('existing')
     const last = { bot: bot.name, section: section.id }
     uiActions().setLastSection(last)
     void navigate({ to: '/b/$bot/s/$section', params: last })
   }, [bots, navigate])
 
   useEffect(() => {
+    if (!bots[0]?.sections_recent[0]) {
+      return
+    }
+
+    // A user who already has bots skips setup, unless their About you was
+    // never written: then the init page comes first, once.
+    setStep('existing')
+    let stale = false
+    void userMemoryGet()
+      .then(memory => {
+        if (stale) {
+          return
+        }
+
+        if (memory.updated_at === null) {
+          setStep('about')
+        } else {
+          openFirstSection()
+        }
+      })
+      .catch(() => openFirstSection())
+
+    return () => {
+      stale = true
+    }
+  }, [bots, openFirstSection])
+
+  useEffect(() => {
     if ((step === 'choice' || step === 'connect' || step === 'install') && connected) {
-      setStep('providers')
+      setStep('about')
     }
   }, [connected, step])
 
@@ -1261,7 +1338,7 @@ function OnboardingPage() {
 
   const copy = (
     {
-      about: ['Tell your bots about you', 'A few lines every bot you make will know from the start.'],
+      about: ['Tell your bots about you', 'Every bot you own reads this from the first message.'],
       bot: [
         'Meet your first bot',
         'Give it a face, a name and a role. You can change all of it later.'
@@ -1277,6 +1354,13 @@ function OnboardingPage() {
 
   return (
     <SetupFrame subtitle={copy[1]} title={copy[0]}>
+      {step === 'about' ? (
+        <AboutStep
+          onContinue={() => (bots.length ? openFirstSection() : setStep('providers'))}
+          onError={onError}
+        />
+      ) : null}
+
       {step === 'providers' ? (
         <ProvidersStep
           onContinue={list => {
@@ -1298,17 +1382,13 @@ function OnboardingPage() {
         />
       ) : null}
 
-      {step === 'tools' ? (
-        <ToolsStep onContinue={() => setStep('about')} onError={onError} />
-      ) : null}
-
-      {step === 'about' ? <AboutStep onContinue={() => setStep('bot')} onError={onError} /> : null}
+      {step === 'tools' ? <ToolsStep onContinue={() => setStep('bot')} onError={onError} /> : null}
 
       {step === 'bot' ? (
         <BotStep
           configured={configured}
           defaultModel={defaultModel}
-          onBack={() => setStep('about')}
+          onBack={() => setStep('tools')}
           onCreated={(bot, section) => {
             const last = { bot: bot.name, section: section.id }
             uiActions().setLastSection(last)

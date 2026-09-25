@@ -5,7 +5,9 @@ import { HEXBOT_ACT_NAMES } from '../components/ui/hexbot-act'
 import { HexbotMark } from '../components/ui/wordmark'
 import { setActiveRpc } from '../lib/rpc'
 import {
+  AboutStep,
   ChoiceStep,
+  compileAboutYou,
   initialOnboardingStep,
   installPercent,
   InstallStep,
@@ -19,11 +21,53 @@ describe('onboarding', () => {
   it.each([
     [{ connected: false, hasBots: false, hasLocalRuntime: true, isElectron: true }, 'choice'],
     [{ connected: false, hasBots: false, hasLocalRuntime: false, isElectron: true }, 'connect'],
-    [{ connected: true, hasBots: false, hasLocalRuntime: true, isElectron: true }, 'providers'],
-    [{ connected: false, hasBots: false, hasLocalRuntime: false, isElectron: false }, 'providers'],
+    [{ connected: true, hasBots: false, hasLocalRuntime: true, isElectron: true }, 'about'],
+    [{ connected: false, hasBots: false, hasLocalRuntime: false, isElectron: false }, 'about'],
     [{ connected: true, hasBots: true, hasLocalRuntime: false, isElectron: false }, 'existing']
   ] as const)('selects the initial step for %o', (input, expected) => {
     expect(initialOnboardingStep(input)).toBe(expected)
+  })
+
+  it('compiles the init page answers into About you, skipping blanks', () => {
+    expect(compileAboutYou({ name: ' Alex ', preferences: 'Short answers.', work: '' })).toBe(
+      'Name: Alex\nHow to talk to me: Short answers.'
+    )
+    expect(compileAboutYou({ name: '', preferences: '', work: '' })).toBe('')
+  })
+
+  it('asks for a name and preferences and saves them as About you', async () => {
+    const call = vi.fn(() => Promise.resolve({ cap: 2000, text: '', updated_at: 1 }))
+    setActiveRpc({ call } as never)
+    const onContinue = vi.fn()
+    render(<AboutStep onContinue={onContinue} onError={vi.fn()} />)
+
+    const submit = screen.getByRole('button', { name: 'Continue' })
+    expect(submit).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Alex' } })
+    fireEvent.change(screen.getByLabelText('What you do'), {
+      target: { value: 'I run a small design studio.' }
+    })
+    fireEvent.change(screen.getByLabelText(/How your bots should talk to you/), {
+      target: { value: 'Short, direct answers.' }
+    })
+    expect(submit).toBeEnabled()
+    fireEvent.click(submit)
+
+    await waitFor(() => expect(onContinue).toHaveBeenCalledOnce())
+    expect(call).toHaveBeenCalledWith('hexbot.memory.user.set', {
+      text: 'Name: Alex\nWhat I do: I run a small design studio.\nHow to talk to me: Short, direct answers.'
+    })
+  })
+
+  it('records a skip so the init page is not asked again', async () => {
+    const call = vi.fn(() => Promise.resolve({ cap: 2000, text: '', updated_at: 1 }))
+    setActiveRpc({ call } as never)
+    const onContinue = vi.fn()
+    render(<AboutStep onContinue={onContinue} onError={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    await waitFor(() => expect(onContinue).toHaveBeenCalledOnce())
+    expect(call).toHaveBeenCalledWith('hexbot.memory.user.set', { text: '' })
   })
 
   it('opens on a welcome screen with one way forward', () => {

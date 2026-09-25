@@ -203,9 +203,15 @@ The composer pill takes the same colour with a one-line notice above it
 3. Run locally: runtime install progress (uv, Python, Git, ripgrep,
    dependencies) with a log disclosure; then the service question ("Keep
    Hexbot running in the background when the app is closed", default on).
-4. Providers: add at least one provider key. A notice reads: "Hexbot does
+4. About you: name, what you do, and how bots should talk to you. Saved as
+   the user's About you, so every bot they own reads it from the first
+   message. Asked once per user, at the first startup where it is empty,
+   also for users who already have bots. Skip saves an empty text.
+5. Providers: add at least one provider key. A notice reads: "Hexbot does
    not include any model credits. Usage is billed by your providers."
-5. First bot: name, avatar, model. Persona optional. Creates the bot and its
+6. Defaults and tools: the default model, then web search and the other
+   tools that need their own account. Both can be skipped.
+7. First bot: name, avatar, model. Persona optional. Creates the bot and its
    first section, lands in the chat.
 
 ### Settings (dialog with left tabs)
