@@ -62,7 +62,10 @@ Three columns, resizable, min widths 240 / 480 / 300.
   "Waiting" (question-mark icon) or a blue "Working" (wrench). A section
   row shows only "Waiting"; "Working" there would be noise.
 - Under each bot: its two most recent touched sections from the last 14
-  days, newest first, plus the open one. A section is touched once the user
+  days, newest first, plus the open one. A section row is its title, a
+  sparkle when the bot named it (the daemon names a section from its first
+  message; the bot can rename it with its tool), the status tag, and the
+  first message beneath in muted text. A section is touched once the user
   has sent something in it, or typed a draft in its composer; drafts are
   kept per section in the browser and the row shows a pencil until the text
   is sent. Untouched sections and older ones stay behind "More", which lists

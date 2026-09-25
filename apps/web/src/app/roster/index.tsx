@@ -7,6 +7,7 @@ import {
   Plus,
   Search,
   Settings,
+  Sparkles,
   SquarePen
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -314,6 +315,8 @@ function BotRows({
           {rows.map(section => {
             const status = sectionStatusOf(bot, section.id, live)
             const dot = status === 'idle' && unseen(section, active) ? 'done' : status
+            // The first line the user typed here, or their unsent draft.
+            const prompt = section.preview || drafts[section.id] || ''
 
             return (
               <div
@@ -325,7 +328,7 @@ function BotRows({
               >
                 <button
                   className={cn(
-                    'flex min-w-0 flex-1 items-center gap-2 rounded-control px-2 py-1 text-left text-[length:var(--text-meta)] outline-none',
+                    'flex min-w-0 flex-1 items-start gap-2 rounded-control px-2 py-1 text-left text-[length:var(--text-meta)] outline-none',
                     active === section.id ? 'text-foreground' : 'text-muted',
                     focused === `section:${section.id}` && rowFocus
                   )}
@@ -333,15 +336,34 @@ function BotRows({
                   onClick={() => onOpen(bot.name, section.id)}
                   type="button"
                 >
-                  <span className="relative grid size-[12px] shrink-0 place-items-center">
+                  <span className="relative mt-[3px] grid size-[12px] shrink-0 place-items-center self-start">
                     {dot === 'idle' && drafts[section.id] ? (
                       <SquarePen aria-label="Draft" size={12} />
                     ) : (
                       <StatusDot className="static size-2 border-0" status={dot} />
                     )}
                   </span>
-                  <span className="min-w-0 flex-1 truncate">{section.title}</span>
-                  <StatusTag status={status === 'needs_you' ? status : undefined} />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1">
+                      <span className="min-w-0 flex-1 truncate">{section.title}</span>
+                      {section.title_by === 'bot' ? (
+                        <Sparkles
+                          aria-label={`Named by ${bot.display_name}`}
+                          className="shrink-0 text-muted"
+                          data-testid="section-named-by-bot"
+                          size={11}
+                        >
+                          <title>{`Named by ${bot.display_name}`}</title>
+                        </Sparkles>
+                      ) : null}
+                      <StatusTag status={status === 'needs_you' ? status : undefined} />
+                    </span>
+                    {prompt ? (
+                      <span className="block truncate text-[length:var(--text-meta)] text-muted/70">
+                        {prompt}
+                      </span>
+                    ) : null}
+                  </span>
                 </button>
                 <Menu
                   items={[

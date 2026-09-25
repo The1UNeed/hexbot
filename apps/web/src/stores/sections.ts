@@ -57,9 +57,11 @@ function indexSections(sections: Section[]): Pick<SectionsState, 'byId' | 'idsBy
 
 function mergeSection(state: SectionsState, section: Section): Partial<SectionsState> {
   const existing = state.idsByBot[section.bot] ?? []
+  // Only the list carries the preview; a rename or archive reply must not blank it.
+  const preview = section.preview || state.byId[section.id]?.preview || ''
 
   return {
-    byId: { ...state.byId, [section.id]: section },
+    byId: { ...state.byId, [section.id]: { ...section, preview } },
     idsByBot: {
       ...state.idsByBot,
       [section.bot]: existing.includes(section.id) ? existing : [section.id, ...existing]

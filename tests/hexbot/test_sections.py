@@ -304,3 +304,69 @@ def test_open_section_replays_a_pending_question(gw):
     assert opened["pending_clarify"] == question
     gw.responses["session.resume"] = lambda p: {"session_id": "live9", "messages": []}
     assert "pending_clarify" not in open_section(section["id"])
+
+
+def test_create_section_leaves_the_hermes_session_untitled(gw):
+    from hexbot import sections
+
+    section = sections.create_section("scout")
+    assert (section["title"], section["title_by"]) == ("New section", None)
+    assert "title" not in gw.params_for("session.create")[0]
+
+    gw.responses["session.create"] = lambda p: {"session_id": "live9",
+                                               "stored_session_id": "dreams", "messages": []}
+    sections.create_section("scout", "Dreams")
+    assert gw.params_for("session.create")[1]["title"] == "Dreams"
+
+
+def test_listing_adopts_the_hermes_auto_title(gw):
+    from hexbot import db, sections
+
+    sections.create_section("scout")
+    hermes = {"id": "stored1", "title": "", "preview": "Lisbon on 600 euros"}
+    gw.responses["session.list"] = {"sessions": [hermes]}
+    assert sections.list_sections("scout")[0]["title"] == "New section"
+
+    # The derived title lands first, the model's title upgrades it.
+    hermes["title"] = "Lisbon on 600 euros"
+    assert sections.list_sections("scout")[0]["title_by"] == "bot"
+    hermes["title"] = "Lisbon trip budget"
+    row = sections.list_sections("scout")[0]
+    assert (row["title"], row["title_by"]) == ("Lisbon trip budget", "bot")
+
+    # A user rename is final.
+    sections.rename_section("stored1", "Portugal")
+    hermes["title"] = "Something else"
+    assert sections.list_sections("scout")[0]["title"] == "Portugal"
+
+    # A bot rename that has not reached Hermes yet is not rolled back.
+    with db.transaction() as conn:
+        conn.execute("UPDATE sections SET title='Pending', title_by='bot', title_dirty=1")
+    assert sections.list_sections("scout")[0]["title"] == "Pending"
+
+
+def test_open_section_previews_the_first_prompt(gw):
+    from hexbot import sections
+
+    sections.create_section("scout")
+    gw.responses["session.resume"] = lambda p: {"session_id": "live2", "messages": [
+        {"role": "user", "text": "Plan a three-day Lisbon trip\non 600 euros " + "x" * 80},
+        {"role": "assistant", "text": "Sure."}]}
+    preview = sections.open_section("stored1")["section"]["preview"]
+    assert preview.startswith("Plan a three-day Lisbon trip on 600 euros") and preview.endswith("...")
+    assert sections.open_section("stored1")["section"]["message_count"] == 2
+
+
+def test_adoption_yields_to_a_rename_that_lands_mid_listing(gw):
+    from hexbot import sections
+
+    sections.create_section("scout")
+
+    def list_and_rename_meanwhile(params):
+        # The user renames after the row was read and before it is written.
+        sections.rename_section("stored1", "Portugal")
+        return {"sessions": [{"id": "stored1", "title": "Lisbon trip budget"}]}
+
+    gw.responses["session.list"] = list_and_rename_meanwhile
+    row = sections.list_sections("scout")[0]
+    assert (row["title"], row["title_by"]) == ("Portugal", None)

@@ -1,5 +1,15 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
-import { Check, Copy, File, MoreHorizontal, PanelRight, RotateCcw, Trash2, X } from 'lucide-react'
+import {
+  Check,
+  Copy,
+  File,
+  MoreHorizontal,
+  PanelRight,
+  RotateCcw,
+  Sparkles,
+  Trash2,
+  X
+} from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -891,10 +901,17 @@ function BotConversation() {
             <button
               className="min-w-0 truncate text-left text-[length:var(--text-secondary)] text-muted hover:text-foreground"
               onClick={() => setEditing(true)}
-              title="Rename section"
+              title={
+                section.title_by === 'bot'
+                  ? `Named by ${bot?.display_name ?? 'the bot'}. Click to rename`
+                  : 'Rename section'
+              }
               type="button"
             >
               {section.title}
+              {section.title_by === 'bot' ? (
+                <Sparkles aria-label="Named by the bot" className="ml-1 inline" size={11} />
+              ) : null}
             </button>
           ) : null}
         </div>
