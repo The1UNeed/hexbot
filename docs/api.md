@@ -109,13 +109,23 @@ null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
 
 ### Sections
 
-Section shape: `{id, bot, title, created_at, updated_at, archived_at | null,
-done_at | null, preview, message_count, live_session_id | null}`
+Section shape: `{id, bot, title, title_by: "bot" | null, created_at,
+updated_at, archived_at | null, done_at | null, preview, message_count,
+live_session_id | null}`
 
-- `hexbot.sections.list {bot?, include_archived?}` → `{sections: [Section]}`
+`title_by` is `"bot"` when the bot named the section, either through the
+`hexbot_rename_section` tool or because the listing adopted the title Hermes
+generates from the first prompt; a user rename clears it. `preview` is the
+first user message, also returned by `open`.
+
+- `hexbot.sections.list {bot?, include_archived?}` → `{sections: [Section]}`.
+  A section still called `New section` (or last named by the bot) takes the
+  Hermes session title here, so the auto-title lands without a client hop.
 - `hexbot.sections.create {bot, title?}` → `{section: Section}` (calls
-  `session.create {profile: bot, title, close_on_disconnect: false}`, records
-  the stored id).
+  `session.create {profile: bot, close_on_disconnect: false}`, records the
+  stored id). `title` is passed to Hermes only when given; an untitled
+  Hermes session is what its auto-titler names from the first prompt, and the
+  row shows `New section` until then.
 - `hexbot.sections.open {id}` → `{section: Section, messages: [Message]}`
   (resumes the stored session on the bot's profile; idempotent if live).
 - `hexbot.sections.rename {id, title}` → `{section: Section}`
@@ -202,6 +212,11 @@ plugin toolset, `hexbot-soul`, which is never written to
 new sections only, since a running section's prompt is frozen. The chat
 shows a "Soul updated" mark under the bubble, as it shows "Memory updated"
 for the builtin memory tool.
+
+The `hexbot_rename_section {title}` tool (toolset `hexbot-section`, kept on
+the same way) renames the section the bot is speaking in, up to 60
+characters, and broadcasts `hexbot.sections.changed`. It refuses in rooms and
+in the Dreams section. The roster marks a bot-named section with a sparkle.
 
 ### Connectors and skills
 

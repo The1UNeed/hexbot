@@ -341,6 +341,8 @@ export interface Section {
   message_count: number
   preview: string
   title: string
+  /** `bot` when the bot named the section itself; null once the user renames it. */
+  title_by: 'bot' | null
   updated_at: null | number
 }
 

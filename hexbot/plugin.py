@@ -130,6 +130,10 @@ def register(ctx):
         from hexbot.soul import SCHEMA as SOUL_SCHEMA, soul_tool
         ctx.register_tool(name="hexbot_soul", toolset="hexbot-soul", schema=SOUL_SCHEMA,
                           handler=soul_tool)
+        # Same rule: the bot names its own section whatever the Tools page says.
+        from hexbot.sections import RENAME_SCHEMA, rename_tool
+        ctx.register_tool(name="hexbot_rename_section", toolset="hexbot-section",
+                          schema=RENAME_SCHEMA, handler=rename_tool)
     from hexbot.connectors import gate_tools
     gate_tools()
     # Constructing the singleton performs restart reconciliation, then starts

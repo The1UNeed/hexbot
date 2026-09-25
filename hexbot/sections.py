@@ -35,11 +35,15 @@ _LIVE: dict[str, str] = {}
 #: Hermes ``session.active_list`` statuses that mean a turn is in flight.
 BUSY_STATUSES = frozenset({"working", "waiting"})
 
+#: The title a section carries until someone names it.
+DEFAULT_TITLE = "New section"
+
 
 def _row_shape(row, session=None) -> dict:
     return {"id": row["id"], "bot": row["bot"], "title": row["title"],
             "created_at": row["created_at"], "updated_at": row["updated_at"],
             "archived_at": row["archived_at"], "done_at": row["done_at"],
+            "title_by": row["title_by"],
             "preview": (session or {}).get("preview", ""),
             "message_count": (session or {}).get("message_count", 0),
             "live_session_id": _LIVE.get(row["id"])}
@@ -138,10 +142,36 @@ def list_sections(bot=None, include_archived=False, *, all_users=False) -> list[
                 "session.list", {"profile": profile, "include_hidden": True})["sessions"]})
         except (GatewayError, KeyError, TypeError):
             logger.debug("session.list unavailable for profile %s", profile, exc_info=True)
-    return [_row_shape(row, history.get(row["id"])) for row in rows]
+    return [_row_shape(_adopt_hermes_title(row, history.get(row["id"])) or row,
+                       history.get(row["id"])) for row in rows]
+
+
+def _adopt_hermes_title(row, session):
+    """Take the title Hermes generated for a section nobody has named.
+
+    Hermes titles every untitled session from its opening message (a derived
+    slice at once, a small-model title a moment later) and keeps that title in
+    its own store. It lands here on the next listing, as a bot-named title,
+    while the section is still ``DEFAULT_TITLE`` or was last named by the bot.
+    A title the user typed (``title_by`` NULL and not the default) is never
+    touched, and neither is a row whose own rename has not reached Hermes yet.
+    Returns the fresh row, or None when nothing changed.
+    """
+    title = str((session or {}).get("title") or "").strip()
+    if not title or title == row["title"] or row["title_dirty"]:
+        return None
+    untouched = row["title_by"] is None and row["title"] == DEFAULT_TITLE
+    if not untouched and row["title_by"] != "bot":
+        return None
+    with db.transaction() as conn:
+        conn.execute("UPDATE sections SET title=?,title_by='bot' WHERE id=?", (title, row["id"]))
+    return _get(row["id"], enforce_owner=False)
 
 
 def create_section(bot: str, title=None) -> dict:
+    """Create a section. Without *title* the Hermes session is left untitled
+    so Hermes's auto-titler names it from the first prompt (see
+    :func:`_adopt_hermes_title`); the row shows ``DEFAULT_TITLE`` meanwhile."""
     db.migrate()
     from hexbot.identity import current_user_id
     with db.transaction() as conn:
@@ -149,9 +179,12 @@ def create_section(bot: str, title=None) -> dict:
     if found_bot is not None and found_bot["owner_id"] != current_user_id():
         raise HexbotError(4302, "not the owner")
     owner_id = found_bot["owner_id"] if found_bot is not None else current_user_id()
-    title = (title or "New section").strip() or "New section"
-    result = gateway.call("session.create", {"profile": bot, "title": title,
-        "close_on_disconnect": False, "follow_profile_config": True})
+    title = (title or "").strip()
+    params = {"profile": bot, "close_on_disconnect": False, "follow_profile_config": True}
+    if title:
+        params["title"] = title
+    title = title or DEFAULT_TITLE
+    result = gateway.call("session.create", params)
     stored = result.get("stored_session_id")
     live = result.get("session_id")
     if not stored:
@@ -198,7 +231,8 @@ def open_section(section_id: str) -> dict:
         _remember_live(section_id, live)
     _flush_pending_title(section_id, live, row["title"])
     messages = result.get("messages", [])
-    opened = {"section": _row_shape(_get(section_id), {"message_count": len(messages)}),
+    opened = {"section": _row_shape(_get(section_id), {"message_count": len(messages),
+                                                        "preview": _preview(messages)}),
               "messages": messages}
     # A question the bot is still waiting on: the client re-draws its card
     # after a reload, since the clarify.request event only reached the page
@@ -206,6 +240,13 @@ def open_section(section_id: str) -> dict:
     if result.get("pending_clarify"):
         opened["pending_clarify"] = result["pending_clarify"]
     return opened
+
+
+def _preview(messages) -> str:
+    """The first user message, shaped like Hermes's ``session.list`` preview."""
+    from hermes_state_common import _shape_preview
+    first = next((m for m in messages if isinstance(m, dict) and m.get("role") == "user"), None)
+    return _shape_preview(first.get("text") or first.get("content")) if first else ""
 
 
 def _flush_pending_title(section_id: str, live: str, title: str) -> None:
@@ -229,8 +270,14 @@ def _set_hermes_title(live: str, title: str) -> bool:
         return False
 
 
-def rename_section(section_id: str, title: str) -> dict:
+def rename_section(section_id: str, title: str, *, by: str | None = None) -> dict:
     """Rename a section.
+
+    ``by`` is ``"bot"`` when the bot renamed it from inside its own turn (the
+    ``hexbot_rename_section`` tool) and ``None`` for the user; the row records
+    it as ``title_by`` so the client can say who named the section. A bot's
+    rename runs on the bot's own thread with no transport identity, so it
+    skips the owner check that every RPC caller goes through.
 
     The Hexbot row is always updated (it is what every ``hexbot.*`` result
     reports). The Hermes session title is only settable through
@@ -244,16 +291,17 @@ def rename_section(section_id: str, title: str) -> dict:
     title = (title or "").strip()
     if not title:
         raise HexbotError(4200, "missing parameter: title")
-    row = _get(section_id)
+    owned = by is None
+    row = _get(section_id, enforce_owner=owned)
     live = _LIVE.get(section_id)
     applied = bool(live) and _set_hermes_title(live, title)
     if live and not applied:
         _forget_live(section_id)
     with db.transaction() as conn:
-        conn.execute("UPDATE sections SET title=?,updated_at=?,title_dirty=? WHERE id=?",
-                     (title, time.time(), 0 if applied else 1, section_id))
+        conn.execute("UPDATE sections SET title=?,title_by=?,updated_at=?,title_dirty=? WHERE id=?",
+                     (title, by, time.time(), 0 if applied else 1, section_id))
     _touch_bot(row["bot"])
-    return _row_shape(_get(section_id))
+    return _row_shape(_get(section_id, enforce_owner=owned))
 
 
 def _archive(section_id, value):
@@ -341,3 +389,47 @@ def mark_read(section_id: str) -> dict:
     with db.transaction() as conn:
         conn.execute("UPDATE sections SET done_at=NULL WHERE id=?", (section_id,))
     return _row_shape(_get(section_id))
+
+
+# ---------------------------------------------------------------------------
+# The ``hexbot_rename_section`` tool: a bot names the section it is in.
+
+TITLE_CAP = 60
+
+RENAME_SCHEMA = {
+    "name": "hexbot_rename_section",
+    "description": (
+        "Name the section (conversation) you are in after its topic, so it is "
+        "easy to find in the sidebar. Every section starts as 'New section': "
+        "call this once at the start of your first reply, as soon as the topic "
+        "is clear, and again later only if the topic changes. Use a short, "
+        "specific noun phrase of two to six words, like a document title. No "
+        "trailing punctuation, no quotes, not a sentence."),
+    "parameters": {"type": "object", "properties": {
+        "title": {"type": "string", "description": "The new title, up to 60 characters."}},
+        "required": ["title"], "additionalProperties": False}}
+
+
+def rename_tool(args: dict, *, session_id: str = "", **_kwargs) -> str:
+    """Tool handler. Hermes accepts only strings, so the reply is JSON."""
+    import json
+    return json.dumps(_rename_from_tool(args, str(session_id or "")), ensure_ascii=False)
+
+
+def _rename_from_tool(args: dict, session_id: str) -> dict:
+    row = section_for_session(session_id) if session_id else None
+    if row is None:
+        return {"error": "hexbot_rename_section only works inside a section, not a room"}
+    if row["title"] == "Dreams":
+        return {"error": "the Dreams section keeps its name"}
+    title = str(args.get("title") or "").strip().strip("\"'").rstrip(".!")
+    if not title:
+        return {"error": "title is required"}
+    if len(title) > TITLE_CAP:
+        return {"error": f"the title is {len(title)} characters; the cap is {TITLE_CAP}"}
+    try:
+        section = rename_section(row["id"], title, by="bot")
+    except HexbotError as exc:
+        return {"error": exc.message}
+    gateway.broadcast("hexbot.sections.changed", {"id": section["id"], "bot": section["bot"]})
+    return {"renamed": True, "title": section["title"]}
