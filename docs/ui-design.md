@@ -84,8 +84,9 @@ Three columns, resizable, min widths 240 / 480 / 300.
   for the right panel.
 - Transcript: full width with a slim gutter (capped at 64rem on very wide
   windows). Bot messages left-aligned in grey bubbles, human messages
-  right-aligned in inverse bubbles (black on light, white on dark). No
-  avatars in a direct message; rooms show a small face and name. Copy and retry icons appear beside a bubble on hover.
+  right-aligned in inverse bubbles (black on light, white on dark). A
+  room bubble also carries the bot's name. Copy and retry icons appear
+  beside a bubble on hover.
   Markdown body with code blocks (copy button), tables, images. Time
   separators ("Today 9:13 PM") between days and after 20 quiet minutes.
   Every bot message, pending or done, has one 24px face at the left of its
