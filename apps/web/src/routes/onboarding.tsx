@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { ArrowRight, ArrowUp, Plus } from 'lucide-react'
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ConnectorFields, connectorValues } from '../components/connector-fields'
 import { isSubscription, ProviderPanel, supportsApiKey } from '../components/provider-panel'
@@ -16,10 +16,12 @@ import { Textarea } from '../components/ui/textarea'
 import { HexbotMark, Wordmark } from '../components/ui/wordmark'
 import {
   botsCreate,
+  botsList,
   connectorsList,
   connectorsSetup,
   modelsList,
   providersList,
+  sectionsCreate,
   settingsGet,
   settingsSet,
   userMemoryGet,
@@ -40,7 +42,7 @@ import type { Bot, Connector, ModelOption, Provider, Section } from '../lib/type
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
 import { introduceBot } from '../stores/sections'
-import { uiActions } from '../stores/ui'
+import { type LastSection, uiActions } from '../stores/ui'
 
 export const Route = createFileRoute('/onboarding')({ component: OnboardingPage })
 
@@ -49,8 +51,8 @@ type OnboardingStep =
   | 'bot'
   | 'choice'
   | 'connect'
+  | 'deciding'
   | 'defaults'
-  | 'existing'
   | 'install'
   | 'jobs'
   | 'meet'
@@ -60,21 +62,45 @@ type OnboardingStep =
 
 export function initialOnboardingStep(input: {
   connected: boolean
-  hasBots: boolean
   hasLocalRuntime: boolean
   isElectron: boolean
 }): OnboardingStep {
-  if (input.hasBots) {
-    return 'existing'
-  }
-
   if (!input.connected && input.isElectron) {
     // The client-only package has nothing to install, so the only way in is
     // to pair with a daemon.
     return input.hasLocalRuntime ? 'choice' : 'connect'
   }
 
-  return 'about'
+  // Connected: what comes next depends on the daemon (About you, bots), so
+  // the page reads both before it shows anything.
+  return 'deciding'
+}
+
+/**
+ * Where onboarding ends for someone who already has bots: the section they
+ * were in, else any bot's latest section, else a new section on the first
+ * bot. Null when there are no bots yet.
+ */
+export async function landingSection(bots: Bot[]): Promise<LastSection | null> {
+  if (!bots.length) {
+    return null
+  }
+
+  const last = uiActions().lastSection
+
+  if (last && bots.some(bot => bot.name === last.bot)) {
+    return last
+  }
+
+  const recent = bots.find(bot => bot.sections_recent.length)
+
+  if (recent) {
+    return { bot: recent.name, section: recent.sections_recent[0]!.id }
+  }
+
+  const { section } = await sectionsCreate(bots[0]!.name)
+
+  return { bot: bots[0]!.name, section: section.id }
 }
 
 /**
@@ -1182,24 +1208,9 @@ function BotStep({
 function OnboardingPage() {
   const navigate = useNavigate()
   const connected = useConnection(state => state.status === 'connected')
-  const order = useBots(state => state.order)
-  const byName = useBots(state => state.byName)
-  const bots = useMemo(() => order.map(name => byName[name]).filter(Boolean), [byName, order])
+  const hasBots = useBots(state => state.order.length > 0)
 
   const [step, setStep] = useState<OnboardingStep>('welcome')
-
-  // Decided when the button is pressed, not when the page mounts, so a daemon
-  // that connected while the welcome screen was up is taken into account.
-  const start = () =>
-    setStep(
-      initialOnboardingStep({
-        connected,
-        hasBots: bots.length > 0,
-        hasLocalRuntime: hasLocalRuntime(),
-        isElectron: isElectron()
-      })
-    )
-
   const [progress, setProgress] = useState<DaemonProgress[]>([])
   const [configured, setConfigured] = useState<Provider[]>([])
   const [defaultModel, setDefaultModel] = useState<string | null>(null)
@@ -1207,52 +1218,85 @@ function OnboardingPage() {
   const [creating, setCreating] = useState(false)
   const onError = useCallback((message: string) => setError(message), [])
 
-  const openFirstSection = useCallback(() => {
-    const bot = bots[0]
-    const section = bot?.sections_recent[0]
+  const finish = useCallback(
+    (bots: Bot[]) =>
+      landingSection(bots)
+        .then(last => {
+          if (!last) {
+            setStep('providers')
 
-    if (!bot || !section) {
+            return
+          }
+
+          uiActions().setLastSection(last)
+          void navigate({ to: '/b/$bot/s/$section', params: last })
+        })
+        .catch(reason => {
+          setError(String(reason))
+          setStep('providers')
+        }),
+    [navigate]
+  )
+
+  // One decision per visit, taken once the daemon is connected and never
+  // revisited when the bot list refreshes: the init page when About you was
+  // never written (its Skip writes an empty text, so the form only mounts
+  // once the read says the file is absent), then the user's section, or
+  // provider setup when there are no bots yet.
+  const decided = useRef(false)
+  const afterAbout = useRef<() => void>(() => setStep('providers'))
+
+  const decide = useCallback(() => {
+    if (decided.current) {
       return
     }
 
-    const last = { bot: bot.name, section: section.id }
-    uiActions().setLastSection(last)
-    void navigate({ to: '/b/$bot/s/$section', params: last })
-  }, [bots, navigate])
-
-  useEffect(() => {
-    if (!bots[0]?.sections_recent[0]) {
-      return
-    }
-
-    // A user who already has bots skips setup, unless their About you was
-    // never written: then the init page comes first, once.
-    setStep('existing')
-    let stale = false
-    void userMemoryGet()
-      .then(memory => {
-        if (stale) {
-          return
-        }
-
+    decided.current = true
+    setStep('deciding')
+    void Promise.all([userMemoryGet(), botsList()])
+      .then(([memory, list]) => {
         if (memory.updated_at === null) {
+          afterAbout.current = () => void finish(list.bots)
           setStep('about')
         } else {
-          openFirstSection()
+          void finish(list.bots)
         }
       })
-      .catch(() => openFirstSection())
+      .catch(reason => {
+        decided.current = false
+        setError(String(reason))
+        setStep('providers')
+      })
+  }, [finish])
 
-    return () => {
-      stale = true
+  // Decided when the button is pressed, not when the page mounts, so a daemon
+  // that connected while the welcome screen was up is taken into account.
+  const start = () => {
+    const next = initialOnboardingStep({
+      connected,
+      hasLocalRuntime: hasLocalRuntime(),
+      isElectron: isElectron()
+    })
+
+    if (next === 'deciding') {
+      decide()
+    } else {
+      setStep(next)
     }
-  }, [bots, openFirstSection])
+  }
+
+  // An install that already has bots never sees the tour.
+  useEffect(() => {
+    if (connected && hasBots) {
+      decide()
+    }
+  }, [connected, decide, hasBots])
 
   useEffect(() => {
     if ((step === 'choice' || step === 'connect' || step === 'install') && connected) {
-      setStep('about')
+      decide()
     }
-  }, [connected, step])
+  }, [connected, decide, step])
 
   useEffect(() => {
     if (step === 'connect') {
@@ -1288,7 +1332,7 @@ function OnboardingPage() {
 
   useEffect(() => setError(null), [step])
 
-  if (step === 'existing' || step === 'connect') {
+  if (step === 'deciding' || step === 'connect') {
     return null
   }
 
@@ -1355,10 +1399,7 @@ function OnboardingPage() {
   return (
     <SetupFrame subtitle={copy[1]} title={copy[0]}>
       {step === 'about' ? (
-        <AboutStep
-          onContinue={() => (bots.length ? openFirstSection() : setStep('providers'))}
-          onError={onError}
-        />
+        <AboutStep onContinue={() => afterAbout.current()} onError={onError} />
       ) : null}
 
       {step === 'providers' ? (

@@ -4,6 +4,7 @@ import { Avatar } from '../components/ui/avatar'
 import { HEXBOT_ACT_NAMES } from '../components/ui/hexbot-act'
 import { HexbotMark } from '../components/ui/wordmark'
 import { setActiveRpc } from '../lib/rpc'
+import type { Bot } from '../lib/types'
 import {
   AboutStep,
   ChoiceStep,
@@ -12,20 +13,54 @@ import {
   installPercent,
   InstallStep,
   JobsStep,
+  landingSection,
   MeetStep,
   ToolsStep,
   WelcomeStep
 } from '../routes/onboarding'
 
+const ui = vi.hoisted(() => ({
+  lastSection: null as { bot: string; section: string } | null,
+  setLastSection: vi.fn()
+}))
+
+vi.mock('../stores/ui', () => ({ uiActions: () => ui }))
+
 describe('onboarding', () => {
   it.each([
-    [{ connected: false, hasBots: false, hasLocalRuntime: true, isElectron: true }, 'choice'],
-    [{ connected: false, hasBots: false, hasLocalRuntime: false, isElectron: true }, 'connect'],
-    [{ connected: true, hasBots: false, hasLocalRuntime: true, isElectron: true }, 'about'],
-    [{ connected: false, hasBots: false, hasLocalRuntime: false, isElectron: false }, 'about'],
-    [{ connected: true, hasBots: true, hasLocalRuntime: false, isElectron: false }, 'existing']
+    [{ connected: false, hasLocalRuntime: true, isElectron: true }, 'choice'],
+    [{ connected: false, hasLocalRuntime: false, isElectron: true }, 'connect'],
+    [{ connected: true, hasLocalRuntime: true, isElectron: true }, 'deciding'],
+    [{ connected: false, hasLocalRuntime: false, isElectron: false }, 'deciding'],
+    [{ connected: true, hasLocalRuntime: false, isElectron: false }, 'deciding']
   ] as const)('selects the initial step for %o', (input, expected) => {
     expect(initialOnboardingStep(input)).toBe(expected)
+  })
+
+  it('lands in the section the user was in, any recent one, or a new one', async () => {
+    const bot = (name: string, sections: string[]) =>
+      ({ name, sections_recent: sections.map(id => ({ id })) }) as unknown as Bot
+
+    const call = vi.fn(() => Promise.resolve({ section: { id: 's-new' } }))
+    setActiveRpc({ call } as never)
+
+    expect(await landingSection([])).toBeNull()
+
+    ui.lastSection = { bot: 'scout', section: 's-old' }
+    expect(await landingSection([bot('bea', ['s-2']), bot('scout', [])])).toEqual({
+      bot: 'scout',
+      section: 's-old'
+    })
+
+    ui.lastSection = { bot: 'gone', section: 's-x' }
+    expect(await landingSection([bot('quiet', []), bot('bea', ['s-2'])])).toEqual({
+      bot: 'bea',
+      section: 's-2'
+    })
+
+    expect(await landingSection([bot('quiet', [])])).toEqual({ bot: 'quiet', section: 's-new' })
+    expect(call).toHaveBeenCalledWith('hexbot.sections.create', { bot: 'quiet' })
+    ui.lastSection = null
   })
 
   it('compiles the init page answers into About you, skipping blanks', () => {

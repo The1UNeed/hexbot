@@ -1,6 +1,7 @@
 """Database, settings and memory: the parts that own state on disk."""
 
 import sqlite3
+from types import MappingProxyType
 
 import pytest
 from ruamel.yaml import YAML
@@ -158,7 +159,6 @@ def test_about_you_renders_as_one_prompt_block(isolated_home):
     assert "Name: Alex" in block
     # Hermes passes a read-only mapping proxy, not a dict, when it renders
     # plugin sections; the block must survive that.
-    from types import MappingProxyType
     assert render_user_memory(MappingProxyType(
         {"session_id": "unknown", "profile_name": "scout"})) == block
     # A session on no bot of ours gets nothing.
