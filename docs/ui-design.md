@@ -37,8 +37,9 @@ own visual identity. Read `CLAUDE.md` for the words.
   is derived from the bot's name. Faces wiggle on hover and blink at rest.
   Click any face, or the Hexbot mark, and it plays a random act for a few
   seconds: typing with its two round hands, juggling, blowing a horn
-  (`components/ui/hexbot-act.tsx`, 21 acts). A working bot plays work acts
-  in turn, and the install screen gives each stage its own.
+  (`components/ui/hexbot-act.tsx`, 21 acts). The install screen gives each
+  stage its own act. In a chat the face never changes size or plays acts on
+  its own: a working bot's face only bobs (`hex-think`).
 - Shadows only on floating layers (menus, dialogs): a hairline border plus
   one soft shadow. Nothing in-panel.
 - Motion: 120ms ease-out for hover and open, 200ms for panel slide. Respect
@@ -53,15 +54,17 @@ Three columns, resizable, min widths 240 / 480 / 300.
 - Header: a window-drag strip (padded for the macOS traffic lights), a "+"
   menu (New bot, New section, New room) and a search pill. No app name.
 - List: bots and rooms in one list, ordered by last activity. A bot row is
-  its face (40px), name, optional label, relative time, and a status dot
-  on the face (see "Status colours"). No message preview: a bot has many
+  its face (40px), name, optional label, and a status dot on the face (see
+  "Status colours"). No times, no message preview: a bot has many
   sections, so one message says little. A room row is the room's cluster
   (one face, or up to four in a 2x2 grid), name, latest message, and the
-  same status dot.
+  same status dot. Both rows end in a status tag while it applies: a purple
+  "Waiting" (question-mark icon) or a blue "Working" (wrench). A section
+  row shows only "Waiting"; "Working" there would be noise.
 - Under each bot: its two most recent touched sections from the last 14
   days, newest first, plus the open one. A section row is its title, a
   sparkle when the bot named it (the daemon names a section from its first
-  message; the bot can rename it with its tool), the relative time, and the
+  message; the bot can rename it with its tool), the status tag, and the
   first message beneath in muted text. A section is touched once the user
   has sent something in it, or typed a draft in its composer; drafts are
   kept per section in the browser and the row shows a pencil until the text
@@ -84,16 +87,19 @@ Three columns, resizable, min widths 240 / 480 / 300.
   for the right panel.
 - Transcript: full width with a slim gutter (capped at 64rem on very wide
   windows). Bot messages left-aligned in grey bubbles, human messages
-  right-aligned in inverse bubbles (black on light, white on dark). No
-  avatars in a direct message; rooms show a small face and name. Copy and retry icons appear beside a bubble on hover.
+  right-aligned in inverse bubbles (black on light, white on dark). A
+  room bubble also carries the bot's name. Copy and retry icons appear
+  beside a bubble on hover.
   Markdown body with code blocks (copy button), tables, images. Time
   separators ("Today 9:13 PM") between days and after 20 quiet minutes.
-  While a reply is pending the bot's face plays work acts, alone, where the next
-  bubble will land (under the last one once text has arrived). No spinner,
-  no ring; a muted step label ("Searching the web for apple") sits beside
-  it only while a tool runs.
-  "Waiting on you" banner (purple) when a bot has asked the human
-  something; a red banner naming the bot when a room turn failed.
+  Every bot message, pending or done, has one 24px face at the left of its
+  column. While a reply is pending the face bobs where the next bubble will
+  land. No spinner, no ring; a muted step label ("Searching the web for
+  apple") sits beside it only while a tool runs.
+  "Waiting on you" is a purple banner pinned under the header, above the
+  transcript, while a bot has asked the human something (in a room it
+  names the bot). Nothing is written into the transcript for it. A red
+  banner names the bot when a room turn failed.
 - Work panel: once a turn has thought or run tools for two seconds, a
   panel opens beside the face with the reasoning trace as it streams and
   each step as it happens (the running step shows its arguments live). It
@@ -129,8 +135,9 @@ it stopped, green when it finished and you have not opened it yet on any device.
 sits on the face in the roster, at the start of the section row it is about,
 on the face in the conversation header, and on the room cluster. A section
 row with an unsent draft and no status shows a draft icon in the same slot.
-The composer pill takes the same colour with a one-line notice above it
-("Waiting on you", or the error). Working and idle draw the plain pill.
+The composer pill takes the same colour; a stopped bot puts its error in a
+one-line notice above it. Waiting is the banner under the header, not a
+notice. Working and idle draw the plain pill.
 
 ### Composer
 

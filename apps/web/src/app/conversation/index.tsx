@@ -58,6 +58,7 @@ import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
 import { MemoryMarks } from './memory-marks'
 import { RoomConversation } from './room'
+import { WaitingBanner } from './waiting-banner'
 import { WorkStatus } from './work-status'
 
 const avatarData = (bot?: Bot) => avatarSrc(bot?.avatar)
@@ -365,14 +366,15 @@ export function MessageRow({
   const hasBody = Boolean(message.text || message.attachments.length)
   const name = bot?.display_name ?? 'Bot'
 
-  // The bot's face beside its bubble. No name: the header already says whose chat this is.
-  // The column reads in order: the work that produced the reply, the reply, then its actions.
+  // The bot's face beside its column, one size, bobbing while the turn runs. No name: the
+  // header already says whose chat this is. The column reads in order: the work that
+  // produced the reply, the reply, then its actions.
   return (
     <article
       className={cn('group flex gap-2 py-1', assistant ? 'justify-start' : 'flex-row-reverse')}
       data-testid={assistant ? 'bot-message' : 'user-message'}
     >
-      {assistant && hasBody ? (
+      {assistant ? (
         <Avatar
           className={cn('mt-1', message.streaming && 'hex-think')}
           image={avatarData(bot)}
@@ -384,9 +386,7 @@ export function MessageRow({
       <div
         className={cn('flex min-w-0 max-w-[80%] flex-col', assistant ? 'items-start' : 'items-end')}
       >
-        {assistant ? (
-          <WorkStatus face={!hasBody} image={avatarData(bot)} message={message} name={name} />
-        ) : null}
+        {assistant ? <WorkStatus message={message} name={name} /> : null}
         {hasBody ? (
           <div className={assistant ? bubbleClass : userBubbleClass}>
             {message.text ? (
@@ -696,12 +696,11 @@ function BotConversation() {
     transcript && liveId ? liveSectionsOf({ [liveId]: transcript }) : {}
   )
 
+  // Waiting is the banner under the header; the composer notice is for errors only.
   const notice =
     status === 'stopped'
       ? (bot?.status_detail?.text ?? messages.findLast(message => message.error)?.error)
-      : status === 'needs_you'
-        ? 'Waiting on you'
-        : null
+      : null
 
   useEffect(() => {
     if (params.section && !liveId && unavailable !== params.section) {
@@ -972,6 +971,7 @@ function BotConversation() {
           </button>
         </div>
       </header>
+      {status === 'needs_you' ? <WaitingBanner /> : null}
       <div
         className="min-h-0 flex-1 overflow-y-auto"
         onScroll={event => {

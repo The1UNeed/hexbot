@@ -29,7 +29,7 @@ const message = (partial: Partial<Message>): Message => ({
 })
 
 describe('WorkStatus', () => {
-  it('shows the face and the running step while streaming', () => {
+  it('shows the running step while streaming', () => {
     render(
       <WorkStatus
         message={message({ streaming: true, toolCalls: [call({ status: 'running' })] })}
