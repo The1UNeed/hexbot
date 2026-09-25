@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react'
 import type { Bot, Room } from '../../lib/types'
 
 import { RoomCluster } from './room-cluster'
-import { StatusDot } from './status-dot'
+import { StatusDot, StatusTag } from './status-dot'
 
 describe('status dot', () => {
   it('is blue while working, purple when it needs you, red when stopped, green when done, and gone when idle', () => {
@@ -17,6 +17,22 @@ describe('status dot', () => {
     expect(screen.getByRole('img', { name: 'Done' })).toHaveClass('bg-success')
     rerender(<StatusDot status="idle" />)
     expect(screen.queryByRole('img')).not.toBeInTheDocument()
+  })
+})
+
+describe('status tag', () => {
+  it('writes Waiting and Working and nothing for the other states', () => {
+    const { rerender } = render(<StatusTag status="needs_you" />)
+    expect(screen.getByTestId('status-tag')).toHaveTextContent('Waiting')
+    expect(screen.getByTestId('status-tag')).toHaveClass('text-accent')
+
+    rerender(<StatusTag status="working" />)
+    expect(screen.getByTestId('status-tag')).toHaveTextContent('Working')
+
+    for (const status of ['idle', 'done', 'stopped'] as const) {
+      rerender(<StatusTag status={status} />)
+      expect(screen.queryByTestId('status-tag')).toBeNull()
+    }
   })
 })
 
