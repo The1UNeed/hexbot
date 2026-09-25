@@ -1,10 +1,12 @@
 // Tunnel hostnames sit one label under the zone (`<slug>.hexbot.app`) so Cloudflare's
 // Universal SSL certificate (`*.hexbot.app`) covers them; deeper names would not be.
-export interface TunnelProvider { create(slug: string, ingressPort: number): Promise<{ tunnelId: string; token: string; hostname: string }>; setIngress(tunnelId: string, hostname: string, ingressPort: number): Promise<void>; delete(tunnelId: string): Promise<void> }
+// `kind` rather than instanceof: Next gives pages and route handlers separate module graphs, so the class identity differs.
+export interface TunnelProvider { readonly kind: "cloudflare" | "fake"; create(slug: string, ingressPort: number): Promise<{ tunnelId: string; token: string; hostname: string }>; setIngress(tunnelId: string, hostname: string, ingressPort: number): Promise<void>; delete(tunnelId: string): Promise<void> }
 
 interface CloudflareResult<T> { success: boolean; errors?: Array<{ message: string }>; result: T }
 
 export class CloudflareTunnelProvider implements TunnelProvider {
+  readonly kind = "cloudflare" as const;
   constructor(private token: string, private accountId: string, private zoneId: string, private domain: string) {}
   private async request<T>(path: string, init: RequestInit): Promise<T> {
     const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, { ...init, headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json", ...init.headers } });
@@ -35,6 +37,7 @@ export class CloudflareTunnelProvider implements TunnelProvider {
 }
 
 export class FakeTunnelProvider implements TunnelProvider {
+  readonly kind = "fake" as const;
   deleted: string[] = []; ingress: Record<string, number> = {};
   async create(slug: string, _ingressPort: number) { return { tunnelId: `fake-tunnel-${slug}`, token: `fake-tunnel-token-${slug}`, hostname: `${slug}.${process.env.CONNECT_DOMAIN ?? "hexbot.test"}` }; }
   async setIngress(tunnelId: string, _hostname: string, ingressPort: number) { this.ingress[tunnelId] = ingressPort; }

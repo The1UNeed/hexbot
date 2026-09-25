@@ -1,0 +1,57 @@
+---
+import Legal from '../layouts/Legal.astro'
+const sections: [string, string][] = [
+  ['purpose', 'What this policy is for'],
+  ['allowed', 'What Connect is for'],
+  ['prohibited', 'What you may not do'],
+  ['hostnames', 'Hostnames and tunnels'],
+  ['limits', 'Fair use and limits'],
+  ['enforcement', 'What happens if you break this policy'],
+  ['reporting', 'Reporting abuse'],
+  ['changes', 'Changes'],
+]
+---
+<Legal title="Acceptable Use Policy" description="What you may and may not do with Hexbot Connect and the hostnames it gives you." lede="Connect gives your daemon a public hostname and lets your devices sign in to it. This policy keeps that safe for you, for other users, and for the networks Connect runs on. It is part of the Terms of Service." effective="25 September 2026" updated="25 September 2026" sections={sections}>
+  <section id="purpose">
+    <h2>What this policy is for</h2>
+    <p>This policy applies to everyone with a Hexbot Connect account and to every daemon, device, and hostname registered through it. It is part of the <a href="/terms/">Terms of Service</a>. It does not apply to the Hexbot software running on your own network without Connect, or to a Connect instance you host yourself.</p>
+  </section>
+  <section id="allowed">
+    <h2>What Connect is for</h2>
+    <p>Connect exists so that you, and the people you have chosen to share a daemon with, can reach that daemon from anywhere: through the Hexbot app or a browser, over a tunnel that ends at the daemon. Registering the daemons you run, signing in from your own devices, and inviting your household or team to a daemon you run for them are all what it is for.</p>
+  </section>
+  <section id="prohibited">
+    <h2>What you may not do</h2>
+    <p>Do not use Connect, a Connect hostname, or a Connect account to:</p>
+    <ul>
+      <li>register a daemon you do not own or are not permitted to run, or reach another person's daemon or account without their permission;</li>
+      <li>probe, scan, or attack the Connect service, other users' daemons, or Cloudflare's network, or try to get around rate limits, authentication, or other protections;</li>
+      <li>send unsolicited messages, spam, or phishing, or impersonate us, Cloudflare, or another person;</li>
+      <li>distribute malware, or store or share content that is illegal where you live or where we operate, including content that exploits children, which we report to the authorities;</li>
+      <li>infringe anyone's intellectual property or privacy rights;</li>
+      <li>create accounts by automated means, share one account among many unrelated people, or sell or rent access to Connect;</li>
+      <li>use a hostname or tunnel for anything other than reaching a Hexbot daemon, as described in the next section;</li>
+      <li>break the terms of the model providers your bots use, or use your bots to do any of the above.</li>
+    </ul>
+  </section>
+  <section id="hostnames">
+    <h2>Hostnames and tunnels</h2>
+    <p>A Connect hostname such as <code>amber-otter-1234.hexbot.app</code> points at the Hexbot daemon on your machine and nothing else. You may not point it at other software, use the tunnel to publish a website or API to the public, relay or proxy traffic for third parties, host a service for people who are not users of that daemon, or run anything through it that generates sustained high traffic unrelated to chatting with your bots. Hostnames belong to the service; you cannot choose, keep, or transfer them, and we may reassign a hostname after its daemon is revoked.</p>
+  </section>
+  <section id="limits">
+    <h2>Fair use and limits</h2>
+    <p>Connect is free during the beta and shared by everyone. We may limit the number of daemons per account, the rate of sign-ins and API calls, and the bandwidth a tunnel may carry, and we may change those limits. Where we can, the service tells you when you hit one. If your use is far outside what a person chatting with their own bots would generate, we may ask you to reduce it or move to your own instance.</p>
+  </section>
+  <section id="enforcement">
+    <h2>What happens if you break this policy</h2>
+    <p>Depending on what happened, we may warn you, revoke a daemon or hostname, sign out devices, suspend or close your account, or report the matter to the authorities. Where we can, we tell you what we did and why, and give you a chance to fix it. We take down content and disable access when a court, a law, or a credible report requires it. Nothing in this policy obliges us to monitor the traffic through tunnels, which we cannot read, or to act on every report.</p>
+  </section>
+  <section id="reporting">
+    <h2>Reporting abuse</h2>
+    <p>If a Connect hostname is being used against you or against this policy, email <a href="mailto:lumora.studio@hotmail.com">lumora.studio@hotmail.com</a> with the hostname, what you saw, and when. Security vulnerabilities go through the <a href="/security/">Security Policy</a> instead.</p>
+  </section>
+  <section id="changes">
+    <h2>Changes</h2>
+    <p>We may update this policy as the service grows. The dates at the top tell you when, and material changes will be announced on this site before they take effect.</p>
+  </section>
+</Legal>

@@ -28,6 +28,7 @@ def parser() -> argparse.ArgumentParser:
     serve.set_defaults(lan=None)
     sub.add_parser("pair")
     connect = sub.add_parser("connect")
+    connect.add_argument("--name")
     connect_sub = connect.add_subparsers(dest="connect_command")
     connect_sub.add_parser("status")
     connect_sub.add_parser("disconnect")
@@ -78,8 +79,15 @@ def main(argv=None):
             print(json.dumps(connect.status(), indent=2)); return 0
         if args.connect_command == "disconnect":
             print(json.dumps(connect.disconnect(), indent=2)); return 0
-        config = connect.register(socket.gethostname(), client=connect.ConnectClient())
+        current = connect.status()
+        if current["registered"]:
+            print(f"Already connected: https://{current['tunnel_hostname']}")
+            print("Run `hexbot connect disconnect` first to register again.")
+            return 0
+        config = connect.register(args.name or socket.gethostname(), client=connect.ConnectClient())
         print(f"Connected: https://{config.tunnel_hostname}")
+        print(f"Open it in a browser: https://{config.tunnel_hostname}")
+        print(f"Manage daemons: {config.api_base}/connect")
         return 0
     if args.command == "devices":
         from hexbot import pairing

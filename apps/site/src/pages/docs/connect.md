@@ -1,42 +1,51 @@
 ---
 layout: ../../layouts/Docs.astro
 title: Hexbot Connect
-description: Reach a self-hosted Hexbot daemon without opening a router port.
+description: Reach a self-hosted Hexbot daemon from anywhere, in the app or a browser, without opening a router port.
 ---
 
+Hexbot Connect is the optional service at [connect.hexbot.app](https://connect.hexbot.app) for reaching your daemon outside its local network. It gives the daemon a Cloudflare Tunnel and a hostname of the form `amber-otter-1234.hexbot.app`, and it signs you in so your devices can prove they are yours. Chat traffic goes straight from your device to your daemon through the tunnel; Connect only brokers identity and hostnames. LAN pairing and [Tailscale](/docs/tailscale/) work without it. Connect is free during the beta.
 
-Hexbot Connect is the optional service at `connect.hexbot.app` for reaching your daemon outside its local network. It creates a Cloudflare Tunnel from the daemon to a hostname of the form `amber-otter-1234.hexbot.app`. LAN pairing and [Tailscale](/docs/tailscale/) work without Connect.
+## Create an account
+
+Go to [connect.hexbot.app](https://connect.hexbot.app) and create an account with an email address, a passkey, or a Google or GitHub account. One account owns any number of daemons and signs in from any number of devices.
 
 ## Register a daemon
 
-Run:
+On the machine that runs your bots, run:
 
 ```sh
 hexbot connect
 ```
 
-The command prints a web address and an eight-character code. Open the address, sign in, and approve the code. The daemon then stores its Connect credentials in `~/.hexbot/connect.json` and starts its tunnel whenever `hexbot serve` runs. Registering from the app's Connect settings while the daemon is running starts the tunnel straight away.
+It prints an address and an eight-character code. Open the address, sign in, and approve the code. The daemon stores its Connect credentials in `~/.hexbot/connect.json`, starts its tunnel whenever `hexbot serve` runs, and reports in every five minutes so the Connect page can show whether it is online. Give the daemon a different name with `hexbot connect --name "Studio Mac"`.
 
-The tunnel follows the daemon's port: each heartbeat reports the port `hexbot serve` is listening on, and Connect points the tunnel at it.
+You can also register from the app: open Settings, choose Connect, and press **Sign in and register**. The app shows the same code and starts the tunnel as soon as you approve it.
 
-Use `hexbot connect status` to inspect the registration and tunnel. Use `hexbot connect disconnect` to stop the connection, remove the local credentials, and revoke the registration. Revocation is best effort when Connect is unreachable; you can also revoke a daemon from the daemon list at `connect.hexbot.app`.
+`hexbot connect status` shows the registration and tunnel. `hexbot connect disconnect` stops the tunnel, removes the local credentials, and revokes the registration. You can also revoke a daemon from your daemons page at connect.hexbot.app; revocation deletes its tunnel, and the daemon keeps working on its own network.
+
+## Open a daemon in a browser
+
+On your daemons page, press **Open in browser** next to an online daemon. Connect sends the browser to the daemon, which asks Connect to confirm who you are, and you land in your rooms and sections. Nothing to install: this works on a phone, a tablet, or someone else's computer.
+
+The browser then appears in that daemon's Settings under Devices with a name like "Safari on iPhone", and you can revoke it there like any paired device. Going straight to the daemon's address (`https://amber-otter-1234.hexbot.app`) shows a sign-in page with the same **Sign in with Hexbot Connect** button.
 
 ## Sign in from the app
 
-Open Settings, choose Connect, and sign in through your system browser. The browser returns to Hexbot, where you can select one of your registered daemons. The app receives a short-lived grant, exchanges it directly with that daemon for a normal revocable device token, and then connects over TLS.
+On a computer without a daemon, or in the client-only package, open Hexbot, choose **Sign in with Hexbot Connect**, and finish signing in in your system browser. The browser returns to Hexbot, which lists your daemons; pick one and you are connected over TLS. The app appears under **Apps signed in with your account** on connect.hexbot.app, where you can sign it out.
 
-The daemon owner can revoke that device as with a LAN-paired device.
+Behind the scenes the app receives a short-lived, single-use login grant and exchanges it directly with the daemon for a normal revocable device token. The daemon owner can revoke that device as with a LAN-paired device.
 
 ## What Connect holds
 
-Connect stores your sign-in identity, registered daemon names and hostnames, hashed service tokens, device names for signed-in clients, and recent connection times. It uses these records to list your daemons, issue short-lived login grants, and manage tunnels.
+Connect stores your sign-in identity (through Clerk), the names and hostnames of your daemons, hashed service tokens, the device names of apps and browsers that signed in, and recent check-in times. It uses these records to list your daemons, issue login grants, and manage tunnels. The [privacy policy](/privacy/#connect) lists every record and how long it is kept.
 
-Connect never receives your conversations, bot memory, provider keys, files, tool results, or long-lived daemon device tokens. Chat traffic passes through Cloudflare's edge and the tunnel process on your daemon host. The Connect API brokers identity and the hostname; it is not the chat server.
+Connect never receives your conversations, bot memory, provider keys, files, tool results, or long-lived device tokens. It is not in the path your chat takes. The [security policy](/security/) explains the design.
 
 ## Self-host Connect
 
-The Connect service is AGPL software in `apps/connect`. Running your own instance requires a Clerk application, a Postgres database such as Neon, a Cloudflare account and zone, a Cloudflare API token scoped to tunnels and DNS, and a Vercel deployment or compatible Next.js host.
+The Connect service is AGPL software in `apps/connect`. Running your own instance requires a Clerk application, a Postgres database such as Neon, a Cloudflare account and zone, a Cloudflare API token scoped to tunnels and DNS, a service signing key, and a Vercel deployment or compatible Next.js host. PostHog is optional.
 
-You must also provide the service signing key. Point a daemon at your instance with the `HEXBOT_CONNECT_URL` environment variable before running `hexbot connect` and `hexbot serve`. Point the app at it by setting `hexbot.connect.url` in the web bundle's local storage, or `VITE_HEXBOT_CONNECT_URL` when building the bundle. Self-hosting the daemon alone does not require any of these services.
+Point a daemon at your instance with the `HEXBOT_CONNECT_URL` environment variable before running `hexbot connect` and `hexbot serve`. Point the app at it by setting `hexbot.connect.url` in the web bundle's local storage, or `VITE_HEXBOT_CONNECT_URL` when building the bundle. Self-hosting the daemon alone does not require any of these services.
 
 See `apps/connect/README.md` in the repository for the deployment checklist.

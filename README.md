@@ -48,7 +48,7 @@ The app follows the track it was installed from; switch in Settings, Updates.
 - **Your hardware.** The daemon runs where you install it. Pair devices over
   LAN or Tailscale, revoke them from settings, and delete conversations
   together with the memory they produced.
-- **Hex Connect.** Sign in once, reach your daemon from outside the LAN.
+- **Hex Connect.** Sign in once, reach your daemon from outside the LAN in the app or a browser.
   Connect brokers identity and a hostname; chat traffic never passes through
   it.
 

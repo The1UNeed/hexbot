@@ -1,0 +1,67 @@
+---
+import Legal from '../layouts/Legal.astro'
+const sections: [string, string][] = [
+  ['model', 'How Hexbot is built to be safe'],
+  ['connect', 'How Connect protects your daemon'],
+  ['daemon', 'What the daemon does'],
+  ['yours', 'Your part'],
+  ['reporting', 'Reporting a vulnerability'],
+  ['scope', 'What is in scope'],
+  ['safe-harbor', 'Safe harbour for researchers'],
+  ['disclosure', 'How we handle reports'],
+  ['changes', 'Changes'],
+]
+---
+<Legal title="Security Policy" description="How Hexbot and Hexbot Connect are protected, and how to report a vulnerability." lede="Hexbot keeps your data on your own machine and keeps Connect out of the path your conversations take. This page explains the design in plain words and tells security researchers how to reach us." effective="25 September 2026" updated="25 September 2026" sections={sections}>
+  <section id="model">
+    <h2>How Hexbot is built to be safe</h2>
+    <p>Your bots, their memory, your files, and your provider keys live in <code>~/.hexbot</code> on the machine that runs the daemon. The app is a window onto that daemon. The website and Connect are outside that boundary: they can help your devices find the daemon and prove who you are, but they cannot read what is inside.</p>
+    <p>Bots use real tools on your computer. The daemon inherits Hermes Agent's approval gate, which asks before risky actions unless you turn on Auto mode, and Hermes's own <a href="https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md">security model</a>, which treats the operating system, not the agent, as the security boundary. Run the daemon as a normal user, keep it updated, and read a skill or plugin before you install it.</p>
+  </section>
+  <section id="connect">
+    <h2>How Connect protects your daemon</h2>
+    <ul>
+      <li><strong>Not in the data path.</strong> Chat traffic goes from your device through Cloudflare's edge and the tunnel process on your daemon host, encrypted with TLS end to end. Connect only brokers identity and hostnames.</li>
+      <li><strong>Sign-in by Clerk.</strong> Passwords, passkeys, and social sign-in are handled by Clerk. Connect never sees a password.</li>
+      <li><strong>Tokens are hashed.</strong> Daemon and app tokens are shown once and stored only as SHA-256 hashes. A database leak does not yield working credentials.</li>
+      <li><strong>Grants are short-lived and single-use.</strong> A login grant is an ES256-signed token valid for five minutes, bound to one daemon, carrying an ID the daemon refuses to accept twice. The daemon verifies it against Connect's published keys and mints its own revocable device token.</li>
+      <li><strong>Browser sign-in uses proof-key exchange.</strong> When you open a daemon in a browser, the daemon starts the sign-in with a PKCE challenge and a state cookie, Connect returns a one-time code to the daemon's own callback address only, and the daemon exchanges the code together with its verifier and its own token. A code seen in a URL or a log is useless on its own.</li>
+      <li><strong>Every device is revocable.</strong> Apps and browsers signed in through Connect appear in the daemon's Devices list, and apps also appear on your Connect page. Revoking a daemon deletes its tunnel.</li>
+      <li><strong>Defence in depth on the web.</strong> Connect and hexbot.app send a Content Security Policy, forbid framing, and send no referrer. Connect answers API calls only with a bearer token and never relies on cookies for them.</li>
+      <li><strong>Open source.</strong> The Connect service, the daemon, and the app are AGPL-3.0 software in our <a href="https://github.com/The1UNeed/hexbot">repository</a>, so anyone can review the design or run their own instance.</li>
+    </ul>
+  </section>
+  <section id="daemon">
+    <h2>What the daemon does</h2>
+    <p>The daemon listens on localhost until you turn on "Allow other devices". On a network, every connection needs a paired device token; pairing codes expire after ten minutes and work once. A daemon registered with Connect turns its authentication gate on regardless of how it is bound. Device tokens are revocable in Settings and with <code>hexbot devices revoke</code>.</p>
+  </section>
+  <section id="yours">
+    <h2>Your part</h2>
+    <ul>
+      <li>Keep the machine that runs your daemon updated and behind a normal user account.</li>
+      <li>Revoke devices and daemons you no longer recognise, and use a passkey or a strong password with two-factor sign-in for your Connect account.</li>
+      <li>Only approve a registration code or an app authorisation you started yourself.</li>
+      <li>Treat provider keys as secrets. Hexbot stores them locally; never paste them into a chat.</li>
+    </ul>
+  </section>
+  <section id="reporting">
+    <h2>Reporting a vulnerability</h2>
+    <p>Please report security issues privately, either through <a href="https://github.com/The1UNeed/hexbot/security/advisories/new">GitHub Security Advisories</a> or by email to <a href="mailto:lumora.studio@hotmail.com">lumora.studio@hotmail.com</a> with "Security" in the subject. Do not open a public issue. A useful report names the component (the app, the daemon, Connect, or the website), the version or commit, steps to reproduce, and what an attacker gains. We do not run a bug bounty programme, but we credit reporters in release notes unless they ask us not to.</p>
+  </section>
+  <section id="scope">
+    <h2>What is in scope</h2>
+    <p>In scope: the Hexbot app and daemon code in <code>hexbot/</code> and <code>apps/</code>, the Connect service at connect.hexbot.app, the hostnames it issues, and this website. Issues in the Hermes Agent core that are not specific to Hexbot should go to <a href="https://github.com/NousResearch/hermes-agent/security">Nous Research</a>; if you are not sure, send it to us and we will pass it on. Out of scope: reports that require a daemon configured with authentication deliberately turned off, findings that only defeat the in-process approval heuristics (Hermes treats those as hardening, not vulnerabilities), volumetric denial of service, and issues in third-party services such as Clerk or Cloudflare, which have their own programmes.</p>
+  </section>
+  <section id="safe-harbor">
+    <h2>Safe harbour for researchers</h2>
+    <p>If you research in good faith, avoid privacy violations, data destruction, and service disruption, only test against accounts and daemons you own, and give us a reasonable time to fix what you find before you talk about it, we will not pursue legal action against you for that research and will consider it authorised under the Terms of Service.</p>
+  </section>
+  <section id="disclosure">
+    <h2>How we handle reports</h2>
+    <p>We acknowledge reports within five working days and aim to fix confirmed vulnerabilities within 90 days, sooner for anything that exposes user data. We publish the fix in the release notes and, where it affects self-hosted instances, in a GitHub Security Advisory with upgrade steps. Coordinated disclosure ends 90 days after the report or when the fix ships, whichever comes first.</p>
+  </section>
+  <section id="changes">
+    <h2>Changes</h2>
+    <p>We may update this policy. The dates at the top tell you when.</p>
+  </section>
+</Legal>

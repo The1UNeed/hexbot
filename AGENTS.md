@@ -131,7 +131,7 @@ Run the suite that covers what you touched, not everything:
 pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint
 pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run
 pnpm --filter ./apps/site run check
-pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run
+pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run && pnpm --filter ./apps/connect run lint
 node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs
 ```
 

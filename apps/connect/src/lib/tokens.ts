@@ -4,6 +4,8 @@ import type { Store } from "./store";
 
 export const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 export const randomToken = (prefix = "") => `${prefix}${randomBytes(32).toString("base64url")}`;
+/** RFC 7636 S256: the daemon sends a hash of its verifier, and proves the verifier at exchange time. */
+export const pkceChallenge = (verifier: string) => createHash("sha256").update(verifier, "ascii").digest("base64url");
 
 const adjectives = ["amber", "brisk", "calm", "coral", "gentle", "lucky", "misty", "quiet", "solar", "swift"];
 const nouns = ["badger", "cedar", "comet", "falcon", "harbor", "otter", "panda", "river", "spruce", "willow"];
@@ -36,12 +38,13 @@ async function loadSigningState(): Promise<SigningState> {
 }
 const state = () => signing.__hexbotConnectSigning ??= loadSigningState();
 export const resetSigningKeyForTests = () => { signing.__hexbotConnectSigning = undefined; };
-export async function issueGrant(claims: GrantClaims, expiresInSeconds = 300) { const s = await state(); return new SignJWT({ daemon_id: claims.daemon_id, device_name: claims.device_name }).setProtectedHeader({ alg: "ES256", kid: s.kid }).setSubject(claims.sub).setIssuedAt().setExpirationTime(Math.floor(Date.now() / 1000) + expiresInSeconds).sign(s.privateKey); }
+/** A short-lived login grant. `jti` lets the daemon refuse a replayed grant. */
+export async function issueGrant(claims: GrantClaims, expiresInSeconds = 300) { const s = await state(); return new SignJWT({ daemon_id: claims.daemon_id, device_name: claims.device_name }).setProtectedHeader({ alg: "ES256", kid: s.kid }).setSubject(claims.sub).setJti(randomBytes(16).toString("base64url")).setIssuedAt().setExpirationTime(Math.floor(Date.now() / 1000) + expiresInSeconds).sign(s.privateKey); }
 export async function getJwks() { const s = await state(); return { keys: [s.publicJwk] }; }
-export async function verifyGrant(token: string, expectedDaemonId?: string, suppliedJwks?: Awaited<ReturnType<typeof getJwks>>): Promise<GrantClaims> {
+export async function verifyGrant(token: string, expectedDaemonId?: string, suppliedJwks?: Awaited<ReturnType<typeof getJwks>>): Promise<GrantClaims & { jti: string }> {
   const jwks = suppliedJwks ?? await getJwks();
   const { payload } = await jwtVerify(token, async header => { const jwk = jwks.keys.find(key => key.kid === header.kid); if (!jwk) throw new Error("unknown signing key"); return importJWK(jwk, "ES256"); }, { algorithms: ["ES256"] });
-  if (!payload.sub || typeof payload.daemon_id !== "string" || typeof payload.device_name !== "string") throw new Error("invalid grant claims");
+  if (!payload.sub || !payload.jti || typeof payload.daemon_id !== "string" || typeof payload.device_name !== "string") throw new Error("invalid grant claims");
   if (expectedDaemonId && payload.daemon_id !== expectedDaemonId) throw new Error("grant daemon does not match");
-  return { sub: payload.sub, daemon_id: payload.daemon_id, device_name: payload.device_name };
+  return { sub: payload.sub, jti: payload.jti, daemon_id: payload.daemon_id, device_name: payload.device_name };
 }

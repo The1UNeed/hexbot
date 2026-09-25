@@ -1,9 +1,11 @@
 // PostHog, loaded only after the visitor accepts the cookie notice. It sends
-// page views, autocaptured clicks, and session recordings (inputs masked)
-// through the /ingest rewrite in vercel.json, plus a `download` event for
-// every build link: edition, os, arch, format, version, channel, and trigger
-// ('auto' when the download page starts it, 'click' otherwise). A download
-// made before the visitor answers is sent if they accept on the same page.
+// page views, autocaptured clicks, Core Web Vitals, uncaught errors, and
+// session recordings (inputs masked) through the /ingest rewrite in
+// vercel.json, plus a `download` event for every build link: edition, os,
+// arch, format, version, channel, and trigger ('auto' when the download page
+// starts it, 'click' otherwise). A download made before the visitor answers
+// is sent if they accept on the same page. Connect (apps/connect) reports to
+// the same project under the same consent key, so one dashboard covers both.
 //
 // `choice` is the one source of truth. PostHog starts opted out and sync()
 // brings it in line whenever it finishes loading or the choice changes, here
@@ -51,6 +53,9 @@ function load() {
       // Already the default; pinned because the privacy page promises it and
       // an init option overrides the project's masking setting.
       session_recording: { maskAllInputs: true },
+      // What Vercel Speed Insights used to measure, in the same project as everything else.
+      capture_performance: { web_vitals: true },
+      capture_exceptions: true,
       disable_surveys: true,
       disable_product_tours: true,
       disable_conversations: true,

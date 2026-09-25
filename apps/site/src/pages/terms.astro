@@ -1,35 +1,94 @@
 ---
-import Base from '../layouts/Base.astro'
+import Legal from '../layouts/Legal.astro'
+const sections: [string, string][] = [
+  ['scope', 'What these terms cover'],
+  ['accounts', 'Your account'],
+  ['service', 'What Connect does'],
+  ['daemons', 'Your daemons and devices'],
+  ['acceptable-use', 'Acceptable use'],
+  ['content', 'Your content'],
+  ['software', 'The software and our marks'],
+  ['third-parties', 'Third-party services'],
+  ['beta', 'Beta service and changes'],
+  ['termination', 'Suspension and ending your use'],
+  ['disclaimers', 'Disclaimers'],
+  ['liability', 'Limitation of liability'],
+  ['indemnity', 'Your responsibility for misuse'],
+  ['law', 'Governing law and disputes'],
+  ['changes', 'Changes to these terms'],
+  ['contact', 'Contact'],
+]
 ---
-<Base title="Terms" description="Terms of use for hexbot.app and Hexbot Connect.">
-  <article class="prose mx-auto px-5 py-12 sm:px-8 lg:py-20">
-    <h1 class="display-sm">Terms</h1>
-    <p class="text-mute">Last updated 6 September 2026.</p>
-    <p>These terms cover this website and Hexbot Connect, the optional hosted service at connect.hexbot.app. By using either one you agree to them. If you do not agree, do not use them. The Hexbot software itself is separate: it is licensed to you under the <a href="https://www.gnu.org/licenses/agpl-3.0.html">GNU AGPL-3.0</a>, and these terms do not change that licence.</p>
-
-    <h2>What Connect does</h2>
-    <p>Connect lets you reach a Hexbot daemon that you run from outside its local network. It signs you in, keeps a list of the daemons you have registered, issues short-lived login grants to your devices, and manages a Cloudflare Tunnel to each daemon. Connect does not host your bots and is not the chat server. Your conversations, memory, files, and provider keys stay on the machine running your daemon, and chat traffic passes through the tunnel, not the Connect API.</p>
-    <p>You never need Connect to use Hexbot. Pairing on your own network and over Tailscale work without it, and you can <a href="/docs/connect/#self-host-connect">run your own Connect instance</a>.</p>
-
+<Legal title="Terms of Service" description="The agreement for using hexbot.app and Hexbot Connect." lede="These terms are the agreement between you and us for this website and Hexbot Connect. They are written to be read, not skimmed. The Hexbot software itself is open source and is not covered here." effective="25 September 2026" updated="25 September 2026" sections={sections}>
+  <section id="scope">
+    <h2>What these terms cover</h2>
+    <p>These terms apply to the website at hexbot.app (the "site") and to Hexbot Connect, the optional hosted service at connect.hexbot.app and the hostnames under hexbot.app that it assigns ("Connect"). We call the two together the "services". "We" and "us" mean the Hexbot team, reachable at <a href="mailto:lumora.studio@hotmail.com">lumora.studio@hotmail.com</a>. "You" means the person using the services or, if you use them for an organisation, that organisation as well.</p>
+    <p>By using the services you agree to these terms, the <a href="/acceptable-use/">Acceptable Use Policy</a>, and the <a href="/privacy/">Privacy Policy</a>, which together form the whole agreement. If you do not agree, do not use the services.</p>
+    <p>The Hexbot software (the app and the daemon) is licensed to you separately under the <a href="https://www.gnu.org/licenses/agpl-3.0.html">GNU AGPL-3.0</a>. Nothing in these terms limits the rights that licence gives you, and you can use the software without ever using Connect.</p>
+  </section>
+  <section id="accounts">
     <h2>Your account</h2>
-    <p>You sign in to Connect with an account handled by Clerk. Keep your sign-in credentials to yourself. You are responsible for the daemons and devices connected to your account, and you can revoke any of them at connect.hexbot.app or from the daemon's settings. Revoke anything you no longer recognise.</p>
-
+    <p>Connect requires an account. Sign-in is handled by Clerk, which stores your email address and sign-in method on our behalf. You must be at least 16 years old, or the age at which you can consent to online services where you live if that is higher, to create an account.</p>
+    <p>Keep your sign-in credentials to yourself and tell us promptly if you believe your account has been used without your permission. Everything done through your account is your responsibility until you tell us otherwise. One person may hold one account; you may not create accounts by automated means or on behalf of someone who is not allowed to have one.</p>
+  </section>
+  <section id="service">
+    <h2>What Connect does</h2>
+    <p>Connect lets you reach a Hexbot daemon that you run, from outside its local network. It signs you in, keeps a list of the daemons you have registered, gives each daemon a hostname and a Cloudflare Tunnel, and issues short-lived, single-use login grants to your devices and browsers. That is all it does.</p>
+    <p>Connect is not the chat server and does not host your bots. Your conversations, memory, files, and provider keys stay on the machine running your daemon. Chat traffic travels through the tunnel, encrypted, and never passes through the Connect service.</p>
+    <p>You never need Connect to use Hexbot. Pairing on your own network and connecting over Tailscale work without it, and because Connect is open source you may <a href="/docs/connect/#self-host-connect">run your own instance</a>, to which these terms do not apply.</p>
+  </section>
+  <section id="daemons">
+    <h2>Your daemons and devices</h2>
+    <p>You may register only daemons that you own or are permitted to run, and only for your own use or the use of people you have chosen to give access to. A registered daemon gets a public hostname. Keeping the daemon patched, deciding who may pair with it, choosing what its bots are allowed to do, and paying your model provider are all up to you.</p>
+    <p>You can rename or revoke a daemon and sign out a device at any time at connect.hexbot.app, and revoke any device from the daemon's own settings. Revoke anything you do not recognise. Registration is limited to a reasonable number of daemons per account; we will tell you if you reach the limit.</p>
+  </section>
+  <section id="acceptable-use">
     <h2>Acceptable use</h2>
-    <p>Only register daemons you own or are permitted to run. Do not use Connect to attack other systems, to send unsolicited messages, to interfere with the service or Cloudflare's network, or to do anything that breaks the law where you live. Do not try to reach other users' daemons or accounts. We may suspend or remove daemons and accounts that break these rules.</p>
-
-    <h2>Your daemon, your responsibility</h2>
-    <p>A tunnel gives your daemon a public hostname. The daemon requires a paired device token for every connection, but keeping it patched, deciding who may pair with it, and choosing what your bots are allowed to do is up to you. Charges from your model provider are between you and that provider.</p>
-
-    <h2>Beta service</h2>
-    <p>Connect is free during its beta. It is provided as is, without warranties of any kind, and we do not promise that it will be available, uninterrupted, or error-free. We may change, pause, or shut down Connect. If we plan to shut it down we will give notice on this site, and your daemons will remain reachable on your own network regardless. To the extent the law allows, we are not liable for indirect or consequential loss arising from your use of Connect or this website, and our total liability is limited to the amount you paid for Connect, which during the beta is nothing.</p>
-
-    <h2>Ending your use</h2>
-    <p>Stop using Connect at any time by running <code>hexbot connect disconnect</code> on each daemon and revoking your devices. Deleting your account removes your Connect records as described in the <a href="/privacy/">privacy policy</a>.</p>
-
-    <h2>Changes</h2>
-    <p>We may update these terms. The date at the top tells you when. Material changes will be announced on this site before they take effect, and continuing to use Connect after that means you accept them.</p>
-
+    <p>The <a href="/acceptable-use/">Acceptable Use Policy</a> is part of these terms. In short: use Connect only for your own daemons, do not attack, probe, or overload the services or Cloudflare's network, do not use a Connect hostname to publish services to the public or to relay traffic for third parties, and do not do anything that is illegal where you live or where we operate.</p>
+  </section>
+  <section id="content">
+    <h2>Your content</h2>
+    <p>Connect holds very little that you create: the names you give your daemons and devices, and your sign-in identity. You keep every right to that content. You give us only the permission needed to display it back to you and to operate the service. We do not have access to your conversations, bot memory, or files, and we do not use anything of yours to train models.</p>
+  </section>
+  <section id="software">
+    <h2>The software and our marks</h2>
+    <p>The Hexbot software, including the Connect service code, is available under the AGPL-3.0 in our <a href="https://github.com/The1UNeed/hexbot">GitHub repository</a>. Hexbot is built on <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a> by Nous Research under its licence. The Hexbot name and mark identify our services; you may describe compatibility with Hexbot, but do not present your own service as ours or use the mark in a way that suggests we endorse you.</p>
+  </section>
+  <section id="third-parties">
+    <h2>Third-party services</h2>
+    <p>Connect depends on Clerk for sign-in, Cloudflare for tunnels and hostnames, Neon for its database, and Vercel for hosting. The model providers your bots use are your own choice and your own relationship. Each of these has its own terms, and we are not responsible for them. If one of them stops serving us, Connect may stop working until we replace it.</p>
+  </section>
+  <section id="beta">
+    <h2>Beta service and changes</h2>
+    <p>Connect is free during its beta and is provided as a beta service. We may change it, add or remove features, set limits, pause it, or shut it down. If we plan to shut Connect down or to start charging for it, we will say so on this site at least 30 days in advance. Your daemons remain reachable on your own network and over Tailscale regardless, and there is nothing to export: Connect holds none of your data beyond the records listed in the Privacy Policy.</p>
+  </section>
+  <section id="termination">
+    <h2>Suspension and ending your use</h2>
+    <p>You can stop at any time: revoke your daemons and devices at connect.hexbot.app or run <code>hexbot connect disconnect</code> on each daemon, and delete your account as described in the <a href="/privacy/#rights">Privacy Policy</a>.</p>
+    <p>We may suspend or close an account, or revoke a daemon or hostname, if we reasonably believe it breaks these terms or the Acceptable Use Policy, puts other users or the services at risk, or is required by law. Where we can, we will tell you why and give you a chance to fix it first. Sections 6 and 11 to 14 survive the end of this agreement.</p>
+  </section>
+  <section id="disclaimers">
+    <h2>Disclaimers</h2>
+    <p>The services are provided "as is" and "as available". To the extent the law allows, we make no warranties of any kind, whether express, implied, or statutory, including warranties of merchantability, fitness for a particular purpose, and non-infringement. We do not promise that the services will be uninterrupted, timely, secure, or error-free, or that a hostname will stay the same. Nothing in these terms limits rights that consumer law gives you and that cannot be excluded.</p>
+  </section>
+  <section id="liability">
+    <h2>Limitation of liability</h2>
+    <p>To the extent the law allows, we are not liable for any indirect, incidental, special, consequential, or punitive damages, or for lost profits, revenue, data, or goodwill, arising from or related to the services, however caused. Our total liability for all claims relating to the services is limited to the greater of the amount you paid us for Connect in the 12 months before the claim and 50 US dollars. During the beta you pay nothing, so the second figure applies. These limits do not apply to liability that cannot be limited by law, including liability for death or personal injury caused by negligence, or for fraud.</p>
+  </section>
+  <section id="indemnity">
+    <h2>Your responsibility for misuse</h2>
+    <p>If a third party brings a claim against us because of your misuse of the services, your breach of these terms, or content or traffic you sent through a daemon you registered, you will cover the reasonable costs and damages we incur as a result, including reasonable legal fees, provided we tell you about the claim promptly and let you take part in the defence.</p>
+  </section>
+  <section id="law">
+    <h2>Governing law and disputes</h2>
+    <p>These terms are governed by the laws of the country in which we are established, without regard to its conflict-of-law rules, and the courts of that country have exclusive jurisdiction over disputes about them, except that if you are a consumer you keep the protection of the mandatory consumer laws of the country where you live and may bring a claim in its courts. Before either of us goes to court, we agree to try to resolve the dispute by contacting each other and talking for at least 30 days.</p>
+  </section>
+  <section id="changes">
+    <h2>Changes to these terms</h2>
+    <p>We may update these terms. The dates at the top tell you when. For material changes we will post a notice on this site at least 14 days before they take effect, and where we have your email address we will send you one too. Using the services after that date means you accept the new terms; if you do not, stop using them and delete your account.</p>
+  </section>
+  <section id="contact">
     <h2>Contact</h2>
-    <p>Send questions about these terms to <a href="mailto:lumora.studio@hotmail.com">lumora.studio@hotmail.com</a> or use the <a href="https://app.youform.com/forms/dyhjikit">contact form</a>.</p>
-  </article>
-</Base>
+    <p>Questions about these terms go to <a href="mailto:lumora.studio@hotmail.com">lumora.studio@hotmail.com</a> or the <a href="https://app.youform.com/forms/dyhjikit">contact form</a>. Security reports go through the <a href="/security/">Security Policy</a>.</p>
+  </section>
+</Legal>

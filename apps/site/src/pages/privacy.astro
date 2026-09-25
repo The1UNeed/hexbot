@@ -1,50 +1,131 @@
 ---
-import Base from '../layouts/Base.astro'
+import Legal from '../layouts/Legal.astro'
+const sections: [string, string][] = [
+  ['overview', 'The short version'],
+  ['controller', 'Who is responsible'],
+  ['website', 'This website'],
+  ['connect', 'Hexbot Connect'],
+  ['never', 'What Connect never receives'],
+  ['app', 'The app and the daemon'],
+  ['providers', 'Service providers'],
+  ['bases', 'Why we may process your data'],
+  ['transfers', 'Where your data is stored'],
+  ['retention', 'How long we keep things'],
+  ['rights', 'Your rights and choices'],
+  ['children', 'Children'],
+  ['security', 'Security'],
+  ['changes', 'Changes'],
+  ['contact', 'Contact'],
+]
 ---
-<Base title="Privacy" description="What hexbot.app and Hexbot Connect collect, and what they never see.">
-  <article class="prose mx-auto px-5 py-12 sm:px-8 lg:py-20">
-    <h1 class="display-sm">Privacy</h1>
-    <p class="text-mute">Last updated 24 September 2026.</p>
-    <p>Hexbot is built so that your data stays on your hardware. This policy explains the small amount that this website and Hexbot Connect handle, and the much larger amount they never see.</p>
-
-    <h2 id="this-website">This website</h2>
-    <p>hexbot.app uses PostHog to count visitors and downloads and to see how people use the site. PostHog loads only if you choose Accept in the cookie notice. If you do, it keeps a random ID in a first-party cookie and your browser's local storage, and records:</p>
+<Legal title="Privacy Policy" description="What hexbot.app, Hexbot Connect, and the app collect, and what they never see." lede="Hexbot is built so that your data stays on your hardware. This policy explains the small amount that this website and Hexbot Connect handle, and the much larger amount they never see." effective="25 September 2026" updated="25 September 2026" sections={sections}>
+  <section id="overview">
+    <h2>The short version</h2>
+    <ul>
+      <li>Your conversations, bot memory, files, and provider keys live on the machine that runs your daemon. Neither this website nor Connect can read them.</li>
+      <li>This website and Connect measure how they are used with PostHog, only after you press Accept in the cookie notice.</li>
+      <li>Connect stores your sign-in identity, the daemons you register, and the devices and browsers you sign in with. It uses them only to run the service.</li>
+      <li>We do not sell personal data, show advertising, or use anything of yours to train models.</li>
+      <li>You can delete your Connect account and everything tied to it by emailing us.</li>
+    </ul>
+  </section>
+  <section id="controller">
+    <h2>Who is responsible</h2>
+    <p>The Hexbot team, reachable at <a href="mailto:lumora.studio@hotmail.com">lumora.studio@hotmail.com</a>, is the controller of the personal data described in this policy. If you run your own Connect instance or your own daemon for other people, you are the controller of what those systems hold, and this policy does not cover them.</p>
+  </section>
+  <section id="website">
+    <h2>This website</h2>
+    <p>hexbot.app uses PostHog to count visitors and downloads, to see how people use the site, and to notice when pages are slow or break. PostHog loads only if you choose Accept in the cookie notice. If you do, it keeps a random ID in a first-party cookie and your browser's local storage and records:</p>
     <ul>
       <li>the pages you view, the links and buttons you click, and which build you download;</li>
       <li>your browser, operating system, screen size, and the site that referred you;</li>
-      <li>your approximate location, derived from your IP address;</li>
+      <li>your approximate location, derived from your IP address, which PostHog then discards;</li>
+      <li>page load timings (Core Web Vitals) and any script error on the page;</li>
       <li>a recording of your visit, with anything you type into a field hidden before it leaves your browser.</li>
     </ul>
-    <p>The legal basis is your consent. PostHog, Inc. stores this data in the United States and processes it on our behalf under its data processing agreement, which includes the EU Standard Contractual Clauses. We keep events for up to a year and recordings for up to 30 days, use them only to improve Hexbot and this site, and do not use them for advertising or sell them. If you decline, or later change your mind with Cookies at the foot of any page, PostHog stops recording and removes its ID. Your browser keeps only a note of your choice, so the notice does not ask again.</p>
-    <p>Vercel Speed Insights measures how fast pages load, without cookies or a persistent identifier. The pairing page loads neither PostHog nor Speed Insights. It reads the daemon address from the query string and the pairing code from the URL fragment; browsers do not send fragments to web servers, and the page does not transmit or store the code.</p>
+    <p>The legal basis is your consent. If you decline, nothing loads and nothing is sent; your browser keeps only a note of your choice so the notice does not ask again. You can change your answer with Cookies at the foot of any page. The pairing page loads no analytics at all, because its address carries a pairing code; browsers do not send the part after <code>#</code> to any server, and the page does not store it.</p>
     <p>The <a href="https://app.youform.com/forms/dyhjikit">contact form</a> is hosted by Youform. What you enter there, including any file you attach, goes to Youform, which stores it for us. We use it only to reply to you and improve Hexbot.</p>
-
+    <p>The site is hosted by Vercel, which keeps short-lived request logs (IP address, user agent, URL) to run and protect its network.</p>
+  </section>
+  <section id="connect">
     <h2>Hexbot Connect</h2>
     <p>Connect, the optional service at connect.hexbot.app, brokers your identity and a hostname so that your own devices can reach your own daemon from outside its network. To do that it stores:</p>
-    <ul>
-      <li><strong>Your sign-in identity.</strong> Sign-in is handled by Clerk, which holds your email address and any sign-in method you choose. Connect keeps only the Clerk user ID that links your account to your daemons.</li>
-      <li><strong>Registered daemons.</strong> The name you gave each daemon, its assigned hostname, its Cloudflare tunnel ID, the port it reports, a hash of its service token, and when it was created, last seen, and revoked.</li>
-      <li><strong>Signed-in devices.</strong> The device name each app reported when it signed in, a hash of its session token, and when it was created, last used, and revoked.</li>
-      <li><strong>Pending registrations.</strong> The short-lived codes shown by <code>hexbot connect</code> while you approve a daemon. They expire within minutes.</li>
-    </ul>
-    <p>Connect uses these records to list your daemons, issue short-lived login grants, keep tunnels pointed at the right port, and let you revoke access. It does not use them for advertising, profiling, or anything else, and it does not sell or share them.</p>
-
+    <dl>
+      <dt>Your sign-in identity</dt>
+      <dd>Sign-in is handled by Clerk, which holds your email address, your name if you give one, and any sign-in method you choose (a password, a passkey, or a Google or GitHub account). Connect keeps only the Clerk user ID that links your account to your daemons.</dd>
+      <dt>Registered daemons</dt>
+      <dd>The name you gave each daemon, its assigned hostname, its Cloudflare tunnel ID, the port it reports, a hash of its service token, and when it was created, last seen, and revoked. A daemon checks in every five minutes so Connect can show whether it is online.</dd>
+      <dt>Apps that signed in</dt>
+      <dd>The device name each Hexbot app reported when it signed in with your account, a hash of its session token, and when it was created, last used, and revoked.</dd>
+      <dt>Browser sign-ins</dt>
+      <dd>When you open a daemon in a browser, Connect records a short-lived, single-use sign-in code together with a device label made from your browser and operating system, such as "Safari on iPhone". The code expires within five minutes. The label is passed to your daemon, which lists it under Devices so you can revoke it there.</dd>
+      <dt>Pending registrations</dt>
+      <dd>The short-lived codes shown by <code>hexbot connect</code> while you approve a daemon. They expire within ten minutes.</dd>
+    </dl>
+    <p>Connect uses these records to list your daemons, show whether they are online, issue login grants, keep tunnels pointed at the right port, and let you revoke access. It does not use them for advertising or profiling, and it does not sell or share them.</p>
+    <p>Connect measures its own use with PostHog under the same consent rule as this website: nothing loads until you press Accept. With your consent it records page views, clicks, page timings, script errors, session recordings with inputs hidden, and a handful of product events (a daemon approved, an app authorised, a daemon opened in a browser, a daemon or device revoked), tied to your Connect account ID so we can see how the service is used per account. Decline, and Connect works exactly the same without any of it.</p>
+    <p>Connect runs on Vercel, which keeps short-lived request logs to operate its network. Requests that Hexbot daemons and apps make to the Connect API carry a bearer token; Connect stores only a hash of every token, never the token itself.</p>
+  </section>
+  <section id="never">
     <h2>What Connect never receives</h2>
-    <p>Connect never receives your conversations, bot memory, provider keys, files, tool results, or the long-lived device tokens your daemon issues. Chat traffic travels from your device through Cloudflare's edge and the tunnel process on your daemon host, encrypted with TLS. The Connect API is not in that path and cannot read it.</p>
-
+    <p>Connect never receives your conversations, bot memory, provider keys, files, tool results, or the long-lived device tokens your daemon issues. Chat traffic travels from your device through Cloudflare's edge and the tunnel process on your daemon host, encrypted with TLS all the way. The Connect service is not in that path and cannot read it. Cloudflare carries the encrypted traffic as part of running the tunnel and applies its own privacy policy to what it sees.</p>
+  </section>
+  <section id="app">
+    <h2>The app and the daemon</h2>
+    <p>The Hexbot app talks only to the daemon you pair with, to your chosen model providers, and to Connect if you sign in to it. What a bot sends to a model provider is governed by that provider's terms and privacy policy, as with any AI application.</p>
+    <p>Crash reporting is off by default. If you turn it on in Settings, Electron may upload a crash report when the desktop process crashes, as described in <a href="/docs/updates/">Updates</a>. Update checks fetch a small manifest from updates.hexbot.app and send nothing about you. The app and the daemon send nothing to PostHog.</p>
+  </section>
+  <section id="providers">
     <h2>Service providers</h2>
-    <p>Connect runs on Vercel, which also provides cookieless page view and load time measurements, stores its records in a Neon Postgres database, signs you in with Clerk, and creates tunnels and DNS records with Cloudflare. Each of these processes data on our behalf under its own privacy policy. Cloudflare carries your encrypted chat traffic as part of running the tunnel; the other providers see only the records listed above.</p>
-
-    <h2>Retention and deletion</h2>
-    <p>Daemon and device records stay while you keep them registered. Revoking a daemon or device marks it revoked and deletes its tunnel. Running <code>hexbot connect disconnect</code> revokes the daemon and removes the credentials on your machine. To delete your account and every record tied to it, email <a href="mailto:lumora.studio@hotmail.com">lumora.studio@hotmail.com</a> from the address you signed in with, and we will remove it within 30 days.</p>
-
-    <h2>The desktop app</h2>
-    <p>The app talks only to the daemon you pair with, your chosen model provider, and Connect if you sign in to it. Crash reporting is off by default; if you turn it on in settings, Electron may upload a crash report when the desktop process crashes, as described in <a href="/docs/updates/">Updates</a>. Update checks fetch a small manifest from this site and send nothing about you.</p>
-
-    <h2>Self-hosting</h2>
-    <p>If you run your own Connect instance, none of the above reaches us. That instance's operator is responsible for its data.</p>
-
-    <h2>Changes and contact</h2>
-    <p>We may update this policy. The date at the top tells you when, and material changes will be announced on this site. Send questions to <a href="mailto:lumora.studio@hotmail.com">lumora.studio@hotmail.com</a> or use the <a href="https://app.youform.com/forms/dyhjikit">contact form</a>.</p>
-  </article>
-</Base>
+    <p>These companies process data on our behalf, under their own data processing terms, and see only what is listed:</p>
+    <ul>
+      <li><strong>Clerk</strong> (sign-in): your email address, name, sign-in methods, and sign-in activity.</li>
+      <li><strong>Cloudflare</strong> (tunnels and DNS): hostnames, tunnel identifiers, and the encrypted traffic passing through your daemon's tunnel.</li>
+      <li><strong>Neon</strong> (database): the Connect records described above.</li>
+      <li><strong>Vercel</strong> (hosting): request logs for this website and Connect.</li>
+      <li><strong>PostHog</strong> (analytics): the usage data described above, only with your consent.</li>
+      <li><strong>Youform</strong> (contact form): what you send us through the form.</li>
+      <li><strong>GitHub</strong> (source code and downloads): standard access logs when you visit our repository or download a release from it.</li>
+    </ul>
+    <p>We do not share personal data with anyone else, except when the law requires it or to protect the services and their users.</p>
+  </section>
+  <section id="bases">
+    <h2>Why we may process your data</h2>
+    <p>Where data protection law asks for a legal basis, ours are: <strong>performing our agreement with you</strong> for the Connect account and records that make the service work; <strong>your consent</strong> for analytics, which you can withdraw at any time; and <strong>our legitimate interests</strong> in keeping the services secure, answering your messages, and defending legal claims, which we balance against your rights.</p>
+  </section>
+  <section id="transfers">
+    <h2>Where your data is stored</h2>
+    <p>Connect's database and PostHog's servers are in the United States, and Clerk, Cloudflare, and Vercel operate worldwide. If you are in the European Economic Area, the United Kingdom, or another place with data transfer rules, your data is transferred under those providers' data processing agreements, which include the EU Standard Contractual Clauses or an equivalent approved mechanism.</p>
+  </section>
+  <section id="retention">
+    <h2>How long we keep things</h2>
+    <ul>
+      <li>Daemon and device records stay while they are registered. Revoking a daemon or device marks it revoked and deletes its tunnel; the record is deleted within 90 days after that.</li>
+      <li>Pending registration codes and browser sign-in codes are deleted within a day of expiring.</li>
+      <li>PostHog keeps events for up to a year and session recordings for up to 30 days.</li>
+      <li>Hosting request logs are kept by Vercel for a short period set by Vercel.</li>
+      <li>Emails and contact form messages are kept for as long as needed to help you and for up to two years after.</li>
+    </ul>
+  </section>
+  <section id="rights">
+    <h2>Your rights and choices</h2>
+    <p>Depending on where you live you may have the right to access the personal data we hold about you, to have it corrected or deleted, to receive a copy in a portable format, to object to or restrict certain processing, and to withdraw consent. To use any of these rights, email <a href="mailto:lumora.studio@hotmail.com">lumora.studio@hotmail.com</a> from the address you signed in with. We answer within 30 days.</p>
+    <p>To delete your Connect account and every record tied to it, revoke your daemons at connect.hexbot.app or run <code>hexbot connect disconnect</code> on each, then email us; we remove the account from Clerk and our database within 30 days. Analytics consent is withdrawn with the Cookies link at the foot of any page. If you think we have handled your data wrongly, you can complain to the data protection authority where you live; we would appreciate the chance to fix it first.</p>
+  </section>
+  <section id="children">
+    <h2>Children</h2>
+    <p>Connect is not for anyone under 16, or under the age of digital consent where they live if that is higher. We do not knowingly collect data from children. If you believe a child has created an account, tell us and we will delete it.</p>
+  </section>
+  <section id="security">
+    <h2>Security</h2>
+    <p>Tokens are stored only as hashes. Login grants are short-lived and single-use, browser sign-ins use proof-key exchange between your daemon and Connect, and every connection uses TLS. The <a href="/security/">Security Policy</a> describes the design and how to report a vulnerability.</p>
+  </section>
+  <section id="changes">
+    <h2>Changes</h2>
+    <p>We may update this policy. The dates at the top tell you when, and material changes will be announced on this site before they take effect.</p>
+  </section>
+  <section id="contact">
+    <h2>Contact</h2>
+    <p>Send questions to <a href="mailto:lumora.studio@hotmail.com">lumora.studio@hotmail.com</a> or use the <a href="https://app.youform.com/forms/dyhjikit">contact form</a>.</p>
+  </section>
+</Legal>

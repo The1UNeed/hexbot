@@ -41,4 +41,26 @@ describe('pair cookie parsing', () => {
       expect.objectContaining({ headers: { authorization: 'Bearer hxb_device' } })
     )
   })
+
+  it('reads a __Host- prefixed session cookie set over HTTPS', async () => {
+    const loginHeaders = new Headers()
+    loginHeaders.append(
+      'set-cookie',
+      '__Host-hermes_session_at=hxb_secure; Secure; HttpOnly; Path=/'
+    )
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('{}', { status: 200, headers: loginHeaders }))
+      .mockResolvedValueOnce(new Response('{"ticket":"once"}', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      pairWithGrant({ host: 'daemon.test', grant: 'signed.jwt', deviceName: 'Laptop' })
+    ).resolves.toBe('hxb_secure')
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://daemon.test/api/auth/ws-ticket',
+      expect.objectContaining({ headers: { authorization: 'Bearer hxb_secure' } })
+    )
+  })
 })
