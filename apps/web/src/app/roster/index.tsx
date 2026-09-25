@@ -19,7 +19,7 @@ import { Input } from '../../components/ui/input'
 import { Menu } from '../../components/ui/menu'
 import { RoomCluster } from '../../components/ui/room-cluster'
 import { Select } from '../../components/ui/select'
-import { StatusDot } from '../../components/ui/status-dot'
+import { StatusDot, StatusTag } from '../../components/ui/status-dot'
 import { modelsList, sectionsMarkRead } from '../../lib/api'
 import {
   avatarPng,
@@ -153,9 +153,7 @@ function RoomRow({
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-2">
           <span className="min-w-0 flex-1 truncate font-semibold">{room.name}</span>
-          <span className="shrink-0 text-[length:var(--text-meta)] text-muted">
-            {relativeTime(room.last_activity_at)}
-          </span>
+          <StatusTag status={status} />
         </span>
         <span className="block truncate text-[length:var(--text-secondary)] text-muted">
           {typeof latest?.payload.text === 'string'
@@ -302,9 +300,7 @@ function BotRows({
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
             <span className="min-w-0 flex-1 truncate font-semibold">{bot.display_name}</span>
-            <span className="shrink-0 text-[length:var(--text-meta)] text-muted">
-              {relativeTime(bot.last_activity_at)}
-            </span>
+            <StatusTag status={status} />
           </span>
           {label ? (
             <span className="block truncate text-[length:var(--text-secondary)] text-muted">
@@ -345,9 +341,7 @@ function BotRows({
                     )}
                   </span>
                   <span className="min-w-0 flex-1 truncate">{section.title}</span>
-                  <span className="text-[length:var(--text-meta)] text-muted">
-                    {relativeTime(section.updated_at)}
-                  </span>
+                  <StatusTag status={status === 'needs_you' ? status : undefined} />
                 </button>
                 <Menu
                   items={[
