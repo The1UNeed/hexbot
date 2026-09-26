@@ -43,7 +43,7 @@ async function fetchConnect(
     method: body ? 'POST' : 'GET'
   })
 
-  if (!response.ok) {throw new Error(`Hexbot Connect request failed (${response.status})`)}
+  if (!response.ok) {throw new Error(`Hex Connect request failed (${response.status})`)}
 
   return response.json()
 }
@@ -257,7 +257,7 @@ function ConnectPage() {
           </div>
         ) : (
           <Button onClick={() => startConnectLogin()} type="button">
-            Sign in with Hexbot Connect
+            Sign in with Hex Connect
           </Button>
         )}
         {daemons.length ? (

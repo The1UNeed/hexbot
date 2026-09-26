@@ -1,5 +1,5 @@
 /**
- * Base URL of the Hexbot Connect service. A `hexbot.connect.url` entry in
+ * Base URL of the Hex Connect service. A `hexbot.connect.url` entry in
  * localStorage or `VITE_HEXBOT_CONNECT_URL` at build time points the app at a
  * local or self-hosted instance; production uses connect.hexbot.app.
  */

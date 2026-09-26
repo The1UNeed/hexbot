@@ -200,7 +200,7 @@ export function ConnectSettings() {
   return (
     <>
       <Heading description="Reach this daemon securely when you are away from your local network.">
-        Hexbot Connect
+        Hex Connect
       </Heading>
       {status?.registered ? (
         <div>
@@ -226,7 +226,7 @@ export function ConnectSettings() {
             <dd>{status.tunnel_running ? 'Running' : 'Stopped'}</dd>
           </dl>
           <p className="mt-3 text-secondary text-muted">
-            Open the address in any browser and sign in with Hexbot Connect, or manage this
+            Open the address in any browser and sign in with Hex Connect, or manage this
             daemon and your signed-in apps at{' '}
             <a
               className="text-accent hover:underline"

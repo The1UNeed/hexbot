@@ -49,7 +49,7 @@ export default async function ConnectPage() {
           <h2 className="display-sm" style={{ fontSize: "1.5rem" }}>Apps signed in with your account</h2>
         </div>
         {devices.length === 0 ? (
-          <p className="mute">No apps yet. In the Hexbot app choose <strong>Sign in with Hexbot Connect</strong> and it will appear here.</p>
+          <p className="mute">No apps yet. In the Hexbot app choose <strong>Sign in with Hex Connect</strong> and it will appear here.</p>
         ) : (
           <ul className="list" style={{ listStyle: "none", margin: 0, padding: 0 }}>
             {devices.map(device => <DeviceRow device={device} key={device.id} />)}

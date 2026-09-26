@@ -10,5 +10,5 @@ export function SignInPrompt({ returnTo, children }: { returnTo: string; childre
   const mode = authMode();
   if (mode === "clerk") return <div className="auth">{children ? <p className="lede center">{children}</p> : null}<SignIn forceRedirectUrl={returnTo} signUpForceRedirectUrl={returnTo} /></div>;
   if (mode === "dev") return <p className="notice">This development instance signs everyone in as <code>{process.env.DEV_USER_ID}</code>. Reload to continue.</p>;
-  return <p className="notice notice-error">Sign-in is not available on this Hexbot Connect instance yet. The operator has not configured an identity provider.</p>;
+  return <p className="notice notice-error">Sign-in is not available on this Hex Connect instance yet. The operator has not configured an identity provider.</p>;
 }

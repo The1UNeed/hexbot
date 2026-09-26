@@ -9,9 +9,9 @@ import { authMode, currentClerkUserId } from "@/lib/auth";
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.CONNECT_BASE_URL ?? "https://connect.hexbot.app"),
-  title: { default: "Hexbot Connect", template: "%s | Hexbot Connect" },
+  title: { default: "Hex Connect", template: "%s | Hex Connect" },
   description: "Sign in once and reach your Hexbot from anywhere, in the app or in a browser. Connect brokers your identity and a hostname; your conversations never pass through it.",
-  openGraph: { siteName: "Hexbot Connect", images: ["/og.png"] },
+  openGraph: { siteName: "Hex Connect", images: ["/og.png"] },
   icons: { icon: "/icon.svg", apple: "/apple-touch-icon.png" },
 };
 

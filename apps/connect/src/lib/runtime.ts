@@ -5,10 +5,10 @@ import { createTunnelProvider, type TunnelProvider } from "./tunnels";
 // state would give the authorize page and /api/* different in-memory stores.
 // Everything process-wide hangs off globalThis instead.
 interface Runtime { store: Store; tunnels: TunnelProvider }
-const global = globalThis as typeof globalThis & { __hexbotConnectRuntime?: Runtime };
-const runtime = (): Runtime => global.__hexbotConnectRuntime ??= { store: createStore(), tunnels: createTunnelProvider() };
+const global = globalThis as typeof globalThis & { __hexConnectRuntime?: Runtime };
+const runtime = (): Runtime => global.__hexConnectRuntime ??= { store: createStore(), tunnels: createTunnelProvider() };
 export const getStore = () => runtime().store;
 export const getTunnels = () => runtime().tunnels;
 /** True when daemons are reached on loopback instead of a tunnel hostname (development, tests). */
 export const fakeTunnels = () => getTunnels().kind === "fake";
-export function setRuntimeForTests(next: Runtime) { global.__hexbotConnectRuntime = next; }
+export function setRuntimeForTests(next: Runtime) { global.__hexConnectRuntime = next; }

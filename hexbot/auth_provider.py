@@ -152,11 +152,11 @@ class HexbotAuthProvider(_DeviceSessionProvider):
             raise InvalidCredentialsError("invalid Connect grant") from exc
 
 
-class HexbotConnectProvider(_DeviceSessionProvider):
-    """Browser sign-in through Hexbot Connect: PKCE to the broker, a grant back."""
+class HexConnectProvider(_DeviceSessionProvider):
+    """Browser sign-in through Hex Connect: PKCE to the broker, a grant back."""
 
     name = "connect"
-    display_name = "Hexbot Connect"
+    display_name = "Hex Connect"
     supports_password = False
     supports_session = True
     supports_token = False
@@ -169,7 +169,7 @@ class HexbotConnectProvider(_DeviceSessionProvider):
     def _config() -> ConnectConfig:
         config = ConnectConfig.load()
         if config is None or not config.daemon_id:
-            raise ProviderError("Hexbot Connect is not set up on this daemon")
+            raise ProviderError("Hex Connect is not set up on this daemon")
         return config
 
     def start_login(self, *, redirect_uri: str) -> LoginStart:

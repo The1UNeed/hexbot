@@ -323,12 +323,12 @@ _provider = None
 
 
 def _register_provider() -> None:
-    """Offer "Sign in with Hexbot Connect" on the login page only while registered."""
+    """Offer "Sign in with Hex Connect" on the login page only while registered."""
     global _provider
     try:
         from hermes_cli.dashboard_auth.registry import register_global_provider
-        from hexbot.auth_provider import HexbotConnectProvider
-        _provider = HexbotConnectProvider()
+        from hexbot.auth_provider import HexConnectProvider
+        _provider = HexConnectProvider()
         register_global_provider(_provider)
     except Exception:
         logger.debug("could not register the Connect sign-in provider", exc_info=True)
