@@ -35,6 +35,11 @@ jobs:
       - run: uv venv venv --python 3.11
       # `all` is every runtime extra; `dev` adds pytest and pytest-asyncio.
       - run: uv sync --extra all --extra dev --locked
+      # The Hex Connect sidecar (hexbot/connect_agent.mts) runs on Node; the Python tests drive it too.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - run: node --test tests/hexbot/*.test.mts
       - run: ./venv/bin/pytest tests/hexbot -q
 
   web:

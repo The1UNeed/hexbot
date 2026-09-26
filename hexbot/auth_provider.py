@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import secrets
 import sqlite3
 import threading
 import time
 import urllib.parse
-
-import jwt
 
 from hermes_cli.dashboard_auth import (
     DashboardAuthProvider, InvalidCodeError, InvalidCredentialsError, LoginStart,
@@ -19,11 +18,11 @@ from hermes_cli.dashboard_auth import (
 
 from hexbot import db
 from hexbot.errors import HexbotError
-from hexbot.connect import ConnectClient, ConnectConfig
+from hexbot.connect import ConnectClient, ConnectConfig, verify_grant
 from hexbot.pairing import DeviceRow, mint_device, redeem_code, verify_token
 
+logger = logging.getLogger(__name__)
 SESSION_TTL_SECONDS = 10 * 365 * 24 * 60 * 60
-GRANT_CLAIMS = ["sub", "daemon_id", "device_name", "exp", "iat", "jti"]
 GRANT_LEEWAY_SECONDS = 60  # a daemon clock a little behind Connect's must not reject every grant
 _USED_GRANTS_LOCK = threading.Lock()
 
@@ -43,52 +42,13 @@ def _mark_grant_used(jti: str, exp: float) -> None:
 class _DeviceSessionProvider(DashboardAuthProvider):
     """Device-token sessions plus Connect grant verification, shared by both providers."""
 
-    def __init__(self, jwks_fetcher=None):
-        self._jwks_fetcher = jwks_fetcher
-        self._jwks_cache: dict[str, dict] = {}
-
-    def _fetch_jwks(self, url: str) -> dict:
-        if self._jwks_fetcher is not None:
-            value = self._jwks_fetcher(url)
-        else:
-            import httpx
-            response = httpx.get(url, timeout=15)
-            response.raise_for_status()
-            value = response.json()
-        if not isinstance(value, dict) or not isinstance(value.get("keys"), list):
-            raise ValueError("invalid JWKS")
-        return value
-
-    @staticmethod
-    def _key_for(jwks: dict, kid: str):
-        for value in jwks.get("keys", []):
-            if value.get("kid") == kid:
-                return jwt.PyJWK.from_dict(value).key
-        return None
-
     def _verify_grant(self, token: str) -> dict:
         """Claims of a valid, unused Connect grant for this daemon. Raises on anything else."""
-        config = ConnectConfig.load()
-        if config is None or not config.daemon_id:
-            raise ValueError("Connect is not configured")
-        header = jwt.get_unverified_header(token)
-        if header.get("alg") != "ES256" or not isinstance(header.get("kid"), str):
-            raise ValueError("unsupported grant header")
-        jwks = self._jwks_cache.get(config.jwks_url)
-        if jwks is None:
-            jwks = self._fetch_jwks(config.jwks_url)
-            self._jwks_cache[config.jwks_url] = jwks
-        key = self._key_for(jwks, header["kid"])
-        if key is None:
-            jwks = self._fetch_jwks(config.jwks_url)
-            self._jwks_cache[config.jwks_url] = jwks
-            key = self._key_for(jwks, header["kid"])
-        if key is None:
-            raise ValueError("unknown signing key")
-        claims = jwt.decode(token, key, algorithms=["ES256"], leeway=GRANT_LEEWAY_SECONDS,
-                            options={"require": GRANT_CLAIMS})
-        if claims["daemon_id"] != config.daemon_id:
-            raise ValueError("wrong daemon")
+        try:
+            claims = verify_grant(token)
+        except Exception as exc:
+            logger.warning("Connect grant rejected: %s", exc)
+            raise
         _mark_grant_used(str(claims["jti"]), float(claims["exp"]))
         return claims
 
@@ -97,7 +57,7 @@ class _DeviceSessionProvider(DashboardAuthProvider):
         name = str(claims["device_name"]).strip()[:80]
         if not name:
             raise ValueError("empty device name")
-        device = mint_device(name, "connect")
+        device = mint_device(name, "connect")  # admin: the sidecar accepts only the pinned owner
         return self._session(device, device.token)
 
     def verify_session(self, *, access_token: str) -> Session | None:
@@ -161,8 +121,7 @@ class HexConnectProvider(_DeviceSessionProvider):
     supports_session = True
     supports_token = False
 
-    def __init__(self, jwks_fetcher=None, http=None):
-        super().__init__(jwks_fetcher)
+    def __init__(self, http=None):
         self._http = http
 
     @staticmethod

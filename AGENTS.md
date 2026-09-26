@@ -127,7 +127,7 @@ Three ways to hurt yourself:
 Run the suite that covers what you touched, not everything:
 
 ```sh
-./venv/bin/pytest tests/hexbot -q
+./venv/bin/pytest tests/hexbot -q && node --test tests/hexbot/*.test.mts
 pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint
 pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run
 pnpm --filter ./apps/site run check

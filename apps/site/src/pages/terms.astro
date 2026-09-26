@@ -34,7 +34,7 @@ const sections: [string, string][] = [
   <section id="service">
     <h2>What Connect does</h2>
     <p>Connect lets you reach a Hexbot daemon that you run, from outside its local network. It signs you in, keeps a list of the daemons you have registered, gives each daemon a hostname and a Cloudflare Tunnel, and issues short-lived, single-use login grants to your devices and browsers. That is all it does.</p>
-    <p>Connect is not the chat server and does not host your bots. Your conversations, memory, files, and provider keys stay on the machine running your daemon. Chat traffic travels through the tunnel, encrypted, and never passes through the Connect service.</p>
+    <p>Connect is not the chat server and does not host your bots. Your conversations, memory, files, and provider keys stay on the machine running your daemon. Chat traffic travels through a Cloudflare tunnel, which Cloudflare decrypts at its edge to route, and never passes through the Connect service.</p>
     <p>You never need Connect to use Hexbot. Pairing on your own network and connecting over Tailscale work without it, and because Connect is open source you may <a href="/docs/connect/#self-host-connect">run your own instance</a>, to which these terms do not apply.</p>
   </section>
   <section id="daemons">

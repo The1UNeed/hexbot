@@ -45,6 +45,6 @@ describe("tunnel provider", () => {
     vi.stubEnv("NODE_ENV", "production");
     const provider = createTunnelProvider();
     expect(provider.kind).toBe("unconfigured");
-    await expect(provider.create("amber-otter-1", 9119)).rejects.toThrow("not configured");
+    await expect(provider.create("0123456789abcdef")).rejects.toThrow("not configured");
   });
 });

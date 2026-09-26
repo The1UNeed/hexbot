@@ -87,7 +87,7 @@ def connect_service(tmp_path_factory):
 @pytest.fixture(scope="module")
 def daemon_home(tmp_path_factory):
     home = tmp_path_factory.mktemp("hexbot-home")
-    binary = home / "bin" / "cloudflared"
+    binary = home / "bin" / "cloudflared-2026.8.0"  # the sidecar's pinned version, so nothing downloads
     binary.parent.mkdir(mode=0o700)
     binary.write_text("#!/bin/sh\nexec sleep 3600\n")  # stands in for the tunnel process
     binary.chmod(0o700)
@@ -194,7 +194,9 @@ def test_connect_end_to_end(connect_service, daemon_home, tmp_path):
     config = json.loads((daemon_home / "connect.json").read_text())
     assert config["api_base"] == connect_url and config["daemon_id"] == approved["daemon_id"]
     assert config["tunnel_hostname"] == approved["hostname"]
-    assert re.fullmatch(r"[a-z]+-[a-z]+-\d+\.hexbot\.test", config["tunnel_hostname"])
+    assert re.fullmatch(r"[0-9a-f]{16}\.hexbot\.test", config["tunnel_hostname"])
+    # The daemon pinned its owner, Connect's issuer, and Connect's published keys.
+    assert config["owner_id"] and config["issuer"] and config["keys"] == httpx.get(f"{connect_url}/.well-known/jwks.json").json()["keys"]
     assert f"public_url: https://{config['tunnel_hostname']}" in (daemon_home / "config.yaml").read_text()
     again = httpx.post(f"{connect_url}/api/register/approve", json={"user_code": code})
     assert again.status_code == 409

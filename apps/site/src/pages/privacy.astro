@@ -62,13 +62,13 @@ const sections: [string, string][] = [
       <dt>Pending registrations</dt>
       <dd>The short-lived codes shown by <code>hexbot connect</code> while you approve a daemon. They expire within ten minutes.</dd>
     </dl>
-    <p>Connect uses these records to list your daemons, show whether they are online, issue login grants, keep tunnels pointed at the right port, and let you revoke access. It does not use them for advertising or profiling, and it does not sell or share them.</p>
+    <p>Connect uses these records to list your daemons, show whether they are online, issue login grants, and let you revoke access. It does not use them for advertising or profiling, and it does not sell or share them.</p>
     <p>Connect measures its own use with PostHog under the same consent rule as this website: nothing loads until you press Accept. With your consent it records page views, clicks, page timings, script errors, session recordings with inputs hidden, and a handful of product events (a daemon approved, an app authorised, a daemon opened in a browser, a daemon or device revoked), tied to your Connect account ID so we can see how the service is used per account. Decline, and Connect works exactly the same without any of it.</p>
     <p>Connect runs on Vercel, which keeps short-lived request logs to operate its network. Requests that Hexbot daemons and apps make to the Connect API carry a bearer token; Connect stores only a hash of every token, never the token itself.</p>
   </section>
   <section id="never">
     <h2>What Connect never receives</h2>
-    <p>Connect never receives your conversations, bot memory, provider keys, files, tool results, or the long-lived device tokens your daemon issues. Chat traffic travels from your device through Cloudflare's edge and the tunnel process on your daemon host, encrypted with TLS all the way. The Connect service is not in that path and cannot read it. Cloudflare carries the encrypted traffic as part of running the tunnel and applies its own privacy policy to what it sees.</p>
+    <p>Connect never receives your conversations, bot memory, provider keys, files, tool results, or the long-lived device tokens your daemon issues. Chat traffic travels from your device through Cloudflare's edge and the tunnel process on your daemon host. The Connect service is not in that path and cannot read it. Cloudflare decrypts the traffic at its edge to route it through the tunnel, so Cloudflare can see it, and applies its own privacy policy to what it sees. LAN pairing and Tailscale do not pass through Cloudflare.</p>
   </section>
   <section id="app">
     <h2>The app and the daemon</h2>
@@ -80,7 +80,7 @@ const sections: [string, string][] = [
     <p>These companies process data on our behalf, under their own data processing terms, and see only what is listed:</p>
     <ul>
       <li><strong>Clerk</strong> (sign-in): your email address, name, sign-in methods, and sign-in activity.</li>
-      <li><strong>Cloudflare</strong> (tunnels and DNS): hostnames, tunnel identifiers, and the encrypted traffic passing through your daemon's tunnel.</li>
+      <li><strong>Cloudflare</strong> (tunnels and DNS): hostnames, tunnel identifiers, and the traffic passing through your daemon's tunnel, which Cloudflare decrypts at its edge.</li>
       <li><strong>Neon</strong> (database): the Connect records described above.</li>
       <li><strong>Vercel</strong> (hosting): request logs for this website and Connect.</li>
       <li><strong>PostHog</strong> (analytics): the usage data described above, only with your consent.</li>

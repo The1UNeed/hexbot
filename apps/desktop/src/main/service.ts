@@ -16,6 +16,7 @@ const options = (): ServiceFileOptions => ({
   executable: hexbotExecutable(),
   home: hexbotHome(),
   path: [binDir(), join(venvDir(), 'bin'), process.env.PATH ?? ''].join(delimiter),
+  node: process.env.APPIMAGE ?? process.execPath, // an AppImage's execPath vanishes when it quits
   logDir: join(hexbotHome(), 'logs')
 })
 

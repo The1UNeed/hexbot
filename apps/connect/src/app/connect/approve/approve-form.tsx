@@ -26,7 +26,7 @@ export function ApproveForm({ initialCode = "" }: { initialCode?: string }) {
 
   if (approved) return (
     <div className="stack">
-      <p className="notice notice-success"><strong>{approved.name}</strong>&nbsp;is connected. Its address is <code>{approved.hostname}</code>. You can close this tab and return to the terminal or the app.</p>
+      <p className="notice notice-success"><strong>{approved.name}</strong> is connected. Its address is <code>{approved.hostname}</code>. You can close this tab and return to the terminal or the app.</p>
       <div className="row"><Link className="button" href="/connect">Your daemons</Link></div>
     </div>
   );

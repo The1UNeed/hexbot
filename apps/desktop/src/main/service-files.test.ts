@@ -5,6 +5,7 @@ const options = {
   executable: '/home/me/.hexbot/runtime/venv/bin/hexbot',
   home: '/home/me/.hexbot',
   path: '/home/me/.hexbot/bin:/usr/bin',
+  node: '/Applications/Hexbot.app/Contents/MacOS/Hexbot',
   logDir: '/home/me/.hexbot/logs'
 }
 describe('service files', () => {
@@ -15,7 +16,7 @@ describe('service files', () => {
 <plist version="1.0"><dict>
   <key>Label</key><string>app.hexbot.daemon</string>
   <key>ProgramArguments</key><array><string>/home/me/.hexbot/runtime/venv/bin/hexbot</string><string>serve</string></array>
-  <key>EnvironmentVariables</key><dict><key>HEXBOT_HOME</key><string>/home/me/.hexbot</string><key>HEXBOT_SUPERVISOR</key><string>service</string><key>PATH</key><string>/home/me/.hexbot/bin:/usr/bin</string></dict>
+  <key>EnvironmentVariables</key><dict><key>HEXBOT_HOME</key><string>/home/me/.hexbot</string><key>HEXBOT_SUPERVISOR</key><string>service</string><key>PATH</key><string>/home/me/.hexbot/bin:/usr/bin</string><key>HEXBOT_NODE</key><string>/Applications/Hexbot.app/Contents/MacOS/Hexbot</string></dict>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>/home/me/.hexbot/logs/service.log</string>
   <key>StandardErrorPath</key><string>/home/me/.hexbot/logs/service-error.log</string>
@@ -35,6 +36,7 @@ ExecStart="/home/me/.hexbot/runtime/venv/bin/hexbot" serve
 Environment=HEXBOT_HOME="/home/me/.hexbot"
 Environment=HEXBOT_SUPERVISOR=service
 Environment=PATH="/home/me/.hexbot/bin:/usr/bin"
+Environment=HEXBOT_NODE="/Applications/Hexbot.app/Contents/MacOS/Hexbot"
 Restart=always
 StandardOutput=append:/home/me/.hexbot/logs/service.log
 StandardError=append:/home/me/.hexbot/logs/service-error.log

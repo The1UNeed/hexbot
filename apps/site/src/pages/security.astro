@@ -21,13 +21,14 @@ const sections: [string, string][] = [
   <section id="connect">
     <h2>How Connect protects your daemon</h2>
     <ul>
-      <li><strong>Not in the data path.</strong> Chat traffic goes from your device through Cloudflare's edge and the tunnel process on your daemon host, encrypted with TLS end to end. Connect only brokers identity and hostnames.</li>
+      <li><strong>Not in the data path.</strong> Chat traffic goes from your device through Cloudflare's edge and the tunnel process on your daemon host; Connect's servers never carry it. TLS protects it as far as Cloudflare, which decrypts it at its edge to route it through the tunnel, so Cloudflare can read it. LAN pairing and Tailscale do not pass through Cloudflare.</li>
+      <li><strong>Your daemon trusts only you.</strong> When a daemon registers, it records its owner and the keys Connect signs with. It accepts a Connect login only for that owner, for that daemon, signed with one of those keys. Where the tunnel leads is set on your machine, not by Connect.</li>
       <li><strong>Sign-in by Clerk.</strong> Passwords, passkeys, and social sign-in are handled by Clerk. Connect never sees a password.</li>
       <li><strong>Tokens are hashed.</strong> Daemon and app tokens are shown once and stored only as SHA-256 hashes. A database leak does not yield working credentials.</li>
       <li><strong>Grants are short-lived and single-use.</strong> A login grant is an ES256-signed token valid for five minutes, bound to one daemon, carrying an ID the daemon refuses to accept twice. The daemon verifies it against Connect's published keys and mints its own revocable device token.</li>
       <li><strong>Browser sign-in uses proof-key exchange.</strong> When you open a daemon in a browser, the daemon starts the sign-in with a PKCE challenge and a state cookie, Connect returns a one-time code to the daemon's own callback address only, and the daemon exchanges the code together with its verifier and its own token. A code seen in a URL or a log is useless on its own.</li>
       <li><strong>Every device is revocable.</strong> Apps and browsers signed in through Connect appear in the daemon's Devices list, and apps also appear on your Connect page. Revoking a daemon deletes its tunnel.</li>
-      <li><strong>Defence in depth on the web.</strong> Connect and hexbot.app send a Content Security Policy, forbid framing, and send no referrer. Connect answers API calls only with a bearer token and never relies on cookies for them.</li>
+      <li><strong>Defence in depth on the web.</strong> Connect and hexbot.app send a Content Security Policy, forbid framing, and send no referrer. Connect's API takes bearer tokens; the one exception is approving a daemon, which uses your Connect sign-in.</li>
       <li><strong>Open source.</strong> The Connect service, the daemon, and the app are AGPL-3.0 software in our <a href="https://github.com/The1UNeed/hexbot">repository</a>, so anyone can review the design or run their own instance.</li>
     </ul>
   </section>
