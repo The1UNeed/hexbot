@@ -1376,6 +1376,17 @@ def _resolve_hermes_bin_dir() -> str | None:
             if os.path.isfile(os.path.join(exe_dir, shim)):
                 candidate = exe_dir
 
+    # Prompts and skills tell bots to run ``hexbot core``. The running
+    # install's bin dir holds both ``hexbot`` and ``hermes``, so prefer it
+    # when the dir found above has no ``hexbot`` (e.g. a lone ~/.local/bin
+    # ``hermes`` symlink).
+    exe_dir = os.path.dirname(sys.executable) if sys.executable else ""
+    hexbot = "hexbot.exe" if _IS_WINDOWS else "hexbot"
+    if exe_dir and os.path.isfile(os.path.join(exe_dir, hexbot)) and not (
+        candidate and os.path.isfile(os.path.join(candidate, hexbot))
+    ):
+        candidate = exe_dir
+
     if candidate and not os.path.isdir(candidate):
         candidate = None
 

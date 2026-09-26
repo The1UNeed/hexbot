@@ -58,6 +58,15 @@ def main(argv=None):
     if argv[:1] == ["hermes"]:  # hidden alias for `core`
         argv[0] = "core"
     _set_home(core=argv[:1] == ["core"])
+    if argv[:1] == ["core"]:
+        # Hand everything after `core` to the core CLI untouched. argv is set
+        # before the import because the core applies `-p <profile>` on import.
+        old = sys.argv
+        try:
+            sys.argv = ["hermes", *argv[1:]]
+            from hermes_cli.main import main as hermes_main
+            return hermes_main()
+        finally: sys.argv = old
     args = parser().parse_args(argv)
     if args.command == "serve":
         from hexbot.serve import run
@@ -113,11 +122,6 @@ def main(argv=None):
         result = subprocess.run([str(executable), "-p", args.bot, "chat", "-q", args.text,
                                  "--oneshot", "-Q"], env=os.environ.copy(), text=True)
         return result.returncode
-    if args.command == "core":
-        from hermes_cli.main import main as hermes_main
-        old = sys.argv
-        try: sys.argv = ["hermes", *args.args]; return hermes_main()
-        finally: sys.argv = old
     from hexbot import bots
     if args.bots_command == "list":
         print(json.dumps({"bots": bots.list_bots()}, indent=2)); return 0

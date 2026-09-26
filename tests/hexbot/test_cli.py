@@ -12,7 +12,8 @@ def test_core_passthrough_and_hidden_alias(name, monkeypatch):
     monkeypatch.setattr("hermes_cli.main.main", lambda: seen.append(list(sys.argv)) or 0)
 
     assert cli.main([name, "doctor", "--fix"]) == 0
-    assert seen == [["hermes", "doctor", "--fix"]]
+    assert cli.main([name, "-p", "scout", "chat", "-q", "hi"]) == 0
+    assert seen == [["hermes", "doctor", "--fix"], ["hermes", "-p", "scout", "chat", "-q", "hi"]]
 
 
 def test_hermes_alias_is_hidden_from_help():

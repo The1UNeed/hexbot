@@ -1646,7 +1646,21 @@ class TestHermesBinDirOnPath:
         monkeypatch.setattr(local_mod.shutil, "which",
                             lambda name: "/opt/hermes/bin/hermes" if name == "hermes" else None)
         monkeypatch.setattr(local_mod.os.path, "isdir", lambda p: p == "/opt/hermes/bin")
+        monkeypatch.setattr(local_mod.sys, "executable", "/nonexistent/venv/bin/python")
         assert local_mod._resolve_hermes_bin_dir() == "/opt/hermes/bin"
+
+    def test_prefers_running_install_when_path_hermes_has_no_hexbot(self, monkeypatch, tmp_path):
+        """A lone ``hermes`` on PATH must not hide ``hexbot core`` from bots."""
+        from tools.environments import local as local_mod
+        self._reset_cache()
+        lone = tmp_path / "local-bin"; lone.mkdir(); (lone / "hermes").write_text("")
+        venv_bin = tmp_path / "venv-bin"; venv_bin.mkdir()
+        for name in ("hermes", "hexbot", "python"):
+            (venv_bin / name).write_text("")
+        monkeypatch.setattr(local_mod.shutil, "which",
+                            lambda name: str(lone / "hermes") if name == "hermes" else None)
+        monkeypatch.setattr(local_mod.sys, "executable", str(venv_bin / "python"))
+        assert local_mod._resolve_hermes_bin_dir() == str(venv_bin)
 
 
     def test_prepend_noop_when_unresolved(self, monkeypatch):
