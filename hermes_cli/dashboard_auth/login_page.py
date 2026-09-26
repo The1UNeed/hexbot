@@ -458,6 +458,15 @@ _PASSWORD_FORM_SCRIPT = """\
 """
 
 
+_renderer = None  # a replacement page, set by an embedding app (Hexbot: hexbot/login_page.py)
+
+
+def set_login_renderer(renderer) -> None:
+    """Serve ``renderer(next_path=...)`` for ``GET /login`` instead of the page below."""
+    global _renderer
+    _renderer = renderer
+
+
 def render_login_html(*, next_path: str = "") -> str:
     """Return the full HTML for ``GET /login``.
 
@@ -468,6 +477,8 @@ def render_login_html(*, next_path: str = "") -> str:
     validating ``next_path`` against the same-origin rules before we
     emit it; we still HTML-escape it as defence in depth.
     """
+    if _renderer is not None:
+        return _renderer(next_path=next_path)
     providers = list_session_providers()
     if not providers:
         return _EMPTY_HTML

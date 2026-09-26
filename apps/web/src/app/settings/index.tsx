@@ -1323,7 +1323,7 @@ export function AboutSettings(): React.JSX.Element {
 
   return (
     <>
-      <Heading description="Hexbot is a self-hosted multi-agent app built on Hermes Agent.">
+      <Heading description="Hexbot is a self-hosted multi-agent app.">
         About
       </Heading>
       <dl className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-2">
@@ -1335,10 +1335,10 @@ export function AboutSettings(): React.JSX.Element {
             <dd>{bridge.edition === 'client' ? 'Client only' : 'Full'}</dd>
           </>
         ) : null}
-        <dt className="text-muted">Hermes Agent</dt>
+        <dt className="text-muted">Agent core</dt>
         <dd>{info?.hermes_version ?? '—'}</dd>
         <dt className="text-muted">License</dt>
-        <dd>MIT</dd>
+        <dd>AGPL-3.0</dd>
       </dl>
       <div className="mt-6 flex gap-2">
         <Button

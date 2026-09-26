@@ -104,6 +104,9 @@ def _register_dream_hooks(ctx) -> None:
 
 
 def register(ctx):
+    from hermes_cli.dashboard_auth.login_page import set_login_renderer
+    from hexbot.login_page import render_login_html
+    set_login_renderer(render_login_html)  # the daemon's sign-in page is Hexbot's
     if hasattr(ctx, "register_dashboard_auth_provider") and not _auth_provider_registered():
         from hexbot.auth_provider import HexbotAuthProvider
         ctx.register_dashboard_auth_provider(HexbotAuthProvider())
