@@ -58,6 +58,8 @@ describe("browser sign-in", () => {
     expect(wrongVerifier.status).toBe(400);
     const noToken = await exchange(request("/api/grants/exchange", { code, code_verifier: verifier, redirect_uri: redirectUri }));
     expect(noToken.status).toBe(401);
+    const wrongCallback = await exchange(request("/api/grants/exchange", { code, code_verifier: verifier, redirect_uri: `${redirectUri}?x=1` }, daemonToken));
+    expect(wrongCallback.status).toBe(400);
     const ok = await exchange(request("/api/grants/exchange", { code, code_verifier: verifier, redirect_uri: redirectUri }, daemonToken));
     expect(ok.status).toBe(200);
     const body = await ok.json();

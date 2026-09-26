@@ -27,8 +27,9 @@ export async function renameDaemon(id: string, name: string): Promise<ActionResu
 export async function revokeDaemon(id: string): Promise<ActionResult> {
   const found = await ownedDaemon(id);
   if ("error" in found) return found;
+  // Tunnel first: a daemon that stays listed can be retried, a hostname left reachable cannot.
+  try { await getTunnels().delete(found.daemon.tunnelId); } catch { return { error: "The daemon's tunnel could not be deleted. Try again in a moment." }; }
   await getStore().revokeDaemon(found.daemon.id, new Date());
-  try { await getTunnels().delete(found.daemon.tunnelId); } catch { revalidatePath("/connect"); return { error: "The daemon was revoked, but its tunnel could not be deleted yet. Try again later." }; }
   revalidatePath("/connect");
   return { ok: true };
 }

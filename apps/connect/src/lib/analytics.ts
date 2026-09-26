@@ -4,16 +4,39 @@
 // in localStorage under the same key, and PostHog starts opted out so a stale
 // consent record of its own can never win over ours.
 //
-// Only the module below touches posthog-js. Pages call `track` and `identify`;
+// Connect URLs carry secrets (a registration code, an app's state, a PKCE
+// request), so every URL property is cut down to its path before it leaves the
+// browser, and session replay never runs on the pages that carry them.
+//
+// Only this module touches posthog-js. Pages call `track` and `identify`;
 // both are no-ops until consent is granted and the client has loaded.
-import type { PostHog } from "posthog-js";
+import type { CaptureResult, PostHog } from "posthog-js";
 
 export type Choice = "granted" | "denied";
 export const STORAGE_KEY = "hexbot-analytics";
 export const projectKey = () => process.env.NEXT_PUBLIC_POSTHOG_KEY || "";
+/** Pages whose address or content carries a credential: no session replay here. */
+export const SENSITIVE_PATHS = ["/connect/approve", "/connect/authorize", "/connect/browser"];
+export const isSensitivePath = (pathname: string) => SENSITIVE_PATHS.some(path => pathname === path || pathname.startsWith(`${path}/`));
 
 export function parseChoice(value: string | null | undefined): Choice | null {
   return value === "granted" || value === "denied" ? value : null;
+}
+
+const urlKeys = ["$current_url", "$referrer", "$initial_current_url", "$initial_referrer", "$session_entry_url", "$session_entry_referrer"];
+const bare = (value: unknown) => {
+  if (typeof value !== "string") return value;
+  try { const url = new URL(value); return `${url.origin}${url.pathname}`; } catch { return value; }
+};
+/** Strip query strings and fragments from every URL property, including the person properties PostHog sets from them. */
+export function scrubEvent<T extends { properties?: Record<string, unknown> }>(event: T): T {
+  const properties = event.properties;
+  if (!properties) return event;
+  for (const bag of [properties, properties.$set, properties.$set_once]) {
+    if (!bag || typeof bag !== "object") continue;
+    for (const key of urlKeys) if (key in (bag as Record<string, unknown>)) (bag as Record<string, unknown>)[key] = bare((bag as Record<string, unknown>)[key]);
+  }
+  return event;
 }
 
 type Listener = () => void;
@@ -30,9 +53,15 @@ const notify = () => listeners.forEach(listener => listener());
 export const consent = () => choice;
 export function subscribe(listener: Listener) { listeners.add(listener); return () => { listeners.delete(listener); }; }
 
+function recordingFor(ph: PostHog, pathname: string) {
+  if (choice !== "granted") return;
+  if (isSensitivePath(pathname)) ph.stopSessionRecording(); else ph.startSessionRecording();
+}
+
 function sync(ph: PostHog) {
   if (choice !== "granted") { ph.opt_out_capturing(); return; }
   if (!ph.has_opted_in_capturing()) ph.opt_in_capturing({ captureEventName: null });
+  recordingFor(ph, window.location.pathname);
   if (pendingIdentity) { ph.identify(pendingIdentity); pendingIdentity = null; }
   for (const [event, properties] of queued.splice(0)) ph.capture(event, properties);
 }
@@ -45,9 +74,14 @@ function load() {
       defaults: "2026-08-30",
       opt_out_capturing_by_default: true,
       opt_out_persistence_by_default: true,
-      before_send: event => (choice === "granted" ? event : null),
-      // Promised on hexbot.app/privacy; pinned because an init option overrides the project setting.
+      // Consent is per host: the site's random visitor id never becomes a Connect account id.
+      cross_subdomain_cookie: false,
+      before_send: (event: CaptureResult | null) => (choice === "granted" && event ? scrubEvent(event) : null),
+      // Autocapture keeps element attributes (hrefs, ids) out of events; replay masks every input.
+      mask_all_element_attributes: true,
       session_recording: { maskAllInputs: true },
+      // Replay starts from sync(), and only on pages that carry no credential.
+      disable_session_recording: true,
       // Replaces Vercel Speed Insights and Web Analytics: Core Web Vitals and uncaught errors.
       capture_performance: { web_vitals: true },
       capture_exceptions: true,
@@ -95,6 +129,11 @@ export function reset() {
 
 export function captureException(error: unknown) {
   if (choice === "granted" && client) client.then(ph => ph.captureException(error), () => undefined);
+}
+
+/** Client-side navigation: stop replay before a sensitive page, resume after it. */
+export function routeChanged(pathname: string) {
+  if (client) client.then(ph => recordingFor(ph, pathname), () => undefined);
 }
 
 /** Runs once per page load from instrumentation-client.ts. */

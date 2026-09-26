@@ -82,6 +82,8 @@ def main(argv=None):
         current = connect.status()
         if current["registered"]:
             print(f"Already connected: https://{current['tunnel_hostname']}")
+            if args.name:
+                print("Rename it on your daemons page; --name only applies to a new registration.")
             print("Run `hexbot connect disconnect` first to register again.")
             return 0
         config = connect.register(args.name or socket.gethostname(), client=connect.ConnectClient())

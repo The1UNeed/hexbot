@@ -48,6 +48,8 @@ function load() {
       defaults: '2026-08-30',
       opt_out_capturing_by_default: true,
       opt_out_persistence_by_default: true,
+      // Consent and the visitor id stay on this host; Connect keeps its own.
+      cross_subdomain_cookie: false,
       // PostHog's own consent record can say opted in before sync() runs.
       before_send: event => (choice === 'granted' ? event : null),
       // Already the default; pinned because the privacy page promises it and

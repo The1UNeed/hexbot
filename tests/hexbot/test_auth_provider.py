@@ -11,11 +11,11 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 
 
-def _grant(*, daemon_id="daemon-1", kid="key-1", expires=300, malformed=False, jti=True):
+def _grant(*, daemon_id="daemon-1", kid="key-1", expires=300, malformed=False, jti=True, issued_in=0):
     key = ec.generate_private_key(ec.SECP256R1())
     jwk = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(key.public_key()))
     jwk.update({"kid": "key-1", "use": "sig", "alg": "ES256"})
-    now = int(time.time())
+    now = int(time.time()) + issued_in
     claims = {"sub": "user-1", "daemon_id": daemon_id, "device_name": "MacBook",
               "iat": now, "exp": now + expires, "jti": secrets.token_hex(8)}
     if malformed:
@@ -40,8 +40,9 @@ def test_connect_grant_mints_connect_device():
     assert list_devices()[0].platform == "connect"
 
 
-def test_connect_grant_is_single_use():
+def test_connect_grant_is_single_use_across_restarts():
     from hermes_cli.dashboard_auth import InvalidCredentialsError
+    from hexbot import db
     from hexbot.auth_provider import HexbotAuthProvider
     from hexbot.connect import ConnectConfig
 
@@ -49,8 +50,22 @@ def test_connect_grant_is_single_use():
     ConnectConfig(daemon_id="daemon-1").save()
     provider = HexbotAuthProvider(jwks_fetcher=lambda _url: jwks)
     provider.complete_password_login(username="ignored", password="cg_" + token)
+    with db.transaction() as conn:
+        assert conn.execute("SELECT count(*) FROM spent_grants").fetchone()[0] == 1
+    # A new provider instance stands in for a restarted daemon: the spent grant is on disk.
+    restarted = HexbotAuthProvider(jwks_fetcher=lambda _url: jwks)
     with pytest.raises(InvalidCredentialsError):
-        provider.complete_password_login(username="ignored", password="cg_" + token)
+        restarted.complete_password_login(username="ignored", password="cg_" + token)
+
+
+def test_connect_grant_tolerates_a_slow_daemon_clock():
+    from hexbot.auth_provider import HexbotAuthProvider
+    from hexbot.connect import ConnectConfig
+
+    token, jwks = _grant(issued_in=30)  # Connect's clock is half a minute ahead
+    ConnectConfig(daemon_id="daemon-1").save()
+    provider = HexbotAuthProvider(jwks_fetcher=lambda _url: jwks)
+    assert provider.complete_password_login(username="ignored", password="cg_" + token).display_name == "MacBook"
 
 
 @pytest.mark.parametrize("kind", ["expired", "wrong_daemon", "wrong_kid", "malformed", "no_jti"])
@@ -60,7 +75,7 @@ def test_invalid_connect_grants(kind):
     from hexbot.connect import ConnectConfig
 
     kwargs = {
-        "expired": {"expires": -1},
+        "expired": {"expires": -120},  # past the sixty seconds of leeway
         "wrong_daemon": {"daemon_id": "other"},
         "wrong_kid": {"kid": "missing"},
         "malformed": {"malformed": True},

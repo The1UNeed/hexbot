@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createTunnelProvider } from "@/lib/tunnels";
 import { browserSignInUrl, daemonOrigin, daemonTarget, deviceNameFromUserAgent, isOnline, relativeTime } from "@/lib/daemons";
 
 const daemon = { tunnelHostname: "amber-otter-1234.hexbot.app", ingressPort: 9200 };
@@ -33,5 +34,17 @@ describe("device names", () => {
     expect(relativeTime(new Date(now - 5 * 60_000), now)).toBe("5 min ago");
     expect(relativeTime(new Date(now - 3 * 3_600_000), now)).toBe("3 h ago");
     expect(relativeTime(new Date(now - 26 * 3_600_000), now)).toBe("yesterday");
+  });
+});
+
+describe("tunnel provider", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it("stands in with fake tunnels in development, and refuses in production without Cloudflare", async () => {
+    for (const name of ["CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_ZONE_ID"]) vi.stubEnv(name, "");
+    expect(createTunnelProvider().kind).toBe("fake");
+    vi.stubEnv("NODE_ENV", "production");
+    const provider = createTunnelProvider();
+    expect(provider.kind).toBe("unconfigured");
+    await expect(provider.create("amber-otter-1", 9119)).rejects.toThrow("not configured");
   });
 });

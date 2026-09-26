@@ -135,8 +135,14 @@ Connect as the identity provider:
    grant, mints a device token with platform `connect`, and Hermes sets the
    session cookies and lands on `next`.
 
-`hexbot connect disconnect` unregisters the provider so the login page stops
-offering Connect.
+Spent grant ids live in the daemon's SQLite database (`spent_grants`), so a
+restart inside a grant's five minutes cannot replay it; grants are verified
+with sixty seconds of clock leeway.
+
+`hexbot connect disconnect` unregisters the provider in the process that runs
+it: disconnecting from the app's Settings (RPC) takes effect at once, while the
+CLI run against a live daemon leaves the button on that daemon's login page
+until it restarts (clicking it answers 503, since the config is gone).
 
 ## Connect API routes
 
@@ -164,9 +170,12 @@ exceptions, session recordings (inputs masked), and the product events
 `connect_daemon_approved`, `connect_client_authorized`,
 `connect_browser_signin_prompted`, `connect_daemon_opened`,
 `connect_daemon_renamed`, `connect_daemon_revoked`, and
-`connect_device_revoked`, identified by the Clerk user id. Traffic goes through
-the `/ingest` rewrites in `next.config.ts`. `docs/deploy.md` describes the
-project and dashboard.
+`connect_device_revoked`, identified by the Clerk user id. Every URL property is cut to its path before
+it is sent, session replay is off on `/connect/approve`, `/connect/authorize`,
+and `/connect/browser`, element attributes are masked, and the hexbot:// link
+is opened from state rather than rendered. Traffic goes through the
+`/ingest` route handler, which forwards no cookies. `docs/deploy.md` describes
+the project and dashboard.
 
 ## Operator requirements
 

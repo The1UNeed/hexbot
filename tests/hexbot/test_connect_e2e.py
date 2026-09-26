@@ -145,9 +145,11 @@ def sign_in_client(connect_url: str, device: str) -> str:
     assert not re.search(r'href="hexbot://', page.text)
     authorized = httpx.post(str(page.url), files=form.fields, headers={"Origin": connect_url}, timeout=60)
     assert authorized.status_code == 200, authorized.text[:500]
-    match = re.search(r'href="hexbot://connect\?state=nonce-1#session=([^"]+)"', authorized.text)
+    # The link is opened from React state, never rendered as an href; it travels in the action's payload.
+    assert 'href="hexbot://' not in authorized.text
+    match = re.search(r"session=(hxc_[A-Za-z0-9_-]+)", authorized.text)
     assert match, authorized.text[:500]
-    token = urllib.parse.unquote(match.group(1))
+    token = match.group(1)
     auth = {"Authorization": f"Bearer {token}"}
     sessions = httpx.get(f"{connect_url}/api/me", headers=auth).json()["sessions"]
     # Reloading the landing page must not mint another client session.

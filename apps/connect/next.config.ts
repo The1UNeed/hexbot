@@ -22,15 +22,8 @@ const csp = [
 
 const config: NextConfig = {
   reactStrictMode: true,
-  // posthog-js posts to paths that end in a slash; Next would otherwise 308 them.
+  // posthog-js posts to paths that end in a slash (/ingest/e/); Next would otherwise 308 them.
   skipTrailingSlashRedirect: true,
-  async rewrites() {
-    // PostHog through this origin, so the CSP stays 'self' and ad blockers see a first-party request.
-    return [
-      { source: "/ingest/static/:path*", destination: "https://us-assets.i.posthog.com/static/:path*" },
-      { source: "/ingest/:path*", destination: "https://us.i.posthog.com/:path*" },
-    ];
-  },
   async headers() {
     return [{
       source: "/(.*)",

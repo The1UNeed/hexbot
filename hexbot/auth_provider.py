@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import secrets
+import sqlite3
 import threading
 import time
 import urllib.parse
@@ -16,24 +17,27 @@ from hermes_cli.dashboard_auth import (
     ProviderError, RefreshExpiredError, Session,
 )
 
+from hexbot import db
 from hexbot.errors import HexbotError
 from hexbot.connect import ConnectClient, ConnectConfig
 from hexbot.pairing import DeviceRow, mint_device, redeem_code, verify_token
 
 SESSION_TTL_SECONDS = 10 * 365 * 24 * 60 * 60
 GRANT_CLAIMS = ["sub", "daemon_id", "device_name", "exp", "iat", "jti"]
-_USED_GRANTS: dict[str, float] = {}  # jti -> exp; a grant logs in once
+GRANT_LEEWAY_SECONDS = 60  # a daemon clock a little behind Connect's must not reject every grant
 _USED_GRANTS_LOCK = threading.Lock()
 
 
 def _mark_grant_used(jti: str, exp: float) -> None:
+    """Record a grant as spent, in the database so a restart within its lifetime cannot replay it."""
     now = time.time()
-    with _USED_GRANTS_LOCK:
-        for key in [key for key, value in _USED_GRANTS.items() if value <= now]:
-            del _USED_GRANTS[key]
-        if jti in _USED_GRANTS:
-            raise ValueError("grant already used")
-        _USED_GRANTS[jti] = exp
+    db.migrate()
+    with _USED_GRANTS_LOCK, db.transaction() as conn:
+        conn.execute("DELETE FROM spent_grants WHERE exp <= ?", (now - GRANT_LEEWAY_SECONDS,))
+        try:
+            conn.execute("INSERT INTO spent_grants(jti, exp) VALUES (?, ?)", (jti, exp))
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("grant already used") from exc
 
 
 class _DeviceSessionProvider(DashboardAuthProvider):
@@ -81,7 +85,8 @@ class _DeviceSessionProvider(DashboardAuthProvider):
             key = self._key_for(jwks, header["kid"])
         if key is None:
             raise ValueError("unknown signing key")
-        claims = jwt.decode(token, key, algorithms=["ES256"], options={"require": GRANT_CLAIMS})
+        claims = jwt.decode(token, key, algorithms=["ES256"], leeway=GRANT_LEEWAY_SECONDS,
+                            options={"require": GRANT_CLAIMS})
         if claims["daemon_id"] != config.daemon_id:
             raise ValueError("wrong daemon")
         _mark_grant_used(str(claims["jti"]), float(claims["exp"]))
