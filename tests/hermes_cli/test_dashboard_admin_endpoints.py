@@ -152,9 +152,9 @@ class TestCredentialPoolEndpoints:
     def test_env_seeded_delete_stays_deleted(self):
         """#55217: DELETE must suppress the source or load_pool() resurrects it.
 
-        load_pool() re-seeds from ~/.hermes/.env on every call, so removing
+        load_pool() re-seeds from ~/.hexbot/.env on every call, so removing
         just the pool row silently reverts on the next dashboard refresh.
-        The endpoint must mirror `hermes auth remove`: clean up the backing
+        The endpoint must mirror `hexbot core auth remove`: clean up the backing
         source and suppress (provider, source).
         """
         from agent.credential_pool import load_pool
@@ -182,7 +182,7 @@ class TestCredentialPoolEndpoints:
     def test_post_readd_lifts_suppression(self):
         """Re-adding via POST is an explicit re-engagement — suppressions lift.
 
-        Mirrors `hermes auth add`, which clears every suppression for the
+        Mirrors `hexbot core auth add`, which clears every suppression for the
         provider so a user who deleted a credential and re-adds one isn't
         silently blocked from env re-seeding.
         """
@@ -831,7 +831,7 @@ class TestUpdateCheckEndpoint:
 
     Powers the dashboard's check-before-you-update flow: the System page
     shows the commit-behind count and asks the user to confirm before
-    ``POST /api/hermes/update`` runs ``hermes update``.
+    ``POST /api/hermes/update`` runs ``hexbot core update``.
     """
 
     @pytest.fixture(autouse=True)
@@ -953,7 +953,7 @@ class TestDebugShareEndpoint:
 
 class TestToolsConfigEndpoints:
     """Provider selection, API-key save, and post-setup spawn for toolsets —
-    the dashboard surface that replicates the `hermes tools` configurator."""
+    the dashboard surface that replicates the `hexbot core tools` configurator."""
 
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):

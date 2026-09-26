@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SQLite State Store for Hermes Agent.
+SQLite State Store for Hexbot.
 
 Provides persistent session storage with FTS5 full-text search, replacing
 the per-session JSONL file approach. Stores session metadata, full message
@@ -308,7 +308,7 @@ def _workspace_key_clause(key: str) -> Tuple[str, List[str]]:
     when its recorded ``git_repo_root`` equals ``key``, or — for rows that
     predate per-session git metadata — when its ``cwd`` is at or under
     ``key`` (so a session started in ``repo/src`` still groups with ``repo``).
-    Used by ``hermes -c``/``--resume`` to continue the most recent session in
+    Used by ``hexbot core -c``/``--resume`` to continue the most recent session in
     the *current* workspace rather than the global MRU.
     """
     prefix = key.rstrip("/\\") or key
@@ -429,7 +429,7 @@ _HANDLES_PER_PATH_WARN = 4
 # Descriptors kept in reserve for everything that is NOT this module: httpx
 # sockets, terminal subprocess pipes, log files.
 #
-# The ceilings above bound Hermes's SQLite descriptors, which is only ever part
+# The ceilings above bound Hexbot's SQLite descriptors, which is only ever part
 # of the fd table. The #98573 report is exactly that case: ~20 state.db
 # descriptors were not the whole 256, they were the share that pushed httpx and
 # terminal pipes over, and the EMFILE surfaced in tools/terminal_tool.py rather
@@ -686,7 +686,7 @@ def _default_db_path() -> Path:
     """Resolve the default state DB path at call time.
 
     ``DEFAULT_DB_PATH`` is computed when this module is first imported, which
-    freezes the developer's real ``~/.hermes`` even when a test fixture later
+    freezes the developer's real ``~/.hexbot`` even when a test fixture later
     redirects ``HERMES_HOME`` — importing this module during collection was
     enough to point every default ``SessionDB()`` at the real state.db.
 
@@ -706,7 +706,7 @@ def _default_db_path() -> Path:
 # Live-DB test-isolation guard
 # ---------------------------------------------------------------------------
 # Forensic evidence (Aug 2026, live developer machine): the production
-# ~/.hermes/state.db accumulated pytest fixture rows — sessions with
+# ~/.hexbot/state.db accumulated pytest fixture rows — sessions with
 # chat_id='chat-1'/'123'/'wx-chat' and gateway_routing scopes literally under
 # /tmp/pytest-of-*/ — and a pytest-spawned process flipped the journal mode
 # out from under the WAL-mode gateway writer, destroying committed
@@ -737,13 +737,13 @@ _STATE_DB_GUARD_BYPASS = False
 _STATE_DB_GUARD_BYPASS_ENV = "HERMES_STATE_DB_GUARD_BYPASS"
 
 #: Additional production roots to refuse (beyond the platform default
-#: ``~/.hermes``).  The test conftest injects the pre-sandbox production
+#: ``~/.hexbot``).  The test conftest injects the pre-sandbox production
 #: root here so custom-``HERMES_HOME`` deployments are covered too.
 _STATE_DB_GUARD_EXTRA_DENY_ROOTS: Tuple[Path, ...] = ()
 
 
 def _real_platform_state_root() -> Optional[Path]:
-    """Resolve the REAL platform-default Hermes root for the guard.
+    """Resolve the REAL platform-default Hexbot root for the guard.
 
     Deliberately avoids ``Path.home()`` / ``hermes_constants``: tests
     routinely monkeypatch ``Path.home`` to a tempdir, and ``hermes_state``
@@ -772,7 +772,7 @@ def _real_platform_state_root() -> Optional[Path]:
 #: redirects ``HERMES_HOME`` to the per-session tmp isolation root.  Its
 #: value is that isolation root.  Unlike ``PYTEST_*`` (owned by pytest, and
 #: routinely scrubbed by tests that rebuild a child environment), this marker
-#: is OURS: it declares "this process tree is running under Hermes test
+#: is OURS: it declares "this process tree is running under Hexbot test
 #: isolation", and it inherits into subprocess children by default — so a
 #: child that received the patched ``HERMES_HOME`` also received the marker,
 #: and a child that resolves a production DB while carrying it is, by
@@ -862,7 +862,7 @@ def _in_test_context() -> bool:
     Order matters for cost: the env probe is two dict lookups and covers the
     common in-process case, so the ancestry walk only runs for processes the
     environment claims are ordinary user runs — and its answer is memoised,
-    so a real ``hermes`` invocation pays for at most one walk.
+    so a real ``hexbot core`` invocation pays for at most one walk.
     """
     if _running_under_pytest():
         return True
@@ -883,12 +883,12 @@ def _production_state_roots() -> List[Path]:
 
 
 def _is_production_state_db(resolved: Path, root: Path) -> bool:
-    """True when *resolved* is a DB file of the real Hermes home *root*.
+    """True when *resolved* is a DB file of the real Hexbot home *root*.
 
     Matches files directly in the root (``<root>/state.db``) and profile
     homes (``<root>/profiles/<name>/state.db``).  Deliberately does NOT
     match deeper scratch paths (e.g. repo worktrees that happen to live
-    under ``~/.hermes/hermes-agent/...``) so hermetic tests using unusual
+    under ``~/.hexbot/hermes-agent/...``) so hermetic tests using unusual
     tempdirs cannot false-positive.
     """
     if resolved.parent == root:
@@ -925,7 +925,7 @@ def _ensure_test_isolation(db_path: Path) -> None:
         if _is_production_state_db(resolved, root):
             raise RuntimeError(
                 "live-system guard: test attempted to open production "
-                f"state.db at {resolved} (under real Hermes root {root}). "
+                f"state.db at {resolved} (under real Hexbot root {root}). "
                 "Tests must run against a temporary HERMES_HOME — pass an "
                 "explicit tmp db_path or let the hermetic conftest redirect "
                 "HERMES_HOME. If this test genuinely needs the live "
@@ -1206,7 +1206,7 @@ def _apply_wal_size_limit(conn: sqlite3.Connection) -> None:
     transaction ever run against it.
 
     A single bulk operation is enough to strand gigabytes. Observed on a
-    3.0 GB ``state.db``: ``hermes sessions optimize`` (FTS merge + VACUUM)
+    3.0 GB ``state.db``: ``hexbot core sessions optimize`` (FTS merge + VACUUM)
     rewrites every page through the WAL, leaving a **3.07 GB**
     ``state.db-wal`` sitting next to the database indefinitely — the host
     went from 6.9 GB free to 772 MB (100% full) and stayed there, because
@@ -1716,7 +1716,7 @@ def _wal_reset_repair_hint() -> str:
     """Return a context-appropriate hint for repairing the SQLite runtime.
 
     Uses the codebase's install-type detection so the hint matches what
-    ``hermes update`` can actually do for this install (#75153).
+    ``hexbot core update`` can actually do for this install (#75153).
     """
     try:
         from hermes_cli.config import (
@@ -1727,7 +1727,7 @@ def _wal_reset_repair_hint() -> str:
         method = detect_install_method(get_project_root())
         cmd = recommended_update_command_for_method(method)
         if method in {"git", "unknown"}:
-            return f"Hermes-managed installs can repair the embedded runtime with `{cmd}`"
+            return f"Hexbot-managed installs can repair the embedded runtime with `{cmd}`"
         if method == "docker":
             return f"update the container image with `{cmd}`"
         # nix/nixos
@@ -1736,7 +1736,7 @@ def _wal_reset_repair_hint() -> str:
         pass
     return (
         "install a Python build bundled with SQLite 3.51.3+ "
-        "(or backports 3.50.7 / 3.44.6) and restart Hermes"
+        "(or backports 3.50.7 / 3.44.6) and restart Hexbot"
     )
 
 
@@ -1771,7 +1771,7 @@ def _log_wal_reset_bug_once(
         )
     else:
         action = "using journal_mode=DELETE instead of enabling WAL"
-    # Check whether this is a Hermes-managed install (uv-managed venv)
+    # Check whether this is a Hexbot-managed install (uv-managed venv)
     # so the warning doesn't promise a repair path that doesn't exist
     # for git/pip/system Python installs (#75153).
     repair_hint = _wal_reset_repair_hint()
@@ -1779,7 +1779,7 @@ def _log_wal_reset_bug_once(
         "%s: linked SQLite %s is vulnerable to the WAL-reset corruption "
         "bug (https://sqlite.org/wal.html#walresetbug) — %s. "
         "Upgrade to SQLite 3.51.3+ (or backports 3.50.7 / 3.44.6); "
-        "%s. See `hermes doctor`. This warning fires once per "
+        "%s. See `hexbot core doctor`. This warning fires once per "
         "process per database.",
         db_label,
         sqlite3.sqlite_version,
@@ -2239,7 +2239,7 @@ def classify_persistence_error(exc_or_str) -> str:
     * ``"corrupt"`` — the database file itself is structurally damaged
       (``database disk image is malformed`` / SQLITE_NOTADB).  Distinct from
       ``"disk"``: freeing space cannot help, the user needs the repair path
-      (``hermes doctor`` / automatic schema surgery).
+      (``hexbot core doctor`` / automatic schema surgery).
     * ``"replaced"`` — the ``state.db`` path no longer names the file this
       process opened (out-of-band ``cp``/``mv``/restore). In-file FTS repair
       cannot help; writes to the live handle must stop.
@@ -2310,9 +2310,9 @@ def _claim_repair_attempt(db_path: Path) -> bool:
 
 # Cross-process serialisation for the schema-surgery paths below.  The
 # ``_repair_attempt_lock`` above is a ``threading.Lock`` — it only covers
-# threads inside ONE interpreter, yet a normal Hermes host runs several
+# threads inside ONE interpreter, yet a normal Hexbot host runs several
 # independent processes against the same ``state.db``: the gateway service,
-# the Desktop app's own ``hermes serve`` backend, interactive CLI sessions,
+# the Desktop app's own ``hexbot core serve`` backend, interactive CLI sessions,
 # and the TUI slash worker.  Two of those hitting a malformed DB at once each
 # ran the full ``writable_schema`` surgery + ``VACUUM`` on their own private
 # connection, with nothing serialising them.
@@ -2533,7 +2533,7 @@ _MAX_PERSISTENT_REPAIR_ATTEMPTS = 3
 _MAX_MALFORMED_BACKUPS = 3
 
 # Sidecars copied alongside a damaged DB and pruned with it. ``-journal`` is
-# included because rollback-journal (DELETE) mode — Hermes's fallback on
+# included because rollback-journal (DELETE) mode — Hexbot's fallback on
 # NFS/SMB/FUSE/ZFS and on WAL-reset-vulnerable SQLite builds — leaves a hot
 # journal on disk whenever a transaction was open, and that file is what
 # interprets the damaged bytes. Omitting it from the forensic copy means the
@@ -3172,8 +3172,8 @@ def preflight_db_writability(
     transactions. This preflight:
 
     - **Repairs** permissions with ``chmod u+rw`` when the file lives inside
-      the Hermes home tree (``get_hermes_home()``) — the safe repair scope:
-      Hermes owns those files, and the OS makes ``chmod`` fail on files the
+      the Hexbot home tree (``get_hermes_home()``) — the safe repair scope:
+      Hexbot owns those files, and the OS makes ``chmod`` fail on files the
       user doesn't own, which bounds the repair exactly.
     - **Fails fast with an actionable error** naming the exact file and the
       exact ``chmod`` command for anything else (root-owned files, read-only
@@ -3229,7 +3229,7 @@ def preflight_db_writability(
         )
         raise sqlite3.OperationalError(
             f"{db_label} is not writable: {kind} {p} is read-only for this "
-            f"user. Hermes needs read-write access to open the database. "
+            f"user. Hexbot needs read-write access to open the database. "
             f"Fix with: chmod u+rw{'x' if is_dir else ''} '{p}'"
             f" (files owned by another user may need sudo/chown).{wal_note}"
         )
@@ -3576,7 +3576,7 @@ def _live_writer_holds_db(db_path: Path) -> bool:
 
     Scope: the WAL-index exclusive lock is what makes this detect a holder, so
     the guard is effective in WAL mode. On SQLite builds carrying the WAL-reset
-    bug and on NFS/SMB, Hermes deliberately runs ``state.db`` in
+    bug and on NFS/SMB, Hexbot deliberately runs ``state.db`` in
     ``journal_mode=DELETE`` (see :func:`apply_wal_with_fallback`); there a held
     reader takes only a SHARED lock, ``BEGIN IMMEDIATE`` still acquires
     RESERVED, and this probe returns False. In that mode repair is serialised
@@ -3715,7 +3715,7 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
                 report["error"] = (
                     "a live writer still holds state.db; skipped schema surgery "
                     "to avoid tearing b-tree pages under a concurrent writer. "
-                    "Stop the gateway (hermes gateway stop) and retry."
+                    "Stop the gateway (hexbot core gateway stop) and retry."
                 )
                 logger.error("state.db repair skipped: %s", report["error"])
             else:
@@ -4176,10 +4176,10 @@ def _run_repair_strategies(
 # complete ``messages_fts`` index's triggers.
 #
 # The table exists ONLY when the loadable tokenizer is available
-# (``~/.hermes/lib/libfts5_cjk.so``, built by ``native/fts5_cjk/build.sh``).
+# (``~/.hexbot/lib/libfts5_cjk.so``, built by ``native/fts5_cjk/build.sh``).
 # A process that cannot load it self-heals by dropping the cjk triggers
 # (message writes keep working; the index goes stale and is rebuilt by the
-# next ``hermes sessions optimize-storage`` on a capable host).
+# next ``hexbot core sessions optimize-storage`` on a capable host).
 #
 # Split DDL: the table/view part is safe to ensure any time; the triggers
 # are created ONLY while the index is complete-or-marker-gated. A stale
@@ -4695,15 +4695,15 @@ def quarantine_zeroed_state_db(
                 "quarantine lock for %s not acquired within 5s — refusing to "
                 "quarantine without the cross-process lock. The zeroed file "
                 "is left in place. If sessions fail to load, restore from "
-                "state-snapshots via `hermes snapshot list` / "
-                "`hermes snapshot restore <id>`.",
+                "state-snapshots via `hexbot core snapshot list` / "
+                "`hexbot core snapshot restore <id>`.",
                 path,
             )
             return None
         return _do_quarantine()
 
 
-# ── Read-only health/stats probes (hermes doctor, dashboards) ──────────
+# ── Read-only health/stats probes (hexbot core doctor, dashboards) ──────────
 
 
 def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
@@ -4955,11 +4955,11 @@ _HERMES_CMDLINE_MARKERS = ("hermes_cli.main", "hermes_cli/main", "hermes serve",
 
 
 def _looks_like_hermes(cmdline: str) -> bool:
-    """Heuristic: does this cmdline look like a Hermes process?
+    """Heuristic: does this cmdline look like a Hexbot process?
 
     Used to decide whether an uninspectable process (fd table unreadable
     due to different user) should be treated as a potential state.db holder.
-    We only flag processes that look like Hermes, not every system daemon.
+    We only flag processes that look like Hexbot, not every system daemon.
     """
     lower = cmdline.lower()
     return any(marker in lower for marker in _HERMES_CMDLINE_MARKERS)
@@ -5039,11 +5039,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # writers and avoids the convoy.
     #
     # Patience is TIME-based, not attempt-based.  A shared state.db is
-    # legitimately held for multi-second stretches by sibling Hermes
+    # legitimately held for multi-second stretches by sibling Hexbot
     # processes: a TRUNCATE checkpoint at close on a large WAL, VACUUM after
     # an auto-prune, offline recovery, or an older still-running process
     # whose FTS maintenance predates the bounded-merge protocol (every
-    # `hermes update` leaves mixed-version processes sharing the DB until
+    # `hexbot core update` leaves mixed-version processes sharing the DB until
     # the old ones exit).  An attempt-counted budget (~15s incidental worst
     # case) silently loses that race and surfaces as
     # session_persistence_failed — a destroyed turn — even though the store
@@ -5368,8 +5368,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     msg = (
                         f"state.db looks ZEROED ({zsize} bytes, no SQLite header). "
                         f"Preserved at {qpath or '(quarantine failed — file left in place)'}. "
-                        f"Restore from {snaps} via `hermes snapshot list` / "
-                        f"`hermes snapshot restore <id>` if available. "
+                        f"Restore from {snaps} via `hexbot core snapshot list` / "
+                        f"`hexbot core snapshot restore <id>` if available. "
                         "Opening a fresh empty database so the agent can start."
                     )
                     logger.error(msg)
@@ -5888,7 +5888,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._fts_unavailable_warned = True
         logger.warning(
             "SQLite FTS5 unavailable for %s; full-text session search "
-            "disabled. Run `hermes update` to rebuild the venv with a "
+            "disabled. Run `hexbot core update` to rebuild the venv with a "
             "current Python (managed uv guarantees FTS5). "
             "(underlying error: %s)",
             self.db_path,
@@ -5943,7 +5943,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                             "cjk_unicode61 tokenizer is unavailable (%s) — "
                             "dropping the cjk triggers so message writes keep "
                             "working. CJK search falls back to trigram/LIKE; "
-                            "run `hermes sessions optimize-storage` on a host "
+                            "run `hexbot core sessions optimize-storage` on a host "
                             "with the extension to rebuild.",
                             fts5_cjk_so_path(),
                         )
@@ -6169,7 +6169,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     # Patience exhausted — say what actually happened so the
                     # surfaced error doesn't read as disk/permission damage.
                     raise sqlite3.OperationalError(
-                        f"database is locked (another Hermes process held the "
+                        f"database is locked (another Hexbot process held the "
                         f"state.db write lock for over {patience_s:.0f}s — "
                         "likely a long maintenance operation such as VACUUM, "
                         "a large WAL checkpoint, or an older pre-update "
@@ -6294,7 +6294,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if recorded_app:
             disk_app = _read_sqlite_application_id(self.db_path)
             # Header 0 means the WAL has not been checkpointed yet — not a
-            # replace. A copied Hermes DB that minted its own id is nonzero.
+            # replace. A copied Hexbot DB that minted its own id is nonzero.
             if disk_app and disk_app != recorded_app:
                 return True
         return False
@@ -6413,9 +6413,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         # Cannot read this process's fd table (different
                         # user, e.g. root gateway vs user desktop).
                         # /proc/<pid>/cmdline is world-readable by default,
-                        # so check whether this is a Hermes process —
+                        # so check whether this is a Hexbot process —
                         # only flag uninspectable holders that look like
-                        # another Hermes instance, not every system daemon.
+                        # another Hexbot instance, not every system daemon.
                         cmdline = _read_proc_cmdline(pid)
                         if cmdline is not None and _looks_like_hermes(cmdline):
                             holders.append((pid, f"uninspectable holder: {cmdline[:80]}"))
@@ -6728,7 +6728,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     # ── Chunked FTS rebuild engine (v23 opt-in optimize) ──
     #
-    # `optimize_fts_storage()` (the `hermes sessions optimize-storage`
+    # `optimize_fts_storage()` (the `hexbot core sessions optimize-storage`
     # command) drops the legacy inline FTS indexes and backfills the new
     # external-content ones. A single blocking rebuild measured ~16 minutes
     # of held write lock on a real 25 GB DB, so the backfill runs in small
@@ -6774,7 +6774,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # an already-optimized v23 DB gaining the cjk index) never gates the
     # complete ``messages_fts`` / trigram triggers.
 
-    # ── Opt-in v23 FTS storage optimization (`hermes sessions optimize-storage`) ──
+    # ── Opt-in v23 FTS storage optimization (`hexbot core sessions optimize-storage`) ──
     #
     # This is the ONLY path that migrates an existing legacy (v22 inline) DB
     # to the v23 external-content schema. It is deliberately foreground and
@@ -7605,7 +7605,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # recovery: the chat resolves to the last keyed row instead — days older
     # — and the conversation time-travels. Hardening the write side cannot
     # reach a row that is *already* damaged; these two methods are the
-    # offline repair path behind ``hermes sessions repair-routing``.
+    # offline repair path behind ``hexbot core sessions repair-routing``.
 
     # Widest plausible gap between a keyed predecessor going quiet and its
     # unkeyed successor being minted. The reported incident gap was ~60s;
@@ -9499,7 +9499,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         merge discipline as ``update_session_runtime_lock`` so lineage
         markers like ``_branched_from`` / ``_delegate_from`` survive). The
         CLI resume paths read this flag back so a ``/yolo ON`` toggle — or a
-        ``--yolo`` launch — survives ``hermes --resume`` into a fresh
+        ``--yolo`` launch — survives ``hexbot core --resume`` into a fresh
         process. No-op when the session row doesn't exist yet; the
         creation-time ``model_config`` carries the flag for ``--yolo``
         launches.
@@ -14314,7 +14314,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         Pass ``workspace_key`` to scope rows to one workspace - matching
         :func:`workspace_key` semantics (git repo root, else cwd). Used by
-        ``hermes -c``/``--resume`` so the "last" session is the last one in
+        ``hexbot core -c``/``--resume`` so the "last" session is the last one in
         the *current* workspace, not the global MRU.
         """
         select_with_last_active = (
@@ -14803,7 +14803,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         A session is considered empty when it has no messages and no
         user-assigned title. Used by CLI exit / session-rotation paths so
         immediately-started-and-quit sessions don't pile up in ``/resume``
-        and ``hermes sessions list`` output. (Pattern ported from
+        and ``hexbot core sessions list`` output. (Pattern ported from
         google-gemini/gemini-cli#27770.)
 
         The emptiness check and delete run in one transaction, so a message
@@ -15660,7 +15660,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """Create Telegram DM topic-mode tables on explicit /topic opt-in.
 
         This migration is deliberately not part of automatic SessionDB startup
-        reconciliation. Operators must be able to upgrade Hermes, keep the old
+        reconciliation. Operators must be able to upgrade Hexbot, keep the old
         Telegram bot behavior running, and only mutate topic-mode state when the
         user executes /topic to opt into the feature.
 
@@ -16008,9 +16008,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         managed_mode: str = "auto",
     ) -> None:
-        """Bind one Telegram DM topic thread to one Hermes session.
+        """Bind one Telegram DM topic thread to one Hexbot session.
 
-        A Hermes session may only be linked to one Telegram topic in MVP.
+        A Hexbot session may only be linked to one Telegram topic in MVP.
         Rebinding the same topic to the same session is idempotent; trying to
         link the same session to a different topic raises ValueError.
         """
@@ -16063,7 +16063,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._execute_write(_do)
 
     def is_telegram_session_linked_to_topic(self, *, session_id: str) -> bool:
-        """Return True if a Hermes session is already bound to any Telegram DM topic.
+        """Return True if a Hexbot session is already bound to any Telegram DM topic.
 
         Read-only: does NOT trigger the telegram-topic migration. If the
         topic-mode tables have not been created yet (i.e. nobody has run
@@ -16230,7 +16230,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # VACUUM cannot be executed inside a transaction.
         with self._lock:
             # Best-effort WAL checkpoint first, then VACUUM. PASSIVE, not
-            # TRUNCATE: a manual `hermes sessions vacuum` runs in a transient
+            # TRUNCATE: a manual `hexbot core sessions vacuum` runs in a transient
             # CLI process, and a TRUNCATE reset here would race a live gateway
             # writer and tear B-tree pages (#45383). VACUUM folds the WAL back
             # itself; journal_size_limit bounds the file.

@@ -27,7 +27,7 @@ def _stringify_filter_value(value: Any) -> str:
 
 
 def _resolve_profile_path(path_value: Any) -> Optional[Path]:
-    """Resolve a user path, mapping ~/.hermes to the active profile home."""
+    """Resolve a user path, mapping ~/.hexbot to the active profile home."""
     if not isinstance(path_value, str):
         return None
     raw = os.path.expandvars(path_value.strip())

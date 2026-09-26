@@ -1,4 +1,4 @@
-"""``hermes lsp`` CLI subcommand.
+"""``hexbot core lsp`` CLI subcommand.
 
 Subcommands:
 
@@ -19,7 +19,7 @@ import sys
 
 
 def register_subparser(subparsers: argparse._SubParsersAction) -> None:
-    """Wire the ``hermes lsp`` subcommand tree into the main argparse."""
+    """Wire the ``hexbot core lsp`` subcommand tree into the main argparse."""
     parser = subparsers.add_parser(
         "lsp",
         help="Language Server Protocol management",
@@ -67,7 +67,7 @@ def register_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def run_lsp_command(args: argparse.Namespace) -> int:
-    """Top-level dispatcher for ``hermes lsp <subcommand>``."""
+    """Top-level dispatcher for ``hexbot core lsp <subcommand>``."""
     sub = getattr(args, "lsp_command", None) or "status"
     try:
         if sub == "status":

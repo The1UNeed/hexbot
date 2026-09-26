@@ -1,4 +1,4 @@
-"""Tests for the Linux XDG desktop entry installed by ``hermes desktop``."""
+"""Tests for the Linux XDG desktop entry installed by ``hexbot core desktop``."""
 
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ def test_install_writes_entry_with_absolute_exec_and_icon(
     values = _parse(entry.read_text(encoding="utf-8"))
 
     # Exec must be the absolute path of the resolved binary. The launcher
-    # runs with a minimal PATH, so a bare `hermes` would not resolve.
+    # runs with a minimal PATH, so a bare `hexbot core` would not resolve.
     assert values["Exec"] == f"{hermes_bin} desktop"
     assert Path(values["Exec"].split(" ")[0]).is_absolute()
 
@@ -175,7 +175,7 @@ def test_exec_falls_back_to_interpreter_module(tmp_path, xdg_home, monkeypatch):
     assert Path(exec_line.split(" ")[0]).is_absolute()
 
 
-# #90292: the shell installer's bash wrapper makes argv[0] the repo `hermes`
+# #90292: the shell installer's bash wrapper makes argv[0] the repo `hexbot core`
 # python script whose `#!/usr/bin/env python3` shebang resolves to the SYSTEM
 # interpreter when the DE spawns the .desktop entry → ModuleNotFoundError,
 # silent (Terminal=false). The Exec line must prefix sys.executable for any
@@ -566,7 +566,7 @@ def test_install_without_source_icon_uses_themed_name(tmp_path, xdg_home, monkey
     entry = lde.install_desktop_entry(root)
 
     # A broken absolute path renders as no icon. The themed name resolves
-    # when Hermes is installed some other way.
+    # when Hexbot is installed some other way.
     assert _parse(entry.read_text(encoding="utf-8"))["Icon"] == "hermes"
 
 
@@ -1042,7 +1042,7 @@ def test_install_places_1024_png_in_256x256_not_scalable(
 
 
 def test_install_removes_stale_scalable_png(tmp_path, xdg_home, monkeypatch):
-    """v2026.8.31 wrote the PNG into scalable/. A later hermes desktop
+    """v2026.8.31 wrote the PNG into scalable/. A later hexbot core desktop
     must delete that leftover so Cinnamon does not keep using it."""
     root = _make_project(tmp_path)
     lde.icon_path(root).write_bytes(_png_ihdr(1024, 1024))

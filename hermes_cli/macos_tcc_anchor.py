@@ -1,7 +1,7 @@
 """Stable macOS TCC anchor for the uv-managed Python interpreter (#95596).
 
 Re-land of the interpreter anchor reverted in #95563.  macOS keys TCC grants
-to the resolved absolute path of the client binary.  Hermes' interpreter is
+to the resolved absolute path of the client binary.  Hexbot's interpreter is
 managed by uv and lives at a versioned store path; every patch bump orphans
 every prior grant (#85345).
 
@@ -411,7 +411,7 @@ def ensure_tcc_anchor(project_root: Path | None = None) -> Path | None:
 
 
 def tcc_anchor_state(project_root: Path | None = None) -> tuple[str, str]:
-    """Report the anchor state for ``hermes doctor``.
+    """Report the anchor state for ``hexbot core doctor``.
 
     Returns ``(status, detail)`` with status one of:
 

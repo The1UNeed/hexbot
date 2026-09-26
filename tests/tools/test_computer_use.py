@@ -790,7 +790,7 @@ class TestLazyMcpInstall:
                  "cua_driver_runtime_contract_status",
                  return_value=state,
              ), patch("tools.lazy_deps.ensure") as mock_ensure:
-            with pytest.raises(RuntimeError, match="hermes computer-use install"):
+            with pytest.raises(RuntimeError, match="hexbot core computer-use install"):
                 cua_backend.CuaDriverBackend().start()
 
         mock_ensure.assert_not_called()
@@ -821,7 +821,7 @@ class TestContractAutoRepair:
     """An installed-but-incompatible driver is repaired automatically, once.
 
     The 0.20 runtime-contract gate fails closed; when the failure is an old
-    installed driver (a state Hermes' own version-floor bump created),
+    installed driver (a state Hexbot's own version-floor bump created),
     start() runs the standard install/repair path once instead of failing
     every computer_use call until the user runs the CLI by hand.
     """
@@ -1635,7 +1635,7 @@ class TestCuaEnvironmentScrubbing:
     def test_cua_session_sanitizes_provider_env_vars(self):
         """_CuaDriverSession lifecycle must sanitize sensitive env vars.
 
-        The cua-driver MCP subprocess should not inherit Hermes-managed
+        The cua-driver MCP subprocess should not inherit Hexbot-managed
         credentials or other sensitive environment variables — only
         runtime-required vars. Regression test for issue #37878.
 
@@ -1978,7 +1978,7 @@ class TestMcpInvocationResolution:
     """Surface 8 (NousResearch/hermes-agent#47072): instead of hardcoding
     `["mcp"]` as the cua-driver subcommand, we ask the driver via its
     `manifest` JSON (trycua/cua#1961) so a future rename or relocation of
-    the MCP subcommand doesn't require a Hermes patch.
+    the MCP subcommand doesn't require a Hexbot patch.
 
     The discovery hop must NEVER prevent the wrapper from starting — every
     failure mode (no manifest verb, non-zero exit, junk JSON, missing
@@ -2258,7 +2258,7 @@ class TestElementTokenAttachment:
 
 
 class TestSessionLifecycle:
-    """Surface gap (audit June 2026): Hermes never declared a cua-driver
+    """Surface gap (audit June 2026): Hexbot never declared a cua-driver
     session, so the agent-cursor overlay was inert and per-run state
     (config overrides, recording ownership, cursor identity) was shared
     across concurrent runs. Wired now: backend.start() calls

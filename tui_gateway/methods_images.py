@@ -82,7 +82,7 @@ def _(rid, params: dict) -> dict:
             {
                 "available": False,
                 "success": False,
-                "error": "No image generation backend configured (run `hermes tools` to enable one).",
+                "error": "No image generation backend configured (run `hexbot core tools` to enable one).",
             },
         )
 

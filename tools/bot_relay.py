@@ -542,7 +542,7 @@ def _hermes_cli() -> str:
     """Resolve the hermes CLI beside this gateway's own interpreter.
 
     The deliver RPC runs on the target gateway, whose process is the venv
-    python — its bin/Scripts directory holds the matching ``hermes``
+    python — its bin/Scripts directory holds the matching ``hexbot core``
     entrypoint. A bare ``"hermes"`` relies on PATH, which is exactly what
     service contexts (systemd units, desktop launchers, non-login SSH
     shells) do not provide, so delivery died with ENOENT there (#93590).
@@ -582,7 +582,7 @@ def local_delivery_command(profile: str, query_file: str) -> list[str]:
 # ── per-profile turn lock (#93091) ───────────────────────────────────────────
 #
 # Two deliveries into the SAME target profile must never run their Bot Chat
-# turns concurrently: deliveries spawn separate ``hermes`` subprocesses, so
+# turns concurrently: deliveries spawn separate ``hexbot core`` subprocesses, so
 # an in-memory mutex is useless — the lock is a per-profile lockfile under
 # ``<root>/bot_relay/locks/`` held with ``fcntl.flock`` for exactly the turn
 # execution window. flock is released by the kernel when the holder's fd

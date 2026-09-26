@@ -3,9 +3,9 @@
 Every handler returns a JSON-RPC frame built with ``tui_gateway.server._ok`` /
 ``_err``. Error codes: 4200-4299 for client mistakes (missing/unknown
 parameters, unknown ids, cap violations, busy resources), 5200-5299 for server
-faults, and any Hermes code that reaches us through
+faults, and any Hexbot code that reaches us through
 :class:`hexbot.errors.GatewayError` is passed through unchanged so a caller can
-tell "Hermes said 4001" from "Hexbot said 4204".
+tell "Hexbot said 4001" from "Hexbot said 4204".
 """
 
 from __future__ import annotations

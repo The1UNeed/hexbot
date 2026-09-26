@@ -1,8 +1,8 @@
-"""Tests for SIGHUP protection and stdout mirroring in ``hermes update``.
+"""Tests for SIGHUP protection and stdout mirroring in ``hexbot core update``.
 
 Covers ``_UpdateOutputStream``, ``_install_hangup_protection``, and
 ``_finalize_update_output`` in ``hermes_cli/main.py``.  These exist so
-that ``hermes update`` survives a terminal disconnect mid-install
+that ``hexbot core update`` survives a terminal disconnect mid-install
 (SSH drop, shell close) without leaving the venv half-installed.
 """
 

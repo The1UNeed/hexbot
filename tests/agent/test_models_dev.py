@@ -866,14 +866,14 @@ class TestModelOverrides:
         assert result["context_window"] == 524288
 
     def test_provider_key_accepts_either_id_space(self):
-        """Override keyed by Hermes id resolves for models.dev id and back."""
+        """Override keyed by Hexbot id resolves for models.dev id and back."""
         overrides = {
             "copilot": {
                 "my-model": {"context_window": 111111},
             },
         }
         with self._setup_overrides(overrides):
-            # Caller passes the models.dev id; config keyed by Hermes id.
+            # Caller passes the models.dev id; config keyed by Hexbot id.
             result = _explicit_model_override("github-copilot", "my-model")
         assert result is not None
         assert result["context_window"] == 111111
@@ -884,7 +884,7 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides):
-            # Caller passes the Hermes id; config keyed by models.dev id.
+            # Caller passes the Hexbot id; config keyed by models.dev id.
             result = _explicit_model_override("copilot", "my-model")
         assert result is not None
         assert result["context_window"] == 222222

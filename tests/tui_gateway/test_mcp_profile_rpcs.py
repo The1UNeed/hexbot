@@ -23,7 +23,7 @@ import tui_gateway.server as server
 def hermes_root(tmp_path, monkeypatch):
     """A temp HERMES_HOME root with two named profiles: 'work' and 'other'.
 
-    Pointing HERMES_HOME at a dir outside ~/.hermes makes it the profile ROOT
+    Pointing HERMES_HOME at a dir outside ~/.hexbot makes it the profile ROOT
     (get_default_hermes_root's Docker/custom branch), so named profiles live at
     ``<root>/profiles/<name>/`` and the launch/default profile is ``<root>``.
     """

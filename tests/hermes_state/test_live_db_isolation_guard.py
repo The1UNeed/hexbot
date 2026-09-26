@@ -2,7 +2,7 @@
 
 Forensic background (Aug 2026): pytest fixture rows (chat-1 / wx-chat
 sessions, gateway_routing scopes under /tmp/pytest-of-*) were found in the
-developer's REAL ~/.hermes/state.db, and a pytest-spawned process flipped
+developer's REAL ~/.hexbot/state.db, and a pytest-spawned process flipped
 the journal mode under the WAL-mode gateway writer, destroying committed
 transcripts. The guard under test makes any pytest-context ``SessionDB``
 construction that resolves to a production state.db fail hard instead of
@@ -24,7 +24,7 @@ from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from hermes_state import SessionDB
 
-# Must match the root the guard itself computes.  Hardcoding ``~/.hermes``
+# Must match the root the guard itself computes.  Hardcoding ``~/.hexbot``
 # silently disarmed every assertion below on Windows, where the real root is
 # ``%LOCALAPPDATA%\hermes``: the paths under test were then *correctly*
 # classified as non-production, so the guard never raised and the whole
@@ -38,7 +38,7 @@ if REAL_ROOT is None:  # pragma: no cover - no resolvable home on this platform
 
 class TestProductionPathRefused:
     def test_explicit_production_db_path_raises(self):
-        """SessionDB pointed at the real ~/.hermes/state.db must fail hard."""
+        """SessionDB pointed at the real ~/.hexbot/state.db must fail hard."""
         with pytest.raises(RuntimeError, match="live-system guard"):
             SessionDB(db_path=REAL_ROOT / "state.db")
 

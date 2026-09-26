@@ -231,7 +231,7 @@ def delete(room_id):
             gateway.call("session.delete", {"session_id": session["stored_session_id"],
                                              "profile": session["bot"]})
         except Exception:
-            # The durable Hexbot row must remain deletable if Hermes already
+            # The durable Hexbot row must remain deletable if Hexbot already
             # lost or closed its hidden session.
             pass
     with db.transaction() as conn:

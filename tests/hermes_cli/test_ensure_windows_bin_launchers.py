@@ -1,11 +1,11 @@
-"""``hermes`` must survive git operations on the checkout (launcher layout).
+"""``hexbot core`` must survive git operations on the checkout (launcher layout).
 
-The Windows ``hermes`` command is a launcher derived from the venv console
+The Windows ``hexbot core`` command is a launcher derived from the venv console
 script. Its canonical home is the managed binary dir ``HERMES_HOME\\bin`` —
 OUTSIDE the git checkout — because the earlier in-checkout home
-(``hermes-agent\\bin``) was swept by ``hermes update``'s autostash
+(``hermes-agent\\bin``) was swept by ``hexbot core update``'s autostash
 (``git stash push --include-untracked``) and, with the desktop updater's
-``--keep-stash``, never restored: ``hermes`` stopped resolving in every new
+``--keep-stash``, never restored: ``hexbot core`` stopped resolving in every new
 terminal (``venv\\Scripts`` itself must stay off PATH — it shadows the
 user's ``python``, #83797).
 
@@ -14,7 +14,7 @@ always for the managed clone; legacy dir only while the user PATH still
 points at it), choosing the form by venv kind: exe copy for normal venvs,
 ``.cmd`` delegator for relocatable venvs whose exe trampolines die when
 copied out of ``venv\\Scripts``. ``migrate_windows_bin_path`` moves an
-existing install's PATH to the canonical layout from the ``hermes update``
+existing install's PATH to the canonical layout from the ``hexbot core update``
 tail. Platform verdict, PATH values, and registry I/O are injected
 parameters (same pattern as ``hermes_constants.venv_bin_dir``), so these
 tests are host-independent input→output checks, not host fakes.
@@ -151,7 +151,7 @@ def test_noop_on_posix(managed_install):
 
 
 def test_profile_session_still_heals_the_shared_bin(tmp_path, monkeypatch):
-    """Under ``hermes -p <name>`` HERMES_HOME points inside profiles/<name>;
+    """Under ``hexbot core -p <name>`` HERMES_HOME points inside profiles/<name>;
     the launcher dir is per-machine, so the heal must anchor on the default
     root and fire anyway — a habitual profile user gets the same repair."""
     home = tmp_path / "hermes"
@@ -191,7 +191,7 @@ def test_no_staging_litter_left_behind(managed_install):
 
 
 # ---------------------------------------------------------------------------
-# migrate_windows_bin_path — the `hermes update` tail migration
+# migrate_windows_bin_path — the `hexbot core update` tail migration
 # ---------------------------------------------------------------------------
 
 
@@ -321,7 +321,7 @@ def test_repo_gitignores_the_legacy_bin_dir():
     """Transition safety: legacy in-checkout launchers must not be stash-swept.
 
     Until every install has migrated, pre-migration checkouts still carry
-    launchers at ``<checkout>/bin``. ``hermes update`` autostashes with
+    launchers at ``<checkout>/bin``. ``hexbot core update`` autostashes with
     ``git stash push --include-untracked``; anything untracked and NOT
     ignored inside the checkout gets swept off disk. Exercises git's real
     ignore machinery rather than reading .gitignore text.

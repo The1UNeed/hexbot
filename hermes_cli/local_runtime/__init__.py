@@ -1,6 +1,6 @@
 """Managed llama.cpp runtime.
 
-Hermes downloads, verifies, supervises, and updates one llama-server, and
+Hexbot downloads, verifies, supervises, and updates one llama-server, and
 decides per machine which model build and context window to run. Key
 modules:
 

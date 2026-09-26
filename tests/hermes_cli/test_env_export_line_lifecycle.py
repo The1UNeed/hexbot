@@ -1,7 +1,7 @@
 """Regression tests for the Tools & Keys GitHub PAT save/remove path (#40041).
 
 Users following generic docs add ``export GITHUB_TOKEN=ghp_...`` to
-``~/.hermes/.env``. ``load_env()`` parses the export prefix (#6659), so every
+``~/.hexbot/.env``. ``load_env()`` parses the export prefix (#6659), so every
 UI shows the token as set (green light) — but ``save_env_value`` /
 ``remove_env_value`` only matched plain ``KEY=`` lines. Result: the UI could
 neither replace nor remove the token (delete 404s as "not found in .env";

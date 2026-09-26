@@ -1,11 +1,11 @@
 # Desktop App Plugins — UI Panes, Commands, Widgets
 
-Write plugins for the Hermes desktop app: statusbar items, layout panes,
+Write plugins for the Hexbot desktop app: statusbar items, layout panes,
 command-palette commands, keybinds, routes, and themes. A plugin is a single
 plain-JavaScript ESM file the app loads at runtime — no build step, no repo
 changes. A plugin can also talk to its own Python backend namespace
 (`ctx.rest`/`ctx.socket` → `/api/plugins/<id>`); the general Python plugin
-system (`~/.hermes/plugins/`) is otherwise documented separately.
+system (`~/.hexbot/plugins/`) is otherwise documented separately.
 
 There are TWO on-disk doors, same contract and hot reload:
 
@@ -31,15 +31,15 @@ Full human reference (every export, area payloads, backend, security):
 
 ## Prerequisites
 
-- The Hermes desktop app (it loads plugins; the CLI/gateway alone does not).
+- The Hexbot desktop app (it loads plugins; the CLI/gateway alone does not).
 - Write access to `$HERMES_HOME/desktop-plugins/` (usually
-  `~/.hermes/desktop-plugins/`).
+  `~/.hexbot/desktop-plugins/`).
 
 ## How to Run
 
 1. Create `$HERMES_HOME/desktop-plugins/<name>/plugin.js` from
    `templates/plugin.js` (in this skill directory) — that's
-   `~/.hermes/...` by default, or `~/.hermes/profiles/<profile>/...` under a
+   `~/.hexbot/...` by default, or `~/.hexbot/profiles/<profile>/...` under a
    named profile. Keep `<name>` equal to the plugin `id`.
 2. The desktop app watches that directory: the plugin loads within a few
    seconds of the file landing, and every later save hot-reloads it in
@@ -113,7 +113,7 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
 - `ctx.storage.get/set/remove` — persistence namespaced to your plugin.
 - `ctx.os` — the curated OS door, attributed to your plugin:
   `ctx.os.notify({ title, body?, silent?, icon?, activate?, onActivate?, actions? })`
-  posts a native OS notification. Fires only while the user is away from Hermes
+  posts a native OS notification. Fires only while the user is away from Hexbot
   (use `host.notify` for the in-app toast); gated by Settings ▸ Notifications ▸
   "Plugin notifications" and throttled per plugin — reserve it for genuinely
   notable events. `activate` accepts a plugin deep link
@@ -134,7 +134,7 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   React Query client — cache, dedupe, `refetchInterval`, invalidate like core;
   never hand-roll a poll loop), plus `atom`/`computed` for plugin-local state.
 - Backend: if the plugin ships a Python `plugin_api.py` (under
-  `~/.hermes/plugins/<id>/dashboard/`, manifest `"api": "plugin_api.py"`), reach
+  `~/.hexbot/plugins/<id>/dashboard/`, manifest `"api": "plugin_api.py"`), reach
   it with `ctx.rest('/path', { method?, body?, timeoutMs? })` and its live twin
   `ctx.socket('/events', onMessage)` — both scoped to `/api/plugins/<id>` by
   construction (traversal rejected). `ctx.socket` is a **no-op on OAuth

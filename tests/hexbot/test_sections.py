@@ -280,7 +280,7 @@ def test_live_statuses_survives_an_unavailable_gateway(fake_gateway):
 
 
 def test_delete_section_tolerates_a_never_messaged_session(gw):
-    """An empty section has no stored Hermes session; deleting it must still work."""
+    """An empty section has no stored Hexbot session; deleting it must still work."""
     from hexbot import sections
 
     sections.create_section("scout", "New section")
@@ -339,7 +339,7 @@ def test_listing_adopts_the_hermes_auto_title(gw):
     hermes["title"] = "Something else"
     assert sections.list_sections("scout")[0]["title"] == "Portugal"
 
-    # A bot rename that has not reached Hermes yet is not rolled back.
+    # A bot rename that has not reached Hexbot yet is not rolled back.
     with db.transaction() as conn:
         conn.execute("UPDATE sections SET title='Pending', title_by='bot', title_dirty=1")
     assert sections.list_sections("scout")[0]["title"] == "Pending"

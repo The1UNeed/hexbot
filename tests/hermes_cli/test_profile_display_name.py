@@ -1,6 +1,6 @@
 """Profile display_name (#45624): presentation-only label in profile.yaml.
 
-The canonical profile id ("default" for ~/.hermes) is never touched —
+The canonical profile id ("default" for ~/.hexbot) is never touched —
 resolution, comparison, and spawn paths must be provably unaffected.
 """
 

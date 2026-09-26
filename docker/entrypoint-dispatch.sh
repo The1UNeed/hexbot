@@ -18,7 +18,7 @@ if [ "$$" -eq 1 ]; then
     exec /init /opt/hermes/docker/main-wrapper.sh "$@"
 fi
 
-echo "[hermes] WARNING: container entrypoint is not PID 1; skipping s6-overlay /init and falling back to direct bootstrap. Supervised services are unavailable in this runtime, but the requested command will still run." >&2
+echo "[hexbot] WARNING: container entrypoint is not PID 1; skipping s6-overlay /init and falling back to direct bootstrap. Supervised services are unavailable in this runtime, but the requested command will still run." >&2
 # /init normally seeds PATH with s6's helpers; the non-PID-1 fallback skips it.
 export PATH="/command:/package/admin/s6/command:${PATH}"
 /opt/hermes/docker/stage2-hook.sh

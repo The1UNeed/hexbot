@@ -2,7 +2,7 @@
 Gateway control socket — the gateway-owned local coordination surface.
 
 Migration step 1 of the #92091 design: every other process on the machine
-(the updater, `hermes serve`/dashboard, the Desktop app) currently discovers
+(the updater, `hexbot core serve`/dashboard, the Desktop app) currently discovers
 gateway identity/state by scanning the process table and string-matching argv
 or by reading ``gateway_state.json`` (which can outlive its writer). This
 module gives the gateway an OWNED contract instead: a local-only socket the
@@ -36,7 +36,7 @@ single JSON line out, then the server closes. Clients must not rely on
 keep-alive or pipelining. Verb handlers may touch disk (they run in an
 executor server-side) but must stay fast; the client budget is small.
 
-Consumers (``hermes update --plan`` inventory, the post-update fleet version
+Consumers (``hexbot core update --plan`` inventory, the post-update fleet version
 matrix) PREFER the socket when it answers and fall back to the existing
 state-file/scan layer when it doesn't — old gateways mid-upgrade and crashed
 processes keep working exactly as before. The scan layer is demoted, not

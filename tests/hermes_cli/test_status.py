@@ -54,7 +54,7 @@ def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys,
 
     output = capsys.readouterr().out
     assert "Manager:      Termux / manual process" in output
-    assert "Start with:   hermes gateway" in output
+    assert "Start with:   hexbot core gateway" in output
     assert "systemd (user)" not in output
 def test_show_status_reports_vercel_backend_contract(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
@@ -112,7 +112,7 @@ def _base_xai_mocks(monkeypatch, tmp_path):
 
 
 class TestShowStatusXaiOAuth:
-    """xAI OAuth row in hermes status."""
+    """xAI OAuth row in hexbot core status."""
 
     # ------------------------------------------------------------------
     # Logged-in branch
@@ -208,11 +208,11 @@ class TestShowStatusXaiOAuth:
         out = capsys.readouterr().out
 
         assert "xAI OAuth" in out
-        assert "not logged in (run: hermes auth add xai-oauth)" in out
+        assert "not logged in (run: hexbot core auth add xai-oauth)" in out
 
 
 def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, tmp_path):
-    """hermes status should surface freshest gateway last_active (#72016)."""
+    """hexbot core status should surface freshest gateway last_active (#72016)."""
     from hermes_cli import status as status_mod
     import hermes_cli.auth as auth_mod
     import hermes_cli.gateway as gateway_mod

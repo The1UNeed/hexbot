@@ -1,7 +1,7 @@
 """LIVE Windows E2E for the venv-holder preflight (fleet-update #91277).
 
 Runs ONLY on a real Windows host (the on-demand ``windows-venv-e2e.yml``
-lane). Spawns REAL processes with realistic Hermes argv shapes and drives
+lane). Spawns REAL processes with realistic Hexbot argv shapes and drives
 the actual detection / classification / exemption code against the live
 process table — no mocked psutil, no faked cmdlines.
 
@@ -10,7 +10,7 @@ the consolidation fix intentionally pin the CORRECT behavior, so on
 unfixed main the buggy ones fail — that failure on the Windows runner is
 the empirical premise-check for each issue:
 
-  #90778 — holder message mislabels `hermes dashboard` as the Desktop
+  #90778 — holder message mislabels `hexbot core dashboard` as the Desktop
            backend, and matches subcommands by substring ("--preserve"
            contains "serve").
   #78089 — pausable-gateway exemption vs. long managed-runtime
@@ -86,7 +86,7 @@ class TestDetection:
             _kill(proc)
 
     def test_foreign_python_not_detected(self):
-        """A python process with no Hermes argv and cwd OUTSIDE the install
+        """A python process with no Hexbot argv and cwd OUTSIDE the install
         must not be reported as a holder."""
         import tempfile
 

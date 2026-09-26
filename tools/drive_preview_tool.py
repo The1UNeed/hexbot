@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interact with the in-app browser / preview pane in the Hermes desktop GUI.
+"""Interact with the in-app browser / preview pane in the Hexbot desktop GUI.
 
 ``open_preview`` shows a page and ``read_preview`` reads it; this tool is the
 third leg — clicking, typing, scrolling, and history — so the agent can drive
@@ -66,7 +66,7 @@ def drive_preview_tool(
 ) -> str:
     """Dispatch one interaction to the desktop renderer and return its outcome."""
     if callback is None:
-        return tool_error("drive_preview is only available in the Hermes desktop app.")
+        return tool_error("drive_preview is only available in the Hexbot desktop app.")
 
     verb = (action or "").strip().lower()
     if verb not in ACTIONS:

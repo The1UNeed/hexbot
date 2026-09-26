@@ -1,9 +1,9 @@
-"""Meta Model API (Muse Spark) provider plugin for Hermes Agent.
+"""Meta Model API (Muse Spark) provider plugin for Hexbot.
 
 Provider profile for Meta Superintelligence Labs' Muse Spark family, served
 via the OpenAI-compatible Meta Model API at ``https://api.meta.ai/v1``.
 
-Bundled from https://github.com/albertodepaola/hermes-meta-provider. Hermes'
+Bundled from https://github.com/albertodepaola/hermes-meta-provider. Hexbot's
 provider discovery (``providers/__init__.py``) imports it on first
 ``get_provider_profile()`` / ``list_providers()`` call, and the module-level
 ``register_provider()`` below wires it into the registry.
@@ -36,7 +36,7 @@ from providers.base import ProviderProfile
 
 
 def _resolve_effort(reasoning_config: dict | None) -> str:
-    """Map Hermes' reasoning_config to a Meta-safe ``reasoning_effort`` value.
+    """Map Hexbot's reasoning_config to a Meta-safe ``reasoning_effort`` value.
 
     Meta's vocabulary (minimal..xhigh; rejects ``none``) is declared in
     agent.reasoning_effort. Disabled/"none" maps to ``minimal`` (the closest

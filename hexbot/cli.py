@@ -11,9 +11,15 @@ import sys
 from pathlib import Path
 
 
-def _set_home() -> None:
+def _set_home(core: bool = False) -> None:
+    explicit = "HEXBOT_HOME" in os.environ
     home = str(Path(os.environ.get("HEXBOT_HOME", "~/.hexbot")).expanduser())
     os.environ["HEXBOT_HOME"] = home
+    current = os.environ.get("HERMES_HOME")
+    # `hexbot core` acts on the core home it runs in: a bot's profile inside
+    # the Hexbot home, or a container/Nix home when no HEXBOT_HOME is set.
+    if core and current and (not explicit or Path(current).expanduser().resolve().is_relative_to(Path(home).resolve())):
+        return
     os.environ["HERMES_HOME"] = home
 
 
@@ -42,13 +48,25 @@ def parser() -> argparse.ArgumentParser:
         create.add_argument(f"--{flag}")
     delete = bots.add_parser("delete"); delete.add_argument("name")
     send = sub.add_parser("send"); send.add_argument("bot"); send.add_argument("text")
-    passthrough = sub.add_parser("hermes"); passthrough.add_argument("args", nargs=argparse.REMAINDER)
+    core = sub.add_parser("core"); core.add_argument("args", nargs=argparse.REMAINDER)
     sub.add_parser("version")
     return root
 
 
 def main(argv=None):
-    _set_home()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["hermes"]:  # hidden alias for `core`
+        argv[0] = "core"
+    _set_home(core=argv[:1] == ["core"])
+    if argv[:1] == ["core"]:
+        # Hand everything after `core` to the core CLI untouched. argv is set
+        # before the import because the core applies `-p <profile>` on import.
+        old = sys.argv
+        try:
+            sys.argv = ["hermes", *argv[1:]]
+            from hermes_cli.main import main as hermes_main
+            return hermes_main()
+        finally: sys.argv = old
     args = parser().parse_args(argv)
     if args.command == "serve":
         from hexbot.serve import run
@@ -104,11 +122,6 @@ def main(argv=None):
         result = subprocess.run([str(executable), "-p", args.bot, "chat", "-q", args.text,
                                  "--oneshot", "-Q"], env=os.environ.copy(), text=True)
         return result.returncode
-    if args.command == "hermes":
-        from hermes_cli.main import main as hermes_main
-        old = sys.argv
-        try: sys.argv = ["hermes", *args.args]; return hermes_main()
-        finally: sys.argv = old
     from hexbot import bots
     if args.bots_command == "list":
         print(json.dumps({"bots": bots.list_bots()}, indent=2)); return 0

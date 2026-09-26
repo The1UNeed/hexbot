@@ -2,7 +2,7 @@
 
 cua-driver's cursor overlay rendering loop can consume CPU indefinitely when
 idle (#28152, #47032), and on Linux/X11 its fullscreen always-on-top overlay
-window can wedge the desktop when a session ends uncleanly. Hermes passes
+window can wedge the desktop when a session ends uncleanly. Hexbot passes
 ``--no-overlay`` to suppress it when the ``computer_use.no_overlay`` config is
 enabled (or auto-detected on macOS, headless Linux / WSL2, and Linux X11).
 

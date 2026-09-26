@@ -19,7 +19,7 @@ from providers.base import ProviderProfile
 # to OpenRouter, Vercel AI Gateway, and Fireworks. Going through
 # profile.default_headers means they survive model switches and credential
 # rotation. Without them OpenCode only sees the OpenAI SDK's generic
-# "OpenAI/Python x.y.z" User-Agent and can't tell the traffic is Hermes Agent.
+# "OpenAI/Python x.y.z" User-Agent and can't tell the traffic is Hexbot.
 _ATTRIBUTION_HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Hermes Agent",

@@ -1,7 +1,7 @@
 """
-Lazy dependency installer for opt-in Hermes Agent backends.
+Lazy dependency installer for opt-in Hexbot backends.
 
-Many Hermes features (Mistral TTS, ElevenLabs TTS, Honcho memory, Bedrock,
+Many Hexbot features (Mistral TTS, ElevenLabs TTS, Honcho memory, Bedrock,
 Slack, Matrix, etc.) require Python packages that not every user needs. The
 historical approach was to bundle them all under ``pyproject.toml`` extras
 (``hermes-agent[all]``) and install them eagerly at setup time. That has
@@ -20,7 +20,7 @@ top of their first-import path. If the deps are missing, ``ensure`` checks
 the ``security.allow_lazy_installs`` config flag (default true) and runs
 a venv-scoped pip install. If the user has explicitly disabled lazy
 installs, ``ensure`` raises :class:`FeatureUnavailable` with a clear
-remediation hint pointing at ``hermes tools`` or the manual pip command.
+remediation hint pointing at ``hexbot core tools`` or the manual pip command.
 
 Security model:
 
@@ -38,7 +38,7 @@ Security model:
   a module the core already ships. The worst a bad/incompatible backend
   package can do is fail to import and report itself unavailable — the agent
   core stays healthy. This is the structural guarantee that a lazily
-  installed package cannot brick Hermes, which is what made it safe to seal
+  installed package cannot brick Hexbot, which is what made it safe to seal
   the venv in the first place. Compiled-wheel safety across image rebuilds
   is handled by an ABI/Python-version stamp on the target subdir (see
   :func:`_ensure_target_ready`).
@@ -274,7 +274,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Tools ─────────────────────────────────────────────────────────────
     # ACP adapter (VS Code / Zed / JetBrains integration)
     "tool.acp": ("agent-client-protocol==0.9.0",),
-    # Dashboard (`hermes dashboard`)
+    # Dashboard (`hexbot core dashboard`)
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
@@ -312,7 +312,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # sentence-transformers for local Hindsight embeddings) requires
     # >=1.5.0,<2, and faster-whisper/tokenizers depend on it transitively.
     # Because active_features() marks a feature active from mere package
-    # presence, the `hermes update` lazy-refresh pass re-asserts THIS pin on
+    # presence, the `hexbot core update` lazy-refresh pass re-asserts THIS pin on
     # every install where hub is present — so an exact pin below 1.5.0
     # force-downgrades the shared package and breaks Hindsight startup
     # (#60783). Policy: keep the exact pin (no ranges — security posture),
@@ -541,13 +541,13 @@ def _unsupported_feature_reason(feature: str) -> Optional[str]:
 
     This is a platform capability gate, not a security policy gate. It keeps
     known-impossible installs out of both first-use lazy installation and the
-    ``hermes update`` lazy-refresh pass.
+    ``hexbot core update`` lazy-refresh pass.
     """
     if sys.platform == "win32" and feature == "platform.matrix":
         return (
             "unsupported on Windows: Matrix E2EE depends on python-olm, "
             "which has no Windows wheel and requires make + libolm to build "
-            "from sdist. Run Hermes under WSL to use Matrix on Windows."
+            "from sdist. Run Hexbot under WSL to use Matrix on Windows."
         )
     return None
 
@@ -593,7 +593,7 @@ def _is_satisfied(spec: str) -> bool:
     Checks both presence AND version. If the package is installed at a
     version outside the spec's range, returns False so the caller will
     upgrade/downgrade to the pinned version. This is what makes
-    ``hermes update`` propagate pin bumps in :data:`LAZY_DEPS` to already-
+    ``hexbot core update`` propagate pin bumps in :data:`LAZY_DEPS` to already-
     installed backends instead of silently leaving stale versions in place.
 
     If ``packaging`` is unavailable for any reason (it's a transitive of
@@ -821,7 +821,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
 
         # Tier 1: uv (preferred — fast, doesn't need pip in the venv)
         # Managed uv first: $HERMES_HOME/bin is never on PATH, so a bare
-        # which() misses the uv Hermes installed and falls through to the
+        # which() misses the uv Hexbot installed and falls through to the
         # slower pip tier. Deliberately a lookup and not ensure_uv(): this runs
         # mid-turn to install an optional dependency, and downloading uv +
         # migrating the Python runtime as a side effect of that is a far bigger
@@ -955,7 +955,7 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     if unsupported:
         raise FeatureUnavailable(feature, missing, unsupported)
 
-    # Package-manager installs (NixOS, and any other distro that ships Hermes
+    # Package-manager installs (NixOS, and any other distro that ships Hexbot
     # from a read-only store) cannot receive lazy pip installs: the venv's
     # site-packages lives in the store, so the uv -> pip -> ensurepip ladder
     # below burns ~15s bootstrapping ensurepip only to fail on a read-only
@@ -979,9 +979,9 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             raise FeatureUnavailable(
                 feature, missing,
                 f"unsupported on {managed_by}-managed installs: this build's "
-                f"packages come from {managed_by}, so Hermes cannot install "
+                f"packages come from {managed_by}, so Hexbot cannot install "
                 f"them at runtime. Add the dependencies for {feature!r} via "
-                f"{managed_by} (or run a pip/uv install of Hermes instead)."
+                f"{managed_by} (or run a pip/uv install of Hexbot instead)."
             )
 
     # Validate every spec against the allowlist + safety regex. Belt and
@@ -1199,7 +1199,7 @@ def active_features() -> list[str]:
     unrelated reasons, while the actual Matrix adapter anchor is ``mautrix``.
     Features the user has never enabled stay quiet.
 
-    Used by ``hermes update`` to figure out which lazy backends need a
+    Used by ``hexbot core update`` to figure out which lazy backends need a
     refresh pass when pins move in :data:`LAZY_DEPS`.
     """
     active = []
@@ -1219,7 +1219,7 @@ def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
                                   whether to surface it (we don't raise)
         ``"skipped: <reason>"`` — gated off (config flag, user decline)
 
-    Intended for ``hermes update``. Never raises; lazy-install failures
+    Intended for ``hexbot core update``. Never raises; lazy-install failures
     here must not block the rest of the update flow.
     """
     return _refresh_features(active_features(), prompt=prompt, restoring=False)

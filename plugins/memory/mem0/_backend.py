@@ -158,7 +158,7 @@ _DIRECT_OPENAI_CLASS_PATH = "plugins.memory.mem0._openai_llm.DirectOpenAILLM"
 
 
 def _register_direct_openai_provider() -> None:
-    """Register Hermes' OpenAI-only Mem0 LLM provider once per factory."""
+    """Register Hexbot's OpenAI-only Mem0 LLM provider once per factory."""
     from mem0.configs.llms.openai import OpenAIConfig
     from mem0.utils.factory import LlmFactory
 
@@ -167,7 +167,7 @@ def _register_direct_openai_provider() -> None:
     if not isinstance(provider_map, dict) or not callable(register_provider):
         raise RuntimeError(
             "mem0 LlmFactory does not support the provider registration required "
-            "for the Hermes OpenAI OSS backend"
+            "for the Hexbot OpenAI OSS backend"
         )
 
     registration = (_DIRECT_OPENAI_CLASS_PATH, OpenAIConfig)
@@ -242,7 +242,7 @@ class OSSBackend(Mem0Backend):
             except (AttributeError, TypeError) as exc:
                 raise RuntimeError(
                     "mem0 MemoryConfig does not expose a mutable llm.provider "
-                    "for the Hermes OpenAI OSS backend"
+                    "for the Hexbot OpenAI OSS backend"
                 ) from exc
             self._memory = Memory(memory_config)
         else:

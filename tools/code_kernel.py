@@ -72,7 +72,7 @@ _IS_WINDOWS = sys.platform == "win32"
 _RUNNER_CAPTURE_BYTES = 1_000_000
 
 KERNEL_RUNNER_SOURCE = '''\
-"""Auto-generated Hermes session-kernel runner. One exec cell per request."""
+"""Auto-generated Hexbot session-kernel runner. One exec cell per request."""
 import contextlib
 import io
 import json

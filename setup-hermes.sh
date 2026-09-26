@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# Hermes Agent Setup Script
+# Hexbot core setup script
 # ============================================================================
 # Quick setup for developers who cloned the repo manually.
 # Uses uv for desktop/server setup and Python's stdlib venv + pip on Termux.
@@ -56,7 +56,7 @@ get_command_link_display_dir() {
 }
 
 echo ""
-echo -e "${CYAN}⚕ Hermes Agent Setup${NC}"
+echo -e "${CYAN}⚕ Hexbot core setup${NC}"
 echo ""
 
 # ============================================================================
@@ -133,7 +133,7 @@ fi
 echo -e "${CYAN}→${NC} Checking Python $PYTHON_VERSION..."
 
 if is_termux; then
-    # Hermes currently declares requires-python >=3.11,<3.14. Termux can expose
+    # The core currently declares requires-python >=3.11,<3.14. Termux can expose
     # a newer default `python` before dependencies have compatible wheels, so
     # prefer explicit compatible minors and verify the upper bound before using
     # the interpreter to create the venv.
@@ -152,7 +152,7 @@ if is_termux; then
     if [ -z "${PYTHON_PATH:-}" ]; then
         if command -v python >/dev/null 2>&1; then
             PYTHON_FOUND_VERSION="$(python --version 2>/dev/null || true)"
-            echo -e "${RED}✗${NC} Termux Python $PYTHON_FOUND_VERSION is not supported; Hermes requires Python >=3.11,<3.14"
+            echo -e "${RED}✗${NC} Termux Python $PYTHON_FOUND_VERSION is not supported; Hexbot requires Python >=3.11,<3.14"
             echo "    Install a supported interpreter and re-run this script:"
             echo "      pkg install tur-repo && pkg install python3.13"
         else

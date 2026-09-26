@@ -1,13 +1,13 @@
-"""hermes claw — OpenClaw migration commands.
+"""hexbot core claw — OpenClaw migration commands.
 
 Usage:
-    hermes claw migrate              # Preview then migrate (always shows preview first)
-    hermes claw migrate --dry-run    # Preview only, no changes
-    hermes claw migrate --yes        # Skip confirmation prompt
-    hermes claw migrate --preset full --overwrite --migrate-secrets  # Full run w/ secrets
-    hermes claw migrate --no-backup  # Skip pre-migration snapshot
-    hermes claw cleanup              # Archive leftover OpenClaw directories
-    hermes claw cleanup --dry-run    # Preview what would be archived
+    hexbot core claw migrate              # Preview then migrate (always shows preview first)
+    hexbot core claw migrate --dry-run    # Preview only, no changes
+    hexbot core claw migrate --yes        # Skip confirmation prompt
+    hexbot core claw migrate --preset full --overwrite --migrate-secrets  # Full run w/ secrets
+    hexbot core claw migrate --no-backup  # Skip pre-migration snapshot
+    hexbot core claw cleanup              # Archive leftover OpenClaw directories
+    hexbot core claw cleanup --dry-run    # Preview what would be archived
 """
 
 import importlib.util
@@ -140,7 +140,7 @@ def _warn_if_openclaw_running(auto_yes: bool) -> None:
     print_info(
         "Messaging platforms (Telegram, Discord, Slack) only allow one "
         "active session per bot token. If you continue, both OpenClaw and "
-        "Hermes may try to use the same token, causing disconnects."
+        "Hexbot may try to use the same token, causing disconnects."
     )
     print_info("Recommendation: stop OpenClaw before migrating.")
     print()
@@ -155,7 +155,7 @@ def _warn_if_openclaw_running(auto_yes: bool) -> None:
 
 
 def _warn_if_gateway_running(auto_yes: bool) -> None:
-    """Check if a Hermes gateway is running with connected platforms.
+    """Check if a Hexbot gateway is running with connected platforms.
 
     Migrating bot tokens while the gateway is polling will cause conflicts
     (e.g. Telegram 409 "terminated by other getUpdates request"). Warn the
@@ -175,7 +175,7 @@ def _warn_if_gateway_running(auto_yes: bool) -> None:
 
     print()
     print_error(
-        "Hermes gateway is running with active connections: "
+        "Hexbot gateway is running with active connections: "
         + ", ".join(connected)
     )
     print_info(
@@ -183,7 +183,7 @@ def _warn_if_gateway_running(auto_yes: bool) -> None:
         "conflicts (Telegram, Discord, and Slack only allow one active "
         "session per token)."
     )
-    print_info("Recommendation: stop the gateway first with 'hermes gateway stop'.")
+    print_info("Recommendation: stop the gateway first with 'hexbot core gateway stop'.")
     print()
     if not auto_yes and not prompt_yes_no("Continue anyway?", default=False):
         print_info("Migration cancelled. Stop the gateway and try again.")
@@ -299,7 +299,7 @@ def _archive_directory(source_dir: Path, dry_run: bool = False) -> Path:
 
 
 def claw_command(args):
-    """Route hermes claw subcommands."""
+    """Route hexbot core claw subcommands."""
     action = getattr(args, "claw_action", None)
 
     if action == "migrate":
@@ -307,17 +307,17 @@ def claw_command(args):
     elif action in {"cleanup", "clean"}:
         _cmd_cleanup(args)
     else:
-        print("Usage: hermes claw <command> [options]")
+        print("Usage: hexbot core claw <command> [options]")
         print()
         print("Commands:")
-        print("  migrate          Migrate settings from OpenClaw to Hermes")
+        print("  migrate          Migrate settings from OpenClaw to Hexbot")
         print("  cleanup          Archive leftover OpenClaw directories after migration")
         print()
-        print("Run 'hermes claw <command> --help' for options.")
+        print("Run 'hexbot core claw <command> --help' for options.")
 
 
 def _cmd_migrate(args):
-    """Run the OpenClaw → Hermes migration."""
+    """Run the OpenClaw → Hexbot migration."""
     # Check current and legacy OpenClaw directories
     explicit_source = getattr(args, "source", None)
     if explicit_source:
@@ -354,7 +354,7 @@ def _cmd_migrate(args):
     )
     print(
         color(
-            "│          ⚕ Hermes — OpenClaw Migration                 │",
+            "│          ⚕ Hexbot — OpenClaw Migration                 │",
             Colors.MAGENTA,
         )
     )
@@ -370,7 +370,7 @@ def _cmd_migrate(args):
         print()
         print_error(f"OpenClaw directory not found: {source_dir}")
         print_info("Make sure your OpenClaw installation is at the expected path.")
-        print_info("You can specify a custom path: hermes claw migrate --source /path/to/.openclaw")
+        print_info("You can specify a custom path: hexbot core claw migrate --source /path/to/.openclaw")
         return
 
     # Find the migration script
@@ -404,7 +404,7 @@ def _cmd_migrate(args):
     # active will cause conflicts (e.g. Telegram 409).
     _warn_if_openclaw_running(auto_yes)
 
-    # Check if a Hermes gateway is running with connected platforms.
+    # Check if a Hexbot gateway is running with connected platforms.
     _warn_if_gateway_running(auto_yes)
 
     # Ensure config.yaml exists before migration tries to read it
@@ -486,7 +486,7 @@ def _cmd_migrate(args):
             f"Plan has {preview_conflicts} conflict(s). Refusing to apply."
         )
         print_info(
-            "Each conflict is an item whose target already exists in ~/.hermes/. "
+            "Each conflict is an item whose target already exists in ~/.hexbot/. "
             "Re-run with --overwrite to replace conflicting targets (item-level "
             "backups are written to the migration report directory)."
         )
@@ -498,17 +498,17 @@ def _cmd_migrate(args):
     if not auto_yes:
         if not sys.stdin.isatty():
             print_info("Non-interactive session — preview only.")
-            print_info("To execute, re-run with: hermes claw migrate --yes")
+            print_info("To execute, re-run with: hexbot core claw migrate --yes")
             return
         if not prompt_yes_no("Proceed with migration?", default=True):
             print_info("Migration cancelled.")
             return
 
-    # ── Phase 2b: Pre-apply backup of the Hermes home ─────────
+    # ── Phase 2b: Pre-apply backup of the Hexbot home ─────────
     # Delegates to hermes_cli.backup.create_pre_migration_backup(), which
     # shares implementation with the pre-update backup (same exclusion
     # rules, same SQLite safe-copy, zip format) so the archive is
-    # restorable with `hermes import`.  Mirrors OpenClaw's
+    # restorable with `hexbot core import`.  Mirrors OpenClaw's
     # createPreMigrationBackup posture — one atomic restore point before
     # any mutation, auto-pruned to the last 5 pre-migration zips.
     backup_archive: Optional[Path] = None
@@ -520,12 +520,12 @@ def _cmd_migrate(args):
                 size_str = _format_size(backup_archive.stat().st_size)
                 print()
                 print_success(f"Pre-migration backup: {backup_archive} ({size_str})")
-                print_info(f"Restore with: hermes import {backup_archive.name}")
+                print_info(f"Restore with: hexbot core import {backup_archive.name}")
         except Exception as e:
             print()
             print_error(f"Could not create pre-migration backup: {e}")
             print_info(
-                "Re-run with --no-backup to skip, or free up disk space under the Hermes home."
+                "Re-run with --no-backup to skip, or free up disk space under the Hexbot home."
             )
             logger.debug("Pre-migration backup error", exc_info=True)
             return
@@ -550,7 +550,7 @@ def _cmd_migrate(args):
         logger.debug("OpenClaw migration error", exc_info=True)
         if backup_archive:
             print_info(f"A pre-migration backup is available at: {backup_archive}")
-            print_info(f"Restore with: hermes import {backup_archive.name}")
+            print_info(f"Restore with: hexbot core import {backup_archive.name}")
         return
 
     # Print results
@@ -558,7 +558,7 @@ def _cmd_migrate(args):
 
     # Source directory is left untouched — archiving is not the migration
     # tool's responsibility.  Users who want to clean up can run
-    # 'hermes claw cleanup' separately.
+    # 'hexbot core claw cleanup' separately.
 
 
 def _cmd_cleanup(args):
@@ -580,7 +580,7 @@ def _cmd_cleanup(args):
     )
     print(
         color(
-            "│          ⚕ Hermes — OpenClaw Cleanup                   │",
+            "│          ⚕ Hexbot — OpenClaw Cleanup                   │",
             Colors.MAGENTA,
         )
     )
@@ -621,7 +621,7 @@ def _cmd_cleanup(args):
                 print_info("Non-interactive session — aborting. Stop OpenClaw and re-run.")
                 return
             if not prompt_yes_no("Proceed anyway?", default=False):
-                print_info("Aborted. Stop OpenClaw first, then re-run: hermes claw cleanup")
+                print_info("Aborted. Stop OpenClaw first, then re-run: hexbot core claw cleanup")
                 return
 
     total_archived = 0
@@ -675,7 +675,7 @@ def _cmd_cleanup(args):
             print_info(f"Would archive: {source_dir} → {archive_path}")
         elif not auto_yes and not sys.stdin.isatty():
             print_info(f"Non-interactive session — would archive: {source_dir}")
-            print_info("To execute, re-run with: hermes claw cleanup --yes")
+            print_info("To execute, re-run with: hexbot core claw cleanup --yes")
         elif auto_yes or prompt_yes_no(f"Archive {source_dir}?", default=True):
             try:
                 archive_path = _archive_directory(source_dir)
@@ -794,7 +794,7 @@ def _print_migration_report(report: dict, dry_run: bool):
     if dry_run:
         print()
         print_info("To execute the migration, run without --dry-run:")
-        print_info(f"  hermes claw migrate --preset {report.get('preset', 'full')}")
+        print_info(f"  hexbot core claw migrate --preset {report.get('preset', 'full')}")
     elif migrated:
         print()
         print_success("Migration complete!")
@@ -809,7 +809,7 @@ def _print_migration_report(report: dict, dry_run: bool):
             print(color("  Your OPENROUTER_API_KEY and other provider keys must be added manually.", Colors.YELLOW))
             print()
             print_info("To migrate API keys, re-run with:")
-            print_info("  hermes claw migrate --migrate-secrets")
+            print_info("  hexbot core claw migrate --migrate-secrets")
             print()
             print_info("Or add your key manually:")
-            print_info("  hermes config set OPENROUTER_API_KEY sk-or-v1-...")
+            print_info("  hexbot core config set OPENROUTER_API_KEY sk-or-v1-...")

@@ -24,7 +24,7 @@ Three parts:
    site). AGPL like the rest of the repo. Free during beta.
 2. **Daemon side**, `hexbot/connect.py`, `hexbot/auth_provider.py`, and the
    `hexbot connect` CLI: registers the daemon, heartbeats, and accepts
-   Connect grants for login through two Hermes auth providers (`hexbot` for
+   Connect grants for login through two core auth providers (`hexbot` for
    apps, `connect` for browsers). A TypeScript sidecar,
    `hexbot/connect_agent.mts`, supervises `cloudflared` and verifies grants.
    It runs on Node 24 or newer; the desktop app passes its own Electron
@@ -109,7 +109,7 @@ forward to, so the whole flow runs on one machine.
    `cloudflared` its killed predecessor left running with this daemon's
    config. Settings shows the tunnel as running only while `cloudflared`
    itself is up. Without Node the daemon serves on and logs that the tunnel
-   did not start. The daemon also sets Hermes
+   did not start. The daemon also sets the core's
    `dashboard.public_url` to the tunnel hostname (which turns the auth gate
    on whatever the bind) and registers the `connect` auth provider so the
    daemon's login page offers "Sign in with Hex Connect". A
@@ -146,13 +146,13 @@ forward to, so the whole flow runs on one machine.
 
 ## Browser sign-in
 
-Hermes redirects an unauthenticated HTML request on a gated daemon to its own
+The core redirects an unauthenticated HTML request on a gated daemon to its own
 `/login` page, so the daemon-served bundle never gets to run before sign-in.
-Browser access therefore uses Hermes's OAuth-shaped provider flow, with
+Browser access therefore uses the core's OAuth-shaped provider flow, with
 Connect as the identity provider:
 
 1. "Open in browser" on `/connect` links to
-   `https://<host>/auth/login?provider=connect&next=/`. Hermes calls
+   `https://<host>/auth/login?provider=connect&next=/`. The core calls
    `HexConnectProvider.start_login`, which makes a `state` and a PKCE
    verifier, stores both in the PKCE cookie, and 302s the browser to
    `/connect/browser?daemon=<id>&state=<state>&code_challenge=<S256>&redirect_uri=https://<host>/auth/callback`.
@@ -163,12 +163,12 @@ Connect as the identity provider:
    `<redirect_uri>?code=hxg_…&state=<state>`; the code row holds the
    challenge, the redirect URI, and a device label from the user agent
    ("Safari on iPhone"). Codes expire in five minutes.
-3. Hermes's `/auth/callback` checks the state cookie and calls
+3. The core's `/auth/callback` checks the state cookie and calls
    `complete_login`, which posts `POST /api/grants/exchange {code,
    code_verifier, redirect_uri}` with the daemon's bearer token. Connect
    verifies the hash, expiry, daemon, verifier, and redirect URI, consumes
    the code, and returns a grant JWT. The daemon verifies it like an app
-   grant, mints a device token with platform `connect`, and Hermes sets the
+   grant, mints a device token with platform `connect`, and the core sets the
    session cookies and lands on `next`.
 
 Spent grant ids live in the daemon's SQLite database (`spent_grants`), so a

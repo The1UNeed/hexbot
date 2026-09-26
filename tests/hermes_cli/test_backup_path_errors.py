@@ -1,4 +1,4 @@
-"""Regression test: `hermes backup -o <bad path>` errors cleanly (round-3 SUB-01).
+"""Regression test: `hexbot core backup -o <bad path>` errors cleanly (round-3 SUB-01).
 
 Before, an unwritable/nonexistent-parent output path raised a raw
 PermissionError traceback from the unguarded is_dir()/mkdir() calls. It must

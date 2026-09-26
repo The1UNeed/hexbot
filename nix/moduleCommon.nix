@@ -30,7 +30,7 @@ let
   # all of the definitions. Without it, only the last definition applies.
   deepConfigType = types.mkOptionType {
     name = "hermes-config-attrs";
-    description = "Hermes YAML config (attrset), merged deeply via lib.recursiveUpdate.";
+    description = "Hexbot YAML config (attrset), merged deeply via lib.recursiveUpdate.";
     check = builtins.isAttrs;
     merge = _loc: defs: lib.foldl' lib.recursiveUpdate { } (map (d: d.value) defs);
   };
@@ -234,7 +234,7 @@ let
       defaultWorkingDirectoryText,
     }:
     {
-      enable = lib.mkEnableOption "Hermes Agent";
+      enable = lib.mkEnableOption "Hexbot";
 
       # ── Package ────────────────────────────────────────────────────────
       package = mkOption {
@@ -271,7 +271,7 @@ let
         type = deepConfigType;
         default = { };
         description = ''
-          The Hermes configuration, as an attribute set. The module joins the
+          The Hexbot configuration, as an attribute set. The module joins the
           definitions from all modules and writes the result to config.yaml.
 
           The merge into the config.yaml on disk is also a deep merge. These
@@ -299,7 +299,7 @@ let
         description = ''
           The paths to environment files that contain secrets, for example
           API keys and tokens. Activation adds the contents of these files to
-          $HERMES_HOME/.env. Hermes reads that file at each start, with
+          $HERMES_HOME/.env. Hexbot reads that file at each start, with
           load_hermes_dotenv().
 
           Each activation writes .env again from the start. Thus a secret
@@ -326,7 +326,7 @@ let
         description = ''
           The path to a file that gives the first contents of auth.json, the
           OAuth credentials. The module copies the file only when auth.json
-          does not exist. Thus a token that Hermes refreshes at runtime stays
+          does not exist. Thus a token that Hexbot refreshes at runtime stays
           after an activation.
         '';
       };
@@ -348,7 +348,7 @@ let
 
           Use this option for the project context that the agent reads from
           its working directory, for example AGENTS.md, notes and checklists.
-          Hermes reads SOUL.md and memories/ from HERMES_HOME, so put those
+          Hexbot reads SOUL.md and memories/ from HERMES_HOME, so put those
           files in `hermesHomeFiles`.
 
           If you set this option, you must also set `workingDirectory`. The
@@ -371,8 +371,8 @@ let
           relative to that directory, and the module makes the necessary
           subdirectories. Each value is a string or a path.
 
-          Hermes reads SOUL.md and the memory files from HERMES_HOME and not
-          from the working directory. Declare those files here, or Hermes
+          Hexbot reads SOUL.md and the memory files from HERMES_HOME and not
+          from the working directory. Declare those files here, or Hexbot
           does not load them.
         '';
         example = literalExpression ''
@@ -422,7 +422,7 @@ let
         description = ''
           Directory-based plugin packages to symlink into the hermes plugins
           directory. Each package must contain a plugin.yaml and __init__.py
-          at its root. Hermes discovers these automatically on startup.
+          at its root. Hexbot discovers these automatically on startup.
         '';
         example = literalExpression ''
           [
@@ -500,7 +500,7 @@ let
       # `hermes serve` and `hermes dashboard` are the same entry point,
       # hermes_cli.main:cmd_dashboard, with one flag of difference. serve runs
       # without a user interface. dashboard also serves the web application.
-      # Both give the /api/ws and /api/pty sockets that Hermes Desktop
+      # Both give the /api/ws and /api/pty sockets that the Hexbot app
       # connects to. They are one process, and you can run only one of them.
       # Thus this option is an enum and not two booleans.
       #
@@ -520,7 +520,7 @@ let
 
             - "none"      — no backend
             - "serve"     — the backend without a user interface. It gives
-                            the /api/ws and /api/pty sockets that Hermes
+                            the /api/ws and /api/pty sockets that Hexbot
                             Desktop connects to.
             - "dashboard" — all that "serve" gives, and the browser admin
                             panel on the same port
@@ -633,7 +633,7 @@ let
 
             The backend reads the file at each start and gives the value to
             HERMES_DASHBOARD_SESSION_TOKEN. That token authorizes the /api
-            routes and the /api/ws socket. Hermes Desktop presents the same
+            routes and the /api/ws socket. The Hexbot app presents the same
             value, so the application reaches this backend and starts no
             second one.
 
@@ -661,7 +661,7 @@ let
   installPackageRemovedMessage =
     value:
     ''
-      services.hermes-agent.installPackage was removed. Hermes now
+      services.hermes-agent.installPackage was removed. Hexbot now
       separates the installation from the services, which is the
       Home Manager convention:
 
@@ -825,7 +825,7 @@ let
         );
     in
     ''
-      # Directories. The service units and Hermes make most of these
+      # Directories. The service units and Hexbot make most of these
       # directories when they first need them. Activation makes them here so
       # that the first activation sets the correct owner and mode, and does
       # not use the umask.
@@ -839,7 +839,7 @@ let
         )
       }
 
-      # config.yaml: merge the Nix settings into the file on disk. Hermes
+      # config.yaml: merge the Nix settings into the file on disk. Hexbot
       # writes this file at runtime. A read-only symlink to the Nix store
       # breaks each save from the application. The Nix keys replace the keys
       # on disk, and the module keeps all other keys.
@@ -1033,11 +1033,11 @@ let
   backendDescription =
     cfg:
     if cfg.backend.mode == "dashboard" then
-      "Hermes Agent web dashboard and desktop backend"
+      "Hexbot web dashboard and desktop backend"
     else
-      "Hermes Agent backend for Hermes Desktop";
+      "Hexbot backend for the Hexbot app";
 
-  # The environment that each Hermes process needs, from either module.
+  # The environment that each Hexbot process needs, from either module.
   #
   # managedSystem gives the value of HERMES_MANAGED. The CLI reads that
   # variable to refuse a configuration change that it cannot keep, and to
@@ -1095,9 +1095,9 @@ let
 
             ${optionPath}.workingDirectory = "/path/you/want";
 
-          To give Hermes an identity and a memory, use
+          To give Hexbot an identity and a memory, use
           ${optionPath}.hermesHomeFiles instead. Those files go to
-          HERMES_HOME. Hermes reads SOUL.md and memories/ only from there.
+          HERMES_HOME. Hexbot reads SOUL.md and memories/ only from there.
         '';
       }
     ];

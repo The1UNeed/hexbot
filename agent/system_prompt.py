@@ -446,7 +446,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     Joined into a single string by :func:`build_system_prompt` and
     cached on ``agent._cached_system_prompt`` for the lifetime of the
-    AIAgent.  Hermes never re-renders parts of this string mid-
+    AIAgent.  Hexbot never re-renders parts of this string mid-
     session — that's the only way to keep upstream prompt caches
     warm across turns.
     """
@@ -487,7 +487,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
     # Pointer to the docs (and, when it exists, the hermes-agent skill) for
-    # user questions about Hermes itself. The skill_view() pointer is a
+    # user questions about Hexbot itself. The skill_view() pointer is a
     # dangling reference in two cases — no skill tools in the toolset
     # (Blank Slate) OR the hermes-agent skill not installed — so the
     # variant is chosen AFTER the skills index is built (see below) and
@@ -676,7 +676,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if _env_hints:
         stable_parts.append(_env_hints)
 
-    # Coding posture (base Hermes, any interactive coding surface in a code
+    # Coding posture (base Hexbot, any interactive coding surface in a code
     # workspace — see agent/coding_context.py). Keep the operating brief in
     # the cross-session-stable prefix, while placing the live git/workspace
     # snapshot behind its own cache boundary. The post-snapshot blocks must
@@ -726,7 +726,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Bot Mode teammate protocol — injected ONLY into a bot's canonical
     # "Bot Chat" session (the conversation teammate bots message into via
-    # `hermes -p <bot> chat --in ~ -c "Bot Chat"` and the desktop pins), on
+    # `hexbot core -p <bot> chat --in ~ -c "Bot Chat"` and the desktop pins), on
     # installs where Bot Mode manages profiles (ui_meta['hermes-bots']).
     # Regular sessions never carry it — the desktop's composer middleware
     # owns the @mention send path. Title is read once at first build and the
@@ -761,9 +761,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
-    # Active-profile hint — names the Hermes profile the agent is running
-    # under so it doesn't conflate ~/.hermes/skills/ (default profile) with
-    # ~/.hermes/profiles/<active>/skills/ (this profile's). Deterministic
+    # Active-profile hint — names the Hexbot profile the agent is running
+    # under so it doesn't conflate ~/.hexbot/skills/ (default profile) with
+    # ~/.hexbot/profiles/<active>/skills/ (this profile's). Deterministic
     # for the lifetime of the agent — profile name doesn't change
     # mid-session, so this doesn't break the prompt cache.
     # See file_safety._resolve_active_profile_name + classify_cross_profile_target
@@ -795,7 +795,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         _root_str = str(get_default_hermes_root())
     else:
         _home_str = _root_str = str(get_hermes_home())
-    # Hexbot (CORE_EDITS.md row 7): a Hexbot user has bots, not profiles, and
+    # A Hexbot user has bots, not profiles, and
     # never a shell; the line keeps only the rule that matters, which is to
     # leave other bots' files alone.
     if active_profile == "default":
@@ -887,7 +887,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         #
         # allow_install_tree_fallback: for cli/tui the launch dir IS the
         # user's shell cwd, so an in-tree fallback is a deliberate choice
-        # (developing Hermes). Every other surface (desktop chat panel,
+        # (developing Hexbot). Every other surface (desktop chat panel,
         # gateway daemons) self-spawns into the install tree, where the
         # fallback would inject this repo's contributor AGENTS.md (#64590).
         context_cwd = resolve_context_cwd()
@@ -896,7 +896,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # tools have a deterministic cwd even when the user picked no
             # workspace. Preserve that tool routing, but let context discovery
             # see it as the fallback it really is. The install-tree guard can
-            # then reject Hermes's bundled contributor AGENTS.md (#97448).
+            # then reject Hexbot's bundled contributor AGENTS.md (#97448).
             context_cwd = None
         context_files_prompt = _r.build_context_files_prompt(
             cwd=context_cwd, skip_soul=_soul_loaded,

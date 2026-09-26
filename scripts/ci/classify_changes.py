@@ -80,8 +80,8 @@ _PY_SKIP = ("docs/", "website/") + _FRONTEND
 # Python lane — otherwise dropping a redirect URI goes green here and breaks
 # every CIMD login on main.
 # website/docs/ and website/scripts/ are asserted about the same way. The docs
-# tree generates llms.txt — the index every LLM (Hermes included, via the
-# hermes-agent skill) reads to learn what Hermes can do — and
+# tree generates llms.txt — the index every LLM (Hexbot included, via the
+# hermes-agent skill) reads to learn what Hexbot can do — and
 # tests/website/test_generate_llms_txt.py holds every page to appearing in it.
 # Skipping Python on a docs-only PR is how the index drifted to 53% coverage.
 _PY_RELEVANT_SITE = (

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Point at something in the Hermes desktop GUI and say one line about it.
+"""Point at something in the Hexbot desktop GUI and say one line about it.
 
 The quiet sibling of ``tour``. Same durable ``data-tour`` handles, same
 discovery call (``tour(action="targets")``) — but no scrim, no spotlight, and no
@@ -13,7 +13,7 @@ on a round-trip would stall the reply it belongs to.
 Lives in the ``desktop_ui`` toolset, which the GUI gateway enables only for
 desktop-sourced sessions, and withdraws itself entirely when the user has
 turned tips off (Settings → Appearance). Off means the model is never told the
-tool exists — a switch that only made the call fail would leave Hermes
+tool exists — a switch that only made the call fail would leave Hexbot
 promising to point at things it cannot point at.
 """
 
@@ -53,7 +53,7 @@ def tip_tool(text: str, selector: str, title: str = "", side: str = "") -> str:
     except Exception as exc:
         return tool_error(f"Failed to show the tip: {exc}")
     if not ok:
-        return tool_error("tip is only available in the Hermes desktop app.")
+        return tool_error("tip is only available in the Hexbot desktop app.")
 
     return json.dumps({"success": True, "selector": selector}, ensure_ascii=False)
 

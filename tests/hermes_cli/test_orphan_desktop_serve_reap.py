@@ -1,4 +1,4 @@
-"""Orphan Desktop-local ``hermes serve`` reap at backend start.
+"""Orphan Desktop-local ``hexbot core serve`` reap at backend start.
 
 When Desktop dies uncleanly, local ``serve --host 127.0.0.1 --port 0``
 children can be reparented to pid 1 and keep full MCP trees alive. The next

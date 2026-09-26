@@ -29,7 +29,7 @@ lockfile-vs-install-marker staleness check then triggers the ``pnpm install``
 self-heal inside the mirror.
 
 This module is import-light on purpose: both ``adapter.py`` (gateway) and
-``cli.py`` (``hermes photon ...``) use it.
+``cli.py`` (``hexbot core photon ...``) use it.
 """
 
 from __future__ import annotations

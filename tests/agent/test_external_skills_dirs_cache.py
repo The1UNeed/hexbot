@@ -25,7 +25,7 @@ from agent.skill_utils import (
 
 @pytest.fixture
 def hermes_home_with_config(tmp_path, monkeypatch):
-    """Isolated ``~/.hermes/`` with a config.yaml referencing one external dir."""
+    """Isolated ``~/.hexbot/`` with a config.yaml referencing one external dir."""
     home = tmp_path / ".hermes"
     home.mkdir()
     external = tmp_path / "external_skills"

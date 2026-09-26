@@ -1,6 +1,6 @@
 """Canonical reasoning-effort vocabulary and wire clamping.
 
-Hermes' internal effort ladder (``hermes_constants.VALID_REASONING_EFFORTS``
+Hexbot's internal effort ladder (``hermes_constants.VALID_REASONING_EFFORTS``
 plus the ``none`` disable level) is wider than what any single provider wire
 accepts. Historically every transport and provider profile hand-rolled its own
 translation map, and the class of bugs that produced was constant: a new
@@ -51,7 +51,7 @@ EFFORT_LADDER: tuple[str, ...] = (
     "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 )
 
-# ``ultra`` is Hermes-internal ladder vocabulary (the Codex product tier); no
+# ``ultra`` is Hexbot-internal ladder vocabulary (the Codex product tier); no
 # provider wire accepts it verbatim anywhere. Every declared wire set below
 # therefore stops at ``max`` — ``ultra`` always clamps down.
 

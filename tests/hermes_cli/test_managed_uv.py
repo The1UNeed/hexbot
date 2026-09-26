@@ -233,7 +233,7 @@ class TestEnsureUvUpdateBoundary:
     """``ensure_uv()`` must answer to both the single-value and the legacy
     ``(path, fresh_bootstrap)`` call conventions — **on POSIX**.
 
-    ``hermes update`` runs the call site from the old, already-imported
+    ``hexbot core update`` runs the call site from the old, already-imported
     ``hermes_cli.main`` against the freshly pulled ``managed_uv``. A release
     parked on a ``(path, fresh)`` tuple runs ``uv_bin, fresh = ensure_uv()``
     against the single-value module; the path is an iterable ``str`` so the
@@ -906,7 +906,7 @@ class TestMinorLineFallForward:
     the provisioner must fall forward to the next supported minor line
     (3.12, then 3.13) -- first via a bare minor request, then via explicit
     patches on that line -- instead of leaving the user stuck on every
-    `hermes update` with no path to a fixed runtime.
+    `hexbot core update` with no path to a fixed runtime.
     """
 
     @staticmethod
@@ -1244,7 +1244,7 @@ class TestDefaultLiveVenv:
     """_default_live_venv() must cover BOTH install layouts (venv/ and .venv/).
 
     Historically repair hardcoded venv/, so uv-default/.venv checkouts got
-    'not-applicable' on every hermes update and stayed on journal_mode=DELETE
+    'not-applicable' on every hexbot core update and stayed on journal_mode=DELETE
     (2,600x slower state.db appends) while the WAL warning promised repair.
     """
 
@@ -1286,7 +1286,7 @@ class TestDefaultLiveVenv:
 class TestVenvPythonUpdateBoundary:
     """``_venv_python`` must survive a hermes_constants predating its symbol.
 
-    ``hermes update`` imports hermes_constants from the OLD checkout, ``git
+    ``hexbot core update`` imports hermes_constants from the OLD checkout, ``git
     pull`` replaces that file, and the freshly-pulled managed_uv then runs its
     lazy ``from hermes_constants import venv_python_path`` against the module
     object already cached in ``sys.modules``. That cached module has no such
@@ -1294,7 +1294,7 @@ class TestVenvPythonUpdateBoundary:
     plainly contains it, which is what made the error so confusing:
 
         cannot import name 'venv_python_path' from 'hermes_constants'
-        (~/.hermes/hermes-agent/hermes_constants.py)
+        (~/.hexbot/hermes-agent/hermes_constants.py)
 
     It aborted the managed-Python runtime repair on the first update from any
     release older than the symbol. Same class as the ``ensure_uv()`` arity skew
@@ -1361,7 +1361,7 @@ class TestWindowsRuntimeSelfLock:
     """The repair pre-flight must see the ONE holder the generic scan hides:
     the updater itself (#93032).
 
-    A CLI ``hermes update`` runs from the venv's own python, and
+    A CLI ``hexbot core update`` runs from the venv's own python, and
     ``_detect_venv_python_processes`` excludes the calling process and its
     ancestors on purpose (correct for the dependency-sync path).  For the
     whole-venv park rename that exemption is fatal on Windows: a directory

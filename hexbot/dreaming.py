@@ -232,7 +232,7 @@ def record_dream(bot: str, output: str, *, room_id: str | None = None,
     """
     dream_id = dream_id or uuid.uuid4().hex
     now = time.time()
-    # Hermes cron lets a job answer "[SILENT]" when it has nothing to report.
+    # Hexbot cron lets a job answer "[SILENT]" when it has nothing to report.
     if output.strip() == "[SILENT]":
         output = ""
     after = _memory_text(bot)
@@ -260,7 +260,7 @@ def record_dream(bot: str, output: str, *, room_id: str | None = None,
         from hermes_state import SessionDB
         store = SessionDB(db_path=_profile_home(bot) / "state.db")
         try:
-            # Hermes stores a session on its first prompt, and this one never gets one.
+            # Hexbot stores a session on its first prompt, and this one never gets one.
             if store.get_session(dream_section["id"]) is None:
                 store.create_session(dream_section["id"], "tui")
             store.append_message(dream_section["id"], "assistant", output)

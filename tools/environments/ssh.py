@@ -165,7 +165,7 @@ class SSHEnvironment(BaseEnvironment):
     # ------------------------------------------------------------------
 
     def _ensure_remote_dirs(self) -> None:
-        """Create base ~/.hermes directory tree on remote in one SSH call."""
+        """Create base ~/.hexbot directory tree on remote in one SSH call."""
         base = f"{self._remote_home}/.hermes"
         dirs = [base, f"{base}/skills", f"{base}/credentials", f"{base}/cache"]
         cmd = self._build_ssh_command()

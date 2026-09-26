@@ -2,7 +2,7 @@
 """
 Code Execution Tool -- Programmatic Tool Calling (PTC)
 
-Lets the LLM write a Python script that calls Hermes tools via RPC,
+Lets the LLM write a Python script that calls Hexbot tools via RPC,
 collapsing multi-step tool chains into a single inference turn.
 
 Architecture (two transports):
@@ -53,7 +53,7 @@ from agent.thread_scoped_output import thread_scoped_silence
 # Availability gate.  On Windows we fall back to loopback TCP for the
 # sandbox RPC transport (AF_UNIX is unreliable on Windows Python) — see
 # ``_use_tcp_rpc`` in ``_execute_local`` below.  That makes execute_code
-# available on every platform Hermes itself runs on.
+# available on every platform Hexbot itself runs on.
 logger = logging.getLogger(__name__)
 
 SANDBOX_AVAILABLE = True
@@ -191,7 +191,7 @@ def _spill_full_stdout(stdout_text: str) -> Optional[str]:
 # backends).  Secret-substring block is applied first; anything left must
 # match a safe prefix, the operational HERMES_ allowlist, or (on Windows) an
 # OS-essential name.  Delegate-task child context is also an exact-name
-# operational marker: without it, a sandbox script that spawns/imports Hermes
+# operational marker: without it, a sandbox script that spawns/imports Hexbot
 # code can lose the DB-layer Kanban mutation guard while still inheriting
 # HERMES_HOME.
 #
@@ -563,7 +563,7 @@ def retry(fn, max_attempts=3, delay=2):
 # ---- UDS transport (local backend) ---------------------------------------
 
 _UDS_TRANSPORT_HEADER = '''\
-"""Auto-generated Hermes tools RPC stubs."""
+"""Auto-generated Hexbot tools RPC stubs."""
 import json, os, socket, shlex, threading, time
 
 _sock = None
@@ -648,7 +648,7 @@ def _call(tool_name, args):
 # ---- File-based transport (remote backends) -------------------------------
 
 _FILE_TRANSPORT_HEADER = '''\
-"""Auto-generated Hermes tools RPC stubs (file-based transport)."""
+"""Auto-generated Hexbot tools RPC stubs (file-based transport)."""
 import json, os, shlex, tempfile, threading, time
 
 _RPC_DIR = os.environ.get("HERMES_RPC_DIR") or os.path.join(tempfile.gettempdir(), "hermes_rpc")
@@ -1471,7 +1471,7 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     child_env["PYTHONUTF8"] = "1"
     # Inject user's configured timezone so datetime.now() in sandboxed
     # code reflects the correct wall-clock time.  Only TZ is set —
-    # HERMES_TIMEZONE is an internal Hermes setting and must not leak
+    # HERMES_TIMEZONE is an internal Hexbot setting and must not leak
     # into child processes.
     _tz_name = os.getenv("HERMES_TIMEZONE", "").strip()
     if _tz_name:
@@ -1481,13 +1481,13 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     apply_subprocess_home_env(child_env)
     # ``hermes_tools.py`` always lives in the staging directory, so that
     # directory must be importable even when project mode changes CWD.
-    # Hermes's own package root is useful too, but only when the child
+    # Hexbot's own package root is useful too, but only when the child
     # uses the same Python environment. Project mode can select an
-    # external venv; exposing Hermes's site-packages to that interpreter
+    # external venv; exposing Hexbot's site-packages to that interpreter
     # can mix incompatible compiled extensions (for example, Python 3.12
     # NumPy with a Python 3.9 project interpreter).
     #
-    # Before re-injecting PYTHONPATH, strip Hermes-owned entries that
+    # Before re-injecting PYTHONPATH, strip Hexbot-owned entries that
     # leaked through _scrub_child_env (PYTHONPATH is in _SAFE_ENV_PREFIXES
     # so it passes the scrub).  They are redundant for same-Hermes-
     # environment children and may be incompatible with external
@@ -1506,8 +1506,8 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
         # fails" reports are diagnosable without log spam.
         _external_env_logged.add(child_python)
         logger.info(
-            "execute_code: child interpreter %s is outside the Hermes "
-            "environment; hermes root omitted from PYTHONPATH",
+            "execute_code: child interpreter %s is outside the Hexbot "
+            "environment; Hexbot root omitted from PYTHONPATH",
             child_python,
         )
     if _existing_pp:
@@ -1525,7 +1525,7 @@ def execute_code(
     """
     Run Python in the session's persistent kernel (local) or a per-call
     child process (remote backends), with RPC access to a subset of
-    Hermes tools.
+    Hexbot tools.
 
     "Sandbox" in names below refers to the security envelope (env
     scrubbing, tool whitelist + call budget, output redaction) — not an
@@ -1908,7 +1908,7 @@ def execute_code(
 
         # Redact secrets (API keys, tokens, etc.) from sandbox output.
         # The sandbox env-var filter (lines 434-454) blocks os.environ access,
-        # but scripts can still read secrets from disk (e.g. open('~/.hermes/.env')).
+        # but scripts can still read secrets from disk (e.g. open('~/.hexbot/.env')).
         # This ensures leaked secrets never enter the model context.
         # code_file=True: this is code-execution output — skip false-positive
         # ENV/JSON/f-string-template redaction; real credentials still masked.
@@ -2036,7 +2036,7 @@ def _load_config() -> dict:
     This helper is called while building the module-level execute_code schema
     during tool discovery.  Importing ``cli`` here pulls prompt_toolkit/Rich and
     a large chunk of the classic REPL onto every agent startup path, including
-    ``hermes --tui`` where it is never used.  Read the lightweight raw config
+    ``hexbot core --tui`` where it is never used.  Read the lightweight raw config
     instead; the config layer already caches by (mtime, size), and an absent
     key cleanly falls back to DEFAULT_EXECUTION_MODE.
     """
@@ -2110,7 +2110,7 @@ _PROBE_CACHE_MAX = 32
 _usable_python_cache: dict = {}
 _python_prefix_cache: dict = {}
 
-# Interpreter paths already reported as outside the Hermes environment —
+# Interpreter paths already reported as outside the Hexbot environment —
 # dedupes the exclusion log to once per path per process.
 _external_env_logged: set = set()
 
@@ -2186,7 +2186,7 @@ def _python_environment_prefix(python_path: str) -> str:
 
 
 def _uses_hermes_python_environment(python_path: str) -> bool:
-    """Whether *python_path* belongs to Hermes's active Python environment.
+    """Whether *python_path* belongs to Hexbot's active Python environment.
 
     Short-circuits when *python_path* IS the running interpreter (by path or
     realpath) — no subprocess probe on the default strict-mode path, and no
@@ -2329,7 +2329,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
                               mode: str = None) -> dict:
     """Build the execute_code schema with description listing only enabled tools.
 
-    When tools are disabled via ``hermes tools`` (e.g. web is turned off),
+    When tools are disabled via ``hexbot core tools`` (e.g. web is turned off),
     the schema description should NOT mention web_search / web_extract —
     otherwise the model thinks they are available and keeps trying to use them.
 
@@ -2364,14 +2364,14 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     if mode == "strict":
         cwd_note = (
             "Scripts run in their own temp dir, not the session's CWD — use absolute paths "
-            "(os.path.expanduser('~/.hermes/.env')) or terminal()/read_file() for user files."
+            "(os.path.expanduser('~/.hexbot/.env')) or terminal()/read_file() for user files."
         )
     else:
         cwd_note = (
             "Scripts run in the session's working directory. Interpreter: "
             "the project's activated venv/conda python when one is active "
             "(VIRTUAL_ENV/CONDA_PREFIX — matches terminal()); otherwise "
-            "Hermes's own python (the common case — stdlib plus Hermes's "
+            "Hexbot's own python (the common case — stdlib plus Hexbot's "
             "deps; check `import x` before relying on project packages)."
         )
 
@@ -2381,7 +2381,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     # a kernel fail open to per-call silently — not worth schema words;
     # the result's `kernel` field tells the truth per call.
     description = (
-        "Run Python that calls Hermes tools programmatically. Use when you "
+        "Run Python that calls Hexbot tools programmatically. Use when you "
         "need 3+ tool calls with logic between them: filtering/reducing "
         "large outputs before they enter context, branching, or loops "
         "(N pages/files, retry on failure). Use normal tool calls for "

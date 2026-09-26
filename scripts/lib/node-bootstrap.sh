@@ -7,7 +7,7 @@
 #
 # Strategy (first hit wins — respects the user's existing tooling):
 #   1. modern `node` already on PATH
-#   2. ~/.hermes/node/ from a prior Hermes-managed install
+#   2. ~/.hermes/node/ from a prior Hexbot-managed install
 #   3. fnm, proto, nvm (in that order) if the user already uses a version manager
 #   4. Termux `pkg`, macOS Homebrew
 #   5. pinned nodejs.org tarball into ~/.hermes/node/ (always works, zero shell rc edits)
@@ -57,7 +57,7 @@ _nb_get_link_dir() {
     fi
 }
 
-# Redirect a Hermes-managed Node's `npm install -g` to the command link dir
+# Redirect a Hexbot-managed Node's `npm install -g` to the command link dir
 # (already on PATH) instead of the default $HERMES_HOME/node/bin, which is off
 # PATH and wiped on every Node upgrade. Scoped to the managed Node via its
 # prefix-local global npmrc; the user's other Node installs / ~/.npmrc are
@@ -137,11 +137,11 @@ _nb_pnpm_version_ok() {
 #     the version is an exact, reviewed pin;
 #   - an explicit --prefix at the managed tree, because
 #     _nb_configure_npm_prefix wrote prefix=~/.local into its etc/npmrc, and
-#     without the override pnpm lands outside the tree Hermes resolves it from.
+#     without the override pnpm lands outside the tree Hexbot resolves it from.
 #
 # Best-effort: a failure here leaves a working Node without pnpm, which is
 # strictly better than no Node at all, and hermes_constants.ensure_hermes_pnpm()
-# retries on demand. No-op when there is no managed npm: Hermes never installs
+# retries on demand. No-op when there is no managed npm: Hexbot never installs
 # into a Node it does not own.
 _nb_ensure_pnpm() {
     local pin
@@ -365,7 +365,7 @@ _nb_install_bundled_node() {
 }
 
 # ---------------------------------------------------------------------------
-# Heal a broken Hermes-managed Node tree (partial upgrade / missing lib/)
+# Heal a broken Hexbot-managed Node tree (partial upgrade / missing lib/)
 # ---------------------------------------------------------------------------
 
 _nb_managed_tool_broken() {
@@ -421,7 +421,7 @@ heal_managed_node() {
     if ! _nb_managed_node_needs_heal; then
         return 0
     fi
-    _nb_log "Hermes-managed Node is broken — redownloading to $HERMES_HOME/node/..."
+    _nb_log "Hexbot-managed Node is broken — redownloading to $HERMES_HOME/node/..."
     _nb_install_bundled_node
 }
 
@@ -445,7 +445,7 @@ ensure_node() {
     if [ -x "$HERMES_HOME/node/bin/node" ]; then
         export PATH="$HERMES_HOME/node/bin:$PATH"
         if _nb_have_modern_node; then
-            _nb_ok "Node $(node --version) found (Hermes-managed)"
+            _nb_ok "Node $(node --version) found (Hexbot-managed)"
             HERMES_NODE_AVAILABLE=true
             # A tree from an older install has no pnpm, and the install in
             # _nb_install_bundled_node is best-effort — one offline install

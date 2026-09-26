@@ -14,7 +14,7 @@ import re
 from typing import Any, Dict, Mapping
 
 
-# Sources Hermes owns and can intentionally persist in auth.json.  Everything
+# Sources Hexbot owns and can intentionally persist in auth.json.  Everything
 # else with a non-empty source is treated as borrowed/reference-only by default
 # so future external secret providers fail closed at the disk boundary.
 _PERSISTABLE_PROVIDER_SOURCES = frozenset({
@@ -163,7 +163,7 @@ def sanitize_borrowed_credential_payload(
 ) -> Dict[str, Any]:
     """Return a disk-safe credential-pool payload.
 
-    Owned sources (manual entries and Hermes-owned OAuth/device-code state)
+    Owned sources (manual entries and Hexbot-owned OAuth/device-code state)
     pass through unchanged.  Borrowed/reference-only sources keep labels,
     source refs, status/cooldown metadata, counters, and a non-reversible
     fingerprint, but raw secret value fields are removed.

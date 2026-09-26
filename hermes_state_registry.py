@@ -120,7 +120,7 @@ def acquire(db_path: Optional[Path] = None) -> "SessionDB":
     writer connection, one ``self._lock``, and one token-writer thread.
 
     If the underlying file was replaced (different inode) since the
-    shared generation was opened — e.g. by ``hermes sessions recover`` or
+    shared generation was opened — e.g. by ``hexbot core sessions recover`` or
     a snapshot restore — the current generation is RETIRED (never lent
     again) but stays alive for its existing holders, and a fresh
     generation is opened in its place.

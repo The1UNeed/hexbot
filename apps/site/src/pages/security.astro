@@ -16,7 +16,7 @@ const sections: [string, string][] = [
   <section id="model">
     <h2>How Hexbot is built to be safe</h2>
     <p>Your bots, their memory, your files, and your provider keys live in <code>~/.hexbot</code> on the machine that runs the daemon. The app is a window onto that daemon. The website and Connect are outside that boundary: they can help your devices find the daemon and prove who you are, but they cannot read what is inside.</p>
-    <p>Bots use real tools on your computer. The daemon inherits Hermes Agent's approval gate, which asks before risky actions unless you turn on Auto mode, and Hermes's own <a href="https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md">security model</a>, which treats the operating system, not the agent, as the security boundary. Run the daemon as a normal user, keep it updated, and read a skill or plugin before you install it.</p>
+    <p>Bots use real tools on your computer. The daemon has an approval gate that asks before risky actions unless you turn on Auto mode. It follows the <a href="https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md">security model</a> of Hermes Agent, which Hexbot is built on: the operating system, not the agent, is the security boundary. Run the daemon as a normal user, keep it updated, and read a skill or plugin before you install it.</p>
   </section>
   <section id="connect">
     <h2>How Connect protects your daemon</h2>
@@ -51,7 +51,7 @@ const sections: [string, string][] = [
   </section>
   <section id="scope">
     <h2>What is in scope</h2>
-    <p>In scope: the Hexbot app and daemon code in <code>hexbot/</code> and <code>apps/</code>, the Connect service at connect.hexbot.app, the hostnames it issues, and this website. Issues in the Hermes Agent core that are not specific to Hexbot should go to <a href="https://github.com/NousResearch/hermes-agent/security">Nous Research</a>; if you are not sure, send it to us and we will pass it on. Out of scope: reports that require a daemon configured with authentication deliberately turned off, findings that only defeat the in-process approval heuristics (Hermes treats those as hardening, not vulnerabilities), volumetric denial of service, and issues in third-party services such as Clerk or Cloudflare, which have their own programmes.</p>
+    <p>In scope: the Hexbot app and daemon code in <code>hexbot/</code> and <code>apps/</code>, the Connect service at connect.hexbot.app, the hostnames it issues, and this website. Issues in the core Hexbot inherits from Hermes Agent that are not specific to Hexbot should go to <a href="https://github.com/NousResearch/hermes-agent/security">Nous Research</a>; if you are not sure, send it to us and we will pass it on. Out of scope: reports that require a daemon configured with authentication deliberately turned off, findings that only defeat the in-process approval heuristics (we treat those as hardening, not vulnerabilities), volumetric denial of service, and issues in third-party services such as Clerk or Cloudflare, which have their own programmes.</p>
   </section>
   <section id="safe-harbor">
     <h2>Safe harbour for researchers</h2>

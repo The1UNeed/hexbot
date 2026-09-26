@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prove a user on some earlier commit can reach this one.
 #
-# Installs a real, earlier Hermes the way a user does, applies ONE update route,
+# Installs a real, earlier Hexbot the way a user does, applies ONE update route,
 # and requires the checkout to land on this commit with a working `hermes`.
 #
 # Nothing here is mocked. scripts/dev-sandbox.sh provides the fake Internet --
@@ -246,7 +246,7 @@ require_hermes_works() {
   ok "hermes runs $when"
 }
 
-# ── install the earlier Hermes ─────────────────────────────────────────────
+# ── install the earlier Hexbot ─────────────────────────────────────────────
 step "installing upstream $INSTALL_REF (real curl | install.sh: uv, Python, Node, venv)"
 install_in_sandbox "install of upstream $INSTALL_REF" "$INSTALL_REF" install
 

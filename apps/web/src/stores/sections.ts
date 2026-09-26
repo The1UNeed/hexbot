@@ -1,7 +1,7 @@
 /**
  * Sections (= conversations = threads), keyed by id and grouped per bot.
  * Refreshed on `hexbot.sections.changed`. `liveSessionId` maps an open
- * section to the Hermes live session its events arrive on.
+ * section to the Hexbot live session its events arrive on.
  */
 
 import { create } from 'zustand'
@@ -115,7 +115,7 @@ export const useSections = create<SectionsState>((set, get) => ({
           live,
           id,
           messagesFromHistory(messages ?? []).filter(
-            // Hermes replays an interrupted hidden kickoff as a plain user turn.
+            // Hexbot replays an interrupted hidden kickoff as a plain user turn.
             message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
           )
         )

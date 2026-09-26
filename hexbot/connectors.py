@@ -1,14 +1,14 @@
-"""Connectors: outside services a bot can reach, and how they map onto Hermes.
+"""Connectors: outside services a bot can reach, and how they map onto Hexbot.
 
 A connector is one catalog row (``CATALOG``). Setting one up writes its
 credentials the way ``hexbot.providers.set_key`` does (root ``.env``, every
-profile ``.env``, ``os.environ``) and, where Hermes needs a backend choice
+profile ``.env``, ``os.environ``) and, where Hexbot needs a backend choice
 (``web.backend``, ``image_gen.provider``, ``tts.provider``,
 ``browser.cloud_provider``), writes that into the root and every profile
 ``config.yaml``. Turning a connector on for a bot pins its toolset in the
 profile's ``tools.enabled_toolsets`` (or clears the skill from
 ``skills.disabled``, or enables the MCP server), preserving whatever else the
-profile has enabled. Field descriptions come from Hermes's own credential
+profile has enabled. Field descriptions come from Hexbot's own credential
 catalog (``OPTIONAL_ENV_VARS``) so the two never drift.
 """
 
@@ -45,7 +45,7 @@ class Provider:
     id: str
     label: str
     keys: tuple[str, ...]
-    #: ``(config section, key, value)`` Hermes reads to pick this backend.
+    #: ``(config section, key, value)`` Hexbot reads to pick this backend.
     selection: tuple[str, str, str] | None = None
 
 
@@ -84,7 +84,7 @@ CATALOG: tuple[Spec, ...] = (
                       ("web", "backend", "keenable")),
              Provider("searxng", "SearXNG (self-hosted)", ("SEARXNG_URL",),
                       ("web", "backend", "searxng"))),
-         # Hermes calls these two keys optional (keyless tiers); Hexbot needs them.
+         # Hexbot calls these two keys optional (keyless tiers); Hexbot needs them.
          extra_help={
              "TAVILY_API_KEY": (None, "Tavily API key for web search and extract.", None, None),
              "KEENABLE_API_KEY": (None, "Keenable API key for web search and page fetch.", None, None)}),
@@ -259,7 +259,7 @@ def _write_config(section: str, key: str, value) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("w") as stream:
             yaml.dump(data, stream)
-    # Hermes caches config.yaml on (mtime, size); the rewrite above is enough.
+    # Hexbot caches config.yaml on (mtime, size); the rewrite above is enough.
 
 
 def _read_root_config() -> dict:
@@ -552,7 +552,7 @@ _CHECKS = {
 
 
 def _run_check(spec_id: str) -> bool | None:
-    """Hermes's own offline requirement check, or None when there is none."""
+    """Hexbot's own offline requirement check, or None when there is none."""
     path = _CHECKS.get(spec_id)
     if path is None:
         return None
@@ -574,7 +574,7 @@ def _is_ready(spec: Spec, *, bot: str | None = None) -> bool:
 
 
 def _scoped_bot() -> str | None:
-    """The bot whose profile Hermes is resolving tools for, if any."""
+    """The bot whose profile Hexbot is resolving tools for, if any."""
     from hermes_constants import get_hermes_home
     home = Path(get_hermes_home())
     return home.name if home.parent.name == "profiles" else None
@@ -583,7 +583,7 @@ def _scoped_bot() -> str | None:
 def gate_tools() -> None:
     """Hide every connector tool from the model until its connector is set up.
 
-    Hermes's own checks pass without one (keyless web search, another
+    Hexbot's own checks pass without one (keyless web search, another
     provider's credential), so each tool in ``Spec.tools`` also has to pass
     ``_is_ready``. Runs once, when the plugin registers; built-in tools are
     in the registry by then.

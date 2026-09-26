@@ -21,7 +21,7 @@ method = _registry.method
 
 @method("profiles.list")
 def _(rid, params: dict) -> dict:
-    """List Hermes profiles (name, path, model, description, skill count).
+    """List Hexbot profiles (name, path, model, description, skill count).
 
     ``include_sessions`` (default true) additionally reports each profile's
     most recent conversation as ``last_session`` so a roster UI can paint
@@ -362,7 +362,7 @@ def _(rid, params: dict) -> dict:
     tokens / credential pools), so a profile created headlessly from a
     plugin was born with NO inference provider — the first message failed
     with "No inference provider configured" and there is no interactive
-    ``hermes setup`` in that flow to recover. A profile spawned as an
+    ``hexbot core setup`` in that flow to recover. A profile spawned as an
     always-available teammate must be able to think out of the box; callers
     that want an isolated/credential-free profile pass
     ``mirror_credentials: false``.
@@ -636,7 +636,7 @@ def _(rid, params: dict) -> dict:
                         {"name": skill_name, "enabled": skill_name.lower() not in disabled}
                     )
 
-            # Toolsets: the same filtered universe the `hermes tools`
+            # Toolsets: the same filtered universe the `hexbot core tools`
             # checklist offers — configurable toolsets (built-in + plugin),
             # minus platform-restricted ones that don't apply here — with
             # enablement resolved the way the runtime actually resolves it.
@@ -679,7 +679,7 @@ def _(rid, params: dict) -> dict:
                 )
                 # Default-off integrations (a2a, yuanbao, spotify, ...) are
                 # opt-ins; when the profile hasn't opted in they're noise in
-                # a per-profile editor — `hermes tools` / Settings is where
+                # a per-profile editor — `hexbot core tools` / Settings is where
                 # you turn them on globally first. Enabled ones still show.
                 # yuanbao rides the same rule: a region-specific integration
                 # that isn't in _DEFAULT_OFF_TOOLSETS but is equally opt-in.

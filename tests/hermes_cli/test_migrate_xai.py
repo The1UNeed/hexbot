@@ -1,4 +1,4 @@
-"""Tests for ``hermes migrate xai`` — apply path with ruamel round-trip."""
+"""Tests for ``hexbot core migrate xai`` — apply path with ruamel round-trip."""
 from __future__ import annotations
 
 import sys

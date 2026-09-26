@@ -1,8 +1,8 @@
 """Browser sign-in for subscription providers, driven from the desktop app.
 
-The device-code flows Hermes runs interactively in a terminal are run here in
+The device-code flows Hexbot runs interactively in a terminal are run here in
 a background thread so a client can start one, show the user the URL and code,
-and poll until the grant is stored in the Hermes auth store.
+and poll until the grant is stored in the Hexbot auth store.
 
 Supported: ``openai-codex`` (ChatGPT or Codex subscription), ``xai-oauth``
 (SuperGrok / Premium+), ``nous`` (Nous Portal). Other OAuth providers report
@@ -164,7 +164,7 @@ def start(provider: str) -> dict:
     flow = FLOWS.get(slug)
     if flow is None:
         return {"supported": False, "provider": slug,
-                "message": f"Sign in from a terminal with: hexbot hermes auth login {slug}"}
+                "message": f"Sign in from a terminal with: hexbot core auth login {slug}"}
     with _lock:
         for other in list(_logins.values()):
             if other.provider == slug and other.status in ("starting", "pending"):

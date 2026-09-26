@@ -425,10 +425,10 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["agent_key"] == token
     assert entry["portal_base_url"] == "https://portal.example.com"
 
-    # `hermes auth add nous` must also populate providers.nous so the
+    # `hexbot core auth add nous` must also populate providers.nous so the
     # 401-recovery path (resolve_nous_runtime_credentials) can refresh an
     # invoke JWT when the token expires. If this mirror is missing, recovery
-    # raises "Hermes is not logged into Nous Portal" and the agent dies.
+    # raises "Hexbot is not logged into Nous Portal" and the agent dies.
     singleton = payload["providers"]["nous"]
     assert singleton["access_token"] == token
     assert singleton["refresh_token"] == "refresh-token"
@@ -438,7 +438,7 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
 
 
 def test_auth_add_nous_oauth_honors_custom_label(tmp_path, monkeypatch):
-    """`hermes auth add nous --type oauth --label <name>` must preserve the
+    """`hexbot core auth add nous --type oauth --label <name>` must preserve the
     custom label end-to-end — it was silently dropped in the first cut of the
     persist_nous_credentials helper because `--label` wasn't threaded through.
     """
@@ -499,13 +499,13 @@ def test_auth_add_nous_oauth_honors_custom_label(tmp_path, monkeypatch):
 
 
 def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch):
-    """Two ``hermes auth add openai-codex`` runs for different ChatGPT
+    """Two ``hexbot core auth add openai-codex`` runs for different ChatGPT
     accounts must produce two independent pool entries with distinct tokens.
 
     Regression for #39236: the add path used to route through the singleton
     ``_save_codex_tokens`` save, so the second login overwrote the first
     account's singleton-mirrored ``device_code`` entry instead of adding a
-    second independent one. ``hermes auth list`` showed two labels sharing
+    second independent one. ``hexbot core auth list`` showed two labels sharing
     one token pair, and rotation silently always used the latest account.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -596,7 +596,7 @@ def test_codex_runtime_pool_only_rate_limit_is_not_missing_auth(tmp_path, monkey
 
 
 def test_auth_add_xai_oauth_sets_active_provider(tmp_path, monkeypatch):
-    """hermes auth add xai-oauth must set active_provider and write a pool entry.
+    """hexbot core auth add xai-oauth must set active_provider and write a pool entry.
 
     Regression history:
     - Early path called ``pool.add_entry()`` without ``active_provider``, so
@@ -651,7 +651,7 @@ def test_auth_add_xai_oauth_sets_active_provider(tmp_path, monkeypatch):
 
 
 def test_auth_add_xai_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch):
-    """Two ``hermes auth add xai-oauth`` runs must produce independent pool entries.
+    """Two ``hexbot core auth add xai-oauth`` runs must produce independent pool entries.
 
     Regression for the same collapse class as #39236 / #42316 for Codex: the
     add path used to route through the singleton ``_save_xai_oauth_tokens``
@@ -868,7 +868,7 @@ def test_clear_provider_auth_removes_provider_pool_entries(tmp_path, monkeypatch
 
 
 def test_logout_resets_codex_config_when_auth_state_already_cleared(tmp_path, monkeypatch, capsys):
-    """`hermes logout --provider openai-codex` must still clear model.provider.
+    """`hexbot core logout --provider openai-codex` must still clear model.provider.
 
     Users can end up with auth.json already cleared but config.yaml still set to
     openai-codex.  Previously logout reported no auth state and left the agent
@@ -938,7 +938,7 @@ def test_unsuppress_credential_source_preserves_other_markers(tmp_path, monkeypa
 
 
 # =============================================================================
-# Unified credential-source stickiness — every source Hermes reads from has a
+# Unified credential-source stickiness — every source Hexbot reads from has a
 # registered RemovalStep in agent.credential_sources, and every seeding path
 # gates on is_source_suppressed.  Below: one test per source proving remove
 # sticks across a fresh load_pool() call.
@@ -946,7 +946,7 @@ def test_unsuppress_credential_source_preserves_other_markers(tmp_path, monkeypa
 
 
 def test_seed_from_singletons_respects_hermes_pkce_suppression(tmp_path, monkeypatch):
-    """anthropic hermes_pkce must not re-seed from ~/.hermes/.anthropic_oauth.json when suppressed."""
+    """anthropic hermes_pkce must not re-seed from ~/.hexbot/.anthropic_oauth.json when suppressed."""
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))

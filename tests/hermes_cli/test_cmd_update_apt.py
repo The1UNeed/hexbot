@@ -1,4 +1,4 @@
-"""APT-managed Hermes installs must never fall through to the git updater."""
+"""APT-managed Hexbot installs must never fall through to the git updater."""
 
 from __future__ import annotations
 

@@ -15,8 +15,8 @@ all in a 300 px column. Three things go wrong:
    same list.
 2. Wide things are squeezed. Memory (four core sections plus notes plus
    dreaming) and Model (two selects with long labels) need room.
-3. Most of what Hermes can do is missing. The Tools page shows five
-   switches. Hermes ships web search across seven providers, image and
+3. Most of what the core can do is missing. The Tools page shows five
+   switches. The core ships web search across seven providers, image and
    video generation, X search, voice, Notion, Linear, Airtable, Home
    Assistant, Spotify, twenty-odd messaging channels, MCP servers, and a
    skills hub. None of it is reachable from Hexbot, and a bot cannot be
@@ -33,7 +33,7 @@ all in a 300 px column. Three things go wrong:
   Nobody is sent to another screen to come back later.
 - **One word for one thing.** Tools are what a bot can do on this
   computer with no account. Connectors are anything that reaches an
-  outside service or server. Skills are instructions. Hermes words
+  outside service or server. Skills are instructions. Core words
   (toolset, platform, env var, MCP) stay internal.
 - **Silent save, loud failure.** Fields save on blur and switches on
   change, as today. Errors show inline beside the control. No Save
@@ -136,12 +136,12 @@ A connector is one row in a catalog that Hexbot owns
 - `scope`: `daemon` (an API key shared by every bot, like a provider
   key) or `bot` (a token that is the bot's own identity, like a
   Telegram bot token).
-- `fields`: the credentials and options to collect, taken from Hermes's
+- `fields`: the credentials and options to collect, taken from the core's
   `OPTIONAL_ENV_VARS` in `hermes_cli/config_defaults.py` (description,
   where to get it, secret or not, advanced or not). That catalog is
-  already the schema Hermes's own setup uses; Hexbot reads it rather
+  already the schema the core's own setup uses; Hexbot reads it rather
   than retyping it.
-- `enables`: what turning it on for a bot means in Hermes terms, one or
+- `enables`: what turning it on for a bot means in core terms, one or
   more of: a toolset in `tools.enabled_toolsets`, a skill left out of
   `skills.disabled`, an MCP server entry, or a platform under
   `platform_toolsets`.
@@ -156,7 +156,7 @@ The first catalog, by group:
 | Images and voice | Image generation (FAL, Krea, OpenAI, xAI), Video generation, Premium voice (ElevenLabs, OpenAI, Mistral) |
 | Notes and work | Notion, Linear, Airtable |
 | Social and home | X search, Home Assistant, Spotify |
-| Channels (bot scope) | Telegram, Discord, Slack, WhatsApp, Signal, iMessage, Matrix, Mattermost, and the rest Hermes ships, each with its allowed-users list |
+| Channels (bot scope) | Telegram, Discord, Slack, WhatsApp, Signal, iMessage, Matrix, Mattermost, and the rest the core ships, each with its allowed-users list |
 | MCP servers | Any number, added by command or URL, with a tool count and a running state |
 
 Web search is a connector, not a tool, because it needs a provider
@@ -198,7 +198,7 @@ catalog, a line saying where to get the value, the scope in plain
 words ("Stored once on this daemon. Every bot you turn it on for uses
 it."), a Turn on for <bot> switch defaulted on, and for daemon-scoped
 connectors an Advanced switch, Use a different token for this bot
-only, which writes to the bot's own profile `.env` instead. Hermes
+only, which writes to the bot's own profile `.env` instead. Core
 profiles each have an `.env`, so this costs nothing new.
 
 Connect and test saves, runs the test, and shows the result in the
@@ -207,8 +207,8 @@ message under the field.
 
 ### Where credentials live
 
-Daemon-scoped values go in the daemon's `.env` as Hermes expects, so
-`hermes` CLI commands run against the same install see them.
+Daemon-scoped values go in the daemon's `.env` as the core expects, so
+`hexbot core` CLI commands run against the same install see them.
 Bot-scoped values go in the bot's profile `.env`. Global Settings gets
 a Connectors tab that is the same catalog without the per-bot switch,
 for administrators who want to set everything up before making bots.
@@ -257,7 +257,7 @@ Settings.
 
 Daemon:
 
-- `hexbot/connectors.py`: the catalog and the mapping onto Hermes
+- `hexbot/connectors.py`: the catalog and the mapping onto core
   config.
 - RPC: `connectors.list` (catalog with daemon state and this bot's
   state), `connectors.setup`, `connectors.test`, `connectors.clear`,

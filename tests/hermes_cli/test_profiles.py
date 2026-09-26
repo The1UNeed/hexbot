@@ -58,7 +58,7 @@ def profile_env(tmp_path, monkeypatch):
 
     * Path.home() -> tmp_path  (so _get_profiles_root() = tmp_path/.hermes/profiles)
     * HERMES_HOME  -> tmp_path/.hermes  (so get_hermes_home() agrees)
-    * Creates the bare-minimum ~/.hermes directory.
+    * Creates the bare-minimum ~/.hexbot directory.
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     default_home = tmp_path / ".hermes"
@@ -200,7 +200,7 @@ class TestCreateProfile:
 # ===================================================================
 
 class TestNoSkillsOptOut:
-    """Tests for `hermes profile create --no-skills` and the opt-out marker."""
+    """Tests for `hexbot core profile create --no-skills` and the opt-out marker."""
 
     def test_no_skills_writes_marker_and_skips_seeding(self, profile_env):
         profile_dir = create_profile("orchestrator", no_alias=True, no_skills=True)
@@ -265,7 +265,7 @@ class TestNoSkillsOptOut:
 # ===================================================================
 
 class TestBackfillProfileEnvs:
-    """Tests for backfill_profile_envs() — the `hermes update` pass that
+    """Tests for backfill_profile_envs() — the `hexbot core update` pass that
     gives pre-#44792 profiles (created before .env seeding) their own
     .env, copied from the default install so credentials don't break."""
 
@@ -371,7 +371,7 @@ class TestDeleteProfile:
         assert pids == [101]
 
     def test_backend_scan_matches_shebang_exec_of_hermes_shim(self, profile_env, monkeypatch):
-        """A `hermes` console-script shim spawned directly (e.g. Electron's
+        """A `hexbot core` console-script shim spawned directly (e.g. Electron's
         findOnPath('hermes') resolution) reports argv[0] as the interpreter
         (python3) and argv[1] as the shim's path -- not "hermes" -- because
         the OS execs the shebang. The scanner must still recognize it so

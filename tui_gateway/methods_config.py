@@ -36,7 +36,7 @@ def _(rid, params: dict) -> dict:
                 )
                 # `scan=true` (set by the desktop in remote-gateway mode): run a
                 # backend-side filesystem scan of the policy roots so repos with
-                # zero Hermes sessions still surface. The desktop's native scan
+                # zero Hexbot sessions still surface. The desktop's native scan
                 # only runs on the local filesystem; on a remote connection it
                 # must ask the host to scan itself (#81723).
                 if params.get("scan") and policy["enabled"]:
@@ -436,7 +436,7 @@ def _(rid, params: dict) -> dict:
                     "provider": provider,
                     "model": runtime.get("model"),
                     "source": source,
-                    "error": "No Hermes provider is configured.",
+                    "error": "No Hexbot provider is configured.",
                 },
             )
 
@@ -479,7 +479,7 @@ def _(rid, params: dict) -> dict:
     """Upload a redacted debug bundle to Nous-internal diagnostics storage.
 
     Desktop's "Send Diagnostics" action (error card / diagnostics UI). Same
-    collection + force-redaction pipeline as ``hermes debug share --nous``
+    collection + force-redaction pipeline as ``hexbot core debug share --nous``
     (collect_share_bundle → build_nous_bundle → share_to_nous); redaction is
     NOT client-controllable — this handler always redacts.
 

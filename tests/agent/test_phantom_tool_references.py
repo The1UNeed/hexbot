@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 class TestHermesAgentHelpGuidance:
-    # Hexbot (CORE_EDITS.md row 7): both slots carry HEXBOT_GUIDANCE, which
+    # Both slots carry HEXBOT_GUIDANCE, which
     # names no tool the session might lack.
     def test_both_slots_carry_the_hexbot_block(self):
         from agent.prompt_builder import (HERMES_AGENT_HELP_GUIDANCE,

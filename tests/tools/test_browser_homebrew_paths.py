@@ -355,7 +355,7 @@ class TestRunBrowserCommandPathConstruction:
     def test_npx_sentinel_resolves_via_resolve_npx_bin_with_pinned_spec(self, tmp_path):
         """When _find_agent_browser resolves the npx sentinel, the cmd prefix
         must come from _resolve_npx_bin() (not a bare shutil.which("npx"), which
-        could let a broken system npx shadow a healthy Hermes-managed one) and
+        could let a broken system npx shadow a healthy Hexbot-managed one) and
         use the pinned agent-browser npx spec, not a bare "agent-browser"."""
         captured_cmd = None
 
@@ -498,7 +498,7 @@ class TestRunChromeFallbackCommandNpxResolution:
 class TestResolveNpxBinPriority:
     """The extended/managed search must be checked before a bare ambient
     PATH lookup, so a broken/unexpected system npx can't shadow a healthy
-    Hermes-managed one — and each candidate must be validated (actually
+    Hexbot-managed one — and each candidate must be validated (actually
     runs) before being trusted, mirroring _find_agent_browser's own
     validation discipline for agent-browser itself."""
 

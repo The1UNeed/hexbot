@@ -1,7 +1,7 @@
 # Photon sidecar
 
-Small Node helper that bridges Hermes Agent to Photon's Spectrum SDK
-(`spectrum-ts`).  Hermes is Python; Photon has no public HTTP
+Small Node helper that bridges Hexbot to Photon's Spectrum SDK
+(`spectrum-ts`).  Hexbot is Python; Photon has no public HTTP
 send-message endpoint today; replies therefore go through this sidecar.
 
 The sidecar:
@@ -10,7 +10,7 @@ The sidecar:
 - exposes a loopback-only HTTP control channel for the Python adapter
   to push send/typing requests (auth via `X-Hermes-Sidecar-Token`)
 - drains the inbound message stream so `spectrum-ts` keeps its
-  reconnect/heartbeat machinery alive and Hermes can receive inbound messages
+  reconnect/heartbeat machinery alive and Hexbot can receive inbound messages
   over the adapter's loopback `GET /inbound` stream
 
 ## Install
@@ -21,8 +21,8 @@ pnpm install --frozen-lockfile --ignore-workspace
 ```
 
 `--ignore-workspace` is required: the sidecar has its own lockfile and is not
-a member of the repository's pnpm workspace. The Hermes plugin's
-`hermes photon setup` command runs this install here automatically.
+a member of the repository's pnpm workspace. The Hexbot plugin's
+`hexbot core photon setup` command runs this install here automatically.
 
 ## Run standalone
 
@@ -41,7 +41,7 @@ it by hand.
 ## Why a sidecar at all?
 
 Photon's Spectrum send path is exposed through the TypeScript SDK's
-`Space.send(...)` API. Hermes is Python, so replies go through this sidecar
+`Space.send(...)` API. Hexbot is Python, so replies go through this sidecar
 until Photon ships a public HTTP send endpoint.
 
 When Photon ships an HTTP send endpoint, the plan is to retire this

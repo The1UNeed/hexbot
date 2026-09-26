@@ -9,7 +9,7 @@ def _rows():
 
 
 def soul_tool(*args, **kwargs):
-    """The real handler returns a JSON string, as Hermes requires."""
+    """The real handler returns a JSON string, as Hexbot requires."""
     import json
     from hexbot.soul import soul_tool as handler
     reply = handler(*args, **kwargs)

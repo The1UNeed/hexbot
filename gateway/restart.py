@@ -35,7 +35,7 @@ def is_global_startup_conflict(error_code: str | None) -> bool:
         return False
     return code == "lock_conflict" or code.endswith("_lock")
 
-# Set by ``hermes gateway run --external-supervisor``. Unlike systemd's
+# Set by ``hexbot core gateway run --external-supervisor``. Unlike systemd's
 # INVOCATION_ID and launchd's XPC_SERVICE_NAME, this survives wrappers that
 # intentionally replace the child environment (for example ``sudo env -i``).
 EXTERNAL_GATEWAY_SUPERVISOR_ENV = "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"

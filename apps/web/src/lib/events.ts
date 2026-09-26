@@ -183,7 +183,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
       return
 
-    // Hermes named the session from its first prompt; the list adopts it.
+    // Hexbot named the session from its first prompt; the list adopts it.
     case 'session.title':
       effects.refreshSections()
 

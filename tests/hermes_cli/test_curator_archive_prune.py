@@ -1,4 +1,4 @@
-"""Tests for `hermes curator archive` and `hermes curator prune`.
+"""Tests for `hexbot core curator archive` and `hexbot core curator prune`.
 
 Covers:
 - archive refuses pinned skills with an `unpin` hint
@@ -38,7 +38,7 @@ def test_archive_refuses_pinned(monkeypatch, capsys):
     assert called == []
     out = capsys.readouterr().out
     assert "pinned" in out.lower()
-    assert "hermes curator unpin" in out
+    assert "hexbot core curator unpin" in out
 
 
 

@@ -1,13 +1,13 @@
-"""Hermes-managed uv and Python runtime repair.
+"""Hexbot-managed uv and Python runtime repair.
 
-Hermes owns its own uv binary at ``$HERMES_HOME/bin/uv`` (or ``uv.exe`` on
+Hexbot owns its own uv binary at ``$HERMES_HOME/bin/uv`` (or ``uv.exe`` on
 Windows).  Every code path that needs uv resolves it from that single location.
 If the binary is missing, ``ensure_uv()`` bootstraps it via the official
 standalone installer with ``UV_UNMANAGED_INSTALL`` / ``UV_INSTALL_DIR`` pointed
 at ``$HERMES_HOME/bin`` so the installer writes directly there — no PATH
 probing, no conda guards, no multi-location resolution chains.
 
-The Python backing the install is different: it is shared by every Hermes
+The Python backing the install is different: it is shared by every Hexbot
 profile because the checkout's ``venv`` is shared.  Runtime repair therefore
 uses an install-scoped store under ``<checkout>/.hermes-runtime/python``. A
 vulnerable interpreter is never reinstalled in place. We provision a new
@@ -52,7 +52,7 @@ _MACOS_MANAGED_PYTHON_IDENTIFIER = "com.nousresearch.hermes.managed-python"
 
 
 def managed_uv_path() -> Path:
-    """Return the path where Hermes keeps *its* uv binary.
+    """Return the path where Hexbot keeps *its* uv binary.
 
     ``$HERMES_HOME/bin/uv`` on POSIX, ``$HERMES_HOME\\bin\\uv.exe`` on
     Windows.  The directory may not exist yet — callers should use
@@ -87,7 +87,7 @@ def managed_python_env(
     install_dir: Path | None = None,
     base_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Return a sanitized environment for Hermes-private uv Python commands."""
+    """Return a sanitized environment for Hexbot-private uv Python commands."""
     target = (
         Path(install_dir)
         if install_dir is not None
@@ -121,7 +121,7 @@ def _macos_sign_managed_python(python: Path) -> bool:
     """Give a newly downloaded managed Python a stable macOS code identity.
 
     python-build-standalone binaries are ad-hoc signed, which leaves macOS
-    TCC with a cdhash-only identity that changes whenever Hermes provisions a
+    TCC with a cdhash-only identity that changes whenever Hexbot provisions a
     new runtime generation.  An identifier-pinned designated requirement
     gives those generations a stable identity even when no Developer ID
     certificate is available locally.
@@ -218,8 +218,8 @@ def _report_runtime_repair_failure(repair: RuntimeRepairResult) -> None:
             f"the existing venv is unchanged ({repair.detail})."
         )
         print(
-            "    Sessions stay protected meanwhile: Hermes keeps databases "
-            "out of WAL mode on this SQLite build. The next `hermes update` "
+            "    Sessions stay protected meanwhile: Hexbot keeps databases "
+            "out of WAL mode on this SQLite build. The next `hexbot core update` "
             "will retry."
         )
         return
@@ -231,7 +231,7 @@ class _UvResult(str):
     """``ensure_uv()`` return value that survives an update boundary.
 
     ``ensure_uv()``'s arity has flipped between a single path string and a
-    ``(path, fresh_bootstrap)`` tuple across releases. ``hermes update`` runs
+    ``(path, fresh_bootstrap)`` tuple across releases. ``hexbot core update`` runs
     the call site from the *old*, already-imported ``hermes_cli.main`` against
     this *freshly pulled* module, so the two can disagree on how many values
     ``ensure_uv()`` returns. An install parked on a 2-tuple release runs
@@ -301,7 +301,7 @@ def _ensure_uv_path(
         # Compatibility boundary: an older, already-imported updater calls the
         # freshly pulled ``ensure_uv()`` after bootstrapping uv.  Repair here so
         # that first update can migrate a vulnerable runtime without requiring
-        # a second ``hermes update``.
+        # a second ``hexbot core update``.
         try:
             repair = repair_vulnerable_runtime(result)
             if repair_observer is not None:
@@ -353,7 +353,7 @@ def ensure_uv(
 def _uv_self_update_is_fresh(now: float | None = None) -> bool:
     """Return True when ``uv self update`` ran recently enough to skip.
 
-    uv releases roughly weekly while many users run ``hermes update`` daily;
+    uv releases roughly weekly while many users run ``hexbot core update`` daily;
     re-running a blocking network self-update on every invocation is waste
     and, offline, an unbounded hang risk. A stamp file under HERMES_HOME
     caches the last successful self-update time.
@@ -393,7 +393,7 @@ def update_managed_uv(
 ) -> Optional[str]:
     """Run ``uv self update`` on the managed uv binary.
 
-    Call this during ``hermes update`` so the managed copy stays current.
+    Call this during ``hexbot core update`` so the managed copy stays current.
     Returns the managed path when uv is available and ``None`` otherwise.
     A self-update failure is non-fatal because the old version still works.
     ``repair_observer``, when provided, receives the runtime repair result.
@@ -461,7 +461,7 @@ def update_managed_uv(
 def _reload_hermes_constants():
     """Re-execute ``hermes_constants`` from disk and return the fresh module.
 
-    ``hermes update`` imports ``hermes_constants`` from the OLD checkout,
+    ``hexbot core update`` imports ``hermes_constants`` from the OLD checkout,
     ``git pull`` then replaces that file, and this freshly-pulled module runs
     its lazy imports against the module object Python already cached in
     ``sys.modules`` — the pre-upgrade one. A symbol added by the update is
@@ -469,7 +469,7 @@ def _reload_hermes_constants():
     contains it, which is what made this read as a contradiction:
 
         cannot import name 'venv_python_path' from 'hermes_constants'
-        (~/.hermes/hermes-agent/hermes_constants.py)
+        (~/.hexbot/hermes-agent/hermes_constants.py)
 
     Reloading picks up the definitions actually on disk, so callers keep using
     the shared helper instead of hand-rolling a second copy of its logic. Same
@@ -666,7 +666,7 @@ def _attempt_install_generation(
     try:
         python.resolve().relative_to(generation.resolve())
     except (OSError, ValueError):
-        logger.warning("uv resolved Python outside the Hermes generation: %s", python)
+        logger.warning("uv resolved Python outside the Hexbot generation: %s", python)
         _remove_tree(generation, boundary=python_root)
         return None
 
@@ -778,7 +778,7 @@ def _install_safe_python_generation(
 
     # All patches on the current minor line are vulnerable or rejected.
     # Fall forward to the next supported minor (e.g. 3.11 → 3.12) so the
-    # user isn't stuck on every `hermes update` with no path to a fixed
+    # user isn't stuck on every `hexbot core update` with no path to a fixed
     # runtime (issue #76106).  The requires-python constraint
     # (>=3.11,<3.14) and the downstream import smoke-test gate
     # compatibility; we only need to stay inside that window.
@@ -1104,7 +1104,7 @@ def _windows_runtime_holders() -> tuple[bool, str]:
         return True, f"could not verify Windows venv holders: {exc}"
     if holders:
         pids = ", ".join(str(item[0]) for item in holders[:6])
-        return True, f"other Hermes processes still hold the venv (PID {pids})"
+        return True, f"other Hexbot processes still hold the venv (PID {pids})"
     return False, ""
 
 
@@ -1112,7 +1112,7 @@ def _windows_runtime_self_lock(live: Path) -> tuple[bool, str]:
     """Detect the one holder the generic scan above is blind to: THIS process.
 
     ``_detect_venv_python_processes`` excludes the calling process and its
-    ancestors on purpose — a CLI ``hermes update`` itself runs from the
+    ancestors on purpose — a CLI ``hexbot core update`` itself runs from the
     venv python — which is correct for the dependency-sync path, where only
     a *loaded* ``.pyd`` image blocks the rewrite and a fresh child process
     dodges it.  For the whole-venv park rename that exemption is fatal:
@@ -1211,7 +1211,7 @@ def _refresh_managed_uv_catalog(uv_bin: str) -> bool:
     newer version number to retry with.
 
     Re-running the official installer is the only supported refresh path for
-    unmanaged installs.  Only the Hermes-managed binary is ever refreshed;
+    unmanaged installs.  Only the Hexbot-managed binary is ever refreshed;
     a caller-supplied foreign uv path is left alone.
 
     Returns ``True`` when the binary's version actually changed — i.e. a
@@ -1242,9 +1242,9 @@ def _default_live_venv(root: Path) -> Path:
     Managed installs create ``<checkout>/venv``, but uv-default and dev
     checkouts use ``<checkout>/.venv``.  Historically only ``venv`` was
     probed, so a ``.venv`` install linking a vulnerable SQLite returned
-    ``not-applicable`` on every ``hermes update`` and stayed on
+    ``not-applicable`` on every ``hexbot core update`` and stayed on
     journal_mode=DELETE forever — even though the WAL fallback warning
-    promises that ``hermes update`` repairs the runtime (issue class:
+    promises that ``hexbot core update`` repairs the runtime (issue class:
     2,600x slower ``state.db`` appends under DELETE).
 
     ``venv`` wins when it holds an interpreter (managed layout takes
@@ -1355,7 +1355,7 @@ def repair_vulnerable_runtime(
         # incomplete generation (#93032).
         print(f"  ⚠ SQLite runtime repair deferred: {self_detail}.")
         print(
-            "    Retrying `hermes update` from inside this venv cannot help: "
+            "    Retrying `hexbot core update` from inside this venv cannot help: "
             "the mapped executable is released only when this process exits."
         )
         print(
@@ -1365,7 +1365,7 @@ def repair_vulnerable_runtime(
         print(f"      cd {root}")
         print("      <system Python> -m hermes_cli.main update")
         print(
-            "    Sessions stay protected meanwhile: Hermes keeps databases "
+            "    Sessions stay protected meanwhile: Hexbot keeps databases "
             "out of WAL mode on this SQLite build."
         )
         return RuntimeRepairResult(
@@ -1401,7 +1401,7 @@ def repair_vulnerable_runtime(
             )
 
         print(
-            "  ⚠ Hermes venv links SQLite "
+            "  ⚠ Hexbot venv links SQLite "
             f"{current.sqlite_version_string}, which has the WAL-reset bug."
         )
         provisioned = _install_safe_python_generation(

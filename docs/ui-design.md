@@ -148,7 +148,7 @@ notice. Working and idle draw the plain pill.
 - Left: attach button (file picker; drag and drop anywhere over the
   transcript; paste images and text files). Attachments preview as chips
   above the textarea with remove buttons.
-- Right: dictation button (Hermes voice), send button (accent) that turns
+- Right: dictation button (Hexbot voice), send button (accent) that turns
   into Stop while streaming.
 - @-mention: typing "@" opens a popover listing the section's bot and, in
   rooms, all members (milestone 3).

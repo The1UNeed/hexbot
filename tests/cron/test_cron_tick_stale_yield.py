@@ -1,7 +1,7 @@
 """Stale-code cron tick yield gate.
 
 A long-lived process whose checkout was updated underneath it (hot git pull /
-interrupted ``hermes update``) serves mixed ``sys.modules``; when such a
+interrupted ``hexbot core update``) serves mixed ``sys.modules``; when such a
 process races a fresh gateway for the cron tick lock and wins, every agent
 job it dispatches can die on ImportErrors whose real cause is staleness.
 

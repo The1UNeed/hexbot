@@ -1,4 +1,4 @@
-"""``hermes profile`` subcommand parser.
+"""``hexbot core profile`` subcommand parser.
 
 Extracted verbatim from ``hermes_cli/main.py:main()`` (god-file Phase 2).
 Handler injected to avoid importing ``main``.
@@ -16,7 +16,7 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     # =========================================================================
     profile_parser = subparsers.add_parser(
         "profile",
-        help="Manage profiles — multiple isolated Hermes instances",
+        help="Manage profiles — multiple isolated Hexbot instances",
     )
     profile_subparsers = profile_parser.add_subparsers(dest="profile_action")
 
@@ -53,14 +53,14 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     profile_create.add_argument(
         "--no-skills",
         action="store_true",
-        help="Create an empty profile with no bundled skills (opts out of `hermes update` skill sync)",
+        help="Create an empty profile with no bundled skills (opts out of `hexbot core update` skill sync)",
     )
     profile_create.add_argument(
         "--description",
         default=None,
         help="One- or two-sentence description of what this profile is good at. "
              "Used by the kanban decomposer to route tasks based on role instead "
-             "of profile name alone. Skip and add later via `hermes profile describe`.",
+             "of profile name alone. Skip and add later via `hexbot core profile describe`.",
     )
 
     profile_delete = profile_subparsers.add_parser("delete", help="Delete a profile")
@@ -137,7 +137,7 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     profile_export.add_argument(
         "-o", "--output", default=None,
         help="Output file (default: a managed profile-exports/<name>-<timestamp>.tar.gz "
-             "under the default Hermes home)",
+             "under the default Hexbot home)",
     )
 
     profile_import = profile_subparsers.add_parser(
@@ -156,7 +156,7 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         "install",
         help="Install a profile distribution from a git URL or local directory",
         description=(
-            "Install a Hermes profile distribution. SOURCE can be a git URL "
+            "Install a Hexbot profile distribution. SOURCE can be a git URL "
             "(github.com/user/repo, https://..., git@...) or a local "
             "directory containing distribution.yaml at its root."
         ),

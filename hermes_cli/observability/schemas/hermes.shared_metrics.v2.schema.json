@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:hermes-agent:schema:shared-metrics:v2",
-  "title": "Hermes Shared Metrics Package v2",
+  "title": "Hexbot Shared Metrics Package v2",
   "type": "object",
   "additionalProperties": false,
   "required": [

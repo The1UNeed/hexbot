@@ -44,7 +44,7 @@ def curator_env(tmp_path, monkeypatch):
     # daemon "curator-review" thread that calls save_state() when it finishes.
     # save_state() resolves the state path from HERMES_HOME at write time, so a
     # straggler thread that outlives this test would write into whatever home
-    # the *next* test has configured (or the default ~/.hermes once monkeypatch
+    # the *next* test has configured (or the default ~/.hexbot once monkeypatch
     # restores the env) — corrupting an unrelated test's state file. This race
     # is invisible on a fast machine but flakes under CI load. Join any such
     # thread here, while HERMES_HOME is still pinned to this test's tmp home
@@ -591,7 +591,7 @@ def test_cli_pin_refuses_bundled_skill(curator_env, capsys):
 # curator review-model resolution (canonical auxiliary.curator slot)
 #
 # Curator was unified with the rest of the aux task system in Apr 2026 so
-# `hermes model` → auxiliary picker, the dashboard Models tab, and the full
+# `hexbot core model` → auxiliary picker, the dashboard Models tab, and the full
 # per-task config (timeout, base_url, api_key, extra_body) all work for it.
 # Voscko report: curator.auxiliary.{provider,model} was advertised but never
 # read. Fix wires curator through auxiliary.curator with a legacy fallback.
@@ -857,7 +857,7 @@ def test_review_fork_restricts_toolsets_to_skills_only(curator_env, monkeypatch)
     ``terminal`` was removed from this fork for issue #96962: a terminal
     mv/cp/rm under the skills tree bypasses the skill ledger entirely, so the
     archive that followed snapshotted an already-stripped package and
-    ``hermes curator rollback`` restored a hollow skill. Removing the toolset
+    ``hexbot core curator rollback`` restored a hollow skill. Removing the toolset
     (rather than guarding terminal commands) closes every shell bypass by
     construction. Without ``enabled_toolsets=["skills"]`` on the AIAgent(...)
     call in ``_run_llm_review``, ``enabled_toolsets`` defaults to None and
@@ -908,7 +908,7 @@ def test_review_fork_toolset_surface_excludes_execution_tools():
     ``terminal`` and ``process`` must stay out of the curator fork's resolved
     surface (issue #96962): a shell mv/cp/rm under the skills tree bypasses
     the skill ledger entirely, the archive that follows snapshots an
-    already-stripped package, and ``hermes curator rollback`` restores a
+    already-stripped package, and ``hexbot core curator rollback`` restores a
     hollow skill. The call-site kwarg is pinned to ``["skills"]`` by the test
     above; this test pins the RESOLUTION, so an ``includes: ["terminal"]``
     added to the skills toolset definition — or a new execution tool merged
@@ -944,7 +944,7 @@ def test_review_prompt_does_not_steer_terminal_writes():
     """The consolidation prompt must not steer the fork into shell mutations.
 
     The #96962 incident was steered by a prompt line telling the fork to
-    ``mkdir -p ~/.hermes/skills/<umbrella>/references/ && mv ...`` its
+    ``mkdir -p ~/.hexbot/skills/<umbrella>/references/ && mv ...`` its
     support files. Removing terminal from the toolset takes away the
     capability; removing the steering stops the fork burning tool calls on
     attempts that can only be refused. Both halves are load-bearing.

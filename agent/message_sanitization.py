@@ -404,7 +404,7 @@ def serialized_messages_bytes(messages: list) -> int:
     """Exact serialized size, in bytes, of the ``messages`` request payload.
 
     Recovery path for HTTP 413 (payload too large).  A 413 is a *byte*-size
-    error, but Hermes' context estimator deliberately prices an image at a
+    error, but Hexbot's context estimator deliberately prices an image at a
     flat per-image token cost so that a screenshot does not trigger premature
     compaction (see ``estimate_messages_tokens_rough``).  That makes the
     token estimate structurally unable to *score* recovery from an

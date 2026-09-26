@@ -1,6 +1,6 @@
-"""Anthropic Messages API adapter for Hermes Agent.
+"""Anthropic Messages API adapter for Hexbot.
 
-Translates between Hermes's internal OpenAI-style message format and
+Translates between Hexbot's internal OpenAI-style message format and
 Anthropic's Messages API. Follows the same pattern as the codex_responses
 adapter — all provider-specific logic is isolated here.
 
@@ -153,7 +153,7 @@ def _get_anthropic_sdk():
 logger = logging.getLogger(__name__)
 
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
-# Hermes effort → Anthropic adaptive-thinking effort (output_config.effort).
+# Hexbot effort → Anthropic adaptive-thinking effort (output_config.effort).
 # Anthropic exposes 5 levels on 4.7+: low, medium, high, xhigh, max.
 # Opus/Sonnet 4.6 only expose 4 levels: low, medium, high, max — no xhigh.
 # We preserve xhigh as xhigh on 4.7+ (the recommended default for coding/
@@ -517,7 +517,7 @@ def _detect_claude_code_version() -> str:
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _MCP_TOOL_PREFIX = "mcp__"
 
-# Anthropic's OAuth billing classifier fingerprints certain Hermes tool
+# Anthropic's OAuth billing classifier fingerprints certain Hexbot tool
 # schemas/prose as a third-party app and reroutes the request to the metered
 # extra-usage lane, surfacing as HTTP 400 "You're out of extra usage" on a
 # valid subscription token (#65365). Deterministic live A/B repros (issue
@@ -836,8 +836,8 @@ def build_anthropic_client(
 
     client = _anthropic_sdk.Anthropic(**kwargs)
     # Bearer-only construction leaves ``api_key`` unset, so the SDK fills it
-    # from ``ANTHROPIC_API_KEY`` (Hermes loads that into the process env from
-    # ``~/.hermes/.env``). The result is dual auth —
+    # from ``ANTHROPIC_API_KEY`` (Hexbot loads that into the process env from
+    # ``~/.hexbot/.env``). The result is dual auth —
     # ``X-Api-Key: sk-ant-…`` *and* ``Authorization: Bearer <portal-jwt>`` —
     # on every Portal / MiniMax / OAuth Messages request. Clear the env-filled
     # key whenever we intentionally authenticated via auth_token alone.
@@ -998,7 +998,7 @@ def build_anthropic_kwargs(
         #    from plan-billing to the extra-usage lane; ``mcp__foo`` is accepted).
         #
         #    Two cases, both must land on the double-underscore ``mcp__`` form:
-        #      a) bare Hermes-native tools (``read_file``)  -> ``mcp__read_file``
+        #      a) bare Hexbot-native tools (``read_file``)  -> ``mcp__read_file``
         #      b) native MCP server tools registered under their full
         #         single-underscore ``mcp_<server>_<tool>`` name
         #         (``mcp_linear_get_issue``) -> ``mcp__linear_get_issue``
@@ -1105,7 +1105,7 @@ def build_anthropic_kwargs(
     # in the ChatCompletionsTransport — see #13503.)
     #
     # On 4.7+ the `thinking.display` field defaults to "omitted", which
-    # silently hides reasoning text that Hermes surfaces in its CLI. We
+    # silently hides reasoning text that Hexbot surfaces in its CLI. We
     # request "summarized" so the reasoning blocks stay populated — matching
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
     if reasoning_config and isinstance(reasoning_config, dict):

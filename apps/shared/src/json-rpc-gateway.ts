@@ -96,7 +96,7 @@ const REPLAY_REQUEST_TIMEOUT_MS = 10_000
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000
 const DEFAULT_HEARTBEAT_DEADLINE_MS = 45_000
 // A reconnect after sleep/wake must not hang forever in 'connecting' (which
-// keeps the composer disabled and stuck on "Starting Hermes..."). If the open
+// keeps the composer disabled and stuck on "Starting Hexbot..."). If the open
 // handshake doesn't land in this window, fail to 'error' so callers can retry.
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 

@@ -434,7 +434,7 @@ _VALID_API_MODES = {
     "bedrock_converse",
     # Optional opt-in: hand the entire turn to a `codex app-server` subprocess
     # so terminal/file-ops/patching/sandboxing run inside Codex's own runtime
-    # instead of Hermes' tool dispatch. Gated behind config key
+    # instead of Hexbot's tool dispatch. Gated behind config key
     # `model.openai_runtime == "codex_app_server"` AND provider in
     # {"openai", "openai-codex"}. Default is unchanged.
     "codex_app_server",
@@ -888,7 +888,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         logger.warning(
             "custom_providers in config.yaml is a dict, not a list. "
             "Each entry must be prefixed with '-' in YAML. "
-            "Run 'hermes doctor' for details."
+            "Run 'hexbot core doctor' for details."
         )
         return None
 
@@ -1672,7 +1672,7 @@ def _resolve_azure_foundry_runtime(
     base_url = explicit_base_url_clean or cfg_base_url or env_base_url
     if not base_url:
         raise AuthError(
-            "Azure Foundry requires a base URL. Set it via 'hermes model' or "
+            "Azure Foundry requires a base URL. Set it via 'hexbot core model' or "
             "the AZURE_FOUNDRY_BASE_URL environment variable."
         )
 
@@ -1761,10 +1761,10 @@ def _resolve_azure_foundry_runtime(
     if not api_key:
         raise AuthError(
             "Azure Foundry requires an API key. Set AZURE_FOUNDRY_API_KEY in "
-            "~/.hermes/.env or run 'hermes model' to configure. To use "
+            "~/.hexbot/.env or run 'hexbot core model' to configure. To use "
             "keyless Microsoft Entra ID auth instead, set "
             "model.auth_mode: entra_id in config.yaml (or pick "
-            "'Microsoft Entra ID' in 'hermes model')."
+            "'Microsoft Entra ID' in 'hexbot core model')."
         )
 
     source = "explicit" if (explicit_api_key or explicit_base_url) else "config"
@@ -2056,10 +2056,10 @@ def resolve_runtime_provider(
                 "Vertex AI credentials could not be resolved. Vertex uses "
                 "OAuth2 (not a static API key): provide a service-account JSON "
                 "via GOOGLE_APPLICATION_CREDENTIALS (or VERTEX_CREDENTIALS_PATH) "
-                "in ~/.hermes/.env, or run 'gcloud auth application-default "
+                "in ~/.hexbot/.env, or run 'gcloud auth application-default "
                 "login' for ADC. Set the GCP project/region under vertex: in "
                 "config.yaml if they aren't embedded in the credentials. "
-                "Run `hermes setup` to install Vertex support."
+                "Run `hexbot core setup` to install Vertex support."
             )
         return {
             "provider": "vertex",
@@ -2190,7 +2190,7 @@ def resolve_runtime_provider(
         # For Nous, the pool entry's runtime_api_key is the agent_key
         # compatibility field. It must be an invoke JWT. The pool doesn't
         # refresh it during selection (that would trigger network calls in
-        # non-runtime contexts like `hermes auth list`). If the key is
+        # non-runtime contexts like `hexbot core auth list`). If the key is
         # expired/missing, refresh the selected pool entry before falling back
         # to singleton auth resolution.
         if provider == "nous" and entry is not None:
@@ -2375,9 +2375,9 @@ def resolve_runtime_provider(
         if _is_azure_endpoint:
             # Honor user-specified env var hints on the model config before
             # falling back to the built-in AZURE_ANTHROPIC_KEY / ANTHROPIC_API_KEY
-            # chain.  Accept both `key_env` (Hermes canonical — matches the
+            # chain.  Accept both `key_env` (Hexbot canonical — matches the
             # custom_providers field name) and `api_key_env` (documented in the
-            # Azure Foundry guide and read by most Hermes-compatible importers).
+            # Azure Foundry guide and read by most Hexbot-compatible importers).
             # Matches the config.yaml examples in website/docs/guides/azure-foundry.md.
             token = ""
             for hint_key in ("key_env", "api_key_env"):

@@ -2,7 +2,7 @@
 """
 Skills Sync -- Manifest-based seeding and updating of bundled skills.
 
-Copies bundled skills from the repo's skills/ directory into ~/.hermes/skills/
+Copies bundled skills from the repo's skills/ directory into ~/.hexbot/skills/
 and uses a manifest to track which skills have been synced and their origin hash.
 
 Manifest format (v2): each line is "skill_name:origin_hash" where origin_hash
@@ -19,7 +19,7 @@ Update logic:
   - DELETED by user (in manifest, absent from user dir): respected, not re-added.
   - REMOVED from bundled (in manifest, gone from repo): cleaned from manifest.
 
-The manifest lives at ~/.hermes/skills/.bundled_manifest.
+The manifest lives at ~/.hexbot/skills/.bundled_manifest.
 """
 
 import hashlib
@@ -95,10 +95,10 @@ def _manifest_file() -> Path:
         return configured
     return _skills_dir() / ".bundled_manifest"
 
-# Marker file written by `hermes profile create --no-skills` (named profiles)
-# and by the installer's `--no-skills` flag (the default ~/.hermes profile).
+# Marker file written by `hexbot core profile create --no-skills` (named profiles)
+# and by the installer's `--no-skills` flag (the default ~/.hexbot profile).
 # When present in HERMES_HOME, sync_skills() is a no-op so neither the
-# installer, `hermes update`, nor a direct sync re-injects bundled skills.
+# installer, `hexbot core update`, nor a direct sync re-injects bundled skills.
 # Delete the file to opt back in. Mirrors
 # hermes_cli.profiles.NO_BUNDLED_SKILLS_MARKER (kept as a literal here to
 # avoid importing the CLI layer into this low-level sync module).
@@ -188,7 +188,7 @@ def _read_suppressed_names() -> set:
     """Built-in skills the curator pruned — must NOT be re-seeded on sync.
 
     Delegates to ``tools.skill_usage`` (single source of truth) and falls back
-    to reading ``~/.hermes/skills/.curator_suppressed`` directly if that import
+    to reading ``~/.hexbot/skills/.curator_suppressed`` directly if that import
     is unavailable in a packaged/update context.
     """
     try:
@@ -281,7 +281,7 @@ def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
 def _compute_relative_dest(skill_dir: Path, bundled_dir: Path) -> Path:
     """
     Compute the destination path in the skills dir preserving the category structure.
-    e.g., bundled/skills/mlops/axolotl -> ~/.hermes/skills/mlops/axolotl
+    e.g., bundled/skills/mlops/axolotl -> ~/.hexbot/skills/mlops/axolotl
     """
     rel = skill_dir.relative_to(bundled_dir)
     return _skills_dir() / rel
@@ -603,7 +603,7 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
 def _read_hub_install_paths() -> Set[str]:
     """Return install paths recorded in the skills-hub lock, as POSIX strings.
 
-    Hub-installed skills are owned by the hub (``hermes skills uninstall``),
+    Hub-installed skills are owned by the hub (``hexbot core skills uninstall``),
     never by bundled sync. Rename recovery must not move them even when their
     content happens to match a bundled origin hash, or the lock's
     ``install_path`` would point at a directory that no longer exists.
@@ -688,7 +688,7 @@ def _recover_renamed_skill(
                     f"  ⚠ {skill_name}: upstream moved this skill to "
                     f"{dest.relative_to(_skills_dir()).as_posix()}, but your "
                     f"modified copy at {rel} was kept — it will not receive "
-                    f"updates. Run `hermes skills reset {skill_name} --restore` "
+                    f"updates. Run `hexbot core skills reset {skill_name} --restore` "
                     f"to move to the new location."
                 )
             continue
@@ -710,13 +710,13 @@ def _recover_renamed_skill(
 
 def sync_skills(quiet: bool = False) -> dict:
     """
-    Sync bundled skills into ~/.hermes/skills/ using the manifest.
+    Sync bundled skills into ~/.hexbot/skills/ using the manifest.
 
     Returns:
         dict with keys: copied (list), updated (list), skipped (int),
                         user_modified (list), cleaned (list), total_bundled (int)
     """
-    # Opt-out: a profile (named or the default ~/.hermes) that wrote the
+    # Opt-out: a profile (named or the default ~/.hexbot) that wrote the
     # .no-bundled-skills marker gets zero bundled-skill seeding — EXCEPT the
     # essential skills (agent/skill_utils.ESSENTIAL_SKILLS). The
     # ``hermes-agent`` skill is the agent's own operating manual and the
@@ -768,9 +768,9 @@ def sync_skills(quiet: bool = False) -> dict:
 
     for skill_name, skill_src in bundled_skills:
         # Curator-pruned built-ins: do not re-seed. The suppression list
-        # (~/.hermes/skills/.curator_suppressed) is written when the curator
+        # (~/.hexbot/skills/.curator_suppressed) is written when the curator
         # archives a bundled skill with curator.prune_builtins enabled. Without
-        # this skip, every `hermes update` would resurrect a skill the user
+        # this skip, every `hexbot core update` would resurrect a skill the user
         # deliberately pruned. Restoring the skill clears its suppression entry.
         # Essential skills are exempt — they must always come back.
         if skill_name in suppressed and skill_name not in _essential_names():
@@ -863,7 +863,7 @@ def sync_skills(quiet: bool = False) -> dict:
                         print(
                             f"  ⚠ {skill_name}: bundled version shipped but you "
                             f"already have a local skill by this name — yours "
-                            f"was kept. Run `hermes skills reset {skill_name}` "
+                            f"was kept. Run `hexbot core skills reset {skill_name}` "
                             f"to replace it with the bundled version."
                         )
                 else:
@@ -1021,14 +1021,14 @@ def _rmtree_writable(path: Path) -> None:
     """
     # Defense in depth (#48200): refuse to rmtree anything outside
     # ``HERMES_HOME/skills/`` to prevent the catastrophic wipe of
-    # ``~/.hermes/`` (``.env``, ``MEMORY.md``, ``kanban.db``, custom
+    # ``~/.hexbot/`` (``.env``, ``MEMORY.md``, ``kanban.db``, custom
     # skills, scripts, …) that an earlier incident observed. Five call
     # sites in this file invoke this helper; if any one of them ever
     # computes a destination outside the skills root — through a bad
     # path join, a missing ``HERMES_HOME`` default, a malicious
     # bundled-manifest entry, or a mid-flight exception that leaves a
     # stale path in scope — this guard turns the resulting
-    # ``shutil.rmtree(~/.hermes)`` into a loud, recoverable ``ValueError``
+    # ``shutil.rmtree(~/.hexbot)`` into a loud, recoverable ``ValueError``
     # instead of silently destroying the user's install.
     target = Path(path).resolve()
     skills_root = _skills_dir().resolve()
@@ -1097,7 +1097,7 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
             "action": "not_in_manifest",
             "message": (
                 f"'{name}' is not a tracked bundled skill. Nothing to reset. "
-                f"(Hub-installed skills use `hermes skills uninstall`.)"
+                f"(Hub-installed skills use `hexbot core skills uninstall`.)"
             ),
             "synced": None,
         }
@@ -1151,7 +1151,7 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
     else:
         action = "manifest_cleared"
         message = (
-            f"Cleared manifest entry for '{name}'. Future `hermes update` runs "
+            f"Cleared manifest entry for '{name}'. Future `hexbot core update` runs "
             f"will re-baseline against your current copy and accept upstream changes."
         )
 
@@ -1159,7 +1159,7 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
 
 
 def _is_tracked_user_modification(origin_hash: str, user_hash: str) -> bool:
-    """Whether an on-disk skill counts as a user modification ``hermes update`` keeps.
+    """Whether an on-disk skill counts as a user modification ``hexbot core update`` keeps.
 
     Shared by the sync loop (which decides what to skip) and
     ``list_user_modified_bundled_skills`` (which surfaces the names) so the two
@@ -1171,7 +1171,7 @@ def _is_tracked_user_modification(origin_hash: str, user_hash: str) -> bool:
 
 
 def list_user_modified_bundled_skills() -> List[dict]:
-    """Return the bundled skills that ``hermes update`` keeps because the user
+    """Return the bundled skills that ``hexbot core update`` keeps because the user
     edited them locally.
 
     A skill counts as user-modified when its on-disk copy no longer matches the
@@ -1230,7 +1230,7 @@ def diff_bundled_skill(name: str) -> dict:
     """Diff a user's copy of a bundled skill against the current stock version.
 
     Lets a user see exactly what diverged before deciding whether to keep their
-    edits or ``hermes skills reset`` back to upstream.
+    edits or ``hexbot core skills reset`` back to upstream.
 
     Returns a dict:
         ``ok`` (bool), ``name`` (str), ``found`` (bool — bundled source exists),
@@ -1253,7 +1253,7 @@ def diff_bundled_skill(name: str) -> dict:
             "diffs": [],
             "message": (
                 f"'{name}' is not a tracked bundled skill (no stock version to "
-                f"diff against). Hub-installed skills use `hermes skills inspect`."
+                f"diff against). Hub-installed skills use `hexbot core skills inspect`."
             ),
         }
     dest = _compute_relative_dest(bundled_src, bundled_dir)
@@ -1329,9 +1329,9 @@ def set_bundled_skills_opt_out(enabled: bool) -> dict:
     """Toggle the .no-bundled-skills opt-out marker for the active profile.
 
     When ``enabled`` is True, writes HERMES_HOME/.no-bundled-skills so the
-    installer, ``hermes update``, and any direct sync stop seeding bundled
+    installer, ``hexbot core update``, and any direct sync stop seeding bundled
     skills. When False, removes the marker so seeding resumes on the next
-    sync. This is the on-disk-state half of ``hermes skills opt-out`` /
+    sync. This is the on-disk-state half of ``hexbot core skills opt-out`` /
     ``opt-in``; removal of already-present skills is a separate, explicit
     step (see ``remove_pristine_bundled_skills``).
 
@@ -1346,8 +1346,8 @@ def set_bundled_skills_opt_out(enabled: bool) -> dict:
             _hermes_home().mkdir(parents=True, exist_ok=True)
             marker.write_text(
                 "This profile opted out of bundled-skill seeding "
-                "(`hermes skills opt-out`).\n"
-                "Delete this file to re-enable sync on the next `hermes update`.\n",
+                "(`hexbot core skills opt-out`).\n"
+                "Delete this file to re-enable sync on the next `hexbot core update`.\n",
                 encoding="utf-8",
             )
             changed = not existed
@@ -1362,7 +1362,7 @@ def set_bundled_skills_opt_out(enabled: bool) -> dict:
                 marker.unlink()
             changed = existed
             message = (
-                "Opted back in. The next `hermes update` (or `hermes skills "
+                "Opted back in. The next `hexbot core update` (or `hexbot core skills "
                 "opt-in --sync`) will re-seed bundled skills."
                 if changed
                 else "Not opted out — no marker to remove."
@@ -1451,7 +1451,7 @@ def remove_pristine_bundled_skills(dry_run: bool = False) -> dict:
 
 
 if __name__ == "__main__":
-    print("Syncing bundled skills into ~/.hermes/skills/ ...")
+    print("Syncing bundled skills into ~/.hexbot/skills/ ...")
     result = sync_skills(quiet=False)
     parts = [
         f"{len(result['copied'])} new",

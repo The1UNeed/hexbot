@@ -1,9 +1,9 @@
-"""OpenAI-compatible shim that forwards Hermes requests to `copilot --acp`.
+"""OpenAI-compatible shim that forwards Hexbot requests to `copilot --acp`.
 
-This adapter lets Hermes treat the GitHub Copilot ACP server as a chat-style
+This adapter lets Hexbot treat the GitHub Copilot ACP server as a chat-style
 backend. Each request starts a short-lived ACP session, sends the formatted
 conversation as a single prompt, collects text chunks, and converts the result
-back into the minimal shape Hermes expects from an OpenAI client.
+back into the minimal shape Hexbot expects from an OpenAI client.
 """
 
 from __future__ import annotations
@@ -192,15 +192,15 @@ def _format_messages_as_prompt(
     tool_choice: Any = None,
 ) -> str:
     sections: list[str] = [
-        "You are being used as the active ACP agent backend for Hermes.",
+        "You are being used as the active ACP agent backend for Hexbot.",
         "Use ACP capabilities to complete tasks.",
         "IMPORTANT: If you take an action with a tool, you MUST output tool calls using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
         "If no tool is needed, answer normally.",
     ]
     if model:
-        sections.append(f"Hermes requested model hint: {model}")
+        sections.append(f"Hexbot requested model hint: {model}")
 
-    # Copilot has no tools of its own that would collide with Hermes', so it
+    # Copilot has no tools of its own that would collide with Hexbot's, so it
     # forwards the whole toolset (no allowlist).
     sections.extend(_render_tool_bridge_sections(tools, tool_choice))
 
@@ -515,17 +515,17 @@ class CopilotACPClient:
             if proc.poll() is not None and stderr_text:
                 if _is_gh_copilot_deprecation_message(stderr_text):
                     raise RuntimeError(
-                        "Hermes ACP mode requires the NEW GitHub Copilot CLI "
+                        "Hexbot ACP mode requires the NEW GitHub Copilot CLI "
                         "(github.com/github/copilot-cli), but the binary it just "
                         "spawned is the deprecated `gh copilot` extension.\n\n"
                         "Install the new CLI:\n"
                         "  npm install -g @github/copilot\n"
                         "  # then verify with: copilot --help\n\n"
                         "If `copilot` already resolves to the new CLI but you still see this,\n"
-                        "point Hermes at it explicitly:\n"
+                        "point Hexbot at it explicitly:\n"
                         "  export HERMES_COPILOT_ACP_COMMAND=/path/to/new/copilot\n\n"
                         "Alternative: use the `copilot` provider (no ACP, hits the Copilot API\n"
-                        "directly with a Copilot subscription token) via `hermes setup`.\n\n"
+                        "directly with a Copilot subscription token) via `hexbot core setup`.\n\n"
                         f"Original error:\n{stderr_text}"
                     )
                 raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
@@ -670,7 +670,7 @@ class CopilotACPClient:
             response = _jsonrpc_error(
                 message_id,
                 -32601,
-                f"ACP client method '{method}' is not supported by Hermes yet.",
+                f"ACP client method '{method}' is not supported by Hexbot yet.",
             )
 
         process.stdin.write(json.dumps(response) + "\n")

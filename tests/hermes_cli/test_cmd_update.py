@@ -114,7 +114,7 @@ class TestCmdUpdatePnpmLockfileCache:
 
     def test_package_json_only_edit_defeats_skip(self, tmp_path, monkeypatch):
         """Reviewer scenario (#61580): dev edits package.json WITHOUT running
-        pnpm — lockfile unchanged. `hermes update` must still install (the
+        pnpm — lockfile unchanged. `hexbot core update` must still install (the
         --no-lockfile fallback is what syncs node_modules in that state)."""
         from hermes_cli import main as hm
 
@@ -731,7 +731,7 @@ class TestConfigVersionCheckUsesFreshModules:
     """Regression: config migration must use freshly-reloaded modules, not the
     sys.modules cache from before git pull.
 
-    Before the fix, ``hermes update`` ran in the PRE-pull Python process.
+    Before the fix, ``hexbot core update`` ran in the PRE-pull Python process.
     After ``git pull`` updated the source on disk, function-level imports
     returned the OLD cached ``hermes_cli.config`` module — so
     ``DEFAULT_CONFIG["_config_version"]`` was stale and
@@ -834,7 +834,7 @@ class TestCmdUpdateProfileSkillSync:
 
 
 class TestCmdUpdateBranchFlag:
-    """``hermes update --branch <name>`` targets the requested branch.
+    """``hexbot core update --branch <name>`` targets the requested branch.
 
     The CLI default stays 'main'; --branch lets callers pick a different
     target without monkey-patching the implementation.
@@ -921,7 +921,7 @@ class TestCmdUpdateBranchFlag:
 
 
 class TestCmdUpdateCheckBranchFlag:
-    """``hermes update --check --branch <name>`` honors the branch override.
+    """``hexbot core update --check --branch <name>`` honors the branch override.
 
     The check path used to call ``git rev-list HEAD..origin/<branch> --count``
     with ``check=True``. When the branch didn't exist on origin, the fetch
@@ -1048,7 +1048,7 @@ class TestCmdUpdateCheckBranchFlag:
 
 
 class TestCmdUpdateZipBranchRefusal:
-    """``hermes update --branch=<non-main>`` must refuse on the ZIP fallback path.
+    """``hexbot core update --branch=<non-main>`` must refuse on the ZIP fallback path.
 
     The ZIP fallback hard-codes a GitHub archive URL for main.zip; honoring
     --branch arbitrarily would require remote-branch existence checks the

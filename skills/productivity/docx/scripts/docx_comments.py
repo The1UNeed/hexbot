@@ -238,7 +238,7 @@ def main() -> int:
     p.add_argument("--target", required=True,
                    help="anchor: first occurrence of this text")
     p.add_argument("--text", required=True, help="comment body")
-    p.add_argument("--author", default="Hermes")
+    p.add_argument("--author", default="Hexbot")
     p.add_argument("--initials", default="")
     p.add_argument("--xml", action="store_true",
                    help="force the XML fallback (skip native API)")

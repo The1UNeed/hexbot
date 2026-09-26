@@ -1,7 +1,7 @@
 """Tests for the community plugin index (#64181).
 
 Covers: index parsing, fuzzy search, cache TTL + fallback chain
-(remote → cache → seed), `hermes plugins search --json`, and install-time
+(remote → cache → seed), `hexbot core plugins search --json`, and install-time
 name resolution (unique / ambiguous / passthrough of owner/repo).
 No live network — every remote fetch is mocked.
 """

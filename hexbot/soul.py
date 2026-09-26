@@ -1,6 +1,6 @@
 """The ``hexbot_soul`` tool: a bot reads or rewrites its own soul.
 
-The soul is the profile's ``SOUL.md``. Hermes freezes it into a section's
+The soul is the profile's ``SOUL.md``. Hexbot freezes it into a section's
 system prompt when the section starts, so a rewrite reaches new sections
 only; the tool says so in its reply, and asks the bot to tell the user.
 """
@@ -40,7 +40,7 @@ def _bot_for_session(session_id: str) -> str | None:
 
 
 def soul_tool(args: dict, *, session_id: str = "", **_kwargs) -> str:
-    """Tool handler. Hermes accepts only strings, so the reply is JSON."""
+    """Tool handler. Hexbot accepts only strings, so the reply is JSON."""
     return json.dumps(_soul(args, session_id), ensure_ascii=False)
 
 

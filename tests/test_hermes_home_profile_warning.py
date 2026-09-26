@@ -4,7 +4,7 @@ Regression test for https://github.com/NousResearch/hermes-agent/issues/18594.
 
 When HERMES_HOME is unset but an active_profile file indicates a non-default
 profile is active, get_hermes_home() should:
-  1. STILL return ~/.hermes (raising would brick 30+ module-level callers)
+  1. STILL return ~/.hexbot (raising would brick 30+ module-level callers)
   2. Emit a loud one-shot warning to stderr so operators can diagnose
      cross-profile data contamination after the fact.
 
@@ -33,7 +33,7 @@ class TestGetHermesHomeProfileWarning:
     def test_classic_mode_no_active_profile_no_warning(
         self, fresh_constants, tmp_path, capsys
     ):
-        """Classic mode: no active_profile file → silent, returns ~/.hermes."""
+        """Classic mode: no active_profile file → silent, returns ~/.hexbot."""
         result = fresh_constants.get_hermes_home()
         assert result == tmp_path / ".hermes"
         assert "HERMES_HOME fallback" not in capsys.readouterr().err

@@ -547,7 +547,7 @@
           # ══════════════════════════════════════════════════════════════════
           (lib.mkIf (!cfg.container.enable) {
             systemd.services.hermes-agent = {
-              description = "Hermes Agent Gateway";
+              description = "Hexbot Gateway";
               wantedBy = [ "multi-user.target" ];
               after = [ "network-online.target" ];
               wants = [ "network-online.target" ];
@@ -593,7 +593,7 @@
             virtualisation.docker.enable = lib.mkDefault (cfg.container.backend == "docker");
 
             systemd.services.hermes-agent = {
-              description = "Hermes Agent Gateway (container)";
+              description = "Hexbot Gateway (container)";
               wantedBy = [ "multi-user.target" ];
               after = [
                 "network-online.target"

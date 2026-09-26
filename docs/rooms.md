@@ -1,9 +1,9 @@
 # Rooms and bot-to-bot messaging
 
 Milestone 3 design. Words per `CLAUDE.md`; product rules per `DESIGN.md`
-section 2. Facts about Hermes in `docs/upstream/rooms-internals.md`.
+section 2. Facts about the core in `docs/core/rooms-internals.md`.
 
-## Why not Hermes Hosted Rooms
+## Why not the core's Hosted Rooms
 
 Hosted Rooms is a discussion engine: two to six members, everyone answers a
 message with no recognised @-handle, at most three rounds and ten messages,
@@ -13,9 +13,8 @@ Hexbot's rules (optional main bot, silence without a mention, members added
 mid-conversation, parallel fan-out with a collecting turn, per-room caps and
 budgets, a bot tagging a human) contradict most of that. Hosted Rooms stays
 untouched for cross-gateway federation later. Hexbot rooms run on their own
-engine over ordinary Hermes sessions, so personas, memory, skills, tools and
-approvals come from Hermes unchanged, and no core edit is needed. The room
-member cap entry in `CORE_EDITS.md` is withdrawn.
+engine over ordinary core sessions, so personas, memory, skills, tools and
+approvals come from the core unchanged, and no core edit is needed.
 
 ## Data model (hexbot.db)
 
@@ -29,7 +28,7 @@ member cap entry in `CORE_EDITS.md` is withdrawn.
   `member.left`, `waiting.human`, `limit.tripped`, `turn.started`,
   `turn.failed`, `note` (system line)
 - `room_sessions(room_id, bot, stored_session_id, live_session_id null)`
-  one hidden Hermes session per (room, bot) on that bot's profile, created
+  one hidden core session per (room, bot) on that bot's profile, created
   with `room_plumbing: true, follow_profile_config: true,
   close_on_disconnect: false`, titled `Room: <name>`
 - `room_turns(id, room_id, bot, trigger_seq, started_at, finished_at,
@@ -91,7 +90,7 @@ section today; room sections come with threads later.
 
 ## Bot-to-bot messages
 
-Hermes's `message_agent` tool delivers through a subprocess per profile and
+The core's `message_agent` tool delivers through a subprocess per profile and
 is only injected into a special "Bot Chat" session. Hexbot registers its own
 tool `message_bot {to, text, wait: bool}` for every bot through
 `ctx.register_tool`:

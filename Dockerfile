@@ -43,7 +43,7 @@ RUN apt-get -o Acquire::Retries=3 update && \
 FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_source
 # Node 26 source stage. Debian trixie's bundled nodejs is pinned to 20.x
 # which reached EOL in April 2026 — we copy node + npm from the upstream
-# node:26 image instead (Hermes pins its toolchain to Node 26 everywhere).
+# node:26 image instead (Hexbot pins its toolchain to Node 26 everywhere).
 # Bookworm-based slim image used so the produced binary links
 # against glibc 2.36, which runs cleanly on our Debian 13 (trixie, glibc
 # 2.41) runtime.  Bumping to a new Node major is a one-line ARG change; see
@@ -63,11 +63,11 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 
 # Install system dependencies in one layer, clear APT cache.
 # tini was previously PID 1 to reap orphaned zombie processes (MCP stdio
-# subprocesses, git, bun, etc.) that would otherwise accumulate when hermes
+# subprocesses, git, bun, etc.) that would otherwise accumulate when Hexbot
 # ran as PID 1. See #15012. Phase 2 of the s6-overlay supervision plan
 # replaces tini with s6-overlay's /init (PID 1 = s6-svscan), which reaps
 # zombies non-blockingly on SIGCHLD and additionally supervises the main
-# hermes process, the dashboard, and per-profile gateways.
+# Hexbot process, the dashboard, and per-profile gateways.
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
     ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils && \
@@ -91,7 +91,7 @@ sys.exit('SQLite FTS5 trigram self-test failed') if db.execute(\"SELECT count(*)
 db.close()"
 
 # ---------- s6-overlay install ----------
-# s6-overlay provides supervision for the main hermes process, the dashboard,
+# s6-overlay provides supervision for the main Hexbot process, the dashboard,
 # and per-profile gateways. /init becomes PID 1 below — see ENTRYPOINT.
 #
 # Multi-arch: BuildKit auto-populates TARGETARCH (amd64 / arm64). s6-overlay
@@ -136,7 +136,7 @@ RUN set -eu; \
 
 # #34192 / #66679: backward-compat shim for orchestration templates that
 # still reference the legacy /usr/bin/tini entrypoint (Hostinger's
-# 'Hermes WebUI' catalog, NAS compose projects that preserve an old
+# 'Hexbot WebUI' catalog, NAS compose projects that preserve an old
 # entrypoint on image update, etc.). A plain symlink to /init made the
 # path exist, but forwarded tini flags like `-g` into s6-overlay's
 # rc.init as the container CMD (`rc.init: 91: -g: not found`) and
@@ -248,9 +248,9 @@ RUN cd plugins/platforms/photon/sidecar && \
 # so Docker users can use these providers without requiring runtime
 # lazy-install access to PyPI (often blocked in containerized envs).
 #
-# The [otlp] extra contains the SDK/exporter imported by Hermes when Gateway
+# The [otlp] extra contains the SDK/exporter imported by Hexbot when Gateway
 # Health export is enabled. Collector and observability-backend dependencies
-# remain external and are not part of the Hermes production image.
+# remain external and are not part of the Hexbot production image.
 #
 # The hindsight memory provider's client (hindsight-client) is baked in
 # for the same reason: it lazy-installs into /opt/hermes/.venv at first
@@ -309,7 +309,7 @@ RUN mkdir -p /opt/hermes/bin && \
 # tree), NOT into $HERMES_HOME. $HERMES_HOME (/opt/data) is a shared data
 # volume that is commonly bind-mounted from the host and even shared with a
 # host-side Desktop/CLI install; stamping it at boot used to clobber that
-# host install's marker and wrongly block its ``hermes update``. A code-scoped
+# host install's marker and wrongly block its ``hexbot core update``. A code-scoped
 # stamp is read first by detect_install_method() and is immune to the share.
 # Start as root so the s6-overlay stage2 hook can usermod/groupmod and chown
 # the data volume. Each supervised service then drops to the hermes user via
@@ -322,14 +322,14 @@ RUN mkdir -p /opt/hermes/bin && \
 # lives outside both /opt/hermes (which operators sometimes bind-mount as a
 # checkout) and /opt/data (the mutable HERMES_HOME volume).
 # .dockerignore excludes .git, so `git rev-parse HEAD` from inside the
-# container always returns nothing — meaning `hermes dump` reports
+# container always returns nothing — meaning `hexbot core dump` reports
 # "(unknown)" and the startup banner drops its `· upstream <sha>` suffix.
 # That makes support triage from container bug reports impossible:
 # we can't tell which commit the user is actually running.
 #
 # Fix: write the commit SHA passed via the HERMES_GIT_SHA build-arg to
 # /opt/hermes/.hermes_build_sha at build time, and have
-# hermes_cli/build_info.py read it at runtime.  Both `hermes dump` and
+# hermes_cli/build_info.py read it at runtime.  Both `hexbot core dump` and
 # banner.get_git_banner_state() try the baked SHA first, then fall back
 # to live `git rev-parse` for source installs (unchanged behaviour).
 #

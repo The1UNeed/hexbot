@@ -52,7 +52,7 @@ _approval_tool_call_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_tool_call_id",
     default="",
 )
-# Hermes session id (observability identity, distinct from the gateway
+# Hexbot session id (observability identity, distinct from the gateway
 # routing session_key above). Approval hooks forward it so observer
 # plugins can attach approval marks to the REAL session scope — without
 # it they fall back to a synthetic "default" session whose scope never
@@ -124,7 +124,7 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     try:
         kwargs.setdefault("turn_id", _approval_turn_id.get())
         kwargs.setdefault("tool_call_id", _approval_tool_call_id.get())
-        # Forward the Hermes session id so observer plugins parent approval
+        # Forward the Hexbot session id so observer plugins parent approval
         # marks to the real session scope instead of a synthetic "default"
         # session (whose scope never closes → marks never export).
         _session_id = _approval_session_id.get()
@@ -294,7 +294,7 @@ def _is_unattended_platform_approval_context() -> bool:
 def _is_single_query_approval_context() -> bool:
     """True when the current approval decision is from a single-query (-q) session.
 
-    ``hermes chat -q "..."`` runs one turn and exits with no user waiting to
+    ``hexbot core chat -q "..."`` runs one turn and exits with no user waiting to
     answer approval prompts, but it still exports ``HERMES_INTERACTIVE=1`` so
     interactive sudo password prompts can be driven from stdin. Without an
     explicit marker, ``_is_interactive_cli()`` would report True and the gate
@@ -381,7 +381,7 @@ def _should_fall_through_to_cli_approval(
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $HERMES_HOME, or by the resolved absolute
 # active profile home path such as /home/hermes/.hermes/config.yaml. The
-# resolved-absolute form is folded into the ~/.hermes/ patterns at detection
+# resolved-absolute form is folded into the ~/.hexbot/ patterns at detection
 # time by _normalize_command_for_detection() — see the rewrite step there — so
 # these static patterns stay free of any import-time path snapshot (which would
 # go stale when HERMES_HOME is set after this module is imported, e.g. under the
@@ -393,14 +393,14 @@ _HERMES_ENV_PATH = (
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
     r'\.env\b'
 )
-# ~/.hermes/config.yaml IS the security policy: approvals.mode, yolo, and the
+# ~/.hexbot/config.yaml IS the security policy: approvals.mode, yolo, and the
 # permanent-approval allowlist live here, and the config cache is mtime-keyed
 # so a write takes effect mid-session (the agent could flip approvals.mode=off
 # and immediately bypass the gate). Pair the write_file/patch deny (file_tools
 # _check_sensitive_path) with terminal-side coverage so `sed -i`, `tee`, `>`,
 # `cp`, etc. targeting it are gated too — otherwise the deny is unpaired
 # theater. Mirrors _HERMES_ENV_PATH; matches the HERMES_HOME override form as
-# well as ~/.hermes/.
+# well as ~/.hexbot/.
 _HERMES_CONFIG_PATH = (
     r'(?:~\/\.hermes/|'
     r'(?:\$home|\$\{home\})/\.hermes/|'
@@ -870,7 +870,7 @@ def _save_blocked_payload(command: str) -> Optional[str]:
         path = script_dir / f"blocked-{int(_time.time())}-{_uuid.uuid4().hex[:8]}.sh"
         path.write_text(
             "#!/bin/bash\n"
-            "# Auto-saved by Hermes: this command exceeded the inline command\n"
+            "# Auto-saved by Hexbot: this command exceeded the inline command\n"
             "# parser limit and was blocked from direct execution. Review it,\n"
             "# then run it via: bash " + str(path) + "\n"
             + command
@@ -977,7 +977,7 @@ DANGEROUS_PATTERNS = [
     (r'\b(?:powershell|pwsh)(?:\.exe)?\b(?:\s+-\S+)*\s+(?:-(?:command|c)\s+)?["\']?(?:remove-item|rmdir|erase|del|rd|ri|rm)\b', "Windows PowerShell destructive delete"),
     (r'\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:encodedcommand|enc|e)\b', "PowerShell encoded command execution"),
     # ── Windows destructive tier (#69472) ────────────────────────────────
-    # These are native Windows EXEs / cmdlets reachable from ANY Hermes
+    # These are native Windows EXEs / cmdlets reachable from ANY Hexbot
     # terminal backend on a Windows host — including the default git-bash
     # backend (taskkill.exe, icacls.exe, reg.exe, vssadmin.exe, bcdedit.exe,
     # cipher.exe are ordinary PATH executables there). Detection input is
@@ -1089,14 +1089,14 @@ DANGEROUS_PATTERNS = [
     # Gateway lifecycle protection: prevent the agent from killing its own
     # gateway process.  These commands trigger a gateway restart/stop that
     # terminates all running agents mid-work.  Allow global flags between
-    # `hermes` and `gateway` (e.g. `hermes -p ade gateway restart`) so a
+    # `hexbot core` and `gateway` (e.g. `hexbot core -p ade gateway restart`) so a
     # profile flag can't slip the agent past the guard.
     (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
     # Docker container lifecycle — any user with docker.sock mounted (a common
     # Docker Compose pattern) gives the agent the ability to restart/stop/kill
     # containers without approval.  These are agent-initiated lifecycle operations
-    # that should always require user consent, just like `hermes gateway restart`
+    # that should always require user consent, just like `hexbot core gateway restart`
     # already does for the gateway process.
     # Docker/Podman daemon redirect — global flags or env prefixes that point
     # the CLI at a DIFFERENT daemon, often a remote host over ssh/tcp.  A
@@ -1146,7 +1146,7 @@ DANGEROUS_PATTERNS = [
     (r'\bkill\b.*\$\(\s*(pgrep|pidof)\b', "kill process via pgrep/pidof expansion (self-termination)"),
     (r'\bkill\b.*`\s*(pgrep|pidof)\b', "kill process via backtick pgrep/pidof expansion (self-termination)"),
     # launchctl-driven gateway stop/restart on macOS. The agent can bypass
-    # the `hermes gateway stop|restart` pattern above by driving launchd
+    # the `hexbot core gateway stop|restart` pattern above by driving launchd
     # directly against the service label (commonly `ai.hermes.gateway`).
     # Catch the operations that stop, restart, or unload it.
     #
@@ -1172,7 +1172,7 @@ DANGEROUS_PATTERNS = [
     # cp/mv/install OVERWRITING a sensitive credential/SSH/shell-rc/Hermes file.
     # The tee/redirection patterns above already gate _SENSITIVE_WRITE_TARGET
     # (~/.ssh/*, ~/.netrc/.pgpass/.npmrc/.pypirc, shell rc files,
-    # ~/.hermes/config.yaml/.env), but cp/mv/install was only paired for /etc and
+    # ~/.hexbot/config.yaml/.env), but cp/mv/install was only paired for /etc and
     # project-relative env/config — so `cp evil ~/.ssh/authorized_keys` (key
     # implant), `cp creds ~/.netrc`, and `cp evil ~/.bashrc` (login-time command
     # injection) slipped through with auto-approve. Same unpaired-door rationale
@@ -1192,7 +1192,7 @@ DANGEROUS_PATTERNS = [
     (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (perl/ruby)"),
     (rf'\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
     (rf'\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
-    # In-place edit of a Hermes-managed security file (~/.hermes/config.yaml or
+    # In-place edit of a Hexbot-managed security file (~/.hexbot/config.yaml or
     # .env). sed -i bypasses the redirection/tee patterns above because it
     # mutates the file directly. Pairs the file_tools write_file/patch deny so
     # the terminal side is not an open door. See #14639.
@@ -1344,7 +1344,7 @@ def _normalize_command_for_detection(command: str) -> str:
     # home-prefix folds below (which match C:\Users\alice\... — no newline).
     command = re.sub(r'\\\r?\n', '', command)
     # Fold absolute home / active-profile-home prefixes into their canonical
-    # ~/ and ~/.hermes/ forms so static user-sensitive patterns catch
+    # ~/ and ~/.hexbot/ forms so static user-sensitive patterns catch
     # /home/alice/.bashrc and C:\Users\alice\.bashrc the same way they catch
     # ~/.bashrc. Resolve at detection time (not via an import-time snapshot) so
     # it tracks HOME / HERMES_HOME even when those are set after this module is
@@ -1355,9 +1355,9 @@ def _normalize_command_for_detection(command: str) -> str:
     # would otherwise dissolve (-> C:Usersalice) and make the fold impossible.
     # The fold matches either separator, so POSIX paths are unaffected by order.
     #
-    # Fold the (more specific) Hermes home first: on Windows it nests under the
+    # Fold the (more specific) Hexbot home first: on Windows it nests under the
     # user home (C:\Users\alice\AppData\...\hermes), so folding the user home
-    # first would eat the prefix the Hermes-home fold needs.
+    # first would eat the prefix the Hexbot-home fold needs.
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
     # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
@@ -1421,7 +1421,7 @@ def _home_prefix_fold_regex(path: str):
 def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
     """Fold each resolved home *path* prefix in *command* to *replacement*.
 
-    *replacement* has no trailing separator (``~`` / ``~/.hermes``); the matched
+    *replacement* has no trailing separator (``~`` / ``~/.hexbot``); the matched
     path tail (with its backslashes normalized to ``/``) supplies it. Longest
     candidate first so a deeper home (e.g. an explicit HOME under USERPROFILE)
     folds before a shorter overlapping one that would otherwise clobber it.
@@ -1464,11 +1464,11 @@ def _rewrite_resolved_user_home(command: str) -> str:
 
 
 def _rewrite_resolved_hermes_home(command: str) -> str:
-    """Rewrite the resolved absolute Hermes home prefix to ``~/.hermes/``.
+    """Rewrite the resolved absolute Hexbot home prefix to ``~/.hexbot/``.
 
     Resolves the active ``HERMES_HOME`` at call time (and its symlink-resolved
     form) and folds an occurrence of ``<home>/`` in *command* into
-    ``~/.hermes/`` so the static ``_HERMES_CONFIG_PATH`` / ``_HERMES_ENV_PATH``
+    ``~/.hexbot/`` so the static ``_HERMES_CONFIG_PATH`` / ``_HERMES_ENV_PATH``
     patterns match. In Docker and gateway deployments the agent often references
     the resolved absolute path directly (e.g. ``sed -i ...
     /home/hermes/.hermes/config.yaml``) rather than ``~``, ``$HOME``, or
@@ -2325,7 +2325,7 @@ def _mask_quoted_newlines(command: str) -> str:
     Detection-only rewrite. A newline inside a quoted string is DATA to the
     shell — part of the argument, not a command separator — yet the flat
     ``_CMDPOS`` start-position class treats every raw ``\\n`` as a command
-    start. That made any multi-line quoted argument (``hermes send`` message
+    start. That made any multi-line quoted argument (``hexbot core send`` message
     bodies, ``git commit -m`` messages, heredoc text) trip the hardline
     blocklist when a data line began with e.g. ``sudo reboot``.
 
@@ -2486,7 +2486,7 @@ def _command_detection_variants(command: str):
 
 
 def _is_verification_artifact_cleanup(command: str) -> bool:
-    """Return whether *command* only removes one Hermes ad-hoc temp script."""
+    """Return whether *command* only removes one Hexbot ad-hoc temp script."""
     try:
         argv = shlex.split(command, posix=True)
     except ValueError:
@@ -2955,7 +2955,7 @@ def approve_session(session_key: str, pattern_key: str):
 
 
 def _release_permission_mode_dependents(session_key: str) -> None:
-    """Drop resources whose immutable mode is derived from Hermes YOLO.
+    """Drop resources whose immutable mode is derived from Hexbot YOLO.
 
     The import stays lazy so approval-only sessions do not load computer-use.
     Releasing on both edges makes enabling YOLO replace an existing standard
@@ -3464,7 +3464,7 @@ def _get_approval_mode() -> str:
 
 
 def is_approval_bypass_active_for_session(session_key: str) -> bool:
-    """Return whether one exact session bypasses Hermes approval prompts.
+    """Return whether one exact session bypasses Hexbot approval prompts.
 
     Collapses the canonical three-source bypass check used across the codebase
     into one place:

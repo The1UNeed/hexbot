@@ -171,7 +171,7 @@ def _add_prompt_cache_key(
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
     """Return the model's wire-compatible reasoning config.
 
-    Hermes' internal effort set extends the wire vocabulary with ``ultra``
+    Hexbot's internal effort set extends the wire vocabulary with ``ultra``
     (the /reasoning command documents none..xhigh|max|ultra). OpenAI-
     compatible wires — OpenRouter chief among them — accept exactly
     max|xhigh|high|medium|low|minimal|none and reject the extension with
@@ -193,7 +193,7 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
-    """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
+    """Translate Hexbot/OpenRouter-style reasoning config to Gemini thinkingConfig."""
     if reasoning_config is None or not isinstance(reasoning_config, dict):
         return None
 
@@ -220,7 +220,7 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
 
     thinking_config: Dict[str, Any] = {"includeThoughts": True}
 
-    # Gemini 2.5 accepts thinkingBudget; don't guess a budget from Hermes'
+    # Gemini 2.5 accepts thinkingBudget; don't guess a budget from Hexbot's
     # coarse effort levels. ``includeThoughts`` alone is enough to surface
     # thought parts without risking request validation errors.
     if normalized_model.startswith("gemini-2.5-"):
@@ -230,7 +230,7 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         effort = "medium"
 
     # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
-    # is stricter (low/high). Clamp Hermes' wider effort set to what each
+    # is stricter (low/high). Clamp Hexbot's wider effort set to what each
     # family accepts so we never forward an undocumented level verbatim.
     if normalized_model.startswith(("gemini-3", "gemini-3.1")):
         if "flash" in normalized_model:
@@ -271,7 +271,7 @@ def _raise_gemini_thinking_max_tokens(
     """Raise Gemini output caps that thinking tokens would otherwise consume.
 
     Gemini bills thought tokens against maxOutputTokens / max_tokens. A
-    global Hermes cap of 4096 is enough for visible text, but Ultra/high
+    global Hexbot cap of 4096 is enough for visible text, but Ultra/high
     thinking can exhaust it on the first request and abort after four
     length-continuations.
     """
@@ -374,7 +374,7 @@ class ChatCompletionsTransport(ProviderTransport):
           ``name`` on ``role: tool``, and strict gateways reject it with
           ``messages[N]: "name" is not supported by this endpoint``. Kept for
           Gemini targets, dropped for everyone else.
-        - Hermes-internal scaffolding markers — any top-level message key
+        - Hexbot-internal scaffolding markers — any top-level message key
           starting with ``_`` (e.g. ``_empty_recovery_synthetic``,
           ``_empty_terminal_sentinel``, ``_thinking_prefill``). These are
           bookkeeping flags the agent loop attaches to messages so the
@@ -501,7 +501,7 @@ class ChatCompletionsTransport(ProviderTransport):
             if strip_tool_result_name and msg.get("role") == "tool" and "name" in msg:
                 mutable_msg().pop("name", None)
 
-            # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
+            # Drop all Hexbot-internal scaffolding markers (``_``-prefixed).
             # OpenAI's message schema has no ``_``-prefixed fields, so this
             # is safe and future-proofs against new markers being added.
             internal_keys = [k for k in msg if isinstance(k, str) and k.startswith("_")]
@@ -1020,7 +1020,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 tc_function = getattr(tc, "function", None)
                 function_name = getattr(tc_function, "name", None)
                 # Match Relay's codec: skip absent function/name fields, but
-                # preserve an explicit blank name for Hermes's recovery path.
+                # preserve an explicit blank name for Hexbot's recovery path.
                 if tc_function is None or function_name is None:
                     continue
                 # Map THIS request's wire aliases back before dispatch.

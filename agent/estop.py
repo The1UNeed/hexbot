@@ -1,12 +1,12 @@
 """Global emergency stop (ESTOP) — a resumable pause for NEW work only.
 
-``hermes pause`` writes a sentinel file at ``$HERMES_HOME/ESTOP``;
-``hermes resume`` removes it. While the sentinel exists:
+``hexbot core pause`` writes a sentinel file at ``$HERMES_HOME/ESTOP``;
+``hexbot core resume`` removes it. While the sentinel exists:
 
 * the cron scheduler skips dispatching due jobs (``cron/scheduler.py:tick``),
 * the embedded kanban dispatcher skips spawning workers
   (``gateway/kanban_watchers.py``),
-* new gateway turns get a brief "Hermes is paused" reply instead of an
+* new gateway turns get a brief "Hexbot is paused" reply instead of an
   agent run (``gateway/run.py:_handle_message``).
 
 In-flight work is NEVER killed — this is pause-new-work, not panic/exit.
@@ -16,7 +16,7 @@ performed, so engaging/disengaging takes effect on the very next check.
 
 The sentinel body is optional JSON ``{"reason": ..., "engaged_at": ...}``.
 A corrupt or empty file still counts as engaged (fail safe): the pause must
-hold even if the file was created by ``touch ~/.hermes/ESTOP``.
+hold even if the file was created by ``touch ~/.hexbot/ESTOP``.
 
 Ported from: gastownhall/gastown estop.go (MIT). Related prior art:
 #26778 (/panic — kill/exit semantics; deliberately different, ours is
@@ -52,10 +52,10 @@ def _hermes_home() -> Path:
 
 
 def _canonical_root() -> Path:
-    """Fleet-wide Hermes root, even when this process is a profile gateway.
+    """Fleet-wide Hexbot root, even when this process is a profile gateway.
 
-    Profile gateways launch with HERMES_HOME=~/.hermes/profiles/<name>.
-    ``hermes pause`` from an operator seat writes ~/.hermes/ESTOP. If we
+    Profile gateways launch with HERMES_HOME=~/.hexbot/profiles/<name>.
+    ``hexbot core pause`` from an operator seat writes ~/.hexbot/ESTOP. If we
     only inspect the profile home, the emergency stop does not bind
     (jarvis-os/t_7b65ff88: fleet-analyst kept dispatching through pause).
     """
@@ -67,7 +67,7 @@ def _canonical_root() -> Path:
 
 
 def sentinel_path() -> Path:
-    """Path of the ESTOP sentinel this process would write on `hermes pause`."""
+    """Path of the ESTOP sentinel this process would write on `hexbot core pause`."""
     return _hermes_home() / SENTINEL_NAME
 
 
@@ -94,7 +94,7 @@ def is_engaged() -> bool:
     """Cheap check: is the global emergency stop engaged?
 
     Engaged if ANY candidate sentinel exists: the process HERMES_HOME
-    (profile-local) or the fleet canonical root (~/.hermes). Fail SAFE on
+    (profile-local) or the fleet canonical root (~/.hexbot). Fail SAFE on
     stat errors so an unreadable sentinel still holds the pause.
     """
     saw_stat_error = False
@@ -130,8 +130,8 @@ def disengage() -> bool:
     """Remove ESTOP sentinels this process can see.
 
     Lifts both the process-local sentinel and the fleet-root sentinel so
-    ``hermes resume`` from a profile gateway still clears an operator pause
-    written at ~/.hermes/ESTOP.
+    ``hexbot core resume`` from a profile gateway still clears an operator pause
+    written at ~/.hexbot/ESTOP.
     """
     lifted = False
     for path in _candidate_sentinel_paths():
@@ -187,12 +187,12 @@ def paused_reply() -> Optional[str]:
     reason = state.get("reason")
     if reason:
         return (
-            f"⏸️ Hermes is paused ({reason}). New work is on hold; "
-            "run `hermes resume` to pick things back up."
+            f"⏸️ Hexbot is paused ({reason}). New work is on hold; "
+            "run `hexbot core resume` to pick things back up."
         )
     return (
-        "⏸️ Hermes is paused. New work is on hold; "
-        "run `hermes resume` to pick things back up."
+        "⏸️ Hexbot is paused. New work is on hold; "
+        "run `hexbot core resume` to pick things back up."
     )
 
 
@@ -217,7 +217,7 @@ def check_paused(component: str, logger: logging.Logger) -> bool:
         suffix = f" (reason: {reason})" if reason else ""
         logger.info(
             "%s dispatch paused by global emergency stop%s — remove with "
-            "`hermes resume` (%s)",
+            "`hexbot core resume` (%s)",
             component,
             suffix,
             sentinel_path(),

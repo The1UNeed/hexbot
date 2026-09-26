@@ -43,7 +43,7 @@ def _run_main_and_capture_yolo_at_startup(monkeypatch, argv):
 
 
 def test_top_level_yolo_flag_sets_env_before_startup(monkeypatch):
-    """hermes --yolo must set HERMES_YOLO_MODE before
+    """hexbot core --yolo must set HERMES_YOLO_MODE before
     _prepare_agent_startup imports tools.approval."""
     result = _run_main_and_capture_yolo_at_startup(
         monkeypatch, ["hermes", "--yolo"]

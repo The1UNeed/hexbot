@@ -277,7 +277,7 @@ class TestGatewayRuntimeStatus:
 
         Per-profile Docker supervision: ``coder``'s gateway died leaving a
         ``gateway_state=running`` record at PID 139.  The OS then recycled 139
-        onto the live *default* gateway (``hermes gateway run``).  The recorded
+        onto the live *default* gateway (``hexbot core gateway run``).  The recorded
         ``start_time`` is absent (older state file), so the start-time PID-reuse
         guard does not catch it.  Without the profile scope the live command
         line still ``looks_like_gateway`` and ``coder`` is wrongly reported up.
@@ -860,7 +860,7 @@ class TestTakeoverMarker:
     def test_consume_rejects_marker_from_different_profile(self, tmp_path, monkeypatch):
         """Regression (#29092): a marker written by a gateway under a DIFFERENT
         HERMES_HOME must be rejected even when PID + start_time coincidentally
-        match — otherwise two profile services sharing a default ~/.hermes flap
+        match — otherwise two profile services sharing a default ~/.hexbot flap
         each other in an infinite SIGTERM/Restart loop. The mismatched marker is
         left in place so the profile it was actually meant for can consume it.
         """
@@ -885,7 +885,7 @@ class TestTakeoverMarker:
         assert marker_path.exists()
 
     def test_consume_accepts_legacy_marker_without_hermes_home(self, tmp_path, monkeypatch):
-        """Back-compat (#29092): markers written by older Hermes versions have no
+        """Back-compat (#29092): markers written by older Hexbot versions have no
         ``replacer_hermes_home`` field; an absent field is treated as same-home so
         single-profile setups and mixed old/new deployments keep working.
         """
@@ -1013,7 +1013,7 @@ class TestPlannedStopMarker:
         ``_get_process_start_time`` returns None on macOS / native Windows
         (no ``/proc/<pid>/stat``). The planned-stop watcher only runs there,
         so if the authoritative consume required a non-None start_time match
-        it would always return False — and ``hermes gateway stop`` would be
+        it would always return False — and ``hexbot core gateway stop`` would be
         misclassified as an unexpected ``UNKNOWN`` exit, exit 1, and revived
         by the service manager (the very crash loop #34597 set out to fix).
         With start_time unavailable on BOTH sides we fall back to PID

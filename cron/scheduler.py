@@ -4,7 +4,7 @@ Cron job scheduler - executes due jobs.
 Provides tick() which checks for due jobs and runs them. The gateway
 calls this every 60 seconds from a background thread.
 
-Uses a file-based lock (~/.hermes/cron/.tick.lock) so only one tick
+Uses a file-based lock (~/.hexbot/cron/.tick.lock) so only one tick
 runs at a time if multiple processes overlap.
 """
 
@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, Callable, List, Optional, Protocol
 
 # Add parent directory to path for imports BEFORE repo-level imports.
-# Without this, standalone invocations (e.g. after `hermes update` reloads
+# Without this, standalone invocations (e.g. after `hexbot core update` reloads
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -144,7 +144,7 @@ def _fallback_chain_phrase() -> str:
     if chain:
         return "Fallback chain was exhausted or unavailable."
     return (
-        "No fallback chain configured — add one with `hermes fallback add`, "
+        "No fallback chain configured — add one with `hexbot core fallback add`, "
         "or set a cron fleet default via `cron.model` + `cron.model_provider` "
         "in config.yaml."
     )
@@ -187,7 +187,7 @@ def _failure_streak_nudge(job: dict) -> str:
     job_ref = job.get("name") or job.get("id") or "this job"
     return (
         f"\nThis job has failed {streak} runs in a row — worth a review. "
-        f"Fix its prompt/config, or pause it with `hermes cron pause {job_ref}` "
+        f"Fix its prompt/config, or pause it with `hexbot core cron pause {job_ref}` "
         "(resume/remove also available) to stop the noise."
     )
 
@@ -220,7 +220,7 @@ class CronTickYielded(RuntimeError):
     Raised instead of returned so the provider loops
     (``cron/scheduler_provider.py``) record it via ``record_ticker_error`` and
     mark the heartbeat ``success=False``: a yielded tick is NOT a healthy tick
-    (``hermes cron status`` must not show green while jobs only fire from the
+    (``hexbot core cron status`` must not show green while jobs only fire from the
     other process). Liveness stays visible — the loop keeps beating and keeps
     yielding; if the fresh gateway dies, its lock releases and the stale
     ticker's next tick proceeds normally (self-healing, no restart needed).
@@ -312,8 +312,8 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
         else:
             job_id = job.get("id") or "<job_id>"
             remediation = (
-                "On the host running Hermes, pin it explicitly: "
-                f"`hermes cron edit {job_id} --provider <provider> "
+                "On the host running Hexbot, pin it explicitly: "
+                f"`hexbot core cron edit {job_id} --provider <provider> "
                 "--model <model>`."
             )
         return (
@@ -429,7 +429,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     message = f"⚠️ Cron '{job_name}' failed: {cleaned}"
 
     # Import-class failures (#95294 part 3): a long-lived gateway whose
-    # checkout was updated underneath it (interrupted `hermes update`, manual
+    # checkout was updated underneath it (interrupted `hexbot core update`, manual
     # git pull) serves MIXED modules — old entries frozen in sys.modules,
     # new files loaded by lazy imports — and every agent cron job then dies
     # with `cannot import name X` / ModuleNotFoundError. The error itself
@@ -459,7 +459,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             message += (
                 f" Likely cause: the gateway is running stale code (booted "
                 f"on {boot_rev}, disk is at {disk_rev}) — run "
-                "`hermes gateway restart` to fix it."
+                "`hexbot core gateway restart` to fix it."
             )
 
     return message
@@ -606,7 +606,7 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
        Keeps the agent's job-scoped toolset override intact — #6130. Enabled
        MCP servers are layered on per ``_merge_mcp_into_per_job_toolsets`` so a
        native-toolset allowlist does not silently strip MCP tools.
-    2. Per-platform ``hermes tools`` config for the ``cron`` platform.
+    2. Per-platform ``hexbot core tools`` config for the ``cron`` platform.
        Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``)
        so users can gate cron toolsets globally without recreating every job.
     3. ``None`` on any lookup failure — AIAgent loads the full default set
@@ -1463,7 +1463,7 @@ def _utcnow_iso_ms() -> str:
 
 
 def _write_usage_audit(record: dict) -> None:
-    """Append a single JSONL line to ~/.hermes/cron/usage_audit.jsonl.
+    """Append a single JSONL line to ~/.hexbot/cron/usage_audit.jsonl.
 
     NEVER raises — a logger bug must not break cron jobs. Wraps the entire
     write (path resolve, mkdir, json.dumps, file append) in a single try.
@@ -1482,7 +1482,7 @@ def _interpreter_shutting_down(exc: Optional[BaseException] = None) -> bool:
     """True when the Python interpreter is finalizing.
 
     A cron tick can fire while the gateway is tearing down — SIGTERM from
-    ``hermes update`` / ``hermes gateway stop`` / systemd restart, or an
+    ``hexbot core update`` / ``hexbot core gateway stop`` / systemd restart, or an
     OOM-kill. Once finalization starts, ``concurrent.futures`` refuses new
     work with ``RuntimeError: cannot schedule new futures after interpreter
     shutdown`` and asyncio's default executor is gone, so *any* attempt to
@@ -1512,7 +1512,7 @@ _hermes_home: Path | None = None
 
 
 def _get_hermes_home() -> Path:
-    """Resolve Hermes home dynamically while preserving test monkeypatch hooks.
+    """Resolve Hexbot home dynamically while preserving test monkeypatch hooks.
 
     Cron is per-profile by design (#4707): the in-process ticker runs inside a
     profile-scoped gateway, so resolving the active HERMES_HOME at call time
@@ -1908,7 +1908,7 @@ def _open_continuable_cron_thread(
     if not callable(create_thread) or loop is None:
         return None
     task_name = job.get("name") or job.get("id", "cron")
-    thread_name = f"Hermes — {task_name}"
+    thread_name = f"Hexbot — {task_name}"
     try:
         from agent.async_utils import safe_schedule_threadsafe
 
@@ -2794,7 +2794,7 @@ def _resolve_bot_chat_target(job: dict, profile_arg: str) -> Optional[dict]:
     ``-p`` flag is needed at send time) or an explicit profile name that
     must exist in THIS machine's profile root.  Cross-machine delivery is
     intentionally unsupported: names resolve only against the local
-    ``~/.hermes/profiles/`` tree, so same-named profiles on other gateways
+    ``~/.hexbot/profiles/`` tree, so same-named profiles on other gateways
     can never be targeted by accident.
     """
     if not profile_arg:
@@ -3196,7 +3196,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # Set when a live adapter acked a send with NO delivery evidence (no
     # message_id / raw_response — the Slack/Matrix/Mattermost bare
     # SendResult(success=True) shape). Persisted on the job as
-    # ``last_delivery_unverified`` so `hermes cron list` shows the state
+    # ``last_delivery_unverified`` so `hexbot core cron list` shows the state
     # instead of it living only in a WARNING log line.
     unverified_targets: list = []
 
@@ -3218,7 +3218,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     # Bridge gateway media-policy config (strict / allow_dirs / trust_recent)
     # into the env vars the path validator reads. Gateway startup does this
-    # at boot; a standalone process (manual `hermes cron run` from the CLI,
+    # at boot; a standalone process (manual `hexbot core cron run` from the CLI,
     # a cron tick without the gateway) historically did NOT — so manual runs
     # filtered attachment paths under a DIFFERENT policy than scheduled runs
     # and silently dropped files the gateway would deliver. Idempotent,
@@ -3361,7 +3361,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             # No live transport. A relay-fronted platform's ONLY sender is the
             # gateway's live relay adapter — there is no standalone fallback
             # (the connector owns the credential). A manual in-process run
-            # (`hermes cron run`) has no live relay adapter, so surface the
+            # (`hexbot core cron run`) has no live relay adapter, so surface the
             # accurate remediation instead of the native configured/enabled
             # gate, which misdiagnoses relay-fronted deployments.
             from gateway.relay import relay_fronted_platforms
@@ -4437,7 +4437,7 @@ def _run_job_script(
     (the `memory-watchdog.sh` pattern) without wrapping them in Python.
 
     Subprocess environment is passed through ``_sanitize_subprocess_env`` so
-    provider credentials and other Hermes-managed secrets are not inherited
+    provider credentials and other Hexbot-managed secrets are not inherited
     (SECURITY.md §2.3), matching terminal and MCP child processes.
 
     Args:
@@ -5279,8 +5279,8 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     except AuthError as exc:
         return (
             f"provider credential missing: {exc}. "
-            "Set the provider API key in .env (or `hermes setup`), or pin a "
-            "working provider via `hermes cron edit "
+            "Set the provider API key in .env (or `hexbot core setup`), or pin a "
+            "working provider via `hexbot core cron edit "
             f"{job.get('id')} --provider <p>`."
         )
     except Exception:
@@ -5411,7 +5411,7 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
             return (
                 f"delivery platform '{platform_name}' has no gateway "
                 "credentials configured (not connected). Configure it via "
-                "`hermes setup` or change the job's `deliver` target."
+                "`hexbot core setup` or change the job's `deliver` target."
             )
     return None
 
@@ -6045,7 +6045,7 @@ def run_job(
 
         # Mark this job as NOT the dispatcher-owned kanban worker.
         #
-        # A kanban worker is a normal `hermes chat -q` CLI agent whose default
+        # A kanban worker is a normal `hexbot core chat -q` CLI agent whose default
         # toolset includes `cronjob`, running with HERMES_KANBAN_TASK
         # legitimately in its own env; `cronjob(action="run")` calls
         # run_one_job() -> run_job() right here in that process.  Without this
@@ -6097,7 +6097,7 @@ def run_job(
         # Model resolution precedence: per-job override > cron.model (the
         # cron-fleet default) > HERMES_MODEL env > config.yaml ``model:``
         # (string or ``{default: ...}``). The per-job value is intentionally
-        # re-read from storage every tick so a ``hermes cron edit --model``
+        # re-read from storage every tick so a ``hexbot core cron edit --model``
         # after a failed run takes effect on the next tick — there is no
         # in-memory cache.
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
@@ -6161,8 +6161,8 @@ def run_job(
                 f"HERMES_MODEL={os.getenv('HERMES_MODEL', '')!r}, "
                 "config.yaml model.default missing or empty). "
                 f"Set a per-job model via "
-                f"`hermes cron edit {job_id} --model <name>` or set a "
-                "default with `hermes model <name>`."
+                f"`hexbot core cron edit {job_id} --model <name>` or set a "
+                "default with `hexbot core model <name>`."
             )
 
         # Apply IPv4 preference if configured.
@@ -6457,9 +6457,9 @@ def run_job(
                     )
                 else:
                     _remediation = (
-                        "To run on the new config, on the host running Hermes "
+                        "To run on the new config, on the host running Hexbot "
                         "pin it explicitly: "
-                        f"`hermes cron edit {job_id} --provider <provider> "
+                        f"`hexbot core cron edit {job_id} --provider <provider> "
                         "--model <model>` (or pin the original values to keep "
                         "them)."
                     )
@@ -7261,7 +7261,7 @@ def run_one_job(
     through the single fenced completion path.
     """
     if extra_prompt is None:
-        # A gateway-forwarded manual run (`hermes cron run --prompt` /
+        # A gateway-forwarded manual run (`hexbot core cron run --prompt` /
         # cronjob(action='run', prompt=...) on a relay-fronted target) stamps
         # its transient context on the job via trigger_job; the ticker/Chronos
         # fire that consumes the manual occurrence carries it here. Single-fire:
@@ -7702,7 +7702,7 @@ def _run_one_job_body(
         elif incident_acked and not success:
             # Distinct from plain "suppressed" (silence marker / local jobs):
             # the failure ping was withheld because the operator acked this
-            # exact signature via `hermes cron incidents ack`.
+            # exact signature via `hexbot core cron incidents ack`.
             delivery_outcome = "suppressed_acked"
         else:
             delivery_outcome = "suppressed"
@@ -7900,7 +7900,7 @@ _DEAD_OWNER_REAP_INTERVAL_SECONDS = 300.0
 _last_dead_owner_reap_at: Optional[float] = None
 
 # Worktree maintenance throttle: the startup pruner historically ran only on
-# `hermes -w` launches, so on gateway-driven boxes (where sessions arrive via
+# `hexbot core -w` launches, so on gateway-driven boxes (where sessions arrive via
 # Telegram/Discord and nobody launches the CLI for days) merged scratch trees
 # accumulated into tens of GB. The cron tick is the one reliably periodic
 # process on every install, so it owns a low-frequency sweep too. Tests may
@@ -7913,7 +7913,7 @@ _worktree_maintenance_lock = threading.Lock()
 def _worktree_maintenance_repos() -> List[str]:
     """Repos whose ``.worktrees/`` this scheduler should keep pruned.
 
-    Candidates: the hermes install checkout itself (where ``hermes -w``
+    Candidates: the hermes install checkout itself (where ``hexbot core -w``
     sessions on dev boxes create trees) and every configured job workdir's
     repo root. Only repos that actually have a ``.worktrees/`` dir survive —
     everything else costs nothing.
@@ -7957,7 +7957,7 @@ def _maybe_run_worktree_maintenance() -> None:
     """Throttled, threaded worktree prune from the cron tick.
 
     Runs ``cli._prune_stale_worktrees`` (the same conservative pruner the
-    ``hermes -w`` startup path uses — dirty/unpushed/live-locked trees are
+    ``hexbot core -w`` startup path uses — dirty/unpushed/live-locked trees are
     never touched) against every candidate repo, on a daemon thread so the
     tick itself never waits on git. Errors never propagate: worktree GC is
     hygiene, not scheduling.
@@ -8022,7 +8022,7 @@ def tick(
     """
     # Stale-code yield gate — BEFORE the lock race (#stale-tick-preemption).
     # A long-lived process whose checkout was updated underneath it (hot
-    # ``git pull``, interrupted ``hermes update``) serves MIXED sys.modules:
+    # ``git pull``, interrupted ``hexbot core update``) serves MIXED sys.modules:
     # every agent job it dispatches can die on ImportErrors whose real cause
     # is staleness. When this process is provably stale AND a fresher
     # process holds the gateway runtime lock, that process's own ticker
@@ -8083,9 +8083,9 @@ def tick(
         raise
 
     try:
-        # Global emergency stop (`hermes pause`): skip dispatch entirely while
+        # Global emergency stop (`hexbot core pause`): skip dispatch entirely while
         # the ESTOP sentinel exists. Never touches in-flight runs — due jobs
-        # simply wait for the next tick after `hermes resume`. Logged once per
+        # simply wait for the next tick after `hexbot core resume`. Logged once per
         # engagement (not every tick) by check_paused.
         try:
             from agent.estop import check_paused as _estop_check_paused
@@ -8100,7 +8100,7 @@ def tick(
 
         # Dead-owner claim reclaim (#86721): execution rows carry their owner
         # pid + process start time, but recovery previously ran only at
-        # scheduler STARTUP. A one-shot `hermes cron run` that claimed a job
+        # scheduler STARTUP. A one-shot `hexbot core cron run` that claimed a job
         # and died mid-run (its runner thread lived in the exiting CLI
         # process) left the row 'claimed' forever while the long-lived
         # gateway ticker kept running — blocking every future run of that
@@ -8130,7 +8130,7 @@ def tick(
                 logger.debug("Dead-owner execution reclaim failed: %s", _reap_exc)
 
         # Periodic worktree GC (throttled to every 6h, threaded): gateway-only
-        # boxes never hit the `hermes -w` startup pruner, so this is the only
+        # boxes never hit the `hexbot core -w` startup pruner, so this is the only
         # sweep they get. Same conservative pruner, same guards.
         try:
             _maybe_run_worktree_maintenance()

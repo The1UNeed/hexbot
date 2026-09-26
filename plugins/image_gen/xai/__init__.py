@@ -199,7 +199,7 @@ def _resolve_model(caller_model: Optional[str] = None) -> Tuple[str, Dict[str, A
 
     Priority:
     1. Caller-supplied ``caller_model`` — the dispatcher forwards top-level
-       ``image_gen.model`` (what ``hermes tools`` writes) as the ``model``
+       ``image_gen.model`` (what ``hexbot core tools`` writes) as the ``model``
        kwarg, mirroring the openrouter provider.
     2. ``XAI_IMAGE_MODEL`` env override.
     3. Scoped ``image_gen.xai.model`` in config.yaml.
@@ -362,7 +362,7 @@ class XAIImageGenProvider(ImageGenProvider):
         provider_name = str(creds.get("provider") or "xai").strip() or "xai"
         if not api_key:
             return error_response(
-                error="No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY.",
+                error="No xAI credentials found. Configure xAI OAuth in `hexbot core model` or set XAI_API_KEY.",
                 error_type="missing_api_key",
                 provider=provider_name,
                 aspect_ratio=aspect_ratio,

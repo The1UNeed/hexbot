@@ -3,7 +3,7 @@
 # The installer is dot-sourced without running its entry point, then external
 # commands and downloads are replaced with deterministic in-process stubs.
 # This exercises the shipped range parser and Test-Node acceptance gate without
-# changing PATH, installing software, or touching the user's Hermes home.
+# changing PATH, installing software, or touching the user's Hexbot home.
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 $installScript = Join-Path $repoRoot 'scripts\install.ps1'

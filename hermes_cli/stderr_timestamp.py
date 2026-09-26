@@ -78,9 +78,9 @@ def _is_launchd_supervised(environ: Mapping[str, str] | None = None) -> bool:
 
 
 def _is_hermes_gateway_run_argv(command: Sequence[str]) -> bool:
-    """True for Hermes ``gateway run`` argv this wrapper is allowed to upgrade.
+    """True for Hexbot ``gateway run`` argv this wrapper is allowed to upgrade.
 
-    The wrapper is generic. Only historical/current Hermes gateway shapes
+    The wrapper is generic. Only historical/current Hexbot gateway shapes
     get ``--external-supervisor``; an arbitrary launchd child must not be
     marked as gateway-supervised (#87005).
     """
@@ -106,7 +106,7 @@ def _prepare_child_command(
 
     launchd stamps ``XPC_SERVICE_NAME=<job label>`` only on this wrapper.
     The grandchild sees ``XPC_SERVICE_NAME=0``. Newly generated plists put
-    ``--external-supervisor`` on the inner ``gateway run`` so ``hermes update``
+    ``--external-supervisor`` on the inner ``gateway run`` so ``hexbot core update``
     can see the flag on the live process argv. Stale plists still wrap the
     historical ``gateway run --replace`` shape without that flag; append it
     here, and only for that shape.

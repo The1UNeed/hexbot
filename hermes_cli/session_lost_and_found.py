@@ -1,6 +1,6 @@
 """Last-resort page-level salvage for an unreadable session database schema.
 
-``hermes sessions recover --allow-partial`` normally copies rows through SQL,
+``hexbot core sessions recover --allow-partial`` normally copies rows through SQL,
 which requires the ``sessions`` and ``messages`` table *schemas* to be
 readable. When the schema page itself is damaged, SQL-level salvage is
 impossible — but the row payloads frequently survive on their b-tree pages.
@@ -13,7 +13,7 @@ walks raw pages and rebuilds rows it cannot attribute to a schema into
 
 This module shells out to that CLI (it is a shell feature, NOT available via
 the Python ``sqlite3`` module) and then heuristically maps ``lost_and_found``
-rows back into a fresh current-schema Hermes session database.
+rows back into a fresh current-schema Hexbot session database.
 
 Everything produced through this lane is explicitly **best effort**: column
 mapping is heuristic (field counts plus sentinel values), fabricated parent
@@ -31,7 +31,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
-# Hermes session ids are timestamps: 20260812_135332_ab12cd. This is the
+# Hexbot session ids are timestamps: 20260812_135332_ab12cd. This is the
 # strongest sentinel available for classifying schema-less rows.
 SESSION_ID_PATTERN = re.compile(r"^\d{8}_\d{6}_")
 

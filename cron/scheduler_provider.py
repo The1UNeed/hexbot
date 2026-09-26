@@ -71,14 +71,14 @@ def _existing_profile_homes(profile_homes: list) -> list:
     The multiplex ticker's ``profile_homes`` is a snapshot taken at startup
     (``web_server.py`` calls ``profiles_to_serve(multiplex=True)`` once, and
     the gateway multiplex path does the same). If a profile is deleted while
-    the ticker runs — via ``hermes profile delete``, the desktop's DELETE
+    the ticker runs — via ``hexbot core profile delete``, the desktop's DELETE
     ``/api/profiles/<name>`` route, or any other path that removes the home
     directory — that stale entry stays in the list.
 
     Ticking or heartbeating a deleted home recreates its ``cron/`` workspace
     (``record_ticker_heartbeat`` -> ``ensure_dirs`` -> ``mkdir(parents=True)``)
     on every 60s cycle, so the "deleted" profile silently comes back on disk
-    and in ``hermes profile list`` (#47368). Filtering on directory existence
+    and in ``hexbot core profile list`` (#47368). Filtering on directory existence
     leaves a deleted profile's home untouched, which is the correct invariant:
     a home that does not exist cannot hold jobs to fire.
     """
@@ -578,7 +578,7 @@ class InProcessCronScheduler(CronScheduler):
         # cron store on every tick cycle so secondary-profile jobs actually fire
         # instead of languishing in a store no ticker owns (#69377). Without this,
         # only the process-global HERMES_HOME (the default profile) is ticked.
-        # Heartbeats and recovery are also scoped per profile so `hermes cron
+        # Heartbeats and recovery are also scoped per profile so `hexbot core cron
         # status` reflects liveness for every profile independently.
         if profile_homes:
             self._start_multiplex(
@@ -600,7 +600,7 @@ class InProcessCronScheduler(CronScheduler):
                 "Marked %d interrupted cron execution(s) unknown after restart",
                 recovered,
             )
-        # Heartbeat once before the first sleep so `hermes cron status` sees a
+        # Heartbeat once before the first sleep so `hexbot core cron status` sees a
         # live ticker immediately after startup, not only after the first tick.
         record_ticker_heartbeat()
         # Exponential backoff for consecutive tick failures — most importantly
@@ -640,7 +640,7 @@ class InProcessCronScheduler(CronScheduler):
                 else:
                     logger.error("Cron tick error: %s", e, exc_info=True)
                 # Persist the failure reason next to the heartbeat markers so
-                # `hermes cron status`/`list` (separate processes) can show
+                # `hexbot core cron status`/`list` (separate processes) can show
                 # WHY ticks fail, not just that the success marker is stale —
                 # e.g. a root-rewritten jobs.json locking out the ticker's
                 # uid went unnoticed for ~14h with the reason buried in the
@@ -784,7 +784,7 @@ class InProcessCronScheduler(CronScheduler):
                         )
                         record_ticker_heartbeat(success=_home_ok)
                         # Surface the failure reason (or clear it) per profile
-                        # so `hermes cron status` can show WHY ticks fail
+                        # so `hexbot core cron status` can show WHY ticks fail
                         # (#68483).
                         if _home_ok:
                             clear_ticker_error()
