@@ -1,9 +1,10 @@
 import Link from "next/link";
-import { SignedIn, SignedOut, UserButton } from "@clerk/nextjs";
+import { UserButton } from "@clerk/nextjs";
 import { authMode } from "@/lib/auth";
 import { Logo } from "./logo";
 
-export function Header() {
+// Clerk 7 dropped <SignedIn>/<SignedOut>; the layout already knows the user on the server.
+export function Header({ signedIn }: { signedIn: boolean }) {
   const mode = authMode();
   return (
     <header className="site-header">
@@ -12,10 +13,7 @@ export function Header() {
         <Link className="hide-sm" href="/connect">Daemons</Link>
         <a className="hide-sm" href="https://hexbot.app/docs/connect/">Docs</a>
         {mode === "clerk" ? (
-          <>
-            <SignedOut><Link className="button button-sm" href="/sign-in">Sign in</Link></SignedOut>
-            <SignedIn><UserButton /></SignedIn>
-          </>
+          signedIn ? <UserButton /> : <Link className="button button-sm" href="/sign-in">Sign in</Link>
         ) : mode === "dev" ? (
           <span className="eyebrow"><span className="dot dot-amber" aria-hidden="true"></span>Development sign-in</span>
         ) : null}

@@ -45,7 +45,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
   const body = (
     <html lang="en">
       <body>
-        <Header />
+        <Header signedIn={userId !== null} />
         <main>{children}</main>
         <Footer />
         <ConsentNotice />
