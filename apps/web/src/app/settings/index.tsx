@@ -45,6 +45,7 @@ import {
 } from '../../stores/updates'
 import { useUsers } from '../../stores/users'
 import { MemoryEditor } from '../bot-settings/memory'
+import { ConfirmUpdate, updateNow, updateTarget } from '../confirm-update'
 
 export const SETTINGS_TABS = [
   'providers',
@@ -1199,6 +1200,7 @@ export function UpdatesSettings(): React.JSX.Element {
   const bridge = getBridge()
   const app = useUpdates(state => state.app)
   const [pending, setPending] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   const action = app ? updateAction(app) : 'check'
   const busy = pending || app?.status === 'checking' || app?.status === 'downloading'
 
@@ -1223,22 +1225,13 @@ export function UpdatesSettings(): React.JSX.Element {
           </p>
           {app?.status !== 'disabled' ? (
             <div className="mt-3 flex flex-wrap gap-2">
-              {action === 'download' ? (
-                <Button
-                  disabled={busy}
-                  onClick={() => run(() => bridge.updater.download())}
-                  variant="primary"
-                >
-                  {app?.errorContext === 'download' ? 'Retry download' : 'Download update'}
-                </Button>
-              ) : null}
-              {action === 'install' ? (
-                <Button
-                  disabled={busy}
-                  onClick={() => run(() => bridge.updater.install())}
-                  variant="primary"
-                >
-                  Restart and install
+              {action === 'download' || action === 'install' ? (
+                <Button disabled={busy} onClick={() => setConfirming(true)} variant="primary">
+                  {action === 'install'
+                    ? 'Restart and install'
+                    : app?.errorContext === 'download'
+                      ? 'Retry update'
+                      : 'Update'}
                 </Button>
               ) : null}
               <Button
@@ -1267,6 +1260,13 @@ export function UpdatesSettings(): React.JSX.Element {
             </span>
           </label>
         </div>
+      ) : null}
+      {bridge ? (
+        <ConfirmUpdate
+          onClose={() => setConfirming(false)}
+          onConfirm={() => run(() => updateNow(bridge))}
+          version={confirming ? updateTarget(app) : null}
+        />
       ) : null}
       <h3 className={cn('font-medium', bridge ? 'mt-8' : '')}>Daemon</h3>
       <div className="mt-2">

@@ -331,7 +331,7 @@ describe('settings', () => {
           install,
           onStatus: () => () => undefined,
           setChannel: vi.fn().mockResolvedValue(idle),
-          state: vi.fn().mockResolvedValue(idle)
+          state: vi.fn(async () => useUpdates.getState().app!)
         },
         version: '0.1.5-nightly.20260914.6'
       }
@@ -360,15 +360,19 @@ describe('settings', () => {
       expect(
         await screen.findByText('Version 0.1.5-nightly.20260916.9 is available.')
       ).toBeVisible()
-      fireEvent.click(screen.getByRole('button', { name: 'Download update' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Update' }))
+      const question = 'Are you sure you want to update to version 0.1.5-nightly.20260916.9?'
+      expect(await screen.findByText(question)).toBeVisible()
+      fireEvent.click(screen.getByRole('button', { name: 'No' }))
+      await waitFor(() => expect(screen.queryByText(question)).toBeNull())
+      expect(download).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole('button', { name: 'Update' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Yes' }))
+      await waitFor(() => expect(install).toHaveBeenCalledTimes(1))
       expect(download).toHaveBeenCalledTimes(1)
-      expect(
-        await screen.findByText(
-          'Version 0.1.5-nightly.20260916.9 is downloaded. Restart to install it.'
-        )
-      ).toBeVisible()
-      fireEvent.click(screen.getByRole('button', { name: 'Restart and install' }))
-      expect(install).toHaveBeenCalledTimes(1)
+      expect(install.mock.invocationCallOrder[0]).toBeGreaterThan(
+        download.mock.invocationCallOrder[0]!
+      )
     } finally {
       delete (window as { hexbot?: unknown }).hexbot
       useUpdates.setState({ app: null, daemon: null })
