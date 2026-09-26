@@ -20048,7 +20048,8 @@ def start_server(
             # child.stdout for this sentinel — so write to the fd, not to the
             # (redirected) sys.stdout, or the desktop times out after 90s
             # against a perfectly healthy backend (#96282).
-            _write_machine_sentinel_line(f"{ready_token} port={actual_port}")
+            if not os.isatty(1):  # for the program reading our output; a person at a terminal never sees it
+                _write_machine_sentinel_line(f"{ready_token} port={actual_port}")
             if headless:
                 # No SPA, and the JSON-RPC/WS endpoints are auth-gated — don't
                 # advertise a paste-and-connect URL, just announce the bind.
@@ -20056,9 +20057,9 @@ def start_server(
                 # block-buffered and can surface MINUTES after the flushed
                 # READY sentinel above, which reads as a slow boot in
                 # support bundles when the backend was actually up.
-                print(f"  Hermes backend listening on {host}:{actual_port}", flush=True)
+                print(f"  Hexbot daemon listening on {host}:{actual_port}", flush=True)
             else:
-                print(f"  Hermes Web UI → http://{host}:{actual_port}")
+                print(f"  Hexbot → http://{host}:{actual_port}")
             _maybe_open_browser(host, actual_port, open_browser, initial_profile)
 
             # Collapse the peer-hangup teardown flood (#50005). When the Desktop

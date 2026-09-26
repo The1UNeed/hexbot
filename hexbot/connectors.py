@@ -626,7 +626,7 @@ def test_connector(connector_id: str, *, bot: str | None = None) -> dict:
     verdict = _run_check(spec.id)
     if verdict is False:
         result = {"ok": False,
-                  "message": f"{spec.name} is set up but Hermes cannot use it yet. Check the value."}
+                  "message": f"{spec.name} is set up but Hexbot cannot use it yet. Check the value."}
         _save_test(spec.id, probed=False, **result)
         return result
     probe = _PROBES.get(spec.id)

@@ -450,7 +450,7 @@ export class JsonRpcGatewayClient {
 
       if (frame.error) {
         call.reject(
-          new JsonRpcGatewayError(frame.error.message || 'Hermes RPC failed', {
+          new JsonRpcGatewayError(frame.error.message || 'The daemon could not complete that request', {
             code: typeof frame.error.code === 'number' ? frame.error.code : undefined,
             data: frame.error.data
           })
