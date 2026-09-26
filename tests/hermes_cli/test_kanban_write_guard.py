@@ -1,4 +1,4 @@
-"""#69283: kanban write guard prevents tests from writing to real ~/.hermes."""
+"""#69283: kanban write guard prevents tests from writing to real ~/.hexbot."""
 
 from __future__ import annotations
 

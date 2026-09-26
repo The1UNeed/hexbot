@@ -1,7 +1,7 @@
 """Export monitoring events to an OpenTelemetry Collector over OTLP/HTTP.
 
 Maps gateway monitoring events to OTel spans and sends them to the endpoint
-configured under ``monitoring.export.otlp``. Lets an operator stream Hermes
+configured under ``monitoring.export.otlp``. Lets an operator stream Hexbot
 gateway health into their own observability stack (OTEL Collector, DataDog,
 and similar).
 

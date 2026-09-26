@@ -1,4 +1,4 @@
-"""Ramp Router (router.com) provider plugin for Hermes Agent.
+"""Ramp Router (router.com) provider plugin for Hexbot.
 
 Provider profile for `Ramp Router <https://docs.router.com>`_, Ramp's LLM
 gateway: one OpenAI Responses-compatible endpoint at
@@ -375,7 +375,7 @@ router = RouterProfile(
     env_vars=("RAMP_ROUTER_API_KEY", "ROUTER_API_KEY", "RAMP_ROUTER_BASE_URL"),
     base_url=_base_url(),
     auth_type="api_key",
-    # Identify Hermes traffic to the gateway (Router attributes coding-agent
+    # Identify Hexbot traffic to the gateway (Router attributes coding-agent
     # clients by User-Agent prefix, the way it already recognizes OpenCode's
     # versioned UA) — and Router's WAF rejects blank/default client UAs.
     default_headers={"User-Agent": f"Hermes-Agent/{_HERMES_VERSION}"},

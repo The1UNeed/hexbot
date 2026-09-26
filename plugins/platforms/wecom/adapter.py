@@ -1148,7 +1148,7 @@ class WeComAdapter(BasePlatformAdapter):
                 #
                 # The official wecom-openclaw-plugin treats this case as an
                 # error and surfaces it to its caller, which then *does not*
-                # resend.  Hermes' prior behaviour — raising RuntimeError so
+                # resend.  Hexbot's prior behaviour — raising RuntimeError so
                 # the upper layer falls back to a normal markdown send —
                 # produced duplicate messages whenever WeCom *had* rendered
                 # the streamed frame (see docs/rca-wecom-stream-final-ack-
@@ -3495,7 +3495,7 @@ def interactive_setup() -> None:
             "How should unauthorized users be handled?",
             [
                 "Enable open access (anyone can message the bot)",
-                "Use DM pairing (unknown users request access, you approve with 'hermes pairing approve')",
+                "Use DM pairing (unknown users request access, you approve with 'hexbot core pairing approve')",
                 "Disable direct messages",
                 "Skip for now (bot will deny all users until configured)",
             ],
@@ -3508,12 +3508,12 @@ def interactive_setup() -> None:
         elif access_idx == 1:
             save_env_value("WECOM_DM_POLICY", "pairing")
             print_success("DM pairing mode — users will receive a code to request access.")
-            print_info("Approve with: hermes pairing approve <platform> <code>")
+            print_info("Approve with: hexbot core pairing approve <platform> <code>")
         elif access_idx == 2:
             save_env_value("WECOM_DM_POLICY", "disabled")
             print_warning("Direct messages disabled.")
         else:
-            print_info("Skipped — configure later with 'hermes gateway setup'")
+            print_info("Skipped — configure later with 'hexbot core gateway setup'")
 
     home = prompt("Home chat ID (optional, for cron/notifications)", password=False).strip()
     if home:
@@ -3562,7 +3562,7 @@ def register(ctx) -> None:
         is_connected=_is_connected,
         validate_config=_is_connected,
         required_env=["WECOM_BOT_ID", "WECOM_SECRET"],
-        install_hint="Run `hermes setup` to install WeCom support.",
+        install_hint="Run `hexbot core setup` to install WeCom support.",
         setup_fn=interactive_setup,
         allowed_users_env="WECOM_ALLOWED_USERS",
         allow_all_env="WECOM_ALLOW_ALL_USERS",
@@ -3586,7 +3586,7 @@ def register(ctx) -> None:
         is_connected=_callback_is_connected,
         validate_config=_callback_is_connected,
         required_env=["WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"],
-        install_hint="Run `hermes setup` to install WeCom support.",
+        install_hint="Run `hexbot core setup` to install WeCom support.",
         allowed_users_env="WECOM_CALLBACK_ALLOWED_USERS",
         allow_all_env="WECOM_CALLBACK_ALLOW_ALL_USERS",
         emoji="💼",

@@ -153,7 +153,7 @@ def build_models_payload(
     - ``pricing``: enrich each row with formatted per-model pricing and,
       for Nous, ``free_tier``/``unavailable_models`` so the GUI picker can
       show $/Mtok columns and gate paid models on free accounts —
-      mirroring the ``hermes model`` CLI picker. Adds network calls
+      mirroring the ``hexbot core model`` CLI picker. Adds network calls
       (pricing fetch + Nous tier check); only set for interactive pickers.
     - ``capabilities``: add a per-row ``capabilities`` map
       ``{model: {fast, reasoning}}`` so pickers can gate the model-options
@@ -665,7 +665,7 @@ def _append_unconfigured_rows(
                 f"Configured provider missing usable credentials; paste {key_env} to reactivate. "
                 "Showing the saved model only."
                 if auth_type == "api_key" and key_env
-                else "Configured provider is not authenticated; run `hermes model` to reactivate. "
+                else "Configured provider is not authenticated; run `hexbot core model` to reactivate. "
                 "Showing the saved model only."
             )
             extras.append(
@@ -702,7 +702,7 @@ def _anthropic_oauth_credentials_present() -> bool:
     """True when the user explicitly authenticated Anthropic via OAuth.
 
     Two deliberate flows leave no trace in active_provider /
-    model.provider / API-key env vars: Hermes' own Anthropic device flow
+    model.provider / API-key env vars: Hexbot's own Anthropic device flow
     (token in auth.json) and a Claude Code login (~/.claude/.credentials.json).
     ``list_authenticated_providers`` already accepts both readers as real
     credentials when discovering rows; this mirrors that acceptance so the
@@ -750,7 +750,7 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
 
     ``list_authenticated_providers`` intentionally discovers ambient / auto-
     seeded credentials (for example GitHub CLI -> Copilot). Desktop chat model
-    pickers want the narrower subset the user explicitly configured for Hermes.
+    pickers want the narrower subset the user explicitly configured for Hexbot.
     """
     from hermes_cli.auth import is_provider_explicitly_configured
 
@@ -791,7 +791,7 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             kept.append(row)
             continue
         if slug == "anthropic" and _anthropic_oauth_credentials_present():
-            # Anthropic OAuth logins (Hermes device flow / Claude Code) are
+            # Anthropic OAuth logins (Hexbot device flow / Claude Code) are
             # deliberate sign-ins that leave no trace in active_provider,
             # model.provider, or API-key env vars. The strict gate below
             # would drop the row even though list_authenticated_providers
@@ -804,7 +804,7 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
 
 
 def _provider_is_keyless(slug: str) -> bool:
-    """True when the provider's Hermes overlay declares it keyless."""
+    """True when the provider's Hexbot overlay declares it keyless."""
     try:
         from hermes_cli.providers import HERMES_OVERLAYS
         overlay = HERMES_OVERLAYS.get(slug)
@@ -891,7 +891,7 @@ def _apply_picker_hints(rows: list[dict]) -> None:
         row["warning"] = (
             f"paste {key_env} to activate"
             if auth_type == "api_key" and key_env
-            else f"run `hermes model` to configure ({auth_type})"
+            else f"run `hexbot core model` to configure ({auth_type})"
         )
 
 

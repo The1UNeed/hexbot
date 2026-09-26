@@ -233,7 +233,7 @@ def _(rid, params: dict) -> dict:
 
 @method("reload.env")
 def _(rid, params: dict) -> dict:
-    """Re-read ``~/.hermes/.env`` into the gateway process via
+    """Re-read ``~/.hexbot/.env`` into the gateway process via
     ``hermes_cli.config.reload_env``, matching classic CLI's ``/reload``
     handler.  Newly added API keys take effect on the next agent call
     without restarting the TUI.
@@ -1842,7 +1842,7 @@ def _(rid, params: dict) -> dict:
 
     Returns ``frames`` (reveal 0→1) plus static legend/summary/bucket metadata,
     so Ink can render and walk the tree locally without round-tripping the
-    gateway. Shares its renderer with the ``hermes journey`` CLI.
+    gateway. Shares its renderer with the ``hexbot core journey`` CLI.
     """
     try:
         cols = int(params.get("cols", 80) or 80)
@@ -1983,7 +1983,7 @@ def _(rid, params: dict) -> dict:
 
     Params: optional ``profile`` (defaults to the launch profile). Result:
     ``{servers: [{name, description, installed, enabled, requires: [env
-    keys], transport}]}`` — the same catalog `hermes mcp` offers, so
+    keys], transport}]}`` — the same catalog `hexbot core mcp` offers, so
     capability UIs can present the full menu and know which entries need
     setup (missing requires) before they'll work.
     """
@@ -2350,7 +2350,7 @@ def _(rid, params: dict) -> dict:
     ``mcp.servers.oauth.poll`` with the returned ``session_id`` until
     ``status == "approved"``. This mirrors the provider-OAuth start/poll model
     (``/api/providers/oauth/{id}/start`` + ``/poll``): a background worker drives
-    the SAME interactive MCP OAuth machinery ``hermes mcp login`` uses
+    the SAME interactive MCP OAuth machinery ``hexbot core mcp login`` uses
     (``_probe_single_server`` under ``force_interactive_oauth``), and a loopback
     listener captures the browser redirect — no FastAPI request object needed.
 
@@ -2513,7 +2513,7 @@ def _(rid, params: dict) -> dict:
     """List installed plugins with activation state, or toggle one on/off.
 
     Backs the TUI Plugins Hub. Uses the same disk-discovery + enable/disable
-    primitives as ``hermes plugins`` / the dashboard, so the three surfaces
+    primitives as ``hexbot core plugins`` / the dashboard, so the three surfaces
     agree on what's installed and what's enabled.
 
     Actions:
@@ -2521,7 +2521,7 @@ def _(rid, params: dict) -> dict:
                        status, portable}], "user_count": N, "bundled_count": M}
       - ``toggle`` → flip ``key`` (or ``name``) based on ``enable`` (bool).
                        Returns the refreshed row plus {"ok", "unchanged"}.
-      - ``install`` → git-clone into ``~/.hermes/plugins/`` (non-interactive).
+      - ``install`` → git-clone into ``~/.hexbot/plugins/`` (non-interactive).
                        Params: ``identifier`` or ``repo``, optional ``force``,
                        ``enable`` (default True). Returns dashboard install dict.
 
@@ -2573,7 +2573,7 @@ def _(rid, params: dict) -> dict:
                         "source": source,
                         "status": status,
                         # Agent Plugins v1 package (plugin.json — the portable
-                        # skills/MCP format) vs a native Hermes plugin.
+                        # skills/MCP format) vs a native Hexbot plugin.
                         "portable": _is_portable_plugin_dir(_dir),
                     }
                 )

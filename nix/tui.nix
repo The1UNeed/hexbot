@@ -1,4 +1,4 @@
-# nix/tui.nix — Hermes TUI (Ink/React) compiled with tsc and bundled
+# nix/tui.nix — Hexbot TUI (Ink/React) compiled with tsc and bundled
 { hermesNpmLib, ... }:
 hermesNpmLib.buildPnpmPackage {
   dirs = [

@@ -13,7 +13,7 @@ Routing contract (exercised by ``tests/tools/test_browser_extension_router.py``)
   default: ``browser.extension_control.enabled`` is false unless explicitly
   configured, so every real browser action keeps its exact legacy path.
 
-- **No server-bound identity ⇒ legacy.** Generic Hermes callers keep the
+- **No server-bound identity ⇒ legacy.** Generic Hexbot callers keep the
   existing backend when no authenticated browser-controller identity is bound.
 
 - **Bound identity ⇒ authoritative extension lane.** Once the gateway binds a
@@ -124,7 +124,7 @@ def route_browser_tool(
     principal_id/transport_family:
         Server-bound caller identity. Both are mandatory when the feature is
         enabled; missing values preserve the existing backend for generic
-        Hermes callers.
+        Hexbot callers.
     tool_call_id:
         Caller tool-call id forwarded verbatim to ``dispatch``.
 

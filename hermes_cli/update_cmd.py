@@ -1,4 +1,4 @@
-"""Hermes update pipeline — extracted from ``hermes_cli/main.py``.
+"""Hexbot update pipeline — extracted from ``hermes_cli/main.py``.
 
 Mechanical move (main.py decomposition): ``_cmd_update_impl``, ``_cmd_update_check``
 and every module-level helper used only by the update path, plus the update-only
@@ -88,9 +88,9 @@ _STALE_PURGE_PROTECTED = frozenset(
 
 
 def _purge_stale_hermes_modules() -> None:
-    """Evict every cached Hermes module after the checkout changed in-place.
+    """Evict every cached Hexbot module after the checkout changed in-place.
 
-    ``hermes update`` keeps running in the pre-pull Python process. The
+    ``hexbot core update`` keeps running in the pre-pull Python process. The
     gateway auto-restart phase that follows does function-level
     ``from hermes_cli.gateway import ...`` — executing NEW source inside an
     OLD ``sys.modules`` world. The moment new source references a symbol
@@ -102,7 +102,7 @@ def _purge_stale_hermes_modules() -> None:
 
     ``_UPDATE_RUNTIME_RELOAD_MODULES`` handled this per-symptom — three
     hardcoded module names, re-fixed every time a new module grew a new
-    export. This is the class fix: drop EVERY cached module under the Hermes
+    export. This is the class fix: drop EVERY cached module under the Hexbot
     package prefixes so subsequent lazy imports rebuild a self-consistent,
     all-new module graph from the updated checkout. Old module objects
     referenced by the running updater frames stay alive and functional (a
@@ -131,16 +131,16 @@ def _purge_stale_hermes_modules() -> None:
                 purged.append(name)
         if purged:
             logger.debug(
-                "Purged %d stale Hermes module(s) after checkout update", len(purged)
+                "Purged %d stale Hexbot module(s) after checkout update", len(purged)
             )
     except Exception as exc:
-        logger.debug("Could not purge stale Hermes modules: %s", exc)
+        logger.debug("Could not purge stale Hexbot modules: %s", exc)
 
 
 def _reload_updated_runtime_modules() -> None:
     """Reload update-sensitive modules after the checkout changes in-place.
 
-    ``hermes update`` keeps running in the pre-pull Python process. After a
+    ``hexbot core update`` keeps running in the pre-pull Python process. After a
     large update, modules already present in ``sys.modules`` can still expose
     old symbols even though their source files on disk are new. Refresh the
     small module set used by lazy-backend refresh before that step imports
@@ -165,7 +165,7 @@ def _reload_updated_runtime_modules() -> None:
 def _reload_config_modules() -> None:
     """Force-reload modules from disk after git pull.
 
-    ``hermes update`` runs in the PRE-pull Python process. After ``git pull``
+    ``hexbot core update`` runs in the PRE-pull Python process. After ``git pull``
     updates the source files on disk, modules already in ``sys.modules``
     still hold the OLD code. Function-level imports return the cached module,
     so ``DEFAULT_CONFIG["_config_version"]`` is the OLD value and
@@ -230,7 +230,7 @@ def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
     """Migrate every SIBLING profile's config.yaml to the current version.
 
     #91277 Phase 2 (fleet-wide config migration; #20438/#54926/#79048): the
-    shared checkout serves every profile, but ``hermes update`` historically
+    shared checkout serves every profile, but ``hexbot core update`` historically
     migrated only the active profile's config — siblings drifted versions
     until their gateway hit a config the new code couldn't read.
 
@@ -325,7 +325,7 @@ def _check_and_apply_config_migration(
     except Exception as exc:
         logger.debug("Config check during update failed: %s", exc)
         print("  ⚠️  Could not check config version.")
-        print("     Run 'hermes config migrate' to check manually.")
+        print("     Run 'hexbot core config migrate' to check manually.")
         return
 
     has_new_options = bool(missing_env or missing_config)
@@ -362,7 +362,7 @@ def _check_and_apply_config_migration(
                 print(f"  ⚠️  {_warn}")
         except Exception as _mig_err:
             print(f"  ⚠️  Config format update failed: {_mig_err}")
-            print("     Run 'hermes config migrate' to retry.")
+            print("     Run 'hexbot core config migrate' to retry.")
     elif needs_migration:
         print()
         # Show WHAT changed, not just a count, so the user can make an
@@ -430,7 +430,7 @@ def _check_and_apply_config_migration(
                 # here and crashes the update at this prompt.
                 print(
                     "  ⚠ Could not read input (encoding issue). Skipping. "
-                    "Run 'hermes config migrate' manually to configure."
+                    "Run 'hexbot core config migrate' manually to configure."
                 )
                 response = "n"
 
@@ -450,10 +450,10 @@ def _check_and_apply_config_migration(
                 print()
                 print("✓ Configuration updated!")
             if (gateway_mode or assume_yes or response == "auto") and missing_env:
-                print("  ℹ API keys require manual entry: hermes config migrate")
+                print("  ℹ API keys require manual entry: hexbot core config migrate")
         else:
             print()
-            print("Skipped. Run 'hermes config migrate' later to configure.")
+            print("Skipped. Run 'hexbot core config migrate' later to configure.")
     else:
         print("  ✓ Configuration is up to date")
 
@@ -556,7 +556,7 @@ def _check_and_apply_config_migration(
         logger.debug("Sibling config auto-restore check failed: %s", exc)
 
 
-# Critical files that Hermes must be able to import immediately after an
+# Critical files that Hexbot must be able to import immediately after an
 # update/install. Most are imported on every CLI startup; ``web_server.py``
 # is the desktop/dashboard backend path that a fresh Windows install launches
 # right away. If any of these fail to parse after a pull, the user can be
@@ -685,7 +685,7 @@ def _editable_install_is_current(git_cmd, cwd, pre_pull_sha: str | None) -> bool
     cannot change anything removes that risk outright for the common update,
     rather than trying to make the rename win more often.
 
-    Skipping is safe because Hermes pins its editable finder to a *static*
+    Skipping is safe because Hexbot pins its editable finder to a *static*
     module list (``[tool.setuptools] py-modules`` plus
     ``packages.find.include``). The one source-only change that would stale
     that finder is a new top-level module or package, and it cannot land
@@ -739,7 +739,7 @@ def _validate_python_files_syntax(
 def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
     """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
 
-    These are the files imported on every ``hermes`` startup; if any of them
+    These are the files imported on every ``hexbot core`` startup; if any of them
     has a syntax error (orphan merge-conflict markers, bad ref to a name
     that no longer exists, etc.) the CLI can't bootstrap at all. We validate
     them after a successful ``git pull`` so we can auto-roll-back instead of
@@ -791,7 +791,7 @@ def _critical_module_import_failures(
     against the half-updated tree. Costs ~0.4s.
 
     Uses the project venv's interpreter when there is one (matching
-    ``_venv_core_imports_healthy``): ``hermes update`` can be driven by a
+    ``_venv_core_imports_healthy``): ``hexbot core update`` can be driven by a
     different Python than the install's own, and probing the wrong
     interpreter would test a tree the user never runs.
 
@@ -916,7 +916,7 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     Writes a prompt marker file so the gateway can forward the question to the
     user, then polls for a response file.  Falls back to *default* on timeout.
 
-    Used by ``hermes update --gateway`` so interactive prompts (stash restore,
+    Used by ``hexbot core update --gateway`` so interactive prompts (stash restore,
     config migration) are forwarded to the messenger instead of being silently
     skipped.
     """
@@ -992,7 +992,7 @@ def _web_toolchain_roots(web_dir: Path) -> tuple[Path, ...]:
     return (web_dir, web_dir.parent)
 
 def _print_curator_first_run_notice() -> None:
-    """Print a short heads-up about the skill curator after `hermes update`.
+    """Print a short heads-up about the skill curator after `hexbot core update`.
 
     Only fires when the curator is enabled AND has no recorded run yet, which
     is exactly the window where the gateway ticker used to fire Curator
@@ -1025,14 +1025,14 @@ def _print_curator_first_run_notice() -> None:
         f"~{days}d after installation; only agent-created skills are in "
         f"scope and nothing is ever auto-deleted (archive is recoverable)."
     )
-    print("  Preview now:  hermes curator run --dry-run")
-    print("  Pause it:     hermes curator pause")
+    print("  Preview now:  hexbot core curator run --dry-run")
+    print("  Pause it:     hexbot core curator pause")
     print(
         "  Docs:         https://hermes-agent.nousresearch.com/docs/user-guide/features/curator"
     )
 
 def _print_fts_optimize_available_notice() -> None:
-    """Advertise the opt-in v23 search-index optimization after `hermes update`.
+    """Advertise the opt-in v23 search-index optimization after `hexbot core update`.
 
     Only fires when the current profile's state.db is still on the legacy
     (pre-v23) inline FTS layout. Leads with the reclaimable-space figure and
@@ -1113,11 +1113,11 @@ def _print_fts_optimize_available_notice() -> None:
         print()
         print("◆ Session database optimization incomplete")
         print(
-            "  A previous `hermes sessions optimize-storage` run was "
+            "  A previous `hexbot core sessions optimize-storage` run was "
             "interrupted. Search still works; re-run the command to resume "
             "and finish reclaiming disk:"
         )
-        print("    hermes sessions optimize-storage")
+        print("    hexbot core sessions optimize-storage")
         return
 
     # Concrete size framing — lead with the savings the user cares about.
@@ -1138,7 +1138,7 @@ def _print_fts_optimize_available_notice() -> None:
             f"typically frees ~60% of state.db — about {est_reclaim:.1f} GB "
             f"of your current {size_gb:.1f} GB."
         )
-    print("  Run when convenient:  hermes sessions optimize-storage")
+    print("  Run when convenient:  hexbot core sessions optimize-storage")
     print(
         "  It runs in the foreground with a progress bar, is safe to "
         "interrupt/re-run, and never changes your conversations."
@@ -1149,11 +1149,11 @@ def _print_curator_recent_run_notice() -> None:
 
     The curator runs in the background (gateway tick + CLI session start),
     so users learn about skill consolidations only by stumbling into a
-    rename. ``hermes update`` is a high-attention surface — surface the
+    rename. ``hexbot core update`` is a high-attention surface — surface the
     most recent run's rename map here, once.
 
     Show-once: state stamps ``last_run_summary_shown_at`` after printing.
-    Subsequent ``hermes update`` invocations skip the block until a newer
+    Subsequent ``hexbot core update`` invocations skip the block until a newer
     curator run lands. Silent when the curator has never run, when the
     most recent summary has already been shown, or when the summary has
     no rename information to display (no archives).
@@ -1199,7 +1199,7 @@ def _print_curator_recent_run_notice() -> None:
         print(f"  {line}")
     print(
         "  (This message shows once per curator run. "
-        "View anytime: hermes curator status)"
+        "View anytime: hexbot core curator status)"
     )
 
     # Stamp shown so we don't repeat on the next update.
@@ -1297,7 +1297,7 @@ def _finish_dashboard_update_cleanup(
         "not be auto-restarted."
     )
     print("  Re-launch it when you want the web UI back:")
-    print("    hermes dashboard --port <port>")
+    print("    hexbot core dashboard --port <port>")
 
 def _atomic_replace_dir(src: str, dst: str) -> None:
     """Replace directory *dst* with *src* without leaving *dst* half-deleted.
@@ -1350,7 +1350,7 @@ def _discard_staged(staged) -> None:
 
     Without this a phase-1 failure (typically disk exhaustion) orphans one
     staging copy per entry already processed — up to a full second copy of
-    the tree. The user then follows the "re-run `hermes update`" advice with
+    the tree. The user then follows the "re-run `hexbot core update`" advice with
     *less* free space than before and the retry fails harder than the
     original attempt.
     """
@@ -1471,7 +1471,7 @@ def _assess_parked_branch_switch(
     to the update target.
 
     Live incident (2026-08-17, Teknium's box): the source checkout sat on a
-    stale feature branch left behind by earlier tooling; ``hermes update``
+    stale feature branch left behind by earlier tooling; ``hexbot core update``
     autostashed, ran its post-update steps and printed "✓ Code updated!"
     while the running code stayed days behind main. The guard's contract:
 
@@ -1578,7 +1578,7 @@ def _print_parked_branch_skip_warning(
     print()
     print("  To resolve, inspect the branch and switch back yourself:")
     print(f"    git -C {cwd} status")
-    print(f"    git -C {cwd} checkout {target_branch} && hermes update")
+    print(f"    git -C {cwd} checkout {target_branch} && hexbot core update")
     print(
         "  (commit or stash your work on the branch first if you want to "
         "keep it)"
@@ -1714,15 +1714,15 @@ def _refuse_update_for_contended_shims(exc: BaseException) -> None:
     launch after the holder exits. Exits 2 (refused) so the command-boundary
     receipt net records it as a refusal, not a failure.
     """
-    print("✗ Cannot continue the update: live Hermes launcher(s) could not be")
+    print("✗ Cannot continue the update: live Hexbot launcher(s) could not be")
     print("  moved aside:")
     for name in getattr(exc, "failed_shims", []) or ["hermes.exe"]:
         print(f"    {name}")
-    print("  Another process is holding this install's venv — typically Hermes")
-    print("  Desktop, a gateway, or another hermes REPL — and mutating the venv")
+    print("  Another process is holding this install's venv — typically Hexbot")
+    print("  Desktop, a gateway, or another `hexbot core` REPL — and mutating the venv")
     print("  now would strand it half-updated.")
     print("  The dependency install has been deferred: close the process(es)")
-    print("  above, then run any `hermes` command to finish it automatically.")
+    print("  above, then run any `hexbot core` command to finish it automatically.")
     # Idempotent: the git path already dropped the marker before the sync;
     # this covers the ZIP/repair paths so the deferral is never silent.
     _write_update_incomplete_marker()
@@ -1865,7 +1865,7 @@ def _abort_zip_update_if_dirty_tree() -> None:
         "  Overlaying the ZIP would overwrite uncommitted edits and permanently "
         "delete untracked files."
     )
-    print("  Stash or commit your changes, then rerun `hermes update`.")
+    print("  Stash or commit your changes, then rerun `hexbot core update`.")
     print("  To inspect: git status --porcelain")
     _m().sys.exit(1)
 
@@ -1922,7 +1922,7 @@ def _post_update_sqlite_runtime_status():
 
 
 def _print_verified_update_completion(message: str) -> bool:
-    """Print a success completion only after probing the next Hermes runtime."""
+    """Print a success completion only after probing the next Hexbot runtime."""
     if not message.startswith("✓"):
         _print_update_completion(message)
         return False
@@ -1945,8 +1945,8 @@ def _print_verified_update_completion(message: str) -> bool:
     )
     print(f"⚠ Update partially complete — {detail}.")
     print(
-        "  Rebuild the Hermes venv with a uv-managed Python, restart Hermes, "
-        "then verify with `hermes doctor`."
+        "  Rebuild the Hexbot venv with a uv-managed Python, restart Hexbot, "
+        "then verify with `hexbot core doctor`."
     )
     return False
 
@@ -1960,7 +1960,7 @@ def _clear_stale_sqlite_sidecars(db_path: Path) -> None:
     which is exactly why ``backup._EXCLUDED_SUFFIXES`` refuses to ship sidecars
     inside a snapshot. Copying the image over the destination replaces only the
     main database file, so any ``-wal`` / ``-shm`` left behind by the *old*
-    database (a crashed writer, or a second Hermes process the updater's drain
+    database (a crashed writer, or a second Hexbot process the updater's drain
     did not stop) survives and is replayed over the fresh image on the next
     open. The result passes ``PRAGMA integrity_check`` while serving the old
     database's contents, and the first checkpoint folds it in permanently.
@@ -2006,13 +2006,13 @@ def _print_update_summary(
             print("  Code and Python deps are updated, but the dashboard/TUI may")
             print("  be in a mixed state until the Node deps are rebuilt.")
         if not desktop_build_ok:
-            print("  Run `hermes desktop` to retry the desktop rebuild.")
+            print("  Run `hexbot core desktop` to retry the desktop rebuild.")
         if not sqlite_runtime_ok:
             print(
-                "  The Python runtime remediation did not complete. Run `hermes "
-                "update` again; if SQLite is unchanged, rebuild the Hermes venv "
-                "with a uv-managed Python, restart Hermes, then verify with "
-                "`hermes doctor`."
+                "  The Python runtime remediation did not complete. Run `hexbot core "
+                "update` again; if SQLite is unchanged, rebuild the Hexbot venv "
+                "with a uv-managed Python, restart Hexbot, then verify with "
+                "`hexbot core doctor`."
             )
     else:
         _print_update_completion(_update_complete_message(pre_update_version))
@@ -2054,7 +2054,7 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
     if holders:
         print(
             f"  ✗ Auto-restore refused: process(es) {holders} still hold "
-            "state.db or its WAL open. Stop them (hermes gateway stop), "
+            "state.db or its WAL open. Stop them (hexbot core gateway stop), "
             "then restore manually with /snapshot restore."
         )
         return False
@@ -2074,7 +2074,7 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
     except LiveConnectionError as exc:
         print(
             f"  ✗ Auto-restore refused: {exc} Close the in-process database "
-            "handles (or restart Hermes) and retry."
+            "handles (or restart Hexbot) and retry."
         )
         return False
     restored = verify_sqlite_integrity(
@@ -2168,7 +2168,7 @@ def _verify_and_restore_state_dbs_post_update() -> None:
 
 
 def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
-    """Update Hermes Agent by downloading a ZIP archive.
+    """Update Hexbot by downloading a ZIP archive.
 
     Used on Windows when git file I/O is broken (antivirus, NTFS filter
     drivers causing 'Invalid argument' errors on file creation).
@@ -2200,8 +2200,8 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
         print(
             "  This path runs when git file I/O is broken on the system. "
             "Either resolve the git-side breakage (typically an antivirus "
-            "or NTFS filter holding files open) and rerun `hermes update "
-            f"--branch {branch}`, or update against main with `hermes update`."
+            "or NTFS filter holding files open) and rerun `hexbot core update "
+            f"--branch {branch}`, or update against main with `hexbot core update`."
         )
         _m().sys.exit(1)
     _abort_zip_update_if_dirty_tree()
@@ -2336,7 +2336,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
                     "  Files appeared in the checkout while the update was "
                     "downloading; committing the swap would delete them."
                 )
-                print("  Stash or commit your changes, then rerun `hermes update`.")
+                print("  Stash or commit your changes, then rerun `hexbot core update`.")
                 _m().sys.exit(1)
             _commit_staged_replacements(staged)
         except Exception:
@@ -2362,7 +2362,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
         # scare the user toward a reinstall they don't need.
         print("  Your existing install was left in place.")
         print(
-            "  Re-run `hermes update` to retry; if the agent won't start, "
+            "  Re-run `hexbot core update` to retry; if the agent won't start, "
             "reinstall from https://hermes-agent.nousresearch.com"
         )
         _m().sys.exit(1)
@@ -2467,7 +2467,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
         print(f"  {failing_module}: {import_error}")
         print()
         print("  This usually means the copy was interrupted partway through.")
-        print("  Re-run `hermes update` to complete it.")
+        print("  Re-run `hexbot core update` to complete it.")
         _m().sys.exit(1)
 
     node_failures = _update_node_dependencies()
@@ -2492,7 +2492,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
         if result.get("user_modified"):
             print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
             print(
-                "    → see them: hermes skills list-modified  "
+                "    → see them: hexbot core skills list-modified  "
                 "(diff/reset to resume updates)"
             )
         if result.get("cleaned"):
@@ -2645,7 +2645,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
                 print(f"  {push.stderr.strip().splitlines()[0]}")
             print(
                 "  Commit, stash, or clean up your local changes manually, "
-                "then re-run `hermes update`."
+                "then re-run `hexbot core update`."
             )
             raise subprocess.CalledProcessError(
                 push.returncode, push.args, output=push.stdout, stderr=push.stderr
@@ -2690,7 +2690,7 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
     invisibly for weeks (#63717 problem 6). This prints a short notice naming
     the stale entries with recovery/cleanup guidance. Deliberately NOT a GC:
     a stash entry can be the only copy of the user's uncommitted work, so
-    Hermes never drops one automatically.
+    Hexbot never drops one automatically.
 
     Best-effort — any git failure returns 0 and must not block the update.
     Returns the number of stale entries warned about.
@@ -2792,7 +2792,7 @@ def _stash_apply_failed_only_on_existing_untracked(stderr: str) -> bool:
 def _park_stashed_changes(stash_ref: str) -> None:
     """Leave a pre-update autostash parked instead of re-applying it.
 
-    Used by ``hermes update --keep-stash`` (the desktop updater's mode): the
+    Used by ``hexbot core update --keep-stash`` (the desktop updater's mode): the
     stash made the update possible on a dirty tree, but local source edits
     must never be silently re-applied onto the updated code. Nothing is
     lost — the entry stays in ``git stash`` with printed recovery guidance.
@@ -2866,7 +2866,7 @@ def _reject_unsafe_stash_restore(
 ) -> None:
     """Restore the clean updated tree, preserve the stash, and abort the update."""
     print()
-    print("✗ Restored local changes made the Hermes agent unexecutable.")
+    print("✗ Restored local changes made the Hexbot agent unexecutable.")
     print(f"  Health check failed: {failing_target}")
     if detail:
         for line in str(detail).splitlines()[:6]:
@@ -2939,7 +2939,7 @@ def _restore_stashed_changes(
         print(
             "  Restoring them may reapply local customizations onto the updated codebase."
         )
-        print("  Review the result afterward if Hermes behaves unexpectedly.")
+        print("  Review the result afterward if Hexbot behaves unexpectedly.")
         print(f"Restore local changes now? {prompt_suffix}")
         if input_fn is not None:
             response = input_fn(f"Restore local changes now? {prompt_suffix}", "n")
@@ -3077,7 +3077,7 @@ def _restore_stashed_changes(
     stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
     if stash_selector is None:
         print(
-            "⚠ Local changes were restored, but Hermes couldn't find the stash entry to drop."
+            "⚠ Local changes were restored, but Hexbot couldn't find the stash entry to drop."
         )
         print(
             "  The stash was left in place. You can remove it manually after checking the result."
@@ -3092,7 +3092,7 @@ def _restore_stashed_changes(
         )
         if drop.returncode != 0:
             print(
-                "⚠ Local changes were restored, but Hermes couldn't drop the saved stash entry."
+                "⚠ Local changes were restored, but Hexbot couldn't drop the saved stash entry."
             )
             if drop.stdout.strip():
                 print(drop.stdout.strip())
@@ -3104,7 +3104,7 @@ def _restore_stashed_changes(
             _print_stash_cleanup_guidance(stash_ref, stash_selector)
 
     print("⚠ Local changes were restored on top of the updated codebase.")
-    print("  Review `git diff` / `git status` if Hermes behaves unexpectedly.")
+    print("  Review `git diff` / `git status` if Hexbot behaves unexpectedly.")
     return True
 
 def _discard_stashed_changes(
@@ -3130,7 +3130,7 @@ def _discard_stashed_changes(
     if stash_selector is None:
         print(
             "⚠ Configured to discard local changes on non-interactive update, "
-            "but Hermes couldn't find the stash entry to drop."
+            "but Hexbot couldn't find the stash entry to drop."
         )
         _print_stash_cleanup_guidance(stash_ref)
         return False
@@ -3143,7 +3143,7 @@ def _discard_stashed_changes(
     )
     if drop.returncode != 0:
         print(
-            "⚠ Configured to discard local changes, but Hermes couldn't drop "
+            "⚠ Configured to discard local changes, but Hexbot couldn't drop "
             "the saved stash entry."
         )
         if drop.stderr.strip():
@@ -3297,7 +3297,7 @@ def _sync_with_upstream_if_needed(
             return False
 
         print()
-        print("ℹ Your fork is not tracking the official Hermes repository.")
+        print("ℹ Your fork is not tracking the official Hexbot repository.")
         print("  This means you may miss updates from NousResearch/hermes-agent.")
         print()
 
@@ -3422,7 +3422,7 @@ def _invalidate_update_cache():
     reports a stale "commits behind" count after a successful update.
 
     The git repo is shared across profiles — when one profile runs
-    ``hermes update``, every profile is now current.
+    ``hexbot core update``, every profile is now current.
     """
     homes = []
     # Default profile home (Docker-aware — uses /opt/data in Docker)
@@ -3589,7 +3589,7 @@ def _warn_pending_fleet_restart(*, startup: bool = False) -> None:
     """Print the specific interrupted-update fleet-restart warning."""
     stream = sys.stderr if startup else sys.stdout
     print(
-        "⚠ A previous `hermes update` pulled new code but did not "
+        "⚠ A previous `hexbot core update` pulled new code but did not "
         "restart running gateways.",
         file=stream,
     )
@@ -3599,7 +3599,7 @@ def _warn_pending_fleet_restart(*, startup: bool = False) -> None:
     )
     if startup:
         print(
-            "  Run `hermes update` or `hermes gateway restart`.",
+            "  Run `hexbot core update` or `hexbot core gateway restart`.",
             file=stream,
         )
 
@@ -3750,7 +3750,7 @@ def _run_pending_fleet_restart() -> bool:
 
 
 def _apply_pending_fleet_restart_catchup() -> None:
-    """On an already-up-to-date ``hermes update``, finish a skipped restart.
+    """On an already-up-to-date ``hexbot core update``, finish a skipped restart.
 
     No-op when nothing is pending. Exits 1 when the catch-up restart is
     incomplete so automation does not treat the fleet as healthy.
@@ -3763,7 +3763,7 @@ def _apply_pending_fleet_restart_catchup() -> None:
     if _run_pending_fleet_restart():
         _clear_fleet_restart_pending_marker()
         return
-    print("  ⚠ Fleet restart incomplete. Recover with: hermes gateway restart")
+    print("  ⚠ Fleet restart incomplete. Recover with: hexbot core gateway restart")
     sys.exit(1)
 
 
@@ -3779,8 +3779,8 @@ def _format_concurrent_instances_message(
     lines.append(f"  Updating now would fail to overwrite {shim} because")
     lines.append("  Windows blocks REPLACE on a running executable.")
     lines.append("")
-    lines.append("  Close Hermes Desktop, exit any open `hermes` REPLs, and")
-    lines.append("  stop the gateway (`hermes gateway stop`) before retrying.")
+    lines.append("  Close Hexbot Desktop, exit any open `hexbot core` REPLs, and")
+    lines.append("  stop the gateway (`hexbot core gateway stop`) before retrying.")
     lines.append("")
     if matches:
         pid_args = " ".join(f"/PID {pid}" for pid, _ in matches)
@@ -3788,7 +3788,7 @@ def _format_concurrent_instances_message(
         lines.append("  stale, terminate them directly, then retry the update:")
         lines.append(f"      taskkill {pid_args} /F")
         lines.append("")
-    lines.append("  Override with `hermes update --force` if you've already")
+    lines.append("  Override with `hexbot core update --force` if you've already")
     lines.append("  confirmed those processes will not write to the venv.")
     return "\n".join(lines)
 
@@ -3838,10 +3838,10 @@ def _filter_non_gateway_concurrent_instances(
     """Return only the concurrent-instance matches that are NOT the gateway.
 
     Used by the pre-update concurrent gate to decide whether to abort
-    ``hermes update``. If every concurrent instance is a gateway, the pause
+    ``hexbot core update``. If every concurrent instance is a gateway, the pause
     machinery (``_pause_windows_gateways_for_update``) and the post-update
     kill+restart block handle it — the update proceeds. If anything else (a
-    TUI shell, a Hermes Desktop backend child, an unrelated ``hermes`` REPL)
+    TUI shell, a Hexbot Desktop backend child, an unrelated ``hexbot core`` REPL)
     is in the list, the gate still aborts with the existing message, since
     those have no pause machinery downstream.
     """
@@ -3883,13 +3883,13 @@ def _capture_active_lazy_features() -> list[str]:
 
 
 def _capture_active_tool_dependencies() -> list[str]:
-    """Snapshot Python dependencies installed explicitly through ``hermes tools``."""
+    """Snapshot Python dependencies installed explicitly through ``hexbot core tools``."""
     try:
         from hermes_cli import tools_config
 
         return tools_config.active_restorable_python_tool_dependencies()
     except Exception as exc:
-        logger.debug("Could not snapshot active Hermes Tools dependencies: %s", exc)
+        logger.debug("Could not snapshot active Hexbot Tools dependencies: %s", exc)
         return []
 
 
@@ -3899,7 +3899,7 @@ def _restore_active_tool_dependencies(
     *,
     env: dict[str, str] | None = None,
 ) -> None:
-    """Restore allowlisted ``hermes tools`` dependencies into a rebuilt venv.
+    """Restore allowlisted ``hexbot core tools`` dependencies into a rebuilt venv.
 
     The dependency names came from a pre-rebuild import probe and are resolved
     through a static package allowlist. Never raises: a failed optional tool
@@ -3912,7 +3912,7 @@ def _restore_active_tool_dependencies(
     try:
         from hermes_cli import tools_config
     except Exception as exc:
-        logger.debug("Hermes Tools dependency restore skipped (import failed): %s", exc)
+        logger.debug("Hexbot Tools dependency restore skipped (import failed): %s", exc)
         return
 
     target_python = _m()._resolve_install_target_python(install_cmd_prefix, env)
@@ -3948,7 +3948,7 @@ def _restore_active_tool_dependencies(
         return
 
     print()
-    print(f"→ Restoring {len(missing)} Hermes Tools dependency set(s)...")
+    print(f"→ Restoring {len(missing)} Hexbot Tools dependency set(s)...")
     restored: list[str] = []
     failed: list[tuple[str, str]] = []
     for name, install_args in missing:
@@ -3982,7 +3982,7 @@ def _refresh_active_lazy_features(
 
     When pyproject.toml's ``[all]`` extra was slimmed down (May 2026), most
     optional backends moved to ``tools/lazy_deps.py`` and only install on
-    first use. ``hermes update`` runs ``uv pip install -e .[all]`` which
+    first use. ``hexbot core update`` runs ``uv pip install -e .[all]`` which
     leaves those packages untouched — so if we bump a pin in
     :data:`LAZY_DEPS` (CVE response, transitive bug fix), users who already
     activated the backend keep the stale version forever.
@@ -4059,7 +4059,7 @@ def _refresh_active_lazy_features(
         print(f"  ⚠ {feature} failed to refresh: {reason}")
 
     if install_cmd_prefix is None:
-        print("  ⚠ Lazy refresh failed; rerun `hermes update` once resolved.")
+        print("  ⚠ Lazy refresh failed; rerun `hexbot core update` once resolved.")
         return False
 
     # Immediate import-based recovery — metadata-only verifiers miss the case
@@ -4075,7 +4075,7 @@ def _refresh_active_lazy_features(
         print(
             "  Lazy backend(s) keep their previous version; probed packages look intact."
         )
-        print("  Rerun `hermes update` once the upstream issue is resolved.")
+        print("  Rerun `hexbot core update` once the upstream issue is resolved.")
         return True
     if status == "indeterminate":
         print(
@@ -4088,7 +4088,7 @@ def _refresh_active_memory_provider_dependencies() -> None:
 
     Memory-provider bridge packages are declared in each provider's
     ``plugin.yaml`` (plus mode-dependent extras like Hindsight's
-    ``hindsight-all``), NOT in Hermes' editable-install extras or
+    ``hindsight-all``), NOT in Hexbot's editable-install extras or
     ``LAZY_DEPS`` alone — so the core dependency reinstall above can strip
     or downgrade them (#53272 mem0ai, #70636 hindsight-embed). Re-run the
     provider's declared install for the ACTIVE provider only, after the
@@ -4210,7 +4210,7 @@ def _pnpm_manifest_paths() -> tuple[Path, ...]:
 
     The lockfile alone is NOT a sufficient key: on a local checkout a dev
     can edit package.json (root or a workspace) without running pnpm — the
-    lockfile is then unchanged but `hermes update` is exactly the step
+    lockfile is then unchanged but `hexbot core update` is exactly the step
     expected to sync node_modules (via the `--no-lockfile` fallback in
     _run_pnpm_install_deterministic).
 
@@ -4315,7 +4315,7 @@ def _repair_node_deps_on_current_checkout(
     A current checkout does not imply healthy Node deps: a previous pnpm
     install may have failed (an engine mismatch, network
     timeout, interrupted install) and its error message says to "re-run
-    hermes update" — but the early return never reached the Node refresh,
+    hexbot core update" — but the early return never reached the Node refresh,
     so that repair advice could never work. ``_update_node_dependencies``
     self-gates on the lockfile hash, which is only recorded after a
     SUCCESSFUL pnpm install (and re-trips when node_modules is missing or
@@ -4325,7 +4325,7 @@ def _repair_node_deps_on_current_checkout(
     node_failures = _update_node_dependencies()
     if node_failures:
         print(f"  ⚠ Node.js refresh failed for: {', '.join(node_failures)}")
-        print("    Fix pnpm and re-run `hermes update`.")
+        print("    Fix pnpm and re-run `hexbot core update`.")
         print_completion(
             "⚠ Checkout is current, but Node.js dependencies could not be repaired."
         )
@@ -4381,7 +4381,7 @@ def _update_node_dependencies() -> list[str]:
             print("→ Updating Node.js dependencies...")
             print("  ⚠ Skipped: only a Windows pnpm is reachable from this WSL shell.")
             print("    Install Node.js inside the WSL distro (nvm, or your distro's")
-            print("    package manager), then re-run `hermes update`.")
+            print("    package manager), then re-run `hexbot core update`.")
             failed = []
             if any(
                 (_m().PROJECT_ROOT / workspace / "package.json").exists()
@@ -4394,13 +4394,13 @@ def _update_node_dependencies() -> list[str]:
     from hermes_constants import get_default_hermes_root
 
     # This cache describes PROJECT_ROOT/node_modules, which is shared by every
-    # Hermes profile using this checkout. Keep one per-checkout cache under the
-    # shared Hermes root rather than rerunning pnpm once per named profile.
+    # Hexbot profile using this checkout. Keep one per-checkout cache under the
+    # shared Hexbot root rather than rerunning pnpm once per named profile.
     shared_hermes_root = get_default_hermes_root()
 
     # Best-effort: warm npx's cache for agent-browser (#43564). Runs before
     # the lockfile-unchanged early return below since that's the common
-    # `hermes update` case. Synchronous and can block ~11s on a true cold
+    # `hexbot core update` case. Synchronous and can block ~11s on a true cold
     # cache (~0.4s once warm) — print first so that doesn't look like a hang.
     print("→ Warming npx cache for agent-browser...")
     try:
@@ -4427,7 +4427,7 @@ def _update_node_dependencies() -> list[str]:
         print()
         print("  ⚠ Node.js dependency refresh did not complete cleanly; the")
         print("    installation may be in a mixed state (updated code, stale Node")
-        print("    deps). Fix pnpm and re-run `hermes update`.")
+        print("    deps). Fix pnpm and re-run `hexbot core update`.")
         return list(labels)
 
     install_args = [
@@ -4446,7 +4446,7 @@ def _update_node_dependencies() -> list[str]:
     # NOTE: capture_output=False here is deliberate (#18840) — optional
     # postinstall scripts print download progress, and capturing it makes a
     # long download look hung. The chatty deprecation noise during
-    # `hermes update` comes from the *desktop* build, not this step; that
+    # `hexbot core update` comes from the *desktop* build, not this step; that
     # one is captured to update.log.
     result = _m()._run_pnpm_install_deterministic(
         pnpm,
@@ -4470,9 +4470,9 @@ def _update_node_dependencies() -> list[str]:
     return failures
 
 def _log_only_write(text: str) -> None:
-    """Write ``text`` to ``~/.hermes/logs/update.log`` only, never the terminal.
+    """Write ``text`` to ``~/.hexbot/logs/update.log`` only, never the terminal.
 
-    During ``hermes update`` ``sys.stdout`` is an ``_UpdateOutputStream`` that
+    During ``hexbot core update`` ``sys.stdout`` is an ``_UpdateOutputStream`` that
     mirrors to both the terminal and ``update.log``. Loud, low-signal
     subprocess output (pnpm installs, the Electron/vite build, the cua-driver
     installer's "Next steps" wall) should be captured and tucked into the log
@@ -4555,7 +4555,7 @@ def _print_fetch_failure(stderr: str) -> None:
 
 
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
-    """Implement ``hermes update --check``: fetch and report without installing.
+    """Implement ``hexbot core update --check``: fetch and report without installing.
 
     ``branch`` selects which branch the check compares against. Default is
     "main"; callers can pass another branch to ask "are there new commits
@@ -4748,12 +4748,12 @@ def _ensure_fhs_path_guard() -> None:
 
     Mirrors the post-symlink probe added to ``scripts/install.sh`` so that
     existing FHS-layout root installs on RHEL/CentOS/Rocky/Alma 8+ get
-    repaired on ``hermes update`` without requiring a reinstall.  The
+    repaired on ``hexbot core update`` without requiring a reinstall.  The
     installer's assumption that ``/usr/local/bin`` is on PATH for every
     standard shell breaks on those distros in non-login interactive shells
     (su, sudo -s, tmux panes, some web terminals): /etc/bashrc doesn't
     add /usr/local/bin and /root/.bash_profile doesn't either.  Symptom:
-    ``hermes`` prints ``command not found`` even though the symlink lives
+    ``hexbot core`` prints ``command not found`` even though the symlink lives
     at /usr/local/bin/hermes.
 
     Silent no-op on: non-Linux, non-root, non-FHS installs, and any system
@@ -4835,24 +4835,24 @@ def _ensure_acp_launcher() -> None:
     r"""Self-heal: install a ``hermes-acp`` launcher next to the ``hermes`` one.
 
     Mirrors the launcher block in ``scripts/install.sh`` so existing installs
-    gain the ACP command on ``hermes update`` without a reinstall.  ACP hosts
+    gain the ACP command on ``hexbot core update`` without a reinstall.  ACP hosts
     (Zed, JetBrains, Buzz Desktop) spawn the agent by resolving the
     ``hermes-acp`` command name against the login-shell PATH; the console
     script of that name lives inside the install's venv, which is not on that
-    PATH, so those hosts report Hermes as not installed even when it is.
+    PATH, so those hosts report Hexbot as not installed even when it is.
 
     The shim simply delegates to the sibling ``hermes`` launcher with the
     ``acp`` subcommand, which makes it correct for every install layout
     (venv wrapper, FHS symlink, pipx/pip console script) without having to
     reconstruct interpreter/entrypoint paths.
 
-    No-op on Windows (install.ps1 stages the ``hermes`` / ``hermes-acp``
+    No-op on Windows (install.ps1 stages the ``hexbot core`` / ``hermes-acp``
     launchers into the managed binary dir ``$HermesHome\bin`` and puts THAT
     on the user PATH — never the whole ``venv\Scripts`` dir, which would
     shadow the user's ``python`` (#83797); when those launchers go missing,
     ``hermes_cli._install_repair.ensure_windows_bin_launchers`` re-stages
     them) and wherever a ``hermes-acp`` is already present next to the
-    ``hermes`` command.  Unwritable directories (e.g. ``/usr/local/bin`` as
+    ``hexbot core`` command.  Unwritable directories (e.g. ``/usr/local/bin`` as
     non-root) are skipped silently.  Idempotent.
     """
     if _m().sys.platform == "win32":
@@ -4874,7 +4874,7 @@ def _ensure_acp_launcher() -> None:
                 continue
             shim = (
                 "#!/usr/bin/env bash\n"
-                "# Hermes Agent — ACP launcher (written by `hermes update`).\n"
+                "# Hexbot — ACP launcher (written by `hexbot core update`).\n"
                 "# ACP hosts (Zed, JetBrains, Buzz) resolve the agent by this\n"
                 "# command name on the login-shell PATH.\n"
                 f'exec "{hermes_cmd}" acp "$@"\n'
@@ -4955,7 +4955,7 @@ def _run_pre_update_backup(args) -> Optional[str]:
       warning so a bloated state.db can never stall the update
       (issues #15733, #34600 are the reason this safety net exists).
     - ``full``  — the quick snapshot PLUS a full zip of HERMES_HOME under
-      ``backups/`` (restorable via ``hermes import``; the #48200 wrong-path
+      ``backups/`` (restorable via ``hexbot core import``; the #48200 wrong-path
       wipe is the reason this level exists).
 
     ``--backup`` forces ``full`` for one run; ``--no-backup`` forces ``off``.
@@ -5126,7 +5126,7 @@ def _run_pre_update_backup(args) -> Optional[str]:
 
     size_str = format_bytes(size_bytes)
 
-    # Render path using display_hermes_home so the user sees ~/.hermes/...
+    # Render path using display_hermes_home so the user sees ~/.hexbot/...
     try:
         from hermes_constants import get_hermes_home, display_hermes_home
 
@@ -5139,7 +5139,7 @@ def _run_pre_update_backup(args) -> Optional[str]:
         display_path = str(out_path)
 
     print(f"  Saved:    {display_path} ({size_str}, {elapsed:.1f}s)")
-    print(f"  Restore:  hermes import {out_path}")
+    print(f"  Restore:  hexbot core import {out_path}")
     print("  Disable:  set updates.pre_update_backup: quick (or off) in config.yaml")
     print()
     return snapshot_id
@@ -5202,11 +5202,11 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     """Probe the project venv for the core imports the backend needs to boot.
 
     Runs a tiny import check inside the venv interpreter (NOT this process —
-    ``hermes update`` may be driven by a different Python). Catches the
+    ``hexbot core update`` may be driven by a different Python). Catches the
     half-updated-venv state: git checkout current but a dependency sync that
     failed or was killed partway (e.g. Windows access-denied on a loaded
     .pyd), leaving imports like ``fastapi``'s new transitive deps missing.
-    Without this probe, ``hermes update`` on a current checkout prints
+    Without this probe, ``hexbot core update`` on a current checkout prints
     "Already up to date!" and returns without ever re-syncing dependencies —
     the user's install stays broken no matter how many times they update
     (ryanc's incident, July 2026).
@@ -5537,7 +5537,7 @@ def _abort_dependency_sync_if_self_locked(gateway_resume=None) -> None:
       importing anything heavy, so it maps nothing and the swap succeeds.
 
     - The ``hermes.exe`` console shim we were launched from (#88838, #89599).
-      The marker cannot help here — every future ``hermes`` launch is also the
+      The marker cannot help here — every future ``hexbot core`` launch is also the
       shim, so deferring to the next launch defers forever.  Hand the install
       to a child under the venv interpreter and exit, releasing the shim.
     """
@@ -5570,7 +5570,7 @@ def _defer_update_for_self_lock(loaded: list[str]) -> None:
     print()
     print("  On Windows a mapped extension cannot be replaced by the process")
     print("  holding it. The code update has been applied; only the dependency")
-    print("  sync has been deferred: the next `hermes` launch will complete it")
+    print("  sync has been deferred: the next `hexbot core` launch will complete it")
     print("  in a fresh process before anything imports these modules.")
     _m()._write_update_incomplete_marker()
 
@@ -5619,7 +5619,7 @@ def _holder_value_flags() -> frozenset:
 
 
 def _hermes_holder_subcommand(cmdline: str) -> str | None:
-    """The actual Hermes SUBCOMMAND a venv-holder argv runs, or None.
+    """The actual Hexbot SUBCOMMAND a venv-holder argv runs, or None.
 
     Token-based, never substring (#90778: ``kanban --preserve-cache``
     contained \"serve\" and got labeled as the Desktop backend). Finds the
@@ -5668,17 +5668,17 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
     """Explain which venv processes block the update and how to clear them.
 
     Holder labels come from the parsed SUBCOMMAND, never substring matching
-    (#90778): a standalone ``hermes dashboard`` must not be labeled as the
+    (#90778): a standalone ``hexbot core dashboard`` must not be labeled as the
     Desktop backend (advice to close an app that isn't running), and flags
     like ``--preserve-cache`` must not match \"serve\". Unknown argv gets no
     hint rather than a wrong one.
     """
     lines = [
-        "✗ Other Hermes processes are running from this install's venv:",
+        "✗ Other Hexbot processes are running from this install's venv:",
     ]
     hint_by_subcommand = {
-        "serve": "  ← Hermes backend (if the Desktop app is open, close it)",
-        "dashboard": "  ← hermes dashboard (stop it: hermes dashboard stop, or close that terminal)",
+        "serve": "  ← Hexbot backend (if the Desktop app is open, close it)",
+        "dashboard": "  ← hexbot core dashboard (stop it: hexbot core dashboard stop, or close that terminal)",
         "gateway": "  ← gateway",
     }
     for pid, name, cmdline in matches[:6]:
@@ -5695,10 +5695,10 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
         "  dependency update would fail partway and leave a broken install."
     )
     lines.append(
-        "  Close the Hermes desktop app / other Hermes terminals, then re-run:"
+        "  Close the Hexbot desktop app / other Hexbot terminals, then re-run:"
     )
-    lines.append("    hermes update")
-    lines.append("  (or use `hermes update --force-venv` to proceed anyway at your own risk)")
+    lines.append("    hexbot core update")
+    lines.append("  (or use `hexbot core update --force-venv` to proceed anyway at your own risk)")
     return "\n".join(lines)
 
 def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
@@ -5738,7 +5738,7 @@ def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
     except OSError:
         venv_prefix = str(venv_dir).lower().rstrip(os.sep) + os.sep
 
-    # Never return ourselves or our own ancestry: a CLI ``hermes update``
+    # Never return ourselves or our own ancestry: a CLI ``hexbot core update``
     # runs from the venv python and would otherwise nominate itself.
     # Same #87594 carve-out as _detect_venv_python_processes: a GATEWAY
     # ancestor is not "our own ancestry" in the interactive sense — it is
@@ -5832,7 +5832,7 @@ def _refuse_gateway_ancestor_tree_kill(
 ) -> bool:
     """Refuse a plain Windows update that would kill its own process tree.
 
-    A chat agent can launch plain ``hermes update`` through its terminal tool.
+    A chat agent can launch plain ``hexbot core update`` through its terminal tool.
     In that topology the updater is a child of the gateway.  The leftover
     holder recovery below uses ``taskkill /T /F`` on Windows, so force-stopping
     that gateway also kills the updater before it can mutate the checkout
@@ -5872,7 +5872,7 @@ def _refuse_gateway_ancestor_tree_kill(
         "update can run."
     )
     print("  From a chat platform, use `/update` instead.")
-    print("  Otherwise, run `hermes update` from a separate terminal.")
+    print("  Otherwise, run `hexbot core update` from a separate terminal.")
     return True
 
 
@@ -5886,7 +5886,7 @@ def _ledger_manual_serve_holders(
     a live process, and its recorded spawner is NOT alive (a Desktop-owned
     backend keeps its live Electron spawner and must keep the refusal — the
     app would respawn what we kill; a PowerShell-launched serve has no live
-    Hermes spawner). Returns the full ledger entries so the relauncher can
+    Hexbot spawner). Returns the full ledger entries so the relauncher can
     rebuild the launch command from structured host/port/profile instead of
     parsing argv.
     """
@@ -5969,7 +5969,7 @@ def _relaunch_stopped_serves(token: dict) -> None:
     if skipped or failed:
         print(
             "  ⚠ Some stopped backends could not be relaunched automatically; "
-            "restart them manually (hermes serve --host <ip> --port <port>)."
+            "restart them manually (hexbot core serve --host <ip> --port <port>)."
         )
     try:
         from hermes_cli.update_receipt import record_step
@@ -5998,12 +5998,12 @@ def _orphaned_desktop_backend_pids(
     ``serve`` backend still holding the venv at that point is a straggler
     whose supervisor is gone: SIGTERM raced its spawn, or it belongs to a
     crashed window. Nothing will respawn it, and refusing on it dead-ends
-    the update with "Hermes is still running" while the user stares at zero
+    the update with "Hexbot is still running" while the user stares at zero
     open windows (ryanc's 2026-08-09 01:59/02:17 failures).
 
     A holder qualifies only when BOTH hold:
 
-    - its cmdline is a Hermes backend (``hermes_cli.main`` + ``serve`` /
+    - its cmdline is a Hexbot backend (``hermes_cli.main`` + ``serve`` /
       ``dashboard``), and
     - its supervising parent is demonstrably gone: the parent PID no longer
       exists, or the PID was reused (parent created *after* the child).
@@ -6151,7 +6151,7 @@ def _ledger_reapable_backend_pids(
 def _handoff_reapable_backend_pids(
     matches: list[tuple[int, str, str]],
 ) -> list[int] | None:
-    """PIDs of Hermes ``serve``/``dashboard`` backends safe to reap during a
+    """PIDs of Hexbot ``serve``/``dashboard`` backends safe to reap during a
     GUI-updater hand-off, INCLUDING ones with a still-live parent.
 
     Complements ``_orphaned_desktop_backend_pids``, which only reaps backends
@@ -6177,7 +6177,7 @@ def _handoff_reapable_backend_pids(
 
     Guarded conservatively:
 
-    - Only Hermes backends (``hermes_cli.main`` + ``serve``/``dashboard``)
+    - Only Hexbot backends (``hermes_cli.main`` + ``serve``/``dashboard``)
       from THIS install's venv qualify; a non-backend holder (operator REPL,
       stray script) disqualifies the whole set → ``None`` (keep refusing), so
       we never widen the blast radius during a hand-off.
@@ -6267,7 +6267,7 @@ def _stop_process_trees(
 
 
 def _looks_like_desktop_control_plane(cmdline: str) -> bool:
-    """True for this-install ``hermes serve`` / ``hermes dashboard`` argv.
+    """True for this-install ``hexbot core serve`` / ``hexbot core dashboard`` argv.
 
     That is the Desktop control plane, not the messaging gateway. Serve and
     dashboard do not host platform adapters (#92091); do not feed this into
@@ -6652,7 +6652,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
     # update even though the gateway itself is stopped.
     launcher_pids = _m()._venv_launcher_ancestors(mapped_pids)
 
-    print("→ Stopping Windows gateway process(es) before updating Hermes...")
+    print("→ Stopping Windows gateway process(es) before updating Hexbot...")
     try:
         drain_timeout = max(float(_get_restart_drain_timeout()), 1.0)
     except Exception:
@@ -6730,7 +6730,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
         if respawnable < len(unmapped_pids):
             # Some had no recoverable command line (psutil missing, access
             # denied, already gone): those still need a manual restart.
-            print("    Restart manually after update: hermes gateway run")
+            print("    Restart manually after update: hexbot core gateway run")
 
     token = {
         "resume_needed": True,
@@ -6810,7 +6810,7 @@ def _cold_start_windows_gateway_after_update() -> bool:
     is installed, signalling the user wants a gateway. Unlike the relaunch
     paths — which watch an old PID and respawn once it exits — this is a direct
     fresh spawn via the same hidden-console + breakaway path that
-    ``hermes gateway start`` uses (``gateway_windows._spawn_detached``).
+    ``hexbot core gateway start`` uses (``gateway_windows._spawn_detached``).
 
     Best-effort and idempotent: re-checks that nothing is running first so a
     concurrent start (e.g. the autostart entry firing) can't produce a
@@ -6966,14 +6966,14 @@ def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
         # cannot revive a job launchd no longer knows about.
         print("  Listed services may be deregistered from launchd, or still")
         print("  running pre-update code (mixed sys.modules). Recover with:")
-        print("    hermes gateway status")
+        print("    hexbot core gateway status")
         print("    launchctl list | grep <label>")
         print("    launchctl bootstrap gui/$(id -u) "
               "~/Library/LaunchAgents/<label>.plist")
         return
     print("  Skipped units may still be running pre-update code (mixed")
     print("  sys.modules). Restart them manually, then verify:")
-    print("    hermes gateway status")
+    print("    hexbot core gateway status")
     if any(not name.startswith("ai.hermes.") for name in ordered):
         print("    systemctl --user restart <unit>   # user-scope")
         print("    sudo systemctl restart <unit>     # system-scope")
@@ -7025,7 +7025,7 @@ def _restart_launchd_gateway_after_update(
             print(
                 f"  ⚠ Gateway restart failed: {stderr}\n"
                 "    The gateway may be DOWN on pre-update code. "
-                "Recover manually: hermes gateway restart"
+                "Recover manually: hexbot core gateway restart"
             )
             return [], [current_label]
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
@@ -7036,7 +7036,7 @@ def _restart_launchd_gateway_after_update(
         print(
             "  ⚠ Could not restart the gateway "
             f"({e.__class__.__name__}: {e}).\n"
-            "    Recover manually: hermes gateway restart"
+            "    Recover manually: hexbot core gateway restart"
         )
         return [], [current_label]
 
@@ -7055,7 +7055,7 @@ def _restart_launchd_gateway_after_update(
         return [current_label], []
     print(
         f"  ✗ {current_label} restarted but launchd is not supervising it.\n"
-        "    Check logs, then: hermes gateway restart"
+        "    Check logs, then: hexbot core gateway restart"
     )
     return [], [current_label]
 
@@ -7237,7 +7237,7 @@ def _gateway_recovery_partition(
     unrecoverable.  The fresh child runs a separate ``hermes-serve*`` systemd
     pass that enumerates units from systemd rather than from this inventory,
     precisely because the ledger collector cannot classify a systemd-launched
-    ``hermes serve``: it records no spawner, so it reads as ``manual-serve``.
+    ``hexbot core serve``: it records no spawner, so it reads as ``manual-serve``.
     Whatever that unit pass does not reconcile is caught afterwards by
     :func:`_surviving_pre_update_serve_runtimes` (#92145).
     """
@@ -7280,7 +7280,7 @@ def _gateway_recovery_partition(
                     # NOT a claim that no supervisor exists. The ledger
                     # collector derives serve/dashboard supervisors from
                     # spawner liveness alone, and a systemd-launched
-                    # `hermes serve` sets neither HERMES_SPAWN nor
+                    # `hexbot core serve` sets neither HERMES_SPAWN nor
                     # HERMES_PARENT_PID, so it lands here as "manual-serve".
                     # Unit-backed serve runtimes are recovered by the
                     # fresh child's systemd pass, which enumerates
@@ -7334,15 +7334,15 @@ def _warn_gateway_restart_phase_aborted(exc: BaseException, pids) -> None:
         print("  Any gateway still running is serving pre-update code")
         print("  (mixed sys.modules) against the updated checkout.")
     print("  Restart it manually, then verify:")
-    print("    hermes gateway restart")
-    print("    hermes gateway status")
+    print("    hexbot core gateway restart")
+    print("    hexbot core gateway status")
 
 def _refresh_windows_gateway_launchers() -> None:
     """Regenerate installed Windows gateway launcher scripts after update.
 
     The Scheduled Task / Startup-folder launchers (``gateway.cmd`` +
     ``gateway.vbs``) are persistence artifacts written once at install time —
-    ``hermes update`` never touched them, so installs created before the
+    ``hexbot core update`` never touched them, so installs created before the
     hidden-console rework (aa2ae36c3f) kept launching the gateway through
     ``pythonw.exe`` forever: every descendant spawn flashed a conhost
     (#54220/#56747) and, since #70344, the console-less gateway died at
@@ -7378,7 +7378,7 @@ def _refresh_bootstrap_cache_scripts(branch: str = "main") -> None:
     2026-08-09 incident: a June 4 cached script's venv stage lacked the
     #81327 process-tree sweep and died on ``Access denied``). The binary
     has no self-update path, so the poisoned cache outlives every
-    ``hermes update``.
+    ``hexbot core update``.
 
     Overwriting the cached script for *branch* with the freshly pulled
     ``scripts/install.ps1`` / ``scripts/install.sh`` on every update turns
@@ -7603,7 +7603,7 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
                 "    (The respawned gateway may have been killed by a parent "
                 "Job Object during updater teardown, #48820.)"
             )
-            print("    Recover with: hermes gateway restart")
+            print("    Recover with: hexbot core gateway restart")
             raise RuntimeError(
                 "Windows gateway relaunch after update was not verified alive"
             )
@@ -7656,9 +7656,9 @@ def _git_is_trampoline(git_cmd: list) -> bool:
 def _portable_git_candidates() -> list:
     """PortableGit candidate paths: shared root first, then profile home.
 
-    The Hermes-managed PortableGit tree lives under the SHARED root
+    The Hexbot-managed PortableGit tree lives under the SHARED root
     (``<root>/git/...``), not the profile-scoped HERMES_HOME
-    (``<root>/profiles/<name>``), so a profile-scoped ``hermes update`` must
+    (``<root>/profiles/<name>``), so a profile-scoped ``hexbot core update`` must
     look there (monerostar review, #87876). The profile-home candidate is
     kept as a fallback for custom layouts that place it there.
     """
@@ -7680,7 +7680,7 @@ def _locate_real_git() -> Optional[Path]:
     (both ~46KB shims) fail to re-exec git-core, while the real binary at
     ``mingw64\\libexec\\git-core\\git.exe`` (≈4.4MB) works when invoked
     directly (#87876). Check the standard Git for Windows locations plus the
-    Hermes-managed PortableGit copy; accept the first candidate that runs and
+    Hexbot-managed PortableGit copy; accept the first candidate that runs and
     does NOT print the trampoline guard. Returns None when nothing suitable
     is found — callers then keep the broken command and let the existing
     fetch-failure ZIP fallback handle it.
@@ -7746,7 +7746,7 @@ def _normalize_managed_eol(git_cmd, repo_root):
     overwritten", so ``install.ps1`` pins ``core.autocrlf=false`` on the managed
     clone (#67730). Checkouts created before that landed never got the pin and
     cannot receive it — the bootstrap installer reuses its build-pinned
-    ``install.ps1`` forever — so ``hermes update``, which ships with the checkout
+    ``install.ps1`` forever — so ``hexbot core update``, which ships with the checkout
     itself, is the only path left that can fix them.
 
     The pin and the cleanup are one operation. Under ``autocrlf=true`` git
@@ -7881,7 +7881,7 @@ def _rebuild_desktop_after_update(
 
     print("→ Checking if desktop app needs rebuilding...")
     # Consult the content-hash stamp IN-PROCESS first. The spawned
-    # `hermes desktop --build-only` subprocess re-imports the whole CLI stack
+    # `hexbot core desktop --build-only` subprocess re-imports the whole CLI stack
     # (~1-3 s) just to reach the same _m()._desktop_build_needed check; when
     # the stamp already says "up to date" we can skip the spawn entirely. The
     # update path never passes --source, so the subprocess would run with
@@ -7905,9 +7905,9 @@ def _rebuild_desktop_after_update(
     # still-settling rebuild window the first wait didn't fully catch — then
     # surface the captured tail so the failure is debuggable.
     #
-    # Start the build subprocess with the Hermes-managed Node on PATH: when
-    # `hermes update` runs inside the desktop updater chain (Desktop →
-    # hermes-setup → hermes update), the shell PATH customizations are lost,
+    # Start the build subprocess with the Hexbot-managed Node on PATH: when
+    # `hexbot core update` runs inside the desktop updater chain (Desktop →
+    # hermes-setup → hexbot core update), the shell PATH customizations are lost,
     # so a bare-PATH child would fail with `node: not found` before cmd_gui can
     # self-heal.
     from hermes_constants import with_hermes_node_path
@@ -7921,7 +7921,7 @@ def _rebuild_desktop_after_update(
             desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=build_env
         )
     if build_result.returncode != 0:
-        print("  ⚠ Desktop build failed (run `hermes desktop` to retry)")
+        print("  ⚠ Desktop build failed (run `hexbot core desktop` to retry)")
         tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
         if tail:
             print(tail)
@@ -7950,7 +7950,7 @@ def _venv_foreign_owned_paths(venv_root, limit: int = 5) -> list:
 
     A venv that was ever touched by ``sudo pip`` / ``sudo hermes`` contains
     root-owned files (classically ``*.dist-info/INSTALLER``). A later normal
-    ``hermes update`` then dies mid-mutation inside ``uv pip install -e .``
+    ``hexbot core update`` then dies mid-mutation inside ``uv pip install -e .``
     ("Permission denied (os error 13)") with ``venv/bin/hermes`` already
     deleted — the CLI is bricked. Same philosophy as the contended-venv gate
     (#87331): a venv we cannot safely mutate is never mutated at all.
@@ -8037,13 +8037,13 @@ def _refuse_update_if_venv_foreign_owned(project_root) -> None:
     if not foreign:
         return
     print("\n✗ Update stopped: this install's venv contains files owned by another user.")
-    print("  Updating now would fail midway (Permission denied) and leave Hermes broken.")
-    print("  This usually happens after running hermes or pip with sudo. Offending paths:")
+    print("  Updating now would fail midway (Permission denied) and leave Hexbot broken.")
+    print("  This usually happens after running hexbot core or pip with sudo. Offending paths:")
     for p, uid in foreign:
         print(f"    - {p} (owner uid {uid})")
     print("\n  Fix ownership, then re-run the update:")
     print(f"    sudo chown -R $(id -un): {project_root}")
-    print("    hermes update")
+    print("    hexbot core update")
     print("\n  Nothing in the venv was modified.")
     sys.exit(1)
 
@@ -8053,18 +8053,18 @@ def _drain_or_signal_gateway_for_update(
     drain_budget: float,
     label: str,
 ) -> bool:
-    """Decide how ``hermes update`` hands a running gateway over to new code.
+    """Decide how ``hexbot core update`` hands a running gateway over to new code.
 
     Three-way triage shared by the systemd and bare-process restart paths:
 
     1. **Gateway is an ancestor of this process** — THREE-WAY DEADLOCK BREAK
-       (#100179). When ``hermes update`` runs INSIDE the gateway's own
+       (#100179). When ``hexbot core update`` runs INSIDE the gateway's own
        process tree (the hermes-auto-update cron job is the canonical case),
        waiting for that gateway to exit is a circular wait::
 
            gateway  waits on all in-flight work units (#77184)
-             └─ cron agent session waits on the `hermes update` process
-                  └─ `hermes update` waits on the gateway to exit  ← back to A
+             └─ cron agent session waits on the `hexbot core update` process
+                  └─ `hexbot core update` waits on the gateway to exit  ← back to A
 
        The wedged-loop probe cannot break it: the cron session posts
        activity every ~180s (process-tool poll return), so it is "actively
@@ -8163,7 +8163,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("Could not read updates.non_interactive_local_changes: %s", exc)
             discard_local_changes = False
 
-    print("⚕ Updating Hermes Agent...")
+    print("⚕ Updating Hexbot...")
     print()
 
     # Phase 1 (#91277): structured update receipt — record what this run
@@ -8177,7 +8177,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         logger.debug("Update receipt unavailable: %s", _receipt_exc)
 
     # Plan phase (#91277 Phase 2): snapshot the pre-update fleet — every
-    # running Hermes runtime, its supervisor, and its running code version —
+    # running Hexbot runtime, its supervisor, and its running code version —
     # into the receipt, so a post-mortem can compare what the update SAW
     # against what it did. Read-only; a probe failure records nothing.
     # ``_pre_update_plan`` is read again AFTER the restart phase to reconcile
@@ -8256,7 +8256,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
 
     # With gateways paused, anything still running from the venv interpreter
-    # (most commonly the Desktop app's `hermes serve` backend) will keep .pyd
+    # (most commonly the Desktop app's `hexbot core serve` backend) will keep .pyd
     # files locked and corrupt the dependency sync below. Refuse rather than
     # race: killing the desktop backend is futile (the app supervises and
     # respawns it), so the user must close the app. Deliberately NOT bypassed
@@ -8305,7 +8305,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _venv_holders = _m()._detect_venv_python_processes()
         if _venv_holders:
             # Positive-identity rung (runs FIRST, any update context): holders
-            # the spawn ledger proves are orphaned Hermes backends — the
+            # the spawn ledger proves are orphaned Hexbot backends — the
             # process self-registered (pid, create_time, purpose, spawner) at
             # startup and its recorded spawner is provably dead. No PPID
             # archaeology, no hand-off contract required.
@@ -8313,7 +8313,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _ledger_backends:
                 print(
                     f"  ⚠ {len(_ledger_backends)} ledger-identified orphaned "
-                    "Hermes backend process(es) hold the venv; stopping their trees"
+                    "Hexbot backend process(es) hold the venv; stopping their trees"
                 )
                 _m()._stop_process_trees(_ledger_backends)
                 _time.sleep(1.0)
@@ -8326,7 +8326,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # Electron's teardown lost the SIGTERM race, exited, and left
                 # its backend (and any .hermes-runtime child) holding the
                 # venv. Nothing will respawn an orphan, so reap the tree and
-                # re-check instead of dead-ending with "Hermes is still
+                # re-check instead of dead-ending with "Hexbot is still
                 # running" while no window is open. Backends whose Desktop
                 # is still alive never reach here (_orphaned_desktop_
                 # backend_pids returns None for them) — that path keeps the
@@ -8340,7 +8340,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _venv_holders = _m()._detect_venv_python_processes()
         if _venv_holders:
             # Manual serve/dashboard rung (#63206): a network-bound
-            # `hermes serve --host <ip>` powering a REMOTE Desktop holds the
+            # `hexbot core serve --host <ip>` powering a REMOTE Desktop holds the
             # venv and used to dead-end the update with exit 2 — the user's
             # only option was killing the backend by hand, and nothing ever
             # brought it back (the remote client's endpoint stayed dead).
@@ -8390,7 +8390,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # live parent — which stranded a whole swarm of per-profile
             # backends (the tearing-down Electron parent / the venv
             # launcher→worker chain still mid-exit) and hung the update. In
-            # the hand-off context those surviving Hermes backends are leaks,
+            # the hand-off context those surviving Hexbot backends are leaks,
             # live parent or not — reap them by cmdline instead of dead-ending.
             _handoff = False
             try:
@@ -8411,7 +8411,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _handoff_backends = _m()._handoff_reapable_backend_pids(_venv_holders)
                 if _handoff_backends:
                     print(
-                        f"  ⚠ {len(_handoff_backends)} Hermes backend process(es) "
+                        f"  ⚠ {len(_handoff_backends)} Hexbot backend process(es) "
                         "still hold the venv after the Desktop hand-off; "
                         "stopping their trees"
                     )
@@ -8424,7 +8424,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(2)
 
     # Self-lock deferral moved: the venv-holder sweep above excludes this
-    # process by design (a CLI `hermes update` IS the venv python), and an
+    # process by design (a CLI `hexbot core update` IS the venv python), and an
     # updater that has imported a native venv extension cannot rewrite its
     # own mapped .pyd (#83569). That check used to run HERE — before the
     # fetch — but firing pre-fetch meant a deferral stranded the user on the
@@ -8935,7 +8935,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 else:
                     current_checkout_complete = False
                     print(f"⚠ Venv still unhealthy after repair: {detail_after}")
-                    print("  Close all Hermes windows/gateways and re-run: hermes update")
+                    print("  Close all Hexbot windows/gateways and re-run: hexbot core update")
             else:
                 current_checkout_complete = _repair_node_deps_on_current_checkout(
                     _print_verified_update_completion,
@@ -8955,7 +8955,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "⚠ Restart required to finish the managed Python runtime repair."
                 )
                 print(
-                    "  Any running Hermes gateways, Desktop backends, or other "
+                    "  Any running Hexbot gateways, Desktop backends, or other "
                     "long-lived processes still use the previous runtime."
                 )
                 print("  Restart each of them to pick up the repaired runtime.")
@@ -8995,7 +8995,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Capture the pre-pull SHA so we can auto-roll-back if the new code
         # has a syntax error in a critical-path file (PR #28452 incident:
         # orphan merge-conflict markers in hermes_cli/config.py bricked
-        # every user who ran ``hermes update`` for the 7 minutes between
+        # every user who ran ``hexbot core update`` for the 7 minutes between
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         try:
@@ -9174,7 +9174,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     )
                     if rollback_result.returncode == 0:
                         print("  ✓ Rollback complete — your install is unchanged.")
-                        print("  Try ``hermes update`` again later once a fix lands.")
+                        print("  Try ``hexbot core update`` again later once a fix lands.")
                     else:
                         print("  ✗ Rollback failed. Recover manually with:")
                         print(f"    cd {_m().PROJECT_ROOT} && git reset --hard {pre_pull_sha}")
@@ -9226,9 +9226,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # applied: a checkout that is pinned to a raw SHA (detached HEAD) can
         # report "N new commit(s)" against origin yet still sit on the old
         # commit afterward (the branch-switch step re-detaches to the SHA).
-        # Before this guard, ``hermes update`` printed "✓ Code updated!" and
+        # Before this guard, ``hexbot core update`` printed "✓ Code updated!" and
         # reinstalled deps + rebuilt the desktop app against the stale tree —
-        # no error, no warning, ``hermes doctor`` healthy. Compare pre-pull
+        # no error, no warning, ``hexbot core doctor`` healthy. Compare pre-pull
         # and post-pull HEAD; if they match, surface the no-op instead of
         # claiming success.
         post_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
@@ -9241,7 +9241,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             print(
                 "  Reattach to the branch and retry: "
-                f"git -C {_m().PROJECT_ROOT} checkout {branch} && hermes update"
+                f"git -C {_m().PROJECT_ROOT} checkout {branch} && hexbot core update"
             )
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)
@@ -9274,7 +9274,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             print(
                 "  Switch to the target branch and retry: "
-                f"git -C {_m().PROJECT_ROOT} checkout {branch} && hermes update"
+                f"git -C {_m().PROJECT_ROOT} checkout {branch} && hexbot core update"
             )
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)
@@ -9282,7 +9282,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # #95294: HEAD advanced; running gateways still serve pre-pull
         # modules until the restart phase below. Any interrupt between here
         # and a completed (or no-op) restart leaves this marker so the next
-        # ``hermes update`` can catch up even when git is already up to date.
+        # ``hexbot core update`` can catch up even when git is already up to date.
         # Distinct from ``.update-incomplete`` (venv/install repair).
         _write_fleet_restart_pending_marker(expected_sha=post_pull_sha or "")
 
@@ -9323,7 +9323,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         #
         # Drop the core-install breadcrumb BEFORE touching the venv. If the
         # install is killed mid-flight (Ctrl-C, terminal close, WSL OOM), the
-        # marker survives and the next ``hermes`` launch finishes the install
+        # marker survives and the next ``hexbot core`` launch finishes the install
         # via ``_recover_from_interrupted_install``. Cleared after the core
         # ``.[all]`` install completes — lazy refresh uses a separate marker.
         _write_update_incomplete_marker()
@@ -9444,7 +9444,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _m()._clear_lazy_refresh_incomplete_marker()
         else:
             print(
-                "  ⚠ Lazy-refresh recovery incomplete — run `hermes` again "
+                "  ⚠ Lazy-refresh recovery incomplete — run `hexbot core` again "
                 "to finish import-based venv repair."
             )
 
@@ -9474,7 +9474,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print()
             print(f"  ⚠ {failing_module} still fails to import after updating:")
             print(f"      {import_error}")
-            print("    Run `hermes update` again — if it persists, reinstall:")
+            print("    Run `hexbot core update` again — if it persists, reinstall:")
             print("    https://hermes-agent.nousresearch.com")
 
         node_failures = _update_node_dependencies()
@@ -9498,7 +9498,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if sys.platform == "darwin" and had_desktop_app_before_update:
             print()
             print(
-                "  ℹ macOS: if Hermes re-prompts for permissions you already "
+                "  ℹ macOS: if Hexbot re-prompts for permissions you already "
                 "granted (toggle shows ON), the stored grant is stale — run "
                 "`tccutil reset ScreenCapture com.nousresearch.hermes` (repeat "
                 "per affected service), toggle it ON in System Settings, then "
@@ -9528,7 +9528,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Seed the model-catalog disk cache from the freshly-pulled checkout.
         # The repo ships the canonical catalog at
         # website/static/api/model-catalog.json, and `git pull` just made it
-        # current — so copy it straight over ~/.hermes/cache/model_catalog.json
+        # current — so copy it straight over ~/.hexbot/cache/model_catalog.json
         # instead of waiting on a network fetch (which can be bot-gated or hit a
         # Portal hiccup). Keeps the model picker's curated/free lists in sync
         # with the version the user just installed. Non-fatal on failure: the
@@ -9557,7 +9557,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if result.get("user_modified"):
                 print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
                 print(
-                    "    → see them: hermes skills list-modified  "
+                    "    → see them: hexbot core skills list-modified  "
                     "(diff/reset to resume updates)"
                 )
             if result.get("cleaned"):
@@ -9674,7 +9674,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Most-recent curator run notice — show-once per run. Surfaces the
         # rename map (`old-name → umbrella`) on the high-attention update
         # surface so users learn about consolidations without having to
-        # check `hermes curator status`. Self-stamps after printing so it
+        # check `hexbot core curator status`. Self-stamps after printing so it
         # never repeats for the same run.
         try:
             _print_curator_recent_run_notice()
@@ -9689,7 +9689,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("FHS PATH guard check failed: %s", e)
 
         # Self-heal the hermes-acp launcher for installs that predate it, so
-        # ACP hosts (Zed, JetBrains, Buzz) can resolve Hermes on PATH without
+        # ACP hosts (Zed, JetBrains, Buzz) can resolve Hexbot on PATH without
         # a reinstall.  No-op on Windows (the launcher migration below owns
         # that) and when already present.
         try:
@@ -9698,16 +9698,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("hermes-acp launcher self-heal failed: %s", e)
 
         # Migrate the Windows hermes launchers to the managed binary dir
-        # (the default Hermes root's bin, next to the managed uv) and repair
+        # (the default Hexbot root's bin, next to the managed uv) and repair
         # them if they are missing. Earlier layouts put them inside the git
         # checkout (hermes-agent\bin) or put venv\Scripts itself on PATH; the
         # in-checkout copies were swept by this command's own pre-update
         # autostash (git stash push --include-untracked) and, with
-        # --keep-stash (the desktop updater), never restored — `hermes`
+        # --keep-stash (the desktop updater), never restored — `hexbot core`
         # stopped resolving in every new terminal. Updates never run
         # install.ps1, so this tail call is how existing installs reach the
         # new layout. No-op on POSIX and on source checkouts (root is not
-        # the managed clone under the default Hermes root).
+        # the managed clone under the default Hexbot root).
         try:
             from hermes_cli._install_repair import migrate_windows_bin_path
 
@@ -9718,7 +9718,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Refresh the cua-driver binary used by the Computer Use toolset.
         # The upstream installer is gated on supported platforms and on the
         # binary already being on PATH, so this is a no-op for users who
-        # don't have it. Tying the refresh to ``hermes update`` gives users a
+        # don't have it. Tying the refresh to ``hexbot core update`` gives users a
         # predictable cadence (matches when they pull new agent code) without
         # adding startup latency or a per-launch GitHub API call.
         try:
@@ -9747,8 +9747,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # silent) upstream installer when the driver's native
                 # check-update verb positively reports a newer release.
                 # An indeterminate check (offline, rate-limited, old
-                # driver) keeps the installed version — `hermes update`
-                # must stay fast; `hermes computer-use install --upgrade`
+                # driver) keeps the installed version — `hexbot core update`
+                # must stay fast; `hexbot core computer-use install --upgrade`
                 # remains the force path. Windows also defers confirmed
                 # updates and contract repairs to that explicit command
                 # because the upstream installer may prompt for console/UAC
@@ -9762,7 +9762,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("cua-driver refresh failed: %s", e)
 
         # Write exit code *before* the gateway restart attempt.
-        # When running as ``hermes update --gateway`` (spawned by the gateway's
+        # When running as ``hexbot core update --gateway`` (spawned by the gateway's
         # /update command), this process lives inside the gateway's systemd
         # cgroup.  A graceful SIGUSR1 restart keeps the drain loop alive long
         # enough for the exit-code marker to be written below, but the
@@ -9821,7 +9821,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # The code update (git pull) is shared across all profiles, so every
         # running gateway needs restarting to pick up the new code.
         #
-        # Purge stale cached Hermes modules FIRST: the import below pulls
+        # Purge stale cached Hexbot modules FIRST: the import below pulls
         # freshly-updated gateway source into this pre-update interpreter,
         # and any already-cached sibling module (cli_output, status, ...)
         # that the new source expects a new symbol from would otherwise
@@ -10048,7 +10048,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         print(
                             f"  ⚠ systemctl timed out listing {scope}-scope "
                             f"gateway units ({exc.cmd if exc.cmd else 'unknown command'}). "
-                            f"Check the gateway with: hermes gateway status"
+                            f"Check the gateway with: hexbot core gateway status"
                         )
                         continue
 
@@ -10215,7 +10215,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 f"  ⚠ {svc_name} is a system service and restarting it needs root.\n"
                                 f"    Restart it manually to load the new version:\n"
                                 f"      sudo systemctl restart {svc_name}\n"
-                                f"    To let `hermes update` restart it automatically, allow\n"
+                                f"    To let `hexbot core update` restart it automatically, allow\n"
                                 f"    passwordless sudo for systemctl, or run updates with sudo."
                             )
                             return
@@ -10234,7 +10234,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         # the RestartSec backoff and leave the unit
                         # dead.  Clearing the failed state first makes
                         # the restart idempotent.  Mirrors the recovery
-                        # path in `hermes gateway restart`
+                        # path in `hexbot core gateway restart`
                         # (`systemd_restart()`) as of PR #20949.
                         subprocess.run(
                             _manage_cmd + ["reset-failed", svc_name],
@@ -10452,10 +10452,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
                 if unmapped_count:
                     print(f"  → Stopped {unmapped_count} manual gateway process(es)")
-                    print("    Restart manually: hermes gateway run")
+                    print("    Restart manually: hexbot core gateway run")
                     if unmapped_count > 1:
                         print(
-                            "    (or: hermes -p <profile> gateway run  for each profile)"
+                            "    (or: hexbot core -p <profile> gateway run  for each profile)"
                         )
 
             if failed_or_stale_units:
@@ -10577,7 +10577,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # A serve/dashboard runtime that is still the SAME process the
             # pre-update inventory saw is a live runtime on the pre-update
             # code generation — the exact unsafe state of #92145, and the one
-            # the reporter hit through tui_gateway (hosted by `hermes serve`,
+            # the reporter hit through tui_gateway (hosted by `hexbot core serve`,
             # which is not a gateway profile and which no `gateway restart`
             # command can reach). Recovery may not report success while one
             # is still there, and it must never kill one: a manual or
@@ -10724,11 +10724,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             except Exception:
                 pass
 
-        # Warn if legacy Hermes gateway unit files are still installed.
+        # Warn if legacy Hexbot gateway unit files are still installed.
         # When both hermes.service (from a pre-rename install) and the
         # current hermes-gateway.service are enabled, they SIGTERM-fight
         # for the same bot token (see PR #11909). Flagging here means
-        # every `hermes update` surfaces the issue until the user migrates.
+        # every `hexbot core update` surfaces the issue until the user migrates.
         try:
             from hermes_cli.gateway import (
                 has_legacy_hermes_units,
@@ -10738,7 +10738,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             if supports_systemd_services() and has_legacy_hermes_units():
                 print()
-                print("⚠ Legacy Hermes gateway unit(s) detected:")
+                print("⚠ Legacy Hexbot gateway unit(s) detected:")
                 for name, path, is_sys in _find_legacy_hermes_units():
                     scope = "system" if is_sys else "user"
                     print(f"    {path}  ({scope} scope)")
@@ -10747,7 +10747,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("  hermes-gateway.service for the bot token and cause SIGTERM")
                 print("  flap loops. Remove them with:")
                 print()
-                print("    hermes gateway migrate-legacy")
+                print("    hexbot core gateway migrate-legacy")
                 print()
                 print("  (add `sudo` if any are in system scope)")
         except Exception as e:
@@ -10770,7 +10770,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # pre-update code generations (#100479). This is the SUCCESS-path
         # twin of the abort-recovery probe above: the restart phase only
         # restarts units, so an sshd-spawned `serve --isolated` or a manual
-        # `hermes serve` (no unit) is left running its pre-update
+        # `hexbot core serve` (no unit) is left running its pre-update
         # sys.modules graph — and its cron ticker keeps firing agent jobs
         # that ImportError on every symbol added in the pulled range. Runs
         # AFTER the dashboard cleanup so a manual dashboard that cleanup
@@ -10788,7 +10788,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print()
         print("Tip: You can now select a provider and model:")
-        print("  hermes model              # Select provider and model")
+        print("  hexbot core model              # Select provider and model")
 
         # Phase 1 (#91277): post-update fleet version verification. Compare
         # every live gateway's stamped code_sha against the freshly-updated
@@ -10936,7 +10936,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # runs pre-update modules — surface that as a failed update so
             # automation / operators do not treat the fleet as healthy.
             # Leave ``fleet_restart_pending`` in place so the next
-            # ``hermes update`` still runs the catch-up restart.
+            # ``hexbot core update`` still runs the catch-up restart.
             sys.exit(1)
         _clear_fleet_restart_pending_marker()
 

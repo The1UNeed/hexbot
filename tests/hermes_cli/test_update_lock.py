@@ -6,7 +6,7 @@ detached), and the desktop's Update button (Tauri updater → install-mode
 bootstrap on its failure screen). Before the shared lock, two of them could run
 concurrently and rewrite source under a live interpreter — observed in the wild
 as an installer ``git checkout`` rewinding the checkout ~9k commits while a
-dashboard-spawned ``hermes update`` was mid-``npm install``, which then failed
+dashboard-spawned ``hexbot core update`` was mid-``npm install``, which then failed
 against the rewound tree's manifests.
 
 These exercise the real marker file against a temp home — no mocks — because
@@ -179,10 +179,10 @@ def test_unwritable_marker_location_does_not_block_the_update(tmp_path):
 
 
 class TestHandoffFromOrchestratingUpdater:
-    """The Tauri updater holds the marker, then spawns ``hermes update``.
+    """The Tauri updater holds the marker, then spawns ``hexbot core update``.
 
     The regression: the child saw its own parent's live marker and exited 2,
-    so every GUI update failed with "Hermes is still running" and retrying
+    so every GUI update failed with "Hexbot is still running" and retrying
     just re-ran the same self-deadlock. The parent names its pid in
     HANDOFF_PID_ENV; a live holder matching it is our own orchestrator.
     """
@@ -229,7 +229,7 @@ class TestHandoffFromOrchestratingUpdater:
 class TestAncestryHandoff:
     """Staged updaters older than the HANDOFF_PID_ENV export never send it.
 
-    ``hermes-setup`` under ``~/.hermes`` is only refreshed by a full installer
+    ``hermes-setup`` under ``~/.hexbot`` is only refreshed by a full installer
     run, so an updated checkout (new lock) driven by a pre-handoff staged
     updater (old parent) deadlocks on exit 2 forever unless the child also
     recognizes a live holder that is its own process ancestor.

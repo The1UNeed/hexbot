@@ -3,7 +3,7 @@
 Plugins that want durable state today invent their own paths, and most of
 them invent the same wrong one: a scratch directory inside
 ``<hermes home>/plugins/<name>/``. That tree is the plugin *install* dir —
-``hermes plugins remove`` deletes it and ``hermes plugins update`` git-pulls
+``hexbot core plugins remove`` deletes it and ``hexbot core plugins update`` git-pulls
 into it — so user data parked there dies with the code that wrote it.
 
 This module is the sanctioned alternative: one data root per plugin under
@@ -13,7 +13,7 @@ inventing a storage story, and every plugin's data is inspectable in one
 predictable place.
 
 Secrets are deliberately NOT part of this convention — credential reads go
-through ``agent.secret_scope`` / ``.env`` like everywhere else in Hermes.
+through ``agent.secret_scope`` / ``.env`` like everywhere else in Hexbot.
 
 Usage::
 
@@ -37,7 +37,7 @@ from pathlib import Path
 
 __all__ = ["plugin_data_dir", "plugin_db"]
 
-# Mirrors the plugin-name shape `hermes plugins install` accepts. Anything
+# Mirrors the plugin-name shape `hexbot core plugins install` accepts. Anything
 # else could escape the data root via separators or traversal.
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")
 

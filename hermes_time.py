@@ -1,15 +1,15 @@
 """
-Timezone-aware clock for Hermes.
+Timezone-aware clock for Hexbot.
 
 Provides a single ``now()`` helper that returns a timezone-aware datetime
 based on the user's configured IANA timezone (e.g. ``Asia/Kolkata``).
 
 Resolution order:
   1. ``HERMES_TIMEZONE`` environment variable
-  2. ``timezone`` key in ``~/.hermes/config.yaml``
+  2. ``timezone`` key in ``~/.hexbot/config.yaml``
   3. Falls back to the server's local time (``datetime.now().astimezone()``)
 
-Invalid timezone values log a warning and fall back safely — Hermes never
+Invalid timezone values log a warning and fall back safely — Hexbot never
 crashes due to a bad timezone string.
 """
 
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
-    # Python 3.8 fallback (shouldn't be needed — Hermes requires 3.9+)
+    # Python 3.8 fallback (shouldn't be needed — Hexbot requires 3.9+)
     from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
 
 # Cached state, keyed to the active timezone source. This process can multiplex

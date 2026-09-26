@@ -569,7 +569,7 @@ class _ProviderCollector:
         and resolved path recorded here.
 
         Gated on ``register_skills`` so merely *inspecting* an inactive
-        provider — ``hermes memory status``, the setup picker — leaves no
+        provider — ``hexbot core memory status``, the setup picker — leaves no
         registry side effects behind.
         """
         if not self._register_skills:

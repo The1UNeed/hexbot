@@ -107,7 +107,7 @@ def test_pyproject_pins_match_lazy_deps_pins():
 
     Any package that is exact-pinned in BOTH a pyproject extra and a
     `tools/lazy_deps.py` LAZY_DEPS entry must use the SAME version in both
-    places. When they drift, `hermes update` resolves the pyproject extra
+    places. When they drift, `hexbot core update` resolves the pyproject extra
     pin and downgrades the package to the older version, reopening whatever
     the lazy pin fixed (the aiohttp #31817 case, and the anthropic
     CVE-2026-34450/34452 case found alongside it) — only for the lazy
@@ -198,7 +198,7 @@ def test_every_lazy_deps_exact_pin_matches_uv_lock():
 
     Any package that is BOTH exact-pinned in ``tools/lazy_deps.py`` AND
     resolved in the committed uv.lock is a *shared* package: the core
-    install ships the locked version, and the ``hermes update`` lazy-refresh
+    install ships the locked version, and the ``hexbot core update`` lazy-refresh
     pass re-asserts the LAZY_DEPS pin whenever the package is present
     (``active_features()``). If the two disagree, every update churns the
     package — and when the lazy pin is older, it force-DOWNGRADES a version
@@ -245,7 +245,7 @@ def test_huggingface_hub_lazy_pin_matches_uv_lock():
     faster-whisper/tokenizers, and transformers/sentence-transformers when
     local Hindsight embeddings are installed), and LAZY_DEPS
     ['tool.trace_upload'] exact-pins it. Because active_features() activates
-    a feature from mere package presence, the `hermes update` lazy-refresh
+    a feature from mere package presence, the `hexbot core update` lazy-refresh
     pass re-asserts the LAZY_DEPS pin on every install where hub is present.
     If that pin drifts from the lock's resolved version, every update churns
     the shared package — and a pin below transformers' floor (>=1.5.0)

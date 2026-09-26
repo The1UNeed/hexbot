@@ -12,7 +12,7 @@ def providers():
     from hexbot.auth_provider import HexbotAuthProvider, HexConnectProvider
     from hexbot.plugin import register
 
-    class Context:  # the parts of Hermes's PluginContext that register() touches first
+    class Context:  # the parts of the core's PluginContext that register() touches first
         def register_dashboard_auth_provider(self, provider): register_provider(provider)
 
     clear_providers()

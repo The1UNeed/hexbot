@@ -1,7 +1,7 @@
 /**
  * Typed wrappers for every daemon method the client calls: the `hexbot.*`
- * surface from docs/api.md plus the Hermes chat subset from
- * docs/upstream/ws-api.md. Everything goes through the active RPC client, so
+ * surface from docs/api.md plus the Hexbot chat subset from
+ * docs/core/ws-api.md. Everything goes through the active RPC client, so
  * a call before the connection is up rejects with `NotConnectedError`.
  */
 
@@ -33,7 +33,7 @@ import type {
 } from './types'
 import type { CurrentUser, UsageSummary, User } from './types'
 
-/** Raw history row as projected by Hermes `session.history`. */
+/** Raw history row as projected by Hexbot `session.history`. */
 export interface HistoryRow {
   args?: unknown
   context?: string
@@ -443,7 +443,7 @@ export function modelsList(provider?: string): Promise<ModelList> {
   return rpcCall<ModelList>('hexbot.models.list', provider ? { provider } : {})
 }
 
-/** Raw Hermes picker payload; `hexbot.models.list` is the projected form. */
+/** Raw Hexbot picker payload; `hexbot.models.list` is the projected form. */
 export function modelOptions(): Promise<Record<string, unknown>> {
   return rpcCall<Record<string, unknown>>('model.options')
 }
@@ -473,7 +473,7 @@ export function devicesRevoke(id: string): Promise<{ revoked: boolean }> {
 }
 
 // ---------------------------------------------------------------------------
-// Hermes chat
+// Hexbot chat
 // ---------------------------------------------------------------------------
 
 export interface PromptSubmitOptions {
@@ -628,7 +628,7 @@ export function attachmentKind(mime: string, name: string): 'file' | 'image' | '
 }
 
 /**
- * Stage one file for the next `prompt.submit`, picking the right Hermes
+ * Stage one file for the next `prompt.submit`, picking the right Hexbot
  * method from its type.
  */
 export async function attachFile(sessionId: string, file: File): Promise<AttachResult> {
@@ -659,12 +659,12 @@ export function nextMessageId(prefix = 'm'): string {
 }
 
 /**
- * Turn the Hermes `session.history` projection into transcript messages.
+ * Turn the Hexbot `session.history` projection into transcript messages.
  * Tool rows fold into the assistant message that precedes them, matching how
  * live `tool.start` / `tool.complete` events are rendered.
  */
 /**
- * Hermes history rows carry no timestamps, so restored messages get `createdAt: 0`
+ * Hexbot history rows carry no timestamps, so restored messages get `createdAt: 0`
  * ("unknown") and the transcript draws no time separator for them.
  */
 export function messagesFromHistory(rows: HistoryRow[]): Message[] {
@@ -714,7 +714,7 @@ export function messagesFromHistory(rows: HistoryRow[]): Message[] {
     const text = typeof row.text === 'string' ? row.text : ''
     const previous = messages.at(-1)
 
-    // Hermes stores one turn as assistant(tool calls) → tool rows → assistant(text).
+    // Hexbot stores one turn as assistant(tool calls) → tool rows → assistant(text).
     // Live streaming shows that as one bubble, so history must too.
     if (role === 'assistant' && previous?.role === 'assistant' && previous.toolCalls.length) {
       previous.text = previous.text ? `${previous.text}\n\n${text}` : text

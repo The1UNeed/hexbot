@@ -1,7 +1,7 @@
 """Tests for pnpm ``ERR_PNPM_UNSUPPORTED_ENGINE`` recovery (``hermes_cli/pnpm_engine.py``).
 
 The behaviour under test is a contract about *reacting* to pnpm's own engine
-check: pnpm states which tool is out of range, Hermes upgrades only a pnpm it
+check: pnpm states which tool is out of range, Hexbot upgrades only a pnpm it
 owns (to the ``packageManager`` pin), and every other case leaves the original
 failure alone.
 """
@@ -91,7 +91,7 @@ class TestDetection:
 
 class TestManagedDetection:
     """The upgrade must fire for every spelling of the managed pnpm, and for
-    no other pnpm — this is the boundary between "Hermes fixes it" and "the
+    no other pnpm — this is the boundary between "Hexbot fixes it" and "the
     user's own toolchain is left alone"."""
 
     @pytest.fixture
@@ -273,7 +273,7 @@ class TestRepairDecision:
     def test_foreign_pnpm_provisions_managed_runtime_instead(
         self, tmp_path, monkeypatch, output, expected_range
     ):
-        """A system/nvm/brew/Nix pnpm is never modified — Hermes provisions its
+        """A system/nvm/brew/Nix pnpm is never modified — Hexbot provisions its
         own managed tree, installs the pinned pnpm into THAT, and returns it.
         A too-old system Node is covered the same way: the managed tree ships a
         supported Node."""

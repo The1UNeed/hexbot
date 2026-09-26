@@ -1,6 +1,6 @@
 """Tests for `chat -c <title>` failing loudly (stderr) and `--create-if-missing`.
 
-Regression for #86794: a background/quiet `hermes chat -c "<title>" -q "..."`
+Regression for #86794: a background/quiet `hexbot core chat -c "<title>" -q "..."`
 against a not-yet-existing titled session silently no-oped — the error message
 was written to stdout (which quiet/programmatic callers treat as the "final
 response" channel) instead of stderr, and there was no way to create the

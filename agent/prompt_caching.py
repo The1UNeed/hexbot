@@ -188,7 +188,7 @@ ALIBABA_FAMILY_PROVIDERS = frozenset({
 #   minimax-m2.5  ttl=1h -> cache_read    0  EXPIRED
 #
 # Read the two non-qwen rows for what they are: evidence about the ROUTE, not
-# about traffic Hermes sends today. anthropic_prompt_cache_policy currently
+# about traffic Hexbot sends today. anthropic_prompt_cache_policy currently
 # opts opencode-go in only for qwen models, so glm-5.2 and minimax-m2.5 on
 # that route receive no cache_control marker at all and never reach this
 # clamp in production. They constrain the route-level rule; they are not

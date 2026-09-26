@@ -8,8 +8,8 @@ endpoints — CI systems, dashboards, other agents — with zero changes to
 call sites and zero polling on the receiving end.
 
 This is the outbound mirror of the inbound webhook platform
-(``gateway/platforms/webhook.py``): inbound wakes Hermes when the world
-changes; outbound tells the world when Hermes does something.
+(``gateway/platforms/webhook.py``): inbound wakes Hexbot when the world
+changes; outbound tells the world when Hexbot does something.
 
 Design notes
 ------------
@@ -29,7 +29,7 @@ Design notes
 * Registration is idempotent — safe to invoke from both the CLI entry
   point and the gateway entry point.
 
-Config schema (``~/.hermes/config.yaml``)::
+Config schema (``~/.hexbot/config.yaml``)::
 
     hooks:
       outbound:
@@ -40,7 +40,7 @@ Config schema (``~/.hermes/config.yaml``)::
           # optional regex, honored for pre/post_tool_call only:
           matcher: "terminal|delegate_task"
           timeout: 10       # per-attempt seconds, clamped to [1, 60]
-          name: ci-notify   # optional label for logs / `hermes hooks list`
+          name: ci-notify   # optional label for logs / `hexbot core hooks list`
 
 Wire format (POST body)::
 
@@ -209,7 +209,7 @@ def register_from_config(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget]:
 
 def iter_configured_targets(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget]:
     """Parse ``hooks.outbound`` without registering anything.
-    Used by ``hermes hooks list``."""
+    Used by ``hexbot core hooks list``."""
     if not isinstance(cfg, dict):
         return []
     hooks_cfg = cfg.get("hooks")

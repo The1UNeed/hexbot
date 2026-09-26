@@ -908,7 +908,7 @@ async def get_active_profile_endpoint():
     """Return the sticky active profile and the profile this dashboard
     process is currently running as.
 
-    ``active`` is the sticky default written by ``hermes profile use`` —
+    ``active`` is the sticky default written by ``hexbot core profile use`` —
     the profile new CLI invocations pick up. ``current`` is the profile
     the running dashboard/gateway is scoped to (derived from HERMES_HOME).
     """
@@ -926,7 +926,7 @@ async def get_active_profile_endpoint():
 
 @router.post("/api/profiles/active")
 async def set_active_profile_endpoint(body: ProfileActiveUpdate):
-    """Set the sticky active profile (mirrors ``hermes profile use``).
+    """Set the sticky active profile (mirrors ``hexbot core profile use``).
 
     Note: this does not retarget the already-running dashboard process —
     it changes which profile subsequent CLI commands and gateways use.
@@ -1140,7 +1140,7 @@ async def update_profile_model_endpoint(name: str, body: ProfileModelUpdate):
 @router.post("/api/profiles/{name}/describe-auto")
 async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
     """Auto-generate a profile's description via the auxiliary LLM
-    (``auxiliary.profile_describer``). Mirrors ``hermes profile describe
+    (``auxiliary.profile_describer``). Mirrors ``hexbot core profile describe
     <name> --auto``.
 
     A failed generation (no aux client, LLM error, …) is returned as
@@ -1167,7 +1167,7 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
 
 # ── Export / Import ──────────────────────────────────────────────────────────
 # Profile sharing for the desktop: wraps hermes_cli.profiles.export_profile /
-# import_profile (the same machinery behind `hermes profile export|import`).
+# import_profile (the same machinery behind `hexbot core profile export|import`).
 # Paths are exchanged, not bytes — the desktop's local and pooled backends
 # share the filesystem with the native save/open dialogs that produce them.
 

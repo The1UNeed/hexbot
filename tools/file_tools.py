@@ -449,7 +449,7 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
 
 
 def _file_ops_uses_host_paths(file_ops) -> bool:
-    """Return True when *file_ops* targets the same host filesystem as Hermes.
+    """Return True when *file_ops* targets the same host filesystem as Hexbot.
 
     Only then may we rewrite V4A header paths to resolved host-absolute
     paths: a container/remote backend has its own filesystem namespace where
@@ -665,7 +665,7 @@ _hermes_config_resolved_loaded = False
 
 
 def _get_hermes_config_resolved() -> str | None:
-    """Return the resolved absolute path of the Hermes config file (cached)."""
+    """Return the resolved absolute path of the Hexbot config file (cached)."""
     global _hermes_config_resolved, _hermes_config_resolved_loaded
     if _hermes_config_resolved_loaded:
         return _hermes_config_resolved
@@ -697,16 +697,16 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
-    # Prevent agents from modifying the Hermes config file directly.
+    # Prevent agents from modifying the Hexbot config file directly.
     # approvals.mode and other security settings live here; a malicious or
     # prompt-injected agent could silently disable exec approval by writing to
     # this file.
     hermes_config = _get_hermes_config_resolved()
     if hermes_config and (resolved == hermes_config or normalized == hermes_config):
         return (
-            f"Refusing to write to Hermes config file: {filepath}\n"
+            f"Refusing to write to Hexbot config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "
-            "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
+            "Edit ~/.hexbot/config.yaml directly or use 'hexbot core config' instead."
         )
     return None
 
@@ -742,7 +742,7 @@ _real_hermes_home_loaded = False
 
 
 def _get_real_hermes_home() -> str | None:
-    """Return the realpath of the authoritative Hermes home (cached)."""
+    """Return the realpath of the authoritative Hexbot home (cached)."""
     global _real_hermes_home_cached, _real_hermes_home_loaded
     if _real_hermes_home_loaded:
         return _real_hermes_home_cached
@@ -809,7 +809,7 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
     except (OSError, ValueError, RuntimeError):
         resolved = os.path.realpath(normalized)
 
-    # The authoritative ~/.hermes home is governed by its own guards
+    # The authoritative ~/.hexbot home is governed by its own guards
     # (config.yaml hard-block, cross-profile guard, write_approval); this
     # gate targets PROJECT-LOCAL instruction files only. Checked before the
     # ``.hermes`` component rule below, which would otherwise match the
@@ -832,8 +832,8 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
         # are loaded as project context and steer behavior the same way.
         # Scope: the file's IMMEDIATE parent must be ``.hermes`` — matching
         # any ancestor named .hermes would gate every write inside a
-        # checkout that happens to live under ~/.hermes (e.g. the
-        # hermes-agent repo itself at ~/.hermes/hermes-agent).
+        # checkout that happens to live under ~/.hexbot (e.g. the
+        # hermes-agent repo itself at ~/.hexbot/hermes-agent).
         parts = candidate.replace("\\", "/").rstrip("/").split("/")
         if len(parts) >= 2 and parts[-2] == ".hermes":
             return candidate
@@ -1030,7 +1030,7 @@ def _check_approval_required_write(paths: list[str],
 
 
 def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:
-    """Return the container-side Hermes mirror prefix for Docker file tools."""
+    """Return the container-side Hexbot mirror prefix for Docker file tools."""
     try:
         from tools.terminal_tool import (
             _active_environments,
@@ -1066,10 +1066,10 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
 def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
     """Return a soft-guard warning when ``filepath`` lands on a host-side
     sandbox-mirror of authoritative profile state, or the Docker
-    container's sandbox mirror of Hermes state.
+    container's sandbox mirror of Hexbot state.
 
     Two detectors (both #32049): these catch writes that would be
-    SILENTLY LOST — the host Hermes process never reads the mirror, so
+    SILENTLY LOST — the host Hexbot process never reads the mirror, so
     the write succeeds but changes nothing. That is a lost-work guard,
     not profile isolation.
 
@@ -1081,7 +1081,7 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     steering. ``cross_profile=True`` still bypasses the mirror guards
     (name kept for replay/transcript compat).
 
-    Returns ``None`` when the write is in-scope or outside Hermes scope.
+    Returns ``None`` when the write is in-scope or outside Hexbot scope.
     """
     try:
         from agent.file_safety import (
@@ -1765,7 +1765,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 "Use vision_analyze for images, or terminal to inspect binary files."
             )
 
-        # ── Hermes internal path guard ────────────────────────────────
+        # ── Hexbot internal path guard ────────────────────────────────
         # Prevent prompt injection via catalog or hub metadata files,
         # and block credential stores under HERMES_HOME.  Pass the
         # already-resolved path so a relative-path read against

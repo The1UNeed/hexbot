@@ -1,4 +1,4 @@
-"""Tests for ``hermes debug`` CLI command and debug utilities."""
+"""Tests for ``hexbot core debug`` CLI command and debug utilities."""
 
 import os
 import urllib.error
@@ -149,7 +149,7 @@ class TestCaptureLogSnapshot:
 class TestMissingLogNote:
     """A missing log explains itself when the writer isn't this backend.
 
-    `hermes debug share` runs on the backend, so a desktop connected to a
+    `hexbot core debug share` runs on the backend, so a desktop connected to a
     remote/docker/SSH backend can never contribute desktop.log. Reporting a
     bare absence sends triage after a client-side bug it cannot see.
     """
@@ -171,7 +171,7 @@ class TestMissingLogNote:
         snap = _capture_log_snapshot("desktop", tail_lines=10)
         assert snap.full_text is None
         assert "not on this host" in snap.tail_text
-        assert "Hermes Desktop" in snap.tail_text
+        assert "Hexbot Desktop" in snap.tail_text
         # The reader needs the path to collect by hand on the client machine.
         assert str(hermes_home / "logs" / "desktop.log") in snap.tail_text
 
@@ -577,7 +577,7 @@ class TestRunDebug:
         run_debug(args)
 
         out = capsys.readouterr().out
-        assert "hermes debug" in out
+        assert "hexbot core debug" in out
         assert "share" in out
         assert "delete" in out
 
@@ -640,8 +640,8 @@ class TestScheduleAutoDelete:
     were observed in production.
 
     The new implementation is stateless: it records pending deletions to
-    ``~/.hermes/pastes/pending.json`` and lets ``_sweep_expired_pastes``
-    handle the DELETE requests synchronously on the next ``hermes debug``
+    ``~/.hexbot/pastes/pending.json`` and lets ``_sweep_expired_pastes``
+    handle the DELETE requests synchronously on the next ``hexbot core debug``
     invocation.
     """
 
@@ -823,7 +823,7 @@ class TestShareIncludesAutoDelete:
 class TestBuildDebugShare:
     """The shared core that returns structured paste URLs (not printed text).
 
-    Backs both ``hermes debug share`` (CLI) and ``POST /api/ops/debug-share``
+    Backs both ``hexbot core debug share`` (CLI) and ``POST /api/ops/debug-share``
     (dashboard). The dashboard renders ``urls`` as real, copyable links, so the
     contract here is the return value, not stdout.
     """
@@ -1047,7 +1047,7 @@ class TestDebugSlashCommand:
 
 
 class TestShareConsentGate:
-    """`hermes debug share` requires explicit consent before uploading.
+    """`hexbot core debug share` requires explicit consent before uploading.
 
     Uses SimpleNamespace rather than MagicMock so ``args.yes`` is a real
     ``False`` — a MagicMock auto-provides a truthy ``.yes`` and would silently

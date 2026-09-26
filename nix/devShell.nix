@@ -57,7 +57,7 @@
           # environment instead of creating an empty project .venv.
           export VIRTUAL_ENV="$(dirname "$(dirname "$(readlink -f "$(command -v python)")")")"
 
-          echo "Hermes Agent dev shell in $HERMES_PYTHON_SRC_ROOT"
+          echo "Hexbot dev shell in $HERMES_PYTHON_SRC_ROOT"
           echo "Ready. Run 'hermes' or 'sandbox hermes' to start."
         '';
       };

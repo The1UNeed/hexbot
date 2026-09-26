@@ -153,7 +153,7 @@ class TestGatewayLifecyclePattern:
         "echo 'just a normal cron job'",
         "run the backup script",
         "gateway is running fine",
-        # `hermes gateway start` is benign — starting a gateway from inside a
+        # `hexbot core gateway start` is benign — starting a gateway from inside a
         # gateway is a no-op / "already running", and a legit cron job may
         # start a sibling profile's gateway. Only restart/stop/kill are the
         # foot-gun (#30719 lists only those).
@@ -189,7 +189,7 @@ class TestGatewayLifecyclePattern:
         # tail of "skill".
         "hermes skill view gateway-notes && echo hermes gateway docs",
         # #77173/#77536: a file path with embedded spaces containing the
-        # lifecycle words must not match — `hermes` is a path component
+        # lifecycle words must not match — `hexbot core` is a path component
         # there, not a command.
         "cat '/docs/hermes gateway restart-notes.md'",
         "less /home/user/notes/hermes gateway restart runbook.txt",
@@ -271,7 +271,7 @@ class TestGatewayLifecyclePattern:
 
 
 class TestProfileFlagGatewayLifecycle:
-    """#78028: `hermes -p <profile> gateway restart|stop` bypasses Branch A's
+    """#78028: `hexbot core -p <profile> gateway restart|stop` bypasses Branch A's
     literal adjacency, so it needs its own pattern. It is only the same
     self-termination foot-gun when the named profile IS the profile running
     the guard; sibling-profile restarts are legitimate fleet operations and

@@ -1,4 +1,4 @@
-# Hermes Hosted Rooms — internals for Hexbot rooms
+# Core hosted rooms: internals behind Hexbot rooms
 
 All paths relative to `/Users/alex/Desktop/Projects/Hexbot`. Line numbers are from files I read.
 
@@ -18,7 +18,7 @@ After the append, `send` calls `prepare_room` synchronously, then `runtime.wakeu
 
 **Reply publication.** On terminal, `discussion.plan_publication` (discussion.py:1292) emits `message.member` (unless the text is `(pass)` — `is_pass_text`, l.484) then a `turn.settled|failed|cancelled|deferred` event, appended by `_append_plan`. Turn loops until `plan_next_task` returns `settled`/`bounded`, which appends `room.activity`.
 
-**Client notification: none.** No `groups.*` notification exists; `docs/upstream/ws-api.md:152-157` lists methods only. Driver-created sessions have no bound transport, so `write_json` (`tui_gateway/server.py:2567-2597`) drops their `approval.request`/stream events to stdio. **The client must poll `groups.log`/`groups.state`.**
+**Client notification: none.** No `groups.*` notification exists; `docs/core/ws-api.md:152-157` lists methods only. Driver-created sessions have no bound transport, so `write_json` (`tui_gateway/server.py:2567-2597`) drops their `approval.request`/stream events to stdio. **The client must poll `groups.log`/`groups.state`.**
 
 `groups.log` returns `{events:[{room_id, seq, event_id, kind, actor, authority_epoch, payload, created_at}], cursor, latest_seq, has_more, authority:{gateway_id, epoch}}` (`hosted_rooms.py:2351-2446`), `limit` ≤ 500, page ≤ 2 MiB. `groups.state` returns `{room:{room_id,name,members,authority_gateway_id,authority_epoch,revision,latest_seq,created_at,updated_at,...}, driver_status:{running,working,blocked,counts,pending_actions,peer_routes}}`.
 
@@ -47,7 +47,7 @@ Minimal Hexbot design that works with the existing engine:
 
 ## 4. Member turns and memory
 
-Session per (profile, room): title `Group: <room_id>` (`hosted_room_driver.py:1506`), `source="bot_room"`, created hidden with `room_plumbing: true, follow_profile_config: true, close_on_disconnect: false` (`hosted_room_server_rpc.py:68-80`). It is a **normal Hermes session in that profile's own state.db**, so SOUL.md, MEMORY.md, skills and the profile's *current* model apply; `room_plumbing` explicitly suppresses restoring the pinned model/provider (`tui_gateway/server.py:4165-4172`, `5555-5578`). The `bot_room` toolset itself is empty (`toolsets.py:243-247`).
+Session per (profile, room): title `Group: <room_id>` (`hosted_room_driver.py:1506`), `source="bot_room"`, created hidden with `room_plumbing: true, follow_profile_config: true, close_on_disconnect: false` (`hosted_room_server_rpc.py:68-80`). It is a **normal Hexbot session in that profile's own state.db**, so SOUL.md, MEMORY.md, skills and the profile's *current* model apply; `room_plumbing` explicitly suppresses restoring the pinned model/provider (`tui_gateway/server.py:4165-4172`, `5555-5578`). The `bot_room` toolset itself is empty (`toolsets.py:243-247`).
 
 The transcript is **not** conversation history — it is a prompt digest. Each turn submits a synthesised prompt (discussion.py:883-935): a header naming the room, the bot's handle and peers, then up to 24 delta lines `@handle: text` / `User (user): text` since that member's watermark, plus fixed rules (reply once, `(pass)` for nothing to add, mention a teammate to pull them in, never leak private conversations). The session itself persists across turns and rooms-days, so the bot also carries its own prior turns in its session context.
 
@@ -61,7 +61,7 @@ The transcript is **not** conversation history — it is a prompt digest. Each t
 
 ## 6. Bot-to-bot DMs
 
-`tools/bot_mode_dm.py` injects a `message_agent` tool (not registered globally) only into a bot's canonical `Bot Chat` session, gated again at dispatch (l.253-270). Local delivery is **a subprocess, not gateway multiplexing**: `hermes -p <profile> chat --in ~ -c "Bot Chat" --create-if-missing -Q` (`tools/bot_relay.py:564-579`), spawned via `terminal_tool(background=True, notify_on_complete=True)`, serialised by the per-profile flock. It is fire-and-forget; the reply reaches the sender as a background-completion notification on its next turn.
+`tools/bot_mode_dm.py` injects a `message_agent` tool (not registered globally) only into a bot's canonical `Bot Chat` session, gated again at dispatch (l.253-270). Local delivery is **a subprocess, not gateway multiplexing**: `hexbot core -p <profile> chat --in ~ -c "Bot Chat" --create-if-missing -Q` (`tools/bot_relay.py:564-579`), spawned via `terminal_tool(background=True, notify_on_complete=True)`, serialised by the per-profile flock. It is fire-and-forget; the reply reaches the sender as a background-completion notification on its next turn.
 
 Cross-connection targets need the desktop as relay: `bot_relay.outbox.drain` → `bot_relay.deliver` on the target gateway → `bot_relay.reply` back on the sender's. Roster rows are `{profile, handle, connection_id, connection_label, title, description, online?}` (`bot_relay.py:111-148`), stored in `<root>/bot_relay/roster.json`.
 
@@ -69,7 +69,7 @@ Observability: no events, no dedicated tables. The DM is a normal turn in the ta
 
 ## 7. Gaps, in priority order
 
-1. **Roster caps.** 2–6 members, plus `_TURN_ID_RE` `r[0-2]`/`p[0-5]` and `_validate_turn_coordinates` bounds. Core edit, already noted as `CORE_EDITS.md` #1 — but that entry names three files and misses that the regex and coordinate bounds must move together.
+1. **Roster caps.** 2–6 members, plus `_TURN_ID_RE` `r[0-2]`/`p[0-5]` and `_validate_turn_coordinates` bounds. Core edit; the regex and coordinate bounds must move together with the cap.
 2. **Membership mutation.** Nothing exists. Hexbot table + a `room.members_changed` writer; never delete a member from `members_json`.
 3. **Client push.** No room notifications. Either poll `groups.log` from the desktop, or add a Hexbot-side broadcast when appending (cheap, additive: `_broadcast_global_event`).
 4. **Main bot / routing.** `default_all=True` fan-out is the opposite of "main bot answers when nobody is mentioned". Replacing `plan_next_task`'s responder selection is the core edit, or Hexbot drives `driver.admit_task` itself and stops calling `plan_next_task`.

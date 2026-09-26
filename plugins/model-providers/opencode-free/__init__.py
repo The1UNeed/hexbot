@@ -6,7 +6,7 @@ Authorization bearer it doesn't recognize with 401 — so this provider
 never sends a credential at all (the runtime resolver pins the keyless
 placeholder and an empty Authorization header; see
 hermes_cli.models.opencode_zen_free_runtime). No OpenCode account needed.
-Select via ``hermes model`` or ``/model free``.
+Select via ``hexbot core model`` or ``/model free``.
 """
 
 from typing import Any

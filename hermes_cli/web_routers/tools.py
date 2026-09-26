@@ -184,10 +184,10 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
     # Install-on-enable: when the newly enabled toolset's provider carries a
     # post_setup hook with a registered, UNSATISFIED install-state predicate
     # (cua-driver binary missing, etc. — see _POST_SETUP_INSTALLED), spawn the
-    # same background install `hermes tools` runs interactively. Without this,
+    # same background install `hexbot core tools` runs interactively. Without this,
     # a dashboard/desktop toggle "saves" but the tool silently never appears
     # in the schema because its check_fn can't find the binary — the exact
-    # dead-end that forced users to discover `hermes computer-use install`
+    # dead-end that forced users to discover `hexbot core computer-use install`
     # by hand. Best-effort: a spawn failure never fails the toggle.
     post_setup_started: Optional[str] = None
     if body.enabled and name not in _CONFIG_ONLY_TOOLSETS:
@@ -234,7 +234,7 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
 async def get_toolset_config(name: str, profile: Optional[str] = None):
     """Return the provider matrix + key status for a toolset's config panel.
 
-    Surfaces the same provider rows the CLI ``hermes tools`` picker shows
+    Surfaces the same provider rows the CLI ``hexbot core tools`` picker shows
     (via ``_visible_providers``), each with its ``env_vars`` annotated with
     current ``is_set`` state so the GUI can render provider selection + key
     entry. Toolsets without a ``TOOL_CATEGORIES`` entry return an empty
@@ -351,7 +351,7 @@ async def get_toolset_models(
 ):
     """Return the model catalog for a toolset backend (image/video gen).
 
-    The GUI counterpart of the model picker `hermes tools` runs after a
+    The GUI counterpart of the model picker `hexbot core tools` runs after a
     backend is selected — e.g. FAL's multi-model catalog (speed / strengths /
     price per model). ``provider`` names a picker row; omitted, the currently
     active provider is used. Toolsets without model catalogs return
@@ -470,7 +470,7 @@ async def select_toolset_provider(
     """Persist a provider selection for a toolset (no key prompting).
 
     Delegates to ``apply_provider_selection`` — the shared, non-interactive
-    core extracted from the CLI configurator — so the GUI and ``hermes tools``
+    core extracted from the CLI configurator — so the GUI and ``hexbot core tools``
     write identical config keys (``web.backend``, ``tts.provider``, etc.).
     API keys and post-setup flows are handled by separate endpoints. Returns
     400 for unknown toolset or provider names.
@@ -609,8 +609,8 @@ async def select_toolset_provider(
 async def save_toolset_env(name: str, body: ToolsetEnvUpdate, profile: Optional[str] = None):
     """Persist API keys for a toolset's provider env vars.
 
-    Writes each ``key: value`` to ``~/.hermes/.env`` via ``save_env_value`` —
-    the same store ``hermes tools`` writes when it prompts for keys. Keys are
+    Writes each ``key: value`` to ``~/.hexbot/.env`` via ``save_env_value`` —
+    the same store ``hexbot core tools`` writes when it prompts for keys. Keys are
     validated against the env-var allowlist for the toolset's category (the
     union of every visible provider's ``env_vars``), so the GUI can't write an
     arbitrary env var through this endpoint. A blank value is treated as
@@ -673,12 +673,12 @@ async def run_toolset_post_setup(
     Post-setup hooks (npm install for browser/Camofox, pip install for
     KittenTTS/Piper/ddgs, cua-driver fetch, etc.) are long-running and
     text-output, so this follows the spawn-action pattern: it launches
-    ``hermes tools post-setup <key>`` and the frontend tails the log via
+    ``hexbot core tools post-setup <key>`` and the frontend tails the log via
     ``GET /api/actions/tools-post-setup/status``. The ``key`` is validated
     against the declared post-setup allowlist before spawning. Returns 400
     for unknown toolset or post-setup key.
 
-    ``profile`` spawns the hook as ``hermes -p <profile> tools post-setup``.
+    ``profile`` spawns the hook as ``hexbot core -p <profile> tools post-setup``.
     Most hooks install machine-level artifacts (repo node_modules, shared
     pip packages) where the scope is inert, but hooks that read config or
     write per-profile state must see the same HERMES_HOME the rest of the
@@ -804,7 +804,7 @@ async def get_computer_use_status(profile: Optional[str] = None):
 
 @router.post("/api/tools/computer-use/permissions/grant")
 async def grant_computer_use_permissions(profile: Optional[str] = None):
-    """Spawn ``hermes computer-use permissions grant`` as a background action.
+    """Spawn ``hexbot core computer-use permissions grant`` as a background action.
 
     macOS-only: ``cua-driver permissions grant`` launches CuaDriver via
     LaunchServices so the TCC dialog is attributed to com.trycua.driver, then

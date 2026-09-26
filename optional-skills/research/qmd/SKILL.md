@@ -220,13 +220,13 @@ qmd multi-get "journals/*.md" --json  # Batch retrieve by glob
 ## MCP Integration (Recommended)
 
 qmd exposes an MCP server that provides search tools directly to
-Hermes Agent via the native MCP client. This is the preferred
+Hexbot via the native MCP client. This is the preferred
 integration — once configured, the agent gets qmd tools automatically
 without needing to load this skill.
 
 ### Option A: Stdio Mode (Simple)
 
-Add to `~/.hermes/config.yaml`:
+Add to `~/.hexbot/config.yaml`:
 
 ```yaml
 mcp_servers:
@@ -254,7 +254,7 @@ qmd mcp --http --daemon
 # Runs on http://localhost:8181 by default
 ```
 
-Then configure Hermes Agent to connect via HTTP:
+Then configure Hexbot to connect via HTTP:
 
 ```yaml
 mcp_servers:

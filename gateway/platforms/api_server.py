@@ -8,8 +8,8 @@ Exposes an HTTP server with endpoints:
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent and any configured model_routes aliases
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
-- GET  /api/sessions               — list client-visible Hermes sessions
-- POST /api/sessions               — create an empty Hermes session
+- GET  /api/sessions               — list client-visible Hexbot sessions
+- POST /api/sessions               — create an empty Hexbot session
 - GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
 - GET  /api/sessions/{session_id}/messages — read session message history
 - POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
@@ -238,7 +238,7 @@ def _browser_controller_ws_sender(ws, loop, *, wait_timeout: float = 10.0):
 
 
 def _hermes_version() -> str:
-    """Return the canonical Hermes Agent version string.
+    """Return the canonical Hexbot version string.
 
     ``hermes_cli.__version__`` is the runtime source of truth used by the CLI,
     dashboard, portal tags, and release script. Prefer it over installed
@@ -509,9 +509,9 @@ def _request_agent_overrides(
     hardcode model names ("gpt-4o", ...), and existing deployments rely on
     those falling back to the gateway default on the OpenAI-compatible
     surfaces — so those handlers pass the opt-in
-    ``direct_model_requests`` config value here, while Hermes-native
+    ``direct_model_requests`` config value here, while Hexbot-native
     endpoints (session chat, /v1/runs) always allow it.  A request that
-    sends an explicit ``provider`` is unambiguously Hermes-aware and is
+    sends an explicit ``provider`` is unambiguously Hexbot-aware and is
     always honored.
     """
     if not isinstance(body, dict):
@@ -1409,7 +1409,7 @@ def _derive_chat_session_id(
     conversation history with every request.  The system prompt and first user
     message are constant across all turns of the same conversation, so hashing
     them produces a deterministic session ID that lets the API server reuse
-    the same Hermes session (and therefore the same Docker container sandbox
+    the same Hexbot session (and therefore the same Docker container sandbox
     directory) across turns.
     """
     seed = f"{system_prompt or ''}\n{first_user_message}"
@@ -1546,7 +1546,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # OpenAI clients routinely hardcode model names ("gpt-4o", ...), and
         # existing deployments rely on those falling back to the gateway
         # default rather than switching the executing model.  Requests that
-        # send an explicit ``provider`` — and the Hermes-native session-chat
+        # send an explicit ``provider`` — and the Hexbot-native session-chat
         # and /v1/runs endpoints — are always honored regardless of this flag.
         # (Idea credit: PR #22825 by @mssteuer.)
         self._direct_model_requests: bool = _coerce_request_bool(
@@ -2122,7 +2122,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # the gateway owner's config/toolsets/capabilities under another
             # profile's URL — cross-profile capability leakage (#91583
             # defect 2) and silently misdelivered peer DMs (observed live:
-            # `hermes peer dm mini/researcher` answered by the mini's default
+            # `hexbot core peer dm mini/researcher` answered by the mini's default
             # agent) — so anything else fails closed as unknown.
             return (
                 None
@@ -2297,7 +2297,7 @@ class APIServerAdapter(BasePlatformAdapter):
         that conversation is currently on.  A client that manages its own
         history has no ``previous_response_id`` chain to carry the transcript
         forward, so the handlers used to mint a fresh id per request — and
-        every conversation-affinity hint Hermes sends off that id
+        every conversation-affinity hint Hexbot sends off that id
         (``prompt_cache_key`` on both OpenAI-wire transports, the
         OpenRouter/Nous sticky ``session_id``, and xAI's ``x-grok-conv-id``)
         re-keyed on every single reply (#96811).
@@ -2492,7 +2492,7 @@ class APIServerAdapter(BasePlatformAdapter):
     def _ensure_session_db(self):
         """Lazily initialise and return the SessionDB for the active profile home.
 
-        Sessions are persisted to ``state.db`` so that ``hermes sessions list``
+        Sessions are persisted to ``state.db`` so that ``hexbot core sessions list``
         shows API-server conversations alongside CLI and gateway ones.
 
         Under multiplex ``/p/<profile>/`` requests the profile runtime scope
@@ -3150,7 +3150,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
 
         # When the config has no model.default but a provider was resolved
-        # (e.g. user ran `hermes auth add openai-codex` without `hermes model`),
+        # (e.g. user ran `hexbot core auth add openai-codex` without `hexbot core model`),
         # fall back to the provider's first catalog model so the API call
         # doesn't fail with "model must be a non-empty string". Mirrors
         # run.py::_resolve_session_agent_runtime. Runs after the selection
@@ -3388,11 +3388,11 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({"object": "list", "data": models})
 
     async def _handle_model_options(self, request: "web.Request") -> "web.Response":
-        """GET /api/model/options — return Hermes provider/model inventory.
+        """GET /api/model/options — return Hexbot provider/model inventory.
 
         This mirrors the dashboard/TUI model picker inventory endpoint so
         external clients using the API server can sync to the user's configured
-        Hermes provider catalog instead of scraping the single OpenAI-compatible
+        Hexbot provider catalog instead of scraping the single OpenAI-compatible
         `/v1/models` alias.
         """
         auth_err = self._check_auth(request)
@@ -3429,7 +3429,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         External UIs and orchestrators use this endpoint to discover the API
         server's plugin-safe contract without scraping docs or assuming that
-        every Hermes version exposes the same endpoints.
+        every Hexbot version exposes the same endpoints.
         """
         auth_err = self._check_auth(request)
         if auth_err:
@@ -3448,7 +3448,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "tool_execution": "server",
                 "split_runtime": False,
                 "description": (
-                    "The API server creates a server-side Hermes AIAgent; "
+                    "The API server creates a server-side Hexbot AIAgent; "
                     "tools execute on the API-server host unless a future "
                     "explicit split-runtime mode is enabled."
                 ),
@@ -3938,7 +3938,7 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             # Unscoped fallback used only when profile resolution is
             # unavailable (tests/manual wiring): keep the controlled root
-            # under the Hermes home.
+            # under the Hexbot home.
             try:
                 from hermes_state import get_hermes_home
 
@@ -4344,7 +4344,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return []
 
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
-        """GET /api/sessions — list persisted Hermes sessions."""
+        """GET /api/sessions — list persisted Hexbot sessions."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -4357,7 +4357,7 @@ class APIServerAdapter(BasePlatformAdapter):
         offset = self._parse_nonnegative_int(request.query.get("offset"), default=0, maximum=1_000_000)
         source = request.query.get("source") or None
         include_children = _coerce_request_bool(request.query.get("include_children"), default=False)
-        # Exact-title lookup, used by `hermes peer dm` to resolve a peer's
+        # Exact-title lookup, used by `hexbot core peer dm` to resolve a peer's
         # canonical "Bot Chat" session. ``include_hidden`` is honored ONLY
         # alongside a title filter: Bot Mode hides canonical chats, so a
         # title-scoped lookup must see them (issue #91583), but a blanket
@@ -4387,7 +4387,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 # Recoverable-archive resurrection (#92687): a canonical Bot
                 # Chat archived by the ws-orphan reaper / older agent cleanup
                 # is invisible to list_sessions_rich (include_archived=False),
-                # which would fail `hermes peer dm` resolution and mint
+                # which would fail `hexbot core peer dm` resolution and mint
                 # transient sessions — same accident the tui_gateway lookups
                 # heal. Resurrect and re-list; deliberate archives stay put.
                 try:
@@ -4420,7 +4420,7 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     async def _handle_create_session(self, request: "web.Request") -> "web.Response":
-        """POST /api/sessions -- create an empty Hermes session row.
+        """POST /api/sessions -- create an empty Hexbot session row.
 
         The existence check, insert, title handling, and invalid-title
         rollback run as a single off-loop operation to avoid a TOCTOU
@@ -5273,7 +5273,7 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             # Derive a stable session ID from the conversation fingerprint so
             # that consecutive messages from the same Open WebUI (or similar)
-            # conversation map to the same Hermes session.  The first user
+            # conversation map to the same Hexbot session.  The first user
             # message + system prompt are constant across all turns.
             first_user = ""
             for cm in conversation_messages:
@@ -5499,7 +5499,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Soft-partial path: we have *some* text but the run did not complete
         # (e.g. truncation with partial buffered output). Still 200 but signal
-        # truncation via finish_reason="length" + Hermes-specific extras.
+        # truncation via finish_reason="length" + Hexbot-specific extras.
         response_data = {
             "id": completion_id,
             "object": "chat.completion",
@@ -6947,7 +6947,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         # Optional transient per-run context forwarded from a standalone
-        # `hermes cron run` / cronjob(action='run', prompt=...) — same length
+        # `hexbot core cron run` / cronjob(action='run', prompt=...) — same length
         # cap and strict injection scan as a stored job prompt.
         extra_prompt = None
         try:
@@ -7268,7 +7268,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "id": f"fc_{uuid.uuid4().hex[:24]}",
                         "type": "function_call",
                         # These calls were already executed server-side by the
-                        # Hermes agent; they are replayed for structured tool
+                        # Hexbot agent; they are replayed for structured tool
                         # UI only.  Mark them completed (matching the SSE
                         # streaming path) so OpenAI clients don't interpret
                         # them as pending calls the client must execute.
@@ -7916,7 +7916,7 @@ class APIServerAdapter(BasePlatformAdapter):
             for method, path, handler in self._http_route_table():
                 self._app.router.add_route(method, path, handler)
                 self._app.router.add_route(method, f"/p/{{profile}}{path}", handler)
-            # Store the adapter after native routes are registered. Local Hermes-Relay
+            # Store the adapter after native routes are registered. Local Hexbot-Relay
             # bootstrap shims use this key as a feature-detection hook; registering
             # native routes first lets those shims no-op instead of shadowing the
             # upstream session-control handlers.
@@ -7937,7 +7937,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # unsandboxed local terminal backend. The API server can drive the
             # agent's terminal/file tools as the host user; on a public bind
             # that is the exact surface the hermes-0day campaign abused to write
-            # ~/.hermes/config.yaml and plant persistence. Sandboxing (Docker /
+            # ~/.hexbot/config.yaml and plant persistence. Sandboxing (Docker /
             # remote backend) contains the blast radius. Warn, don't refuse —
             # the operator may have an external firewall / strong key.
             if is_network_accessible(self._host):

@@ -28,7 +28,7 @@ def load_manifest(root: Path) -> Recipe | None:
 
     Mirrors grok's ``loadVerifyEnvironment``: any read/parse/shape problem
     returns ``None`` rather than raising, so a corrupt manifest degrades to
-    fresh detection instead of breaking ``hermes verify``.
+    fresh detection instead of breaking ``hexbot core verify``.
     """
     path = manifest_path(root)
     try:

@@ -3,7 +3,7 @@
 ``_first_positional_argv`` and ``_apply_profile_override`` in ``main.py``
 historically kept hand-maintained copies of "which top-level options consume
 a value". Those copies drift — ``--reasoning`` was a value-taking top-level
-option absent from both sets, so every ``hermes --reasoning high <cmd> …``
+option absent from both sets, so every ``hexbot core --reasoning high <cmd> …``
 invocation mis-classified ``high`` as the first positional and forced eager
 plugin CLI discovery (~500-650ms startup tax).
 

@@ -548,7 +548,7 @@ class TestProtectedInstructionFiles:
         assert res.get("error") and "BLOCKED" in res["error"]
 
     def test_checkout_nested_under_hermes_dir_not_gated(self, tmp_path, approvals):
-        """A repo living UNDER a .hermes dir (e.g. ~/.hermes/hermes-agent)
+        """A repo living UNDER a .hermes dir (e.g. ~/.hexbot/hermes-agent)
         must not have every write gated — only files directly inside a
         .hermes dir count as project config."""
         repo = tmp_path / ".hermes" / "some-repo" / "src"
@@ -560,7 +560,7 @@ class TestProtectedInstructionFiles:
     def test_real_hermes_home_not_gated_by_this_check(
         self, tmp_path, approvals, monkeypatch
     ):
-        """~/.hermes itself is governed by existing guards, not this gate."""
+        """~/.hexbot itself is governed by existing guards, not this gate."""
         import tools.file_tools as ft
         fake_home = tmp_path / ".hermes"
         (fake_home / "notes").mkdir(parents=True)

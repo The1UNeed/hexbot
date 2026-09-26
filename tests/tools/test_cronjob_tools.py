@@ -167,7 +167,7 @@ class TestScanCronSkillAssembled:
         """Security postmortems and runbooks routinely describe attack
         commands in prose — that's not a payload, it's documentation.
         Real example: the `hermes-agent-dev` skill contains a postmortem
-        section saying 'the attacker could just cat ~/.hermes/.env'.
+        section saying 'the attacker could just cat ~/.hexbot/.env'.
         """
         assert _scan_cron_skill_assembled(
             "the attacker could just cat ~/.hermes/.env to steal credentials"
@@ -432,7 +432,7 @@ class TestUnifiedCronjobTool:
 
 
 class TestAgentCannotSetModelPin:
-    """Per-job inference pins are user-owned (dashboard / `hermes cron`
+    """Per-job inference pins are user-owned (dashboard / `hexbot core cron`
     --model / hand-edited jobs). The agent-facing tool schema must not expose
     model/provider/base_url, and the registered handler must ignore them even
     if a model hallucinates the old parameters."""

@@ -45,7 +45,7 @@ def cron_env(tmp_path, monkeypatch):
 
     # Patch the module-level SKILLS_DIR snapshots that `skill_view()`
     # uses. Without this, the tool resolves against the real
-    # `~/.hermes/skills/` and our planted skills are invisible.
+    # `~/.hexbot/skills/` and our planted skills are invisible.
     import tools.skills_tool as _skills_tool
     monkeypatch.setattr(_skills_tool, "SKILLS_DIR", skills_dir)
     monkeypatch.setattr(_skills_tool, "HERMES_HOME", hermes_home)
@@ -63,7 +63,7 @@ def cron_env(tmp_path, monkeypatch):
 
 
 def _plant_skill(hermes_home: Path, name: str, body: str) -> None:
-    """Drop a SKILL.md into ~/.hermes/skills/<name>/ bypassing skills_guard."""
+    """Drop a SKILL.md into ~/.hexbot/skills/<name>/ bypassing skills_guard."""
     skill_dir = hermes_home / "skills" / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
@@ -73,7 +73,7 @@ def _plant_skill(hermes_home: Path, name: str, body: str) -> None:
 
 
 def _plant_bundle(hermes_home: Path, name: str, skills: list[str], instruction: str = "") -> None:
-    """Drop a bundle YAML into ~/.hermes/skill-bundles/ and refresh cache."""
+    """Drop a bundle YAML into ~/.hexbot/skill-bundles/ and refresh cache."""
     bundles_dir = hermes_home / "skill-bundles"
     bundles_dir.mkdir(parents=True, exist_ok=True)
     lines = [f"name: {name}", "skills:"]
@@ -183,7 +183,7 @@ class TestBuildJobPromptScansSkillContent:
     def test_skill_with_env_exfil_command_in_prose_is_allowed(self, cron_env):
         """A skill that *describes* an exfil command in prose (e.g. a
         security postmortem documenting "the attacker could just
-        ``cat ~/.hermes/.env``") must NOT be blocked. This was a real
+        ``cat ~/.hexbot/.env``") must NOT be blocked. This was a real
         false positive in the bundled `hermes-agent-dev` skill that
         silently killed every PR-scout cron job for weeks.
 

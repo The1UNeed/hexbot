@@ -1,4 +1,4 @@
-"""Regression tests: YOLO mode persists across ``hermes --resume``.
+"""Regression tests: YOLO mode persists across ``hexbot core --resume``.
 
 Pre-fix bug: the ``/yolo`` toggle (and the process-start ``--yolo`` flag)
 lived only in the in-memory ``tools.approval._session_yolo`` set / the

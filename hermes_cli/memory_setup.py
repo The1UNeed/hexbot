@@ -1,4 +1,4 @@
-"""hermes memory setup|status — configure memory provider plugins.
+"""hexbot core memory setup|status — configure memory provider plugins.
 
 Auto-detects installed memory providers via the plugin system.
 Interactive curses-based UI for provider selection, then walks through
@@ -25,7 +25,7 @@ def _provider_pip_dependencies(provider_name: str, declared: list) -> list:
     some providers install mode-dependent extras at setup time that the
     manifest can't express. Hindsight's ``local_embedded`` mode installs
     ``hindsight-all`` (daemon + embedder + client) during
-    ``hermes memory setup`` — if the update-time refresh only reinstalled
+    ``hexbot core memory setup`` — if the update-time refresh only reinstalled
     the declared ``hindsight-client``, the embedded daemon would stay
     broken after a venv rebuild stripped ``hindsight-embed`` (#70636).
     """
@@ -45,7 +45,7 @@ def _provider_pip_dependencies(provider_name: str, declared: list) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Curses-based interactive picker (same pattern as hermes tools)
+# Curses-based interactive picker (same pattern as hexbot core tools)
 # ---------------------------------------------------------------------------
 
 def _curses_select(
@@ -109,7 +109,7 @@ def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
     When ``force`` is true, every declared dependency is handed to the
     installer even if its import currently succeeds — the resolver then
     reinstalls anything missing or version-drifted and no-ops on satisfied
-    ranges. This is how ``hermes update`` heals the active memory provider
+    ranges. This is how ``hexbot core update`` heals the active memory provider
     after a venv rebuild/sync removed or downgraded its bridge packages
     (#53272, #70636).
     """
@@ -254,7 +254,7 @@ def cmd_setup_provider(provider_name: str) -> None:
 
     if not match:
         print(f"\n  Memory provider '{provider_name}' not found.")
-        print("  Run 'hermes memory setup' to see available providers.\n")
+        print("  Run 'hexbot core memory setup' to see available providers.\n")
         return
 
     name, _, provider = match
@@ -287,7 +287,7 @@ def cmd_setup(args) -> None:
 
     if not providers:
         print("\n  No memory provider plugins detected.")
-        print("  Install a plugin to ~/.hermes/plugins/ and try again.\n")
+        print("  Install a plugin to ~/.hexbot/plugins/ and try again.\n")
         return
 
     # Build picker items
@@ -438,7 +438,7 @@ def _write_env_vars(
     previously wrote via ``Path.write_text`` directly, bypassing all of
     that: a memory-provider plugin schema declaring ``env_var: "LD_PRELOAD"``
     would land in ``.env`` verbatim and load via the ``env_loader.py``
-    ``.env`` -> ``os.environ`` chain on the next Hermes startup, and the
+    ``.env`` -> ``os.environ`` chain on the next Hexbot startup, and the
     file existed at the default umask between the write and the later
     ``chmod`` regardless of key legitimacy.
 
@@ -452,7 +452,7 @@ def _write_env_vars(
 
     ``hermes_home`` may be supplied by plugin ``post_setup`` hooks that
     already received an explicit home directory (e.g. a non-default
-    profile). It is applied through the context-local Hermes home override
+    profile). It is applied through the context-local Hexbot home override
     so ``save_env_value`` still owns the validation, sanitization, and
     atomic-write path without mutating global ``os.environ``.
     """
@@ -548,14 +548,14 @@ def cmd_status(args) -> None:
                             line += f"  → {url}"
                         print(line)
                 print(
-                    "  Note: systemd/gateway services do not inherit ~/.hermes/.env —"
+                    "  Note: systemd/gateway services do not inherit ~/.hexbot/.env —"
                 )
                 print(
                     "        set any variables above in the service environment."
                 )
         else:
             print("\n  Plugin:    NOT installed ✗")
-            print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
+            print(f"  Install the '{provider_name}' memory plugin to ~/.hexbot/plugins/")
 
     if providers:
         print("\n  Installed plugins:")

@@ -1,6 +1,6 @@
-"""``hermes config set`` must parse list/mapping literals, not store them as strings.
+"""``hexbot core config set`` must parse list/mapping literals, not store them as strings.
 
-Before this fix, ``hermes config set platform_toolsets.discord '["file","web"]'``
+Before this fix, ``hexbot core config set platform_toolsets.discord '["file","web"]'``
 stored the value as a raw STRING. Every reader that gates on
 ``isinstance(..., list)`` — ``_get_platform_tools``, ``_get_enabled_set``,
 ``_get_disabled_set`` — then silently ignored it and fell back to its default,

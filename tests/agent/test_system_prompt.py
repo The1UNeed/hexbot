@@ -279,7 +279,7 @@ class TestNamedProfileHintIntegration:
         with patch("agent.coding_context._coding_mode", return_value="off"):
             prompt = "\n\n".join(_prompt_parts(agent).values())
 
-        # Hexbot wording (CORE_EDITS.md row 7).
+        # Hexbot wording.
         assert f"Your own files (skills, memory, scheduled jobs) live under {profile_home}/." in prompt
         # The doubled form must not appear anywhere.
         assert f"{profile_home}/profiles/coder" not in prompt

@@ -1967,7 +1967,7 @@ class TestFtsRebuildLoopWithoutTrigram:
     single ``SessionDB`` open, holding the write lock, and never converged.
 
     The v23 repair also clears the deferred-rebuild resume markers, so an
-    interrupted ``hermes sessions optimize-storage`` silently lost its place
+    interrupted ``hexbot core sessions optimize-storage`` silently lost its place
     every time the store was reopened.
     """
 

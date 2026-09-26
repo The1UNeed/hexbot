@@ -64,9 +64,9 @@ def set_user_memory(text: str, *, owner_id=None) -> dict:
 
 
 def _session_owner(session_info) -> str | None:
-    """The owner of the bot behind a Hermes session: a section, a room, or
+    """The owner of the bot behind a Hexbot session: a section, a room, or
     any other turn on a bot's profile (a dream)."""
-    # Hermes renders prompt sections with a read-only mapping proxy, not a
+    # Hexbot renders prompt sections with a read-only mapping proxy, not a
     # dict, so anything mapping-shaped must pass.
     if not isinstance(session_info, Mapping):
         return None
@@ -113,7 +113,7 @@ def _memory_path(bot: str) -> Path:
 
 
 def _cap(bot: str) -> int:
-    """The bot's own memory limit: Hermes reads it from the profile's config."""
+    """The bot's own memory limit: Hexbot reads it from the profile's config."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.memory_tool import load_on_disk_store
     token = set_hermes_home_override(str(hexbot_home() / "profiles" / bot))

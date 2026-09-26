@@ -308,7 +308,7 @@ class _SupermemoryClient:
         )
 
     def _merge_metadata(self, metadata: Optional[dict]) -> dict:
-        # sm_source routes Hermes writes into the "Hermes" Space in the Supermemory
+        # sm_source routes Hexbot writes into the "Hexbot" Space in the Supermemory
         # app so the user can filter / bulk-manage them per source agent. This is a
         # functional routing key for the user, not vendor telemetry.
         merged = {"sm_source": "hermes", **(metadata or {})}
@@ -576,7 +576,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         return bool(get_secret("SUPERMEMORY_API_KEY", ""))
 
     def get_config_schema(self):
-        # Only prompt for the API key during `hermes memory setup`.
+        # Only prompt for the API key during `hexbot core memory setup`.
         # All other options are documented for $HERMES_HOME/supermemory.json
         # or the SUPERMEMORY_CONTAINER_TAG env var.
         return [

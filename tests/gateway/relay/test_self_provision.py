@@ -244,7 +244,7 @@ def test_no_nas_token_is_non_fatal(monkeypatch):
 
 
 def test_relay_display_name_suppresses_stock_brand(monkeypatch):
-    """The default 'Hermes Agent' brand is identical on every install — forwarding
+    """The default 'Hexbot' brand is identical on every install — forwarding
     it would shadow the connector's linked-owner fallback (which actually
     disambiguates) with a uniform label. Only customized names are forwarded."""
     monkeypatch.delenv("GATEWAY_RELAY_DISPLAY_NAME", raising=False)

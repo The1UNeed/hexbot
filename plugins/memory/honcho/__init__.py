@@ -450,7 +450,7 @@ class HonchoMemoryProvider(MemoryProvider):
     def _start_session_init_background(self, *, wait_timeout: float = 0.0) -> None:
         """Start Honcho session initialization in a daemon thread.
 
-        This keeps Hermes CLI/gateway startup responsive when Honcho is down,
+        This keeps Hexbot CLI/gateway startup responsive when Honcho is down,
         slow, or its database is unhealthy. The thread may still take the SDK
         timeout path, but it cannot block agent construction or first prompt
         assembly. ``wait_timeout`` lets fast/mock initializations finish before
@@ -524,7 +524,7 @@ class HonchoMemoryProvider(MemoryProvider):
         # not treat that partially initialized state as usable.
         session = self._manager.get_or_create(self._session_key)
 
-        # Skip under per-session strategy: every Hermes run creates a fresh
+        # Skip under per-session strategy: every Hexbot run creates a fresh
         # Honcho session by design, so uploading MEMORY.md/USER.md/SOUL.md to
         # each one would flood the backend with short-lived duplicates instead
         # of performing a one-time migration.
@@ -919,7 +919,7 @@ class HonchoMemoryProvider(MemoryProvider):
             "has expired and automatic token refresh failed, so memory sync and "
             f"recall are paused. Reason: {msg}\n"
             "Tell the user (once) that Honcho memory is paused and that running "
-            "'hermes honcho setup' to re-authenticate will restore it."
+            "'hexbot core honcho setup' to re-authenticate will restore it."
         )
 
     def _consume_pending_dialectic(self) -> str:

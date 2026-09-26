@@ -4,7 +4,7 @@ Anthropic OAuth refresh tokens are single-use: the POST that returns a new
 pair also invalidates the one that was sent.  The replacement therefore exists
 only in memory until it reaches its authoritative on-disk store —
 ``~/.claude/.credentials.json`` for ``claude_code`` entries,
-``~/.hermes/.anthropic_oauth.json`` for ``hermes_pkce`` ones.  Those singletons
+``~/.hexbot/.anthropic_oauth.json`` for ``hermes_pkce`` ones.  Those singletons
 are authoritative in the strict sense: ``_seed_from_singletons()`` re-reads
 them on every ``load_pool()`` and writes what it finds over the pool row.
 

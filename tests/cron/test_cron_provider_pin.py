@@ -108,13 +108,13 @@ class TestProviderDriftGuard:
         assert "openrouter" in blob
         assert "nous" in blob
         assert "spend" in blob
-        assert "hermes cron edit pin-test --provider <provider> --model <model>" in blob
+        assert "hexbot core cron edit pin-test --provider <provider> --model <model>" in blob
         assert "cronjob action=update" not in blob
         assert "44585" in blob
 
         delivered = _summarize_cron_failure_for_delivery(job, error).lower()
-        assert "host running hermes" in delivered
-        assert "hermes cron edit pin-test --provider <provider> --model <model>" in delivered
+        assert "host running hexbot" in delivered
+        assert "hexbot core cron edit pin-test --provider <provider> --model <model>" in delivered
         assert "cronjob action=update" not in delivered
 
     def test_c_no_snapshot_runs_backcompat(self, tmp_path):
@@ -152,7 +152,7 @@ class TestProviderDriftGuard:
         assert success is False
         assert agent_constructed is False
         assert error is not None
-        assert "hermes cron edit pin-test --model <name>" in error
+        assert "hexbot core cron edit pin-test --model <name>" in error
         assert "cronjob action=update" not in error
 
     def test_d_explicitly_pinned_runs_regardless_of_drift(self, tmp_path):

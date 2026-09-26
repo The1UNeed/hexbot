@@ -130,7 +130,7 @@ def test_lock_conflict_names_owning_profile(adapter):
         "Telegram bot token already in use by the "
         "'lead-gen-outreach' profile gateway (PID 559). "
         "Stop that gateway first "
-        "(hermes --profile lead-gen-outreach gateway stop)."
+        "(hexbot core --profile lead-gen-outreach gateway stop)."
     )
     assert adapter._fatal_error_retryable is True
     assert adapter._fatal_error_code == "telegram-bot-token_lock"

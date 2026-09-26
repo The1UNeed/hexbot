@@ -1,4 +1,4 @@
-"""Tests for hermes backup and import commands."""
+"""Tests for hexbot core backup and import commands."""
 
 import json
 import os
@@ -56,7 +56,7 @@ def _advance_backup_clock(seconds: float = 1.1) -> None:
 
 
 def _make_hermes_tree(root: Path) -> None:
-    """Create a realistic ~/.hermes directory structure for testing."""
+    """Create a realistic ~/.hexbot directory structure for testing."""
     (root / "config.yaml").write_text("model:\n  provider: openrouter\n")
     (root / ".env").write_text("OPENROUTER_API_KEY=sk-test-123\n")
     for db_name in ("memory_store.db", "hermes_state.db"):
@@ -383,7 +383,7 @@ class TestValidateBackupZip:
                 zf.writestr(name, "dummy")
 
     def test_state_db_passes(self, tmp_path):
-        """A zip containing state.db is accepted as a valid Hermes backup."""
+        """A zip containing state.db is accepted as a valid Hexbot backup."""
         from hermes_cli.backup import _validate_backup_zip
         zip_path = tmp_path / "backup.zip"
         self._make_zip(zip_path, ["state.db", "sessions/abc.json"])
@@ -478,8 +478,8 @@ class TestImport:
         run_import(Namespace(zipfile=str(zip_path), force=True))
 
         out = capsys.readouterr().out
-        assert "Done. Your Hermes configuration has been restored." in out
-        assert "hermes gateway install" in out
+        assert "Done. Your Hexbot configuration has been restored." in out
+        assert "hexbot core gateway install" in out
 
 
 
@@ -818,7 +818,7 @@ def _break_member(monkeypatch, failing_member: str) -> None:
 
 
 class TestImportAtomicWrites:
-    """`hermes import` must never leave a user's file truncated.
+    """`hexbot core import` must never leave a user's file truncated.
 
     The pre-fix code did ``open(target, "wb")`` then ``dst.write(src.read())``,
     which zeroes the existing file *before* any replacement bytes exist. These
@@ -970,7 +970,7 @@ class TestImportAtomicWrites:
         """A root-run import must not re-own the user's files to root.
 
         ``os.replace`` swaps in a temp file owned by the *writing* user, so a
-        ``sudo hermes import`` onto a user-owned (or Docker/NAS volume-owned)
+        ``sudo hexbot core import`` onto a user-owned (or Docker/NAS volume-owned)
         HERMES_HOME would hand every restored file to root. The uid/gid is
         forced so the assertion does not require running as root.
         """
@@ -1054,7 +1054,7 @@ class TestImportAtomicWrites:
         file whose contents now come from the zip.  Whoever produced the
         archive would then get whatever that file executes as.  The other
         ``utils`` writers can preserve the full mode safely because they
-        re-serialize content this process produced; ``hermes import`` is the
+        re-serialize content this process produced; ``hexbot core import`` is the
         one write path where the bytes are untrusted, and it is also the path
         that documents ``sudo`` use for owner preservation.
 
@@ -1428,7 +1428,7 @@ class TestQuickSnapshot:
 
 
 # ---------------------------------------------------------------------------
-# Pre-update backup (hermes update safety net)
+# Pre-update backup (hexbot core update safety net)
 # ---------------------------------------------------------------------------
 
     # -- security: path traversal regression coverage -----------------------
@@ -1587,7 +1587,7 @@ class TestQuickSnapshotProjectsKanban:
 
 
 class TestPreUpdateBackup:
-    """Tests for create_pre_update_backup — the auto-backup ``hermes update``
+    """Tests for create_pre_update_backup — the auto-backup ``hexbot core update``
     runs before touching anything."""
 
 
@@ -1601,7 +1601,7 @@ class TestPreUpdateBackup:
 
     def test_backup_contents_match_full_backup(self, hermes_home):
         """Pre-update backup should include the same user data that
-        ``hermes backup`` would, and should exclude the same directories."""
+        ``hexbot core backup`` would, and should exclude the same directories."""
         from hermes_cli.backup import create_pre_update_backup
         out = create_pre_update_backup(hermes_home=hermes_home)
         assert out is not None
@@ -1621,7 +1621,7 @@ class TestPreUpdateBackup:
         assert "gateway.pid" not in names
 
     def test_pre_update_zip_does_not_nest_the_pre_update_snapshot(self, hermes_home):
-        """``hermes update`` in ``full`` mode takes the quick snapshot *before*
+        """``hexbot core update`` in ``full`` mode takes the quick snapshot *before*
         the full zip, so the zip walk sees the snapshot it just made. It must
         skip it — otherwise every pre-update zip ships state.db twice."""
         from hermes_cli.backup import (
@@ -1754,12 +1754,12 @@ class TestRunPreUpdateBackup:
 
 
 # ---------------------------------------------------------------------------
-# Pre-migration backup (hermes claw migrate safety net)
+# Pre-migration backup (hexbot core claw migrate safety net)
 # ---------------------------------------------------------------------------
 
 class TestPreMigrationBackup:
     """Tests for create_pre_migration_backup — the auto-backup
-    ``hermes claw migrate`` runs before mutating ~/.hermes/."""
+    ``hexbot core claw migrate`` runs before mutating ~/.hexbot/."""
 
     @pytest.fixture
     def hermes_home(self, tmp_path):
@@ -1770,8 +1770,8 @@ class TestPreMigrationBackup:
 
 
     def test_restorable_with_hermes_import(self, hermes_home, tmp_path):
-        """The zip produced by pre-migration backup must be a valid Hermes
-        backup — `hermes import` should accept it."""
+        """The zip produced by pre-migration backup must be a valid Hexbot
+        backup — `hexbot core import` should accept it."""
         from hermes_cli.backup import create_pre_migration_backup, _validate_backup_zip
         out = create_pre_migration_backup(hermes_home=hermes_home)
         assert out is not None
@@ -1802,7 +1802,7 @@ class TestPreMigrationBackup:
 # ---------------------------------------------------------------------------
 
 class TestRestoreCronJobsIfEmptied:
-    """`hermes update` config migration can leave cron/jobs.json valid-but-empty,
+    """`hexbot core update` config migration can leave cron/jobs.json valid-but-empty,
     silently dropping every scheduled job. `restore_cron_jobs_if_emptied` is the
     post-migration safety net that restores from the pre-update snapshot."""
 
@@ -2101,7 +2101,7 @@ class TestMemoryProviderExternalPaths:
 
 
 class TestImportHonorsHermesHomeOverride:
-    """`hermes import` must restore into the home the command runs under.
+    """`hexbot core import` must restore into the home the command runs under.
 
     Resolving the target through get_default_hermes_root() maps a profile
     home (<root>/profiles/<name>) back to <root>: the import then overwrites

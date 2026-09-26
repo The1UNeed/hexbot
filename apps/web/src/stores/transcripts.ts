@@ -212,13 +212,13 @@ function replaceMessage(
 }
 
 /**
- * Hermes's spinner copy, "(◔_◔) pondering...": a face without letters and one
+ * Hexbot's spinner copy, "(◔_◔) pondering...": a face without letters and one
  * verb. Wait notices ("⏳ waiting on the provider — 30s ...") are kept.
  */
 const SPINNER_LINE = /^[^a-z]*[a-z]+\.\.\.$/i
 
 /**
- * The assistant message deltas and tool calls attach to. Hermes can emit a
+ * The assistant message deltas and tool calls attach to. Hexbot can emit a
  * delta or a tool call without a preceding `message.start` (a resumed turn),
  * so one is opened on demand.
  */
@@ -371,7 +371,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     messageInterim(sessionId, text, alreadyStreamed = false) {
-      // Commentary emitted alongside tool calls. When Hermes already streamed
+      // Commentary emitted alongside tool calls. When Hexbot already streamed
       // it as deltas, appending again would duplicate the text.
       if (alreadyStreamed || !text) {
         return
@@ -402,7 +402,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     thinkingDelta(sessionId, text) {
-      // Hermes's status line, not reasoning: it fires before and between API
+      // Hexbot's status line, not reasoning: it fires before and between API
       // calls, so it only annotates a message that is already streaming.
       const activity = SPINNER_LINE.test(text.trim()) ? '' : text.trim()
 

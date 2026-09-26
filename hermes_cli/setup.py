@@ -1,5 +1,5 @@
 """
-Interactive setup wizard for Hermes Agent.
+Interactive setup wizard for Hexbot.
 
 Modular wizard with independently-runnable sections:
   1. Model & Provider — choose your AI provider and model
@@ -8,7 +8,7 @@ Modular wizard with independently-runnable sections:
   4. Messaging Platforms — connect Telegram, Discord, etc.
   5. Tools — configure TTS, web search, image generation, etc.
 
-Config files are stored in ~/.hermes/ for easy access.
+Config files are stored in ~/.hexbot/ for easy access.
 """
 
 import importlib.util
@@ -153,7 +153,7 @@ from hermes_cli.config import (
     get_env_value,
     ensure_hermes_home,
 )
-# display_hermes_home imported lazily at call sites (stale-module safety during hermes update)
+# display_hermes_home imported lazily at call sites (stale-module safety during hexbot core update)
 
 from hermes_cli.colors import Colors, color
 
@@ -187,19 +187,19 @@ def is_interactive_stdin() -> bool:
 def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
     """Print guidance for headless/non-interactive setup flows."""
     print()
-    print(color("⚕ Hermes Setup — Non-interactive mode", Colors.CYAN, Colors.BOLD))
+    print(color("⚕ Hexbot Setup — Non-interactive mode", Colors.CYAN, Colors.BOLD))
     print()
     if reason:
         print_info(reason)
     print_info("The interactive wizard cannot be used here.")
     print()
-    print_info("Configure Hermes using environment variables or config commands:")
-    print_info("  hermes config set model.provider custom")
-    print_info("  hermes config set model.base_url http://localhost:8080/v1")
-    print_info("  hermes config set model.default your-model-name")
+    print_info("Configure Hexbot using environment variables or config commands:")
+    print_info("  hexbot core config set model.provider custom")
+    print_info("  hexbot core config set model.base_url http://localhost:8080/v1")
+    print_info("  hexbot core config set model.default your-model-name")
     print()
     print_info("Or set OPENROUTER_API_KEY / OPENAI_API_KEY in your environment.")
-    print_info("Run 'hermes setup' in an interactive terminal to use the full wizard.")
+    print_info("Run 'hexbot core setup' in an interactive terminal to use the full wizard.")
     print()
 
 
@@ -468,7 +468,7 @@ def _prompt_api_key(var: dict):
         save_env_value(var["name"], value)
         print_success("  ✓ Saved")
     else:
-        print_warning("  Skipped (configure later with 'hermes setup')")
+        print_warning("  Skipped (configure later with 'hexbot core setup')")
 
 
 def _print_setup_summary(config: dict, hermes_home):
@@ -487,10 +487,10 @@ def _print_setup_summary(config: dict, hermes_home):
         _provider_ready = False
     if not _provider_ready:
         print()
-        print_warning("No inference provider is configured — Hermes cannot chat yet.")
+        print_warning("No inference provider is configured — Hexbot cannot chat yet.")
         print_info("  Finish this one step with either of:")
-        print_info("    hermes model            (pick any provider/model)")
-        print_info("    hermes setup --portal   (Nous Portal OAuth, no API key)")
+        print_info("    hexbot core model            (pick any provider/model)")
+        print_info("    hexbot core setup --portal   (Nous Portal OAuth, no API key)")
 
     # Tool availability summary
     print()
@@ -510,7 +510,7 @@ def _print_setup_summary(config: dict, hermes_home):
     if _vision_backends:
         tool_status.append(("Vision (image analysis)", True, None))
     else:
-        tool_status.append(("Vision (image analysis)", False, "run 'hermes setup' to configure"))
+        tool_status.append(("Vision (image analysis)", False, "run 'hexbot core setup' to configure"))
 
 
     # Web tools (Exa, Parallel, Firecrawl, Tavily, or Keenable)
@@ -585,7 +585,7 @@ def _print_setup_summary(config: dict, hermes_home):
         else:
             tool_status.append(("Image Generation", False, "FAL_KEY or OPENAI_API_KEY"))
 
-    # Video generation — opt-in via `hermes tools` → Video Generation.
+    # Video generation — opt-in via `hexbot core tools` → Video Generation.
     # Only show the row when a plugin reports available so we don't badger
     # users who don't care about video gen with a "missing" status line.
     if subscription_features.video_gen.managed_by_nous:
@@ -632,7 +632,7 @@ def _print_setup_summary(config: dict, hermes_home):
         if neutts_ok:
             tool_status.append(("Text-to-Speech (NeuTTS local)", True, None))
         else:
-            tool_status.append(("Text-to-Speech (NeuTTS — not installed)", False, "run 'hermes setup tts'"))
+            tool_status.append(("Text-to-Speech (NeuTTS — not installed)", False, "run 'hexbot core setup tts'"))
     elif tts_provider == "kittentts":
         try:
             kittentts_ok = importlib.util.find_spec("kittentts") is not None
@@ -641,7 +641,7 @@ def _print_setup_summary(config: dict, hermes_home):
         if kittentts_ok:
             tool_status.append(("Text-to-Speech (KittenTTS local)", True, None))
         else:
-            tool_status.append(("Text-to-Speech (KittenTTS — not installed)", False, "run 'hermes setup tts'"))
+            tool_status.append(("Text-to-Speech (KittenTTS — not installed)", False, "run 'hexbot core setup tts'"))
     else:
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
 
@@ -671,7 +671,7 @@ def _print_setup_summary(config: dict, hermes_home):
             tool_status.append(("Speech-to-Text (Local Whisper)", True, None))
         else:
             tool_status.append(
-                ("Speech-to-Text (Local Whisper — not installed)", False, "run 'hermes tools' → Speech-to-Text")
+                ("Speech-to-Text (Local Whisper — not installed)", False, "run 'hexbot core tools' → Speech-to-Text")
             )
 
     if subscription_features.modal.managed_by_nous:
@@ -680,7 +680,7 @@ def _print_setup_summary(config: dict, hermes_home):
         if subscription_features.modal.direct_override:
             tool_status.append(("Modal Execution (direct Modal)", True, None))
         else:
-            tool_status.append(("Modal Execution", False, "run 'hermes setup terminal'"))
+            tool_status.append(("Modal Execution", False, "run 'hexbot core setup terminal'"))
     elif managed_nous_tools_enabled() and subscription_features.nous_auth_present:
         tool_status.append(("Modal Execution (optional via Nous subscription)", True, None))
 
@@ -688,7 +688,7 @@ def _print_setup_summary(config: dict, hermes_home):
     if get_env_value("HASS_TOKEN"):
         tool_status.append(("Smart Home (Home Assistant)", True, None))
 
-    # Spotify (OAuth via hermes auth spotify — check auth.json, not env vars)
+    # Spotify (OAuth via hexbot core auth spotify — check auth.json, not env vars)
     try:
         from hermes_cli.auth import get_provider_auth_state
         _spotify_state = get_provider_auth_state("spotify") or {}
@@ -732,7 +732,7 @@ def _print_setup_summary(config: dict, hermes_home):
     disabled_tools = [(name, var) for name, avail, var in tool_status if not avail]
     if disabled_tools:
         print_warning(
-            "Some tools are disabled. Run 'hermes setup tools' to configure them,"
+            "Some tools are disabled. Run 'hexbot core setup tools' to configure them,"
         )
         from hermes_constants import display_hermes_home as _dhh
         print_warning(f"or edit {_dhh()}/.env directly to add the missing API keys.")
@@ -772,18 +772,18 @@ def _print_setup_summary(config: dict, hermes_home):
     print()
     print(color("📝 To edit your configuration:", Colors.CYAN, Colors.BOLD))
     print()
-    print(f"   {color('hermes setup', Colors.GREEN)}          Re-run the full wizard")
-    print(f"   {color('hermes setup model', Colors.GREEN)}    Change model/provider")
-    print(f"   {color('hermes setup terminal', Colors.GREEN)} Change terminal backend")
-    print(f"   {color('hermes setup gateway', Colors.GREEN)}  Configure messaging")
-    print(f"   {color('hermes setup tools', Colors.GREEN)}    Configure tool providers")
+    print(f"   {color('hexbot core setup', Colors.GREEN)}          Re-run the full wizard")
+    print(f"   {color('hexbot core setup model', Colors.GREEN)}    Change model/provider")
+    print(f"   {color('hexbot core setup terminal', Colors.GREEN)} Change terminal backend")
+    print(f"   {color('hexbot core setup gateway', Colors.GREEN)}  Configure messaging")
+    print(f"   {color('hexbot core setup tools', Colors.GREEN)}    Configure tool providers")
     print()
-    print(f"   {color('hermes config', Colors.GREEN)}         View current settings")
+    print(f"   {color('hexbot core config', Colors.GREEN)}         View current settings")
     print(
-        f"   {color('hermes config edit', Colors.GREEN)}    Open config in your editor"
+        f"   {color('hexbot core config edit', Colors.GREEN)}    Open config in your editor"
     )
-    print(f"   {color('hermes config set <key> <value>', Colors.GREEN)}")
-    print("                          Set a specific value")
+    print(f"   {color('hexbot core config set <key> <value>', Colors.GREEN)}")
+    print("                               Set a specific value")
     print()
     print("   Or edit the files directly:")
     print(f"   {color(f'nano {get_config_path()}', Colors.DIM)}")
@@ -794,9 +794,9 @@ def _print_setup_summary(config: dict, hermes_home):
     print()
     print(color("🚀 Ready to go!", Colors.CYAN, Colors.BOLD))
     print()
-    print(f"   {color('hermes', Colors.GREEN)}              Start chatting")
-    print(f"   {color('hermes gateway', Colors.GREEN)}      Start messaging gateway")
-    print(f"   {color('hermes doctor', Colors.GREEN)}       Check for issues")
+    print(f"   {color('hexbot core', Colors.GREEN)}              Start chatting")
+    print(f"   {color('hexbot core gateway', Colors.GREEN)}      Start messaging gateway")
+    print(f"   {color('hexbot core doctor', Colors.GREEN)}       Check for issues")
     print()
 
 
@@ -939,7 +939,7 @@ def _read_nearest_vercel_project(start: Path | None = None) -> dict[str, str]:
 
 
 # Tool categories and provider config are now in tools_config.py (shared
-# between `hermes tools` and `hermes setup tools`).
+# between `hexbot core tools` and `hexbot core setup tools`).
 
 
 # =============================================================================
@@ -951,10 +951,10 @@ def _read_nearest_vercel_project(start: Path | None = None) -> dict[str, str]:
 def setup_model_provider(config: dict, *, quick: bool = False):
     """Configure the inference provider and default model.
 
-    Delegates to ``cmd_model()`` (the same flow used by ``hermes model``)
+    Delegates to ``cmd_model()`` (the same flow used by ``hexbot core model``)
     for provider selection, credential prompting, and model picking.
     This ensures a single code path for all provider setup — any new
-    provider added to ``hermes model`` is automatically available here.
+    provider added to ``hexbot core model`` is automatically available here.
 
     When *quick* is True, skips credential rotation, vision, and TTS
     configuration — used by the streamlined first-time quick setup.
@@ -966,7 +966,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     print_info(f"   Guide: {_DOCS_BASE}/integrations/providers")
     print()
 
-    # Delegate to the shared hermes model flow — handles provider picker,
+    # Delegate to the shared hexbot core model flow — handles provider picker,
     # credential prompting, model selection, and config persistence.
     from hermes_cli.main import select_provider_and_model
     try:
@@ -977,7 +977,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     except Exception as exc:
         logger.debug("select_provider_and_model error during setup: %s", exc)
         print_warning(f"Provider setup encountered an error: {exc}")
-        print_info("You can try again later with: hermes model")
+        print_info("You can try again later with: hexbot core model")
 
     # Re-sync the wizard's config dict from what cmd_model saved to disk.
     # This is critical: cmd_model writes to disk via its own load/save cycle,
@@ -992,8 +992,8 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     # Credential rotation, vision-backend selection, and TTS provider are no
     # longer prompted here. They have safe defaults (rotation off, vision
     # auto-detected from the main provider, TTS = Edge) and are configurable
-    # on demand via `hermes auth add`, `hermes setup` vision, and
-    # `hermes setup tts`. This keeps both quick and full setup thin.
+    # on demand via `hexbot core auth add`, `hexbot core setup` vision, and
+    # `hexbot core setup tts`. This keeps both quick and full setup thin.
 
 
     # Tool Gateway prompt is already shown by _model_flow_nous() above.
@@ -1099,7 +1099,7 @@ def _xai_oauth_logged_in_for_setup() -> bool:
     """True iff xAI Grok OAuth credentials are already stored locally.
 
     Lets TTS / STT setup skip the API-key prompt for users who logged in
-    through ``hermes model`` -> xAI Grok OAuth (SuperGrok / Premium+).
+    through ``hexbot core model`` -> xAI Grok OAuth (SuperGrok / Premium+).
     """
     try:
         from hermes_cli.auth import get_xai_oauth_auth_status
@@ -1209,7 +1209,7 @@ def _setup_tts_provider(config: dict):
         print_info("OpenAI TTS will use the managed Nous gateway and bill to your subscription.")
         if get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY"):
             print_warning(
-                "Direct OpenAI credentials are still configured and may take precedence until removed from ~/.hermes/.env."
+                "Direct OpenAI credentials are still configured and may take precedence until removed from ~/.hexbot/.env."
             )
 
     if selected == "neutts":
@@ -1261,7 +1261,7 @@ def _setup_tts_provider(config: dict):
 
     elif selected == "xai":
         # Resolution order: existing OAuth tokens (free for SuperGrok subscribers
-        # via the Hermes auth store) > existing XAI_API_KEY > prompt the user.
+        # via the Hexbot auth store) > existing XAI_API_KEY > prompt the user.
         # When neither is configured, offer both options instead of forcing the
         # API-key path — xAI TTS works fine with OAuth bearer tokens too.
         oauth_logged_in = _xai_oauth_logged_in_for_setup()
@@ -1305,7 +1305,7 @@ def _setup_tts_provider(config: dict):
                     from hermes_constants import display_hermes_home as _dhh
                     print_warning(
                         "No xAI API key provided for TTS. Configure XAI_API_KEY "
-                        f"via hermes setup model or {_dhh()}/.env to use xAI TTS. "
+                        f"via hexbot core setup model or {_dhh()}/.env to use xAI TTS. "
                         "Falling back to Edge TTS."
                     )
                     selected = "edge"
@@ -1389,7 +1389,7 @@ def _setup_tts_provider(config: dict):
 
 
 def setup_tts(config: dict):
-    """Standalone TTS setup (for 'hermes setup tts')."""
+    """Standalone TTS setup (for 'hexbot core setup tts')."""
     _setup_tts_provider(config)
 
 
@@ -1402,7 +1402,7 @@ def setup_terminal_backend(config: dict):
     """Configure the terminal execution backend."""
     import platform as _platform
     print_header("Terminal Backend")
-    print_info("Choose where Hermes runs shell commands and code.")
+    print_info("Choose where Hexbot runs shell commands and code.")
     print_info("This affects tool execution, file access, and isolation.")
     print_info(f"   Guide: {_DOCS_BASE}/user-guide/configuration#terminal-backend-configuration")
     print()
@@ -1430,7 +1430,7 @@ def setup_terminal_backend(config: dict):
         next_idx += 1
 
     # Plugin-registered terminal backends (standalone plugin repos installed
-    # under ~/.hermes/plugins/). Fail-soft: a broken plugin must not take the
+    # under ~/.hexbot/plugins/). Fail-soft: a broken plugin must not take the
     # setup wizard down.
     plugin_backend_names = []
     try:
@@ -1470,7 +1470,7 @@ def setup_terminal_backend(config: dict):
         print_success("Terminal backend: Local")
         print_info("Commands run directly on this machine.")
         # Gateway working directory defaults to home; sudo stays off. Both are
-        # configurable later via `hermes setup terminal` / config.yaml.
+        # configurable later via `hexbot core setup terminal` / config.yaml.
         config["terminal"].setdefault("cwd", str(Path.home()))
 
     elif selected_backend == "docker":
@@ -1484,7 +1484,7 @@ def setup_terminal_backend(config: dict):
         else:
             print_info(f"Docker found: {docker_bin}")
 
-        # Image and resource limits use defaults; tune via `hermes setup terminal`.
+        # Image and resource limits use defaults; tune via `hexbot core setup terminal`.
         config["terminal"].setdefault(
             "docker_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
@@ -1503,12 +1503,12 @@ def setup_terminal_backend(config: dict):
             proxy_cfg.setdefault("enforce_on_docker", True)
             print_success("Egress firewall enabled in config")
             print_info(
-                "Run `hermes egress setup` then `hermes egress start` to mint "
+                "Run `hexbot core egress setup` then `hexbot core egress start` to mint "
                 "tokens and launch the proxy."
             )
         else:
             print_info(
-                "Skipping egress firewall. You can enable it later with `hermes egress setup`."
+                "Skipping egress firewall. You can enable it later with `hexbot core egress setup`."
             )
 
     elif selected_backend == "singularity":
@@ -1524,7 +1524,7 @@ def setup_terminal_backend(config: dict):
         else:
             print_info(f"Found: {sing_bin}")
 
-        # Image and resource limits use defaults; tune via `hermes setup terminal`.
+        # Image and resource limits use defaults; tune via `hexbot core setup terminal`.
         config["terminal"].setdefault(
             "singularity_image",
             "docker://nikolaik/python-nodejs:python3.11-nodejs20",
@@ -1645,7 +1645,7 @@ def setup_terminal_backend(config: dict):
                 save_env_value("DAYTONA_API_KEY", api_key)
                 print_success("    Configured")
 
-        # Image and resource limits use defaults; tune via `hermes setup terminal`.
+        # Image and resource limits use defaults; tune via `hexbot core setup terminal`.
         config["terminal"].setdefault(
             "daytona_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
@@ -1662,7 +1662,7 @@ def setup_terminal_backend(config: dict):
             import subprocess
 
             # Managed uv first: $HERMES_HOME/bin is never on PATH, so a bare
-            # which() misses the uv Hermes installed. Bootstrapping one is
+            # which() misses the uv Hexbot installed. Bootstrapping one is
             # welcome here — this is the interactive setup wizard, already
             # mid-install, and the alternative tier is a pip that a `uv venv`
             # venv may not even have.
@@ -1792,7 +1792,7 @@ def _apply_default_agent_settings(config: dict):
     print_info("  Tool progress: all")
     print_info("  Compression threshold: 0.50")
     print_info("  Session reset: never (use /reset or compression)")
-    print_info("  Run `hermes setup agent` later to customize.")
+    print_info("  Run `hexbot core setup agent` later to customize.")
 
 
 def setup_agent_settings(config: dict):
@@ -1836,7 +1836,7 @@ def setup_agent_settings(config: dict):
     print_info("  new     — Show tool name only when it changes (less noise)")
     print_info("  all     — Show every tool call with a short preview")
     print_info("  verbose — Full args, results, and debug logs")
-    print_info("  log     — Silent in chat; write every tool call to ~/.hermes/logs/tool_calls.log (gateway only)")
+    print_info("  log     — Silent in chat; write every tool call to ~/.hexbot/logs/tool_calls.log (gateway only)")
 
     current_mode = cfg_get(config, "display", "tool_progress", default="all")
     mode = prompt("Tool progress mode", current_mode)
@@ -2114,7 +2114,7 @@ def _setup_telegram():
         print_info("⚠️  No allowlist set - anyone who finds your bot can use it!")
 
     print()
-    print_info("📬 Home Channel: where Hermes delivers cron job results,")
+    print_info("📬 Home Channel: where Hexbot delivers cron job results,")
     print_info("   cross-platform messages, and notifications.")
     print_info("   For Telegram DMs, this is your user ID (same as above).")
 
@@ -2152,7 +2152,7 @@ def _setup_bluebubbles():
         if not prompt_yes_no("Reconfigure BlueBubbles?", False):
             return
 
-    print_info("Connects Hermes to iMessage via BlueBubbles — a free, open-source")
+    print_info("Connects Hexbot to iMessage via BlueBubbles — a free, open-source")
     print_info("macOS server that bridges iMessage to any device.")
     print_info("   Requires a Mac running BlueBubbles Server v1.0.0+")
     print_info("   Download: https://bluebubbles.app/")
@@ -2257,8 +2257,8 @@ def _setup_webhooks():
     print_info("   Route configuration guide:")
     print_info("   https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/#configuring-routes")
     print()
-    print_info("   Open config in your editor:  hermes config edit")
-    print_info("   Open config in your editor:  hermes config edit")
+    print_info("   Open config in your editor:  hexbot core config edit")
+    print_info("   Open config in your editor:  hexbot core config edit")
 
 
 def setup_gateway(config: dict):
@@ -2266,7 +2266,7 @@ def setup_gateway(config: dict):
     from hermes_cli.gateway import _all_platforms, _platform_status, _configure_platform
 
     print_header("Messaging Platforms")
-    print_info("Connect to messaging platforms to chat with Hermes from anywhere.")
+    print_info("Connect to messaging platforms to chat with Hexbot from anywhere.")
     print_info("Toggle with Space, confirm with Enter.")
     print()
 
@@ -2284,7 +2284,7 @@ def setup_gateway(config: dict):
     selected = prompt_checklist("Select platforms to configure:", items, pre_selected)
 
     if not selected:
-        print_info("No platforms selected. Run 'hermes setup gateway' later to configure.")
+        print_info("No platforms selected. Run 'hexbot core setup gateway' later to configure.")
     else:
         for idx in selected:
             _configure_platform(platforms[idx])
@@ -2336,14 +2336,14 @@ def setup_gateway(config: dict):
             print_info("   Set one later with /set-home in your chat, or:")
             for plat in missing_home:
                 print_info(
-                    f"     hermes config set {plat.upper()}_HOME_CHANNEL <channel_id>"
+                    f"     hexbot core config set {plat.upper()}_HOME_CHANNEL <channel_id>"
                 )
 
     # ── Gateway Service Setup ──
     # Runs UNCONDITIONALLY — even with zero platforms configured. A gateway
     # without platforms is a supported mode (cron scheduler keeps running,
     # and adapters come up automatically once tokens are added later, e.g.
-    # via `hermes import` or `hermes setup gateway`). Gating this on
+    # via `hexbot core import` or `hexbot core setup gateway`). Gating this on
     # messaging config was the bug that left install-then-import machines
     # with registered cron jobs and restored bot tokens but no process to
     # serve them.
@@ -2410,7 +2410,7 @@ def setup_gateway(config: dict):
 def setup_tools(config: dict, first_install: bool = False):
     """Configure tools — delegates to the unified tools_command() in tools_config.py.
 
-    Both `hermes setup tools` and `hermes tools` use the same flow:
+    Both `hexbot core setup tools` and `hexbot core tools` use the same flow:
     platform selection → toolset toggles → provider/API key configuration.
 
     Args:
@@ -2696,15 +2696,15 @@ def _load_openclaw_migration_module():
 
 # Item kinds that represent high-impact changes warranting explicit warnings.
 # Gateway tokens/channels can hijack messaging platforms from the old agent.
-# Config values may have different semantics between OpenClaw and Hermes.
+# Config values may have different semantics between OpenClaw and Hexbot.
 # Instruction/context files (.md) can contain incompatible setup procedures.
 _HIGH_IMPACT_KIND_KEYWORDS = {
-    "gateway": "⚠ Gateway/messaging — this will configure Hermes to use your OpenClaw messaging channels",
-    "telegram": "⚠ Telegram — this will point Hermes at your OpenClaw Telegram bot",
-    "slack": "⚠ Slack — this will point Hermes at your OpenClaw Slack workspace",
-    "discord": "⚠ Discord — this will point Hermes at your OpenClaw Discord bot",
-    "whatsapp": "⚠ WhatsApp — this will point Hermes at your OpenClaw WhatsApp connection",
-    "config": "⚠ Config values — OpenClaw settings may not map 1:1 to Hermes equivalents",
+    "gateway": "⚠ Gateway/messaging — this will configure Hexbot to use your OpenClaw messaging channels",
+    "telegram": "⚠ Telegram — this will point Hexbot at your OpenClaw Telegram bot",
+    "slack": "⚠ Slack — this will point Hexbot at your OpenClaw Slack workspace",
+    "discord": "⚠ Discord — this will point Hexbot at your OpenClaw Discord bot",
+    "whatsapp": "⚠ WhatsApp — this will point Hexbot at your OpenClaw WhatsApp connection",
+    "config": "⚠ Config values — OpenClaw settings may not map 1:1 to Hexbot equivalents",
     "soul": "⚠ Instruction file — may contain OpenClaw-specific setup/restart procedures",
     "memory": "⚠ Memory/context file — may reference OpenClaw-specific infrastructure",
     "context": "⚠ Context file — may contain OpenClaw-specific instructions",
@@ -2748,7 +2748,7 @@ def _print_migration_preview(report: dict):
         print()
 
     if conflict_items:
-        print(color("  Would overwrite (conflicts with existing Hermes config):", Colors.YELLOW))
+        print(color("  Would overwrite (conflicts with existing Hexbot config):", Colors.YELLOW))
         for item in conflict_items:
             kind = item.get("kind", "unknown")
             reason = item.get("reason", "already exists")
@@ -2769,8 +2769,8 @@ def _print_migration_preview(report: dict):
         for warning in sorted(warnings_shown):
             print(color(f"    {warning}", Colors.YELLOW))
         print()
-        print(color("  Note: OpenClaw config values may have different semantics in Hermes.", Colors.YELLOW))
-        print(color("  For example, OpenClaw's tool_call_execution: \"auto\" ≠ Hermes's yolo mode.", Colors.YELLOW))
+        print(color("  Note: OpenClaw config values may have different semantics in Hexbot.", Colors.YELLOW))
+        print(color("  For example, OpenClaw's tool_call_execution: \"auto\" ≠ Hexbot's yolo mode.", Colors.YELLOW))
         print(color("  Instruction files (.md) from OpenClaw may contain incompatible procedures.", Colors.YELLOW))
         print()
 
@@ -2793,12 +2793,12 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
     print()
     print_header("OpenClaw Installation Detected")
     print_info(f"Found OpenClaw data at {openclaw_dir}")
-    print_info("Hermes can preview what would be imported before making any changes.")
+    print_info("Hexbot can preview what would be imported before making any changes.")
     print()
 
     if not prompt_yes_no("Would you like to see what can be imported?", default=True):
         print_info(
-            "Skipping migration. You can run it later with: hermes claw migrate --dry-run"
+            "Skipping migration. You can run it later with: hexbot core claw migrate --dry-run"
         )
         return False
 
@@ -2856,14 +2856,14 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
     # ── Phase 2: Confirm and execute ──
     if not prompt_yes_no("Proceed with migration?", default=False):
         print_info(
-            "Migration cancelled. You can run it later with: hermes claw migrate"
+            "Migration cancelled. You can run it later with: hexbot core claw migrate"
         )
         print_info(
             "Use --dry-run to preview again, or --preset minimal for a lighter import."
         )
         return False
 
-    # Execute the migration — overwrite=False so existing Hermes configs are
+    # Execute the migration — overwrite=False so existing Hexbot configs are
     # preserved. The user saw the preview; conflicts are skipped by default.
     try:
         migrator = mod.Migrator(
@@ -2871,7 +2871,7 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
             target_root=hermes_home.resolve(),
             execute=True,
             workspace_target=None,
-            overwrite=False,  # preserve existing Hermes config
+            overwrite=False,  # preserve existing Hexbot config
             migrate_secrets=True,
             output_dir=None,
             selected_options=selected,
@@ -2894,7 +2894,7 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
     if migrated:
         print_success(f"Imported {migrated} item(s) from OpenClaw.")
     if conflicts:
-        print_info(f"Skipped {conflicts} item(s) that already exist in Hermes (use hermes claw migrate --overwrite to force).")
+        print_info(f"Skipped {conflicts} item(s) that already exist in Hexbot (use hexbot core claw migrate --overwrite to force).")
     if skipped:
         print_info(f"Skipped {skipped} item(s) (not found or unchanged).")
     if errors:
@@ -2926,18 +2926,18 @@ SETUP_SECTIONS = [
 def _run_portal_one_shot(config: dict) -> None:
     """One-shot Nous Portal setup — OAuth + model pick + provider + Tool Gateway.
 
-    Wired into ``hermes setup --portal`` and ``hermes portal``. This is the
+    Wired into ``hexbot core setup --portal`` and ``hexbot core portal``. This is the
     Nous-Portal slice of the first-time quick setup, collapsed into a single
     shareable command so a brand-new user goes from zero to a fully working
-    Hermes session — model selected, provider set, and web/image/tts/browser
+    Hexbot session — model selected, provider set, and web/image/tts/browser
     tools routed via their Portal sub — without being told to run
-    ``hermes setup`` and hunt for the quick-setup option.
+    ``hexbot core setup`` and hunt for the quick-setup option.
 
     The login + model selection + provider switch + Tool Gateway opt-in are all
     delegated to ``_model_flow_nous`` — the exact same flow quick setup uses
-    (``_run_first_time_quick_setup``) and the same one ``hermes model`` runs
+    (``_run_first_time_quick_setup``) and the same one ``hexbot core model`` runs
     when you pick Nous. Routing through it (instead of hand-rolling the auth +
-    provider write here) means ``hermes portal`` always offers a model picker,
+    provider write here) means ``hexbot core portal`` always offers a model picker,
     and there is a single source of truth for the Nous onboarding steps.
     """
     from hermes_cli.config import load_config
@@ -2949,7 +2949,7 @@ def _run_portal_one_shot(config: dict) -> None:
             Colors.MAGENTA,
         )
     )
-    print(color("│     ⚕ Hermes Setup — Nous Portal (one-shot)             │", Colors.MAGENTA))
+    print(color("│     ⚕ Hexbot Setup — Nous Portal (one-shot)             │", Colors.MAGENTA))
     print(
         color(
             "└─────────────────────────────────────────────────────────┘",
@@ -2968,7 +2968,7 @@ def _run_portal_one_shot(config: dict) -> None:
     # which selects a model internally) and the already-logged-in path (curated
     # Nous model picker), then offers the Tool Gateway opt-in and sets
     # provider=nous via the login/model save. This is the same routine quick
-    # setup calls, so `hermes portal` == quick setup's Nous step.
+    # setup calls, so `hexbot core portal` == quick setup's Nous step.
     try:
         from hermes_cli.main import _model_flow_nous
 
@@ -2981,13 +2981,13 @@ def _run_portal_one_shot(config: dict) -> None:
         # Treat all of these as a graceful cancel/abort for the portal flow.
         print()
         print_info("  Setup cancelled.")
-        print_info("  You can retry later with `hermes portal`.")
+        print_info("  You can retry later with `hexbot core portal`.")
         return
     except Exception as exc:
-        logger.debug("_model_flow_nous error during `hermes portal`: %s", exc)
+        logger.debug("_model_flow_nous error during `hexbot core portal`: %s", exc)
         print()
         print_error(f"  Nous Portal setup encountered an error: {exc}")
-        print_info("  You can retry later with `hermes portal`.")
+        print_info("  You can retry later with `hexbot core portal`.")
         return
 
     # Re-sync the in-memory config from disk — _model_flow_nous (and the
@@ -3003,8 +3003,8 @@ def _run_portal_one_shot(config: dict) -> None:
 
     print()
     print_success("Portal setup complete.")
-    print_info("  Run `hermes portal info` to inspect routing.")
-    print_info("  Run `hermes` to start chatting.")
+    print_info("  Run `hexbot core portal info` to inspect routing.")
+    print_info("  Run `hexbot core` to start chatting.")
 
 
 @contextmanager
@@ -3109,7 +3109,7 @@ def run_setup_action_with_navigation(
 ) -> None:
     """Run a setup-style menu flow with Escape and nested Left navigation.
 
-    Shared commands such as ``hermes model`` use the same provider/model
+    Shared commands such as ``hexbot core model`` use the same provider/model
     pickers as the setup wizard, but run outside ``run_setup_wizard``.  This
     installs the setup navigation context for that standalone command and
     reuses the same prompt replay state machine.
@@ -3126,14 +3126,14 @@ def _run_setup_wizard_impl(args):
     """Run the interactive setup wizard.
 
     Supports full, quick, and section-specific setup:
-      hermes setup           — full or quick (auto-detected)
-      hermes setup model     — just model/provider
-      hermes setup tts       — just text-to-speech
-      hermes setup terminal  — just terminal backend
-      hermes setup gateway   — just messaging platforms
-      hermes setup tools     — just tool configuration
-      hermes setup telemetry — just local shared metrics
-      hermes setup agent     — just agent settings
+      hexbot core setup           — full or quick (auto-detected)
+      hexbot core setup model     — just model/provider
+      hexbot core setup tts       — just text-to-speech
+      hexbot core setup terminal  — just terminal backend
+      hexbot core setup gateway   — just messaging platforms
+      hexbot core setup tools     — just tool configuration
+      hexbot core setup telemetry — just local shared metrics
+      hexbot core setup agent     — just agent settings
     """
     from hermes_cli.config import is_managed, managed_error
     if is_managed():
@@ -3195,7 +3195,7 @@ def _run_setup_wizard_impl(args):
                         Colors.MAGENTA,
                     )
                 )
-                print(color(f"│     ⚕ Hermes Setup — {label:<34s} │", Colors.MAGENTA))
+                print(color(f"│     ⚕ Hexbot Setup — {label:<34s} │", Colors.MAGENTA))
                 print(
                     color(
                         "└─────────────────────────────────────────────────────────┘",
@@ -3233,7 +3233,7 @@ def _run_setup_wizard_impl(args):
     )
     print(
         color(
-            "│             ⚕ Hermes Agent Setup Wizard                │", Colors.MAGENTA
+            "│                ⚕ Hexbot Setup Wizard                   │", Colors.MAGENTA
         )
     )
     print(
@@ -3244,7 +3244,7 @@ def _run_setup_wizard_impl(args):
     )
     print(
         color(
-            "│  Let's configure your Hermes Agent installation.       │", Colors.MAGENTA
+            "│  Let's configure your Hexbot installation.             │", Colors.MAGENTA
         )
     )
     print(
@@ -3275,11 +3275,11 @@ def _run_setup_wizard_impl(args):
 
         print()
         print_header("Reconfigure")
-        print_success("You already have Hermes configured.")
+        print_success("You already have Hexbot configured.")
         print_info("Running the full wizard — each prompt shows your current value.")
         print_info("Press Enter to keep it, or type a new value to change it.")
         print_info("")
-        print_info("Tip: jump straight to a section with 'hermes setup model|terminal|")
+        print_info("Tip: jump straight to a section with 'hexbot core setup model|terminal|")
         print_info("     gateway|tools|agent', or fill only missing items with --quick.")
         # Fall through to the "Full Setup — run all sections" block below.
         # --reconfigure is now the default on existing installs; the flag
@@ -3300,7 +3300,7 @@ def _run_setup_wizard_impl(args):
             config = load_config()
 
         setup_mode = prompt_choice(
-            "How would you like to set up Hermes?",
+            "How would you like to set up Hexbot?",
             [
                 "Quick Setup (Nous Portal) — free OAuth login, no API keys, model + tools (recommended)",
                 "Full setup — configure every provider, tool & option yourself (bring your own keys)",
@@ -3341,7 +3341,7 @@ def _run_setup_wizard_impl(args):
     print_info(f"Data folder:  {hermes_home}")
     print_info(f"Install dir:  {PROJECT_ROOT}")
     print()
-    print_info("You can edit these files directly or use 'hermes config edit'")
+    print_info("You can edit these files directly or use 'hexbot core config edit'")
 
     if migration_ran:
         print()
@@ -3351,7 +3351,7 @@ def _run_setup_wizard_impl(args):
 
     # Section 3: Agent Settings — no longer prompted. First installs get the
     # recommended defaults silently; existing installs keep whatever they have.
-    # Tune later with `hermes setup agent`.
+    # Tune later with `hexbot core setup agent`.
     if not is_existing:
         _apply_default_agent_settings(config)
 
@@ -3414,8 +3414,8 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     Routes straight to the Nous Portal provider — runs the device-code OAuth
     login, picks a Nous model, then configures the terminal backend and (optionally)
     a messaging platform. Applies sensible defaults for everything else (agent
-    settings, tools); the user can customize later via ``hermes setup <section>``
-    or switch providers with ``hermes model``.
+    settings, tools); the user can customize later via ``hexbot core setup <section>``
+    or switch providers with ``hexbot core model``.
     """
     from hermes_cli.config import load_config
 
@@ -3438,7 +3438,7 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     except Exception as exc:
         logger.debug("_model_flow_nous error during quick setup: %s", exc)
         print_warning(f"Nous Portal setup encountered an error: {exc}")
-        print_info("You can try again later with: hermes model")
+        print_info("You can try again later with: hexbot core model")
 
     # Re-sync the wizard's config dict from disk — _model_flow_nous (and the
     # underlying login/model save) write via their own load/save cycle, and the
@@ -3461,7 +3461,7 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
         "Connect a messaging platform? (Telegram, Discord, etc.)",
         [
             "Set up messaging now (recommended)",
-            "Skip — set up later with 'hermes setup gateway'",
+            "Skip — set up later with 'hexbot core setup gateway'",
         ],
         0,
     )
@@ -3472,16 +3472,16 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     else:
         # Messaging skipped — still install/start the gateway service so cron
         # jobs run and platforms come alive as soon as tokens are added later
-        # (e.g. via `hermes import` from another machine).
+        # (e.g. via `hexbot core import` from another machine).
         from hermes_cli.gateway import ensure_gateway_service
         ensure_gateway_service(context="setup")
 
     print()
     print_success("Setup complete! You're ready to go.")
     print()
-    print_info("  Configure all settings:    hermes setup")
+    print_info("  Configure all settings:    hexbot core setup")
     if gateway_choice != 0:
-        print_info("  Connect Telegram/Discord:  hermes setup gateway")
+        print_info("  Connect Telegram/Discord:  hexbot core setup gateway")
     _print_macos_fda_tip()
     print()
 
@@ -3512,7 +3512,7 @@ def _print_macos_fda_tip() -> None:
     print_info("  your terminal (and Hermes.app if you use Desktop), or run:")
     print_info("    open \"x-apple.systempreferences:com.apple.preference"
                ".security?Privacy_AllFiles\"")
-    print_info("  The grant is permanent — it survives every Hermes update.")
+    print_info("  The grant is permanent — it survives every Hexbot update.")
 
 
 def _blank_slate_minimal_toolsets(config: dict):
@@ -3524,7 +3524,7 @@ def _blank_slate_minimal_toolsets(config: dict):
     points at ``vision_analyze``, so an agent without it can't see screenshots
     or image files at all. Skills stay on because the essential
     ``hermes-agent`` skill (the agent's operating manual for driving,
-    configuring, and troubleshooting Hermes) is always seeded — without
+    configuring, and troubleshooting Hexbot) is always seeded — without
     ``skill_view`` it would be unloadable. Two layers enforce the selection:
 
     1. ``platform_toolsets["cli"] = ["file", "skills", "terminal", "vision"]``
@@ -3536,7 +3536,7 @@ def _blank_slate_minimal_toolsets(config: dict):
        non-configurable platform-toolset recovery that would otherwise re-add
        toolsets like ``kanban``). We list every known toolset except the ones we
        keep, guaranteeing a true blank slate regardless of platform/recovery
-       quirks. The user re-enables any of them later via ``hermes tools`` (which
+       quirks. The user re-enables any of them later via ``hexbot core tools`` (which
        rewrites ``platform_toolsets``) or by editing ``agent.disabled_toolsets``.
     """
     keep = {"file", "terminal", "vision", "skills"}
@@ -3574,8 +3574,8 @@ def _blank_slate_minimal_toolsets(config: dict):
 def _blank_slate_minimize_config(config: dict):
     """Turn OFF the optional config features for a Blank Slate install.
 
-    Everything here is opt-in afterwards via ``hermes setup agent`` /
-    ``hermes config set``. We keep only what's needed to run.
+    Everything here is opt-in afterwards via ``hexbot core setup agent`` /
+    ``hexbot core config set``. We keep only what's needed to run.
     """
     config.setdefault("agent", {})["max_turns"] = 90
 
@@ -3620,7 +3620,7 @@ def _run_blank_slate_setup(config: dict, hermes_home, is_existing: bool):
     print_info("Everything else (web, browser, code exec, memory,")
     print_info("delegation, cron, plugins, MCP, …) starts disabled. The")
     print_info("essential `hermes-agent` skill is always kept so the agent")
-    print_info("can help you drive and configure Hermes itself.")
+    print_info("can help you drive and configure Hexbot itself.")
     print()
 
     # ── Step 1: Provider & Model (REQUIRED — the agent cannot run without it) ──
@@ -3656,7 +3656,7 @@ def _run_blank_slate_setup(config: dict, hermes_home, is_existing: bool):
     if path == 0:
         save_config(config)
         # Blank Slate means no bundled skills; record the opt-out so future
-        # `hermes update` runs don't re-inject them. Essential skills (the
+        # `hexbot core update` runs don't re-inject them. Essential skills (the
         # `hermes-agent` operating manual) are still seeded by the sync.
         try:
             from tools.skills_sync import set_bundled_skills_opt_out, sync_skills
@@ -3667,11 +3667,11 @@ def _run_blank_slate_setup(config: dict, hermes_home, is_existing: bool):
         print()
         print_success("Blank Slate setup complete — minimal agent ready.")
         print_info("Enable anything later, on demand:")
-        print_info("  Enable tools:        hermes tools")
-        print_info("  Seed skills:         hermes skills opt-in --sync")
-        print_info("  Add MCP servers:     hermes mcp add")
-        print_info("  Enable plugins:      hermes plugins")
-        print_info("  Tune agent settings: hermes setup agent")
+        print_info("  Enable tools:        hexbot core tools")
+        print_info("  Seed skills:         hexbot core skills opt-in --sync")
+        print_info("  Add MCP servers:     hexbot core mcp add")
+        print_info("  Enable plugins:      hexbot core plugins")
+        print_info("  Tune agent settings: hexbot core setup agent")
         print()
         _print_setup_summary(config, hermes_home)
         return
@@ -3707,8 +3707,8 @@ def _blank_slate_walkthrough(config: dict, hermes_home):
             sync_skills(quiet=True)
             print_info("No skills seeded (except the essential `hermes-agent`")
             print_info("skill). A .no-bundled-skills marker keeps future")
-            print_info("`hermes update` runs from re-injecting them. Opt back in any")
-            print_info("time with `hermes skills opt-in --sync`.")
+            print_info("`hexbot core update` runs from re-injecting them. Opt back in any")
+            print_info("time with `hexbot core skills opt-in --sync`.")
     except Exception as exc:
         logger.debug("blank-slate skill handling error: %s", exc)
         print_warning(f"Skill setup step encountered an error: {exc}")
@@ -3731,23 +3731,23 @@ def _blank_slate_walkthrough(config: dict, hermes_home):
             logger.debug("blank-slate tools_command error: %s", exc)
             print_warning(f"Tool selector encountered an error: {exc}")
     else:
-        print_info("Keeping the minimal toolset. Add tools later with `hermes tools`.")
+        print_info("Keeping the minimal toolset. Add tools later with `hexbot core tools`.")
 
     # ── Built-in plugins (off unless chosen) ──
     print()
     print_header("Plugins")
     if prompt_yes_no("Review and enable built-in plugins now?", default=False):
-        print_info("Manage plugins with `hermes plugins list` / `hermes plugins install`.")
+        print_info("Manage plugins with `hexbot core plugins list` / `hexbot core plugins install`.")
     else:
-        print_info("No plugins enabled. Add later with `hermes plugins`.")
+        print_info("No plugins enabled. Add later with `hexbot core plugins`.")
 
     # ── MCP servers (off unless chosen) ──
     print()
     print_header("MCP Servers")
     if prompt_yes_no("Add an MCP server now?", default=False):
-        print_info("Add servers with `hermes mcp add <name> --url ... | --command ...`.")
+        print_info("Add servers with `hexbot core mcp add <name> --url ... | --command ...`.")
     else:
-        print_info("No MCP servers configured. Add later with `hermes mcp add`.")
+        print_info("No MCP servers configured. Add later with `hexbot core mcp add`.")
 
     # ── Optional messaging gateway ──
     print()
@@ -3758,10 +3758,10 @@ def _blank_slate_walkthrough(config: dict, hermes_home):
 
     print()
     print_success("Blank Slate setup complete — minimal agent ready.")
-    print_info("  Enable more tools:   hermes tools")
-    print_info("  Seed skills:         hermes skills opt-in --sync")
-    print_info("  Add MCP servers:     hermes mcp add")
-    print_info("  Tune agent settings: hermes setup agent")
+    print_info("  Enable more tools:   hexbot core tools")
+    print_info("  Seed skills:         hexbot core skills opt-in --sync")
+    print_info("  Add MCP servers:     hexbot core mcp add")
+    print_info("  Tune agent settings: hexbot core setup agent")
     print()
 
     _print_setup_summary(config, hermes_home)
@@ -3798,7 +3798,7 @@ def _run_quick_setup(config: dict, hermes_home):
     if not has_anything_missing:
         print_success("Everything is configured! Nothing to do.")
         print()
-        print_info("Run 'hermes setup' and choose 'Full Setup' to reconfigure,")
+        print_info("Run 'hexbot core setup' and choose 'Full Setup' to reconfigure,")
         print_info("or pick a specific section from the menu.")
         return
 
@@ -3860,8 +3860,8 @@ def _run_quick_setup(config: dict, hermes_home):
     if missing_messaging:
         print()
         print_header("Messaging Platforms")
-        print_info("Connect Hermes to messaging apps to chat from anywhere.")
-        print_info("You can configure these later with 'hermes setup gateway'.")
+        print_info("Connect Hexbot to messaging apps to chat from anywhere.")
+        print_info("You can configure these later with 'hexbot core setup gateway'.")
 
         # Group by platform (preserving order)
         platform_order = []

@@ -1,9 +1,9 @@
 """
-Buzz Platform Adapter for Hermes Agent.
+Buzz Platform Adapter for Hexbot.
 
 A plugin-based gateway adapter that connects to a Buzz community relay
 (Block's open-source human+agent collaboration platform, built on the
-Nostr protocol) and relays messages to/from the Hermes agent.
+Nostr protocol) and relays messages to/from the Hexbot agent.
 
 The adapter does not speak Nostr itself — it shells out to the ``buzz``
 CLI binary ("JSON in, JSON out") via ``asyncio.create_subprocess_exec``.
@@ -35,7 +35,7 @@ Or via environment variables (overrides config.yaml):
     BUZZ_REPLY_TO_MODE
 
 The only secret is BUZZ_PRIVATE_KEY (nsec or hex) — it belongs in
-``~/.hermes/.env``.  It is passed to the CLI via the subprocess
+``~/.hexbot/.env``.  It is passed to the CLI via the subprocess
 environment and is never logged.
 """
 
@@ -201,7 +201,7 @@ def _escape_unresolved_presentation_mention(content: str, error: str) -> Optiona
     """Make one CLI-rejected ``@name`` token presentation-only.
 
     Buzz resolves whitespace-prefixed ``@name`` tokens into notification
-    p-tags before signing or publishing. Ordinary prose such as a Hermes
+    p-tags before signing or publishing. Ordinary prose such as a Hexbot
     ``@session:...`` link can therefore fail mention preflight. Insert an
     invisible separator only after the rejected ``@`` so the rendered text
     remains readable while valid member mentions remain unchanged.
@@ -1242,8 +1242,8 @@ class BuzzAdapter(BasePlatformAdapter):
         Fizz) and the name must be followed by a non-word character or
         end-of-text ("@Riley!!" tags Riley; "@FizzBuzz" does NOT tag a
         member named Fizz).  Longer names match first and consume their
-        span, so "@Hermes Matt" prefers the member "Hermes Matt" over a
-        member "Hermes".
+        span, so "@Hexbot Matt" prefers the member "Hexbot Matt" over a
+        member "Hexbot".
 
         Duplicate display names are ambiguous: the span is consumed but no
         one is tagged (presentation-only), mirroring how Buzz treats
@@ -3156,7 +3156,7 @@ def _env_enablement() -> Optional[dict]:
     """Seed ``PlatformConfig.extra`` from env vars during gateway config load.
 
     Called BEFORE adapter construction so env-only setups show up in
-    ``hermes gateway status`` and ``get_connected_platforms()``.  Returns
+    ``hexbot core gateway status`` and ``get_connected_platforms()``.  Returns
     ``None`` when Buzz isn't minimally configured.
 
     The special ``home_channel`` key is handled by the core hook — it becomes
@@ -3206,7 +3206,7 @@ async def _standalone_send(
 ) -> Dict[str, Any]:
     """One-shot send without a live adapter (out-of-process cron delivery).
 
-    Used by ``tools/send_message_tool`` when ``hermes cron`` runs separately
+    Used by ``tools/send_message_tool`` when ``hexbot core cron`` runs separately
     from the gateway process.  Without this hook, ``deliver=buzz`` cron jobs
     fail with ``No live adapter for platform 'buzz'``.
     """
@@ -3288,7 +3288,7 @@ async def _standalone_send(
 
 
 def interactive_setup() -> None:
-    """Interactive ``hermes gateway setup`` flow for the Buzz platform.
+    """Interactive ``hexbot core gateway setup`` flow for the Buzz platform.
 
     Lazy-imports ``hermes_cli.setup`` helpers so the plugin stays importable
     in non-CLI contexts (gateway runtime, tests).
@@ -3311,7 +3311,7 @@ def interactive_setup() -> None:
         if not prompt_yes_no("Reconfigure Buzz?", False):
             return
 
-    print_info("Connect Hermes to a Buzz community (Block's Nostr-based human+agent platform).")
+    print_info("Connect Hexbot to a Buzz community (Block's Nostr-based human+agent platform).")
     print_info("   Requires the buzz CLI binary and a Nostr key that is a community member.")
     print()
 
@@ -3360,12 +3360,12 @@ def interactive_setup() -> None:
         save_env_value("BUZZ_ALLOWED_USERS", allowed.replace(" ", "") if allowed else "")
 
     print()
-    print_success("Buzz configuration saved to ~/.hermes/.env")
-    print_info("Restart the gateway for changes to take effect: hermes gateway restart")
+    print_success("Buzz configuration saved to ~/.hexbot/.env")
+    print_info("Restart the gateway for changes to take effect: hexbot core gateway restart")
 
 
 def register(ctx):
-    """Plugin entry point: called by the Hermes plugin system."""
+    """Plugin entry point: called by the Hexbot plugin system."""
     ctx.register_platform(
         name="buzz",
         label="Buzz",

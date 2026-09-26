@@ -11,7 +11,7 @@ instead of native tools, a missing author/license/metadata block, a
 marketing words in the description, ``platforms:`` gating vs POSIX-only
 primitives, and forbidden scaffolding files.
 
-Design contract (matches the Hermes "no lazy-reading escape hatches / don't
+Design contract (matches the Hexbot "no lazy-reading escape hatches / don't
 destroy the feature" posture):
 
 * Findings are **advisory** by default. ``lint_skill`` returns a list of

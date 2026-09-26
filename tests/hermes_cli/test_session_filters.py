@@ -1,5 +1,5 @@
 """Tests for hermes_cli.session_filters — CLI time/filter parsing for
-`hermes sessions prune` / `hermes sessions archive`."""
+`hexbot core sessions prune` / `hexbot core sessions archive`."""
 
 import time
 from argparse import Namespace

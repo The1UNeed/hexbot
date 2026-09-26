@@ -132,7 +132,7 @@ class TestCronCommandLifecycle:
 class TestUnverifiedDeliveryVisibility:
     """An evidence-free live-adapter ack (Slack/Matrix/Mattermost bare
     ``SendResult(success=True)``) is accepted as delivered, but the UNVERIFIED
-    state must be visible in ``hermes cron list`` and ``hermes cron doctor``,
+    state must be visible in ``hexbot core cron list`` and ``hexbot core cron doctor``,
     not only in a WARNING log line."""
 
     def _seed(self):
@@ -428,7 +428,7 @@ def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
 
 
 class TestCronRunBackgroundDispatch:
-    """`hermes cron run` must not report 'failed' when the run was dispatched
+    """`hexbot core cron run` must not report 'failed' when the run was dispatched
     to the background delegation worker.
 
     The CLI process inherits the gateway/desktop session env, so a manual run

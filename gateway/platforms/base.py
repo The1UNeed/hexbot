@@ -44,9 +44,9 @@ def _consume_detached_handler_exception(task: "asyncio.Task") -> None:
         )
 
 
-# Audio file extensions Hermes recognizes for native audio delivery.
+# Audio file extensions Hexbot recognizes for native audio delivery.
 # Keep Telegram's narrower attachment/voice sets below separate: formats such
-# as MPEG-2 Layer II are audio to Hermes but unsupported by sendAudio/sendVoice.
+# as MPEG-2 Layer II are audio to Hexbot but unsupported by sendAudio/sendVoice.
 _AUDIO_MIME_TYPES = {
     ".ogg": "audio/ogg",
     ".opus": "audio/opus",
@@ -135,7 +135,7 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     """Build platform-aware thread metadata for adapter sends.
 
     Most platforms route threaded sends with a generic ``thread_id`` metadata
-    value. Telegram private-chat topics created through Hermes' DM-topic helper
+    value. Telegram private-chat topics created through Hexbot's DM-topic helper
     are exposed in updates as ``message_thread_id`` plus a reply anchor. Live
     user-message replies route with ``message_thread_id`` + ``reply_to_message_id``;
     synthetic/resumed sends that have no reply anchor fall back to Telegram's
@@ -175,7 +175,7 @@ def _reply_anchor_for_event(event) -> str | None:
     """Return reply_to id for platforms that need reply semantics.
 
     Telegram forum/supergroup topics should be routed by topic metadata, not by
-    replying to the triggering message. Hermes-created Telegram private-chat
+    replying to the triggering message. Hexbot-created Telegram private-chat
     topic lanes prefer replying to the triggering user message so the answer
     stays attached to the active lane; synthetic/resumed sends fall back to
     ``direct_messages_topic_id`` metadata when no message id is available.
@@ -700,7 +700,7 @@ def streaming_tts_should_skip_whole_file(
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
-    "Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually."
+    "Load this skill in the local CLI to be prompted, or add the key to ~/.hexbot/.env manually."
 )
 
 
@@ -1308,7 +1308,7 @@ _MEDIA_DELIVERY_CACHE_SUBDIRS = (
 
 
 def _profile_cache_roots() -> List[Path]:
-    """Return per-profile canonical cache roots under the shared Hermes root.
+    """Return per-profile canonical cache roots under the shared Hexbot root.
 
     Profile gateways write generated artifacts to
     ``<root>/profiles/<name>/cache/{images,audio,...}``. The static safe-roots
@@ -1410,7 +1410,7 @@ def _media_delivery_denied_paths() -> List[Path]:
     home = Path(os.path.expanduser("~"))
     for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS:
         denied.append(home / sub)
-    # The active Hermes profile and shared Hermes root both contain control
+    # The active Hexbot profile and shared Hexbot root both contain control
     # files and credentials. Only cache subdirectories under them are
     # explicitly allowlisted above (matched BEFORE this denylist in
     # validate_media_delivery_path, so generated media still delivers).
@@ -1421,7 +1421,7 @@ def _media_delivery_denied_paths() -> List[Path]:
     # delivery (read/exfil) side can't trail the write side: a credential the
     # agent is forbidden to write or read must also never be auto-attached to a
     # chat reply. Enumerated explicitly per-file rather than denying the whole
-    # tree, so skills/, logs/, and ad-hoc agent-written files under ~/.hermes
+    # tree, so skills/, logs/, and ad-hoc agent-written files under ~/.hexbot
     # stay deliverable (see #32090, #34425).
     _ROOT_CREDENTIAL_FILES = (
         ".env",
@@ -1472,8 +1472,8 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
     denylist so that a non-root gateway can't deliver another user's home, but
     on a root-run gateway ``$HOME=/root`` and the operator's own deliverables
     (``/root/work/proposal.docx``) live directly under it. The credential
-    sub-directories inside home (``~/.ssh``, ``~/.aws``, ...) and Hermes
-    secrets (``~/.hermes/.env``, ``auth.json``) are *separate, more-specific*
+    sub-directories inside home (``~/.ssh``, ``~/.aws``, ...) and Hexbot
+    secrets (``~/.hexbot/.env``, ``auth.json``) are *separate, more-specific*
     denied paths, so they stay blocked regardless of this exception — it can
     only un-block a plain file sitting in the running user's home tree, never a
     credential location or another user's home.
@@ -1692,7 +1692,7 @@ def _docker_persistent_home_host_roots(session_key: str = "") -> List[Path]:
 
 
 def _cache_dir_container_mounts() -> List[Tuple[Path, Path]]:
-    """(host, container) pairs for the auto-mounted Hermes cache dirs.
+    """(host, container) pairs for the auto-mounted Hexbot cache dirs.
 
     The agent legitimately sees generated artifacts at ``/root/.hermes/...``
     (``agent_visible_image`` from image_generate, cache-dir reads) and will
@@ -1737,14 +1737,14 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
     """Translate a container-absolute path to its host path when possible.
 
     Uses longest-prefix match across configured ``docker_volumes``, the
-    auto-mounted Hermes cache dirs (``/root/.hermes/...``), the session's
+    auto-mounted Hexbot cache dirs (``/root/.hermes/...``), the session's
     persistent Docker ``/workspace`` host root, and the persistent ``/root``
     home mount.
     """
     if not candidate.is_absolute():
         return None
 
-    # In-process gateways (Desktop backend, `hermes serve`) may not have
+    # In-process gateways (Desktop backend, `hexbot core serve`) may not have
     # bridged terminal.* config into TERMINAL_* env vars — run the idempotent
     # bridge so the mount parsing below sees the active backend and volumes
     # (same guard _binary_reference_block applies for inbound attachments).
@@ -1818,7 +1818,7 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
 
     Strict mode (opt-in via ``gateway.strict`` in ``config.yaml`` or
     ``HERMES_MEDIA_DELIVERY_STRICT=1``): the file MUST live under a
-    Hermes-managed cache, under an operator-allowlisted root
+    Hexbot-managed cache, under an operator-allowlisted root
     (``HERMES_MEDIA_ALLOW_DIRS``), or be freshly produced inside the
     configured recency window. Suitable for public-facing bots where
     prompt injection from one user shouldn't be able to exfiltrate the
@@ -1871,11 +1871,11 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
 
     # Non-strict mode (default): accept anything not on the denylist.
     # The denylist still blocks /etc, /proc, ~/.ssh, ~/.aws, and the
-    # credential/secret stores under the Hermes root (~/.hermes/.env,
+    # credential/secret stores under the Hexbot root (~/.hexbot/.env,
     # auth.json, .anthropic_oauth.json, google_token.json, pairing/, ...) —
     # so the obvious prompt-injection / credential-exfil sites
     # (``MEDIA:/etc/passwd``, ``MEDIA:~/.ssh/id_rsa``,
-    # ``MEDIA:~/.hermes/google_token.json``) remain rejected.
+    # ``MEDIA:~/.hexbot/google_token.json``) remain rejected.
     if not _media_delivery_strict_mode():
         if _path_under_denied_prefix(resolved):
             return None
@@ -3100,7 +3100,7 @@ class BasePlatformAdapter(ABC):
     splits_long_messages: bool = False
 
     # The command prefix users can always TYPE on this platform to reach
-    # Hermes commands.  Default "/" (most platforms deliver "/approve" etc.
+    # Hexbot commands.  Default "/" (most platforms deliver "/approve" etc.
     # as plain message text).  Platforms where typing a leading "/" is
     # intercepted or restricted by the client (Slack blocks native slash
     # commands inside threads; Matrix clients reserve "/" for client-local
@@ -3395,7 +3395,7 @@ class BasePlatformAdapter(ABC):
         final-editing the preview.
 
         Some adapters can send richer final messages than their current edit
-        implementation supports. Telegram is the motivating case: Hermes sends
+        implementation supports. Telegram is the motivating case: Hexbot sends
         final replies through ``sendRichMessage`` but still finalizes streamed
         previews through its existing MarkdownV2 edit path until Bot API 10.1's
         ``rich_message`` edit parameter is wired directly. Such adapters
@@ -3745,7 +3745,7 @@ class BasePlatformAdapter(ABC):
             holder += f" (PID {owner_pid})" if owner_pid else ""
             remedy = (
                 f" Stop that gateway first "
-                f"(hermes --profile {owner_profile} gateway stop)."
+                f"(hexbot core --profile {owner_profile} gateway stop)."
             )
         else:
             holder = f" (PID {owner_pid})" if owner_pid else ""
@@ -4762,7 +4762,7 @@ class BasePlatformAdapter(ABC):
         Override in subclasses to send audio as voice bubbles (Telegram)
         or file attachments (Discord). Default falls back to a friendly
         notice — never echo the local audio_path into chat, since it is a
-        host filesystem path that would leak the Hermes home layout.
+        host filesystem path that would leak the Hexbot home layout.
         """
         # audio_path is intentionally NOT included in the chat text — it is a
         # host-local path that leaks filesystem layout. The path is logged for
@@ -4908,7 +4908,7 @@ class BasePlatformAdapter(ABC):
         Override in subclasses to send videos as inline playable media.
         Default falls back to a friendly notice — never echo the local
         video_path into chat, since it is a host filesystem path that
-        would leak the Hermes home layout.
+        would leak the Hexbot home layout.
         """
         # See send_voice for the rationale: do not echo host paths into chat.
         logger.warning(
@@ -4936,7 +4936,7 @@ class BasePlatformAdapter(ABC):
         Override in subclasses to send files as downloadable attachments.
         Default falls back to a friendly notice — never echo the local
         file_path into chat, since it is a host filesystem path that
-        would leak the Hermes home layout.
+        would leak the Hexbot home layout.
         """
         # See send_voice for the rationale: do not echo host paths into chat.
         logger.warning(
@@ -5009,7 +5009,7 @@ class BasePlatformAdapter(ABC):
         Override in subclasses for native photo attachments. Default falls
         back to a friendly notice — never echo the local image_path into
         chat, since it is a host filesystem path that would leak the
-        Hermes home layout.
+        Hexbot home layout.
         """
         # See send_voice for the rationale: do not echo host paths into chat.
         logger.warning(

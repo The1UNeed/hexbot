@@ -1,4 +1,4 @@
-"""Runtime-backed validation behind ``hermes plugins doctor``.
+"""Runtime-backed validation behind ``hexbot core plugins doctor``.
 
 The Doctor originated in #46456 / contributor PR #46457 by 峯岸 亮
 (@zapabob).  This core command keeps that contribution's manifest/import/
@@ -94,7 +94,7 @@ def _doctor_runtime(plugin_path: Path):
         manifests = manager._scan_directory(plugins_root, source="user")
         if not manifests:
             raise _DoctorLoadError(
-                f"Hermes discovery found no valid plugin manifest under {copied}"
+                f"Hexbot discovery found no valid plugin manifest under {copied}"
             )
         if len(manifests) != 1:
             raise _DoctorLoadError(
@@ -206,7 +206,7 @@ def _holds_plugin(path: Path) -> bool:
 
     Doctor copies the resolved directory wholesale before the runtime gets
     to reject it, so an unvalidated resolve is a disk-usage bug, not just a
-    confusing error: ``hermes plugins doctor`` with no argument defaults to
+    confusing error: ``hexbot core plugins doctor`` with no argument defaults to
     ``.``, and any directory used to satisfy that.
     """
     if not path.is_dir():
@@ -292,7 +292,7 @@ def _check_manifest_v2(report: "DoctorReport", manifest: Any) -> None:
     mv = getattr(manifest, "manifest_version", 1)
     if mv > SUPPORTED_MANIFEST_VERSION:
         report.warning(
-            f"manifest_version {mv} is newer than this Hermes supports "
+            f"manifest_version {mv} is newer than this Hexbot supports "
             f"({SUPPORTED_MANIFEST_VERSION}); unknown fields are ignored"
         )
 
@@ -336,7 +336,7 @@ def _check_manifest_v2(report: "DoctorReport", manifest: Any) -> None:
         report.warning(
             "declared python_dependencies not installed: "
             + ", ".join(missing)
-            + " — Hermes never auto-installs plugin dependencies; "
+            + " — Hexbot never auto-installs plugin dependencies; "
             + "install manually: pip install "
             + " ".join(f"'{m}'" for m in missing)
         )
@@ -356,7 +356,7 @@ def _check_manifest_v2(report: "DoctorReport", manifest: Any) -> None:
 
 
 def doctor_plugin(target: str | os.PathLike[str] | None = None) -> DoctorReport:
-    """Validate one plugin through Hermes' real scanner and registration path."""
+    """Validate one plugin through Hexbot's real scanner and registration path."""
     try:
         path = resolve_plugin_path(target)
     except FileNotFoundError as exc:

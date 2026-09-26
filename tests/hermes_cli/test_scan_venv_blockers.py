@@ -187,7 +187,7 @@ def test_terminate_safe_preview_refuses_reused_pid() -> None:
 # ---------------------------------------------------------------------------
 # _is_pausable_gateway — the gateway exemption
 #
-# `hermes-setup` always invokes `hermes update --yes --gateway`, whose
+# `hermes-setup` always invokes `hexbot core update --yes --gateway`, whose
 # `_pause_windows_gateways_for_update()` stops running gateways itself. The
 # Desktop preflight must therefore not report gateway launcher/worker chains
 # as blockers — doing so aborts the handoff before the component that can

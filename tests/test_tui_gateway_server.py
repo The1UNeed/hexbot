@@ -4370,7 +4370,7 @@ def test_config_sync_config_wins_over_env_seed(monkeypatch):
 
 
 def test_config_sync_ignores_env_seed_without_config_model(monkeypatch):
-    # `hermes --tui -m <model>` sets HERMES_MODEL/HERMES_INFERENCE_MODEL as a
+    # `hexbot core --tui -m <model>` sets HERMES_MODEL/HERMES_INFERENCE_MODEL as a
     # launch-scoped seed. When config.yaml has NO model.default (typical
     # custom-provider-only setup), the sync must NOT adopt the env seed as a
     # config target — doing so replayed the -m flag as a /model switch and
@@ -8284,7 +8284,7 @@ def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # Point the canonical resolver (load_config → env HERMES_HOME) at the
     # temp home too, so the smart default is asserted against THIS config
-    # rather than whatever the developer's real ~/.hermes happens to hold.
+    # rather than whatever the developer's real ~/.hexbot happens to hold.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump({"approvals": {"timeout": 15}})
@@ -11367,7 +11367,7 @@ def test_session_status_reads_live_gateway_agent(monkeypatch):
         server._sessions.pop("sid", None)
 
     out = resp["result"]["output"]
-    assert "Hermes TUI Status" in out
+    assert "Hexbot TUI Status" in out
     assert "Session ID: session-key" in out
     assert "Title: Live TUI" in out
     assert "Model: live-model (live-provider)" in out
@@ -16000,13 +16000,13 @@ def test_pending_title_finalizer_uses_session_profile_db(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------
-# model.options — curated-list parity with `hermes model` and classic /model
+# model.options — curated-list parity with `hexbot core model` and classic /model
 # --------------------------------------------------------------------------
 
 
 def test_model_options_does_not_overwrite_curated_models(monkeypatch):
     """The TUI model.options handler must surface the same curated model
-    list as `hermes model` and the classic CLI /model picker.
+    list as `hexbot core model` and the classic CLI /model picker.
 
     Regression: earlier versions of this handler unconditionally replaced
     each provider's curated ``models`` field with ``provider_model_ids()``
@@ -16500,7 +16500,7 @@ def test_session_active_list_excludes_finalized_sessions(monkeypatch):
     that window ``session.active_list`` would otherwise still report the dead
     session, which is exactly the footer "N sessions" count that only ever grew
     until a gateway restart. A live session on the real stdio transport (the
-    standalone ``hermes --tui`` case) must still be reported.
+    standalone ``hexbot core --tui`` case) must still be reported.
     """
     class _DB:
         def get_session_title(self, key):
@@ -17684,7 +17684,7 @@ def test_config_set_indicator_none_keeps_blank_repr(monkeypatch):
 
 
 def test_reload_env_rpc_calls_hermes_cli_reload_env(monkeypatch):
-    """reload.env mirrors classic CLI's `/reload` — re-reads ~/.hermes/.env
+    """reload.env mirrors classic CLI's `/reload` — re-reads ~/.hexbot/.env
     into the gateway process and reports the count of vars updated."""
     calls = {"n": 0}
 
@@ -18084,7 +18084,7 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
 
 
 def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, tmp_path):
-    """TUI /save (session.save RPC) must snapshot under the Hermes profile
+    """TUI /save (session.save RPC) must snapshot under the Hexbot profile
     home — not the project/workspace CWD — and include the system prompt,
     mirroring the classic CLI /save and the dashboard save export.
 
@@ -20774,7 +20774,7 @@ def test_session_branch_keeps_reasoning_fields(monkeypatch, tmp_path):
 #
 # Until ~mid-2026 _save_cfg used yaml.safe_dump on a deep-loaded config dict.
 # Every /personality (or /reasoning, /details_mode, /prompt, ...) write
-# silently rewrote ~/.hermes/config.yaml top-to-bottom — top-level keys
+# silently rewrote ~/.hexbot/config.yaml top-to-bottom — top-level keys
 # reordered alphabetically, comments stripped, kaomoji/Chinese in stored
 # personality prompts mangled to \uXXXX escapes. These tests pin the
 # user-visible behavior of the comment-preserving replacement so we don't
@@ -21925,7 +21925,7 @@ def test_persist_live_session_system_prompt_uses_profile_home(monkeypatch, tmp_p
     server._persist_live_session_system_prompt(session)
 
     # The system prompt must have been built while the override pointed
-    # to the profile home, not the root ~/.hermes.
+    # to the profile home, not the root ~/.hexbot.
     assert len(built_homes) == 1, f"expected 1 build, got {built_homes}"
     assert str(profile_home) in built_homes[0], (
         f"system prompt built with wrong home: {built_homes[0]}"

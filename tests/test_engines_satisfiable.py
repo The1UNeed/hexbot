@@ -1,12 +1,12 @@
 """The manifest's ``engines`` must be satisfiable by a toolchain we can actually ship.
 
 `engineStrict: true` in `pnpm-workspace.yaml` makes `engines` a hard gate on
-every `pnpm install` — the installer's workspace step, `hermes update`'s
+every `pnpm install` — the installer's workspace step, `hexbot core update`'s
 dependency refresh, and CI alike. So a floor nobody's toolchain can meet is
 not a strict-hygiene win; it is a total install outage.
 
 Node bundles no pnpm, so the pnpm every install ends up with is the one
-Hermes bootstraps: the `packageManager` pin. If that pin falls outside
+Hexbot bootstraps: the `packageManager` pin. If that pin falls outside
 `engines.pnpm`, every fresh install dies at the first `pnpm install` and the
 engine recovery in `hermes_cli/pnpm_engine.py` reinstalls the same rejected
 version. These tests encode the invariants that catch it.
@@ -88,7 +88,7 @@ def _satisfies_range(version: str, spec: str) -> bool:
 
 class TestEnginesAreSatisfiable:
     def test_pnpm_floor_is_met_by_the_pinned_pnpm(self):
-        """The pnpm Hermes bootstraps must be one our floor accepts.
+        """The pnpm Hexbot bootstraps must be one our floor accepts.
 
         Without this, a fresh install cannot run `pnpm install` at all: the
         installer puts `pnpm@<packageManager pin>` into the managed Node tree

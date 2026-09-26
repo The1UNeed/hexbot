@@ -1,4 +1,4 @@
-"""Fetch-failure classification for `hermes update` / `hermes update --check`.
+"""Fetch-failure classification for `hexbot core update` / `hexbot core update --check`.
 
 A GitHub-side HTTP 429 (rate limit / outage) used to be reported as the
 generic "Failed to fetch updates from origin." — or worse, matched the

@@ -340,7 +340,7 @@ from utils import env_int
 
 def _is_allowed_bridge_path(url: str) -> bool:
     """Return True only when an absolute path from the bridge resolves inside a
-    known Hermes media cache directory.
+    known Hexbot media cache directory.
 
     The Baileys bridge is a local subprocess that downloads inbound media and
     hands back absolute file paths. A compromised or buggy bridge could hand
@@ -401,7 +401,7 @@ def check_whatsapp_requirements() -> bool:
     
     WhatsApp requires a Node.js bridge for most implementations.
     """
-    # Prefer Hermes-managed Node so Windows installs are not broken by a
+    # Prefer Hexbot-managed Node so Windows installs are not broken by a
     # bad or elevation-triggering system Node on PATH.
     _node = find_node_executable("node")
     if not _node:
@@ -556,7 +556,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.warning("[%s] Node.js not found. WhatsApp requires Node.js.", self.name)
             self._set_fatal_error(
                 "whatsapp_node_missing",
-                "Node.js is not installed — install Node.js and re-run `hermes gateway`.",
+                "Node.js is not installed — install Node.js and re-run `hexbot core gateway`.",
                 retryable=False,
             )
             return False
@@ -582,13 +582,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not creds_path.exists():
             logger.warning(
                 "[%s] WhatsApp is enabled but not paired (no creds.json at %s). "
-                "Pair from the dashboard or run `hermes whatsapp`; remove "
+                "Pair from the dashboard or run `hexbot core whatsapp`; remove "
                 "WHATSAPP_ENABLED from your .env to disable.",
                 self.name, creds_path,
             )
             self._set_fatal_error(
                 "whatsapp_not_paired",
-                "WhatsApp enabled but not paired — pair from the dashboard or run `hermes whatsapp`.",
+                "WhatsApp enabled but not paired — pair from the dashboard or run `hexbot core whatsapp`.",
                 retryable=False,
             )
             return False
@@ -607,7 +607,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             # Auto-install the bridge dependencies when node_modules is missing OR
             # package.json changed since the last install (e.g. after
-            # `hermes update` bumps the Baileys pin).  The stamp file records
+            # `hexbot core update` bumps the Baileys pin).  The stamp file records
             # the package.json hash of the last successful install.
             bridge_dir = bridge_path.parent
             _pkg_json = bridge_dir / "package.json"
@@ -649,7 +649,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         print(f"[{self.name}] pnpm install failed: {install_result.stderr or install_result.stdout}")
                         self._set_fatal_error(
                             "whatsapp_npm_install_failed",
-                            f"WhatsApp bridge pnpm install failed. Run `{_manual_install}` manually, then restart `hermes gateway`.",
+                            f"WhatsApp bridge pnpm install failed. Run `{_manual_install}` manually, then restart `hexbot core gateway`.",
                             retryable=False,
                         )
                         return False
@@ -663,7 +663,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     print(f"[{self.name}] Failed to install dependencies: {e}")
                     self._set_fatal_error(
                         "whatsapp_npm_install_failed",
-                        f"WhatsApp bridge pnpm install failed ({e}). Run `{_manual_install}` manually, then restart `hermes gateway`.",
+                        f"WhatsApp bridge pnpm install failed ({e}). Run `{_manual_install}` manually, then restart `hexbot core gateway`.",
                         retryable=False,
                     )
                     return False
@@ -687,7 +687,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 # bridge if it is serving the same bridge.js
                                 # that is on disk right now.  A long-lived
                                 # bridge survives gateway restarts AND
-                                # `hermes update`, so without this check it
+                                # `hexbot core update`, so without this check it
                                 # keeps serving pre-update code forever
                                 # (e.g. no inbound media download).  Old
                                 # bridges that don't report scriptHash are
@@ -770,7 +770,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     bridge_env[_key] = _v
             # Pass the profile-aware cache directories so the bridge writes
             # media where the Python side reads it.  Without these the bridge
-            # hardcodes ~/.hermes/{image,audio,document}_cache, which diverges
+            # hardcodes ~/.hexbot/{image,audio,document}_cache, which diverges
             # under HERMES_HOME overrides, profiles, and the new cache/ layout.
             from gateway.platforms.base import (
                 get_audio_cache_dir as _get_audio_dir,
@@ -859,7 +859,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     # auto-reconnect later, e.g. after a code 515 restart).
                     print(f"[{self.name}] ⚠ WhatsApp not connected after 30s")
                     print(f"[{self.name}]   Bridge log: {self._bridge_log}")
-                    print(f"[{self.name}]   If session expired, re-pair: hermes whatsapp")
+                    print(f"[{self.name}]   If session expired, re-pair: hexbot core whatsapp")
             
             # Create a persistent HTTP session for all bridge communication
             self._http_session = aiohttp.ClientSession()
@@ -1936,7 +1936,7 @@ def _is_connected(config) -> bool:
     bridge token here — so the opt-in flag is the connection signal. The legacy
     built-in path keyed off ``WHATSAPP_ENABLED`` in both the connected-platforms
     check and the setup-status display; returning an unconditional True here
-    would make WhatsApp always show as "configured" in ``hermes setup`` even
+    would make WhatsApp always show as "configured" in ``hexbot core setup`` even
     when the user never enabled it. #41112.
     """
     extra = getattr(config, "extra", {}) or {}
@@ -1958,7 +1958,7 @@ def _build_adapter(config):
 
 
 def register(ctx) -> None:
-    """Plugin entry point — called by the Hermes plugin system."""
+    """Plugin entry point — called by the Hexbot plugin system."""
     ctx.register_platform(
         name="whatsapp",
         label="WhatsApp",

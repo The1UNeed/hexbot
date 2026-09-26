@@ -155,7 +155,7 @@ class TestRmtreeWritableScopeGuard:
     ``tools/skills_sync.py`` ever computes a path outside the skills
     root — through a bad join, a missing default, a malicious
     bundled-manifest entry, or a stale path in scope after an
-    exception — the result is a silent ``shutil.rmtree(~/.hermes/)``
+    exception — the result is a silent ``shutil.rmtree(~/.hexbot/)``
     that destroys the user's ``.env``, ``MEMORY.md``, ``kanban.db``,
     custom skills, scripts, and the rest of the install in one go
     (#48200).
@@ -166,7 +166,7 @@ class TestRmtreeWritableScopeGuard:
     """
 
     def test_refuses_anything_that_is_not_a_strict_child_of_skills(self, tmp_path):
-        """``/``, ``~/.hermes`` itself, a sibling dir, and the skills root
+        """``/``, ``~/.hexbot`` itself, a sibling dir, and the skills root
         are all rejected — the root because a ``dest`` that collapses to it
         would wipe every installed skill (the degenerate #48200 path)."""
         from tools.skills_sync import _rmtree_writable
@@ -706,9 +706,9 @@ class TestResetBundledSkill:
 class TestNoBundledSkillsOptOut:
     """The .no-bundled-skills marker makes sync_skills() a no-op.
 
-    This is what `hermes profile create --no-skills` (named profiles) and the
-    installer's `--no-skills` flag (default ~/.hermes) rely on so bundled
-    skills are never seeded at install time NOR re-injected by `hermes update`.
+    This is what `hexbot core profile create --no-skills` (named profiles) and the
+    installer's `--no-skills` flag (default ~/.hexbot) rely on so bundled
+    skills are never seeded at install time NOR re-injected by `hexbot core update`.
     """
 
     def test_marker_skips_sync_and_removal_seeds_normally(self, tmp_path):
@@ -754,7 +754,7 @@ class TestNoBundledSkillsOptOut:
 
 
 class TestOptOutToggleAndRemove:
-    """`hermes skills opt-out/opt-in` core: marker toggle + safe removal."""
+    """`hexbot core skills opt-out/opt-in` core: marker toggle + safe removal."""
 
     def _setup_bundled(self, tmp_path):
         bundled = tmp_path / "bundled"

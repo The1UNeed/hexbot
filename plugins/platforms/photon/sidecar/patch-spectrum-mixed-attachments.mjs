@@ -2,7 +2,7 @@
 // Patch spectrum-ts' iMessage inbound mapper until upstream preserves mixed
 // text + attachment Apple events. The mapper returns only
 // buildAttachmentMessage(...) whenever attachments are present, which drops
-// `message.content.text` before Hermes can see it. We rewrite the two inbound
+// `message.content.text` before Hexbot can see it. We rewrite the two inbound
 // mappers — `rebuildFromAppleMessage` (used by `space.getMessage`) and
 // `toInboundMessages` (used by the live stream) — so a bubble carrying both
 // text and attachment(s) surfaces as a group whose first child is the typed
@@ -151,7 +151,7 @@ export function patchSpectrumTs(root = scriptDir()) {
     // spectrum-ts 12.x replaced the attachment-only branches with
     // `buildUnwrappedContentMessage` + `toOrderedParts`, which already emits a
     // group containing both text and attachments. There is nothing left for
-    // Hermes to patch; keep the legacy v8 path below for older pinned installs.
+    // Hexbot to patch; keep the legacy v8 path below for older pinned installs.
     if (
       original.includes("const buildUnwrappedContentMessage = async") &&
       original.includes("const parts = toOrderedParts(message.content.text, attachments);")

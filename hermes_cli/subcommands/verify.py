@@ -1,4 +1,4 @@
-"""``hermes verify`` subcommand parser.
+"""``hexbot core verify`` subcommand parser.
 
 Follows the pattern of ``hermes_cli/subcommands/doctor.py``: parser built
 here, handler injected to avoid importing ``main``.
@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Callable
 
 # Keep in sync with agent/verify/runner.py defaults; not imported here to
-# avoid paying an extra module import on every `hermes` invocation.
+# avoid paying an extra module import on every `hexbot core` invocation.
 DEFAULT_PHASE_TIMEOUT = 600.0
 DEFAULT_READY_TIMEOUT = 60.0
 

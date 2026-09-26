@@ -1,4 +1,4 @@
-"""Base class for all Hermes execution environment backends.
+"""Base class for all Hexbot execution environment backends.
 
 Unified spawn-per-call model: every command spawns a fresh ``bash -c`` process.
 A session snapshot (env vars, functions, aliases) is captured once at init and
@@ -536,7 +536,7 @@ def _cwd_marker(session_id: str) -> str:
 # HERMES_SESSION_ID leak via the shared snapshot). Stripping them from the
 # snapshot is safe because they are re-injected on every command; a snapshot
 # should only carry the user's own shell state (PATH, functions, exports they
-# set), not Hermes' per-turn session identity.
+# set), not Hexbot's per-turn session identity.
 #
 # Kept in sync with gateway.session_context._VAR_MAP: every bridged name starts
 # with one of these prefixes (or is HERMES_UI_SESSION_ID). Used by unit tests
@@ -609,7 +609,7 @@ def _export_dump_excluding_session_vars(
 
 
 class BaseEnvironment(ABC):
-    """Common interface and unified execution flow for all Hermes backends.
+    """Common interface and unified execution flow for all Hexbot backends.
 
     Subclasses implement ``_run_bash()`` and ``cleanup()``.  The base class
     provides ``execute()`` with session snapshot sourcing, CWD tracking,
@@ -619,7 +619,7 @@ class BaseEnvironment(ABC):
     # Subclasses that embed stdin as a heredoc (Modal, Daytona) set this.
     _stdin_mode: str = "pipe"  # "pipe" or "heredoc"
 
-    # True only when commands execute on the SAME host as the Hermes process
+    # True only when commands execute on the SAME host as the Hexbot process
     # (LocalEnvironment). Controller-host facts (sys.platform, Path.home())
     # only describe the execution target when this is True — remote/container
     # backends must not inherit controller-side platform behavior (e.g. the
@@ -924,17 +924,17 @@ class BaseEnvironment(ABC):
             parts.append(f"unset {present} {value}")
 
         # Harness attribution: every tool subprocess advertises that it runs
-        # under Hermes via the cross-agent ``AI_AGENT`` standard (read by e.g.
-        # huggingface_hub's agent detection) plus the Hermes-specific
+        # under Hexbot via the cross-agent ``AI_AGENT`` standard (read by e.g.
+        # huggingface_hub's agent detection) plus the Hexbot-specific
         # ``HERMES_AGENT`` marker.  The value MUST equal our id in the public
         # agent-harness registry (``hermes-agent`` — see huggingface.js
         # ``agent-harnesses.ts``); standard-var matching is exact, so any other
         # value is reported as "unknown".  Setting it here (rather than only in
         # the host process env) is what carries the marker into REMOTE backends
         # (Docker/SSH/Modal/Daytona/Singularity/Vercel), whose exec env is not
-        # inherited from the Hermes process.  ``${VAR:-default}`` semantics:
+        # inherited from the Hexbot process.  ``${VAR:-default}`` semantics:
         # never clobber an outer harness value that arrived via the inherited
-        # process env (Hermes running inside another agent's terminal).
+        # process env (Hexbot running inside another agent's terminal).
         parts.append(
             'export AI_AGENT="${AI_AGENT:-hermes-agent}" '
             'HERMES_AGENT="${HERMES_AGENT:-true}"'
@@ -959,7 +959,7 @@ class BaseEnvironment(ABC):
         # Run the actual command
         parts.append(f"eval '{escaped}'")
         parts.append("__hermes_ec=$?")
-        # Restrict Hermes metadata files without changing the user's command
+        # Restrict Hexbot metadata files without changing the user's command
         # umask. Snapshot files may contain env-carried secrets.
         parts.append("umask 077")
 

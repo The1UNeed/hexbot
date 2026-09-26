@@ -1,14 +1,14 @@
 """Install and remove the Linux desktop entry (``hermes.desktop``).
 
-``hermes desktop`` builds and launches the Electron app. On Linux, a
+``hexbot core desktop`` builds and launches the Electron app. On Linux, a
 freshly-built app has no launcher presence: no menu item, no icon. This
 module writes the XDG desktop entry that gives it one.
-``hermes uninstall --gui`` removes the entry again.
+``hexbot core uninstall --gui`` removes the entry again.
 
 Two values must be absolute for the entry to work:
 
   - ``Exec`` — the launcher runs without shell ``PATH`` customizations, so
-    a bare ``hermes desktop`` fails when hermes lives in ``~/.local/bin``
+    a bare ``hexbot core desktop`` fails when hermes lives in ``~/.local/bin``
     or a venv. Resolve the real binary and write its full path.
   - ``Icon`` — an unqualified icon name needs an indexed icon theme. The
     spec allows an absolute path instead, so point at the app icon in the
@@ -142,9 +142,9 @@ def _running_interpreter_fallback() -> str:
 
 
 def resolve_exec_command(project_root: Optional[Path] = None) -> str:
-    """Build the absolute ``Exec=`` command line for ``hermes desktop``.
+    """Build the absolute ``Exec=`` command line for ``hexbot core desktop``.
 
-    Prefer the real ``hermes`` executable (argv[0] or PATH). When Hermes
+    Prefer the real ``hexbot core`` executable (argv[0] or PATH). When Hexbot
     runs as a module with no launcher installed, use the current
     interpreter, also absolute.
 
@@ -183,12 +183,12 @@ def resolve_exec_command(project_root: Optional[Path] = None) -> str:
         resolved = Path(bin_path).resolve()
         if _needs_interpreter(resolved):
             # The resolved launcher is a Python script whose shebang points at
-            # a NON-venv interpreter (e.g. the repo's `hermes` script with
+            # a NON-venv interpreter (e.g. the repo's `hexbot core` script with
             # `#!/usr/bin/env python3` when argv[0] came from the shell
             # installer's bash wrapper). Launched from the .desktop entry that
             # shebang resolves to the SYSTEM python and dies on the first
             # third-party import (#90292) — silently, since Terminal=false.
-            # sys.executable is the interpreter actually running Hermes (the
+            # sys.executable is the interpreter actually running Hexbot (the
             # venv one), so prefix it explicitly.
             argv = [interpreter, str(resolved), "desktop"]
         else:
@@ -211,7 +211,7 @@ def _resolve_hermes_bin_for_desktop_entry(
 
     Wraps :func:`hermes_cli.relaunch.resolve_hermes_bin` with one
     desktop-entry-specific rule: an ``argv[0]`` that points inside this
-    checkout is a launch-context artifact (the repo ``hermes`` script the
+    checkout is a launch-context artifact (the repo ``hexbot core`` script the
     wrapper execs with, or an interpreter binary surfaced by programmatic
     relaunch paths), not a durable installed launcher. Persisting it makes
     the entry a function of however the previous launch happened — the
@@ -242,7 +242,7 @@ def _resolve_hermes_bin_for_desktop_entry(
             path = Path(candidate).resolve()
         except OSError:
             return False
-        # The repo `hermes` script and anything else shipped in the tree is
+        # The repo `hexbot core` script and anything else shipped in the tree is
         # checkout-internal. Compare against BOTH the lexical and resolved
         # roots (checkout_root is kept lexical; candidates resolve, so a
         # symlinked home needs the resolved comparison too).
@@ -316,7 +316,7 @@ def _resolve_hermes_bin_for_desktop_entry(
         return rerouted
 
     if rerouted is None and primary:
-        # argv[0] was checkout-internal AND PATH had no `hermes` — common
+        # argv[0] was checkout-internal AND PATH had no `hexbot core` — common
         # in stripped systemd user sessions and autostart relaunches.
         # The installer's wrapper lives at known locations; probe them
         # directly before giving up, otherwise we'd silently persist the
@@ -494,7 +494,7 @@ def _project_root() -> Path:
 
 def _needs_interpreter(bin_path: Path) -> bool:
     """Whether ``bin_path`` is a Python script that must run under
-    ``sys.executable`` to see Hermes' venv (rather than its own shebang)."""
+    ``sys.executable`` to see Hexbot's venv (rather than its own shebang)."""
     try:
         with open(bin_path, "rb") as fh:
             head = fh.readline(256)
@@ -575,9 +575,9 @@ def render_desktop_entry(exec_command: str, icon: str) -> str:
     return (
         "[Desktop Entry]\n"
         "Type=Application\n"
-        "Name=Hermes\n"
-        "GenericName=Hermes Desktop\n"
-        "Comment=Launch Hermes Desktop\n"
+        "Name=Hexbot\n"
+        "GenericName=Hexbot Desktop\n"
+        "Comment=Launch Hexbot Desktop\n"
         f"Exec={exec_command}\n"
         f"Icon={icon}\n"
         "Terminal=false\n"
@@ -729,7 +729,7 @@ def _install_icon_to_hicolor(icon: Path) -> bool:
     """Install the app icon into the user's hicolor icon theme tree.
 
     The freedesktop icon lookup finds an installed ``apps/hermes.png``
-    by the unqualified name ``hermes``, so the entry can reference the
+    by the unqualified name ``hexbot core``, so the entry can reference the
     icon without an absolute checkout path. Raster PNGs go to indexed
     fixed-size dirs, never ``scalable`` (SVG-only). When the source
     decodes, it is Lanczos-resized to 24/32/48/256 so Cinnamon's panel
@@ -760,7 +760,7 @@ def _install_icon_to_hicolor(icon: Path) -> bool:
 
 
 def install_desktop_entry(project_root: Path) -> Optional[Path]:
-    """Write (or refresh) the Hermes desktop entry. Return its path.
+    """Write (or refresh) the Hexbot desktop entry. Return its path.
 
     Return ``None`` on non-Linux platforms or when the write fails. This
     is a convenience, never a reason to fail a launch.

@@ -10,7 +10,7 @@ Sources, in the order ``resolve_anthropic_token()`` consults them:
 
 1. ``ANTHROPIC_TOKEN`` / ``CLAUDE_CODE_OAUTH_TOKEN`` (explicit OAuth env)
 2. ``ANTHROPIC_API_KEY`` (explicit API key)
-3. ``~/.hermes/.anthropic_oauth.json`` (Hermes PKCE login)
+3. ``~/.hexbot/.anthropic_oauth.json`` (Hexbot PKCE login)
 4. ``~/.claude/.credentials.json`` / macOS Keychain (Claude Code)
 5. the credential pool in ``auth.json``
 
@@ -89,7 +89,7 @@ class CredentialPersistError(RuntimeError):
     consumes the old refresh token server-side and returns a replacement. The
     replacement exists only in memory until it reaches its authoritative
     on-disk store (``~/.claude/.credentials.json`` for ``claude_code``,
-    ``~/.hermes/.anthropic_oauth.json`` for ``hermes_pkce``).
+    ``~/.hexbot/.anthropic_oauth.json`` for ``hermes_pkce``).
 
     If that write fails and the caller reports success anyway, the on-disk
     (already consumed) pair survives and is re-seeded on the next
@@ -120,7 +120,7 @@ class CredentialPersistError(RuntimeError):
 #   * process-local (this OrderedDict) — fast path, always recorded;
 #   * durable sidecar file next to the shared credential source — the
 #     authority boundary of ``claude_code``/``hermes_pkce`` is the shared
-#     singleton file, which other Hermes processes/profiles read with fresh
+#     singleton file, which other Hexbot processes/profiles read with fresh
 #     interpreters.  A process-local verdict only stops the process that
 #     lost the commit from lying to itself; the sidecar stops every OTHER
 #     process from leasing the stale pair or re-POSTing the spent refresh
@@ -186,7 +186,7 @@ def _append_spent_rotation_sidecar(source_path: Path, fingerprints: list) -> Non
                 "comment": (
                     "Non-secret one-way fingerprints of Anthropic OAuth "
                     "credentials whose rotation was consumed server-side but "
-                    "never durably committed. Written by Hermes so sibling "
+                    "never durably committed. Written by Hexbot so sibling "
                     "processes sharing this credential source fail closed "
                     "instead of replaying a spent single-use refresh token."
                 ),
@@ -323,7 +323,7 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
 def claude_code_credentials_path() -> Path:
     """Location Claude Code CLI writes its shared OAuth credentials file.
 
-    This file is not profile-owned: every Hermes profile's credential pool
+    This file is not profile-owned: every Hexbot profile's credential pool
     reads and writes the *same* path, so cross-profile refresh races on a
     ``claude_code`` pool entry must be serialized against this exact path
     (see ``CredentialPool._claude_code_credentials_lock`` in
@@ -485,7 +485,7 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
     Claude Code's OAuth refresh tokens are single-use: a successful refresh
     rotates the pair and invalidates the old refresh token. Claude Code itself
     also refreshes on its own schedule (IDE/CLI activity), so by the time
-    Hermes notices an expired token, Claude Code may have already rotated it.
+    Hexbot notices an expired token, Claude Code may have already rotated it.
     POSTing our now-stale refresh token in that window races Claude Code and
     fails with ``invalid_grant``.
 
@@ -707,7 +707,7 @@ def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] 
 def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[str, Any]]) -> Optional[str]:
     """Prefer Claude Code creds when a persisted env OAuth token would shadow refresh.
 
-    Hermes historically persisted setup tokens into ANTHROPIC_TOKEN. That makes
+    Hexbot historically persisted setup tokens into ANTHROPIC_TOKEN. That makes
     later refresh impossible because the static env token wins before we ever
     inspect Claude Code's refreshable credential file. If we have a refreshable
     Claude Code credential record, prefer it over the static env OAuth token.
@@ -731,7 +731,7 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
 
     Read-only: enumerates with ``clear_expired=False, refresh=False`` so a bare
     token *resolve* (which runs from diagnostic/read-only call sites such as
-    ``account_usage`` and ``hermes models``) never mutates ``~/.hermes/auth.json``
+    ``account_usage`` and ``hermes models``) never mutates ``~/.hexbot/auth.json``
     or makes a network refresh call. Refresh-on-expiry is owned by the API call
     path's pool recovery, not the resolver.
     """
@@ -790,12 +790,12 @@ def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
     Priority:
-      1. ANTHROPIC_TOKEN env var (OAuth/setup token saved by Hermes)
+      1. ANTHROPIC_TOKEN env var (OAuth/setup token saved by Hexbot)
       2. CLAUDE_CODE_OAUTH_TOKEN env var
       3. ANTHROPIC_API_KEY env var (explicit regular API key)
       4. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
          — with automatic refresh if expired and a refresh token is available
-      5. Anthropic credential_pool OAuth entry (~/.hermes/auth.json)
+      5. Anthropic credential_pool OAuth entry (~/.hexbot/auth.json)
 
     Returns the token string or None.
     """
@@ -809,7 +809,7 @@ def resolve_anthropic_token() -> Optional[str]:
             creds_loaded = True
         return creds
 
-    # 1. Hermes-managed OAuth/setup token env var
+    # 1. Hexbot-managed OAuth/setup token env var
     token = _getenv("ANTHROPIC_TOKEN").strip()
     if token:
         preferred = _prefer_refreshable_claude_code_token(token, _read_creds())
@@ -836,7 +836,7 @@ def resolve_anthropic_token() -> Optional[str]:
     if resolved_claude_token:
         return resolved_claude_token
 
-    # 5. Hermes credential_pool OAuth entry.
+    # 5. Hexbot credential_pool OAuth entry.
     resolved_pool_token = _resolve_anthropic_pool_token()
     if resolved_pool_token:
         return resolved_pool_token
@@ -887,9 +887,9 @@ def run_oauth_setup_token() -> Optional[str]:
     return None
 
 
-# ── Hermes-native PKCE OAuth flow ────────────────────────────────────────
+# ── Hexbot-native PKCE OAuth flow ────────────────────────────────────────
 # Mirrors the flow used by Claude Code, pi-ai, and OpenCode.
-# Stores credentials in ~/.hermes/.anthropic_oauth.json (our own file).
+# Stores credentials in ~/.hexbot/.anthropic_oauth.json (our own file).
 
 _OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 # Anthropic migrated the OAuth token endpoint to platform.claude.com;
@@ -947,7 +947,7 @@ def _generate_pkce() -> tuple:
 
 
 def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
-    """Run Hermes-native OAuth PKCE flow and return credential state."""
+    """Run Hexbot-native OAuth PKCE flow and return credential state."""
     import secrets
     import time
     import webbrowser
@@ -970,7 +970,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     auth_url = f"https://claude.ai/oauth/authorize?{urlencode(params)}"
 
     print()
-    print("Authorize Hermes with your Claude Pro/Max subscription.")
+    print("Authorize Hexbot with your Claude Pro/Max subscription.")
     print()
     print("╭─ Claude Pro/Max Authorization ────────────────────╮")
     print("│                                                   │")
@@ -1077,7 +1077,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
 
 
 def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
-    """Read Hermes-managed OAuth credentials from ~/.hermes/.anthropic_oauth.json."""
+    """Read Hexbot-managed OAuth credentials from ~/.hexbot/.anthropic_oauth.json."""
     oauth_file = _get_hermes_oauth_file()
     if oauth_file.exists():
         try:
@@ -1085,7 +1085,7 @@ def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
             if data.get("accessToken"):
                 return data
         except (json.JSONDecodeError, OSError, IOError) as e:
-            logger.debug("Failed to read Hermes OAuth credentials: %s", e)
+            logger.debug("Failed to read Hexbot OAuth credentials: %s", e)
     return None
 
 
@@ -1096,7 +1096,7 @@ def _write_hermes_oauth_credentials(
     *,
     target: Optional[Path] = None,
 ) -> None:
-    """Write refreshed hermes_pkce tokens back to ~/.hermes/.anthropic_oauth.json.
+    """Write refreshed hermes_pkce tokens back to ~/.hexbot/.anthropic_oauth.json.
 
     ``target`` overrides the destination: a named profile that rotated a grant
     it BORROWED from the global root (credential-pool root fallback) must
@@ -1141,7 +1141,7 @@ def _write_hermes_oauth_credentials(
             raise
     except (OSError, IOError, ValueError) as e:
         logger.error(
-            "Failed to write refreshed Hermes OAuth credentials to %s: %s", oauth_file, e
+            "Failed to write refreshed Hexbot OAuth credentials to %s: %s", oauth_file, e
         )
         raise CredentialPersistError(oauth_file, e) from e
 

@@ -196,7 +196,7 @@ def test_cmd_restart_propagates_start_failure(hermes_home, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _load_env_file_into_environ — setup discovers keys kept only in ~/.hermes/.env
+# _load_env_file_into_environ — setup discovers keys kept only in ~/.hexbot/.env
 # ---------------------------------------------------------------------------
 
 
@@ -273,7 +273,7 @@ def test_cmd_config_returns_0_when_present(hermes_home, monkeypatch):
 
 def test_register_cli_uses_egress_command_dest():
     """The subparser dest must be 'egress_command' to stay disjoint from
-    the inbound OAuth 'hermes proxy' subparser (dest='proxy_command').
+    the inbound OAuth 'hexbot core proxy' subparser (dest='proxy_command').
     A future grep-and-refactor on proxy_command should not hit this
     subparser by accident."""
 

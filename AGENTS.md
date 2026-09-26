@@ -9,17 +9,16 @@ Hexbot is a self-hosted multi-agent desktop app. Named **bots**, each with a
 face, a model, skills, and its own memory, talk to you and to each other in
 **rooms**. A Python **daemon** runs the bots and serves a WebSocket API plus a
 web UI; an Electron **app** connects to it over LAN, Tailscale, or **Hex
-Connect**. The daemon is a hard fork of
-[Hermes Agent](https://github.com/NousResearch/hermes-agent): the Hermes core
-sits at the repository root, Hexbot's code sits in `hexbot/` and `apps/`.
+Connect**. The **core** (agent loop, tools, providers, gateway, CLI) sits at
+the repository root; product code sits in `hexbot/` and `apps/`. The core
+is Hexbot's own code; there is no upstream to track.
 
 Three facts shape most decisions:
 
-- **Hexbot owns the edges, Hermes owns the waist.** New behaviour goes in
-  `hexbot/` (a Hermes plugin plus its own modules), `apps/`, or a skill.
-  Every edit to an imported Hermes file is listed in `CORE_EDITS.md` with a
-  reason. If you touch a root-level Python file, add a row.
-- **Prompt caching is sacred.** A section is one long-lived Hermes session
+- **Product behaviour lives at the edges.** New behaviour goes in `hexbot/`
+  (a core plugin plus its own modules), `apps/`, or a skill. Change the core
+  when the fix belongs there, not to bolt on a product feature.
+- **Prompt caching is sacred.** A section is one long-lived core session
   that reuses a cached prefix every turn. Do not mutate past context, swap
   toolsets, or rebuild the system prompt mid-conversation.
 - **One product, two packages, three channels.** Full package (app plus
@@ -38,18 +37,19 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Channel**: how a build is named and published. **Stable** (tagged `v<version>`, updatable; named `Hexbot [alpha]` while the version is `0.x`), **Nightly** (`Hexbot Nightly`, daily from `main`, updatable on its own track), **Dev** (the source tree). See `docs/channels.md`.
 - **Track**: the channel an installed app takes updates from, Stable or Nightly. Defaults to the channel the build came from; the user switches it in Settings, Updates.
 - **Update server**: `updates.hexbot.app`, a Cloudflare R2 bucket holding every package and the electron-updater feed files. Written only by `release.yml`.
-- **Bot**: a named agent with its own soul, model, skills, and memory. One Hermes profile, multiplexed in one daemon process.
-- **Section** = **conversation** = **thread**: one persistent chat with a bot or inside a room. A section lives until the user archives or deletes it. Each section is its own Hermes session with its own context window.
+- **Bot**: a named agent with its own soul, model, skills, and memory. One core profile, multiplexed in one daemon process.
+- **Section** = **conversation** = **thread**: one persistent chat with a bot or inside a room. A section lives until the user archives or deletes it. Each section is its own core session with its own context window.
 - **Room**: a group chat with one or more humans and any number of bots. May have a **main bot** that responds when nobody is @-mentioned.
 - **Turn**: one user message and everything the bots do in response. The room turn engine (`hexbot/rooms/`) decides who speaks.
 - **Soul**: a bot's persona, the `SOUL.md` in its profile. The user and the bot both edit it; the bot says so when it does.
 - **Memory**: a bot's own notes, the `MEMORY.md` in its profile. The bot writes it during chat, dreaming curates it, the user can edit it. Deleting a section removes its history and leaves memory alone.
 - **About you**: one text per user, written only by the user and read by every bot they own (`users/<id>/user.md`).
 - **Dreaming**: a bot's daily pass over that day's conversations that folds what matters into its memory.
-- **Auto mode**: the approval mode that lets a small model auto-approve low-risk tool actions. Hermes calls it `smart`. The other modes are Manual (default) and Off.
+- **Auto mode**: the approval mode that lets a small model auto-approve low-risk tool actions. The core calls it `smart`. The other modes are Manual (default) and Off.
 - **Pairing**: connecting an app to a daemon with a one-time code or link over LAN. Never depends on Connect.
 - **Hex Connect**: the optional cloud service at connect.hexbot.app (Clerk auth, Cloudflare tunnels) for reaching a daemon from outside the LAN. Brokers identity and a hostname; chat traffic never passes through it.
-- **Hermes**: the upstream agent core. Hermes words that leak into Hexbot (`profile`, `session`, `smart`) stay internal; UI copy uses the Hexbot word.
+- **Core**: the Python code at the repository root. Core words that leak into Hexbot (`profile`, `session`, `smart`) stay internal; UI copy uses the Hexbot word.
+- **`hermes` identifiers**: the core began as a fork of Hermes Agent, so some code names keep a `hermes` prefix for compatibility with existing installs: `hermes_cli/`, `HERMES_HOME` and other `HERMES_*` variables, `@hermes/shared`, the `hermes_session_at` cookie. Do not rename them. Never write "Hermes" in UI copy, docs, or prompts; the only exceptions are the credits to Hermes Agent in `README.md`, `NOTICE`, the site, and Settings, About.
 
 ## Where code lives
 
@@ -58,16 +58,16 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 | `hexbot/` | Hexbot Python package: CLI, daemon plugin, pairing, bots, sections, rooms, memory, dreaming, users, Connect client | all |
 | `apps/web/` | React bundle (Vite, Tailwind). Used by the app and served to browsers | all |
 | `apps/desktop/` | Electron shell, updater, runtime bootstrap, two electron-builder configs | all |
-| `apps/shared/` | Hermes `@hermes/shared`. `apps/web` imports its gateway client and event types; the upstream `web/` dashboard uses the rest | all |
+| `apps/shared/` | `@hermes/shared`. `apps/web` imports its gateway client and event types; the core `web/` dashboard uses the rest | all |
 | `apps/site/` | Astro site at hexbot.app: landing page, docs, pairing page | stable |
 | `apps/connect/` | Next.js Connect service at connect.hexbot.app | all |
-| `tests/hexbot/` | Hexbot Python tests. Upstream suites stay under `tests/` | all |
+| `tests/hexbot/` | Hexbot Python tests. Core suites stay under `tests/` | all |
 | `scripts/desktop/` | Version, build, icon, update feed, and cask scripts, each with tests | stable, nightly |
 | `scripts/dev/` | `run.mjs` (`pnpm dev`) and the live smoke scripts | dev |
 | `.github/workflows/` | `ci.yml` (tests, also called by release), `release.yml` (stable and nightly) | see file |
 | `.devcontainer/` | Dev environment | dev |
-| `docs/` | Design and operations docs. `docs/upstream/` is Hermes material kept for reference | |
-| Root `*.py`, `agent/`, `tools/`, `hermes_cli/`, `tui_gateway/`, `gateway/`, `plugins/`, `skills/` | Hermes core. Edit only with a `CORE_EDITS.md` row | |
+| `docs/` | Design and operations docs. `docs/core/` covers the core: development guide, plugin APIs, the WebSocket API | |
+| Root `*.py`, `agent/`, `tools/`, `hermes_cli/`, `tui_gateway/`, `gateway/`, `plugins/`, `skills/` | The core: agent loop, tools, providers, gateway, core CLI (`hexbot core <command>`) | |
 
 `DESIGN.md` is the product design; `docs/channels.md` explains how the three
 channels map to files, GitHub, and the update server, and what was borrowed
@@ -118,9 +118,9 @@ Three ways to hurt yourself:
    never start a server against it.
 2. **Killing by pattern.** Do not `pkill -f hexbot` or `pkill -f python`;
    your own agent process may match. Kill only PIDs you started.
-3. **Editing the Hermes core casually.** A one-line change to `cli.py` or
-   `run_agent.py` makes the next upstream merge painful. Prefer a plugin
-   hook, a `hexbot/` module, or the RPC registration in `hexbot/plugin.py`.
+3. **Growing the core for a product feature.** Prefer a plugin hook, a
+   `hexbot/` module, or the RPC registration in `hexbot/plugin.py`. Change
+   the core when the fix belongs there.
 
 ## Verifying
 
@@ -138,7 +138,7 @@ node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/de
 `ci.yml` runs all of these on every push and pull request, and `release.yml`
 runs it again before building packages.
 
-If you edited a Hermes core file, also run the upstream suites named in
+If you edited a core file, also run the core suites named in
 `docs/testing.md` and compare against the recorded baseline. Backend tests
 wait on events and RPC replies, never on `sleep`.
 
@@ -192,7 +192,6 @@ exercise the graph.
 - Conventional titles in plain words: `fix(web): rooms no longer drop the
   first message`, `feat(daemon): dreaming skips archived sections`.
 - One concern per PR. Screenshots for UI changes.
-- Update `CORE_EDITS.md` in the same commit as any Hermes core edit.
 - Do not commit plans, scratch files, or build output (`apps/*/.next`,
   `apps/*/dist`, `apps/desktop/release` are ignored; keep them that way).
 - Write release notes in `docs/releases/<version>.md` before tagging.
@@ -200,7 +199,7 @@ exercise the graph.
 ## Taste
 
 - Simple over clever. The smallest change that fixes the whole bug class.
-- Complexity belongs at boundaries: the Hermes plugin seam, the WebSocket
+- Complexity belongs at boundaries: the core plugin seam, the WebSocket
   RPC layer, the Electron main process. Components and daemon handlers stay
   plain.
 - Users notice dropped frames and stale labels. No continuous repaint
@@ -208,9 +207,8 @@ exercise the graph.
 - Copy is short, concrete, and uses glossary words. No "seamless", no
   exclamation marks.
 
-## Hermes reference
+## Core reference
 
-The upstream development guide is preserved at
-`docs/upstream/HERMES_AGENTS.md`. Consult it for the Hermes core (tools,
-plugins, skills, cron, the AIAgent class, prompt caching rules) before
-editing anything at the repository root.
+`docs/core/development.md` is the development guide for the core (tools,
+plugins, skills, cron, the AIAgent class, prompt caching rules). Read it
+before editing anything at the repository root.

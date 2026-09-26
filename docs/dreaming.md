@@ -1,12 +1,12 @@
 # Dreaming
 
 Milestone 4. A bot's daily pass over that day's conversations that
-summarises them into its section memory. Facts about Hermes cron in
-`docs/upstream/plugin-apis.md` section 4.
+summarises them into its section memory. Facts about core cron in
+`docs/core/plugin-apis.md` section 4.
 
 ## Mechanics
 
-- One Hermes cron job per bot, stored in that bot's profile
+- One core cron job per bot, stored in that bot's profile
   (`<profile>/cron/jobs.json` via `cron.jobs.use_cron_store(home)`),
   named `hexbot-dream`, schedule `cron` kind from the deployment setting
   `dream_time` (default `03:00` local), created when the bot is created and
@@ -16,7 +16,7 @@ summarises them into its section memory. Facts about Hermes cron in
   and skills loaded, `platform="cron"`), so it uses the bot's own model.
 - The prompt is built by `hexbot/dreaming.py`: it lists the bot's sections
   and rooms with activity since the last dream, includes for each a
-  transcript digest (Hermes session search over the profile's `state.db`
+  transcript digest (core session search over the profile's `state.db`
   by time range; capped at 12k characters per section, older parts
   summarised first), and instructs the bot to curate its memory with the
   memory tool: merge duplicates, sharpen vague entries, drop stale ones, add
@@ -36,7 +36,7 @@ summarises them into its section memory. Facts about Hermes cron in
   `cron.trigger_job`. `hexbot.dreaming.status {bot}` reports last run,
   next run and last error.
 - The daemon must be running at the scheduled time; the user service from
-  milestone 1 provides that. If it was not, Hermes cron catches up on the
+  milestone 1 provides that. If it was not, core cron catches up on the
   next tick and the dream covers everything since the last run.
 
 ## Room memory

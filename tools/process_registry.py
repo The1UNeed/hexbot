@@ -97,7 +97,7 @@ WATCH_GLOBAL_COOLDOWN_SECONDS = 30
 # ---------------------------------------------------------------------------
 # systemd cgroup isolation for gateway-spawned local executors (#70716)
 # ---------------------------------------------------------------------------
-# When Hermes runs as a systemd gateway with MemoryHigh/MemoryMax limits,
+# When Hexbot runs as a systemd gateway with MemoryHigh/MemoryMax limits,
 # local background terminal commands inherit the gateway's cgroup.  A
 # memory-heavy executor (Codex, tests, Node) can push the whole cgroup past
 # MemoryMax and trigger systemd-oomd to kill the ENTIRE gateway — taking down
@@ -260,7 +260,7 @@ def _systemd_run_user_scope_available() -> bool:
 
 
 def _is_supervised_gateway_process() -> bool:
-    """Return whether this process is in a supervised Hermes gateway runtime.
+    """Return whether this process is in a supervised Hexbot gateway runtime.
 
     Both supervisor markers and ``_HERMES_GATEWAY`` are inherited by every
     descendant, and importing ``gateway.run`` also sets the latter. Require
@@ -1720,13 +1720,13 @@ class ProcessRegistry:
     ) -> dict:
         """Bounded wait for tracked ``notify_on_complete`` background processes.
 
-        One-shot CLI runs (``hermes -q/-Q/-z``) exit as soon as their single
+        One-shot CLI runs (``hexbot core -q/-Q/-z``) exit as soon as their single
         turn ends.  Any background process the turn spawned with
         ``notify_on_complete=True`` — a bounded task whose completion the
         caller explicitly cares about — still holds a stdout pipe owned by
         the dying parent, so it is killed by SIGPIPE on its next write a few
         seconds later.  Bot Mode handoff REPLIES are the visible casualty
-        (#90879): a recipient invoked as ``hermes -p <bot> chat -Q
+        (#90879): a recipient invoked as ``hexbot core -p <bot> chat -Q
         --query-file ...`` dispatches its reply via ``message_agent`` /
         ``bot_relay`` exactly this way, then exits, and the reply process is
         destroyed ~3s later.  The sender waits forever for a reply that was
@@ -2055,7 +2055,7 @@ class ProcessRegistry:
         The reader thread (`_reader_loop`) sets `session.exited = True` only
         in its `finally` block, which runs when `stdout.read()` returns EOF.
         If the direct `Popen` child has exited but a descendant process (e.g.
-        a daemon spawned by `hermes update` restarting the gateway) is still
+        a daemon spawned by `hexbot core update` restarting the gateway) is still
         holding the stdout pipe open, the reader blocks forever and poll()
         keeps returning "running" indefinitely (issue #17327 — 74 polls over
         7 minutes on Feishu).
@@ -2521,7 +2521,7 @@ class ProcessRegistry:
         if sink is None:
             return {
                 "status": "error",
-                "error": "close_terminal is only available in the Hermes desktop app.",
+                "error": "close_terminal is only available in the Hexbot desktop app.",
             }
         # The session may already be finished (or pruned) — the tab can still
         # linger and be closed, so a missing session is not an error here.
@@ -2815,7 +2815,7 @@ class ProcessRegistry:
                             "session_id": s.id,
                             # Redact inline credentials before persisting to
                             # disk — the checkpoint file lives under
-                            # ~/.hermes/processes.json with the raw command
+                            # ~/.hexbot/processes.json with the raw command
                             # (issue #77484). Recovery only uses command for
                             # display/logging (the process is already running;
                             # adoption re-validates the PID, never re-runs the
@@ -3059,7 +3059,7 @@ def _delegation_model_not_found_notice(results) -> "list[str] | None":
         "(HTTP 400: not a valid model ID).",
         "Every task in this batch failed for this reason before doing any work.",
         "Check Settings → Advanced → Subagent Model (or: "
-        "hermes config get delegation.model).",
+        "hexbot core config get delegation.model).",
     ]
     try:
         from hermes_cli.fallback_config import get_fallback_chain
@@ -3329,7 +3329,7 @@ def format_process_notification(evt: dict) -> "str | None":
     if _exit in {-15, 143, "-15", "143"}:
         _signal = ", SIGTERM"
     if _reason == "killed":
-        _status = f"terminated by {_source or 'Hermes'}"
+        _status = f"terminated by {_source or 'Hexbot'}"
     elif _reason == "lost":
         _status = "marked lost because the process backend disappeared"
     elif _reason == "failed_start":

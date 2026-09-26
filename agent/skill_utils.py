@@ -51,7 +51,7 @@ EXCLUDED_SKILL_DIRS = frozenset(
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
 
 # ── Org-shared skills (sync contract) ───────────────────────────
-# Org mirrors live under ~/.hermes/skills/_org/<org_id>/. Resolution is
+# Org mirrors live under ~/.hexbot/skills/_org/<org_id>/. Resolution is
 # TOKEN-GATED via a marker file the sync client writes after verifying the
 # token (skills_sync_client.pull_org_skills): only the marked org's mirror is
 # scanned. No marker ⇒ no org skills load. The marker is plain data (org_id
@@ -337,7 +337,7 @@ def _detect_environment(env: str) -> bool:
         except Exception:
             result = False
     elif env == "s6":
-        # The Hermes Docker image runs s6-overlay as PID 1 (/init). s6 plants
+        # The Hexbot Docker image runs s6-overlay as PID 1 (/init). s6 plants
         # its runtime scaffolding under /run/s6 and ships its admin tree under
         # /package/admin/s6-overlay. Either marker means we're inside an
         # s6-supervised container.
@@ -436,9 +436,9 @@ def _load_raw_config() -> Dict[str, Any]:
 
 # Skills that must stay available regardless of configuration. The
 # `hermes-agent` skill is the agent's own operating manual — it drives
-# configuring, extending, and troubleshooting Hermes itself, and the system
+# configuring, extending, and troubleshooting Hexbot itself, and the system
 # prompt unconditionally points at it. Disabling it leaves the agent unable
-# to help with Hermes, so disable requests for these names are ignored
+# to help with Hexbot, so disable requests for these names are ignored
 # everywhere the disabled list is consulted.
 ESSENTIAL_SKILLS: frozenset = frozenset({"hermes-agent"})
 
@@ -486,7 +486,7 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
 def parse_config_string_list(value) -> List[str]:
     """Normalize a config value that may hold a JSON-array string into a list.
 
-    ``hermes config set`` and JSON-mode editor saves store lists as quoted
+    ``hexbot core config set`` and JSON-mode editor saves store lists as quoted
     JSON strings (``'["a","b"]'`` or the Python-literal ``"['a']"``). Treating
     such a string as a single name makes a curated disabled list silently
     filter nothing (#86661); parsing it restores the intended list. A scalar
@@ -518,7 +518,7 @@ def _normalize_string_set(values) -> Set[str]:
 # (config_path_str, mtime_ns) -> resolved external dirs list.  Keyed by
 # mtime_ns so a config.yaml edit mid-run is picked up automatically;
 # otherwise every call would re-read + re-YAML-parse the 15KB config,
-# which becomes the dominant cost of ``hermes`` startup when ~120 skills
+# which becomes the dominant cost of ``hexbot core`` startup when ~120 skills
 # each trigger a category lookup during banner construction (10+ seconds
 # of pure waste).
 _EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int], List[Path]] = {}
@@ -535,11 +535,11 @@ def get_external_skills_dirs() -> List[Path]:
 
     Each entry is expanded (``~`` and ``${VAR}``) and resolved to an absolute
     path.  Only directories that actually exist are returned.  Duplicates and
-    paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
+    paths that resolve to the local ``~/.hexbot/skills/`` are silently skipped.
 
     Cached in-process, keyed on ``config.yaml`` mtime — the function is
     called once per skill during banner / tool-registry scans, and YAML
-    parsing a non-trivial config dominates ``hermes`` cold-start time
+    parsing a non-trivial config dominates ``hexbot core`` cold-start time
     when the cache is absent.
     """
     config_path = get_config_path()
@@ -617,7 +617,7 @@ def get_skill_create_dir() -> Optional[Path]:
     """Return the configured ``skills.create_dir``, or ``None`` when unset.
 
     When set, agent-created skills (``skill_manage`` action=create) land in
-    this directory instead of the profile-local ``~/.hermes/skills/``, and
+    this directory instead of the profile-local ``~/.hexbot/skills/``, and
     every user-facing instruction string that names the creation path renders
     this directory instead of the default.
 
@@ -677,7 +677,7 @@ def display_skill_create_dir() -> str:
 
 
 def get_all_skills_dirs() -> List[Path]:
-    """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
+    """Return all skill directories: local ``~/.hexbot/skills/`` first, then external.
 
     The local dir is always first (and always included even if it doesn't exist
     yet — callers handle that).  When ``skills.create_dir`` is configured, it
@@ -708,7 +708,7 @@ def get_all_skills_dirs() -> List[Path]:
 #
 # Two candidate roots at the project root (found by walking up from cwd to the
 # first directory containing ``.git``):
-#   <root>/.hermes/skills/   — Hermes-native location
+#   <root>/.hermes/skills/   — Hexbot-native location
 #   <root>/.agents/skills/   — cross-tool convention shared with other harnesses
 #
 # TRUST GATE: unlike AGENTS.md (plain instruction text), skills are load-on-
@@ -717,7 +717,7 @@ def get_all_skills_dirs() -> List[Path]:
 # when the project root is listed in ``skills.trusted_project_dirs`` in
 # config.yaml (Codex-style per-path trust). Untrusted dirs are still
 # *discoverable* via get_untrusted_project_skills_root() so the CLI can print
-# a one-line "run `hermes skills trust`" notice.
+# a one-line "run `hexbot core skills trust`" notice.
 #
 # PRECEDENCE: trusted project skills override same-named profile/bundled
 # skills (index scans project dirs first; skill_view resolves cross-tier
@@ -852,7 +852,7 @@ def get_untrusted_project_skills_root() -> Optional[Tuple[Path, int]]:
     """When cwd's project has skills but is NOT trusted: (root, skill_count).
 
     Used by the CLI to print a one-line notice pointing at
-    ``hermes skills trust``. Returns None when there is nothing to notify
+    ``hexbot core skills trust``. Returns None when there is nothing to notify
     about (no project, no skills, already trusted, or discovery disabled).
     """
     parsed = _load_raw_config()
@@ -886,7 +886,7 @@ def get_scan_ordered_skills_dirs() -> List[Path]:
 
 # ── Project skill quarantine (scan-time injection defense) ────────────────
 #
-# Trust (`hermes skills trust`) is a REPO-level decision made once; the repo's
+# Trust (`hexbot core skills trust`) is a REPO-level decision made once; the repo's
 # skill content keeps changing underneath it with every pull. The hub install
 # path runs skills_guard on install, but project skills are read straight from
 # a checkout — without this gate a `git pull` could inject a malicious skill
@@ -978,7 +978,7 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     """Normalize a skill identifier to a ``skill_view()``-safe relative path.
 
     Slash commands and cron jobs may store absolute paths to skills that live
-    under ``~/.hermes/skills/`` (including via symlinks) or configured
+    under ``~/.hexbot/skills/`` (including via symlinks) or configured
     ``skills.external_dirs``. ``skill_view()`` rejects absolute names for
     security, so callers must translate trusted absolute paths to their
     relative form first.
@@ -1015,7 +1015,7 @@ def normalize_skill_lookup_name(identifier: str) -> str:
 
     # Prefer the lexical path under a trusted skill root before resolving
     # symlinks. Slash-command discovery can legitimately find a skill via
-    # ~/.hermes/skills/<name> where <name> is a symlink to a checked-out
+    # ~/.hexbot/skills/<name> where <name> is a symlink to a checked-out
     # skill elsewhere. Resolving first turns that trusted visible path into
     # an arbitrary absolute path that skill_view() refuses to load.
     for root in trusted_roots:
@@ -1046,7 +1046,7 @@ def _resolve_for_skill_ownership(path) -> Path:
 def is_external_skill_path(path) -> bool:
     """Return True when ``path`` lives under a configured external skills dir.
 
-    ``skills.external_dirs`` are externally owned: Hermes can discover and view
+    ``skills.external_dirs`` are externally owned: Hexbot can discover and view
     their skills, and foreground user-directed tool calls may still edit them,
     but autonomous lifecycle maintenance must treat them as read-only. This
     helper centralizes the ownership boundary so curator/reporting/tool paths do
@@ -1279,7 +1279,7 @@ def is_skill_description_truncated_for_prompt(frontmatter: Dict[str, Any]) -> bo
 def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*.
 
-    Excludes Hermes metadata, VCS, virtualenv/dependency, cache, and skill
+    Excludes Hexbot metadata, VCS, virtualenv/dependency, cache, and skill
     support directories. Support directories (references/templates/assets/
     scripts) can contain arbitrary markdown and even archived package
     ``SKILL.md`` files, but they are progressive-disclosure data loaded through

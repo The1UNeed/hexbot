@@ -1,9 +1,9 @@
 """Per-mutation skill audit ledger + single-edit rollback (tracker #79686 P3).
 
 Every skill mutation — regardless of actor — appends one JSONL entry to
-``~/.hermes/skills/.curator_ledger.jsonl`` describing who changed what, with
+``~/.hexbot/skills/.curator_ledger.jsonl`` describing who changed what, with
 before/after file manifests whose contents are stored content-addressed
-(sha256-deduped) under ``~/.hermes/.curator_backups/blobs/``.
+(sha256-deduped) under ``~/.hexbot/.curator_backups/blobs/``.
 
 Design decisions (Teknium-approved):
   - JSONL, not the state DB: the ledger is a durable, human-greppable audit
@@ -12,7 +12,7 @@ Design decisions (Teknium-approved):
     The curator *invariant* (never hard-delete autonomously) is unchanged and
     applies only to autonomous actors; foreground user deletes stay
     hard-delete — but they are still ledgered so they're recoverable via
-    ``hermes curator rollback <entry-id>``.
+    ``hexbot core curator rollback <entry-id>``.
   - Per-file content-addressed blobs (not tarballs): a mutation typically
     touches one file, so a whole-tree tarball per mutation would be wasteful,
     and identical content across entries dedupes to a single blob.
@@ -54,7 +54,7 @@ _BACKUP_ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d{2})?$")
 _ARCHIVE_TS_SUFFIX_RE = re.compile(r"^(.+)-\d{14}$")
 # Actions whose rollback must restore a COMPLETE skill package. These are
 # the actions where a hollow before-capture (support files re-homed out of
-# the tree first) makes `hermes curator rollback` restore a shell of a
+# the tree first) makes `hexbot core curator rollback` restore a shell of a
 # skill instead of the package (issue #96962).
 _PACKAGE_RESTORE_ACTIONS = frozenset({"delete", "archive", "purge"})
 _VALID_ACTORS = {ACTOR_CURATOR, ACTOR_AGENT, ACTOR_USER}

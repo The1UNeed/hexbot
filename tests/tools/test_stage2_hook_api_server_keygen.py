@@ -133,7 +133,7 @@ def test_keygen_skips_when_container_env_provides_key(
 ) -> None:
     """`docker run -e API_SERVER_KEY=...` must win: no generated key.
 
-    Hermes loads $HERMES_HOME/.env with override=True, so a key generated
+    Hexbot loads $HERMES_HOME/.env with override=True, so a key generated
     into .env would silently shadow the operator's env-provided credential
     and 401 every client still using it.
     """

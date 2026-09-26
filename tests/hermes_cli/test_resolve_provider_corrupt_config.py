@@ -1,6 +1,6 @@
 """Regression tests for issue #81952 (silent OpenRouter paid-default class fix).
 
-When ``~/.hermes/config.yaml`` EXISTS but fails to parse, ``load_config()``
+When ``~/.hexbot/config.yaml`` EXISTS but fails to parse, ``load_config()``
 falls back to ``DEFAULT_CONFIG`` — so ``resolve_provider('auto')``'s tier-2
 config check finds no ``model.provider`` and the tier-3 env sniff
 (OPENROUTER_API_KEY / OPENAI_API_KEY) or tier-4 pool probe silently adopts the

@@ -17,11 +17,11 @@ pnpm says whether it or Node is the mismatch, and the recovery installs the
 ``packageManager`` pin from the root ``package.json``, which the repo's tests
 keep inside ``engines.pnpm``.
 
-Scope of the repair is deliberately narrow. Hermes only upgrades a pnpm that
+Scope of the repair is deliberately narrow. Hexbot only upgrades a pnpm that
 lives inside its **own** managed Node tree (``$HERMES_HOME/node``), installing
 in place with that tree's npm and ``--prefix``. A system / nvm / brew / Nix pnpm
-belongs to the user and their other projects; Hermes never modifies those.
-When the failing pnpm is one of those foreign installs, Hermes instead
+belongs to the user and their other projects; Hexbot never modifies those.
+When the failing pnpm is one of those foreign installs, Hexbot instead
 provisions its own managed Node tree (the same tree a fresh install creates),
 installs the pinned pnpm into *that*, and hands the caller the managed pnpm to
 retry with — leaving the user's toolchain untouched.
@@ -87,7 +87,7 @@ def actual_pnpm_version(output: str) -> str | None:
 
 
 def managed_pnpm_prefix(pnpm: str | os.PathLike[str] | None) -> Path | None:
-    """Return the Hermes-managed Node root *pnpm* lives in, else ``None``.
+    """Return the Hexbot-managed Node root *pnpm* lives in, else ``None``.
 
     Symlinks are resolved first: ``$HERMES_HOME/node/bin/pnpm`` links into
     ``lib/node_modules/pnpm/bin/pnpm.cjs``, and a user may link
@@ -124,7 +124,7 @@ def upgrade_managed_pnpm(
     spec = pinned_pnpm_spec()
     if not quiet:
         reason = f" to satisfy {pnpm_range}" if pnpm_range else ""
-        print(f"→ Installing Hermes-managed {spec}{reason}…", flush=True)
+        print(f"→ Installing Hexbot-managed {spec}{reason}…", flush=True)
     # The managed pnpm lives inside the very tree the desktop app's Node
     # processes execute from; an in-place upgrade while it is in use fails
     # with PermissionError: [WinError 5] on pnpm.cmd (#80926). Defer instead
@@ -133,7 +133,7 @@ def upgrade_managed_pnpm(
     if managed_node_tree_in_use():
         if not quiet:
             print(
-                "  ⚠ deferred: the Hermes-managed Node.js tree is in use by a "
+                "  ⚠ deferred: the Hexbot-managed Node.js tree is in use by a "
                 "running app; the pnpm upgrade will apply on a later update "
                 "once the app is closed.",
                 file=sys.stderr,
@@ -164,7 +164,7 @@ def _print_manual_fix(pnpm: str, pnpm_range: str, actual: str | None) -> None:
     print(
         f"\n✗ {have}does not satisfy the range this project requires: {pnpm_range}\n"
         f"  Resolved pnpm: {pnpm}\n"
-        "  Hermes could not provision its own Node.js runtime and never\n"
+        "  Hexbot could not provision its own Node.js runtime and never\n"
         "  modifies a system/nvm/brew/Nix pnpm. Upgrade yours yourself with:\n"
         f"      npm install -g {pinned_pnpm_spec()}",
         file=sys.stderr,
@@ -174,7 +174,7 @@ def _print_manual_fix(pnpm: str, pnpm_range: str, actual: str | None) -> None:
 def _provision_managed_pnpm(
     pnpm_range: str | None, *, quiet: bool = False
 ) -> str | None:
-    """Provision a Hermes-managed Node tree and return its pinned pnpm.
+    """Provision a Hexbot-managed Node tree and return its pinned pnpm.
 
     Installs the managed tree under ``$HERMES_HOME/node`` (reusing a healthy
     one when present), then installs the pinned pnpm into it — a fresh Node
@@ -183,7 +183,7 @@ def _provision_managed_pnpm(
     """
     if not quiet:
         print(
-            "→ Provisioning a Hermes-managed Node.js runtime "
+            "→ Provisioning a Hexbot-managed Node.js runtime "
             "(the resolved pnpm belongs to your system and is left alone)…",
             flush=True,
         )
@@ -212,7 +212,7 @@ def maybe_repair_pnpm_engine(
 
     *output* is the combined stdout/stderr of the pnpm command that just failed.
     Returns the pnpm executable the caller should retry its command with —
-    the same *pnpm* after an in-place upgrade of a Hermes-managed install, or
+    the same *pnpm* after an in-place upgrade of a Hexbot-managed install, or
     a freshly provisioned managed pnpm when the failing pnpm belongs to the
     user (system / nvm / brew / Nix installs are never modified). Returns
     ``None`` when no repair happened — not an engine failure, a Node mismatch
@@ -230,7 +230,7 @@ def maybe_repair_pnpm_engine(
     prefix = managed_pnpm_prefix(pnpm)
 
     if prefix is not None:
-        # Hermes owns this pnpm — upgrade it in place. Only a pnpm-range
+        # Hexbot owns this pnpm — upgrade it in place. Only a pnpm-range
         # failure is fixable this way; a Node mismatch needs a Node upgrade.
         if not pnpm_range:
             return None

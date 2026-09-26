@@ -13,7 +13,7 @@ Secret (lives in $HERMES_HOME/.env or the environment):
                        plugin talks to that server directly over HTTP
                        (X-API-Key auth) instead of the cloud API.
 
-Behavioral settings (live in $HERMES_HOME/mem0.json, set via `hermes memory
+Behavioral settings (live in $HERMES_HOME/mem0.json, set via `hexbot core memory
 setup`):
   mode               — Backend mode: "platform" (default) or "oss"
   host               — Self-hosted Mem0 server URL (alt: MEM0_HOST env var).
