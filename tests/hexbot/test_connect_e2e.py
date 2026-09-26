@@ -2,7 +2,7 @@
 in-memory store, fake tunnels, DEV_USER_ID auth), a real daemon, and the same
 HTTP calls the CLI, the web client, and the desktop app make.
 
-Opt in with ``HEXBOT_CONNECT_E2E=1``; it needs the repo's node_modules and venv.
+Opt in with ``HEXBOT_CONNECT_E2E=1``; it needs ``pnpm install`` and the venv.
 The only piece not exercised is Cloudflare itself: the grant names the fake
 tunnel hostname, so the client-to-daemon leg goes to the daemon's loopback port
 instead (in production the tunnel forwards to that same port).
@@ -67,12 +67,13 @@ def connect_service(tmp_path_factory):
     source = sandbox / "app"
     shutil.copytree(ROOT / "apps/connect", source,
                     ignore=shutil.ignore_patterns(".env*", ".next", "node_modules"))
-    (source / "node_modules").symlink_to(ROOT / "node_modules", target_is_directory=True)
+    # pnpm keeps each workspace package's dependencies under its own node_modules.
+    (source / "node_modules").symlink_to(ROOT / "apps/connect/node_modules", target_is_directory=True)
     log = (sandbox / "next.log").open("wb")
     env = {k: v for k, v in os.environ.items() if not k.startswith(("NEXT_PUBLIC_CLERK", "CLERK", "DATABASE_URL", "CF_"))}
     env.update({"DEV_USER_ID": "e2e-user", "CONNECT_BASE_URL": f"http://127.0.0.1:{port}",
                 "CONNECT_DOMAIN": "hexbot.test", "CONNECT_INGRESS_PORT": "9119"})
-    process = subprocess.Popen(["node", str(ROOT / "node_modules/next/dist/bin/next"), "dev", "--webpack",
+    process = subprocess.Popen(["node", str(ROOT / "apps/connect/node_modules/next/dist/bin/next"), "dev", "--webpack",
                                 "-p", str(port), "-H", "127.0.0.1"],
                                cwd=source, env=env, stdout=log, stderr=log)
     try:
@@ -144,9 +145,11 @@ def sign_in_client(connect_url: str, device: str) -> str:
     assert not re.search(r'href="hexbot://', page.text)
     authorized = httpx.post(str(page.url), files=form.fields, headers={"Origin": connect_url}, timeout=60)
     assert authorized.status_code == 200, authorized.text[:500]
-    match = re.search(r'href="hexbot://connect\?state=nonce-1#session=([^"]+)"', authorized.text)
+    # The link is opened from React state, never rendered as an href; it travels in the action's payload.
+    assert 'href="hexbot://' not in authorized.text
+    match = re.search(r"session=(hxc_[A-Za-z0-9_-]+)", authorized.text)
     assert match, authorized.text[:500]
-    token = urllib.parse.unquote(match.group(1))
+    token = match.group(1)
     auth = {"Authorization": f"Bearer {token}"}
     sessions = httpx.get(f"{connect_url}/api/me", headers=auth).json()["sessions"]
     # Reloading the landing page must not mint another client session.
@@ -219,8 +222,9 @@ def test_connect_end_to_end(connect_service, daemon_home, tmp_path):
             time.sleep(0.5)
         assert daemons[0]["tunnel_hostname"] == config["tunnel_hostname"]
         granted = httpx.post(f"{connect_url}/api/daemons/{daemons[0]['id']}/grant", headers=auth).json()
+        # With the fake tunnel provider the grant names the daemon's loopback port (the tunnel target).
         assert granted["daemon"] == {"id": daemons[0]["id"], "name": daemons[0]["name"],
-                                     "host": config["tunnel_hostname"], "port": 443, "tls": True}
+                                     "host": "127.0.0.1", "port": port, "tls": False}
         assert httpx.post(f"{connect_url}/api/daemons/{daemons[0]['id']}/grant").status_code == 401
 
         # 4. The daemon exchanges the grant for a device token (the tunnel would forward here).
@@ -233,8 +237,35 @@ def test_connect_end_to_end(connect_service, daemon_home, tmp_path):
         tampered = granted["grant"][:-4] + "AAAA"
         assert httpx.post(f"{base}/auth/password-login", json={"provider": "hexbot", "username": "Laptop",
                                                                 "password": f"cg_{tampered}"}).status_code == 401
+        # A grant logs in once.
         assert httpx.post(f"{base}/auth/password-login", json={"provider": "hexbot", "username": "Laptop",
-                                                                "password": f"cg_{granted['grant']}"}).status_code == 200
+                                                                "password": f"cg_{granted['grant']}"}).status_code == 401
+
+        # 4b. Browser sign-in: the daemon's login page offers Connect, the round trip ends in a cookie session.
+        login_page = httpx.get(f"{base}/login")
+        assert 'href="/auth/login?provider=connect' in login_page.text
+        with httpx.Client(base_url=base, follow_redirects=False) as browser:
+            started = browser.get("/auth/login", params={"provider": "connect", "next": "/"})
+            assert started.status_code == 302, started.text
+            to_connect = httpx.URL(started.headers["location"])
+            assert f"{to_connect.scheme}://{to_connect.host}:{to_connect.port}" == connect_url
+            query = dict(to_connect.params)
+            # The daemon names its public address; the tunnel would forward that callback to the loopback port.
+            public = f"https://{config['tunnel_hostname']}"
+            assert query["daemon"] == approved["daemon_id"] and query["redirect_uri"] == f"{public}/auth/callback"
+            back = httpx.get(str(to_connect), headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"},
+                             follow_redirects=False, timeout=60)
+            assert back.status_code in {302, 307}, back.text[:500]
+            callback = httpx.URL(back.headers["location"])
+            assert str(callback).startswith(f"{public}/auth/callback?") and callback.params["state"] == query["state"]
+            finished = browser.get(callback.path, params=dict(callback.params))
+            assert finished.status_code == 302 and finished.headers["location"] == "/", finished.text[:500]
+            assert finished.cookies["hermes_session_at"].startswith("hxb_")
+            # Replaying the callback fails: the daemon's state cookie is gone and the code is spent.
+            assert browser.get(callback.path, params=dict(callback.params)).status_code == 400
+            whoami = httpx.get(f"{base}/api/auth/me", cookies=finished.cookies)
+            assert whoami.status_code == 200 and whoami.json().get("display_name") == "Chrome on macOS", whoami.text
 
         ticket = httpx.post(f"{base}/api/auth/ws-ticket", headers={"Authorization": f"Bearer {token}"}).json()["ticket"]
         results = asyncio.run(rpc_session(port, ticket))

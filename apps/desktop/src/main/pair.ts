@@ -9,10 +9,12 @@ export function cookieValue(
   headers: Pick<Headers, 'getSetCookie'>,
   name: string
 ): string | undefined {
+  // Over HTTPS (the Connect tunnel) the daemon prefixes its cookie names.
+  const names = new Set([name, `__Host-${name}`, `__Secure-${name}`])
   for (const cookie of headers.getSetCookie()) {
     const first = cookie.split(';', 1)[0]!
     const separator = first.indexOf('=')
-    if (separator > 0 && first.slice(0, separator).trim() === name)
+    if (separator > 0 && names.has(first.slice(0, separator).trim()))
       return first.slice(separator + 1).trim()
   }
   return undefined

@@ -1,10 +1,12 @@
 // Tunnel hostnames sit one label under the zone (`<slug>.hexbot.app`) so Cloudflare's
 // Universal SSL certificate (`*.hexbot.app`) covers them; deeper names would not be.
-export interface TunnelProvider { create(slug: string, ingressPort: number): Promise<{ tunnelId: string; token: string; hostname: string }>; setIngress(tunnelId: string, hostname: string, ingressPort: number): Promise<void>; delete(tunnelId: string): Promise<void> }
+// `kind` rather than instanceof: Next gives pages and route handlers separate module graphs, so the class identity differs.
+export interface TunnelProvider { readonly kind: "cloudflare" | "fake" | "unconfigured"; create(slug: string, ingressPort: number): Promise<{ tunnelId: string; token: string; hostname: string }>; setIngress(tunnelId: string, hostname: string, ingressPort: number): Promise<void>; delete(tunnelId: string): Promise<void> }
 
 interface CloudflareResult<T> { success: boolean; errors?: Array<{ message: string }>; result: T }
 
 export class CloudflareTunnelProvider implements TunnelProvider {
+  readonly kind = "cloudflare" as const;
   constructor(private token: string, private accountId: string, private zoneId: string, private domain: string) {}
   private async request<T>(path: string, init: RequestInit): Promise<T> {
     const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, { ...init, headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json", ...init.headers } });
@@ -35,13 +37,25 @@ export class CloudflareTunnelProvider implements TunnelProvider {
 }
 
 export class FakeTunnelProvider implements TunnelProvider {
+  readonly kind = "fake" as const;
   deleted: string[] = []; ingress: Record<string, number> = {};
   async create(slug: string, _ingressPort: number) { return { tunnelId: `fake-tunnel-${slug}`, token: `fake-tunnel-token-${slug}`, hostname: `${slug}.${process.env.CONNECT_DOMAIN ?? "hexbot.test"}` }; }
   async setIngress(tunnelId: string, _hostname: string, ingressPort: number) { this.ingress[tunnelId] = ingressPort; }
   async delete(tunnelId: string) { this.deleted.push(tunnelId); }
 }
 
+/** A production deployment without Cloudflare credentials refuses to register daemons rather than pretend. */
+export class UnconfiguredTunnelProvider implements TunnelProvider {
+  readonly kind = "unconfigured" as const;
+  private fail(): never { throw new Error("Cloudflare tunnel credentials are not configured"); }
+  async create(_slug: string, _ingressPort: number): Promise<never> { this.fail(); }
+  async setIngress(): Promise<never> { this.fail(); }
+  async delete(): Promise<never> { this.fail(); }
+}
+
 export const createTunnelProvider = (): TunnelProvider => {
   const { CF_API_TOKEN, CF_ACCOUNT_ID, CF_ZONE_ID, CONNECT_DOMAIN } = process.env;
-  return CF_API_TOKEN && CF_ACCOUNT_ID && CF_ZONE_ID && CONNECT_DOMAIN ? new CloudflareTunnelProvider(CF_API_TOKEN, CF_ACCOUNT_ID, CF_ZONE_ID, CONNECT_DOMAIN) : new FakeTunnelProvider();
+  if (CF_API_TOKEN && CF_ACCOUNT_ID && CF_ZONE_ID && CONNECT_DOMAIN) return new CloudflareTunnelProvider(CF_API_TOKEN, CF_ACCOUNT_ID, CF_ZONE_ID, CONNECT_DOMAIN);
+  // Fake tunnels point every daemon at loopback, which must never happen on a real deployment.
+  return process.env.NODE_ENV === "production" ? new UnconfiguredTunnelProvider() : new FakeTunnelProvider();
 };

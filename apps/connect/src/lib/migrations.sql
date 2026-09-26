@@ -5,3 +5,4 @@ CREATE TABLE IF NOT EXISTS registrations (id uuid PRIMARY KEY DEFAULT gen_random
 ALTER TABLE daemons ADD COLUMN IF NOT EXISTS ingress_port integer NOT NULL DEFAULT 9119;
 CREATE INDEX IF NOT EXISTS registrations_user_code_idx ON registrations(user_code);
 CREATE TABLE IF NOT EXISTS client_sessions (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid NOT NULL REFERENCES users(id), token_hash text UNIQUE NOT NULL, device_name text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), last_seen_at timestamptz, revoked_at timestamptz);
+CREATE TABLE IF NOT EXISTS grant_codes (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), code_hash text UNIQUE NOT NULL, daemon_id uuid NOT NULL REFERENCES daemons(id), user_id uuid NOT NULL REFERENCES users(id), device_name text NOT NULL, challenge text NOT NULL, redirect_uri text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL, consumed_at timestamptz);

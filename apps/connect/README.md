@@ -12,7 +12,11 @@ pnpm connect:dev
 
 With no `DATABASE_URL`, the process uses an in-memory store. With incomplete Cloudflare credentials, it uses deterministic fake tunnels. With no `CONNECT_SIGNING_KEY_JWK`, it creates an ephemeral ES256 key and prints a warning. Data and signing keys reset when the process restarts.
 
-Clerk is optional locally. When `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is absent, `DEV_USER_ID` is the signed-in user. The fallback only works in a development build (`next dev`); a production build ignores it on any host, so a deployment without Clerk rejects every sign-in.
+Clerk is optional locally. When `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is absent, `DEV_USER_ID` is the signed-in user and the header shows a "Development sign-in" badge. The fallback only works in a development build (`next dev`); a production build ignores it on any host, so a deployment without Clerk rejects every sign-in. To see the real sign-in pages locally, put a Clerk development instance's keys in `.env.local`.
+
+With the fake tunnel provider every daemon's address is `http://127.0.0.1:<port>` (the port from its last heartbeat), so "Open in browser" and the app's grant both reach a daemon running on this machine.
+
+PostHog is optional: set `NEXT_PUBLIC_POSTHOG_KEY` to the project key shared with hexbot.app and the cookie notice appears; leave it unset and nothing loads.
 
 `GET /api/health` reports which backends are active (`store`, `tunnels`, `auth`, `signing`) and `ready: true` only when all four are production ones.
 
@@ -50,6 +54,7 @@ Production needs these environment variables, all from `.env.example`:
 | `CONNECT_DOMAIN` | `hexbot.app` |
 | `DATABASE_URL` | Neon project connection string |
 | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY` | Clerk application (production instance) |
+| `NEXT_PUBLIC_POSTHOG_KEY` | the PostHog project shared with hexbot.app (Production only) |
 | `CF_API_TOKEN` | Cloudflare API token with Account: Cloudflare Tunnel: Edit and Zone: DNS: Edit |
 | `CF_ACCOUNT_ID`, `CF_ZONE_ID` | Cloudflare dashboard, zone `hexbot.app` |
 | `CONNECT_SIGNING_KEY_JWK` | one line from `node scripts/make-signing-key.mjs` |
@@ -63,5 +68,10 @@ CI runs the same checks Vercel builds against:
 ```bash
 pnpm --filter ./apps/connect run typecheck
 pnpm --filter ./apps/connect run test --run
+pnpm --filter ./apps/connect run lint
 pnpm --filter ./apps/connect run build
 ```
+
+## Pages and flows
+
+`docs/connect.md` at the repository root describes every route and the three sign-in flows (daemon registration, app sign-in, browser sign-in). Security headers and the Content Security Policy live in `next.config.ts` so they apply on any host, not only Vercel.

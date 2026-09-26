@@ -137,3 +137,14 @@ div.rise { display: flex; }
 .faq > details > div a { color: var(--color-accent); text-decoration: underline; text-underline-offset: .18em; }
 .prose img { width: 100%; height: auto; border-radius: 14px; border: 1px solid var(--color-line); }
 .prose blockquote { border-left: 3px solid var(--color-line); padding-left: 1rem; color: var(--color-mute); }
+
+/* Legal pages: numbered sections, a little more air between them. */
+.legal { counter-reset: legal; max-width: 44rem; }
+.legal section { counter-increment: legal; scroll-margin-top: 2rem; }
+.legal section + section { margin-top: 3rem; }
+.legal section > h2 { margin: 0 0 .75rem; font-size: 1.5rem; }
+.legal section > h2::before { content: counter(legal) ". "; color: var(--color-mute); font-weight: 500; }
+.legal section > h3 { margin: 1.5rem 0 .5rem; }
+.legal dl { margin: 1rem 0; }
+.legal dt { font-weight: 650; }
+.legal dd { margin: .15rem 0 .75rem; color: var(--color-mute); }

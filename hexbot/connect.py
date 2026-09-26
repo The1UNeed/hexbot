@@ -119,6 +119,30 @@ class ConnectClient:
     def jwks(self) -> dict:
         return self._json("GET", "/.well-known/jwks.json")
 
+    def exchange_grant(self, daemon_id: str, daemon_token: str, *, code: str,
+                       code_verifier: str, redirect_uri: str) -> dict:
+        """Trade a browser sign-in code for a grant. A rejected code (4xx) is not an outage."""
+        try:
+            response = self.http("POST", f"{self.api_base}/api/grants/exchange", timeout=15,
+                                 headers={"Authorization": f"Bearer {daemon_token}"},
+                                 json={"code": code, "code_verifier": code_verifier,
+                                       "redirect_uri": redirect_uri})
+            if isinstance(response, dict):
+                data = response
+            else:
+                if response.status_code in {400, 401, 403, 404, 409, 410}:
+                    raise HexbotError(4243, "Connect sign-in code rejected")
+                response.raise_for_status()
+                data = response.json()
+        except HexbotError:
+            raise
+        except Exception as exc:
+            raise HexbotError(5241, "Connect service unreachable") from exc
+        if not isinstance(data, dict) or not all(
+                isinstance(data.get(key), str) for key in ("grant", "device_name")):
+            raise HexbotError(5241, "Connect returned an incomplete grant")
+        return data
+
 
 def save_registration(result: dict, api_base: str) -> ConnectConfig:
     required = ("daemon_id", "daemon_token", "slug", "tunnel_hostname", "tunnel_token")
@@ -295,6 +319,30 @@ _heartbeat_stop: threading.Event | None = None
 _heartbeat_thread: threading.Thread | None = None
 _last_heartbeat_at: float | None = None
 _last_error: str | None = None
+_provider = None
+
+
+def _register_provider() -> None:
+    """Offer "Sign in with Hexbot Connect" on the login page only while registered."""
+    global _provider
+    try:
+        from hermes_cli.dashboard_auth.registry import register_global_provider
+        from hexbot.auth_provider import HexbotConnectProvider
+        _provider = HexbotConnectProvider()
+        register_global_provider(_provider)
+    except Exception:
+        logger.debug("could not register the Connect sign-in provider", exc_info=True)
+
+
+def _unregister_provider() -> None:
+    global _provider
+    try:
+        from hermes_cli.dashboard_auth.registry import unregister_global_provider
+        if _provider is not None:
+            unregister_global_provider("connect", _provider)
+    except Exception:
+        logger.debug("could not unregister the Connect sign-in provider", exc_info=True)
+    _provider = None
 
 
 def start_daemon(port: int, *, client=None, tunnel=None) -> bool:
@@ -302,6 +350,7 @@ def start_daemon(port: int, *, client=None, tunnel=None) -> bool:
     config = ConnectConfig.load()
     if config is None or not config.daemon_id:
         return False
+    _register_provider()
     stop_daemon()  # idempotent: a registration made while serving restarts the workers
     apply_public_url(config.tunnel_hostname)
     _tunnel = tunnel or Tunnel(config)
@@ -338,6 +387,7 @@ def disconnect(*, client=None) -> dict:
         except Exception:
             logger.warning("could not revoke the Connect registration remotely", exc_info=True)
     ConnectConfig.clear()
+    _unregister_provider()
     apply_public_url(None)
     return status()
 

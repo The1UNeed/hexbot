@@ -11,7 +11,7 @@ from hexbot.home import DATABASE_NAME, ensure_layout, hexbot_home
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);
@@ -125,6 +125,10 @@ CREATE INDEX IF NOT EXISTS idx_bot_incidents_bot_open ON bot_incidents(bot,resol
     8: """
 DROP TABLE IF EXISTS core_memory;
 DROP TABLE IF EXISTS memory_entries;
+""",
+    # v11: Connect grants log in once, and a restart must not forget which ones did.
+    11: """
+CREATE TABLE IF NOT EXISTS spent_grants(jti TEXT PRIMARY KEY, exp REAL NOT NULL);
 """,
 }
 

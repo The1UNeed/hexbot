@@ -81,3 +81,4 @@ jobs:
       - run: pnpm --filter ./apps/site run check
       - run: pnpm --filter ./apps/connect run typecheck
       - run: pnpm --filter ./apps/connect run test --run
+      - run: pnpm --filter ./apps/connect run lint

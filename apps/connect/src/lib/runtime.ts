@@ -9,4 +9,6 @@ const global = globalThis as typeof globalThis & { __hexbotConnectRuntime?: Runt
 const runtime = (): Runtime => global.__hexbotConnectRuntime ??= { store: createStore(), tunnels: createTunnelProvider() };
 export const getStore = () => runtime().store;
 export const getTunnels = () => runtime().tunnels;
+/** True when daemons are reached on loopback instead of a tunnel hostname (development, tests). */
+export const fakeTunnels = () => getTunnels().kind === "fake";
 export function setRuntimeForTests(next: Runtime) { global.__hexbotConnectRuntime = next; }

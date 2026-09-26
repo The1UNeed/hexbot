@@ -30,6 +30,7 @@ import {
   type UpdateState
 } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
+import { connectBaseUrl } from '../../lib/connect-url'
 import { pairWithDaemon, targetOrigin } from '../../lib/connection'
 import type { ApprovalMode, ModelOption, PairingCode, Provider } from '../../lib/types'
 import { daemonBehind } from '../../lib/version-skew'
@@ -203,11 +204,45 @@ export function ConnectSettings() {
       {status?.registered ? (
         <div>
           <dl className="grid grid-cols-[auto_1fr] gap-2">
+            <dt className="text-muted">Address</dt>
+            <dd>
+              <a
+                className="text-accent hover:underline"
+                href={`https://${status.tunnel_hostname}`}
+                onClick={event => {
+                  if (getBridge()) {
+                    event.preventDefault()
+                    void open(`https://${status.tunnel_hostname}`)
+                  }
+                }}
+                rel="noreferrer"
+                target="_blank"
+              >
+                {status.tunnel_hostname}
+              </a>
+            </dd>
             <dt className="text-muted">Tunnel</dt>
-            <dd>{status.tunnel_hostname}</dd>
-            <dt className="text-muted">Status</dt>
             <dd>{status.tunnel_running ? 'Running' : 'Stopped'}</dd>
           </dl>
+          <p className="mt-3 text-secondary text-muted">
+            Open the address in any browser and sign in with Hexbot Connect, or manage this
+            daemon and your signed-in apps at{' '}
+            <a
+              className="text-accent hover:underline"
+              href={`${connectBaseUrl()}/connect`}
+              onClick={event => {
+                if (getBridge()) {
+                  event.preventDefault()
+                  void open(`${connectBaseUrl()}/connect`)
+                }
+              }}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {connectBaseUrl().replace(/^https?:\/\//, '')}
+            </a>
+            .
+          </p>
           <Button
             className="mt-5"
             onClick={() =>

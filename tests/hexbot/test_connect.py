@@ -195,9 +195,64 @@ def test_restarting_workers_stops_the_previous_heartbeat(isolated_home):
         def start(self, port): pass
         def stop(self): pass
 
-    assert connect.start_daemon(9001, client=Client(), tunnel=NoTunnel())
-    assert connect.start_daemon(9002, client=Client(), tunnel=NoTunnel())
-    release.set()
-    connect.stop_daemon()
+    from hermes_cli.dashboard_auth.registry import clear_providers
+    try:
+        assert connect.start_daemon(9001, client=Client(), tunnel=NoTunnel())
+        assert connect.start_daemon(9002, client=Client(), tunnel=NoTunnel())
+    finally:
+        release.set()
+        connect.stop_daemon()
+        clear_providers()
     assert ports == [9001, 9002]
     assert connect.status()["last_heartbeat_at"] is None or ports[-1] == 9002
+
+
+def test_start_daemon_registers_connect_sign_in_and_disconnect_removes_it(isolated_home):
+    from hermes_cli.dashboard_auth.registry import clear_providers, list_providers
+    from hexbot import connect
+
+    connect.ConnectConfig(daemon_id="daemon-1", daemon_token="secret", slug="kitchen").save()
+
+    class Client:
+        def heartbeat(self, *_args): return {"ok": True}
+        def revoke(self, *_args): return {"ok": True}
+
+    class NoTunnel:
+        running = False
+        def start(self, port): pass
+        def stop(self): pass
+
+    clear_providers()
+    try:
+        assert connect.start_daemon(9001, client=Client(), tunnel=NoTunnel())
+        assert [p.name for p in list_providers()] == ["connect"]
+        assert connect.disconnect(client=Client())["registered"] is False
+        assert list_providers() == []
+    finally:
+        connect.stop_daemon()
+        clear_providers()
+
+
+def test_cli_connect_uses_name_and_short_circuits_when_registered(monkeypatch, capsys):
+    from hexbot import cli, connect
+
+    names = []
+    config = connect.ConnectConfig(api_base="https://example.test", daemon_id="daemon-1",
+                                   tunnel_hostname="kitchen.connect.hexbot.app")
+    monkeypatch.setattr(connect, "register", lambda name, *, client: names.append(name) or config)
+    monkeypatch.setattr(connect, "status", lambda: {"registered": False, "tunnel_hostname": None})
+    assert cli.main(["connect", "--name", "Kitchen"]) == 0
+    assert names == ["Kitchen"]
+    assert capsys.readouterr().out.splitlines() == [
+        "Connected: https://kitchen.connect.hexbot.app",
+        "Open it in a browser: https://kitchen.connect.hexbot.app",
+        "Manage daemons: https://example.test/connect",
+    ]
+    monkeypatch.setattr(connect, "status",
+                        lambda: {"registered": True, "tunnel_hostname": "kitchen.connect.hexbot.app"})
+    assert cli.main(["connect"]) == 0
+    assert names == ["Kitchen"]
+    assert capsys.readouterr().out.splitlines() == [
+        "Already connected: https://kitchen.connect.hexbot.app",
+        "Run `hexbot connect disconnect` first to register again.",
+    ]

@@ -21,4 +21,5 @@ export default async function proxy(request: NextRequest, event: NextFetchEvent)
   const response = (withClerk ? await withClerk(request, event) : null) ?? NextResponse.next();
   return api && response instanceof Response ? cors(response) : response;
 }
-export const config = { matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"] };
+// PostHog traffic (/ingest) and static files skip Clerk.
+export const config = { matcher: ["/((?!_next/static|_next/image|ingest|favicon.ico|icon.svg|apple-touch-icon.png|og.png).*)"] };
