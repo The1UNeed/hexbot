@@ -140,9 +140,10 @@ the GitHub release; the packages are.
 The packaged app checks its track 15 seconds after launch and every 4
 minutes after that (`apps/desktop/src/main/updater.ts`). It never downloads
 on its own: when a version is available, a pill in the roster footer and the
-Settings, Updates page offer "Download update", then "Restart to update".
-Restarting shows an "Installing update" notice with no buttons until the app
-closes and reopens on the new version.
+Settings, Updates page offer "Update" (`apps/web/src/app/confirm-update.tsx`).
+It asks "Are you sure you want to update to version X?"; Yes downloads the
+update if it is not on disk yet, then shows an "Installing update" notice
+with no buttons until the app closes and reopens on the new version.
 Every check, download, and failure is written to `<home>/logs/desktop.log`.
 A nightly install ignores a stable version in the bucket and the other way
 round; switching tracks in Settings runs a check on the new track at once,

@@ -30,7 +30,7 @@ describe('describePill', () => {
     }
     expect(describePill(available, null, null, null)).toMatchObject({
       action: 'download',
-      label: 'Download update'
+      label: 'Update'
     })
     expect(
       describePill({ ...available, percent: 42, status: 'downloading' }, null, null, null)
@@ -64,7 +64,7 @@ describe('describePill', () => {
       )
     ).toMatchObject({
       action: 'download',
-      label: 'Retry download',
+      label: 'Retry update',
       title: 'Download failed: disk full'
     })
   })
@@ -94,6 +94,6 @@ describe('describePill', () => {
 
   it('shows the app update before the daemon one', () => {
     const available = { ...idle, availableVersion: '3.0.0', status: 'available' as const }
-    expect(describePill(available, null, '2.0.0', '1.0.0')?.label).toBe('Download update')
+    expect(describePill(available, null, '2.0.0', '1.0.0')?.label).toBe('Update')
   })
 })
