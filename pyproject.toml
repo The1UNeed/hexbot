@@ -588,6 +588,8 @@ py-modules = [
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*", "hexbot", "hexbot.*"]
 
 [tool.setuptools.package-data]
+# The Hex Connect sidecar, run by Node from hexbot/connect.py.
+hexbot = ["connect_agent.mts"]
 hermes_cli = ["observability/schemas/*.json", "data/*.json", "local_runtime/*.json"]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —

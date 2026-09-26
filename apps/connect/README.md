@@ -24,7 +24,7 @@ Point a daemon at a local instance with `HEXBOT_CONNECT_URL=http://localhost:300
 
 ## Hostnames
 
-Each daemon gets `<slug>.<CONNECT_DOMAIN>`, for example `amber-otter-1234.hexbot.app`. The name sits one label under the zone so Cloudflare's Universal SSL certificate (`*.hexbot.app`) covers it. Slugs are always `adjective-noun-number`, so they never collide with `connect` or `www`.
+Each daemon gets `<slug>.<CONNECT_DOMAIN>`, where the slug is 16 hex characters (64 random bits), so hostnames cannot be guessed. The name sits one label under the zone so Cloudflare's Universal SSL wildcard certificate covers it. `CONNECT_DOMAIN` is a registrable domain of its own, never `hexbot.app`: every daemon is controlled by its user, and sharing a site with Connect would let one set cookies for it (`docs/deploy.md`).
 
 `CONNECT_INGRESS_PORT` is only the initial tunnel target. Every daemon heartbeat carries the port `hexbot serve` listens on, and the tunnel configuration is updated when it changes.
 
@@ -51,13 +51,14 @@ Production needs these environment variables, all from `.env.example`:
 | Variable | Source |
 | --- | --- |
 | `CONNECT_BASE_URL` | `https://connect.hexbot.app` |
-| `CONNECT_DOMAIN` | `hexbot.app` |
+| `CONNECT_DOMAIN` | the tunnel zone, a domain of its own (not `hexbot.app`) |
 | `DATABASE_URL` | Neon project connection string |
 | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY` | Clerk application (production instance) |
 | `NEXT_PUBLIC_POSTHOG_KEY` | the PostHog project shared with hexbot.app (Production only) |
-| `CF_API_TOKEN` | Cloudflare API token with Account: Cloudflare Tunnel: Edit and Zone: DNS: Edit |
-| `CF_ACCOUNT_ID`, `CF_ZONE_ID` | Cloudflare dashboard, zone `hexbot.app` |
+| `CF_API_TOKEN` | Cloudflare API token with Account: Cloudflare Tunnel: Edit and Zone: DNS: Edit on the tunnel zone only |
+| `CF_ACCOUNT_ID`, `CF_ZONE_ID` | Cloudflare dashboard, the tunnel zone |
 | `CONNECT_SIGNING_KEY_JWK` | one line from `node scripts/make-signing-key.mjs` |
+| `CONNECT_JWKS_EXTRA` | optional JSON array of public JWKs to publish beside the signing key, for rotation (`docs/connect.md`) |
 
 Do not set `DEV_USER_ID` in production. Run the migration against the production database, then redeploy from the Vercel dashboard, then confirm `https://connect.hexbot.app/api/health` returns `ready: true`.
 

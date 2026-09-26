@@ -151,13 +151,12 @@ def _connect_register_start(params) -> dict:
 def _connect_register_poll(params) -> dict:
     client = connect.ConnectClient()
     result = client.register_poll(_required(params, "device_code"))
-    state = result.get("status", "approved" if result.get("daemon_token") else "pending")
-    result["status"] = state
+    state = result["status"]
     if state == "approved":
         connect.save_registration(result, client.api_base)
         from hexbot import serve
         connect.start_daemon(serve.state()["port"])
-    return result
+    return {"status": state}  # the tokens stay in connect.json, never in the renderer
 
 
 def _rooms_create(p):

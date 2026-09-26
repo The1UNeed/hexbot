@@ -2,7 +2,8 @@
 
 ## Hexbot suites
 
-- Python: `./venv/bin/pytest tests/hexbot -q`
+- Python: `./venv/bin/pytest tests/hexbot -q` (the Connect tests also run the Node sidecar; they skip without `node`)
+- Connect sidecar: `node --test tests/hexbot/*.test.mts`
 - Web bundle: `pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint && pnpm --filter ./apps/web run build`
 - Desktop: `pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run && pnpm --filter ./apps/desktop run build`
 - Packaging and release scripts: `node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs`

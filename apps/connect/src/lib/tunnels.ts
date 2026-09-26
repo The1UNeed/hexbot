@@ -1,7 +1,9 @@
-// Tunnel hostnames sit one label under the zone (`<slug>.hexbot.app`) so Cloudflare's
-// Universal SSL certificate (`*.hexbot.app`) covers them; deeper names would not be.
+// Tunnel hostnames sit one label under CONNECT_DOMAIN, a zone of its own (docs/deploy.md), so Cloudflare's
+// Universal SSL wildcard certificate covers them; deeper names would not be.
 // `kind` rather than instanceof: Next gives pages and route handlers separate module graphs, so the class identity differs.
-export interface TunnelProvider { readonly kind: "cloudflare" | "fake" | "unconfigured"; create(slug: string, ingressPort: number): Promise<{ tunnelId: string; token: string; hostname: string }>; setIngress(tunnelId: string, hostname: string, ingressPort: number): Promise<void>; delete(tunnelId: string): Promise<void> }
+// Tunnels are locally managed: the daemon's sidecar sets ingress to its own loopback port, and this
+// service never sends an ingress config, so a leaked daemon token cannot repoint a tunnel.
+export interface TunnelProvider { readonly kind: "cloudflare" | "fake" | "unconfigured"; create(slug: string): Promise<{ tunnelId: string; hostname: string }>; connectorToken(tunnelId: string): Promise<string>; delete(tunnelId: string): Promise<void> }
 
 interface CloudflareResult<T> { success: boolean; errors?: Array<{ message: string }>; result: T }
 
@@ -14,20 +16,16 @@ export class CloudflareTunnelProvider implements TunnelProvider {
     if (!response.ok || !data.success) throw new Error(data.errors?.[0]?.message ?? `Cloudflare request failed (${response.status})`);
     return data.result;
   }
-  async create(slug: string, ingressPort: number) {
-    const created = await this.request<{ id: string }>(`/accounts/${this.accountId}/cfd_tunnel`, { method: "POST", body: JSON.stringify({ name: `hexbot-${slug}`, config_src: "cloudflare" }) });
+  async create(slug: string) {
+    const created = await this.request<{ id: string }>(`/accounts/${this.accountId}/cfd_tunnel`, { method: "POST", body: JSON.stringify({ name: `hexbot-${slug}`, config_src: "local" }) });
     try {
       const hostname = `${slug}.${this.domain}`;
-      await this.setIngress(created.id, hostname, ingressPort);
       await this.request<{ id: string }>(`/zones/${this.zoneId}/dns_records`, { method: "POST", body: JSON.stringify({ type: "CNAME", name: hostname, content: `${created.id}.cfargotunnel.com`, proxied: true }) });
-      const token = await this.request<string>(`/accounts/${this.accountId}/cfd_tunnel/${created.id}/token`, { method: "GET" });
-      return { tunnelId: created.id, token, hostname };
+      return { tunnelId: created.id, hostname };
     } catch (error) { await this.delete(created.id).catch(() => undefined); throw error; }
   }
-  /** Points the remotely managed tunnel at the daemon's current port; the daemon reports it on every heartbeat. */
-  async setIngress(tunnelId: string, hostname: string, ingressPort: number) {
-    await this.request(`/accounts/${this.accountId}/cfd_tunnel/${tunnelId}/configurations`, { method: "PUT", body: JSON.stringify({ config: { ingress: [{ hostname, service: `http://127.0.0.1:${ingressPort}` }, { service: "http_status:404" }] } }) });
-  }
+  /** Fetched when the daemon collects its registration, so no tunnel token is stored here. */
+  connectorToken(tunnelId: string) { return this.request<string>(`/accounts/${this.accountId}/cfd_tunnel/${tunnelId}/token`, { method: "GET" }); }
   async delete(tunnelId: string) {
     const target = `${tunnelId}.cfargotunnel.com`;
     const records = await this.request<Array<{ id: string }>>(`/zones/${this.zoneId}/dns_records?type=CNAME&content=${encodeURIComponent(target)}`, { method: "GET" });
@@ -38,9 +36,9 @@ export class CloudflareTunnelProvider implements TunnelProvider {
 
 export class FakeTunnelProvider implements TunnelProvider {
   readonly kind = "fake" as const;
-  deleted: string[] = []; ingress: Record<string, number> = {};
-  async create(slug: string, _ingressPort: number) { return { tunnelId: `fake-tunnel-${slug}`, token: `fake-tunnel-token-${slug}`, hostname: `${slug}.${process.env.CONNECT_DOMAIN ?? "hexbot.test"}` }; }
-  async setIngress(tunnelId: string, _hostname: string, ingressPort: number) { this.ingress[tunnelId] = ingressPort; }
+  deleted: string[] = [];
+  async create(slug: string) { return { tunnelId: `fake-tunnel-${slug}`, hostname: `${slug}.${process.env.CONNECT_DOMAIN ?? "hexbot.test"}` }; }
+  async connectorToken(tunnelId: string) { return `fake-tunnel-token-${tunnelId}`; }
   async delete(tunnelId: string) { this.deleted.push(tunnelId); }
 }
 
@@ -48,8 +46,8 @@ export class FakeTunnelProvider implements TunnelProvider {
 export class UnconfiguredTunnelProvider implements TunnelProvider {
   readonly kind = "unconfigured" as const;
   private fail(): never { throw new Error("Cloudflare tunnel credentials are not configured"); }
-  async create(_slug: string, _ingressPort: number): Promise<never> { this.fail(); }
-  async setIngress(): Promise<never> { this.fail(); }
+  async create(_slug: string): Promise<never> { this.fail(); }
+  async connectorToken(): Promise<never> { this.fail(); }
   async delete(): Promise<never> { this.fail(); }
 }
 

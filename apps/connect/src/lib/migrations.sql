@@ -1,8 +1,11 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE IF NOT EXISTS users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), clerk_user_id text UNIQUE NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS daemons (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid NOT NULL REFERENCES users(id), name text NOT NULL, slug text UNIQUE NOT NULL, tunnel_id text NOT NULL, tunnel_hostname text NOT NULL, token_hash text UNIQUE NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), last_seen_at timestamptz, revoked_at timestamptz);
-CREATE TABLE IF NOT EXISTS registrations (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_code text NOT NULL, device_code_hash text UNIQUE NOT NULL, daemon_name text NOT NULL, platform text NOT NULL, ingress_port integer NOT NULL DEFAULT 9119, user_id uuid REFERENCES users(id), expires_at timestamptz NOT NULL, approved_at timestamptz, consumed_at timestamptz, credentials jsonb);
+CREATE TABLE IF NOT EXISTS registrations (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_code text NOT NULL, device_code_hash text UNIQUE NOT NULL, daemon_name text NOT NULL, platform text NOT NULL, ingress_port integer NOT NULL DEFAULT 9119, user_id uuid REFERENCES users(id), expires_at timestamptz NOT NULL, approved_at timestamptz, consumed_at timestamptz);
 ALTER TABLE daemons ADD COLUMN IF NOT EXISTS ingress_port integer NOT NULL DEFAULT 9119;
 CREATE INDEX IF NOT EXISTS registrations_user_code_idx ON registrations(user_code);
 CREATE TABLE IF NOT EXISTS client_sessions (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid NOT NULL REFERENCES users(id), token_hash text UNIQUE NOT NULL, device_name text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), last_seen_at timestamptz, revoked_at timestamptz);
 CREATE TABLE IF NOT EXISTS grant_codes (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), code_hash text UNIQUE NOT NULL, daemon_id uuid NOT NULL REFERENCES daemons(id), user_id uuid NOT NULL REFERENCES users(id), device_name text NOT NULL, challenge text NOT NULL, redirect_uri text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL, consumed_at timestamptz);
+-- Registrations point at their daemon and hold no secrets; tokens are minted when the daemon collects them.
+ALTER TABLE registrations ADD COLUMN IF NOT EXISTS daemon_id uuid REFERENCES daemons(id);
+ALTER TABLE registrations DROP COLUMN IF EXISTS credentials;

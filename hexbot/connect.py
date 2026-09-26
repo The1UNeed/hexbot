@@ -1,4 +1,5 @@
-"""Hex Connect registration, tunnel supervision, and daemon heartbeat."""
+"""Hex Connect registration and daemon heartbeat. The TypeScript sidecar
+(connect_agent.mts) runs cloudflared and verifies grants."""
 
 from __future__ import annotations
 
@@ -6,10 +7,10 @@ import json
 import logging
 import os
 import platform
+import shutil
 import subprocess
 import threading
 import time
-import urllib.request
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
@@ -39,12 +40,13 @@ class ConnectConfig:
     tunnel_hostname: str = ""
     tunnel_token: str = ""
     registered_at: float | None = None
-    jwks_url: str = ""
+    # Pinned at registration: grants must name this owner and issuer and be signed by one of these keys.
+    owner_id: str = ""
+    issuer: str = ""
+    keys: list = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.api_base = self.api_base.rstrip("/")
-        if not self.jwks_url:
-            self.jwks_url = f"{self.api_base}/.well-known/jwks.json"
 
     @classmethod
     def path(cls) -> Path:
@@ -58,10 +60,14 @@ class ConnectConfig:
         try:
             raw = json.loads(path.read_text())
             allowed = {field.name for field in fields(cls)}
-            return cls(**{key: value for key, value in raw.items() if key in allowed})
+            config = cls(**{key: value for key, value in raw.items() if key in allowed})
         except (OSError, ValueError, TypeError):
             logger.warning("could not read %s", path, exc_info=True)
             return None
+        if config.daemon_id and not (config.owner_id and config.issuer and config.keys):
+            logger.warning("this Hex Connect registration predates owner pinning; run `hexbot connect` again")
+            return None
+        return config
 
     def save(self) -> None:
         path = self.path()
@@ -116,9 +122,6 @@ class ConnectClient:
                           headers={"Authorization": f"Bearer {daemon_token}"},
                           json={"port": port})
 
-    def jwks(self) -> dict:
-        return self._json("GET", "/.well-known/jwks.json")
-
     def exchange_grant(self, daemon_id: str, daemon_token: str, *, code: str,
                        code_verifier: str, redirect_uri: str) -> dict:
         """Trade a browser sign-in code for a grant. A rejected code (4xx) is not an outage."""
@@ -145,7 +148,8 @@ class ConnectClient:
 
 
 def save_registration(result: dict, api_base: str) -> ConnectConfig:
-    required = ("daemon_id", "daemon_token", "slug", "tunnel_hostname", "tunnel_token")
+    required = ("daemon_id", "daemon_token", "slug", "tunnel_hostname", "tunnel_token",
+                "owner_id", "issuer", "keys")
     if any(not result.get(key) for key in required):
         raise HexbotError(5241, "Connect returned an incomplete registration")
     config = ConnectConfig(api_base=api_base, registered_at=time.time(),
@@ -164,7 +168,7 @@ def register(daemon_name: str, *, client: ConnectClient, sleep=time.sleep, out=p
         deadline = time.monotonic() + REGISTER_TIMEOUT
         while time.monotonic() < deadline:
             result = client.register_poll(started["device_code"])
-            state = result.get("status", "approved" if result.get("daemon_token") else "pending")
+            state = result["status"]
             if state == "approved":
                 return save_registration(result, client.api_base)
             if state == "expired":
@@ -179,102 +183,50 @@ def register(daemon_name: str, *, client: ConnectClient, sleep=time.sleep, out=p
         raise HexbotError(5241, "Connect service unreachable") from exc
 
 
-CLOUDFLARED_VERSION = "2026.8.0"
-CLOUDFLARED_URLS = {
-    ("darwin", "arm64"): f"https://github.com/cloudflare/cloudflared/releases/download/{CLOUDFLARED_VERSION}/cloudflared-darwin-arm64.tgz",
-    ("darwin", "x86_64"): f"https://github.com/cloudflare/cloudflared/releases/download/{CLOUDFLARED_VERSION}/cloudflared-darwin-amd64.tgz",
-    ("linux", "x86_64"): f"https://github.com/cloudflare/cloudflared/releases/download/{CLOUDFLARED_VERSION}/cloudflared-linux-amd64",
-}
+AGENT = Path(__file__).with_name("connect_agent.mts")
 
 
-def _download(url: str, destination: Path) -> None:
-    urllib.request.urlretrieve(url, destination)
+def _agent(*args: str) -> tuple[list[str], dict]:
+    """Command and environment for the sidecar. The desktop app sets HEXBOT_NODE to its own
+    Electron binary, which runs as Node under ELECTRON_RUN_AS_NODE; elsewhere Node 24+ is on PATH."""
+    node = os.environ.get("HEXBOT_NODE")
+    node = node if node and os.path.exists(node) else shutil.which("node")  # a moved or unmounted app
+    if not node:
+        raise HexbotError(5243, "Hex Connect needs Node.js 24 or newer")
+    env = {**os.environ, "HEXBOT_HOME": str(hexbot_home()), "ELECTRON_RUN_AS_NODE": "1"}
+    return [node, str(AGENT), *args], env
+
+
+def verify_grant(grant: str) -> dict:
+    """Claims of a grant the sidecar checked against the pinned owner, issuer, and keys. Raises ValueError."""
+    if ConnectConfig.load() is None:
+        raise ValueError("Hex Connect is not set up")  # no Node process for a login Connect cannot serve
+    command, env = _agent("verify")
+    result = subprocess.run(command, env=env, input=grant, capture_output=True, text=True, timeout=20)
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or "invalid Connect grant")
+    return json.loads(result.stdout)
 
 
 class Tunnel:
-    def __init__(self, config: ConnectConfig | None = None, *, spawn=None,
-                 download=None, sleep=None):
-        self.config = config or ConnectConfig.load()
-        self.spawn = spawn or subprocess.Popen
-        self.download = download or _download
-        self.sleep = sleep
-        self.process = None
-        self.thread: threading.Thread | None = None
-        self._stop = threading.Event()
+    """The sidecar supervising cloudflared. It exits, with cloudflared, when its stdin closes."""
 
-    def ensure_cloudflared(self) -> Path:
-        binary = hexbot_home() / "bin" / "cloudflared"
-        if binary.is_file():
-            return binary
-        key = (platform.system().lower(), platform.machine().lower())
-        aliases = {"amd64": "x86_64", "x64": "x86_64", "aarch64": "arm64"}
-        key = (key[0], aliases.get(key[1], key[1]))
-        url = CLOUDFLARED_URLS.get(key)
-        if url is None:
-            raise HexbotError(5242, f"cloudflared is unsupported on {key[0]} {key[1]}")
-        binary.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        downloaded = binary.with_suffix(".download")
-        self.download(url, downloaded)
-        if url.endswith(".tgz"):
-            import tarfile
-            with tarfile.open(downloaded) as archive:
-                member = next(item for item in archive.getmembers()
-                              if Path(item.name).name == "cloudflared")
-                member.name = "cloudflared"
-                archive.extract(member, binary.parent, filter="data")
-            downloaded.unlink()
-        else:
-            downloaded.replace(binary)
-        binary.chmod(0o700)
-        return binary
+    def __init__(self, config: ConnectConfig | None = None, *, spawn=subprocess.Popen):
+        self.config = config or ConnectConfig.load()
+        self.spawn = spawn
+        self.process = None
+        self.stopped = False
 
     def start(self, port: int) -> None:
-        if not self.config or not self.config.tunnel_token or (self.thread and self.thread.is_alive()):
-            return
-        binary = self.ensure_cloudflared()
-        log_path = hexbot_home() / "logs" / "cloudflared.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        self._stop.clear()
-        log = log_path.open("ab")
-        command = [str(binary), "tunnel", "run", "--token", self.config.tunnel_token]
-        self.process = self.spawn(command, stdout=log, stderr=log)
-
-        def supervise():
-            backoff = 1
-            try:
-                while not self._stop.is_set():
-                    try:
-                        self.process.wait()
-                    except Exception:
-                        logger.debug("cloudflared failed", exc_info=True)
-                    finally:
-                        self.process = None
-                    if self.sleep is None:
-                        if self._stop.wait(backoff):
-                            break
-                    else:
-                        self.sleep(backoff)
-                        if self._stop.is_set():
-                            break
-                    backoff = min(backoff * 2, 16)
-                    if not self._stop.is_set():
-                        try:
-                            self.process = self.spawn(command, stdout=log, stderr=log)
-                        except Exception:
-                            logger.debug("could not restart cloudflared", exc_info=True)
-            finally:
-                log.close()
-
-        self.thread = threading.Thread(target=supervise, name="hexbot-cloudflared", daemon=True)
-        self.thread.start()
+        if self.config and self.config.tunnel_token and not self.running and not self.stopped:
+            command, env = _agent("tunnel", str(port))
+            self.process = self.spawn(command, env=env, stdin=subprocess.PIPE)
 
     def stop(self) -> None:
-        self._stop.set()
-        process = self.process
-        if process is not None and process.poll() is None:
-            process.terminate()
-        if self.thread and self.thread is not threading.current_thread():
-            self.thread.join(timeout=5)
+        self.stopped = True
+        if self.running:
+            self.process.stdin.close()
+            self.process.wait(timeout=5)
 
     @property
     def running(self) -> bool:
@@ -353,14 +305,17 @@ def start_daemon(port: int, *, client=None, tunnel=None) -> bool:
     _register_provider()
     stop_daemon()  # idempotent: a registration made while serving restarts the workers
     apply_public_url(config.tunnel_hostname)
-    _tunnel = tunnel or Tunnel(config)
-    _tunnel.start(port)
+    tunnel = _tunnel = tunnel or Tunnel(config)
     api = client or ConnectClient(config.api_base)
     stop = _heartbeat_stop = threading.Event()
 
     def heartbeat_loop():
         global _last_heartbeat_at, _last_error
         while not stop.is_set():
+            try:
+                tunnel.start(port)  # (re)starts the sidecar if it is not running; a no-op while it runs
+            except (HexbotError, OSError) as exc:  # no Node: serve on, LAN pairing and Tailscale do not need it
+                logger.warning("Hex Connect tunnel not started: %s", exc)
             try:
                 api.heartbeat(config.daemon_id, config.daemon_token, port)
                 if stop.is_set():
@@ -405,11 +360,20 @@ def stop_daemon() -> None:
     _heartbeat_thread = None
 
 
+def _cloudflared_up() -> bool:
+    """Whether the cloudflared the sidecar last started is still alive (it clears the pid when cloudflared exits)."""
+    try:
+        os.kill(int((hexbot_home() / "cloudflared.pid").read_text()), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def status() -> dict:
     config = ConnectConfig.load()
     return {"registered": bool(config and config.daemon_id),
             "daemon_id": config.daemon_id if config else None,
             "slug": config.slug if config else None,
             "tunnel_hostname": config.tunnel_hostname if config else None,
-            "tunnel_running": bool(_tunnel and _tunnel.running),
+            "tunnel_running": bool(_tunnel and _tunnel.running and _cloudflared_up()),
             "last_heartbeat_at": _last_heartbeat_at, "last_error": _last_error}

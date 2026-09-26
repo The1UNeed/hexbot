@@ -89,7 +89,7 @@ main { flex: 1; width: 100%; }
 .status { display: inline-flex; align-items: center; gap: .45rem; font-size: .9rem; color: var(--mute); }
 .status.online { color: var(--ink); }
 
-.notice { display: flex; align-items: flex-start; gap: .6rem; max-width: 40em; padding: .8rem 1rem; border-radius: 14px; background: var(--wash); color: var(--mute); font-size: .95rem; line-height: 1.45; }
+.notice { max-width: 40em; padding: .8rem 1rem; border-radius: 14px; background: var(--wash); color: var(--mute); font-size: .95rem; line-height: 1.45; }
 .notice-error { background: #fff2f1; color: var(--danger); }
 .notice-success { background: #edf9f0; color: #14532d; }
 .notice a, .notice-error a { color: inherit; }

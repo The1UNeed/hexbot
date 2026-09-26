@@ -14,11 +14,12 @@ export async function POST(request: Request) {
   if (!registration) return jsonError("invalid_user_code", "The user code is invalid", 404);
   if (registration.expiresAt.getTime() <= Date.now()) return jsonError("expired", "The user code has expired", 410);
   if (registration.approvedAt) return jsonError("already_approved", "This registration is already approved", 409);
-  const user = await getStore().getOrCreateUser(clerkId); const slug = await generateSlug(getStore());
-  const tunnel = await getTunnels().create(slug, registration.ingressPort); const daemonToken = randomToken("hxd_");
+  const user = await getStore().getOrCreateUser(clerkId); const slug = generateSlug();
+  const tunnel = await getTunnels().create(slug);
   try {
-    const daemon = await getStore().createDaemon({ userId: user.id, name: registration.daemonName, slug, tunnelId: tunnel.tunnelId, tunnelHostname: tunnel.hostname, ingressPort: registration.ingressPort, tokenHash: hashToken(daemonToken) });
-    await getStore().approveRegistration(registration.id, user.id, { daemonToken, daemonId: daemon.id, slug, tunnelToken: tunnel.token, tunnelHostname: tunnel.hostname });
+    // The daemon's real token is minted when it polls; until then the row holds the hash of a token nobody has.
+    const daemon = await getStore().createDaemon({ userId: user.id, name: registration.daemonName, slug, tunnelId: tunnel.tunnelId, tunnelHostname: tunnel.hostname, ingressPort: registration.ingressPort, tokenHash: hashToken(randomToken()) });
+    await getStore().approveRegistration(registration.id, user.id, daemon.id);
     return NextResponse.json({ approved: true, daemon_id: daemon.id, name: daemon.name, hostname: daemon.tunnelHostname });
   } catch (error) { await getTunnels().delete(tunnel.tunnelId).catch(() => undefined); throw error; }
 }

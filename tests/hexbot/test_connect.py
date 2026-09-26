@@ -1,6 +1,6 @@
 import json
+import shutil
 import stat
-import threading
 import time
 from pathlib import Path
 
@@ -11,19 +11,33 @@ from ruamel.yaml import YAML
 def approved(**extra):
     return {"status": "approved", "daemon_id": "daemon-1", "daemon_token": "secret",
             "slug": "kitchen", "tunnel_hostname": "kitchen.connect.hexbot.app",
-            "tunnel_token": "tunnel", **extra}
+            "tunnel_token": "tunnel", "owner_id": "user-1", "issuer": "https://example.test",
+            "keys": [{"kid": "key-1"}], **extra}
+
+
+def pinned(**extra):
+    """A registration that pins its owner, issuer, and keys, as every current one does."""
+    from hexbot.connect import ConnectConfig
+    fields = {"daemon_id": "daemon-1", "daemon_token": "secret", "slug": "kitchen", "owner_id": "user-1",
+              "issuer": "https://example.test", "keys": [{"kid": "key-1"}], **extra}
+    return ConnectConfig(**fields)
 
 
 def test_config_round_trip_permissions_and_clear(isolated_home):
     from hexbot.connect import ConnectConfig
 
-    config = ConnectConfig(api_base="https://example.test/", daemon_id="daemon-1",
-                           daemon_token="secret", slug="kitchen")
+    config = pinned(api_base="https://example.test/")
     config.save()
-    assert ConnectConfig.load() == config
+    assert ConnectConfig.load() == config and config.api_base == "https://example.test"
     assert stat.S_IMODE((isolated_home / "connect.json").stat().st_mode) == 0o600
-    assert config.jwks_url == "https://example.test/.well-known/jwks.json"
     ConnectConfig.clear()
+    assert ConnectConfig.load() is None
+
+
+def test_a_registration_without_pins_must_register_again(isolated_home):
+    from hexbot.connect import ConnectConfig
+
+    ConnectConfig(daemon_id="daemon-1", daemon_token="secret").save()  # written before owner pinning
     assert ConnectConfig.load() is None
 
 
@@ -84,37 +98,77 @@ def test_public_url_is_mirrored_and_removed_without_losing_keys(isolated_home):
         assert data == {"model": "keep", "dashboard": {"theme": "dark"}}
 
 
-def test_tunnel_supervisor_restarts_with_backoff_and_stops(isolated_home):
-    from hexbot.connect import ConnectConfig, Tunnel
+@pytest.mark.skipif(shutil.which("node") is None, reason="the Connect sidecar runs on Node")
+def test_sidecar_runs_cloudflared_on_loopback_with_the_token_off_argv(isolated_home):
+    from hexbot.connect import Tunnel
 
-    binary = isolated_home / "bin/cloudflared"
-    binary.parent.mkdir()
-    binary.write_text("fake")
-    binary.chmod(0o700)
-    sleeps, commands, release = [], [], threading.Event()
-
-    class Child:
-        def __init__(self, number): self.number, self.terminated = number, False
-        def wait(self):
-            if self.number >= 4: release.wait(1)
-            return 1
-        def poll(self): return None if self.number >= 4 and not self.terminated else 1
-        def terminate(self): self.terminated = True; release.set()
-
-    def spawn(command, **_kwargs):
-        commands.append(command)
-        return Child(len(commands))
-
-    tunnel = Tunnel(ConnectConfig(tunnel_token="token"), spawn=spawn,
-                    sleep=lambda seconds: sleeps.append(seconds))
+    fake = isolated_home / "bin/cloudflared-2026.8.0"  # the pinned version, so nothing downloads
+    fake.parent.mkdir()
+    fake.write_text('#!/bin/sh\necho "$@" > "$HEXBOT_HOME/args"\necho "$TUNNEL_TOKEN" > "$HEXBOT_HOME/token"\nexec sleep 30\n')
+    fake.chmod(0o700)
+    config = pinned(tunnel_token="tunnel-secret")
+    config.save()
+    tunnel = Tunnel(config)
     tunnel.start(9119)
-    deadline = time.time() + 1
-    while len(commands) < 4 and time.time() < deadline:
-        time.sleep(0.005)
-    tunnel.stop()
-    assert sleeps[:3] == [1, 2, 4]
-    assert commands[0][-4:] == ["tunnel", "run", "--token", "token"]
-    assert not tunnel.running
+    deadline = time.time() + 10
+    while not (isolated_home / "token").exists() and time.time() < deadline:
+        time.sleep(0.05)
+    settings = isolated_home / "cloudflared.yml"
+    assert (isolated_home / "args").read_text().split() == [
+        "tunnel", "--config", str(settings), "--no-autoupdate", "run"]
+    assert json.loads(settings.read_text()) == {"ingress": [{"service": "http://127.0.0.1:9119"}]}
+    assert (isolated_home / "token").read_text().strip() == "tunnel-secret"
+    from hexbot import connect
+    assert connect._cloudflared_up()
+    tunnel.process.stdin.close()  # the daemon going away closes the pipe
+    assert tunnel.process.wait(timeout=10) == 0 and not tunnel.running
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="the Connect sidecar runs on Node")
+def test_a_restarted_sidecar_stops_the_cloudflared_its_killed_predecessor_left(isolated_home):
+    import os
+    import signal
+    from hexbot.connect import Tunnel
+
+    fake = isolated_home / "bin/cloudflared-2026.8.0"
+    fake.parent.mkdir()
+    fake.write_text("#!/bin/sh\nwhile :; do sleep 1; done\n")  # keeps its argv, as cloudflared does
+    fake.chmod(0o700)
+    config = pinned(tunnel_token="tunnel-secret")
+    config.save()
+
+    def started(_tunnel):
+        pid_file = isolated_home / "cloudflared.pid"
+        deadline = time.time() + 10
+        while not pid_file.exists() and time.time() < deadline:
+            time.sleep(0.05)
+        return int(pid_file.read_text())
+
+    first = Tunnel(config)
+    first.start(9119)
+    orphan = started(first)
+    os.kill(first.process.pid, signal.SIGKILL)  # skips the sidecar's cleanup: cloudflared is orphaned
+    first.process.wait()
+    second = Tunnel(config)
+    second.start(9119)  # what the heartbeat does when it finds the sidecar gone
+    deadline = time.time() + 10
+    while time.time() < deadline and _alive(orphan):
+        time.sleep(0.05)
+    try:
+        assert not _alive(orphan)
+    finally:
+        second.stop()
+        if _alive(orphan):
+            os.kill(orphan, signal.SIGKILL)
+
+
+def _alive(pid):
+    import os
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
 
 
 def test_connect_rpc_methods_and_frames(monkeypatch):
@@ -147,13 +201,12 @@ def test_api_base_defaults_and_env_override(monkeypatch):
     assert connect.ConnectClient().api_base == "https://connect.hexbot.app"
     monkeypatch.setenv("HEXBOT_CONNECT_URL", "http://localhost:3000/")
     assert connect.ConnectClient().api_base == "http://localhost:3000"
-    assert connect.ConnectConfig().jwks_url == "http://localhost:3000/.well-known/jwks.json"
 
 
 def test_disconnect_revokes_remotely_and_clears(isolated_home):
     from hexbot import connect
 
-    connect.ConnectConfig(daemon_id="daemon-1", daemon_token="secret", slug="kitchen").save()
+    pinned().save()
     calls = []
 
     class Client:
@@ -166,7 +219,7 @@ def test_disconnect_revokes_remotely_and_clears(isolated_home):
 def test_disconnect_survives_unreachable_service(isolated_home):
     from hexbot import connect
 
-    connect.ConnectConfig(daemon_id="daemon-1", daemon_token="secret", slug="kitchen").save()
+    pinned().save()
 
     class Client:
         def revoke(self, *_args): raise RuntimeError("offline")
@@ -179,8 +232,7 @@ def test_restarting_workers_stops_the_previous_heartbeat(isolated_home):
     import threading
     from hexbot import connect
 
-    connect.ConnectConfig(daemon_id="daemon-1", daemon_token="secret", slug="kitchen",
-                          tunnel_hostname="kitchen.hexbot.test").save()
+    pinned(tunnel_hostname="kitchen.hexbot.test").save()
     ports = []
     release = threading.Event()
 
@@ -211,7 +263,7 @@ def test_start_daemon_registers_connect_sign_in_and_disconnect_removes_it(isolat
     from hermes_cli.dashboard_auth.registry import clear_providers, list_providers
     from hexbot import connect
 
-    connect.ConnectConfig(daemon_id="daemon-1", daemon_token="secret", slug="kitchen").save()
+    pinned().save()
 
     class Client:
         def heartbeat(self, *_args): return {"ok": True}
@@ -256,3 +308,22 @@ def test_cli_connect_uses_name_and_short_circuits_when_registered(monkeypatch, c
         "Already connected: https://kitchen.connect.hexbot.app",
         "Run `hexbot connect disconnect` first to register again.",
     ]
+
+
+def test_serving_continues_without_node(isolated_home, monkeypatch):
+    from hermes_cli.dashboard_auth.registry import clear_providers
+    from hexbot import connect
+
+    monkeypatch.setenv("HEXBOT_NODE", "/Applications/Moved.app/Contents/MacOS/Hexbot")  # gone
+    monkeypatch.setattr(connect.shutil, "which", lambda _name: None)
+    pinned(tunnel_token="tunnel").save()
+
+    class Client:
+        def heartbeat(self, *_args): return {"ok": True}
+
+    try:
+        assert connect.start_daemon(9001, client=Client())
+        assert connect.status()["tunnel_running"] is False
+    finally:
+        connect.stop_daemon()
+        clear_providers()

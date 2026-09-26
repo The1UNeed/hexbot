@@ -42,12 +42,14 @@ Connect needs Clerk, Neon, Cloudflare, a signing key, and optionally the PostHog
 
 Environment variables are set per environment in the Vercel project. Production holds the real accounts. Preview holds nothing today, so a preview of Connect builds and serves pages but rejects every sign-in; to make previews usable, add a Clerk development instance, a Neon branch, and a separate signing key to the Preview environment only. Never give Preview the production Clerk, Neon, or Cloudflare credentials. `CONNECT_BASE_URL` stays unset in Preview because the code falls back to the request origin.
 
+**Owner pinning (this release).** The migration drops `registrations.credentials`, so the running service cannot approve registrations between the migration and the deploy; run them back to back. Grants now carry `aud`, which older daemons reject, and daemons from this release ignore a `connect.json` written before owner pinning. After deploying, update each daemon, revoke the old registrations on connect.hexbot.app, and run `hexbot connect` again; the new registrations get hostnames in the tunnel zone.
+
 **Deploy order for a Connect change.** Migrate the database first (`DATABASE_URL=... pnpm --filter ./apps/connect run migrate`; the migration is idempotent), then let the push to `main` deploy Connect, then release the daemon. Daemons from this release require grants with a `jti` and use `POST /api/grants/exchange`, which an older Connect does not serve, and a newer Connect needs the `grant_codes` table, so the other orders break sign-in until the last piece lands.
 
 Order of operations for the first real deployment:
 
 1. Move the `hexbot.app` nameservers to Cloudflare (free plan). Recreate the Vercel records there as DNS-only: `hexbot.app` A `76.76.21.21`, `www` and `connect` CNAME `cname.vercel-dns.com`. Confirm the Vercel domains show as verified afterwards.
-2. Create a Cloudflare API token with Account: Cloudflare Tunnel: Edit and Zone: DNS: Edit for the zone. Note the account id and zone id.
+2. Add a second zone for tunnels, a registrable domain of its own (not a subdomain of `hexbot.app`), and submit it to the [Public Suffix List](https://github.com/publicsuffix/list) so browsers treat each daemon as its own site. Every daemon hostname is controlled by its user; on `hexbot.app` any of them could set cookies for Connect and the site. Set `CONNECT_DOMAIN` and `CF_ZONE_ID` to that zone. Create a Cloudflare API token with Account: Cloudflare Tunnel: Edit and Zone: DNS: Edit for the tunnel zone only, so a leaked token cannot touch `hexbot.app` or `updates.hexbot.app`. Note the account id and zone id.
 3. Create a Clerk application with a production instance on `connect.hexbot.app` and add its DNS records in Cloudflare (DNS-only). Enable the sign-in methods you want (email code or password, passkeys, Google, GitHub); the pages use Clerk's components at `/sign-in` and `/sign-up`, so nothing beyond the domain needs configuring.
 4. Create a Neon project and run `DATABASE_URL=... pnpm --filter ./apps/connect run migrate`.
 5. Generate the signing key: `node apps/connect/scripts/make-signing-key.mjs`.
