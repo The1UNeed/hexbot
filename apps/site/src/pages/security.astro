@@ -12,7 +12,7 @@ const sections: [string, string][] = [
   ['changes', 'Changes'],
 ]
 ---
-<Legal title="Security Policy" description="How Hexbot and Hexbot Connect are protected, and how to report a vulnerability." lede="Hexbot keeps your data on your own machine and keeps Connect out of the path your conversations take. This page explains the design in plain words and tells security researchers how to reach us." effective="25 September 2026" updated="25 September 2026" sections={sections}>
+<Legal title="Security Policy" description="How Hexbot and Hex Connect are protected, and how to report a vulnerability." lede="Hexbot keeps your data on your own machine and keeps Connect out of the path your conversations take. This page explains the design in plain words and tells security researchers how to reach us." effective="25 September 2026" updated="25 September 2026" sections={sections}>
   <section id="model">
     <h2>How Hexbot is built to be safe</h2>
     <p>Your bots, their memory, your files, and your provider keys live in <code>~/.hexbot</code> on the machine that runs the daemon. The app is a window onto that daemon. The website and Connect are outside that boundary: they can help your devices find the daemon and prove who you are, but they cannot read what is inside.</p>

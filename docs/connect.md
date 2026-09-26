@@ -81,7 +81,7 @@ forward to, so the whole flow runs on one machine.
    supervised child on every `hexbot serve`, sets Hermes
    `dashboard.public_url` to the tunnel hostname (which turns the auth gate
    on whatever the bind), and registers the `connect` auth provider so the
-   daemon's login page offers "Sign in with Hexbot Connect".
+   daemon's login page offers "Sign in with Hex Connect".
 5. Heartbeat: `POST /api/daemons/{id}/heartbeat {port}` every five minutes
    with the daemon token; Connect records `last_seen_at` and repoints the
    tunnel when the port changes. Ten minutes without one shows as offline.
@@ -117,7 +117,7 @@ Connect as the identity provider:
 
 1. "Open in browser" on `/connect` links to
    `https://<host>/auth/login?provider=connect&next=/`. Hermes calls
-   `HexbotConnectProvider.start_login`, which makes a `state` and a PKCE
+   `HexConnectProvider.start_login`, which makes a `state` and a PKCE
    verifier, stores both in the PKCE cookie, and 302s the browser to
    `/connect/browser?daemon=<id>&state=<state>&code_challenge=<S256>&redirect_uri=https://<host>/auth/callback`.
 2. `/connect/browser` checks the daemon exists, the challenge shape, and that

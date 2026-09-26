@@ -1,10 +1,10 @@
 ---
 layout: ../../layouts/Docs.astro
-title: Hexbot Connect
+title: Hex Connect
 description: Reach a self-hosted Hexbot daemon from anywhere, in the app or a browser, without opening a router port.
 ---
 
-Hexbot Connect is the optional service at [connect.hexbot.app](https://connect.hexbot.app) for reaching your daemon outside its local network. It gives the daemon a Cloudflare Tunnel and a hostname of the form `amber-otter-1234.hexbot.app`, and it signs you in so your devices can prove they are yours. Chat traffic goes straight from your device to your daemon through the tunnel; Connect only brokers identity and hostnames. LAN pairing and [Tailscale](/docs/tailscale/) work without it. Connect is free during the beta.
+Hex Connect is the optional service at [connect.hexbot.app](https://connect.hexbot.app) for reaching your daemon outside its local network. It gives the daemon a Cloudflare Tunnel and a hostname of the form `amber-otter-1234.hexbot.app`, and it signs you in so your devices can prove they are yours. Chat traffic goes straight from your device to your daemon through the tunnel; Connect only brokers identity and hostnames. LAN pairing and [Tailscale](/docs/tailscale/) work without it. Connect is free during the beta.
 
 ## Create an account
 
@@ -28,11 +28,11 @@ You can also register from the app: open Settings, choose Connect, and press **S
 
 On your daemons page, press **Open in browser** next to an online daemon. Connect sends the browser to the daemon, which asks Connect to confirm who you are, and you land in your rooms and sections. Nothing to install: this works on a phone, a tablet, or someone else's computer.
 
-The browser then appears in that daemon's Settings under Devices with a name like "Safari on iPhone", and you can revoke it there like any paired device. Going straight to the daemon's address (`https://amber-otter-1234.hexbot.app`) shows a sign-in page with the same **Sign in with Hexbot Connect** button.
+The browser then appears in that daemon's Settings under Devices with a name like "Safari on iPhone", and you can revoke it there like any paired device. Going straight to the daemon's address (`https://amber-otter-1234.hexbot.app`) shows a sign-in page with the same **Sign in with Hex Connect** button.
 
 ## Sign in from the app
 
-On a computer without a daemon, or in the client-only package, open Hexbot, choose **Sign in with Hexbot Connect**, and finish signing in in your system browser. The browser returns to Hexbot, which lists your daemons; pick one and you are connected over TLS. The app appears under **Apps signed in with your account** on connect.hexbot.app, where you can sign it out.
+On a computer without a daemon, or in the client-only package, open Hexbot, choose **Sign in with Hex Connect**, and finish signing in in your system browser. The browser returns to Hexbot, which lists your daemons; pick one and you are connected over TLS. The app appears under **Apps signed in with your account** on connect.hexbot.app, where you can sign it out.
 
 Behind the scenes the app receives a short-lived, single-use login grant and exchanges it directly with the daemon for a normal revocable device token. The daemon owner can revoke that device as with a LAN-paired device.
 

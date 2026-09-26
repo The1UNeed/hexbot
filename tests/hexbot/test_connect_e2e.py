@@ -1,4 +1,4 @@
-"""Hexbot Connect end to end on one machine: a real Connect service (Next.js,
+"""Hex Connect end to end on one machine: a real Connect service (Next.js,
 in-memory store, fake tunnels, DEV_USER_ID auth), a real daemon, and the same
 HTTP calls the CLI, the web client, and the desktop app make.
 

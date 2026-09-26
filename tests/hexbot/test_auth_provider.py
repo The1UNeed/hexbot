@@ -141,9 +141,9 @@ def _connect_config():
 
 def test_connect_provider_start_login():
     from hermes_cli.dashboard_auth import ProviderError
-    from hexbot.auth_provider import HexbotConnectProvider
+    from hexbot.auth_provider import HexConnectProvider
 
-    provider = HexbotConnectProvider()
+    provider = HexConnectProvider()
     with pytest.raises(ProviderError):
         provider.start_login(redirect_uri="https://daemon.test/auth/callback")
     _connect_config()
@@ -170,13 +170,13 @@ def _exchange(reply):
 
 
 def test_connect_provider_complete_login_mints_device():
-    from hexbot.auth_provider import HexbotConnectProvider
+    from hexbot.auth_provider import HexConnectProvider
     from hexbot.pairing import list_devices
 
     _connect_config()
     token, jwks = _grant()
     calls, http = _exchange({"grant": token, "device_name": "Chrome on macOS"})
-    provider = HexbotConnectProvider(jwks_fetcher=lambda _url: jwks, http=http)
+    provider = HexConnectProvider(jwks_fetcher=lambda _url: jwks, http=http)
     session = provider.complete_login(code="code-1", state="state-1", code_verifier="ver",
                                       redirect_uri="https://daemon.test/auth/callback")
     method, url, kwargs = calls[0]
@@ -195,7 +195,7 @@ def test_connect_provider_complete_login_mints_device():
 ])
 def test_connect_provider_complete_login_failures(reply, expected):
     import hermes_cli.dashboard_auth as auth
-    from hexbot.auth_provider import HexbotConnectProvider
+    from hexbot.auth_provider import HexConnectProvider
     from hexbot.errors import HexbotError
 
     _connect_config()
@@ -205,7 +205,7 @@ def test_connect_provider_complete_login_failures(reply, expected):
         "unreachable": HexbotError(5241, "Connect service unreachable"),
         "wrong_daemon": {"grant": token, "device_name": "Chrome"},
     }[reply])
-    provider = HexbotConnectProvider(jwks_fetcher=lambda _url: jwks, http=http)
+    provider = HexConnectProvider(jwks_fetcher=lambda _url: jwks, http=http)
     with pytest.raises(getattr(auth, expected)):
         provider.complete_login(code="c", state="s", code_verifier="v",
                                 redirect_uri="https://daemon.test/auth/callback")
@@ -213,14 +213,14 @@ def test_connect_provider_complete_login_failures(reply, expected):
 
 def test_provider_shape_and_protocol():
     from hermes_cli.dashboard_auth import assert_protocol_compliance, RefreshExpiredError
-    from hexbot.auth_provider import HexbotAuthProvider, HexbotConnectProvider
+    from hexbot.auth_provider import HexbotAuthProvider, HexConnectProvider
 
     assert_protocol_compliance(HexbotAuthProvider)
-    assert_protocol_compliance(HexbotConnectProvider)
+    assert_protocol_compliance(HexConnectProvider)
     provider = HexbotAuthProvider()
     assert (provider.name, provider.supports_password, provider.supports_session,
             provider.supports_token) == ("hexbot", True, True, False)
-    browser = HexbotConnectProvider()
+    browser = HexConnectProvider()
     assert (browser.name, browser.supports_password, browser.supports_session,
             browser.supports_token) == ("connect", False, True, False)
     with pytest.raises(RefreshExpiredError):

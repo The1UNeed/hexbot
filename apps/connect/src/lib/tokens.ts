@@ -19,7 +19,7 @@ export async function generateSlug(store: Store): Promise<string> {
 
 export interface GrantClaims { sub: string; daemon_id: string; device_name: string }
 interface SigningState { privateKey: CryptoKey; publicJwk: JWK; kid: string }
-const signing = globalThis as typeof globalThis & { __hexbotConnectSigning?: Promise<SigningState> };
+const signing = globalThis as typeof globalThis & { __hexConnectSigning?: Promise<SigningState> };
 
 async function loadSigningState(): Promise<SigningState> {
   const configured = process.env.CONNECT_SIGNING_KEY_JWK;
@@ -36,8 +36,8 @@ async function loadSigningState(): Promise<SigningState> {
   const kid = await calculateJwkThumbprint(publicJwk);
   return { privateKey: pair.privateKey, publicJwk: { ...publicJwk, kid, use: "sig", alg: "ES256" }, kid };
 }
-const state = () => signing.__hexbotConnectSigning ??= loadSigningState();
-export const resetSigningKeyForTests = () => { signing.__hexbotConnectSigning = undefined; };
+const state = () => signing.__hexConnectSigning ??= loadSigningState();
+export const resetSigningKeyForTests = () => { signing.__hexConnectSigning = undefined; };
 /** A short-lived login grant. `jti` lets the daemon refuse a replayed grant. */
 export async function issueGrant(claims: GrantClaims, expiresInSeconds = 300) { const s = await state(); return new SignJWT({ daemon_id: claims.daemon_id, device_name: claims.device_name }).setProtectedHeader({ alg: "ES256", kid: s.kid }).setSubject(claims.sub).setJti(randomBytes(16).toString("base64url")).setIssuedAt().setExpirationTime(Math.floor(Date.now() / 1000) + expiresInSeconds).sign(s.privateKey); }
 export async function getJwks() { const s = await state(); return { keys: [s.publicJwk] }; }

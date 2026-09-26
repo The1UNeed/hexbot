@@ -25,7 +25,7 @@ A few habits help:
 - Rooms where people and bots talk together. Mention a bot to bring it in, or let the main bot answer.
 - Real tools on your machine: terminal, files, code, a browser, reminders and schedules. With your own accounts, web search, image generation, Notion, Home Assistant, and any MCP server. The full list is on the [Tools page](/tools/).
 - More than 50 model providers, including subscriptions you may already pay for.
-- Pairing a phone or laptop on your network, Tailscale, and Hexbot Connect for when you're out.
+- Pairing a phone or laptop on your network, Tailscale, and Hex Connect for when you're out.
 - Dreaming. Each night every bot rereads the day and tidies its memory.
 
 ![A Hexbot room where Ledger posts September sales by channel and Scout confirms the totals.](/screens/room.webp)

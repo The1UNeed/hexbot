@@ -10,7 +10,7 @@ export default async function AuthorizePage({ searchParams }: { searchParams: Pr
   if (!state || !device || state.length > 256 || device.length > 100) return (
     <div className="page narrow stack">
       <h1 className="display-sm" style={{ fontSize: "2rem" }}>This link is incomplete</h1>
-      <p className="notice notice-error">The authorization link is missing the app&apos;s request. Go back to Hexbot and choose <strong>Sign in with Hexbot Connect</strong> again.</p>
+      <p className="notice notice-error">The authorization link is missing the app&apos;s request. Go back to Hexbot and choose <strong>Sign in with Hex Connect</strong> again.</p>
     </div>
   );
   const returnTo = `/connect/authorize?state=${encodeURIComponent(state)}&device=${encodeURIComponent(device)}`;
