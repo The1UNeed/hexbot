@@ -15,6 +15,10 @@ metadata:
 
 # Notion
 
+## Workspace and user setup
+
+Write generated files and nonsecret configuration drafts under `./hexbot-setup/` in the section working directory. Home paths below are final installation locations, including paths used by helper scripts and references. The user must run installation, migration, sign-in, and credential/configuration writes outside the bot shell. Do not write to `~/.hexbot` or `$HEXBOT_HOME` from a tool, and do not copy credentials into workspace drafts.
+
 Talk to Notion two ways. Same integration token works for both — pick by what's available.
 
 ◆ **`ntn` CLI** — Notion's official CLI. Shorter syntax, one-line file uploads, required for Workers. macOS + Linux only as of May 2026 (Windows support "coming soon"). **Default when installed.**

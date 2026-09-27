@@ -14,6 +14,10 @@ metadata:
 
 # Telephony — Numbers, Calls, and Texts without Core Tool Changes
 
+## Workspace and user setup
+
+Write generated files and nonsecret configuration drafts under `./hexbot-setup/` in the section working directory. Home paths below are final installation locations, including paths used by helper scripts and references. The user must run installation, migration, sign-in, and credential/configuration writes outside the bot shell. Do not write to `~/.hexbot` or `$HEXBOT_HOME` from a tool, and do not copy credentials into workspace drafts.
+
 This optional skill gives Hexbot practical phone capabilities while keeping telephony out of the core tool list.
 
 It ships with a helper script, `scripts/telephony.py`, that can:
