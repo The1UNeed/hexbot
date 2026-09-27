@@ -76,6 +76,9 @@ try {
   await once(model, 'listening')
   const modelBase = `http://127.0.0.1:${model.address().port}/v1`
   await writeFile(path.join(home, 'config.yaml'), `model:\n  provider: lmstudio\n  default: test-model\n  base_url: ${modelBase}\n  api_key: smoke-key\n`)
+  // An existing About you (even empty, as Skip leaves it) keeps the first-run page out of the chat flow.
+  await mkdir(path.join(home, 'users', 'local'), { recursive: true })
+  await writeFile(path.join(home, 'users', 'local', 'user.md'), '')
   daemon = spawn(daemonPath, ['serve', '--host', '127.0.0.1', '--port', '0'], {
     cwd: root,
     env: { ...process.env, HEXBOT_HOME: home, HEXBOT_PI_EXECUTABLE: piPath, HEXBOT_WEB_DIST: webDist },
