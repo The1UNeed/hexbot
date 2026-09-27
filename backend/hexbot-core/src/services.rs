@@ -48,19 +48,35 @@ pub struct ConnectConfig {
     pub registered_at: Option<f64>,
     #[serde(default)]
     pub jwks_url: String,
+    #[serde(default)]
+    pub owner_id: String,
+    #[serde(default)]
+    pub issuer: String,
+    #[serde(default)]
+    pub keys: Vec<Value>,
 }
 impl ConnectConfig {
     pub fn load(home: &Path) -> Result<Option<Self>> {
         match fs::read(home.join("connect.json")) {
             Ok(bytes) => {
                 let mut config: Self = serde_json::from_slice(&bytes)
-                    .map_err(|_| Error::new(5241, "invalid Connect configuration"))?;
+                    .map_err(|_| Error::new(5241, "invalid Hex Connect configuration"))?;
                 config.api_base = config.api_base.trim_end_matches('/').to_owned();
                 service_url(&config.api_base)?;
                 if config.jwks_url.is_empty() {
                     config.jwks_url = format!("{}/.well-known/jwks.json", config.api_base);
                 }
                 same_origin(&config.api_base, &config.jwks_url)?;
+                if !config.daemon_id.is_empty()
+                    && (config.owner_id.is_empty()
+                        || config.issuer.is_empty()
+                        || config.keys.is_empty())
+                {
+                    eprintln!(
+                        "This Hex Connect registration predates owner pinning; run `hexbot connect` again"
+                    );
+                    return Ok(None);
+                }
                 Ok(Some(config))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -71,7 +87,7 @@ impl ConnectConfig {
         common::atomic_write(
             &home.join("connect.json"),
             &serde_json::to_vec_pretty(self)
-                .map_err(|_| Error::new(5241, "invalid Connect configuration"))?,
+                .map_err(|_| Error::new(5241, "invalid Hex Connect configuration"))?,
         )
     }
 }
@@ -107,6 +123,7 @@ struct Service {
     data: Mutex<Data>,
     workers: Mutex<Option<Workers>>,
     lifecycle: Mutex<()>,
+    jwks: Mutex<JwksCache>,
 }
 static SERVICES: OnceLock<Mutex<HashMap<PathBuf, Arc<Service>>>> = OnceLock::new();
 async fn service(home: &Path) -> Result<Arc<Service>> {
@@ -177,12 +194,12 @@ async fn object(
     let mut response = request
         .send()
         .await
-        .map_err(|_| Error::new(5241, "Connect service unreachable"))?;
+        .map_err(|_| Error::new(5241, "Hex Connect service unreachable"))?;
     if !response.status().is_success() {
         return Err(Error::new(
             5241,
             format!(
-                "Connect service returned HTTP {}",
+                "Hex Connect service returned HTTP {}",
                 response.status().as_u16()
             ),
         ));
@@ -191,17 +208,20 @@ async fn object(
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|_| Error::new(5241, "Connect response failed"))?
+        .map_err(|_| Error::new(5241, "Hex Connect response failed"))?
     {
         if bytes.len() + chunk.len() > 1024 * 1024 {
-            return Err(Error::new(5241, "Connect response exceeds byte limit"));
+            return Err(Error::new(5241, "Hex Connect response exceeds byte limit"));
         }
         bytes.extend_from_slice(&chunk);
     }
     let value: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| Error::new(5241, "Connect returned invalid JSON"))?;
+        .map_err(|_| Error::new(5241, "Hex Connect returned invalid JSON"))?;
     if !value.is_object() {
-        return Err(Error::new(5241, "Connect returned a non-object response"));
+        return Err(Error::new(
+            5241,
+            "Hex Connect returned a non-object response",
+        ));
     }
     Ok(value)
 }
@@ -318,60 +338,127 @@ async fn download(url: &str, path: &Path, max_bytes: u64, github: bool) -> Resul
     }
     Err(Error::new(5242, "too many download redirects"))
 }
-async fn ensure_cloudflared(home: &Path) -> Result<PathBuf> {
-    let binary = home.join("bin/cloudflared");
-    if binary.is_file() {
-        return Ok(binary);
+fn cloudflared_asset() -> Result<(&'static str, &'static str)> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Ok((
+            "cloudflared-darwin-arm64.tgz",
+            "6244b4b199515690f93e170110d219d8d141184ba847179980c2f5906800c931",
+        )),
+        ("macos", "x86_64") => Ok((
+            "cloudflared-darwin-amd64.tgz",
+            "95c57d69cf6b19a94880090d76f24f46cd359c68ca82a14b143ea604dff33020",
+        )),
+        ("linux", "aarch64") => Ok((
+            "cloudflared-linux-arm64",
+            "d2b49df8dbb3a36e743ce00b091c180e0942a0b67487257c573a631db001796c",
+        )),
+        ("linux", "x86_64") => Ok((
+            "cloudflared-linux-amd64",
+            "14ecae0dd17ba74f8055e22b8f5b5acc3cbb5a9c3be4e7d6507fe1c4eadaea95",
+        )),
+        ("windows", "x86_64") => Ok((
+            "cloudflared-windows-amd64.exe",
+            "82781b3ba8cb66c0f8fbc7d34974bc4bd8eb1fcc76f27badb97eb4cc7060f5ad",
+        )),
+        _ => Err(Error::new(5242, "unsupported cloudflared platform")),
     }
-    let architecture = match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        _ => return Err(Error::new(5242, "unsupported cloudflared architecture")),
-    };
-    let os = match std::env::consts::OS {
-        "macos" => "darwin",
-        "linux" => "linux",
-        _ => return Err(Error::new(5242, "unsupported cloudflared platform")),
-    };
-    fs::create_dir_all(home.join("bin"))?;
-    let tmp = tempfile::NamedTempFile::new_in(home.join("bin"))?;
-    let suffix = if os == "darwin" { ".tgz" } else { "" };
-    let url = format!(
-        "https://github.com/cloudflare/cloudflared/releases/download/{CLOUDFLARED_VERSION}/cloudflared-{os}-{architecture}{suffix}"
-    );
-    download(&url, tmp.path(), 128 * 1024 * 1024, true).await?;
-    if os == "darwin" {
-        let mut archive =
-            tar::Archive::new(flate2::read::GzDecoder::new(fs::File::open(tmp.path())?));
-        let mut found = None;
-        for entry in archive.entries()? {
-            let mut entry = entry?;
-            if entry.path()?.file_name() == Some(std::ffi::OsStr::new("cloudflared"))
-                && entry.header().entry_type().is_file()
-            {
-                let mut bytes = Vec::new();
-                entry
-                    .by_ref()
-                    .take(128 * 1024 * 1024 + 1)
-                    .read_to_end(&mut bytes)?;
-                if bytes.len() > 128 * 1024 * 1024 {
-                    return Err(Error::new(5242, "cloudflared exceeds byte limit"));
-                }
-                found = Some(bytes);
-                break;
+}
+fn verified_cloudflared(asset: &Path, expected: &str, compressed: bool) -> Result<Vec<u8>> {
+    let bytes = fs::read(asset)?;
+    if bytes.len() > 128 * 1024 * 1024 || format!("{:x}", Sha256::digest(&bytes)) != expected {
+        return Err(Error::new(
+            5242,
+            "cloudflared does not match its pinned SHA-256",
+        ));
+    }
+    if !compressed {
+        return Ok(bytes);
+    }
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes.as_slice()));
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        if entry.path()?.file_name() == Some(std::ffi::OsStr::new("cloudflared"))
+            && entry.header().entry_type().is_file()
+        {
+            let mut binary = Vec::new();
+            entry
+                .by_ref()
+                .take(128 * 1024 * 1024 + 1)
+                .read_to_end(&mut binary)?;
+            if binary.len() > 128 * 1024 * 1024 {
+                return Err(Error::new(5242, "cloudflared exceeds byte limit"));
             }
+            return Ok(binary);
         }
-        common::atomic_write(
-            &binary,
-            &found.ok_or_else(|| Error::new(5242, "cloudflared missing from archive"))?,
-        )?;
-    } else {
-        tmp.persist(&binary).map_err(|e| Error::from(e.error))?;
+    }
+    Err(Error::new(5242, "cloudflared missing from archive"))
+}
+fn install_cloudflared(binary: &Path, bytes: &[u8]) -> Result<()> {
+    // Always compare with the pinned asset, including a cached executable.
+    if fs::symlink_metadata(binary).is_ok_and(|m| m.file_type().is_symlink())
+        || fs::read(binary).ok().as_deref() != Some(bytes)
+    {
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(binary.parent().expect("binary directory"))?;
+        temporary.write_all(bytes)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            temporary
+                .as_file()
+                .set_permissions(fs::Permissions::from_mode(0o700))?;
+        }
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist(binary)
+            .map_err(|e| Error::from(e.error))?;
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
+        fs::set_permissions(binary, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+async fn ensure_cloudflared(home: &Path) -> Result<PathBuf> {
+    let (name, digest) = cloudflared_asset()?;
+    let url = format!(
+        "https://github.com/cloudflare/cloudflared/releases/download/{CLOUDFLARED_VERSION}/{name}"
+    );
+    ensure_cloudflared_asset(home, name, digest, &url).await
+}
+async fn ensure_cloudflared_asset(
+    home: &Path,
+    name: &str,
+    digest: &str,
+    url: &str,
+) -> Result<PathBuf> {
+    let directory = home.join("bin");
+    fs::create_dir_all(&directory)?;
+    let binary = directory.join(format!(
+        "cloudflared-{CLOUDFLARED_VERSION}{}",
+        if cfg!(windows) { ".exe" } else { "" }
+    ));
+    let asset = directory.join(format!("{name}-{CLOUDFLARED_VERSION}.asset"));
+    let compressed = name.ends_with(".tgz");
+    let bytes = match verified_cloudflared(&asset, digest, compressed) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            let temporary = tempfile::NamedTempFile::new_in(&directory)?;
+            download(url, temporary.path(), 128 * 1024 * 1024, true).await?;
+            let bytes = verified_cloudflared(temporary.path(), digest, compressed)?;
+            temporary
+                .persist(&asset)
+                .map_err(|e| Error::from(e.error))?;
+            bytes
+        }
+    };
+    install_cloudflared(&binary, &bytes)?;
+    // The unversioned binary from older releases is never executed.
+    match fs::remove_file(directory.join("cloudflared")) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
     }
     Ok(binary)
 }
@@ -415,28 +502,52 @@ pub async fn start_daemon(home: &Path, port: u16) -> Result<bool> {
     };
     common::identifier(&config.daemon_id)?;
     if config.daemon_token.is_empty() || config.tunnel_token.is_empty() {
-        return Err(Error::new(5241, "incomplete Connect registration"));
+        return Err(Error::new(5241, "incomplete Hex Connect registration"));
     }
     apply_public_url(home, Some(&config.tunnel_hostname))?;
     let binary = ensure_cloudflared(home).await?;
+    run_tunnel(home, port, service.clone(), config, binary).await
+}
+fn spawn_cloudflared(
+    binary: &Path,
+    settings: &Path,
+    logs: &Path,
+    port: u16,
+    token: &str,
+) -> Result<Child> {
+    common::atomic_write(
+        settings,
+        &serde_json::to_vec(&json!({"ingress":[{"service":format!("http://127.0.0.1:{port}")}]}))
+            .expect("tunnel settings"),
+    )?;
+    let log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(logs)?;
+    Command::new(binary)
+        .arg("tunnel")
+        .arg("--config")
+        .arg(settings)
+        .args(["--no-autoupdate", "run"])
+        .env("TUNNEL_TOKEN", token)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log)
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(Into::into)
+}
+async fn run_tunnel(
+    home: &Path,
+    port: u16,
+    service: Arc<Service>,
+    config: ConnectConfig,
+    binary: PathBuf,
+) -> Result<bool> {
+    let tunnel_settings = home.join("cloudflared.yml");
     fs::create_dir_all(home.join("logs"))?;
     let logs = home.join("logs/cloudflared.log");
-    let spawn = |binary: &Path, config: &ConnectConfig| -> Result<Child> {
-        let log = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&logs)?;
-        Command::new(binary)
-            .args(["tunnel", "run"])
-            .env("TUNNEL_TOKEN", &config.tunnel_token)
-            .stdin(Stdio::null())
-            .stdout(log.try_clone()?)
-            .stderr(log)
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(Into::into)
-    };
-    let child = spawn(&binary, &config)?;
+    let child = spawn_cloudflared(&binary, &tunnel_settings, &logs, port, &config.tunnel_token)?;
     service.data.lock().await.running = true;
     let (stop, mut stopped) = watch::channel(false);
     let mut heartbeat_stop = stopped.clone();
@@ -457,17 +568,13 @@ pub async fn start_daemon(home: &Path, port: u16) -> Result<bool> {
             loop {
                 tokio::select! { _=stopped.changed()=>return, _=tokio::time::sleep(Duration::from_secs(backoff))=>{} }
                 backoff = (backoff * 2).min(16);
-                let log = fs::OpenOptions::new().create(true).append(true).open(&logs);
-                let restarted = log.and_then(|log| {
-                    Command::new(&binary)
-                        .args(["tunnel", "run"])
-                        .env("TUNNEL_TOKEN", &tunnel_config.tunnel_token)
-                        .stdin(Stdio::null())
-                        .stdout(log.try_clone()?)
-                        .stderr(log)
-                        .kill_on_drop(true)
-                        .spawn()
-                });
+                let restarted = spawn_cloudflared(
+                    &binary,
+                    &tunnel_settings,
+                    &logs,
+                    port,
+                    &tunnel_config.tunnel_token,
+                );
                 match restarted {
                     Ok(new_child) => {
                         child = new_child;
@@ -531,7 +638,38 @@ async fn connect_status(home: &Path) -> Result<Value> {
     )
 }
 
-/// Verify the cloud grant before creating a locally revocable device credential.
+#[derive(Default)]
+struct JwksCache {
+    url: String,
+    at: Option<f64>,
+    keys: Vec<Value>,
+}
+async fn published_keys(home: &Path, config: &ConnectConfig, kid: &str) -> Result<Vec<Value>> {
+    let service = service(home).await?;
+    let mut cache = service.jwks.lock().await;
+    let now = common::now();
+    let age = cache.at.map(|at| now - at);
+    if cache.url == config.jwks_url
+        && age.is_some_and(|age| {
+            age >= 0.
+                && (age < 60. || (age < 600. && cache.keys.iter().any(|key| key["kid"] == kid)))
+        })
+    {
+        return Ok(cache.keys.clone());
+    }
+    // Remember failures too; unauthenticated clients cannot force repeated fetches.
+    cache.url = config.jwks_url.clone();
+    cache.at = Some(now);
+    cache.keys.clear();
+    let raw = object(Method::GET, &config.jwks_url, None, None).await?;
+    cache.keys = raw["keys"]
+        .as_array()
+        .ok_or_else(|| Error::new(4231, "invalid Hex Connect signing keys"))?
+        .clone();
+    Ok(cache.keys.clone())
+}
+
+/// Verify pinned identity and signing material, then spend and mint in one transaction.
 pub async fn redeem_grant(
     home: &Path,
     grant: &str,
@@ -539,52 +677,91 @@ pub async fn redeem_grant(
     platform: &str,
 ) -> Result<Value> {
     let check = async {
-        use jsonwebtoken::{
-            Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet,
-        };
+        use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::Jwk};
         let config = ConnectConfig::load(home)?
-            .ok_or_else(|| Error::new(4231, "Connect is not configured"))?;
-        let header = decode_header(grant).map_err(|_| Error::new(4231, "invalid Connect grant"))?;
-        if header.alg != Algorithm::ES256 {
-            return Err(Error::new(4231, "invalid Connect grant"));
+            .ok_or_else(|| Error::new(4231, "Hex Connect is not set up on this daemon"))?;
+        let invalid = || Error::new(4231, "invalid Hex Connect grant");
+        let header = decode_header(grant).map_err(|_| invalid())?;
+        if header.alg != Algorithm::ES256 || header.typ.as_deref() != Some("hexbot-grant+jwt") {
+            return Err(invalid());
         }
-        let kid = header
-            .kid
-            .ok_or_else(|| Error::new(4231, "invalid Connect grant"))?;
-        let raw = object(Method::GET, &config.jwks_url, None, None).await?;
-        let keys: JwkSet = serde_json::from_value(raw)
-            .map_err(|_| Error::new(4231, "invalid Connect signing keys"))?;
-        let key = keys
-            .find(&kid)
-            .ok_or_else(|| Error::new(4231, "unknown Connect signing key"))?;
-        let key = DecodingKey::from_jwk(key)
-            .map_err(|_| Error::new(4231, "invalid Connect signing key"))?;
+        let kid = header.kid.ok_or_else(invalid)?;
+        let pin = config
+            .keys
+            .iter()
+            .find(|key| key["kid"] == kid && key["kty"] == "EC" && key["crv"] == "P-256")
+            .ok_or_else(invalid)?;
+        let published = published_keys(home, &config, &kid).await?;
+        if !published.iter().any(|key| {
+            ["kid", "kty", "crv", "x", "y"]
+                .iter()
+                .all(|field| key[*field].is_string() && key[*field] == pin[*field])
+        }) {
+            return Err(invalid());
+        }
+        let jwk: Jwk = serde_json::from_value(pin.clone()).map_err(|_| invalid())?;
+        let key = DecodingKey::from_jwk(&jwk).map_err(|_| invalid())?;
         let mut validation = Validation::new(Algorithm::ES256);
-        validation.set_required_spec_claims(&["sub", "exp", "iat"]);
-        validation.leeway = 0;
+        validation.set_required_spec_claims(&["sub", "exp", "iat", "aud", "iss"]);
+        validation.set_audience(&[&config.daemon_id]);
+        validation.set_issuer(&[&config.issuer]);
+        validation.leeway = 60;
         let claims = decode::<Value>(grant, &key, &validation)
-            .map_err(|_| Error::new(4231, "invalid Connect grant"))?
+            .map_err(|_| invalid())?
             .claims;
-        if claims["daemon_id"] != config.daemon_id
-            || claims["sub"].as_str().is_none_or(str::is_empty)
-            || claims["iat"].as_f64().is_none_or(|iat| iat > common::now())
+        if claims["iss"] != config.issuer
+            || claims["aud"] != config.daemon_id
+            || claims["sub"] != config.owner_id
+            || claims["daemon_id"] != config.daemon_id
+            || claims["iat"]
+                .as_f64()
+                .is_none_or(|iat| iat - 60. > common::now())
+            || claims["exp"]
+                .as_f64()
+                .is_none_or(|exp| exp + 60. <= common::now())
         {
-            return Err(Error::new(4231, "invalid Connect grant"));
+            return Err(invalid());
         }
+        let jti = claims["jti"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(invalid)?;
         let name = claims["device_name"]
             .as_str()
-            .ok_or_else(|| Error::new(4231, "invalid Connect grant"))?
+            .ok_or_else(invalid)?
             .trim()
             .chars()
             .take(80)
             .collect::<String>();
         if name.is_empty() {
-            return Err(Error::new(4231, "invalid Connect grant"));
+            return Err(invalid());
         }
-        crate::auth::mint_device(home, &name, platform, "local")
+        crate::auth::redeem_verified_grant(
+            home,
+            &name,
+            platform,
+            jti,
+            claims["exp"].as_f64().ok_or_else(invalid)?,
+        )
     }
     .await;
-    check.map_err(|_| Error::new(4231, "invalid Connect grant"))
+    check.map_err(|_| Error::new(4231, "invalid Hex Connect grant"))
+}
+
+pub async fn exchange_browser_grant(
+    config: &ConnectConfig,
+    code: &str,
+    verifier: &str,
+    redirect_uri: &str,
+) -> Result<String> {
+    let result = object(
+        Method::POST,
+        &format!("{}/api/grants/exchange", config.api_base),
+        Some(&config.daemon_token),
+        Some(json!({"code":code,"code_verifier":verifier,"redirect_uri":redirect_uri})),
+    )
+    .await?;
+    Ok(common::required(&result, "grant")?.to_owned())
 }
 
 fn capability() -> Option<String> {
@@ -939,6 +1116,15 @@ pub async fn register_poll(home: &Path, code: &str, start_tunnel: bool) -> Resul
     result["status"] = json!(status);
     if status == "approved" {
         let config = ConnectConfig {
+            owner_id: common::required(&result, "owner_id")?.into(),
+            issuer: common::required(&result, "issuer")?.into(),
+            keys: result["keys"]
+                .as_array()
+                .filter(|keys| !keys.is_empty())
+                .ok_or_else(|| {
+                    Error::new(5241, "Hex Connect registration is missing signing keys")
+                })?
+                .clone(),
             api_base: base.clone(),
             daemon_id: common::required(&result, "daemon_id")?.into(),
             daemon_token: common::required(&result, "daemon_token")?.into(),
@@ -959,7 +1145,7 @@ pub async fn register_poll(home: &Path, code: &str, start_tunnel: bool) -> Resul
             }
         }
     }
-    Ok(result)
+    Ok(json!({"status":status}))
 }
 
 pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result<Value>> {
@@ -979,6 +1165,7 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
         match method {
             "hexbot.connect.status"=>connect_status(home).await,
             "hexbot.connect.register_start"=>{
+                if ConnectConfig::load(home)?.is_some_and(|c| !c.daemon_id.is_empty()) { return Err(Error::new(4240, "Already connected to Hex Connect. Disconnect first to register again.")); }
                 let base=api_base(home)?;
                 object(Method::POST,&format!("{base}/api/register/start"),None,Some(json!({"daemon_name":p["daemon_name"].as_str().unwrap_or("Hexbot"),"platform":if cfg!(target_os="macos"){"darwin"}else{std::env::consts::OS}}))).await
             }
@@ -1020,4 +1207,40 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
             _=>unreachable!(),
         }
     }.await)
+}
+
+#[cfg(all(test, unix))]
+#[path = "../tests/fixtures/connect_tunnel.rs"]
+mod tunnel_tests;
+
+#[cfg(test)]
+mod cloudflared_tests {
+    use super::*;
+    #[test]
+    fn digest_mismatch_and_stale_cached_executable() {
+        let home = tempfile::tempdir().unwrap();
+        let asset = home.path().join("asset");
+        let binary = home.path().join("cloudflared-2026.8.0");
+        let bytes = b"verified fixture executable";
+        fs::write(&asset, bytes).unwrap();
+        let digest = format!("{:x}", Sha256::digest(bytes));
+        assert!(verified_cloudflared(&asset, "wrong", false).is_err());
+        let verified = verified_cloudflared(&asset, &digest, false).unwrap();
+        fs::write(&binary, b"unverified old binary").unwrap();
+        install_cloudflared(&binary, &verified).unwrap();
+        assert_eq!(fs::read(&binary).unwrap(), bytes);
+        fs::write(&binary, b"tampered cached binary").unwrap();
+        install_cloudflared(&binary, &verified).unwrap();
+        assert_eq!(fs::read(&binary).unwrap(), bytes);
+        fs::write(&asset, b"tampered cached asset").unwrap();
+        assert!(verified_cloudflared(&asset, &digest, false).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&binary).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+    }
 }

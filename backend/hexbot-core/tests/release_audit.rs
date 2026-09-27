@@ -14,10 +14,15 @@ fn signed_grant(claims: &Value) -> String {
     let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
     header.kid = Some("fixture".into());
     header.typ = Some("hexbot-grant+jwt".into());
-    jsonwebtoken::encode(&header, claims, &jsonwebtoken::EncodingKey::from_ec_pem(TEST_KEY).unwrap()).unwrap()
+    jsonwebtoken::encode(
+        &header,
+        claims,
+        &jsonwebtoken::EncodingKey::from_ec_pem(TEST_KEY).unwrap(),
+    )
+    .unwrap()
 }
 fn grant_claims() -> Value {
-    json!({"sub":"actual-owner","iss":"https://connect.hexbot.app","daemon_id":"daemon-1","device_name":"Review fixture","jti":"review-grant-1","iat":common::now() as u64,"exp":common::now() as u64+300})
+    json!({"aud":"daemon-1","sub":"actual-owner","iss":"https://connect.hexbot.app","daemon_id":"daemon-1","device_name":"Review fixture","jti":"review-grant-1","iat":common::now() as u64,"exp":common::now() as u64+300})
 }
 
 #[tokio::test]
@@ -28,7 +33,10 @@ async fn audit_current_connect_grant_is_accepted() {
     let mut claims = grant_claims();
     claims["aud"] = json!("daemon-1");
     let result = services::redeem_grant(home.path(), &signed_grant(&claims), "", "connect").await;
-    assert!(result.is_ok(), "Current Connect grants must work: {result:?}");
+    assert!(
+        result.is_ok(),
+        "Current Connect grants must work: {result:?}"
+    );
 }
 
 #[tokio::test]
@@ -39,7 +47,10 @@ async fn audit_wrong_pinned_owner_is_rejected() {
     let mut claims = grant_claims();
     claims["sub"] = json!("different-owner");
     let result = services::redeem_grant(home.path(), &signed_grant(&claims), "", "connect").await;
-    assert!(result.is_err(), "Grant for another owner minted a local credential");
+    assert!(
+        result.is_err(),
+        "Grant for another owner minted a local credential"
+    );
 }
 
 #[tokio::test]
@@ -51,8 +62,12 @@ async fn audit_unpinned_signing_key_is_rejected() {
     let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     config["keys"][0]["kid"] = json!("different-pinned-key");
     fs::write(path, config.to_string()).unwrap();
-    let result = services::redeem_grant(home.path(), &signed_grant(&grant_claims()), "", "connect").await;
-    assert!(result.is_err(), "Unpinned signing key minted a local credential");
+    let result =
+        services::redeem_grant(home.path(), &signed_grant(&grant_claims()), "", "connect").await;
+    assert!(
+        result.is_err(),
+        "Unpinned signing key minted a local credential"
+    );
 }
 
 #[tokio::test]
@@ -61,8 +76,16 @@ async fn audit_redeemed_grant_cannot_restore_revoked_access() {
     let home = home();
     pinned_registration(&mock, home.path());
     let grant = signed_grant(&grant_claims());
-    let first = services::redeem_grant(home.path(), &grant, "", "connect").await.unwrap();
-    db::open(home.path()).unwrap().execute("UPDATE devices SET revoked_at=1 WHERE id=?", [first["device_id"].as_str().unwrap()]).unwrap();
+    let first = services::redeem_grant(home.path(), &grant, "", "connect")
+        .await
+        .unwrap();
+    db::open(home.path())
+        .unwrap()
+        .execute(
+            "UPDATE devices SET revoked_at=1 WHERE id=?",
+            [first["device_id"].as_str().unwrap()],
+        )
+        .unwrap();
     let second = services::redeem_grant(home.path(), &grant, "", "connect").await;
     assert!(second.is_err(), "A spent grant restored revoked access");
 }
@@ -70,19 +93,137 @@ async fn audit_redeemed_grant_cannot_restore_revoked_access() {
 #[test]
 fn audit_current_main_database_can_be_opened() {
     let home = home();
-    db::open(home.path()).unwrap().execute_batch("ALTER TABLE sections ADD COLUMN title_by TEXT; CREATE TABLE spent_grants(jti TEXT PRIMARY KEY, exp REAL NOT NULL); UPDATE schema_version SET version=11;").unwrap();
-    assert!(db::migrate(home.path()).is_ok(), "Current main's schema 11 is rejected");
+    db::open(home.path()).unwrap().execute_batch("UPDATE sections SET title_by='user'; INSERT INTO spent_grants VALUES ('existing',9999999999); UPDATE schema_version SET version=11;").unwrap();
+    assert!(
+        db::migrate(home.path()).is_ok(),
+        "Current main's schema 11 is rejected"
+    );
 }
 
 #[tokio::test]
 async fn audit_deleted_room_removes_native_transcripts() {
     let home = home();
-    let app = hexbot_core::server::App::new(home.path().to_path_buf(), "127.0.0.1:0".parse().unwrap(), "/unused/pi".into(), None).unwrap();
+    let app = hexbot_core::server::App::new(
+        home.path().to_path_buf(),
+        "127.0.0.1:0".parse().unwrap(),
+        "/unused/pi".into(),
+        None,
+    )
+    .unwrap();
     db::open(home.path()).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('owl','local'); INSERT INTO rooms(id,name,owner_id) VALUES('room-a','Audit room','local'); INSERT INTO room_members(room_id,member_kind,member_id) VALUES('room-a','bot','owl'); INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room-a','owl','room-session-a');").unwrap();
     let dir = hexbot_core::runtime_store::session_dir(home.path(), "room-session-a").unwrap();
     fs::write(dir.join("conversation.jsonl"), "private room history").unwrap();
     hexbot_core::runtime_store::open(home.path()).unwrap().execute("INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES('room-session-a','local','owl','private prompt')", []).unwrap();
-    app.call("local", "hexbot.rooms.delete", &json!({"id":"room-a"})).await.unwrap();
+    app.call("local", "hexbot.rooms.delete", &json!({"id":"room-a"}))
+        .await
+        .unwrap();
     app.shutdown().await;
-    assert!(!dir.exists(), "Deleted room left its private native transcript on disk");
+    assert!(
+        !dir.exists(),
+        "Deleted room left its private native transcript on disk"
+    );
+}
+
+#[tokio::test]
+async fn grants_require_pinned_claims_header_and_published_key_material() {
+    let mock = Mock::new().await;
+    let home = home();
+    pinned_registration(&mock, home.path());
+    for (field, value) in [
+        ("iss", json!("https://evil.example")),
+        ("aud", json!("another-daemon")),
+        ("aud", json!(["daemon-1"])),
+        ("sub", json!("another-owner")),
+        ("jti", json!(null)),
+        ("iat", json!(common::now() + 61.)),
+        ("exp", json!(common::now() - 61.)),
+    ] {
+        let mut claims = grant_claims();
+        claims[field] = value;
+        assert!(
+            services::redeem_grant(home.path(), &signed_grant(&claims), "", "connect")
+                .await
+                .is_err(),
+            "accepted {claims}"
+        );
+    }
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+    header.kid = Some("fixture".into());
+    header.typ = Some("JWT".into());
+    let grant = jsonwebtoken::encode(
+        &header,
+        &grant_claims(),
+        &jsonwebtoken::EncodingKey::from_ec_pem(TEST_KEY).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        services::redeem_grant(home.path(), &grant, "", "connect")
+            .await
+            .is_err()
+    );
+    let path = home.path().join("connect.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["keys"][0]["x"] = json!("different-material");
+    fs::write(&path, config.to_string()).unwrap();
+    assert!(
+        services::redeem_grant(home.path(), &signed_grant(&grant_claims()), "", "connect")
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn revoked_published_key_and_missing_registration_pins_fail_closed() {
+    let mock = Mock::new().await;
+    let home = home();
+    pinned_registration(&mock, home.path());
+    *mock.data.keys.lock().await = json!({"keys":[]});
+    assert!(
+        services::redeem_grant(home.path(), &signed_grant(&grant_claims()), "", "connect")
+            .await
+            .is_err()
+    );
+    let path = home.path().join("connect.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config.as_object_mut().unwrap().remove("owner_id");
+    fs::write(&path, config.to_string()).unwrap();
+    assert!(
+        services::ConnectConfig::load(home.path())
+            .unwrap()
+            .is_none()
+    );
+    assert!(!services::start_daemon(home.path(), 12345).await.unwrap());
+}
+
+#[tokio::test]
+async fn parallel_grant_redemption_and_jwks_cache() {
+    let mut mock = Mock::new().await;
+    let home = home();
+    pinned_registration(&mock, home.path());
+    let grant = signed_grant(&grant_claims());
+    let (a, b) = tokio::join!(
+        services::redeem_grant(home.path(), &grant, "", "connect"),
+        services::redeem_grant(home.path(), &grant, "", "connect")
+    );
+    assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+    mock.event("/.well-known/jwks.json").await;
+    assert!(
+        mock.events.try_recv().is_err(),
+        "parallel requests fetched keys twice"
+    );
+    *mock.data.bad.lock().await = true;
+    let mut claims = grant_claims();
+    claims["jti"] = json!("cached-key");
+    assert!(
+        services::redeem_grant(home.path(), &signed_grant(&claims), "", "connect")
+            .await
+            .is_ok()
+    );
+    assert!(mock.events.try_recv().is_err());
+    // A fresh verification call still consults the durable spent-grant table.
+    assert!(
+        services::redeem_grant(home.path(), &grant, "", "connect")
+            .await
+            .is_err()
+    );
 }

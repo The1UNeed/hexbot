@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
 use crate::{Error, Result};
 
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 11;
 
 const TABLES: &str = "
 CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);
@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, name TEXT, platform TEXT
  last_seen_at REAL, revoked_at REAL);
 CREATE TABLE IF NOT EXISTS pairing_codes(code_hash TEXT PRIMARY KEY, created_at REAL,
  expires_at REAL, used_at REAL);
+CREATE TABLE IF NOT EXISTS spent_grants(jti TEXT PRIMARY KEY, exp REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS rooms(
  id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT 'local',
@@ -89,6 +90,7 @@ const COLUMNS: &[(&str, &str, &str)] = &[
     ("sections", "done_at", "REAL"),
     ("dreams", "memory_before", "TEXT"),
     ("dreams", "memory_after", "TEXT"),
+    ("sections", "title_by", "TEXT"),
 ];
 
 /// Open the explicitly selected database without running schema migrations.
@@ -117,6 +119,14 @@ pub fn open(home: &Path) -> Result<Connection> {
 
 /// Upgrade all known schemas in one database transaction. Never downgrade.
 pub fn migrate(home: &Path) -> Result<()> {
+    fs::create_dir_all(home)?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(home.join("migrate.lock"))?;
+    lock.lock()?;
     let mut connection = open(home)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if table_exists(&transaction, "schema_version")? {

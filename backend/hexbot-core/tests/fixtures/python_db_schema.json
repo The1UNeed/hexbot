@@ -77,6 +77,13 @@
         "memory_after",
         "TEXT"
       ]
+    ],
+    "10": [
+      [
+        "sections",
+        "title_by",
+        "TEXT"
+      ]
     ]
   },
   "_MIGRATION_DDL": {
@@ -84,6 +91,7 @@
     "4": "\nCREATE TABLE IF NOT EXISTS dreams(\n id TEXT PRIMARY KEY, bot TEXT NOT NULL, room_id TEXT, started_at REAL NOT NULL,\n finished_at REAL, status TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '');\nCREATE TABLE IF NOT EXISTS room_memory(\n room_id TEXT PRIMARY KEY, text TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL,\n FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);\nCREATE INDEX IF NOT EXISTS idx_dreams_bot_started ON dreams(bot,started_at DESC);\n",
     "5": "\nCREATE TABLE IF NOT EXISTS users(\n id TEXT PRIMARY KEY, display_name TEXT NOT NULL, role TEXT NOT NULL\n CHECK(role IN ('admin','member')), limits_json TEXT NOT NULL DEFAULT '{}',\n created_at REAL NOT NULL, disabled_at REAL);\nCREATE INDEX IF NOT EXISTS idx_devices_owner ON devices(owner_id);\nCREATE INDEX IF NOT EXISTS idx_bots_owner ON bots(owner_id);\nCREATE INDEX IF NOT EXISTS idx_sections_owner ON sections(owner_id);\nCREATE INDEX IF NOT EXISTS idx_rooms_owner ON rooms(owner_id);\n",
     "6": "\nCREATE TABLE IF NOT EXISTS bot_incidents(\n id TEXT PRIMARY KEY, bot TEXT NOT NULL, section_id TEXT, room_id TEXT, session_id TEXT,\n kind TEXT NOT NULL CHECK(kind IN ('connector_error','turn_failed')), connector TEXT,\n text TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL, resolved_at REAL);\nCREATE INDEX IF NOT EXISTS idx_bot_incidents_bot_open ON bot_incidents(bot,resolved_at);\n",
-    "8": "\nDROP TABLE IF EXISTS core_memory;\nDROP TABLE IF EXISTS memory_entries;\n"
+    "8": "\nDROP TABLE IF EXISTS core_memory;\nDROP TABLE IF EXISTS memory_entries;\n",
+    "11": "CREATE TABLE IF NOT EXISTS spent_grants(jti TEXT PRIMARY KEY, exp REAL NOT NULL);"
   }
 }

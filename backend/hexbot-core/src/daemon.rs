@@ -216,11 +216,14 @@ async fn run() -> Result<()> {
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let router = server::router(app.clone());
         let mut serving = tokio::spawn(async move {
-            axum::serve(listener, router)
-                .with_graceful_shutdown(async {
-                    let _ = stopped.await;
-                })
-                .await
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
         });
         println!("HERMES_BACKEND_READY port={port}");
         std::io::stdout().flush()?;

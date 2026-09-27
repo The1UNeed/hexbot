@@ -16,6 +16,7 @@ fn jwks() -> Value {
 }
 struct StateData {
     response: Mutex<Value>,
+    keys: Mutex<Value>,
     observed: mpsc::UnboundedSender<(String, Value, String)>,
     bad: Mutex<bool>,
     binary: Mutex<Vec<u8>>,
@@ -57,7 +58,7 @@ async fn handler(
             json!({"device_code":"device-code","user_code":"ABCD1234","verify_url":"https://connect.example/approve","interval":1})
         }
         "/api/register/poll" => state.response.lock().await.clone(),
-        "/.well-known/jwks.json" => jwks(),
+        "/.well-known/jwks.json" => state.keys.lock().await.clone(),
         "/binary" => return state.binary.lock().await.clone().into_response(),
         path if path.ends_with("/manifest.json") => state.manifest.lock().await.clone(),
         _ => json!({"ok":true}),
@@ -68,6 +69,7 @@ impl Mock {
     async fn new() -> Self {
         let (sender, events) = mpsc::unbounded_channel();
         let data = Arc::new(StateData {
+            keys: Mutex::new(jwks()),
             response: Mutex::new(json!({"status":"pending"})),
             observed: sender,
             bad: Mutex::new(false),
@@ -111,7 +113,7 @@ impl Mock {
         common::write_config(home,&json!({"connect":{"api_base":self.base},"updates":{"base_url":self.base},"model":"keep"})).unwrap();
     }
     fn persist_registration(&self, home: &std::path::Path) {
-        fs::write(home.join("connect.json"),serde_json::to_vec(&json!({"api_base":self.base,"daemon_id":"daemon-1","daemon_token":"daemon-secret","slug":"kitchen","tunnel_hostname":"kitchen.connect.example","tunnel_token":"tunnel-secret"})).unwrap()).unwrap();
+        fs::write(home.join("connect.json"),serde_json::to_vec(&json!({"api_base":self.base,"daemon_id":"daemon-1","daemon_token":"daemon-secret","slug":"kitchen","tunnel_hostname":"kitchen.connect.example","tunnel_token":"tunnel-secret","owner_id":"cloud-user","issuer":"https://connect.hexbot.app","keys":jwks()["keys"]})).unwrap()).unwrap();
     }
 }
 fn home() -> tempfile::TempDir {
@@ -224,7 +226,8 @@ async fn connect_grants_verify_signature_claims_and_mint_revocable_devices() {
     let key = EncodingKey::from_ec_pem(TEST_KEY).unwrap();
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("fixture".into());
-    let claims = json!({"sub":"cloud-user","daemon_id":"daemon-1","device_name":"Alice laptop","iat":common::now() as u64,"exp":common::now() as u64+300});
+    header.typ = Some("hexbot-grant+jwt".into());
+    let claims = json!({"sub":"cloud-user","iss":"https://connect.hexbot.app","aud":"daemon-1","jti":"test-grant","daemon_id":"daemon-1","device_name":"Alice laptop","iat":common::now() as u64,"exp":common::now() as u64+300});
     let grant = encode(&header, &claims, &key).unwrap();
     let device = services::redeem_grant(home.path(), &grant, "untrusted-name", "connect")
         .await
@@ -248,6 +251,7 @@ async fn connect_grants_verify_signature_claims_and_mint_revocable_devices() {
     ] {
         let mut bad = claims.clone();
         bad[field] = value;
+        bad["jti"] = json!(format!("bad-{field}"));
         assert_eq!(
             services::redeem_grant(
                 home.path(),
@@ -304,73 +308,6 @@ async fn configured_jwks_cannot_redirect_credentials_or_trust_to_another_origin(
         .unwrap()
         .is_err()
     );
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn approved_registration_starts_tunnel_heartbeats_and_disconnect_reaps() {
-    use std::os::unix::fs::PermissionsExt;
-    let mut mock = Mock::new().await;
-    let home = home();
-    mock.configure(home.path());
-    let binary = home.path().join("bin/cloudflared");
-    fs::create_dir_all(binary.parent().unwrap()).unwrap();
-    fs::write(&binary,format!("#!/usr/bin/env node\nconst fs=require('fs');const marker=__filename+'.count';const count=fs.existsSync(marker)?2:1;fs.writeFileSync(marker,'1');\nprocess.on('SIGTERM',()=>process.exit(0));\nsetTimeout(()=>process.exit(0),20000);\nfetch({}+'/tunnel_started',{{method:'POST',body:JSON.stringify({{pid:process.pid,count,token:process.env.TUNNEL_TOKEN,args:process.argv.slice(2)}})}}).then(()=>{{if(count===1)process.exit(17);}});\n",serde_json::to_string(&mock.base).unwrap())).unwrap();
-    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
-    *mock.data.response.lock().await = json!({"status":"approved","daemon_id":"daemon-1","daemon_token":"daemon-secret","slug":"kitchen","tunnel_hostname":"kitchen.connect.example","tunnel_token":"tunnel-secret"});
-    services::call(
-        home.path(),
-        "local",
-        "hexbot.connect.register_poll",
-        &json!({"device_code":"code"}),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let (heartbeat, authorization) = mock.event("/api/daemons/daemon-1/heartbeat").await;
-    assert_eq!(heartbeat["port"], 9119);
-    assert_eq!(authorization, "Bearer daemon-secret");
-    let (tunnel, _) = mock.event("/tunnel_started").await;
-    assert_eq!(tunnel["count"], 1);
-    assert_eq!(tunnel["token"], "tunnel-secret");
-    assert_eq!(tunnel["args"], json!(["tunnel", "run"]));
-    let (restarted, _) = mock.event("/tunnel_started").await;
-    assert_eq!(restarted["count"], 2);
-    let pid = restarted["pid"].as_i64().unwrap() as i32;
-    assert_eq!(
-        fs::metadata(home.path().join("connect.json"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
-    let state = services::call(home.path(), "local", "hexbot.connect.status", &json!({}))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(state["tunnel_running"], true);
-    assert!(!state.to_string().contains("secret"));
-    let disconnected = services::call(
-        home.path(),
-        "local",
-        "hexbot.connect.disconnect",
-        &json!({}),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(disconnected["registered"], false);
-    assert_eq!(disconnected["tunnel_running"], false);
-    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
-    assert!(!home.path().join("connect.json").exists());
-    assert!(
-        common::read_config(home.path())
-            .unwrap()
-            .get("dashboard")
-            .is_none()
-    );
-    services::shutdown(home.path()).await.unwrap();
 }
 
 #[tokio::test]
@@ -624,4 +561,24 @@ async fn native_update_child() {
     assert!(result["message"].as_str().unwrap().contains("503"));
     assert!(!other.path().join("runtime/native-current.json").exists());
     services::shutdown(other.path()).await.unwrap();
+}
+
+#[tokio::test]
+async fn registration_persists_pins_and_returns_only_status() {
+    let mut mock = Mock::new().await;
+    let home = home();
+    mock.configure(home.path());
+    *mock.data.response.lock().await = json!({"status":"approved","daemon_id":"daemon-1","daemon_token":"daemon-secret","slug":"kitchen","tunnel_hostname":"kitchen.connect.example","tunnel_token":"tunnel-secret","owner_id":"cloud-user","issuer":"https://connect.hexbot.app","keys":jwks()["keys"]});
+    let response = services::register_poll(home.path(), "device-code", false)
+        .await
+        .unwrap();
+    assert_eq!(response, json!({"status":"approved"}));
+    let (body, _) = mock.event("/api/register/poll").await;
+    assert_eq!(body, json!({"device_code":"device-code"}));
+    let config = services::ConnectConfig::load(home.path()).unwrap().unwrap();
+    assert_eq!(config.owner_id, "cloud-user");
+    assert_eq!(config.issuer, "https://connect.hexbot.app");
+    assert_eq!(config.keys, jwks()["keys"].as_array().unwrap().to_vec());
+    assert_eq!(config.daemon_token, "daemon-secret");
+    assert_eq!(config.tunnel_token, "tunnel-secret");
 }

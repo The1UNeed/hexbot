@@ -24,6 +24,7 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
     match a.as_slice() {
         ["connect"] => Ok(("register", json!({}))),
+        ["connect", "--name", name] => Ok(("register", json!({"name":name}))),
         ["connect", "status"] => Ok(("hexbot.connect.status", json!({}))),
         ["connect", "disconnect"] => Ok(("hexbot.connect.disconnect", json!({}))),
         ["devices", "list"] => Ok(("hexbot.devices.list", json!({}))),
@@ -400,7 +401,16 @@ pub async fn execute(home: &Path, args: &[String]) -> Result<Value> {
     common::user(home, "local")?;
     if method == "register" {
         common::admin(home, "local")?;
-        let name = hostname();
+        if services::ConnectConfig::load(home)?.is_some_and(|c| !c.daemon_id.is_empty()) {
+            return Err(Error::new(
+                4240,
+                "Already connected to Hex Connect. Disconnect first to register again.",
+            ));
+        }
+        let name = p["name"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(hostname);
         let started = invoke(
             home,
             &mut socket,
@@ -433,22 +443,22 @@ pub async fn execute(home: &Path, args: &[String]) -> Result<Value> {
                 match result["status"].as_str().unwrap_or("pending") {
                     "approved" => {
                         return Ok(
-                            json!({"connected":format!("https://{}",common::required(&result,"tunnel_hostname")?)}),
+                            json!({"connected":format!("https://{}",services::ConnectConfig::load(home)?.ok_or_else(||Error::new(5241,"Hex Connect registration was not saved"))?.tunnel_hostname)}),
                         );
                     }
-                    "expired" => return Err(Error::new(4241, "Connect registration expired")),
-                    "denied" => return Err(Error::new(4242, "Connect registration denied")),
+                    "expired" => return Err(Error::new(4241, "Hex Connect registration expired")),
+                    "denied" => return Err(Error::new(4242, "Hex Connect registration denied")),
                     "pending" => tokio::time::sleep(interval).await,
                     _ => {
                         return Err(Error::new(
                             5241,
-                            "Connect returned an unknown registration status",
+                            "Hex Connect returned an unknown registration status",
                         ));
                     }
                 }
             }
         };
-        return tokio::select! {result=tokio::time::timeout(Duration::from_secs(600),poll)=>result.map_err(|_|Error::new(4241,"Connect registration expired"))?,_=tokio::signal::ctrl_c()=>Err(Error::new(5200,"Registration interrupted"))};
+        return tokio::select! {result=tokio::time::timeout(Duration::from_secs(600),poll)=>result.map_err(|_|Error::new(4241,"Hex Connect registration expired"))?,_=tokio::signal::ctrl_c()=>Err(Error::new(5200,"Registration interrupted"))};
     }
     let mut result = invoke(home, &mut socket, method, p).await?;
     if method == "hexbot.devices.list"
