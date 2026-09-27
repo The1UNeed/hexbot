@@ -19,14 +19,16 @@ use std::{
 const DEVICE_COLUMNS: &str =
     "d.id,d.name,d.platform,d.owner_id,d.created_at,d.last_seen_at,d.revoked_at";
 const CODE_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-static FAILURES: OnceLock<Mutex<HashMap<PathBuf, VecDeque<f64>>>> = OnceLock::new();
+type Attempts = HashMap<(PathBuf, String), VecDeque<f64>>;
+static FAILURES: OnceLock<Mutex<Attempts>> = OnceLock::new();
 fn digest(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 fn normalize_code(value: &str) -> String {
     value.trim().to_uppercase().replace(['-', ' '], "")
 }
-fn invalid_code(home: &Path) -> Error {
+// Count before inspecting credentials. Both the client buckets and their total size are bounded.
+pub fn check_attempt(home: &Path, client: &str) -> Result<()> {
     let mut failures = FAILURES
         .get_or_init(Default::default)
         .lock()
@@ -38,11 +40,18 @@ fn invalid_code(home: &Path) -> Error {
         }
         !attempts.is_empty()
     });
-    let attempts = failures.entry(home.to_path_buf()).or_default();
+    let key = (home.to_owned(), client.to_owned());
+    if failures.len() >= 4096 && !failures.contains_key(&key) {
+        return Err(Error::new(4232, "too many attempts"));
+    }
+    let attempts = failures.entry(key).or_default();
     if attempts.len() >= 10 {
-        return Error::new(4232, "too many attempts");
+        return Err(Error::new(4232, "too many attempts"));
     }
     attempts.push_back(time);
+    Ok(())
+}
+fn invalid_code() -> Error {
     Error::new(4231, "invalid or expired pairing code")
 }
 fn create_code(conn: &Connection, owner: &str) -> Result<Value> {
@@ -110,20 +119,60 @@ pub fn mint_device(home: &Path, name: &str, platform: &str, owner: &str) -> Resu
     tx.commit()?;
     Ok(device)
 }
+/// Main maps the pinned cloud owner to the local admin. Spend and mint atomically.
+pub fn redeem_verified_grant(
+    home: &Path,
+    name: &str,
+    platform: &str,
+    jti: &str,
+    exp: f64,
+) -> Result<Value> {
+    let mut conn = db::open(home)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let active = tx
+        .query_row(
+            "SELECT 1 FROM users WHERE id='local' AND disabled_at IS NULL",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !active {
+        return Err(Error::new(4302, "not the owner"));
+    }
+    tx.execute("DELETE FROM spent_grants WHERE exp <= ?", [now() - 60.])?;
+    tx.execute(
+        "INSERT INTO spent_grants(jti,exp) VALUES (?,?)",
+        params![jti, exp],
+    )
+    .map_err(|_| Error::new(4231, "Hex Connect grant already used"))?;
+    let device = mint(&tx, name, platform, "local")?;
+    tx.commit()?;
+    Ok(device)
+}
 pub fn redeem_code(home: &Path, code: &str, device_name: &str, platform: &str) -> Result<Value> {
-    db::migrate(home)?;
+    redeem_code_from(home, code, device_name, platform, "local")
+}
+pub fn redeem_code_from(
+    home: &Path,
+    code: &str,
+    device_name: &str,
+    platform: &str,
+    client: &str,
+) -> Result<Value> {
+    check_attempt(home, client)?;
     let mut conn = db::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let hash = digest(&normalize_code(code));
     let time = now();
     let owner: Option<String> = tx.query_row("SELECT c.user_id FROM pairing_codes c JOIN users u ON u.id=c.user_id WHERE c.code_hash=? AND c.used_at IS NULL AND c.expires_at>? AND u.disabled_at IS NULL", params![hash,time], |row| row.get(0)).optional()?;
-    let owner = owner.ok_or_else(|| invalid_code(home))?;
+    let owner = owner.ok_or_else(invalid_code)?;
     if tx.execute(
         "UPDATE pairing_codes SET used_at=? WHERE code_hash=? AND used_at IS NULL",
         params![time, hash],
     )? != 1
     {
-        return Err(invalid_code(home));
+        return Err(invalid_code());
     }
     let device = mint(&tx, device_name, platform, &owner)?;
     tx.commit()?;
@@ -133,12 +182,14 @@ pub fn verify_token(home: &Path, token: &str) -> Result<Option<Value>> {
     if token.is_empty() {
         return Ok(None);
     }
-    db::migrate(home)?;
     let conn = db::open(home)?;
+    verify_token_with(&conn, token)
+}
+pub fn verify_token_with(conn: &Connection, token: &str) -> Result<Option<Value>> {
     let sql = format!(
         "SELECT {DEVICE_COLUMNS} FROM devices d JOIN users u ON u.id=d.owner_id WHERE d.token_hash=? AND d.revoked_at IS NULL AND u.disabled_at IS NULL"
     );
-    let Some(mut device) = rows(&conn, &sql, &[&digest(token)])?.into_iter().next() else {
+    let Some(mut device) = rows(conn, &sql, &[&digest(token)])?.into_iter().next() else {
         return Ok(None);
     };
     let time = now();

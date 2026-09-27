@@ -91,9 +91,9 @@ fn shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
 
 #[test]
 fn all_python_versions_upgrade_without_losing_rows() {
-    let python_v9 = legacy_home(9);
-    let reference = Connection::open(python_v9.path().join("hexbot.db")).unwrap();
-    for version in 1..=9 {
+    let python_v11 = legacy_home(11);
+    let reference = Connection::open(python_v11.path().join("hexbot.db")).unwrap();
+    for version in 1..=11 {
         let home = legacy_home(version);
         db::migrate(home.path()).unwrap();
         db::migrate(home.path()).unwrap();
@@ -124,7 +124,7 @@ fn all_python_versions_upgrade_without_losing_rows() {
                 .query_row("SELECT version FROM schema_version", [], |r| r
                     .get::<_, i64>(0))
                 .unwrap(),
-            9
+            11
         );
         assert_eq!(
             connection
@@ -164,7 +164,7 @@ fn open_does_not_migrate_and_future_versions_remain_untouched() {
     );
     connection
         .execute_batch(
-            "CREATE TABLE schema_version(version INTEGER); INSERT INTO schema_version VALUES (10);",
+            "CREATE TABLE schema_version(version INTEGER); INSERT INTO schema_version VALUES (12);",
         )
         .unwrap();
     assert!(db::migrate(home.path()).is_err());
@@ -173,7 +173,7 @@ fn open_does_not_migrate_and_future_versions_remain_untouched() {
             .query_row("SELECT version FROM schema_version", [], |r| r
                 .get::<_, i64>(0))
             .unwrap(),
-        10
+        12
     );
     assert_eq!(
         connection
@@ -320,5 +320,31 @@ fn simultaneous_migrations_serialize_and_remain_idempotent() {
             .query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
             .unwrap(),
         "ok"
+    );
+}
+
+#[test]
+fn current_python_database_preserves_title_attribution_and_spent_grants() {
+    let home = legacy_home(11);
+    let conn = db::open(home.path()).unwrap();
+    conn.execute("UPDATE sections SET title_by='user'", [])
+        .unwrap();
+    conn.execute("INSERT INTO spent_grants VALUES ('spent',9999999999)", [])
+        .unwrap();
+    let before = shape(&conn);
+    db::migrate(home.path()).unwrap();
+    assert_eq!(shape(&conn), before);
+    assert_eq!(
+        conn.query_row("SELECT title_by FROM sections", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "user"
+    );
+    assert_eq!(
+        conn.query_row("SELECT exp FROM spent_grants WHERE jti='spent'", [], |r| {
+            r.get::<_, f64>(0)
+        })
+        .unwrap(),
+        9999999999.
     );
 }

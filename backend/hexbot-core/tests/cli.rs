@@ -303,7 +303,7 @@ async fn offline_connect_registration_saves_without_spawning_tunnel() {
     }
     async fn poll() -> axum::Json<Value> {
         axum::Json(
-            json!({"status":"approved","daemon_id":"daemon1","daemon_token":"private","slug":"owl","tunnel_hostname":"owl.tunnel.hexbot.app","tunnel_token":"private-tunnel"}),
+            json!({"status":"approved","daemon_id":"daemon1","daemon_token":"private","slug":"owl","tunnel_hostname":"owl.tunnel.hexbot.app","tunnel_token":"private-tunnel","owner_id":"owner","issuer":"https://connect.hexbot.app","keys":[{"kid":"fixture"}]}),
         )
     }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -325,10 +325,17 @@ async fn offline_connect_registration_saves_without_spawning_tunnel() {
     )
     .unwrap();
     assert_eq!(
-        run(h.path(), &["connect"]).await["connected"],
+        run(h.path(), &["connect", "--name", "Kitchen"]).await["connected"],
         "https://owl.tunnel.hexbot.app"
     );
     assert!(h.path().join("connect.json").is_file());
+    assert!(
+        cli::execute(h.path(), &["connect".into()])
+            .await
+            .unwrap_err()
+            .message
+            .contains("Already connected")
+    );
     assert!(!h.path().join("bin/cloudflared").exists());
     assert_eq!(
         run(h.path(), &["connect", "status"]).await["registered"],

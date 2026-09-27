@@ -167,7 +167,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         HEXBOT_WEB_DEV_URL: `http://localhost:${webPort}`
       })
     } else {
-      start('daemon', hexbot, ['serve', '--port', String(daemonPort)], runtimeEnv)
+      start('daemon', hexbot, ['serve', '--port', String(daemonPort)], { ...runtimeEnv, HEXBOT_WEB_DEV_URL: `http://localhost:${webPort}` })
       await waitForPort(daemonPort, 'daemon')
       console.log(`[dev] daemon http://127.0.0.1:${daemonPort}`)
       start(
