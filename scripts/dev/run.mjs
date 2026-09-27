@@ -1,6 +1,7 @@
 // The dev channel: run Hexbot from this checkout (docs/channels.md, "Dev").
 //
 //   pnpm dev                daemon + web bundle, open the printed URL
+//   pnpm dev --backend python run the legacy daemon for rollback verification
 //   pnpm dev --desktop      web bundle + Electron app (the app runs the daemon)
 //   pnpm dev --home DIR     daemon state somewhere other than <checkout>/.hexbot
 //   pnpm dev --port N       fixed daemon port instead of one derived from the path
@@ -9,8 +10,10 @@
 // `.hexbot/`), never in ~/.hexbot, and the ports derive from the checkout
 // path so two worktrees run side by side. An ambient HEXBOT_HOME is ignored
 // on purpose: it is too easy to inherit the live install from a shell.
+import { selectBackend } from '../desktop/backend-selection.mjs'
 import { createHash } from 'node:crypto'
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { promisify } from 'node:util'
 import { existsSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import net from 'node:net'
@@ -25,6 +28,8 @@ const option = name => {
   return index === -1 ? undefined : args[index + 1]
 }
 const desktop = args.includes('--desktop')
+
+export { selectBackend } from '../desktop/backend-selection.mjs'
 
 export function derivePorts(path) {
   const hash = createHash('sha256').update(path).digest()
@@ -121,9 +126,22 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (home === resolve(homedir(), '.hexbot'))
       throw new Error('Refusing to run a dev daemon against ~/.hexbot, the live install')
     await mkdir(home, { recursive: true })
-    const hexbot = resolve(repositoryRoot, 'venv/bin/hexbot')
-    if (!existsSync(hexbot))
+    const backend = selectBackend(args)
+    const native = backend === 'rust'
+    const hexbot = resolve(repositoryRoot, native ? 'backend/hexbot-core/target/debug/hexbot' : 'venv/bin/hexbot')
+    const pi = resolve(repositoryRoot, 'backend/pi-runtime/node_modules/.bin/pi')
+    if (native) {
+      console.log('[dev] building the Rust daemon')
+      const run = promisify(execFile)
+      await run('cargo', ['build', '--locked', '--manifest-path', resolve(repositoryRoot, 'backend/hexbot-core/Cargo.toml'), '--bin', 'hexbot'], { cwd: repositoryRoot, maxBuffer: 32 * 1024 * 1024 })
+      if (!existsSync(pi)) await run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: resolve(repositoryRoot, 'backend/pi-runtime'), maxBuffer: 32 * 1024 * 1024 })
+    } else if (!existsSync(hexbot)) {
       throw new Error('venv/bin/hexbot is missing. Run the uv commands in AGENTS.md first.')
+    }
+    const runtimeEnv = {
+      HEXBOT_HOME: home, HEXBOT_BACKEND: backend,
+      ...(native ? { HEXBOT_EXECUTABLE: hexbot, HEXBOT_PI_EXECUTABLE: pi } : {})
+    }
 
     const derived = derivePorts(repositoryRoot)
     const daemonPort = Number(option('--port') ?? (await freePortFrom(derived.daemon)))
@@ -145,11 +163,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       await waitForPort(webPort, 'web bundle')
       console.log(`[dev] web http://localhost:${webPort}`)
       start('desktop', pnpm, ['--filter', './apps/desktop', 'run', 'dev'], {
-        HEXBOT_HOME: home,
+        ...runtimeEnv,
         HEXBOT_WEB_DEV_URL: `http://localhost:${webPort}`
       })
     } else {
-      start('daemon', hexbot, ['serve', '--port', String(daemonPort)], { HEXBOT_HOME: home })
+      start('daemon', hexbot, ['serve', '--port', String(daemonPort)], runtimeEnv)
       await waitForPort(daemonPort, 'daemon')
       console.log(`[dev] daemon http://127.0.0.1:${daemonPort}`)
       start(

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { createWriteStream, existsSync } from 'node:fs'
-import { chmod, cp, mkdir, readdir, rm, stat } from 'node:fs/promises'
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { arch, platform } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -8,8 +8,9 @@ import { pipeline } from 'node:stream/promises'
 import { spawn } from 'node:child_process'
 
 import { app } from 'electron'
+import { gte, valid } from 'semver'
 
-import { binDir, hexbotHome, srcDir, venvDir } from './paths'
+import { binDir, hexbotHome, nativeDir, nativeServiceExecutable, runtimeDir, srcDir, venvDir } from './paths'
 
 export type BootstrapStage =
   'uv' | 'python' | 'source' | 'venv' | 'dependencies' | 'git' | 'ripgrep' | 'done'
@@ -137,6 +138,134 @@ async function keepLatestSources(current: string): Promise<void> {
   )
 }
 
+interface NativeManifest {
+  version: string
+  target: string
+  files: Record<string, string>
+}
+
+async function verifyNativeRuntime(
+  directory: string, deps: BootstrapDeps, signedHashes?: Record<string, string>
+): Promise<Record<string, string>> {
+  const manifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8')) as NativeManifest
+  if (manifest.version !== deps.appVersion || manifest.target !== `${deps.platform}-${deps.arch}`)
+    throw new Error('Native runtime version or architecture does not match this app')
+  const required = ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi', 'pi/package-lock.json',
+    'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js']
+  if (!manifest.files || required.some(file => !manifest.files[file]))
+    throw new Error('Native runtime manifest is incomplete')
+  const actualHashes: Record<string, string> = {}
+  for (const [file, digest] of Object.entries(manifest.files)) {
+    if (file.startsWith('/') || file.includes('\\') || file.split('/').some(part => !part || part === '.' || part === '..'))
+      throw new Error('Invalid native runtime manifest path')
+    const hash = createHash('sha256').update(await readFile(join(directory, file))).digest('hex')
+    // macOS signs Mach-O files after staging. The signed app's resource is
+    // authoritative; installed copies must still match its exact bytes.
+    const expected = deps.platform === 'darwin' && ['node', 'hexbot-core'].includes(file)
+      ? signedHashes?.[file] ?? hash : digest
+    if (hash !== expected) throw new Error(`Native runtime checksum failed: ${file}`)
+    actualHashes[file] = hash
+  }
+  return actualHashes
+}
+
+async function installCodeRuntime(deps: BootstrapDeps): Promise<void> {
+  const python = join(binDir(), 'python3.11')
+  const voice = join(binDir(), 'edge-tts')
+  if (deps.exists(python) && deps.exists(voice)) return
+  await mkdir(binDir(), { recursive: true })
+  const uv = join(binDir(), 'uv')
+  if (!deps.exists(uv)) {
+    deps.emit({ stage: 'uv', message: 'Preparing the code runtime installer' })
+    const script = join(hexbotHome(), 'runtime', 'uv-install.sh')
+    await deps.download('https://astral.sh/uv/install.sh', script)
+    await deps.run('sh', [script], { env: { ...process.env, UV_INSTALL_DIR: binDir(), UV_NO_MODIFY_PATH: '1' } })
+  }
+  const env = { ...process.env,
+    UV_PYTHON_INSTALL_DIR: join(hexbotHome(), 'python'),
+    UV_PYTHON_BIN_DIR: binDir(),
+    UV_TOOL_DIR: join(hexbotHome(), 'runtime', 'tools'),
+    UV_TOOL_BIN_DIR: binDir(),
+    UV_CACHE_DIR: join(hexbotHome(), 'runtime', 'uv-cache')
+  }
+  if (!deps.exists(python)) {
+    deps.emit({ stage: 'python', message: 'Installing Python for code tools' })
+    await deps.run(uv, ['python', 'install', '--no-bin', '3.11'], { env })
+    let executable = ''
+    await deps.run(uv, ['python', 'find', '--no-project', '--managed-python', '3.11'], { env }, line => {
+      if (line.startsWith('/')) executable = line.trim()
+    })
+    if (!executable) throw new Error('Managed code interpreter was not found')
+    await rm(python, { force: true })
+    await symlink(executable, python)
+  }
+  if (!deps.exists(voice)) {
+    deps.emit({ stage: 'dependencies', message: 'Installing voice tools' })
+    await deps.run(uv, ['tool', 'install', '--python', python, 'edge-tts==7.2.7'], { env })
+  }
+}
+
+async function activateNativeRuntime(destination: string, deps: BootstrapDeps, files: Record<string, string>): Promise<void> {
+  const stable = nativeServiceExecutable()
+  // Reopening an older app must not replace a newer verified service runtime.
+  try {
+    const selected = JSON.parse(await readFile(join(runtimeDir(), 'native-current.json'), 'utf8')) as {
+      version: string; executable: string; files?: Record<string, string>
+    }
+    const executable = await realpath(stable)
+    const nativeRoot = await realpath(join(runtimeDir(), 'native'))
+    if (valid(selected.version) && gte(selected.version, deps.appVersion) &&
+      executable === selected.executable && executable.startsWith(`${nativeRoot}/`)) {
+      const directory = dirname(executable)
+      const manifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8')) as NativeManifest
+      await verifyNativeRuntime(directory, { ...deps, appVersion: selected.version }, selected.files ?? manifest.files)
+      return
+    }
+  } catch {
+    // A missing, interrupted or damaged selection is replaced by this verified bundle.
+  }
+  const staging = await mkdtemp(join(runtimeDir(), '.native-link-'))
+  try {
+    const link = join(staging, 'launcher')
+    const executable = await realpath(join(destination, 'hexbot'))
+    await symlink(executable, link)
+    const metadata = join(staging, 'current.json')
+    await writeFile(metadata, JSON.stringify({ version: deps.appVersion, executable, files }))
+    await rename(link, stable)
+    await rename(metadata, join(runtimeDir(), 'native-current.json'))
+  } finally {
+    await rm(staging, { recursive: true, force: true })
+  }
+}
+
+async function installNativeRuntime(deps: BootstrapDeps): Promise<void> {
+  const source = join(deps.resourcesPath, 'hexbot-native')
+  const destination = nativeDir(deps.appVersion)
+  deps.emit({ stage: 'source', message: 'Preparing Hexbot runtime' })
+  const signedHashes = await verifyNativeRuntime(source, deps)
+  // Always verify the installed binary before reusing it after an interrupted install.
+  try {
+    await verifyNativeRuntime(destination, deps, signedHashes)
+  } catch {
+    await mkdir(dirname(destination), { recursive: true })
+    const staging = await mkdtemp(`${destination}.staging-`)
+    try {
+      await cp(source, staging, { recursive: true })
+      await verifyNativeRuntime(staging, deps, signedHashes)
+      for (const file of ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi'])
+        await chmod(join(staging, file), 0o755)
+      await deps.run(join(staging, 'pi/hexbot-pi'), ['--version'])
+      await rm(destination, { recursive: true, force: true })
+      await rename(staging, destination)
+    } finally {
+      await rm(staging, { recursive: true, force: true })
+    }
+  }
+  await installCodeRuntime(deps)
+  await activateNativeRuntime(destination, deps, signedHashes)
+  deps.emit({ stage: 'done', message: 'Hexbot runtime is ready', percent: 100 })
+}
+
 export async function performBootstrap(overrides: Partial<BootstrapDeps> = {}): Promise<void> {
   const deps: BootstrapDeps = {
     appIsPackaged: app?.isPackaged ?? false,
@@ -154,6 +283,10 @@ export async function performBootstrap(overrides: Partial<BootstrapDeps> = {}): 
     deps.emit({ stage, message, percent })
   if (!deps.appIsPackaged) {
     emit('done', 'Development runtime is ready', 100)
+    return
+  }
+  if (deps.exists(join(deps.resourcesPath, 'hexbot-native', 'manifest.json'))) {
+    await installNativeRuntime(deps)
     return
   }
   await mkdir(binDir(), { recursive: true })

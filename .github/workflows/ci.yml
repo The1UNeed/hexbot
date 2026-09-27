@@ -20,6 +20,46 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  rust-components:
+    name: Rust daemon and Pi integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend/hexbot-core
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
+      - run: cargo +1.97.1 fmt --check
+      - run: cargo +1.97.1 test --locked
+      - run: cargo +1.97.1 clippy --locked --all-targets -- -D warnings
+      - name: Verify real Pi sessions and native tools
+        run: |
+          npm ci --prefix ../pi-runtime --ignore-scripts --no-audit --no-fund
+          node --test ../pi-runtime/acp.test.mjs
+          HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo +1.97.1 test --locked --test pi_live -- --ignored
+          HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo +1.97.1 test --locked --test runtime -- --ignored
+          HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo +1.97.1 test --locked --test runtime_recovery -- --ignored
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - run: pnpm --filter ./apps/web run build
+        working-directory: .
+      - run: pnpm --filter ./apps/desktop exec playwright install --with-deps chromium
+        working-directory: .
+      - name: Unchanged browser app against Rust and Pi
+        run: node scripts/dev/native-ui-smoke.mjs
+        working-directory: .
+      - name: Electron full edition against Rust and Pi
+        run: xvfb-run -a node scripts/dev/native-ui-smoke.mjs --desktop --edition=full
+        working-directory: .
+      - name: Electron client-only edition against Rust and Pi
+        run: xvfb-run -a node scripts/dev/native-ui-smoke.mjs --desktop --edition=client
+        working-directory: .
+
   python:
     name: Python
     runs-on: ubuntu-24.04
@@ -56,7 +96,13 @@ jobs:
       - run: pnpm --filter ./apps/web run build
       - run: pnpm --filter ./apps/desktop run typecheck
       - run: pnpm --filter ./apps/desktop run test --run
+      - name: Prepare the native desktop compiler
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
       - run: pnpm --filter ./apps/desktop run build
+      - name: Install the native desktop runtime in isolated state
+        run: HEXBOT_NATIVE_TEST_BUNDLE="$GITHUB_WORKSPACE/apps/desktop/resources/hexbot-native" pnpm --filter ./apps/desktop run test --run src/main/backend/native-bootstrap.test.ts
       - name: Release script tests
         run: node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs
       # Runs the exact commands release.yml runs after a build (version

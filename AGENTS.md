@@ -7,19 +7,19 @@ Code, Codex, Cursor) and for people; `CLAUDE.md` imports it.
 
 Hexbot is a self-hosted multi-agent desktop app. Named **bots**, each with a
 face, a model, skills, and its own memory, talk to you and to each other in
-**rooms**. A Python **daemon** runs the bots and serves a WebSocket API plus a
+**rooms**. A Rust **daemon** runs Pi agent sessions and serves a WebSocket API plus a
 web UI; an Electron **app** connects to it over LAN, Tailscale, or **Hex
-Connect**. The daemon is a hard fork of
-[Hermes Agent](https://github.com/NousResearch/hermes-agent): the Hermes core
-sits at the repository root, Hexbot's code sits in `hexbot/` and `apps/`.
+Connect**. The native daemon is in `backend/hexbot-core/`, with pinned Pi and
+its private extension in `backend/pi-runtime/`. The former Hermes/Python backend
+remains in `hexbot/` and the repository root as a compatibility reference.
 
 Three facts shape most decisions:
 
-- **Hexbot owns the edges, Hermes owns the waist.** New behaviour goes in
-  `hexbot/` (a Hermes plugin plus its own modules), `apps/`, or a skill.
-  Every edit to an imported Hermes file is listed in `CORE_EDITS.md` with a
-  reason. If you touch a root-level Python file, add a row.
-- **Prompt caching is sacred.** A section is one long-lived Hermes session
+- **Rust owns the daemon; Pi runs the agent loop.** New daemon behaviour goes
+  in `backend/hexbot-core/`; the private Pi extension adapts tools and events.
+  The existing frontend contract stays in `apps/`. Legacy Hermes edits still
+  require a `CORE_EDITS.md` row if an imported root Python file changes.
+- **Prompt caching is sacred.** A section is one persistent Pi session
   that reuses a cached prefix every turn. Do not mutate past context, swap
   toolsets, or rebuild the system prompt mid-conversation.
 - **One product, two packages, three channels.** Full package (app plus
@@ -38,10 +38,10 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Channel**: how a build is named and published. **Stable** (tagged `v<version>`, updatable; named `Hexbot [alpha]` while the version is `0.x`), **Nightly** (`Hexbot Nightly`, daily from `main`, updatable on its own track), **Dev** (the source tree). See `docs/channels.md`.
 - **Track**: the channel an installed app takes updates from, Stable or Nightly. Defaults to the channel the build came from; the user switches it in Settings, Updates.
 - **Update server**: `updates.hexbot.app`, a Cloudflare R2 bucket holding every package and the electron-updater feed files. Written only by `release.yml`.
-- **Bot**: a named agent with its own soul, model, skills, and memory. One Hermes profile, multiplexed in one daemon process.
-- **Section** = **conversation** = **thread**: one persistent chat with a bot or inside a room. A section lives until the user archives or deletes it. Each section is its own Hermes session with its own context window.
+- **Bot**: a named agent with its own soul, model, skills, and memory. One bot profile with independent Pi conversations managed by the daemon.
+- **Section** = **conversation** = **thread**: one persistent chat with a bot or inside a room. A section lives until the user archives or deletes it. Each section is its own Pi session with its own context window.
 - **Room**: a group chat with one or more humans and any number of bots. May have a **main bot** that responds when nobody is @-mentioned.
-- **Turn**: one user message and everything the bots do in response. The room turn engine (`hexbot/rooms/`) decides who speaks.
+- **Turn**: one user message and everything the bots do in response. The room turn engine (`backend/hexbot-core/src/rooms.rs`) decides who speaks.
 - **Soul**: a bot's persona, the `SOUL.md` in its profile. The user and the bot both edit it; the bot says so when it does.
 - **Memory**: a bot's own notes, the `MEMORY.md` in its profile. The bot writes it during chat, dreaming curates it, the user can edit it. Deleting a section removes its history and leaves memory alone.
 - **About you**: one text per user, written only by the user and read by every bot they own (`users/<id>/user.md`).
@@ -55,7 +55,9 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 
 | Path | What | Channel |
 | --- | --- | --- |
-| `hexbot/` | Hexbot Python package: CLI, daemon plugin, pairing, bots, sections, rooms, memory, dreaming, users, Connect client | all |
+| `backend/hexbot-core/` | Rust daemon, CLI, storage, rooms, tools, scheduling, providers, Connect | all |
+| `backend/pi-runtime/` | Pinned Pi runtime and private Hexbot extension | all |
+| `hexbot/` | Legacy Python daemon and compatibility reference | explicit legacy builds |
 | `apps/web/` | React bundle (Vite, Tailwind). Used by the app and served to browsers | all |
 | `apps/desktop/` | Electron shell, updater, runtime bootstrap, two electron-builder configs | all |
 | `apps/shared/` | Hermes `@hermes/shared`. `apps/web` imports its gateway client and event types; the upstream `web/` dashboard uses the rest | all |
@@ -79,12 +81,13 @@ from T3 Code; `docs/release.md` is the release procedure and one-time setup;
 Install once:
 
 ```sh
-uv venv venv --python 3.11 && UV_PROJECT_ENVIRONMENT=venv uv sync --extra all --extra dev --locked
+rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
 pnpm install --frozen-lockfile
 ```
 
-Or open the repository in the dev container (`.devcontainer/`), which runs
-those two lines for you.
+The development runner builds Rust and installs locked Pi dependencies. For
+legacy comparison tests, also install the Python environment documented in
+`docs/testing.md`; `--backend python` selects the retained daemon explicitly.
 
 Run Hexbot from the checkout (the Dev channel):
 
@@ -106,7 +109,7 @@ PID. This mirrors T3 Code's `vp run dev` and its per-worktree `.t3` state.
 Starting pieces by hand is fine too, with the same rule:
 
 ```sh
-HEXBOT_HOME=$(mktemp -d) ./venv/bin/hexbot serve --port 9119
+HEXBOT_HOME=$(mktemp -d) backend/hexbot-core/target/debug/hexbot serve --port 9119
 VITE_HEXBOT_ORIGIN=http://127.0.0.1:9119 pnpm --filter ./apps/web run dev
 ```
 
@@ -127,7 +130,8 @@ Three ways to hurt yourself:
 Run the suite that covers what you touched, not everything:
 
 ```sh
-./venv/bin/pytest tests/hexbot -q
+cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml
+cargo clippy --locked --manifest-path backend/hexbot-core/Cargo.toml --all-targets -- -D warnings
 pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint
 pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run
 pnpm --filter ./apps/site run check

@@ -1,6 +1,5 @@
-# Full package: the desktop app plus the daemon runtime (Python source staged
-# by scripts/desktop/stage-python-src.mjs and installed on first launch).
+# Full package: the Rust daemon, pinned Node/Pi runtime, skills and web assets.
 extends: ./electron-builder.base.yml
 extraResources:
-  - from: resources/hexbot-src
-    to: hexbot-src
+  - from: resources/hexbot-native
+    to: hexbot-native

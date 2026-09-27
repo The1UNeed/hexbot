@@ -1,0 +1,89 @@
+{
+  "_DDL": "\nCREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);\nCREATE TABLE IF NOT EXISTS bots(name TEXT PRIMARY KEY, display_name TEXT, title TEXT,\n description TEXT, owner_id TEXT NOT NULL DEFAULT 'local', created_at REAL,\n updated_at REAL, last_activity_at REAL);\nCREATE TABLE IF NOT EXISTS sections(id TEXT PRIMARY KEY, bot TEXT NOT NULL, title TEXT,\n owner_id TEXT NOT NULL DEFAULT 'local', created_at REAL, updated_at REAL,\n archived_at REAL, last_live_session_id TEXT);\nCREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, name TEXT, platform TEXT,\n token_hash TEXT UNIQUE, owner_id TEXT NOT NULL DEFAULT 'local', created_at REAL,\n last_seen_at REAL, revoked_at REAL);\nCREATE TABLE IF NOT EXISTS pairing_codes(code_hash TEXT PRIMARY KEY, created_at REAL,\n expires_at REAL, used_at REAL);\nCREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);\nCREATE INDEX IF NOT EXISTS idx_sections_bot ON sections(bot);\n",
+  "_ADDED_COLUMNS": {
+    "2": [
+      [
+        "sections",
+        "title_dirty",
+        "INTEGER NOT NULL DEFAULT 0"
+      ]
+    ],
+    "4": [
+      [
+        "bots",
+        "dream_enabled",
+        "INTEGER NOT NULL DEFAULT 1"
+      ],
+      [
+        "bots",
+        "tools_json",
+        "TEXT NOT NULL DEFAULT '[]'"
+      ],
+      [
+        "bots",
+        "skills_json",
+        "TEXT NOT NULL DEFAULT '[]'"
+      ]
+    ],
+    "5": [
+      [
+        "bots",
+        "shareable",
+        "INTEGER NOT NULL DEFAULT 0"
+      ],
+      [
+        "pairing_codes",
+        "user_id",
+        "TEXT NOT NULL DEFAULT 'local'"
+      ],
+      [
+        "dreams",
+        "owner_id",
+        "TEXT NOT NULL DEFAULT 'local'"
+      ]
+    ],
+    "6": [
+      [
+        "bots",
+        "notify",
+        "INTEGER NOT NULL DEFAULT 1"
+      ],
+      [
+        "bots",
+        "approval_mode",
+        "TEXT NOT NULL DEFAULT 'inherit'"
+      ],
+      [
+        "bots",
+        "workdir",
+        "TEXT"
+      ]
+    ],
+    "7": [
+      [
+        "sections",
+        "done_at",
+        "REAL"
+      ]
+    ],
+    "9": [
+      [
+        "dreams",
+        "memory_before",
+        "TEXT"
+      ],
+      [
+        "dreams",
+        "memory_after",
+        "TEXT"
+      ]
+    ]
+  },
+  "_MIGRATION_DDL": {
+    "3": "\nCREATE TABLE IF NOT EXISTS rooms(\n id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT 'local',\n main_bot TEXT, approval_mode TEXT, limits_json TEXT NOT NULL DEFAULT '{}',\n created_at REAL, updated_at REAL, last_activity_at REAL, archived_at REAL);\nCREATE TABLE IF NOT EXISTS room_members(\n room_id TEXT NOT NULL, member_kind TEXT NOT NULL CHECK(member_kind IN ('human','bot')),\n member_id TEXT NOT NULL, added_by TEXT, added_at REAL, left_at REAL,\n last_read_seq INTEGER NOT NULL DEFAULT 0,\n PRIMARY KEY(room_id,member_kind,member_id),\n FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);\nCREATE TABLE IF NOT EXISTS room_events(\n room_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,\n actor_kind TEXT, actor_id TEXT, payload_json TEXT NOT NULL DEFAULT '{}', created_at REAL,\n PRIMARY KEY(room_id,seq), FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);\nCREATE TABLE IF NOT EXISTS room_sessions(\n room_id TEXT NOT NULL, bot TEXT NOT NULL, stored_session_id TEXT NOT NULL,\n live_session_id TEXT, PRIMARY KEY(room_id,bot),\n FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);\nCREATE TABLE IF NOT EXISTS room_turns(\n id TEXT PRIMARY KEY, room_id TEXT NOT NULL, bot TEXT NOT NULL, trigger_seq INTEGER NOT NULL,\n started_at REAL, finished_at REAL, status TEXT NOT NULL,\n input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,\n cost_usd REAL NOT NULL DEFAULT 0,\n FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);\nCREATE TABLE IF NOT EXISTS bot_messages(\n id TEXT PRIMARY KEY, from_bot TEXT NOT NULL, to_bot TEXT NOT NULL,\n room_id TEXT, section_id TEXT, created_at REAL, text TEXT NOT NULL);\nCREATE INDEX IF NOT EXISTS idx_room_events_room_seq ON room_events(room_id,seq);\nCREATE INDEX IF NOT EXISTS idx_room_turns_room_trigger ON room_turns(room_id,trigger_seq);\nCREATE INDEX IF NOT EXISTS idx_bot_messages_pair ON bot_messages(from_bot,to_bot,created_at);\n",
+    "4": "\nCREATE TABLE IF NOT EXISTS dreams(\n id TEXT PRIMARY KEY, bot TEXT NOT NULL, room_id TEXT, started_at REAL NOT NULL,\n finished_at REAL, status TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '');\nCREATE TABLE IF NOT EXISTS room_memory(\n room_id TEXT PRIMARY KEY, text TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL,\n FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);\nCREATE INDEX IF NOT EXISTS idx_dreams_bot_started ON dreams(bot,started_at DESC);\n",
+    "5": "\nCREATE TABLE IF NOT EXISTS users(\n id TEXT PRIMARY KEY, display_name TEXT NOT NULL, role TEXT NOT NULL\n CHECK(role IN ('admin','member')), limits_json TEXT NOT NULL DEFAULT '{}',\n created_at REAL NOT NULL, disabled_at REAL);\nCREATE INDEX IF NOT EXISTS idx_devices_owner ON devices(owner_id);\nCREATE INDEX IF NOT EXISTS idx_bots_owner ON bots(owner_id);\nCREATE INDEX IF NOT EXISTS idx_sections_owner ON sections(owner_id);\nCREATE INDEX IF NOT EXISTS idx_rooms_owner ON rooms(owner_id);\n",
+    "6": "\nCREATE TABLE IF NOT EXISTS bot_incidents(\n id TEXT PRIMARY KEY, bot TEXT NOT NULL, section_id TEXT, room_id TEXT, session_id TEXT,\n kind TEXT NOT NULL CHECK(kind IN ('connector_error','turn_failed')), connector TEXT,\n text TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL, resolved_at REAL);\nCREATE INDEX IF NOT EXISTS idx_bot_incidents_bot_open ON bot_incidents(bot,resolved_at);\n",
+    "8": "\nDROP TABLE IF EXISTS core_memory;\nDROP TABLE IF EXISTS memory_entries;\n"
+  }
+}

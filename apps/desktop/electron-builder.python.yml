@@ -1,0 +1,6 @@
+# Legacy rollback package: the desktop app plus the daemon runtime (Python source staged
+# by scripts/desktop/stage-python-src.mjs and installed on first launch).
+extends: ./electron-builder.base.yml
+extraResources:
+  - from: resources/hexbot-src
+    to: hexbot-src

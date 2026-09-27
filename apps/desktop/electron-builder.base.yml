@@ -9,6 +9,9 @@ files:
   - out/**
   - resources/**
   - '!resources/hexbot-src/**'
+  - '!resources/hexbot-native/**'
+  - '!resources/hexbot-native.tar.gz*'
+  - '!resources/hexbot-native.staging-*/**'
   - package.json
 asar: true
 protocols:

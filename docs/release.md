@@ -12,7 +12,7 @@ page is the procedure and the one-time setup. Modelled on T3 Code's
   `apps/desktop/package.json` (a manual stable run takes the version from
   that file and refuses one that is already tagged), computes the nightly
   version, and stops a scheduled nightly when `main` has not moved.
-- `check` runs `ci.yml`: Python, web, desktop, site, Connect, and the
+- `check` runs `ci.yml`: Rust/Pi, legacy Python, web, desktop, site, Connect, and the
   desktop script tests. Nothing is built until it passes.
 - `build` makes six packages in parallel: full and client for macOS arm64,
   macOS x64, and Linux x64, signed and notarized when the Apple secrets are
@@ -36,6 +36,24 @@ page is the procedure and the one-time setup. Modelled on T3 Code's
 `ci.yml` runs `scripts/desktop/release-smoke.mjs` on every push: the version
 resolution, feed, manifest, and cask scripts against synthetic packages, so
 a broken release script fails before tag day.
+
+Full packages use the Rust daemon with pinned Node and Pi. Release builds run
+on matching architectures, including Intel macOS runners for the Intel daemon.
+The native update archive and SHA-256 manifest are published under
+`daemon/native/<version>/<os>-<arch>/`. Rust releases also publish a compatibility
+source archive at the historical daemon URL. An installed Python service updates
+through that archive, verifies the native bundle and its version, then switches
+its existing launcher to `runtime/native-executable`. The home and stored data stay
+in place. Set `HEXBOT_BACKEND=python` to run the retained Python source explicitly;
+this does not convert conversations newly created by Pi back to Hermes sessions.
+A manual `backend: python` dispatch selects a legacy package without the transition
+marker; release channels and full/client editions keep their meanings.
+
+Local native package verification does not publish:
+
+```sh
+node scripts/desktop/dist.mjs --mac --dir
+```
 
 ## Cut a stable release
 

@@ -48,6 +48,8 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv=None):
     _set_home()
+    from hexbot.native_transition import handoff
+    handoff(argv)
     args = parser().parse_args(argv)
     if args.command == "serve":
         from hexbot.serve import run

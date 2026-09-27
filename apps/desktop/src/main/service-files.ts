@@ -1,5 +1,5 @@
 // HEXBOT_SUPERVISOR=service tells the daemon it runs under launchd or systemd
-// and may replace its own source when a client asks (hexbot/update.py).
+// and may install a verified native update when a client asks.
 export interface ServiceFileOptions {
   executable: string
   home: string

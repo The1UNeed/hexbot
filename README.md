@@ -57,17 +57,16 @@ Docs live at [hexbot.app/docs](https://hexbot.app/docs/) and are built from
 
 ## Develop
 
-Hexbot is a hard fork of [Hermes Agent](https://github.com/NousResearch/hermes-agent).
-The Hermes core sits at the repository root; Hexbot's code sits in `hexbot/`
-(Python daemon extensions) and `apps/` (web bundle, Electron app, site,
-Connect). `AGENTS.md` is the guide for anyone, human or agent, working on the
-code. `CORE_EDITS.md` lists every change to imported Hermes files.
+Hexbot's daemon is Rust in `backend/hexbot-core/`; agents run on pinned Pi
+0.87.1 through the private extension in `backend/pi-runtime/`. The existing
+web, Electron, site, and Connect applications live in `apps/`. The former
+Python/Hermes backend remains as a compatibility reference and can be selected
+explicitly with `--backend python`. See `backend/hexbot-core/README.md` for
+storage compatibility and validation limits.
 
-Fastest start: open the repository in the dev container (`.devcontainer/`),
-which installs everything. By hand:
+Install Rust 1.97.1 and Node 26, then:
 
 ```sh
-uv venv venv --python 3.11 && UV_PROJECT_ENVIRONMENT=venv uv sync --extra all --extra dev --locked
 pnpm install --frozen-lockfile
 ```
 
@@ -87,7 +86,7 @@ touches `~/.hexbot`, your real install. `scripts/dev/run.mjs` has the flags.
 Tests:
 
 ```sh
-./venv/bin/pytest tests/hexbot -q
+cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml
 pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint
 pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run
 node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs

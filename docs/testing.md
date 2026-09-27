@@ -2,7 +2,23 @@
 
 ## Hexbot suites
 
+- Rust daemon: `cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml`
+  and `cargo clippy --locked --manifest-path backend/hexbot-core/Cargo.toml --all-targets -- -D warnings`.
+  Node and Python 3 are needed by subprocess/database comparison fixtures.
+  Database upgrades are compared with the original Python implementation in
+  temporary homes. Local HTTP/SSE/MCP fixtures test provider/tool behavior.
+  Actual Pi and unchanged-browser checks are documented in
+  [`backend/hexbot-core/README.md`](../backend/hexbot-core/README.md).
+- Native browser end to end: `node scripts/dev/native-ui-smoke.mjs` after building
+  Rust and the web bundle and installing the locked Pi dependency and Chromium.
+  Uses a local streaming model with actual Pi; no provider credentials needed.
+  Add `--desktop --edition=full` or `--desktop --edition=client` for Electron.
+  On headless Linux run these Electron checks through `xvfb-run -a`.
 - Python: `./venv/bin/pytest tests/hexbot -q`
+- Legacy service handoff: `python3 -m unittest tests/hexbot/test_native_transition.py -v`
+  (also included in the Python suite). Uses temporary homes and local archives to
+  check the old service's upgrade, native restart, explicit Python override,
+  checksums, archive limits, failure recovery, and preservation of existing data.
 - Web bundle: `pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint && pnpm --filter ./apps/web run build`
 - Desktop: `pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run && pnpm --filter ./apps/desktop run build`
 - Packaging and release scripts: `node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs`
@@ -12,6 +28,13 @@
 - Connect: `HEXBOT_CONNECT_E2E=1 ./venv/bin/pytest tests/hexbot/test_connect_e2e.py -q` (a real Connect service with the in-memory store, a real daemon, and the CLI, web, and desktop HTTP calls; no Cloudflare).
 
 ## Upstream Hermes suites
+
+Install the retained Python environment before running comparison or legacy tests:
+
+```sh
+uv venv venv --python 3.11
+UV_PROJECT_ENVIRONMENT=venv uv sync --extra all --extra dev --locked
+```
 
 Run the suites that cover the seams Hexbot edits (see `CORE_EDITS.md`):
 
@@ -53,7 +76,7 @@ checkout path, so worktrees do not collide. `pnpm dev --desktop` starts
 the Electron app instead. The smoke scripts below take the printed daemon
 port. Never point a dev daemon at `~/.hexbot`.
 
-## Real-model checks
+## Legacy Python real-model checks
 
 The `openai-codex` provider works on a machine with a Codex CLI login. To
 seed a temporary home for manual or end-to-end runs:

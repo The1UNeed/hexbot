@@ -1,6 +1,6 @@
 # Hexbot daemon API
 
-The client speaks JSON-RPC 2.0 over the Hermes WebSocket at `/api/ws`
+The client speaks JSON-RPC 2.0 over the Rust daemon WebSocket at `/api/ws`
 (newline-delimited text frames; server events arrive as notifications with
 method `"event"` and `params: {type, session_id, seq, payload}`). Hermes
 methods are used as-is for chat. Hexbot adds `hexbot.*` methods for its own
@@ -179,7 +179,7 @@ keep `left_at` after departure so old transcripts retain their identities.
 - `hexbot.rooms.delete {id}` → `{deleted: true}`
 - `hexbot.rooms.mark_read {id, seq}` → `{room}`
 
-Room turns use hidden Hermes sessions on each bot profile. The daemon waits
+Room turns use hidden Pi sessions on each bot profile. The daemon waits
 for the corresponding assistant row through `session.history` after
 `prompt.submit`; it does not depend on the WebSocket that initiated the room.
 
@@ -354,11 +354,14 @@ kind, connector, text, created_at, resolved_at}}` followed by
 
 ## CLI
 
-- `hexbot serve [--host] [--port] [--lan]`: starts the daemon (wraps
-  `hermes serve`, loads the hexbot plugin, applies `~/.hexbot` as home).
-- `hexbot pair`: prints the pairing code, addresses, and a QR.
+- `hexbot serve [--host IP] [--port N] [--lan | --no-lan]`: starts the Rust
+  daemon with Pi agents. `HEXBOT_HOME` selects the daemon state directory.
+- `hexbot pair`: prints the pairing code, expiry, address, pairing link, and QR code.
 - `hexbot connect [status|disconnect]`: registers, inspects, or disconnects
   this daemon from Hex Connect.
-- `hexbot bots list|create|delete`, `hexbot rooms list` (milestone 3),
-  `hexbot send <bot> <text>`.
-- Every Hermes command remains reachable as `hexbot hermes <args>`.
+- `hexbot devices list|revoke`, `hexbot bots list|create|delete`,
+  `hexbot rooms list`, and `hexbot send <bot> <text>`.
+- Native commands use the running daemon when available, preserving event
+  delivery and the single runtime owner. Offline mutations require its home lock.
+- The arbitrary `hexbot hermes <args>` upstream CLI remains in the explicit
+  legacy Python installation; it is not part of the Rust runtime.

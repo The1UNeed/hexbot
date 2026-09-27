@@ -4,7 +4,7 @@ import { dirname, join, delimiter } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
-import { binDir, hexbotExecutable, hexbotHome, venvDir } from './backend/paths'
+import { binDir, serviceExecutable, hexbotHome, venvDir } from './backend/paths'
 import { launchdPlist, systemdUnit, type ServiceFileOptions } from './service-files'
 
 const exec = promisify(execFile)
@@ -13,7 +13,7 @@ const servicePath = (): string =>
     ? join(homedir(), 'Library', 'LaunchAgents', 'app.hexbot.daemon.plist')
     : join(homedir(), '.config', 'systemd', 'user', 'hexbot.service')
 const options = (): ServiceFileOptions => ({
-  executable: hexbotExecutable(),
+  executable: serviceExecutable(),
   home: hexbotHome(),
   path: [binDir(), join(venvDir(), 'bin'), process.env.PATH ?? ''].join(delimiter),
   logDir: join(hexbotHome(), 'logs')

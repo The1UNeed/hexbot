@@ -1,5 +1,6 @@
 // Build one desktop package.
 //   --mac|--linux        platform (required)
+//   --backend <name>    rust | python (default rust; python is the rollback build)
 //   --client             the client-only edition (no daemon runtime)
 //   --channel <name>     stable | nightly | dev (default dev). See docs/channels.md.
 // Remaining arguments go to electron-builder.
@@ -8,12 +9,16 @@ import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { builderConfig, nativeBuildEnvironment, selectBackend } from './backend-selection.mjs'
 import { productName } from './release-version.mjs'
 import { iconOptions, parseBuildArgs } from './build-config.mjs'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const desktopRoot = resolve(repositoryRoot, 'apps/desktop')
-const { client, channel, builderArgs } = parseBuildArgs(process.argv.slice(2))
+const rawArgs = process.argv.slice(2)
+const backendIndex = rawArgs.indexOf('--backend')
+const backend = selectBackend(rawArgs)
+const { client, channel, builderArgs } = parseBuildArgs(rawArgs.filter((_, i) => backendIndex === -1 || (i !== backendIndex && i !== backendIndex + 1)))
 
 // Each channel is the same code with a different name, so users can tell
 // builds apart and install them side by side. Artifact names already carry
@@ -38,7 +43,8 @@ if (!builderArgs.some(arg => arg === '--mac' || arg === '--linux'))
     'Usage: node scripts/desktop/dist.mjs --mac|--linux [--client] [--channel stable|nightly|dev] [electron-builder options]'
   )
 
-const env = { ...process.env, HEXBOT_EDITION: client ? 'client' : 'full', HEXBOT_CHANNEL: channel }
+const env = { ...process.env, HEXBOT_EDITION: client ? 'client' : 'full', HEXBOT_CHANNEL: channel, HEXBOT_BACKEND: backend }
+if (!client && backend === 'rust') Object.assign(env, nativeBuildEnvironment(builderArgs))
 if (!env.CSC_LINK && !env.CSC_NAME) env.CSC_IDENTITY_AUTO_DISCOVERY = 'false'
 
 // Xcode 26 compiles the channel's Icon Composer source into a layered macOS
@@ -77,7 +83,7 @@ await run(pnpm, [
   ...builderArgs,
   ...channelArgs,
   ...iconArgs,
-  ...(client ? ['--config', 'electron-builder.client.yml'] : []),
+  ...builderConfig(backend, client),
   '--publish',
   'never'
 ]).catch(error => {
