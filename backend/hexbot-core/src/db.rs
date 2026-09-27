@@ -89,6 +89,7 @@ const COLUMNS: &[(&str, &str, &str)] = &[
     ("sections", "done_at", "REAL"),
     ("dreams", "memory_before", "TEXT"),
     ("dreams", "memory_after", "TEXT"),
+    ("sections", "title_by", "TEXT"),
 ];
 
 /// Open the explicitly selected database without running schema migrations.

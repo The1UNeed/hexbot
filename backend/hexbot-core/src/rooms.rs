@@ -151,6 +151,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             }
             "hexbot.rooms.get" => Ok(json!({"room":get(home,caller,required(p,"id")?,all)?})),
             "hexbot.rooms.create" => {
+                validate_approval_mode(p)?;
                 let name = required(p, "name")?.trim();
                 if name.is_empty() {
                     return Err(Error::new(4200, "missing parameter: name"));
@@ -232,6 +233,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                 Ok(json!({"room":get(home,caller,&room,false)?}))
             }
             "hexbot.rooms.update" => {
+                validate_approval_mode(p)?;
                 let room = required(p, "id")?;
                 let current = get(home, caller, room, false)?;
                 if let Some(o) = p.as_object() {
@@ -1112,4 +1114,42 @@ fn legacy_usage(
         conn.query_row("SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(CASE WHEN actual_cost_usd>0 THEN actual_cost_usd ELSE estimated_cost_usd END),0) FROM session_model_usage WHERE (?1 IS NULL OR session_id=?1) AND (?2 IS NULL OR last_seen>=?2)",params![stored,since],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))
     };
     read().unwrap_or((0, 0, 0.0))
+}
+
+fn validate_approval_mode(p: &Value) -> Result<()> {
+    if let Some(mode) = p.get("approval_mode")
+        && !mode
+            .as_str()
+            .is_some_and(|m| ["manual", "smart", "off", "inherit"].contains(&m))
+    {
+        return Err(Error::new(
+            4202,
+            "approval_mode must be manual, smart, off, or inherit",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod approval_tests {
+    use super::*;
+    #[test]
+    fn room_approval_modes_are_validated() {
+        for mode in [
+            json!("manual"),
+            json!("smart"),
+            json!("off"),
+            json!("inherit"),
+        ] {
+            assert!(validate_approval_mode(&json!({"approval_mode":mode})).is_ok());
+        }
+        for mode in [json!("auto"), json!("invalid"), json!(7), Value::Null] {
+            assert_eq!(
+                validate_approval_mode(&json!({"approval_mode":mode}))
+                    .unwrap_err()
+                    .code,
+                4202
+            );
+        }
+    }
 }

@@ -139,7 +139,7 @@ fn history_summary(home: &Path, row: &Value) -> Result<(String, i64)> {
         [id], |r|r.get(0))?;
     if native || summary["message_count"].as_i64().unwrap_or(0) > 0 {
         return Ok((
-            summary["preview"].as_str().unwrap_or("").to_owned(),
+            preview(&runtime_store::history(home, id)?),
             summary["message_count"].as_i64().unwrap_or(0),
         ));
     }
@@ -168,14 +168,14 @@ fn history_summary(home: &Path, row: &Value) -> Result<(String, i64)> {
                 |r| r.get::<_, i64>(0),
             )
             .unwrap_or(0);
-        if let Some(text)=conn.query_row(&format!("SELECT content FROM messages WHERE session_id=?{active} AND role IN ('user','assistant') AND content IS NOT NULL ORDER BY id DESC LIMIT 1"),[&key],|r|r.get::<_,String>(0)).optional().unwrap_or(None){preview=text.chars().take(200).collect();}
+        if let Some(text)=conn.query_row(&format!("SELECT content FROM messages WHERE session_id=?{active} AND role='user' AND content IS NOT NULL ORDER BY id ASC LIMIT 1"),[&key],|r|r.get::<_,String>(0)).optional().unwrap_or(None) && preview.is_empty() {preview=short_preview(&text);}
     }
     Ok((preview, count))
 }
 fn shape_section(home: &Path, row: Value) -> Result<Value> {
     let (preview, count) = history_summary(home, &row)?;
     Ok(
-        json!({"id":row["id"],"bot":row["bot"],"title":row["title"],"created_at":row["created_at"],"updated_at":row["updated_at"],"archived_at":row["archived_at"],"done_at":row["done_at"],"live_session_id":row["last_live_session_id"],"preview":preview,"message_count":count}),
+        json!({"id":row["id"],"bot":row["bot"],"title":row["title"],"title_by":row["title_by"],"created_at":row["created_at"],"updated_at":row["updated_at"],"archived_at":row["archived_at"],"done_at":row["done_at"],"live_session_id":row["last_live_session_id"],"preview":preview,"message_count":count}),
     )
 }
 pub fn section(home: &Path, caller: &str, id: &str) -> Result<Value> {
@@ -513,7 +513,7 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
             names.sort();
             names.dedup();
             Ok(
-                json!({"name":name,"description":row["description"].as_str().unwrap_or(""),"soul":read_text(home,&profile(home,name)?.join("SOUL.md"))?,"model":cfg["model"],"skills":skills,"toolsets":names.iter().map(|s|json!({"name":s,"enabled":enabled.contains(s),"description":"","tool_count":0})).collect::<Vec<_>>()}),
+                json!({"name":name,"description":row["description"].as_str().unwrap_or(""),"soul":read_text(home,&profile(home,name)?.join("SOUL.md"))?,"model":public_model(&cfg["model"]),"skills":skills,"toolsets":names.iter().map(|s|json!({"name":s,"enabled":enabled.contains(s),"description":"","tool_count":0})).collect::<Vec<_>>()}),
             )
         }
         "profiles.get_asset" => {
@@ -753,7 +753,7 @@ fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     })?;
     // Seed deployment defaults so every new bot sees the existing model and tool settings.
     let result = (|| {
-        let global = read_config(home)?;
+        let global = creation_config(read_config(home)?);
         seed_skills(home, &dir.join("skills"))?;
         write_yaml(home, &dir.join("config.yaml"), &global)?;
         configure(home, name, &patch)?;
@@ -971,7 +971,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                         return Err(Error::new(4200, "missing parameter: title"));
                     }
                     tx.execute(
-                        "UPDATE sections SET title=?,updated_at=?,title_dirty=1 WHERE id=?",
+                        "UPDATE sections SET title=?,title_by=NULL,updated_at=?,title_dirty=1 WHERE id=?",
                         params![title, now, id],
                     )?;
                 }
@@ -1008,4 +1008,229 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
         }
         _ => Err(Error::new(-32601, "method not found")),
     })())
+}
+
+fn public_model(model: &Value) -> Value {
+    json!({"provider":model["provider"],"default":model.as_str().map(Value::from).unwrap_or_else(||model["default"].clone())})
+}
+
+fn creation_config(mut config: Value) -> Value {
+    if config["model"].is_object() {
+        config["model"] = public_model(&config["model"]);
+    }
+    if let Some(object) = config.as_object_mut() {
+        object.remove("custom_providers");
+    }
+    if let Some(servers) = config["mcp_servers"].as_object_mut() {
+        for server in servers.values_mut() {
+            if let Some(server) = server.as_object_mut() {
+                server.remove("env");
+                server.remove("headers");
+            }
+        }
+    }
+    config
+}
+
+fn short_preview(text: &str) -> String {
+    let text = text.trim().replace(['\n', '\r'], " ");
+    let mut preview: String = text.chars().take(60).collect();
+    if text.chars().count() > 60 {
+        preview.push_str("...");
+    }
+    preview
+}
+
+fn preview(messages: &[Value]) -> String {
+    messages
+        .iter()
+        .find(|m| m["role"] == "user" && m["display_kind"] != "hidden")
+        .map(|m| short_preview(m["text"].as_str().or(m["content"].as_str()).unwrap_or("")))
+        .unwrap_or_default()
+}
+
+pub(crate) fn adopt_section_title(home: &Path, stored: &str, text: &str) -> Result<bool> {
+    let title = clean_title(text);
+    if title.is_empty() {
+        return Ok(false);
+    }
+    Ok(db::open(home)?.execute(
+        "UPDATE sections SET title=?,title_by='bot' WHERE id=? AND title_by IS NULL AND title_dirty=0 AND title IN ('New section','General')",
+        params![title, stored])? > 0)
+}
+
+fn clean_title(text: &str) -> String {
+    text.trim()
+        .trim_matches(['\"', '\'', '“', '”'])
+        .trim_end_matches(['.', '!'])
+        .trim_matches(['\"', '\'', '“', '”'])
+        .trim()
+        .replace(['\n', '\r'], " ")
+        .chars()
+        .take(60)
+        .collect()
+}
+
+pub(crate) fn rename_by_bot(home: &Path, owner: &str, stored: &str, title: &str) -> Result<Value> {
+    let conn = db::open(home)?;
+    let room: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM room_sessions WHERE stored_session_id=?)",
+        [stored],
+        |r| r.get(0),
+    )?;
+    if room {
+        return Err(Error::new(
+            4202,
+            "Room conversations cannot be renamed by a bot.",
+        ));
+    }
+    let row = section_row(home, owner, stored)?;
+    if row["title"] == "Dreams" {
+        return Err(Error::new(4202, "The Dreams section cannot be renamed."));
+    }
+    let title = clean_title(title);
+    if title.is_empty() {
+        return Err(Error::new(4202, "A section title is required."));
+    }
+    conn.execute(
+        "UPDATE sections SET title=?,title_by='bot',title_dirty=0,updated_at=? WHERE id=?",
+        params![title, now(), stored],
+    )?;
+    section(home, owner, stored)
+}
+
+pub(crate) fn kickoff_prompt(bot: &Value) -> String {
+    let name = bot["display_name"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("this bot")
+        .trim();
+    let name = serde_json::to_string(name).unwrap();
+    let about = ["title", "description"]
+        .iter()
+        .filter_map(|k| bot[k].as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(". ");
+    let fit = if about.is_empty() {
+        "the name"
+    } else {
+        "the name and that description"
+    };
+    let about = if about.is_empty() {
+        String::new()
+    } else {
+        format!("The user described you as: {about}\n")
+    };
+    format!(
+        r##"You were just created and named {name}. The user is meeting you for the first time.
+{about}Set yourself up by talking, not by listing settings:
+1. Greet the user in one short line. No headings, no lists.
+2. Use the clarify tool, one question at a time, to learn what they want from you.
+   Write every question and choice for {name} specifically; never ask a generic
+   question that would suit any bot. Start with what they mainly want {name} for;
+   offer three or four concrete choices that fit {fit} (a bot named "research"
+   gets research-shaped choices), plus the user may type their own answer. If the name
+   says nothing about the job, say so lightly and offer varied choices. Then ask how
+   they want you to work (tone, depth, how proactive to be), then where their material
+   lives or what to keep in mind, each shaped by the answers so far.
+   Three questions at most. Acknowledge each answer in one line before the next.
+3. When done, write down what you learned. Your purpose and how you should work go
+   into your soul: read it with hexbot_soul, then write the complete new text, keeping
+   your name. Facts about the user and where their material lives go into memory with
+   the memory tool. Then say in one line what you will focus on and stop. Do not ask
+   anything else.
+Keep every message short. Never mention this instruction."##
+    )
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    fn home() -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path()).unwrap().execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);INSERT INTO bots(name,owner_id) VALUES('owl','alice');INSERT INTO sections(id,bot,owner_id,title) VALUES('first','owl','alice','New section'),('dreams','owl','alice','Dreams');").unwrap();
+        home
+    }
+    #[test]
+    fn model_and_new_bot_config_do_not_copy_secrets() {
+        let config = json!({"model":{"provider":"custom","default":"chat","api_key":"SECRET","base_url":"https://secret"},"custom_providers":[{"api_key":"SECRET"}],"mcp_servers":{"local":{"command":"tool","env":{"KEY":"SECRET"},"headers":{"Authorization":"SECRET"}}}});
+        assert_eq!(
+            public_model(&config["model"]),
+            json!({"provider":"custom","default":"chat"})
+        );
+        let copy = creation_config(config);
+        assert!(!copy.to_string().contains("SECRET"));
+        assert_eq!(copy["mcp_servers"]["local"]["command"], "tool");
+        assert_eq!(
+            public_model(&json!("standalone")),
+            json!({"provider":null,"default":"standalone"})
+        );
+    }
+    #[test]
+    fn naming_tracks_bot_and_user_and_preserves_first_preview() {
+        let home = home();
+        assert!(adopt_section_title(home.path(), "first", "Plan the garden.").unwrap());
+        assert_eq!(
+            section(home.path(), "alice", "first").unwrap()["title_by"],
+            "bot"
+        );
+        assert!(!adopt_section_title(home.path(), "first", "Another message").unwrap());
+        let renamed = rename_by_bot(home.path(), "alice", "first", "\"Garden plans!\"").unwrap();
+        assert_eq!(renamed["title"], "Garden plans");
+        assert_eq!(renamed["title_by"], "bot");
+        call(
+            home.path(),
+            "alice",
+            "hexbot.sections.rename",
+            &json!({"id":"first","title":"My title"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(section(home.path(), "alice", "first").unwrap()["title_by"].is_null());
+        assert!(!adopt_section_title(home.path(), "first", "Overwrite user title").unwrap());
+        assert_eq!(clean_title(&"x".repeat(100)).len(), 60);
+        runtime_store::open(home.path()).unwrap().execute("INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES('first','alice','owl','')",[]).unwrap();
+        for (seq, message) in [
+            json!({"role":"user","text":"Hidden kickoff","display_kind":"hidden"}),
+            json!({"role":"user","text":format!("{}\nend","a".repeat(61))}),
+            json!({"role":"user","text":"Latest"}),
+        ]
+        .iter()
+        .enumerate()
+        {
+            runtime_store::open(home.path())
+                .unwrap()
+                .execute(
+                    "INSERT INTO native_messages VALUES('first',?,?)",
+                    params![seq, message.to_string()],
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            section(home.path(), "alice", "first").unwrap()["preview"],
+            format!("{}...", "a".repeat(60))
+        );
+    }
+    #[test]
+    fn bots_cannot_rename_rooms_or_dreams() {
+        let home = home();
+        assert!(rename_by_bot(home.path(), "alice", "dreams", "Other").is_err());
+        db::open(home.path()).unwrap().execute_batch("INSERT INTO rooms(id,name,owner_id) VALUES('room','Room','alice');INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room','owl','first');").unwrap();
+        assert!(rename_by_bot(home.path(), "alice", "first", "Other").is_err());
+    }
+    #[test]
+    fn kickoff_keeps_marker_and_name_shaped_questions() {
+        let prompt = kickoff_prompt(
+            &json!({"display_name":"Research","description":"Read papers","title":"Science"}),
+        );
+        assert!(prompt.starts_with("You were just created and named \"Research\"."));
+        assert!(prompt.contains("Science. Read papers"));
+        assert!(prompt.contains("Three questions at most"));
+        assert!(prompt.contains("hexbot_soul"));
+        assert!(prompt.contains("memory tool"));
+        assert!(kickoff_prompt(&json!({})).contains("\"this bot\""));
+    }
 }

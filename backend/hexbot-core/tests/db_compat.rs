@@ -93,6 +93,10 @@ fn shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
 fn all_python_versions_upgrade_without_losing_rows() {
     let python_v9 = legacy_home(9);
     let reference = Connection::open(python_v9.path().join("hexbot.db")).unwrap();
+    // Main #34 adds title attribution after the captured v9 schema.
+    reference
+        .execute_batch("ALTER TABLE sections ADD COLUMN title_by TEXT")
+        .unwrap();
     for version in 1..=9 {
         let home = legacy_home(version);
         db::migrate(home.path()).unwrap();
