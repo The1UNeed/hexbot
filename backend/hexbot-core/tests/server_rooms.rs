@@ -251,12 +251,11 @@ fn frozen_session(home: &std::path::Path, stored: &str) -> (String, String) {
         .unwrap()
 }
 #[tokio::test]
-async fn removing_running_shared_member_closes_process_but_preserves_private_session_history() {
+async fn removing_last_shared_member_closes_process_and_purges_room_transcript() {
     let (h, app) = setup();
     let room = room(&app, "bob", json!(["owl"])).await;
     let live = running_room(&app, &room).await;
     let stored = stored_room_session(h.path(), &room);
-    let frozen = frozen_session(h.path(), &stored);
     let history = hexbot_core::runtime_store::history(h.path(), &stored).unwrap();
     assert!(!history.is_empty());
     // Owning the bot does not permit its owner to remove it from someone else's room.
@@ -293,11 +292,21 @@ async fn removing_running_shared_member_closes_process_but_preserves_private_ses
             .unwrap()
             .is_err()
     );
-    assert_eq!(
-        hexbot_core::runtime_store::history(h.path(), &stored).unwrap(),
-        history
+    assert!(
+        hexbot_core::runtime_store::history(h.path(), &stored)
+            .unwrap()
+            .is_empty()
     );
-    assert_eq!(frozen_session(h.path(), &stored), frozen);
+    assert!(!h.path().join("runtime/sessions").join(&stored).exists());
+    let count: i64 = hexbot_core::runtime_store::open(h.path())
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM native_sessions WHERE stored_id=?",
+            [&stored],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
     app.shutdown().await;
 }
 #[tokio::test]

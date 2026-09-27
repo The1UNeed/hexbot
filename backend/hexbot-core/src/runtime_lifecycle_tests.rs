@@ -20,11 +20,12 @@ fn setup() -> (tempfile::TempDir, Arc<Runtime>, EventHub) {
         .unwrap();
     let script = home.path().join("pi.cjs");
     let logfile = json!(home.path().join("processes.jsonl")).to_string();
+    let dialogs = json!(home.path().join("dialogs.jsonl")).to_string();
     fs::write(&script, format!(r#"#!/usr/bin/env node
 const fs=require('node:fs'),rl=require('node:readline').createInterface({{input:process.stdin}});
 const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
 fs.appendFileSync({logfile},JSON.stringify({{pid:process.pid,args:process.argv.slice(2),config:JSON.parse(fs.readFileSync(process.env.HEXBOT_SESSION_CONFIG))}})+'\n');
-rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,command:c.type,success:true,data:{{}}}});if(c.type==='prompt'){{emit({{type:'agent_start'}});if(c.message!=='wait')emit({{type:'agent_settled'}});}}if(c.type==='abort')emit({{type:'agent_settled'}});}});
+rl.on('line',line=>{{const c=JSON.parse(line);if(c.type==='extension_ui_response'){{fs.appendFileSync({dialogs},JSON.stringify(c)+'\n');return;}}emit({{type:'response',id:c.id,command:c.type,success:true,data:{{}}}});if(c.type==='prompt'){{emit({{type:'agent_start'}});emit({{type:'message_end',message:{{role:'user',content:c.message}}}});if(c.message!=='wait')emit({{type:'agent_settled'}});}}if(c.type==='abort')emit({{type:'agent_settled'}});}});
 "#)).unwrap();
     #[cfg(unix)]
     {
@@ -297,5 +298,254 @@ async fn intentional_close_of_busy_turn_does_not_report_failure_incident() {
         assert_ne!(event.frame["params"]["type"], "hexbot.bots.incident");
         assert_ne!(event.frame["params"]["type"], "error");
     }
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn unrelated_open_lock_does_not_block_live_commands() {
+    let (_home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let lock = runtime.open_lock("other");
+    let _guard = lock.lock().await;
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        runtime.call("alice", "session.interrupt", &json!({"session_id":id})),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    runtime.shutdown().await;
+}
+#[tokio::test]
+async fn buffered_events_after_close_cannot_restore_deleted_rows() {
+    let (home, runtime, _) = setup();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    runtime.close_stored("alice", "first").await.unwrap();
+    store::delete(home.path(), "first").unwrap();
+    runtime
+        .event(
+            &s,
+            json!({"type":"message_end","message":{"role":"user","content":"late"}}),
+        )
+        .unwrap();
+    assert!(store::history(home.path(), "first").unwrap().is_empty());
+    runtime.shutdown().await;
+}
+#[tokio::test]
+async fn stale_settled_keeps_queued_prompt_busy_and_tool_duration_is_emitted() {
+    let (_home, runtime, hub) = setup();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    {
+        let mut state = s.state.lock().unwrap();
+        state.busy = true;
+        state.display.push_back("normal".into());
+    }
+    runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
+    assert!(s.state.lock().unwrap().busy);
+    runtime
+        .event(
+            &s,
+            json!({"type":"tool_execution_start","toolCallId":"one","toolName":"read"}),
+        )
+        .unwrap();
+    runtime
+        .event(
+            &s,
+            json!({"type":"tool_execution_end","toolCallId":"one","toolName":"read","result":{}}),
+        )
+        .unwrap();
+    let log = hub.since("alice", &id, 0);
+    assert!(log.to_string().contains("duration_s"));
+    runtime.shutdown().await;
+}
+#[tokio::test]
+async fn running_child_prevents_parent_retirement() {
+    let (_home, runtime, _) = setup();
+    open(&runtime).await;
+    age(&runtime);
+    runtime.children.lock().unwrap().insert(
+        "child".into(),
+        delegation::Child {
+            row: json!({"parent":"first","status":"running"}),
+            stop: watch::channel(false).0,
+        },
+    );
+    assert_eq!(runtime.retire_idle(common::now()).await.unwrap(), 0);
+    runtime.shutdown().await;
+}
+#[tokio::test]
+async fn capacity_retires_the_oldest_idle_process_and_keeps_live_alias() {
+    let (home, runtime, _) = setup();
+    let first = open(&runtime).await;
+    for i in 0..16 {
+        let id = format!("section-{i}");
+        db::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO sections(id,bot,owner_id) VALUES(?,'owl','alice')",
+                [&id],
+            )
+            .unwrap();
+        runtime.open_session("alice", "owl", &id).await.unwrap();
+    }
+    assert_eq!(runtime.sessions.lock().unwrap().len(), 16);
+    assert!(!runtime.sessions.lock().unwrap().contains_key("first"));
+    assert_eq!(runtime.live("alice", &first).await.unwrap().id, first);
+    assert_eq!(runtime.sessions.lock().unwrap().len(), 16);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn long_code_tool_does_not_block_event_pump_or_interrupt() {
+    use tokio::io::AsyncReadExt;
+    let (home, runtime, hub) = setup();
+    fs::write(home.path().join("profiles/owl/config.yaml"),"model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [code_execution]\n").unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let code = format!(
+        "import socket, os\ns=socket.create_connection(('127.0.0.1', {}))\ns.sendall(str(os.getpid()).encode()+b'\\n')\ns.recv(1)",
+        listener.local_addr().unwrap().port()
+    );
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    runtime.event(&s,json!({"type":"extension_ui_request","id":"code","method":"input","title":format!("__HEXBOT_TOOL__{}",json!({"name":"execute_code","args":{"code":code}}))})).unwrap();
+    let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut pid = vec![];
+    loop {
+        let b = socket.read_u8().await.unwrap();
+        if b == b'\n' {
+            break;
+        }
+        pid.push(b);
+    }
+    // The tool is blocked in a socket read. The real pump still handles the
+    // fake process's prompt events, including its terminal state.
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"hello"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if events.recv().await.unwrap().frame["params"]["type"] == "message.complete" {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        runtime.interrupt_stored("alice", "first"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        socket.read_u8().await.unwrap_err().kind(),
+        std::io::ErrorKind::UnexpectedEof
+    );
+    let cancelled: Value = serde_json::from_str(
+        fs::read_to_string(home.path().join("dialogs.jsonl"))
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(cancelled["id"], "code");
+    assert_eq!(cancelled["cancelled"], true);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn recoverable_store_failure_keeps_output_and_retries_at_settle() {
+    let (home, runtime, _) = setup();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let conn = store::open(home.path()).unwrap();
+    conn.execute_batch("CREATE TRIGGER reject_message BEFORE INSERT ON native_messages BEGIN SELECT RAISE(ABORT,'write temporarily unavailable'); END;").unwrap();
+    s.state.lock().unwrap().busy = true;
+    runtime.event(&s,json!({"type":"message_end","message":{"role":"assistant","content":"Saved after retry","stopReason":"stop"}})).unwrap();
+    assert_eq!(s.state.lock().unwrap().output, "Saved after retry");
+    assert_eq!(s.state.lock().unwrap().unsaved.len(), 1);
+    conn.execute_batch("DROP TRIGGER reject_message").unwrap();
+    runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
+    assert_eq!(
+        store::history(home.path(), "first").unwrap()[0]["text"],
+        "Saved after retry"
+    );
+    assert!(s.state.lock().unwrap().unsaved.is_empty());
+    runtime.shutdown().await;
+}
+#[tokio::test]
+async fn background_result_resolves_a_retired_parent_and_does_not_reopen_closed_parent() {
+    let (home, runtime, _) = setup();
+    open(&runtime).await;
+    age(&runtime);
+    runtime.retire_idle(common::now()).await.unwrap();
+    runtime
+        .return_result("alice", "owl", "first", "A completed task")
+        .await;
+    assert_eq!(processes(home.path()).len(), 2);
+    runtime.close_stored("alice", "first").await.unwrap();
+    runtime
+        .return_result("alice", "owl", "first", "A late task")
+        .await;
+    assert_eq!(processes(home.path()).len(), 2);
+    assert!(runtime.sessions.lock().unwrap().is_empty());
+    runtime.shutdown().await;
+}
+#[tokio::test]
+async fn unavailable_mcp_warns_and_opens_with_no_discovered_tools() {
+    let (home, runtime, hub) = setup();
+    common::write_config(
+        home.path(),
+        &json!({"mcp_servers":{"missing":{"command":"/missing/hexbot-tool"}}}),
+    )
+    .unwrap();
+    let mut events = hub.subscribe();
+    open(&runtime).await;
+    let mut warning = false;
+    while let Ok(event) = events.try_recv() {
+        warning |= event.frame["params"]["type"] == "warning";
+    }
+    assert!(warning);
+    let saved = &processes(home.path())[0]["config"]["tools"];
+    assert!(
+        saved
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["server"].is_null())
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn close_removes_unsubmitted_attachments_and_keeps_the_conversation() {
+    let (home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let attached = runtime.call("alice","file.attach",&json!({"session_id":id,"name":"pending.txt","data_url":"data:text/plain;base64,aGVsbG8="})).await.unwrap().unwrap();
+    let path = PathBuf::from(attached["path"].as_str().unwrap());
+    assert!(path.exists());
+    runtime.close_stored("alice", "first").await.unwrap();
+    assert!(!path.exists());
+    assert!(
+        home.path()
+            .join("runtime/sessions/first/conversation.jsonl")
+            .exists()
+    );
+    open(&runtime).await;
     runtime.shutdown().await;
 }

@@ -36,15 +36,20 @@ const DEADLINE: Duration = Duration::from_secs(30);
 struct State {
     busy: bool,
     closed: bool,
+    interrupted: bool,
     last_activity: f64,
     output: String,
     error: Option<String>,
     pending: HashMap<String, Value>,
+    tool_dialogs: std::collections::HashSet<String>,
     native_approvals: HashMap<String, tokio::sync::oneshot::Sender<String>>,
     display: VecDeque<String>,
     attachments: Vec<Value>,
     refs: Vec<String>,
+    staged_files: Vec<PathBuf>,
     origin: String,
+    tool_started: HashMap<String, std::time::Instant>,
+    unsaved: VecDeque<(Value, Option<String>)>,
 }
 struct Live {
     owner: String,
@@ -55,13 +60,17 @@ struct Live {
     state: Mutex<State>,
     settled: watch::Sender<u64>,
     tools: Vec<Value>,
+    requests: Mutex<tokio::task::JoinSet<()>>,
+    event_gate: Mutex<()>,
+    permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
 }
 pub struct Runtime {
     home: PathBuf,
     events: EventHub,
     pi_executable: PathBuf,
     sessions: Mutex<HashMap<String, Arc<Live>>>,
-    opening: AsyncMutex<()>,
+    opening: Mutex<HashMap<String, Weak<AsyncMutex<()>>>>,
+    capacity: Arc<tokio::sync::Semaphore>,
     weak: Weak<Self>,
     stopping: AtomicBool,
     hops: Mutex<HashMap<String, usize>>,
@@ -77,7 +86,8 @@ impl Runtime {
             events,
             pi_executable,
             sessions: Mutex::new(HashMap::new()),
-            opening: AsyncMutex::new(()),
+            opening: Mutex::new(HashMap::new()),
+            capacity: Arc::new(tokio::sync::Semaphore::new(16)),
             weak: weak.clone(),
             stopping: AtomicBool::new(false),
             hops: Mutex::new(HashMap::new()),
@@ -102,7 +112,6 @@ impl Runtime {
     }
     async fn live(&self, caller: &str, id: &str) -> Result<Arc<Live>> {
         common::user(&self.home, caller)?;
-        let _guard = self.opening.lock().await;
         let existing = self
             .sessions
             .lock()
@@ -120,34 +129,67 @@ impl Runtime {
             params![id,caller], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
         let (stored, bot) = target.ok_or_else(|| Error::new(4001, "session not found"))?;
         common::bot_session_access(&self.home, caller, &bot, &stored)?;
-        self.open_session_locked(caller, &bot, &stored, None, None)
-            .await
+        self.open_session(caller, &bot, &stored).await
     }
     // Retire only settled sessions. Their frozen prompt, tools, JSONL and live ID
     // remain durable, so any unchanged client RPC can resume the same section.
     async fn retire_idle(&self, before: f64) -> Result<usize> {
-        let _guard = self.opening.lock().await;
+        let mut candidates = self
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        candidates.sort_by(|a, b| {
+            let first = a.state.lock().unwrap().last_activity;
+            let second = b.state.lock().unwrap().last_activity;
+            first.total_cmp(&second)
+        });
         let mut expired = vec![];
-        self.sessions.lock().unwrap().retain(|_, s| {
+        for s in candidates {
+            let lock = self.open_lock(&s.stored);
+            let Ok(guard) = lock.try_lock_owned() else {
+                continue;
+            };
+            let has_children = self
+                .children
+                .lock()
+                .unwrap()
+                .values()
+                .any(|c| c.row["parent"] == s.stored && c.row["status"] == "running");
+            {
+                let mut tasks = s.requests.lock().unwrap();
+                while tasks.try_join_next().is_some() {}
+            }
+            let mut sessions = self.sessions.lock().unwrap();
+            let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
-            if !state.busy
+            if !has_children
+                && !state.busy
+                && !state.closed
                 && state.pending.is_empty()
                 && state.attachments.is_empty()
                 && state.refs.is_empty()
+                && state.unsaved.is_empty()
                 && state.last_activity < before
+                && s.requests.lock().unwrap().is_empty()
             {
                 state.closed = true;
-                expired.push(s.clone());
-                false
-            } else {
-                true
+                sessions.remove(&s.stored);
+                expired.push((s.clone(), guard));
+                // Under capacity pressure retire only the least recently used bot.
+                if before == f64::INFINITY {
+                    break;
+                }
             }
-        });
-        for s in &expired {
+        }
+        for (s, _) in &expired {
             crate::provider_acp::cancel(&self.home, &s.stored).await;
             Self::cancel_dialogs(s).await;
             crate::native_tools::close_session(&self.home, &s.stored).await;
             s.process.shutdown().await.map_err(pi_error)?;
+            s.permit.lock().unwrap().take();
             self.events.forget(&s.owner, &s.id);
         }
         Ok(expired.len())
@@ -160,10 +202,20 @@ impl Runtime {
         if !reply.success {
             return Err(Error::new(
                 5201,
-                reply.error.unwrap_or_else(|| "Pi command failed".into()),
+                reply.error.unwrap_or_else(|| "Bot command failed".into()),
             ));
         }
         Ok(reply.data.unwrap_or_else(|| json!({})))
+    }
+    fn open_lock(&self, stored: &str) -> Arc<AsyncMutex<()>> {
+        let mut locks = self.opening.lock().unwrap();
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(stored).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(AsyncMutex::new(()));
+        locks.insert(stored.into(), Arc::downgrade(&lock));
+        lock
     }
     async fn open_session(&self, owner: &str, bot: &str, stored: &str) -> Result<Arc<Live>> {
         self.open_session_with_tools(owner, bot, stored, None, None)
@@ -182,8 +234,55 @@ impl Runtime {
         }
         common::identifier(bot)?;
         common::identifier(stored)?;
-        let _guard = self.opening.lock().await;
-        self.open_session_locked(owner, bot, stored, restricted, overrides)
+        common::bot_session_access(
+            &self.home,
+            owner,
+            bot,
+            overrides
+                .and_then(|p| p["parent_session"].as_str())
+                .unwrap_or(stored),
+        )?;
+        // Discovery never holds a section lock and never changes frozen tools.
+        let saved: bool = store::open(&self.home)?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?)",
+            [stored],
+            |r| r.get(0),
+        )?;
+        let discovered = if saved {
+            vec![]
+        } else {
+            match tokio::time::timeout(
+                Duration::from_secs(5),
+                crate::connectors::mcp_tools(&self.home, bot),
+            )
+            .await
+            {
+                Ok(Ok(tools)) => tools,
+                result => {
+                    eprintln!("MCP discovery failed for {bot}: {result:?}");
+                    self.events.emit(owner, None, "warning", json!({"message":"Some connected tools are unavailable", "section_id":stored}));
+                    vec![]
+                }
+            }
+        };
+        let _parent_guard =
+            if let Some(parent) = overrides.and_then(|p| p["parent_session"].as_str()) {
+                let guard = self.open_lock(parent).lock_owned().await;
+                let active: bool = store::open(&self.home)?.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM native_live_sessions WHERE stored_id=?)",
+                    [parent],
+                    |r| r.get(0),
+                )?;
+                if !active {
+                    return Err(Error::new(4001, "The parent section was closed"));
+                }
+                Some(guard)
+            } else {
+                None
+            };
+        let lock = self.open_lock(stored);
+        let _guard = lock.lock().await;
+        self.open_session_locked(owner, bot, stored, restricted, overrides, discovered)
             .await
     }
     async fn open_session_locked(
@@ -193,6 +292,7 @@ impl Runtime {
         stored: &str,
         restricted: Option<&[&str]>,
         overrides: Option<&Value>,
+        discovered: Vec<Value>,
     ) -> Result<Arc<Live>> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(Error::new(5201, "daemon is shutting down"));
@@ -209,6 +309,15 @@ impl Runtime {
             s.state.lock().unwrap().last_activity = common::now();
             return Ok(s);
         }
+        if self.capacity.available_permits() == 0 {
+            self.retire_idle(f64::INFINITY).await?;
+        }
+        let permit = self.capacity.clone().try_acquire_owned().map_err(|_| {
+            Error::new(
+                4002,
+                "Too many sections are running. Stop a bot and try again.",
+            )
+        })?;
         let botrow = common::rows(
             &db::open(&self.home)?,
             "SELECT * FROM bots WHERE name=?",
@@ -292,7 +401,7 @@ impl Runtime {
             }
             tools.push(crate::dreaming::tool_descriptor());
             tools.extend(crate::native_tools::descriptors(&self.home, bot)?);
-            tools.extend(crate::connectors::mcp_tools(&self.home, bot).await?);
+            tools.extend(discovered);
             let mut config = common::read_config(&self.home)?;
             if let Ok(text) = fs::read_to_string(profile.join("config.yaml")) {
                 let local: Value =
@@ -467,23 +576,34 @@ impl Runtime {
             state: Mutex::new(State {
                 busy: false,
                 closed: false,
+                interrupted: false,
                 last_activity: common::now(),
                 output: String::new(),
                 error: None,
                 pending: HashMap::new(),
+                tool_dialogs: std::collections::HashSet::new(),
                 native_approvals: HashMap::new(),
                 display: VecDeque::new(),
                 attachments: vec![],
                 refs: vec![],
+                staged_files: vec![],
                 origin: common::id(),
+                tool_started: HashMap::new(),
+                unsaved: VecDeque::new(),
             }),
+            requests: Mutex::new(tokio::task::JoinSet::new()),
+            event_gate: Mutex::new(()),
+            permit: Mutex::new(Some(permit)),
             settled,
             tools: options["tools"].as_array().cloned().unwrap_or_default(),
         });
-        self.sessions
-            .lock()
-            .unwrap()
-            .insert(stored.into(), s.clone());
+        {
+            let mut sessions = self.sessions.lock().unwrap();
+            if self.stopping.load(Ordering::Acquire) {
+                return Err(Error::new(5201, "daemon is shutting down"));
+            }
+            sessions.insert(stored.into(), s.clone());
+        }
         let weak = self.weak.clone();
         let task_session = s.clone();
         tokio::spawn(async move {
@@ -587,7 +707,9 @@ impl Runtime {
         }
         let mut command = json!({"type":"prompt","message":text});
         let refs;
+        let staged_files;
         {
+            let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
             if state.closed {
                 return Err(Error::new(4001, "session not found"));
@@ -604,12 +726,14 @@ impl Runtime {
                 self.hops.lock().unwrap().remove(&old);
             }
             state.busy = true;
+            state.interrupted = false;
             state.last_activity = common::now();
             state
                 .display
                 .push_back(if hidden { "hidden" } else { "normal" }.into());
             command["images"] = json!(std::mem::take(&mut state.attachments));
             refs = std::mem::take(&mut state.refs);
+            staged_files = std::mem::take(&mut state.staged_files);
             if !refs.is_empty() {
                 command["message"] =
                     json!(format!("{}\n\nAttached files:\n{}", text, refs.join("\n")));
@@ -627,7 +751,7 @@ impl Runtime {
         let response = match &intent {
             Ok(_) => s
                 .process
-                .request_preserving(&mut command, DEADLINE)
+                .prompt(&mut command)
                 .await
                 .map_err(pi_error)
                 .and_then(|reply| {
@@ -658,6 +782,15 @@ impl Runtime {
                 let mut restored_refs = refs;
                 restored_refs.append(&mut state.refs);
                 state.refs = restored_refs;
+                if state.closed {
+                    for path in staged_files {
+                        if let Err(error) = fs::remove_file(&path) {
+                            eprintln!("Could not remove staged attachment: {error}");
+                        }
+                    }
+                } else {
+                    state.staged_files.extend(staged_files);
+                }
                 state.busy = false;
                 state.error = Some(error.message.clone());
                 state.display.pop_back();
@@ -691,7 +824,9 @@ impl Runtime {
         self.open_session_with_tools(owner, bot, stored, restricted.as_deref(), Some(options))
             .await?;
         let result = self.run_hidden(owner, bot, stored, text).await;
-        let _ = self.close_stored(owner, stored).await;
+        if let Err(error) = self.close_stored(owner, stored).await {
+            eprintln!("Could not close background bot {stored}: {}", error.message);
+        }
         result
     }
     pub async fn run_hidden_restricted(
@@ -716,7 +851,9 @@ impl Runtime {
         self.open_session_with_tools(owner, bot, stored, Some(allowed_tools), None)
             .await?;
         let result = self.run_hidden(owner, bot, stored, text).await;
-        let _ = self.close_stored(owner, stored).await;
+        if let Err(error) = self.close_stored(owner, stored).await {
+            eprintln!("Could not close background bot {stored}: {}", error.message);
+        }
         result
     }
     pub async fn run_hidden(
@@ -758,19 +895,34 @@ impl Runtime {
         Ok(state.output.clone())
     }
     async fn cancel_dialogs(s: &Live) {
+        let mut tasks = {
+            let _gate = s.event_gate.lock().unwrap();
+            s.state.lock().unwrap().interrupted = true;
+            std::mem::take(&mut *s.requests.lock().unwrap())
+        };
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
         let pending = {
             let mut state = s.state.lock().unwrap();
             state.native_approvals.clear();
-            std::mem::take(&mut state.pending)
+            state.display.clear();
+            let mut pending = std::mem::take(&mut state.pending);
+            for id in state.tool_dialogs.drain() {
+                pending.insert(id, json!({"method":"input"}));
+            }
+            pending
         };
         for (id, request) in pending {
             if request["method"] == "native" {
                 continue;
             }
-            let _ = s
+            if let Err(error) = s
                 .process
                 .respond_extension(&id, json!({"cancelled":true}), DEADLINE)
-                .await;
+                .await
+            {
+                eprintln!("Could not cancel bot dialog {id}: {error}");
+            }
         }
     }
     pub async fn interrupt_stored(&self, owner: &str, stored: &str) -> Result<bool> {
@@ -788,7 +940,29 @@ impl Runtime {
         Ok(false)
     }
     pub async fn close_stored(&self, owner: &str, stored: &str) -> Result<bool> {
-        let _guard = self.opening.lock().await;
+        let mut closed = false;
+        let mut pending = VecDeque::from([stored.to_owned()]);
+        let mut seen = std::collections::HashSet::new();
+        while let Some(id) = pending.pop_front() {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            // Closing a parent prevents new children. Collect its children only
+            // after that boundary, including any whose opening was in progress.
+            closed |= self.close_one(owner, &id).await?;
+            for child in common::rows(
+                &store::open(&self.home)?,
+                "SELECT stored_id FROM native_sessions WHERE json_extract(options,'$.parent_session')=?",
+                &[&id],
+            )? {
+                pending.push_back(required(&child, "stored_id")?.to_owned());
+            }
+        }
+        Ok(closed)
+    }
+    async fn close_one(&self, owner: &str, stored: &str) -> Result<bool> {
+        let lock = self.open_lock(stored);
+        let _guard = lock.lock().await;
         let alias: Option<(String,String)> = store::open(&self.home)?.query_row(
             "SELECT s.owner,l.live_id FROM native_live_sessions l JOIN native_sessions s ON s.stored_id=l.stored_id WHERE l.stored_id=?", [stored],
             |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
@@ -807,7 +981,10 @@ impl Runtime {
             sessions.remove(stored)
         };
         if let Some(s) = s {
-            s.state.lock().unwrap().closed = true;
+            {
+                let _gate = s.event_gate.lock().unwrap();
+                s.state.lock().unwrap().closed = true;
+            }
             for child in self
                 .children
                 .lock()
@@ -819,8 +996,19 @@ impl Runtime {
             }
             crate::provider_acp::cancel(&self.home, &s.stored).await;
             Self::cancel_dialogs(&s).await;
+            {
+                let mut state = s.state.lock().unwrap();
+                state.attachments.clear();
+                state.refs.clear();
+                for path in state.staged_files.drain(..) {
+                    if let Err(error) = fs::remove_file(path) {
+                        eprintln!("Could not remove staged attachment: {error}");
+                    }
+                }
+            }
             crate::native_tools::close_session(&self.home, &s.stored).await;
             s.process.shutdown().await.map_err(pi_error)?;
+            s.permit.lock().unwrap().take();
             self.events.forget(owner, &s.id);
             db::open(&self.home)?.execute(
                 "UPDATE sections SET last_live_session_id=NULL WHERE id=?",
@@ -839,7 +1027,7 @@ impl Runtime {
     }
     pub async fn shutdown(&self) {
         self.stopping.store(true, Ordering::Release);
-        let _guard = self.opening.lock().await;
+
         let sessions = self
             .sessions
             .lock()
@@ -848,17 +1036,28 @@ impl Runtime {
             .map(|(_, s)| s)
             .collect::<Vec<_>>();
         for s in sessions {
-            s.state.lock().unwrap().closed = true;
+            {
+                let _gate = s.event_gate.lock().unwrap();
+                s.state.lock().unwrap().closed = true;
+            }
             crate::provider_acp::cancel(&self.home, &s.stored).await;
             Self::cancel_dialogs(&s).await;
             crate::native_tools::close_session(&self.home, &s.stored).await;
-            let _ = s.process.shutdown().await;
+            if let Err(error) = s.process.shutdown().await {
+                eprintln!("Bot shutdown failed: {error}");
+            }
+            s.permit.lock().unwrap().take();
         }
     }
     pub async fn call(&self, caller: &str, method: &str, p: &Value) -> Option<Result<Value>> {
         let matched = matches!(
             method,
             "hexbot.sections.open"
+                | "hexbot.sections.close"
+                | "hexbot.sections.delete"
+                | "hexbot.bots.delete"
+                | "hexbot.rooms.delete"
+                | "hexbot.rooms.remove_member"
                 | "hexbot.bots.introduce"
                 | "prompt.submit"
                 | "session.history"
@@ -881,9 +1080,70 @@ impl Runtime {
         if !matched {
             return None;
         }
-        Some(self.call_inner(caller, method, p).await)
+        let runtime = self.weak.upgrade()?;
+        let (caller, method, p) = (caller.to_owned(), method.to_owned(), p.clone());
+        Some(
+            tokio::spawn(async move { runtime.call_inner(&caller, &method, &p).await })
+                .await
+                .unwrap_or_else(|error| {
+                    Err(Error::new(5201, format!("Bot request failed: {error}")))
+                }),
+        )
     }
     async fn call_inner(&self, caller: &str, method: &str, p: &Value) -> Result<Value> {
+        if method == "hexbot.bots.delete" {
+            let bot = required(p, "name")?;
+            common::bot_owner(&self.home, caller, bot)?;
+            if !self.busy_sections(bot).is_empty() {
+                return Err(Error::new(4211, "bot has a running section"));
+            }
+            let sessions = common::rows(
+                &store::open(&self.home)?,
+                "SELECT stored_id,owner FROM native_sessions WHERE bot=?",
+                &[&bot],
+            )?;
+            for row in sessions {
+                self.close_stored(required(&row, "owner")?, required(&row, "stored_id")?)
+                    .await?;
+            }
+            return crate::catalog::call(&self.home, caller, method, p).unwrap();
+        }
+        if method == "hexbot.sections.delete" {
+            let stored = required(p, "id")?;
+            crate::catalog::section(&self.home, caller, stored)?;
+            self.close_stored(caller, stored).await?;
+            return crate::catalog::call(&self.home, caller, method, p).unwrap();
+        }
+        if matches!(method, "hexbot.rooms.delete" | "hexbot.rooms.remove_member") {
+            let room = required(p, "id")?;
+            let row = crate::rooms::get(&self.home, caller, room, false)?;
+            let last = method == "hexbot.rooms.remove_member"
+                && row["members"].as_array().is_some_and(|members| {
+                    members
+                        .iter()
+                        .filter(|m| m["member_kind"] == "bot" && m["left_at"].is_null())
+                        .count()
+                        == 1
+                });
+            // Close before metadata cascades remove the only stored-id mapping.
+            let sessions = common::rows(
+                &db::open(&self.home)?,
+                "SELECT stored_session_id,bot FROM room_sessions WHERE room_id=?",
+                &[&room],
+            )?;
+            for session in sessions {
+                if method == "hexbot.rooms.delete" || last || session["bot"] == p["bot"] {
+                    self.close_stored(caller, required(&session, "stored_session_id")?)
+                        .await?;
+                }
+            }
+            return crate::rooms::call(&self.home, caller, method, p).unwrap();
+        }
+        if method == "hexbot.sections.close" {
+            let stored = required(p, "id")?;
+            crate::catalog::section(&self.home, caller, stored)?;
+            return Ok(json!({"closed":self.close_stored(caller, stored).await?}));
+        }
         if matches!(method, "hexbot.sections.open" | "hexbot.bots.introduce") {
             let stored = required(
                 p,
@@ -966,7 +1226,18 @@ impl Runtime {
                 Ok(json!({"status":"interrupted"}))
             }
             "session.steer" => {
-                Self::command(&s, json!({"type":"steer","message":required(p,"text")?})).await?;
+                let text = required(p, "text")?;
+                let intent = store::stage_prompt(&self.home, &s.stored, text, "normal")?;
+                {
+                    let _gate = s.event_gate.lock().unwrap();
+                    s.state.lock().unwrap().display.push_back("normal".into());
+                }
+                if let Err(error) = Self::command(&s, json!({"type":"steer","message":text})).await
+                {
+                    store::reject_prompt(&self.home, &s.stored, &intent)?;
+                    s.state.lock().unwrap().display.pop_back();
+                    return Err(error);
+                }
                 Ok(json!({"status":"queued"}))
             }
             "session.close" => Ok(json!({"closed":self.close_stored(caller,&s.stored).await?})),
@@ -1159,6 +1430,37 @@ impl Runtime {
                 "since":context.2.unwrap_or_else(common::now),"action":null
             }}),
         )
+    }
+    async fn return_result(&self, owner: &str, bot: &str, stored: &str, text: &str) {
+        let result = async {
+            let lock = self.open_lock(stored);
+            let guard = lock.lock().await;
+            let active: bool = store::open(&self.home)?.query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_live_sessions WHERE stored_id=?)",
+                [stored],
+                |r| r.get(0),
+            )?;
+            if !active {
+                return Err(Error::new(
+                    4001,
+                    "The section was closed before its background result arrived",
+                ));
+            }
+            // Existing sections have frozen tools, so no discovery is needed.
+            let parent = self
+                .open_session_locked(owner, bot, stored, None, None, vec![])
+                .await?;
+            drop(guard);
+            self.submit(&parent, text, true, true).await
+        }
+        .await;
+        if let Err(error) = result {
+            eprintln!(
+                "Could not deliver background result to {stored}: {}",
+                error.message
+            );
+            self.events.emit(owner, None, "warning", json!({"section_id":stored,"message":"A background result could not be delivered", "error":error.message}));
+        }
     }
     async fn deliver_message(&self, s: &Live, to: &str, text: &str) -> Result<String> {
         common::bot_owner(&self.home, &s.owner, to)?;
@@ -1413,13 +1715,17 @@ impl Runtime {
                         .ok_or_else(|| Error::new(5201, "daemon is stopping"))?;
                     let source = s.clone();
                     let message_id = common::id();
-                    tokio::spawn(async move {
+                    let mut tasks = s.requests.lock().unwrap();
+                    while tasks.try_join_next().is_some() {}
+                    tasks.spawn(async move {
                         let result = runtime.deliver_message(&source, &to, &text).await;
                         let reply = match result {
                             Ok(reply) => format!("[reply from {to}] {reply}"),
                             Err(error) => format!("[delivery to {to} failed] {}", error.message),
                         };
-                        let _ = runtime.submit(&source, &reply, true, true).await;
+                        runtime
+                            .return_result(&source.owner, &source.bot, &source.stored, &reply)
+                            .await;
                     });
                     Ok(json!({"status":"sent","message_id":message_id}))
                 } else {
@@ -1534,64 +1840,326 @@ impl Runtime {
             }
         }
     }
-    async fn event(&self, s: &Arc<Live>, event: Value) -> Result<()> {
+    fn persist_message(&self, s: &Live, message: &Value, display: Option<&str>) {
+        s.state
+            .lock()
+            .unwrap()
+            .unsaved
+            .push_back((message.clone(), display.map(str::to_owned)));
+        self.retry_messages(s);
+    }
+    fn retry_messages(&self, s: &Live) {
+        let mut unsaved = std::mem::take(&mut s.state.lock().unwrap().unsaved);
+        while let Some((message, display)) = unsaved.front() {
+            if let Err(error) = store::project_message(
+                &self.home,
+                &s.stored,
+                &s.owner,
+                &s.bot,
+                message,
+                display.as_deref(),
+            ) {
+                eprintln!(
+                    "Conversation write will be retried for {}: {}",
+                    s.stored, error.message
+                );
+                break;
+            }
+            unsaved.pop_front();
+        }
+        s.state.lock().unwrap().unsaved = unsaved;
+    }
+    fn event(&self, s: &Arc<Live>, event: Value) -> Result<()> {
+        let _gate = s.event_gate.lock().unwrap();
+        if s.state.lock().unwrap().closed {
+            return Ok(());
+        }
         match event["type"].as_str().unwrap_or("") {
-            "agent_start"=>{self.emit(s,"message.start",json!({}));self.emit(s,"status.update",json!({"kind":"working","text":"Working"}));},
-            "message_update"=>{let update=&event["assistantMessageEvent"];match update["type"].as_str().unwrap_or(""){"text_delta"=>self.emit(s,"message.delta",json!({"text":update["delta"]})),"thinking_delta"=>self.emit(s,"reasoning.delta",json!({"text":update["delta"]})),_=>{}}},
-            "message_end"=>{
-                let message=&event["message"];let body=store::text(&message["content"]);
+            "agent_start" => {
+                self.emit(s, "message.start", json!({}));
+                self.emit(
+                    s,
+                    "status.update",
+                    json!({"kind":"working","text":"Working"}),
+                );
+            }
+            "message_update" => {
+                let update = &event["assistantMessageEvent"];
+                match update["type"].as_str().unwrap_or("") {
+                    "text_delta" => self.emit(s, "message.delta", json!({"text":update["delta"]})),
+                    "thinking_delta" => {
+                        self.emit(s, "reasoning.delta", json!({"text":update["delta"]}))
+                    }
+                    _ => {}
+                }
+            }
+            "message_end" => {
+                let message = &event["message"];
+                let body = store::text(&message["content"]);
                 match message["role"].as_str().unwrap_or("") {
-                    "user"=>{let display=s.state.lock().unwrap().display.pop_front().unwrap_or_else(||"normal".into());store::project_message(&self.home,&s.stored,&s.owner,&s.bot,message,Some(&display))?;},
-                    "assistant"=>{
-                        store::project_message(&self.home,&s.stored,&s.owner,&s.bot,message,None)?;
-                        {let mut state=s.state.lock().unwrap();state.output=body.clone();if message["stopReason"]!="error" && message["stopReason"]!="aborted"{state.error=None;}
-                        if !state.error.as_ref().is_some_and(|e|e.starts_with("Configured turn limit")){if message["stopReason"]=="error"{state.error=Some(message["errorMessage"].as_str().unwrap_or("The model request failed").into());}else if message["stopReason"]=="aborted"{state.error=Some("The turn was interrupted".into());}}}
-                        if message["content"].as_array().is_some_and(|a|a.iter().any(|b|b["type"]=="toolCall")) && !body.is_empty(){self.emit(s,"message.interim",json!({"text":body,"already_streamed":true}));}
-                    },
-                    "toolResult"=>{store::project_message(&self.home,&s.stored,&s.owner,&s.bot,message,None)?;},
-                    _=>{}
+                    "user" => {
+                        let display = s
+                            .state
+                            .lock()
+                            .unwrap()
+                            .display
+                            .pop_front()
+                            .unwrap_or_else(|| "normal".into());
+                        self.persist_message(s, message, Some(&display));
+                    }
+                    "assistant" => {
+                        self.persist_message(s, message, None);
+                        {
+                            let mut state = s.state.lock().unwrap();
+                            state.output = body.clone();
+                            if message["stopReason"] != "error"
+                                && message["stopReason"] != "aborted"
+                            {
+                                state.error = None;
+                            }
+                            if !state
+                                .error
+                                .as_ref()
+                                .is_some_and(|e| e.starts_with("Configured turn limit"))
+                            {
+                                if message["stopReason"] == "error" {
+                                    state.error = Some(
+                                        message["errorMessage"]
+                                            .as_str()
+                                            .unwrap_or("The model request failed")
+                                            .into(),
+                                    );
+                                } else if message["stopReason"] == "aborted" {
+                                    state.error = Some("The turn was interrupted".into());
+                                }
+                            }
+                        }
+                        if message["content"]
+                            .as_array()
+                            .is_some_and(|a| a.iter().any(|b| b["type"] == "toolCall"))
+                            && !body.is_empty()
+                        {
+                            self.emit(
+                                s,
+                                "message.interim",
+                                json!({"text":body,"already_streamed":true}),
+                            );
+                        }
+                    }
+                    "toolResult" => {
+                        self.persist_message(s, message, None);
+                    }
+                    _ => {}
                 }
-            },
-            "tool_execution_start"=>self.emit(s,"tool.start",json!({"tool_id":event["toolCallId"],"name":event["toolName"],"args":event["args"]})),
-            "tool_execution_end"=>{
-                let text=store::text(&event["result"]["content"]);
-                let failed=event["isError"]==true||event["result"]["isError"]==true;
-                let mut result=event["result"].clone();
+            }
+            "tool_execution_start" => {
+                s.state.lock().unwrap().tool_started.insert(
+                    event["toolCallId"].as_str().unwrap_or("").into(),
+                    std::time::Instant::now(),
+                );
+                self.emit(s,"tool.start",json!({"tool_id":event["toolCallId"],"name":event["toolName"],"args":event["args"]}));
+            }
+            "tool_execution_end" => {
+                let text = store::text(&event["result"]["content"]);
+                let failed = event["isError"] == true || event["result"]["isError"] == true;
+                let mut result = event["result"].clone();
                 if failed {
-                    if !result.is_object(){result=json!({"result":result});}
-                    result["error"]=json!(if text.is_empty(){"Tool failed"}else{&text});
+                    if !result.is_object() {
+                        result = json!({"result":result});
+                    }
+                    result["error"] = json!(if text.is_empty() {
+                        "Tool failed"
+                    } else {
+                        &text
+                    });
                 }
-                self.emit(s,"tool.complete",json!({"tool_id":event["toolCallId"],"name":event["toolName"],"result":result,"result_text":text,"summary":if failed{"Tool failed"}else{"Done"}}));
-            },
-            "agent_settled"=>{
-                let (text,error,pending)={let mut state=s.state.lock().unwrap();state.busy=false;state.last_activity=common::now();(state.output.clone(),state.error.clone(),std::mem::take(&mut state.pending))};
-                for (id,request) in pending {if request["kind"]=="clarify"{self.emit(s,"clarify.expire",json!({"request_id":id}));}}
-                if let Some(error)=error.as_deref().filter(|e|*e!="The turn was interrupted"){self.incident(s,error);}
-                let usage=store::usage(&self.home,&s.stored)?;
+                let duration = s
+                    .state
+                    .lock()
+                    .unwrap()
+                    .tool_started
+                    .remove(event["toolCallId"].as_str().unwrap_or(""))
+                    .map_or(0., |start| start.elapsed().as_secs_f64());
+                self.emit(s,"tool.complete",json!({"duration_s":duration,"tool_id":event["toolCallId"],"name":event["toolName"],"result":result,"result_text":text,"summary":if failed{"Tool failed"}else{"Done"}}));
+            }
+            "agent_settled" => {
+                self.retry_messages(s);
+                let (text, error, pending) = {
+                    let mut state = s.state.lock().unwrap();
+                    if !state.display.is_empty() {
+                        return Ok(());
+                    }
+                    state.busy = false;
+                    state.last_activity = common::now();
+                    (
+                        state.output.clone(),
+                        state.error.clone(),
+                        std::mem::take(&mut state.pending),
+                    )
+                };
+                for (id, request) in pending {
+                    if request["kind"] == "clarify" {
+                        self.emit(s, "clarify.expire", json!({"request_id":id}));
+                    }
+                }
+                if let Some(error) = error
+                    .as_deref()
+                    .filter(|e| *e != "The turn was interrupted")
+                {
+                    self.incident(s, error);
+                }
+                let usage = store::usage(&self.home, &s.stored).unwrap_or_else(|error| {
+                    eprintln!("Usage unavailable for {}: {}", s.stored, error.message);
+                    json!({})
+                });
                 self.emit(s,"message.complete",json!({"text":text,"error":error,"status":if error.is_some(){"error"}else{"complete"},"usage":usage}));
-                self.emit(s,"session.usage",json!({"usage":usage}));self.emit(s,"status.update",json!({"kind":"idle","text":""}));
-                let now=common::now();let conn=db::open(&self.home)?;conn.execute("UPDATE sections SET updated_at=?,done_at=? WHERE id=?",params![now,now,s.stored])?;conn.execute("UPDATE bots SET last_activity_at=? WHERE name=?",params![now,s.bot])?;
-                self.events.emit(&s.owner,None,"hexbot.sections.changed",json!({"id":s.stored}));s.settled.send_modify(|v|*v+=1);
-            },
-            "extension_ui_request"=>{
-                let id=event["id"].as_str().unwrap_or("");let title=event["title"].as_str().unwrap_or("");
-                if let Some(request)=title.strip_prefix("__HEXBOT_TOOL__") {
-                    let request:Value=serde_json::from_str(request).map_err(|e|Error::new(5201,e.to_string()))?;
-                    let response=match self.tool(s,request["name"].as_str().unwrap_or(""),&request["args"]).await{Ok(result)=>json!({"result":result}),Err(error)=>json!({"error":error.message})};
-                    s.process.respond_extension(id,json!({"value":response.to_string()}),DEADLINE).await.map_err(pi_error)?;
-                }else if let Some(payload)=title.strip_prefix("__HEXBOT_CLARIFY__") {
-                    let mut payload:Value=serde_json::from_str(payload).map_err(|e|Error::new(5201,e.to_string()))?;payload["request_id"]=json!(id);
-                    if let Some(questions)=payload["questions"].as_array_mut(){for (index,question) in questions.iter_mut().enumerate(){if question["qid"].as_str().unwrap_or("").is_empty(){question["qid"]=json!(format!("q{}",index+1));}}}
-                    let mut pending=event.clone();pending["kind"]=json!("clarify");pending["clarify_payload"]=payload.clone();pending["answers"]=json!({});s.state.lock().unwrap().pending.insert(id.into(),pending);self.emit(s,"clarify.request",payload);self.events.emit(&s.owner,None,"hexbot.bots.changed",json!({"name":s.bot}));
-                }else if matches!(event["method"].as_str(),Some("select"|"confirm"|"input"|"editor")) {
-                    let approval=title.strip_prefix("__HEXBOT_APPROVAL__");let mut request=event.clone();request["kind"]=json!(if approval.is_some() || event["method"]=="confirm"{"approval"}else{"clarify"});
-                    s.state.lock().unwrap().pending.insert(id.into(),request.clone());self.events.emit(&s.owner,None,"hexbot.bots.changed",json!({"name":s.bot}));
-                    if request["kind"]=="approval"{let mut payload=approval.and_then(|v|serde_json::from_str::<Value>(v).ok()).unwrap_or_else(||json!({"tool":"tool","command":title,"reason":event["message"]}));payload["request_id"]=json!(id);payload["choices"]=json!(["once","session","always","deny"]);self.emit(s,"approval.request",payload);}else{self.emit(s,"clarify.request",json!({"request_id":id,"question":title,"choices":event["options"]}));}
-                }else if event["method"]=="notify" || event["method"]=="setStatus" {self.emit(s,"status.update",json!({"kind":"status","text":event["message"].as_str().or(event["statusText"].as_str()).unwrap_or("")}));}
-            },
-            "auto_retry_start"=>self.emit(s,"status.update",json!({"kind":"waiting","text":"Retrying the model request"})),
-            "compaction_start"=>self.emit(s,"status.update",json!({"kind":"working","text":"Compacting conversation"})),
-            _=>{}
+                self.emit(s, "session.usage", json!({"usage":usage}));
+                self.emit(s, "status.update", json!({"kind":"idle","text":""}));
+                s.settled.send_modify(|v| *v += 1);
+                let now = common::now();
+                let conn = db::open(&self.home)?;
+                conn.execute(
+                    "UPDATE sections SET updated_at=?,done_at=? WHERE id=?",
+                    params![now, now, s.stored],
+                )?;
+                conn.execute(
+                    "UPDATE bots SET last_activity_at=? WHERE name=?",
+                    params![now, s.bot],
+                )?;
+                self.events.emit(
+                    &s.owner,
+                    None,
+                    "hexbot.sections.changed",
+                    json!({"id":s.stored}),
+                );
+            }
+            "extension_ui_request" => {
+                let id = event["id"].as_str().unwrap_or("");
+                let title = event["title"].as_str().unwrap_or("");
+                if let Some(request) = title.strip_prefix("__HEXBOT_TOOL__") {
+                    let request: Value = serde_json::from_str(request)
+                        .map_err(|e| Error::new(5201, e.to_string()))?;
+                    let runtime = self
+                        .weak
+                        .upgrade()
+                        .ok_or_else(|| Error::new(5201, "daemon is stopping"))?;
+                    let source = s.clone();
+                    let id = id.to_owned();
+                    let mut tasks = s.requests.lock().unwrap();
+                    while tasks.try_join_next().is_some() {}
+                    let interrupted = {
+                        let mut state = s.state.lock().unwrap();
+                        state.tool_dialogs.insert(id.clone());
+                        state.interrupted
+                    };
+                    tasks.spawn(async move {
+                        if interrupted {
+                            if let Err(error) = source
+                                .process
+                                .respond_extension(&id, json!({"cancelled":true}), DEADLINE)
+                                .await
+                            {
+                                eprintln!("Could not cancel late tool request: {error}");
+                            }
+                            source.state.lock().unwrap().tool_dialogs.remove(&id);
+                            return;
+                        }
+                        let response = match runtime
+                            .tool(
+                                &source,
+                                request["name"].as_str().unwrap_or(""),
+                                &request["args"],
+                            )
+                            .await
+                        {
+                            Ok(result) => json!({"result":result}),
+                            Err(error) => json!({"error":error.message}),
+                        };
+                        if let Err(error) = source
+                            .process
+                            .respond_extension(&id, json!({"value":response.to_string()}), DEADLINE)
+                            .await
+                        {
+                            eprintln!("Tool reply failed for {}: {error}", source.stored);
+                        }
+                        source.state.lock().unwrap().tool_dialogs.remove(&id);
+                    });
+                } else if let Some(payload) = title.strip_prefix("__HEXBOT_CLARIFY__") {
+                    let mut payload: Value = serde_json::from_str(payload)
+                        .map_err(|e| Error::new(5201, e.to_string()))?;
+                    payload["request_id"] = json!(id);
+                    if let Some(questions) = payload["questions"].as_array_mut() {
+                        for (index, question) in questions.iter_mut().enumerate() {
+                            if question["qid"].as_str().unwrap_or("").is_empty() {
+                                question["qid"] = json!(format!("q{}", index + 1));
+                            }
+                        }
+                    }
+                    let mut pending = event.clone();
+                    pending["kind"] = json!("clarify");
+                    pending["clarify_payload"] = payload.clone();
+                    pending["answers"] = json!({});
+                    s.state.lock().unwrap().pending.insert(id.into(), pending);
+                    self.emit(s, "clarify.request", payload);
+                    self.events
+                        .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
+                } else if matches!(
+                    event["method"].as_str(),
+                    Some("select" | "confirm" | "input" | "editor")
+                ) {
+                    let approval = title.strip_prefix("__HEXBOT_APPROVAL__");
+                    let mut request = event.clone();
+                    request["kind"] =
+                        json!(if approval.is_some() || event["method"] == "confirm" {
+                            "approval"
+                        } else {
+                            "clarify"
+                        });
+                    s.state
+                        .lock()
+                        .unwrap()
+                        .pending
+                        .insert(id.into(), request.clone());
+                    self.events
+                        .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
+                    if request["kind"] == "approval" {
+                        let mut payload = approval
+                            .and_then(|v| serde_json::from_str::<Value>(v).ok())
+                            .unwrap_or_else(
+                                || json!({"tool":"tool","command":title,"reason":event["message"]}),
+                            );
+                        payload["request_id"] = json!(id);
+                        payload["choices"] = json!(["once", "session", "always", "deny"]);
+                        self.emit(s, "approval.request", payload);
+                    } else {
+                        self.emit(
+                            s,
+                            "clarify.request",
+                            json!({"request_id":id,"question":title,"choices":event["options"]}),
+                        );
+                    }
+                } else if event["method"] == "notify" || event["method"] == "setStatus" {
+                    self.emit(s,"status.update",json!({"kind":"status","text":event["message"].as_str().or(event["statusText"].as_str()).unwrap_or("")}));
+                }
+            }
+            "auto_retry_start" => {
+                self.emit(
+                    s,
+                    "thinking.delta",
+                    json!({"text":"Retrying the model request"}),
+                );
+                self.emit(
+                    s,
+                    "status.update",
+                    json!({"kind":"waiting","text":"Retrying the model request"}),
+                );
+            }
+            "compaction_start" | "auto_compaction_start" => self.emit(
+                s,
+                "status.update",
+                json!({"kind":"working","text":"Compacting conversation"}),
+            ),
+            _ => {}
         }
         Ok(())
     }
@@ -1609,17 +2177,33 @@ fn pump(
                 break;
             };
             let error = match event {
-                Ok(event) => runtime.event(&s, event).await.err(),
+                Ok(event) => {
+                    if let Err(error) = runtime.event(&s, event) {
+                        eprintln!(
+                            "Conversation event could not be saved for {}: {}",
+                            s.stored, error.message
+                        );
+                        runtime.emit(
+                            &s,
+                            "warning",
+                            json!({"message":"A conversation update could not be saved"}),
+                        );
+                    }
+                    None
+                }
                 Err(error) => Some(pi_error(error)),
             };
             if let Some(error) = error {
-                let busy = {
+                let (busy, was_closed) = {
+                    let _gate = s.event_gate.lock().unwrap();
                     let mut state = s.state.lock().unwrap();
-                    let busy = state.busy && !state.closed;
+                    let was_closed = state.closed;
+                    let busy = state.busy && !was_closed;
                     state.busy = false;
+                    state.closed = true;
                     state.error = Some(error.message.clone());
                     state.pending.clear();
-                    busy
+                    (busy, was_closed)
                 };
                 if busy {
                     runtime.incident(&s, &error.message);
@@ -1630,6 +2214,11 @@ fn pump(
                         json!({"text":"","error":error.message,"status":"error"}),
                     );
                 }
+                if !was_closed {
+                    Runtime::cancel_dialogs(&s).await;
+                    crate::native_tools::close_session(&runtime.home, &s.stored).await;
+                }
+                s.permit.lock().unwrap().take();
                 s.settled.send_modify(|v| *v += 1);
                 let mut sessions = runtime.sessions.lock().unwrap();
                 if sessions

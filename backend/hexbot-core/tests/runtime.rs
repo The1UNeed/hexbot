@@ -797,3 +797,108 @@ async fn actual_pi_configured_turn_limit_stops_further_requests() {
     runtime.shutdown().await;
     server.abort();
 }
+
+#[test]
+fn legacy_multi_compaction_deduplicates_display_and_uses_only_tip_context() {
+    let home = setup();
+    let legacy = rusqlite::Connection::open(home.path().join("profiles/owl/state.db")).unwrap();
+    legacy.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY,session_key TEXT,parent_session_id TEXT,end_reason TEXT,model_config TEXT,source TEXT,ended_at REAL,started_at REAL); CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,timestamp REAL,active INTEGER,compacted INTEGER,display_kind TEXT);
+    INSERT INTO sessions VALUES('root','section-a',NULL,'compression','{}','chat',2,0),('middle','section-a','root','compression','{}','chat',4,2),('tip','section-a','middle',NULL,'{}','chat',NULL,4),('fork','section-b','root',NULL,'{\"_branched_from\":\"root\"}','chat',NULL,8);
+    INSERT INTO messages VALUES(1,'root','user','First',1,1,0,'normal'),(2,'middle','user','First',1,1,0,'normal'),(3,'middle','assistant','Middle',3,1,0,'normal'),(4,'tip','user','Latest',5,1,0,'normal'),(5,'fork','user','Private branch',8,1,0,'normal'),(6,'tip','assistant','Compacted in place',4,0,1,'normal'),(7,'tip','user','Rewound',7,0,0,'normal');").unwrap();
+    runtime_store::import_hermes(home.path(), "owl", "section-a", home.path()).unwrap();
+    let history = runtime_store::history(home.path(), "section-a").unwrap();
+    assert_eq!(
+        history
+            .iter()
+            .map(|m| m["text"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["First", "Middle", "Latest", "Compacted in place"]
+    );
+    let log = fs::read_to_string(
+        home.path()
+            .join("runtime/sessions/section-a/conversation.jsonl"),
+    )
+    .unwrap();
+    let entries = log
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[1]["message"]["content"], "Latest");
+    assert_eq!(
+        hexbot_core::catalog::section(home.path(), "alice", "section-a").unwrap()["message_count"],
+        history.len()
+    );
+    runtime_store::import_hermes(home.path(), "owl", "section-b", home.path()).unwrap();
+    let branch = runtime_store::history(home.path(), "section-b").unwrap();
+    assert_eq!(branch.len(), 1);
+    assert_eq!(branch[0]["text"], "Private branch");
+}
+
+#[test]
+fn summary_uses_first_visible_user_and_invalidates_on_history_changes() {
+    let home = setup();
+    let text = "界".repeat(61);
+    for message in [
+        json!({"role":"user","text":"internal","display_kind":"hidden"}),
+        json!({"role":"user","text":text}),
+        json!({"role":"user","text":"later"}),
+    ] {
+        runtime_store::append(home.path(), "section-a", message).unwrap();
+    }
+    let summary = runtime_store::summary(home.path(), "section-a").unwrap();
+    assert_eq!(summary["preview"], format!("{}...", "界".repeat(60)));
+    assert_eq!(summary["message_count"], 3);
+    runtime_store::append(
+        home.path(),
+        "section-a",
+        json!({"role":"assistant","text":"reply"}),
+    )
+    .unwrap();
+    assert_eq!(
+        runtime_store::summary(home.path(), "section-a").unwrap()["message_count"],
+        4
+    );
+}
+
+#[tokio::test]
+async fn damaged_conversation_is_quarantined_without_blocking_other_sections() {
+    let home = setup();
+    let conn = runtime_store::open(home.path()).unwrap();
+    conn.execute("INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES('damaged','alice','owl','')",[]).unwrap();
+    let dir = runtime_store::session_dir(home.path(), "damaged").unwrap();
+    fs::write(dir.join("conversation.jsonl"), "not a conversation\n").unwrap();
+    let runtime = Runtime::new(home.path().into(), EventHub::new(), fake_pi(home.path())).unwrap();
+    open(&runtime, "alice").await;
+    assert!(!dir.join("conversation.jsonl").exists());
+    let backup = fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+    assert_eq!(fs::read_to_string(backup).unwrap(), "not a conversation\n");
+    assert!(runtime_store::import_hermes(home.path(), "owl", "damaged", home.path()).is_err());
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn deleting_bot_closes_idle_hidden_processes_too() {
+    let home = setup();
+    let app = hexbot_core::server::App::new(
+        home.path().into(),
+        "127.0.0.1:0".parse().unwrap(),
+        fake_pi(home.path()),
+        None,
+    )
+    .unwrap();
+    app.runtime
+        .ensure_hidden("alice", "owl", "hidden-job")
+        .await
+        .unwrap();
+    app.call("alice", "hexbot.bots.delete", &json!({"name":"owl"}))
+        .await
+        .unwrap();
+    let active = app
+        .call("alice", "session.active_list", &json!({}))
+        .await
+        .unwrap();
+    assert!(active["sessions"].as_array().unwrap().is_empty());
+    assert!(!home.path().join("runtime/sessions/hidden-job").exists());
+    app.shutdown().await;
+}

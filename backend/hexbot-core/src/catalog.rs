@@ -150,26 +150,20 @@ fn history_summary(home: &Path, row: &Value) -> Result<(String, i64)> {
         return Ok((String::new(), 0));
     }
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let active = if rows(&conn, "PRAGMA table_info(messages)", &[])?
+    let (messages, _) = runtime_store::legacy_rows(&conn, id)?;
+    let count = messages
         .iter()
-        .any(|c| c["name"] == "active")
-    {
-        " AND active=1"
-    } else {
-        ""
-    };
-    let mut count = 0;
-    let mut preview = String::new();
-    for key in legacy_ids(&conn, id)? {
-        count += conn
-            .query_row(
-                &format!("SELECT COUNT(*) FROM messages WHERE session_id=?{active}"),
-                [&key],
-                |r| r.get::<_, i64>(0),
-            )
-            .unwrap_or(0);
-        if let Some(text)=conn.query_row(&format!("SELECT content FROM messages WHERE session_id=?{active} AND role IN ('user','assistant') AND content IS NOT NULL ORDER BY id DESC LIMIT 1"),[&key],|r|r.get::<_,String>(0)).optional().unwrap_or(None){preview=text.chars().take(200).collect();}
-    }
+        .filter(|m| matches!(m["role"].as_str(), Some("user" | "assistant" | "tool")))
+        .count() as i64;
+    let preview = messages
+        .iter()
+        .find(|m| m["role"] == "user" && m["display_kind"] != "hidden")
+        .map(|m| runtime_store::preview(m["content"].as_str().unwrap_or("")))
+        .unwrap_or_default();
+    runtime_store::open(home)?.execute(
+        "INSERT OR REPLACE INTO native_summaries VALUES(?,?,?)",
+        params![id, count, preview],
+    )?;
     Ok((preview, count))
 }
 fn shape_section(home: &Path, row: Value) -> Result<Value> {
@@ -918,6 +912,13 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             for s in list_sections(home, caller, &json!({"bot":name,"include_archived":true}))? {
                 delete_section(home, caller, s["id"].as_str().unwrap_or(""), true)?;
             }
+            for session in rows(
+                &runtime_store::open(home)?,
+                "SELECT stored_id FROM native_sessions WHERE bot=?",
+                &[&name],
+            )? {
+                runtime_store::delete(home, required(&session, "stored_id")?)?;
+            }
             let mut conn = db::open(home)?;
             let tx = conn.transaction()?;
             tx.execute("DELETE FROM dreams WHERE bot=?", [name])?;
@@ -927,7 +928,17 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             tx.execute("DELETE FROM bot_incidents WHERE bot=?", [name])?;
             tx.execute("DELETE FROM bots WHERE name=?", [name])?;
             if dir.exists() {
-                fs::remove_dir_all(dir)?;
+                // Keep notes outside the active bot directory after deletion.
+                let memory = dir.join("memories/MEMORY.md");
+                if memory.is_file() {
+                    safe(home, &memory)?;
+                    let saved = home
+                        .join("runtime/deleted-bots")
+                        .join(format!("{name}-{}", id()))
+                        .join("MEMORY.md");
+                    atomic_write(&saved, &fs::read(&memory)?)?;
+                }
+                fs::remove_dir_all(&dir)?;
             }
             tx.commit()?;
             Ok(json!({"deleted":true}))

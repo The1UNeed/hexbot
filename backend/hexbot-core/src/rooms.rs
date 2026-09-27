@@ -300,6 +300,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                     )?;
                     let mut result = get(home, caller, room, false)?;
                     if active_bots(&result).is_empty() {
+                        purge_transcripts(home, room)?;
                         conn.execute("DELETE FROM rooms WHERE id=?", [room])?;
                         result["deleted"] = json!(true);
                         return Ok(json!({"room":result,"event":event}));
@@ -343,6 +344,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             "hexbot.rooms.delete" => {
                 let room = required(p, "id")?;
                 get(home, caller, room, false)?;
+                purge_transcripts(home, room)?;
                 conn.execute("DELETE FROM rooms WHERE id=?", [room])?;
                 Ok(json!({"deleted":true}))
             }
@@ -773,6 +775,7 @@ impl RoomEngine {
     }
     /// Processes durable triggers in sequence; only one worker owns a room.
     pub async fn drain(&self, owner: &str, room_id: &str) -> Result<()> {
+        let mut after_seq = 0;
         while !self.stopped(room_id) {
             let mut room = get(&self.home, owner, room_id, false)?;
             let titles = rows(
@@ -792,8 +795,8 @@ impl RoomEngine {
                 let conn = db::open(&self.home)?;
                 let mut events = rows(
                     &conn,
-                    "SELECT * FROM room_events WHERE room_id=? AND kind IN ('message.user','message.bot') ORDER BY seq",
-                    &[&room_id],
+                    "SELECT e.*, (SELECT json_group_array(t.bot) FROM room_turns t WHERE t.room_id=e.room_id AND t.trigger_seq=e.seq) AS done_bots, EXISTS(SELECT 1 FROM room_events w WHERE w.room_id=e.room_id AND w.kind='waiting.human' AND json_extract(w.payload_json,'$.trigger_seq')=e.seq) AS waited FROM room_events e WHERE e.room_id=? AND e.seq>? AND e.kind IN ('message.user','message.bot') ORDER BY e.seq",
+                    &[&room_id, &after_seq],
                 )?;
                 for e in &mut events {
                     e["payload"] = json_field(&e["payload_json"]);
@@ -803,17 +806,15 @@ impl RoomEngine {
             let mut candidate = None;
             for event in candidates {
                 let seq = event["seq"].as_i64().unwrap();
-                let done = rows(
-                    &db::open(&self.home)?,
-                    "SELECT bot FROM room_turns WHERE room_id=? AND trigger_seq=?",
-                    &[&room_id, &seq],
-                )?
-                .iter()
-                .filter_map(|r| r["bot"].as_str().map(str::to_string))
-                .collect();
+                let done = json_field(&event["done_bots"])
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect();
                 let (selected, waiting) = select_responders(&room, &event, &done);
                 if waiting {
-                    let waited=db::open(&self.home)?.query_row("SELECT 1 FROM room_events WHERE room_id=? AND kind='waiting.human' AND json_extract(payload_json,'$.trigger_seq')=?",params![room_id,seq],|_|Ok(())).optional()?.is_some();
+                    let waited = event["waited"] == 1;
                     if !waited {
                         self.emit(
                             owner,
@@ -829,6 +830,7 @@ impl RoomEngine {
                     candidate = Some((event, selected));
                     break;
                 }
+                after_seq = seq;
             }
             let Some((event, bots)) = candidate else {
                 return Ok(());
@@ -1112,4 +1114,15 @@ fn legacy_usage(
         conn.query_row("SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(CASE WHEN actual_cost_usd>0 THEN actual_cost_usd ELSE estimated_cost_usd END),0) FROM session_model_usage WHERE (?1 IS NULL OR session_id=?1) AND (?2 IS NULL OR last_seen>=?2)",params![stored,since],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))
     };
     read().unwrap_or((0, 0, 0.0))
+}
+
+fn purge_transcripts(home: &Path, room: &str) -> Result<()> {
+    for row in rows(
+        &db::open(home)?,
+        "SELECT stored_session_id FROM room_sessions WHERE room_id=?",
+        &[&room],
+    )? {
+        crate::runtime_store::delete(home, required(&row, "stored_session_id")?)?;
+    }
+    Ok(())
 }

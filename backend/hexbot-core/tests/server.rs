@@ -740,3 +740,79 @@ async fn attachment_transport_accepts_existing_size_ranges() {
     socket.close(None).await.unwrap();
     fixture.shutdown().await;
 }
+
+#[tokio::test]
+async fn websocket_disconnect_during_prompt_ack_keeps_the_section_running() {
+    let fixture = Fixture::new(false).await;
+    let pi = fixture._directory.path().join("fake-pi.cjs");
+    fs::write(&pi,r#"#!/usr/bin/env node
+const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
+const rl=require('node:readline').createInterface({input:process.stdin});
+let pending;
+const reply=c=>emit({type:'response',id:c.id,command:c.type,success:true,data:{}});
+rl.on('line',line=>{const c=JSON.parse(line);
+if(c.type==='prompt'){pending=c;emit({type:'agent_start'});emit({type:'message_end',message:{role:'user',content:c.message}});return;}
+reply(c);
+if(c.type==='steer' && pending){reply(pending);pending=null;emit({type:'message_end',message:{role:'user',content:c.message}});emit({type:'message_end',message:{role:'assistant',content:'Completed after disconnect',stopReason:'stop'}});emit({type:'agent_settled'});}
+});
+"#).unwrap();
+    db::open(&fixture.home).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('owl','local'); INSERT INTO sections(id,bot,owner_id) VALUES('first','owl','local');").unwrap();
+    fs::create_dir_all(fixture.home.join("profiles/owl")).unwrap();
+    fs::write(
+        fixture.home.join("profiles/owl/config.yaml"),
+        "tools:\n  enabled_toolsets: []\n",
+    )
+    .unwrap();
+    let mut socket = fixture.socket(&fixture.token).await;
+    let opened = request(
+        &mut socket,
+        "open",
+        "hexbot.sections.open",
+        json!({"id":"first"}),
+    )
+    .await;
+    let live = &opened["result"]["section"]["live_session_id"];
+    assert!(live.is_string(), "{opened}");
+    socket.send(Message::Text(json!({"jsonrpc":"2.0","id":"prompt","method":"prompt.submit","params":{"session_id":live,"text":"long request"}}).to_string().into())).await.unwrap();
+    loop {
+        if frame(&mut socket).await["params"]["type"] == "message.start" {
+            break;
+        }
+    }
+    socket.close(None).await.unwrap();
+    drop(socket);
+    let mut reconnected = fixture.socket(&fixture.token).await;
+    // A second client releases the fake's acknowledgement barrier.
+    let reply = request(
+        &mut reconnected,
+        "finish",
+        "session.steer",
+        json!({"session_id":live,"text":"finish"}),
+    )
+    .await;
+    assert!(reply.get("error").is_none(), "{reply}");
+    let history = request(
+        &mut reconnected,
+        "history",
+        "session.history",
+        json!({"session_id":live}),
+    )
+    .await;
+    // Wait on the saved completion event if the history RPC won that race.
+    if !history.to_string().contains("Completed after disconnect") {
+        loop {
+            if frame(&mut reconnected).await["params"]["type"] == "message.complete" {
+                break;
+            }
+        }
+    }
+    let history = request(
+        &mut reconnected,
+        "saved",
+        "session.history",
+        json!({"session_id":live}),
+    )
+    .await;
+    assert!(history.to_string().contains("Completed after disconnect"));
+    fixture.shutdown().await;
+}

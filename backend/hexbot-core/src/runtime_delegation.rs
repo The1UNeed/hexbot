@@ -168,7 +168,7 @@ impl Runtime {
                 if task["output_schema"].is_object() && !*stop.borrow() && let Ok(text)=&result {let errors=serde_json::from_str::<Value>(text).map(|v|validate(&v,&task["output_schema"],"$")).unwrap_or_else(|_|vec!["response is not JSON".into()]);
                     if !errors.is_empty(){let correction=format!("Correct only the JSON form of your final answer. Do not repeat the task or any completed actions. Return JSON matching {}. Validation errors: {}",task["output_schema"],errors.join("; "));result=tokio::select!{result=runtime.run_hidden_job(&source.owner,&source.bot,&id,&correction,&options)=>result,_=stop.changed()=>Err(Error::new(5201,"subagent stopped"))};}
                 }
-                let _=runtime.close_stored(&source.owner,&id).await;
+                if let Err(error)=runtime.close_stored(&source.owner,&id).await { eprintln!("Could not close delegated bot {id}: {}",error.message); }
                 {let mut all=runtime.children.lock().unwrap();let child=all.get_mut(&id).unwrap();child.row["status"]=json!(if result.is_ok(){"complete"}else{"failed"});child.row["finished_at"]=json!(common::now());match result{Ok(text)=>{child.row["result"]=json!(text);if task["output_schema"].is_object(){let parsed=serde_json::from_str::<Value>(&text);let errors=parsed.as_ref().map(|v|validate(v,&task["output_schema"],"$")).unwrap_or_else(|_|vec!["response is not JSON".into()]);child.row["schema_valid"]=json!(errors.is_empty());child.row["schema_errors"]=json!(errors);}},Err(error)=>child.row["error"]=json!(error.message)};child.row.clone()}
             })
         }).collect::<Vec<_>>();
@@ -187,7 +187,9 @@ impl Runtime {
                 "[Delegated tasks completed]\n{}",
                 json!({"results":results})
             );
-            let _ = runtime.submit(&source, &text, true, true).await;
+            runtime
+                .return_result(&source.owner, &source.bot, &source.stored, &text)
+                .await;
         });
         Ok(
             json!({"status":"dispatched","mode":"background","count":ids.len(),"delegation_id":delegation,"subagent_ids":ids,"note":"Subagents are running. Continue working; their results return automatically."}),

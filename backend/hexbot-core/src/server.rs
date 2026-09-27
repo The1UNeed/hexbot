@@ -1029,6 +1029,8 @@ async fn connection(
             }
         }
     }
+    // Runtime RPCs own their command tasks. One-shot requests still cancel
+    // with this connection and run their scoped cleanup.
     tasks.abort_all();
 }
 async fn handle_request(

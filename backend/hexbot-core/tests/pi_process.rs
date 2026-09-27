@@ -188,7 +188,7 @@ async fn timeout_terminates_and_reaps_child() {
     );
     let (process, mut events) = fixture.spawn();
     let pid = process
-        .request(json!({"type":"ready"}), DEADLINE)
+        .request_cancellable(json!({"type":"ready"}), DEADLINE)
         .await
         .unwrap()
         .data
@@ -197,7 +197,7 @@ async fn timeout_terminates_and_reaps_child() {
         .unwrap();
     assert_eq!(
         process
-            .request(json!({"type":"never"}), Duration::from_millis(30))
+            .request_cancellable(json!({"type":"never"}), Duration::from_millis(30))
             .await
             .unwrap_err(),
         PiError::Timeout
@@ -235,8 +235,11 @@ async fn cancelling_a_request_terminates_the_owned_child() {
         Fixture::new("function receive(request) { send({type:'received', pid:process.pid}); }");
     let (process, mut events) = fixture.spawn();
     let caller = process.clone();
-    let request =
-        tokio::spawn(async move { caller.request(json!({"type":"never"}), DEADLINE).await });
+    let request = tokio::spawn(async move {
+        caller
+            .request_cancellable(json!({"type":"never"}), DEADLINE)
+            .await
+    });
     let pid = events.recv().await.unwrap()["pid"].as_u64().unwrap();
     request.abort();
     let _ = request.await;
@@ -297,7 +300,7 @@ async fn blocked_stdin_does_not_block_deadline_or_cleanup() {
     );
     let (process, mut events) = fixture.spawn();
     let pid = process
-        .request(json!({"type":"ready"}), DEADLINE)
+        .request_cancellable(json!({"type":"ready"}), DEADLINE)
         .await
         .unwrap()
         .data
@@ -305,7 +308,7 @@ async fn blocked_stdin_does_not_block_deadline_or_cleanup() {
         .as_u64()
         .unwrap();
     let result = process
-        .request(
+        .request_cancellable(
             json!({"type":"prompt", "message":"x".repeat(900_000)}),
             Duration::from_millis(50),
         )
@@ -602,4 +605,63 @@ function receive(request) {
             .unwrap_err(),
         PiError::Exited
     );
+}
+
+#[tokio::test]
+async fn ordinary_request_cancellation_preserves_the_shared_bot() {
+    let fixture = Fixture::new(
+        "let pending; function receive(request) { if(request.type==='prompt') {pending=request; send({type:'agent_start'});} else {reply(pending,{}); reply(request,{}); send({type:'agent_settled'});} }",
+    );
+    let (process, mut events) = fixture.spawn();
+    let caller = process.clone();
+    let request =
+        tokio::spawn(async move { caller.request(json!({"type":"prompt"}), DEADLINE).await });
+    assert_eq!(events.recv().await.unwrap()["type"], "agent_start");
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+    assert!(
+        process
+            .request(json!({"type":"finish"}), DEADLINE)
+            .await
+            .unwrap()
+            .success
+    );
+    assert_eq!(events.recv().await.unwrap()["type"], "agent_settled");
+    process.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn prompt_waits_for_ack_after_compaction_and_other_commands_still_work() {
+    let fixture = Fixture::new(
+        "let pending; function receive(request) { if(request.type==='prompt') {pending=request; send({type:'auto_compaction_start'});} else {reply(request,{}); reply(pending,{}); send({type:'agent_settled'});} }",
+    );
+    let (process, mut events) = fixture.spawn();
+    let caller = process.clone();
+    let request = tokio::spawn(async move { caller.prompt(&mut json!({"type":"prompt"})).await });
+    assert_eq!(
+        events.recv().await.unwrap()["type"],
+        "auto_compaction_start"
+    );
+    assert!(!request.is_finished());
+    process
+        .request(json!({"type":"finish_compaction"}), DEADLINE)
+        .await
+        .unwrap();
+    assert!(request.await.unwrap().unwrap().success);
+    process.shutdown().await.unwrap();
+}
+#[test]
+fn transport_errors_use_product_words() {
+    for error in [
+        PiError::Exited,
+        PiError::Timeout,
+        PiError::Cancelled,
+        PiError::Shutdown,
+        PiError::EventOverflow,
+        PiError::Capacity,
+        PiError::Cleanup,
+        PiError::Io("read"),
+        PiError::Protocol("bad record"),
+    ] {
+        assert!(!error.to_string().contains("Pi"));
+    }
 }
