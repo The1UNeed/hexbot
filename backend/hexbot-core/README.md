@@ -139,14 +139,17 @@ by running the tests. App install count is not a daemon capacity measurement.
 Python code execution uses the same live approval mode as shell actions. Manual
 asks before each script; Auto consults the approver and asks when it declines;
 Off skips consent. A small destructive-operation guard applies in every mode.
-The complete resulting memory and soul documents are scanned before bot writes.
+New or changed memory and soul text is scanned with adjacent lines before bot writes. Removing memory text is allowed.
 
 `../pi-runtime/credential-policy.json` supplies the credential paths for both
 file guards and child isolation. macOS shell and Python children use
 `sandbox-exec` and fail closed if the profile cannot be applied. Linux uses
-bubblewrap when available, with credential paths masked and a private process
-namespace. Without bubblewrap, a warning records the lack of OS isolation.
-Provider keys reach the agent through its auth file, not its environment.
+bubblewrap after a successful startup probe, with credential paths masked and a private process
+namespace. Shell, Python, and scheduled scripts cannot write the Hexbot home except
+the current workspace and output folders. SSH private keys are protected; SSH
+config, known hosts, public keys, and the SSH agent remain available. If bubblewrap
+is missing or cannot start, a warning records the lack of OS isolation.
+Provider keys reach the agent through its auth file. The selected Bedrock or Vertex provider also receives its cloud environment settings; shell and scheduled script children do not.
 The Python environment does not include `HEXBOT_HOME`.
 
 Managed browser traffic uses the safety proxy, including loopback. The
@@ -157,8 +160,7 @@ as disabling implicit bypass. Unmanaged browsers allow inspection only, and
 browser code execution is refused without interception. URL tools always deny
 the daemon listener and metadata addresses, even with private URLs enabled.
 
-MCP discovery has a 25-second deadline per server and preserves successful
-results. Hidden turns include prompt submission in their 30-minute deadline.
+MCP discovery runs servers concurrently under a shared 25-second deadline, preserves successful results, and caches failures for 30 seconds. Hidden turns include prompt submission in their 30-minute deadline.
 Recovery quarantines damaged data; transient I/O or SQLite failures leave the
 files in place for a later attempt.
 

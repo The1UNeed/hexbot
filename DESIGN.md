@@ -76,10 +76,18 @@ more freedom and more capability than a hosted product can offer.
 - Modes: Manual (default), Auto (`smart` in config), Off. Overridable per bot
   and per room. The auto-approver runs on the cheapest model of the first
   configured provider.
-- Off uses Pi's default tool behavior. Manual uses Pi's stock gates for
-  dangerous shell commands plus protected paths. Auto uses the same gates
+- Off skips approval prompts. Manual asks before dangerous shell commands
+  and protected actions. Auto uses the same gates
   with a small model deciding. Every mode blocks catastrophic commands and
-  prevents tools from reading credential files.
+  prevents tools from reading Hexbot credential files, including app device
+  tokens in `desktop-data/`. On macOS, shell, Python, and scheduled scripts
+  cannot write the Hexbot home except their workspace and artifact or attachment
+  folders. Linux applies these restrictions when bubblewrap passes its startup
+  probe; otherwise Hexbot warns and keeps approval guards. SSH private keys
+  (`id_*` except `.pub`, `*.pem`, `*.key`) are protected. SSH config, known hosts,
+  public keys, and the SSH agent remain available. A bot scheduling an absolute
+  script path asks the section owner in Manual and Auto. Scripts must stay in
+  the bot scripts folder or workspace.
 - Approvals render inline in the transcript with approve, deny and
   always-allow. Native notifications for approvals and mentions.
 - New bots get files, web search, browser and terminal (terminal gated by

@@ -32,6 +32,10 @@ Start with Manual. Grant section-scoped approval for repeated, well-understood w
 
 ## Credential and browser access
 
-Shell and Python tools cannot read Hexbot credential files or SSH keys on macOS. If the operating system cannot apply that isolation, the command fails. Linux uses bubblewrap when installed; otherwise Hexbot logs that isolation is unavailable and keeps the command approval guards.
+On macOS, shell, Python, and scheduled scripts cannot read Hexbot credential files, including device tokens in `desktop-data/`. They cannot write the Hexbot home except the section workspace and artifact or attachment folders. File tools keep the same home write protection in every approval mode. The default workspace at `~/Hexbot` stays writable. If the operating system cannot apply isolation, the command fails. Linux uses bubblewrap after a successful startup probe. If bubblewrap is missing or cannot start, Hexbot warns and keeps the command approval guards.
+
+SSH private keys named `id_*` except `.pub`, `*.pem`, or `*.key` are protected. SSH config, known hosts, and public keys remain readable. Commands can use your SSH agent for Git without reading private keys.
+
+Scheduled scripts must live in the bot scripts folder or workspace and run without provider credentials. When a bot schedules an absolute script path, Manual and Auto ask the section owner for approval.
 
 Navigation and page actions require a local browser managed by Hexbot. Browsers connected through a debugging address or a cloud provider support inspection only until network interception is available. Browser code execution is unavailable without interception. Allowing private URLs still blocks cloud metadata and the daemon's own listener.

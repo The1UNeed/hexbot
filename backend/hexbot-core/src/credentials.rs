@@ -2,8 +2,10 @@
 use crate::{Error, Result};
 use serde::Deserialize;
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 #[derive(Deserialize)]
 struct Policy {
@@ -25,49 +27,108 @@ pub fn credential_name(home: &Path, path: &Path) -> bool {
             regex::Regex::new(&policy().home).unwrap(),
         )
     });
-    name.is_match(path.file_name().and_then(|s| s.to_str()).unwrap_or(""))
-        || path
-            .strip_prefix(home)
-            .is_ok_and(|p| local.is_match(&p.to_string_lossy().replace('\\', "/")))
+    path.strip_prefix(home).is_ok_and(|p| {
+        name.is_match(path.file_name().and_then(|s| s.to_str()).unwrap_or(""))
+            || local.is_match(&p.to_string_lossy().replace('\\', "/"))
+    })
 }
-fn secret_paths(home: &Path) -> Result<Vec<PathBuf>> {
-    fn walk(home: &Path, dir: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if credential_name(home, &path) {
-                paths.push(path.clone());
-                if let Ok(target) = std::fs::canonicalize(&path) {
-                    paths.push(target);
-                }
-            } else if entry.file_type()?.is_dir()
-                && !["node_modules", ".git", "bin", "venv", "native", "artifacts"]
-                    .contains(&entry.file_name().to_string_lossy().as_ref())
-            {
-                walk(home, &path, paths)?;
-            }
-        }
-        Ok(())
+fn entries(dir: &Path) -> impl Iterator<Item = std::fs::DirEntry> {
+    std::fs::read_dir(dir).into_iter().flatten().flatten()
+}
+pub(crate) fn private_key(name: &str) -> bool {
+    (name.starts_with("id_") || name.ends_with(".pem") || name.ends_with(".key"))
+        && !name.ends_with(".pub")
+}
+fn secret_paths(home: &Path) -> Vec<PathBuf> {
+    type Cache = HashMap<PathBuf, (Instant, Vec<PathBuf>)>;
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+    let mut cache = CACHE.get_or_init(Default::default).lock().unwrap();
+    if let Some((at, paths)) = cache.get(home)
+        && at.elapsed() < Duration::from_secs(5)
+    {
+        return paths.clone();
     }
-    let mut paths = vec![];
-    if let Some(user) = std::env::var_os("HOME") {
-        let ssh = PathBuf::from(user).join(".ssh");
-        if let Ok(target) = std::fs::canonicalize(&ssh) {
+    fn add(path: PathBuf, paths: &mut Vec<PathBuf>) {
+        if let Ok(target) = std::fs::canonicalize(&path) {
             paths.push(target);
         }
-        paths.push(ssh);
+        paths.push(path);
     }
-    walk(home, home, &mut paths)?;
+    fn walk(home: &Path, dir: &Path, paths: &mut Vec<PathBuf>) {
+        for entry in entries(dir) {
+            let path = entry.path();
+            if credential_name(home, &path) {
+                add(path, paths);
+            } else if entry.file_type().is_ok_and(|t| t.is_dir())
+                && ![
+                    "node_modules",
+                    ".git",
+                    "bin",
+                    "venv",
+                    "native",
+                    "artifacts",
+                    "python",
+                    "cache",
+                ]
+                .contains(&entry.file_name().to_string_lossy().as_ref())
+                && path != home.join("runtime/sessions")
+            {
+                walk(home, &path, paths);
+            }
+        }
+    }
+    let mut paths = vec![];
+    fn walk_ssh(dir: &Path, paths: &mut Vec<PathBuf>) {
+        for entry in entries(dir) {
+            if private_key(&entry.file_name().to_string_lossy()) {
+                add(entry.path(), paths);
+            } else if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                walk_ssh(&entry.path(), paths);
+            }
+        }
+    }
+    if let Some(user) = std::env::var_os("HOME") {
+        walk_ssh(&PathBuf::from(user).join(".ssh"), &mut paths);
+    }
+    walk(home, home, &mut paths);
     paths.sort();
     paths.dedup();
-    Ok(paths)
+    cache.insert(home.to_owned(), (Instant::now(), paths.clone()));
+    paths
+}
+fn bwrap() -> Option<&'static Path> {
+    static BWRAP: OnceLock<Option<PathBuf>> = OnceLock::new();
+    BWRAP
+        .get_or_init(|| {
+            if !cfg!(target_os = "linux") {
+                return None;
+            }
+            let path = std::env::var_os("PATH").and_then(|p| {
+                std::env::split_paths(&p)
+                    .map(|d| d.join("bwrap"))
+                    .find(|p| p.is_file())
+            })?;
+            let status = std::process::Command::new(&path)
+                .args([
+                    "--die-with-parent",
+                    "--unshare-pid",
+                    "--ro-bind",
+                    "/",
+                    "/",
+                    "--proc",
+                    "/proc",
+                    "--",
+                    "/bin/true",
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            status.is_ok_and(|s| s.success()).then_some(path)
+        })
+        .as_deref()
 }
 pub fn warn_unavailable_isolation() {
-    if cfg!(target_os = "macos")
-        || cfg!(target_os = "linux")
-            && std::env::var_os("PATH")
-                .is_some_and(|p| std::env::split_paths(&p).any(|dir| dir.join("bwrap").is_file()))
-    {
+    if cfg!(target_os = "macos") || bwrap().is_some() {
         return;
     }
     static WARN: std::sync::Once = std::sync::Once::new();
@@ -77,48 +138,76 @@ pub fn warn_unavailable_isolation() {
         )
     });
 }
-pub fn isolated_command(home: &Path, program: &str) -> Result<tokio::process::Command> {
-    let paths = secret_paths(home)?;
+fn quoted(path: impl AsRef<str>) -> String {
+    serde_json::to_string(path.as_ref()).unwrap()
+}
+fn sandbox_profile(roots: &[PathBuf], paths: &[PathBuf], writable: &[PathBuf]) -> String {
+    let mut filters = vec![];
+    for root in roots {
+        let root = regex::escape(&root.to_string_lossy());
+        for pattern in [
+            format!("^{root}/(.*/)?{}", &policy().basename[1..]),
+            format!("^{root}/{}", &policy().home[1..]),
+        ] {
+            filters.push(format!("(regex {})", quoted(pattern)));
+        }
+    }
+    if let Some(user) = std::env::var_os("HOME") {
+        let ssh = PathBuf::from(user).join(".ssh");
+        for root in [ssh.clone(), std::fs::canonicalize(&ssh).unwrap_or(ssh)] {
+            filters.push(format!(
+                "(require-all (regex {}) (require-not (regex {})))",
+                quoted(format!(
+                    r"^{}/(.*/)?(id_[^/]*|[^/]*\.(pem|key))$",
+                    regex::escape(&root.to_string_lossy())
+                )),
+                quoted(r"\.pub$")
+            ));
+        }
+    }
+    for path in paths {
+        filters.push(format!("(subpath {})", quoted(path.to_string_lossy())));
+    }
+    let inside_home = roots
+        .iter()
+        .map(|p| format!("(subpath {})", quoted(p.to_string_lossy())))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let except_writable = if writable.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "(require-not (require-any {}))",
+            writable
+                .iter()
+                .map(|p| format!("(subpath {})", quoted(p.to_string_lossy())))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    };
+    format!(
+        "(version 1)(allow default)(deny file-write* (require-all (require-any {inside_home}) {except_writable}))(deny file-read* file-write* {})",
+        filters.join(" ")
+    )
+}
+pub fn isolated_command(
+    home: &Path,
+    program: &str,
+    writable: &[PathBuf],
+) -> Result<tokio::process::Command> {
+    let paths = secret_paths(home);
+    let roots = vec![home.to_owned(), std::fs::canonicalize(home)?];
+    let writable: Vec<_> = writable
+        .iter()
+        .filter_map(|p| std::fs::canonicalize(p).ok())
+        .filter(|p| roots.iter().any(|root| p != root && p.starts_with(root)))
+        .collect();
     if cfg!(target_os = "macos") {
-        let mut filters = vec![format!(
-            "(regex #{})",
-            serde_json::to_string(&format!("/{}", &policy().basename[1..])).unwrap()
-        )];
-        for root in [home.to_owned(), std::fs::canonicalize(home)?] {
-            filters.push(format!(
-                "(regex #{})",
-                serde_json::to_string(&format!(
-                    "^{}/{}",
-                    regex::escape(&root.to_string_lossy()),
-                    &policy().home[1..]
-                ))
-                .unwrap()
-            ));
-        }
-        for path in paths {
-            filters.push(format!(
-                "(subpath {})",
-                serde_json::to_string(&path.to_string_lossy()).unwrap()
-            ));
-        }
         let mut command = tokio::process::Command::new("/usr/bin/sandbox-exec");
-        command.args([
-            "-p",
-            &format!(
-                "(version 1)(allow default)(deny file-read* file-write* {})",
-                filters.join(" ")
-            ),
-            program,
-        ]);
+        command.args(["-p", &sandbox_profile(&roots, &paths, &writable), program]);
         return Ok(command);
     }
-    if cfg!(target_os = "linux")
-        && let Some(bwrap) = std::env::var_os("PATH").and_then(|p| {
-            std::env::split_paths(&p)
-                .map(|d| d.join("bwrap"))
-                .find(|p| p.is_file())
-        })
-    {
+    if let Some(bwrap) = bwrap() {
         let mut command = tokio::process::Command::new(bwrap);
         command.args([
             "--die-with-parent",
@@ -129,9 +218,19 @@ pub fn isolated_command(home: &Path, program: &str) -> Result<tokio::process::Co
             "--proc",
             "/proc",
         ]);
+        for root in roots {
+            command.arg("--ro-bind").arg(&root).arg(&root);
+        }
+        for path in writable {
+            command.arg("--bind").arg(&path).arg(&path);
+        }
         for path in paths.into_iter().filter(|p| p.exists()) {
             if path.is_dir() {
-                command.arg("--tmpfs").arg(path);
+                command
+                    .arg("--tmpfs")
+                    .arg(&path)
+                    .arg("--remount-ro")
+                    .arg(&path);
             } else {
                 command.args(["--ro-bind", "/dev/null"]).arg(path);
             }
@@ -141,6 +240,32 @@ pub fn isolated_command(home: &Path, program: &str) -> Result<tokio::process::Co
     }
     warn_unavailable_isolation();
     Ok(tokio::process::Command::new(program))
+}
+/// Explicit inheritance prevents provider keys and runtime injection variables reaching scripts.
+pub fn shell_environment(command: &mut tokio::process::Command) {
+    command
+        .env_clear()
+        .envs(std::env::vars().filter(|(name, _)| {
+            matches!(
+                name.as_str(),
+                "PATH"
+                    | "HOME"
+                    | "USER"
+                    | "LOGNAME"
+                    | "SHELL"
+                    | "TMPDIR"
+                    | "TMP"
+                    | "TEMP"
+                    | "LANG"
+                    | "LANGUAGE"
+                    | "TZ"
+                    | "SSH_AUTH_SOCK"
+                    | "SystemRoot"
+                    | "WINDIR"
+                    | "PATHEXT"
+                    | "COMSPEC"
+            ) || name.starts_with("LC_")
+        }));
 }
 /// Cheap floor for literal catastrophic Python actions. Approval remains required
 /// for arbitrary code, including indirection that a textual guard cannot prove safe.
@@ -184,6 +309,119 @@ pub fn check_code(code: &str) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn policy_is_scoped_and_walk_skips_heavy_trees() {
+        let home = tempfile::tempdir().unwrap();
+        for name in [
+            "python",
+            "desktop-data",
+            "runtime/sessions",
+            "cache",
+            "node_modules",
+            "venv",
+            "bin",
+            "native",
+        ] {
+            let dir = home.path().join(name).join("deep");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("auth.json"), "secret").unwrap();
+        }
+        assert!(credential_name(
+            home.path(),
+            &home.path().join("desktop-data/Local Storage/token")
+        ));
+        assert!(!credential_name(
+            home.path(),
+            Path::new("/unrelated/auth.json")
+        ));
+        let paths = secret_paths(home.path());
+        assert!(paths.contains(&home.path().join("desktop-data")));
+        assert!(
+            !paths
+                .iter()
+                .any(|p| p.to_string_lossy().contains("deep/auth.json"))
+        );
+        for name in ["known_hosts", "config", "id_ed25519.pub"] {
+            assert!(!private_key(name));
+        }
+        for name in ["id_rsa", "id_ed25519", "work.pem", "work.key"] {
+            assert!(private_key(name));
+        }
+        let profile = sandbox_profile(&[home.path().to_owned()], &paths, &[]);
+        assert!(!profile.contains("regex #"));
+        assert!(profile.contains("(deny file-write*"));
+        assert!(profile.contains(&quoted(format!(
+            "^{}/{}",
+            regex::escape(&home.path().to_string_lossy()),
+            &policy().home[1..]
+        ))));
+    }
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn newly_created_secrets_and_home_writes_are_denied() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let base = tempfile::tempdir().unwrap();
+        let home = base.path().join("home");
+        let workspace = home.join("workspace");
+        for path in [
+            "workspace",
+            "profiles/owl",
+            "bin",
+            "hooks",
+            "skills",
+            "profiles/owl/artifacts",
+            "runtime/sessions/one/attachments",
+        ] {
+            std::fs::create_dir_all(home.join(path)).unwrap();
+        }
+        std::fs::write(base.path().join("connect.json"), "outside").unwrap();
+        let script = format!(
+            r#"echo ready; read -r go; secret='{}/profiles/owl'; cat "$secret/.env" >/dev/null 2>&1 && exit 10; cat "$secret/connect.json" >/dev/null 2>&1 && exit 13; cat '{}/connect.json' || exit 11; for p in config.yaml bin/script hooks/script skills/script profiles/owl/config.yaml; do (echo bad > '{}'/$p) 2>/dev/null && exit 12; done; echo ok > '{}/result'; echo ok > '{}/profiles/owl/artifacts/result'; echo ok > '{}/runtime/sessions/one/attachments/result'; echo ok > '{}/normal-workspace'"#,
+            home.display(),
+            base.path().display(),
+            home.display(),
+            workspace.display(),
+            home.display(),
+            home.display(),
+            base.path().display()
+        );
+        let mut child = isolated_command(
+            &home,
+            "/bin/bash",
+            &[
+                workspace.clone(),
+                home.join("profiles/owl/artifacts"),
+                home.join("runtime/sessions/one/attachments"),
+            ],
+        )
+        .unwrap()
+        .args(["-c", &script])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+        let mut output = BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        output.read_line(&mut line).await.unwrap();
+        assert_eq!(line.trim(), "ready", "sandbox did not start");
+        std::fs::write(home.join("profiles/owl/.env"), "secret").unwrap();
+        std::fs::write(home.join("profiles/owl/connect.json"), "secret").unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"go\n")
+            .await
+            .unwrap();
+        let result = child.wait_with_output().await.unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    #[test]
     fn code_floor() {
         for code in [
             "import shutil; shutil.rmtree('/')",
@@ -203,14 +441,14 @@ mod tests {
     async fn python_isolated_from_secrets() {
         let home = tempfile::tempdir().unwrap();
         std::fs::write(home.path().join(".env"), "SECRET").unwrap();
-        let result = isolated_command(home.path(), "/bin/cat")
+        let result = isolated_command(home.path(), "/bin/cat", &[])
             .unwrap()
             .arg(home.path().join(".env"))
             .output()
             .await
             .unwrap();
         assert!(!result.status.success());
-        let result = isolated_command(home.path(), "python3")
+        let result = isolated_command(home.path(), "python3", &[])
             .unwrap()
             .args([
                 "-c",
@@ -223,7 +461,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.status.success());
-        let result = isolated_command(home.path(), "/bin/echo")
+        let result = isolated_command(home.path(), "/bin/echo", &[])
             .unwrap()
             .arg("ordinary")
             .output()

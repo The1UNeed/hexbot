@@ -469,7 +469,7 @@ fn blocked_ip(ip: std::net::IpAddr, allow_private: bool) -> bool {
     match ip {
         IpAddr::V4(ip) => {
             let [a, b, c, d] = ip.octets();
-            if (a == 169 && b == 254) || [a, b, c, d] == [100, 100, 100, 200] {
+            if a == 0 || (a == 169 && b == 254) || [a, b, c, d] == [100, 100, 100, 200] {
                 return true;
             }
             !allow_private
@@ -489,7 +489,7 @@ fn blocked_ip(ip: std::net::IpAddr, allow_private: bool) -> bool {
             if let Some(ip) = ip.to_ipv4_mapped() {
                 return blocked_ip(IpAddr::V4(ip), allow_private);
             }
-            if ip == "fd00:ec2::254".parse::<std::net::Ipv6Addr>().unwrap() {
+            if ip.is_unspecified() || ip == "fd00:ec2::254".parse::<std::net::Ipv6Addr>().unwrap() {
                 return true;
             }
             !allow_private
@@ -539,7 +539,9 @@ impl Drop for DaemonListener {
 fn is_daemon_address(address: &std::net::SocketAddr) -> bool {
     daemon_listeners().lock().unwrap().keys().any(|listener| {
         listener.port() == address.port()
-            && (listener.ip().to_canonical() == address.ip().to_canonical()
+            && (address.ip().is_unspecified()
+                || matches!(address.ip().to_canonical(), std::net::IpAddr::V4(ip) if ip.octets()[0] == 0)
+                || listener.ip().to_canonical() == address.ip().to_canonical()
                 || listener.ip().is_unspecified()
                     && (address.ip().is_loopback()
                         || std::net::UdpSocket::bind(std::net::SocketAddr::new(address.ip(), 0))
@@ -785,10 +787,19 @@ mod tool_safety_tests {
         let url =
             url::Url::parse(&format!("http://127.0.0.1:{}/auth/session", address.port())).unwrap();
         assert!(url_addresses(&url, true).await.is_err());
+        let url = url::Url::parse(&format!("http://0.0.0.0:{}/", address.port())).unwrap();
+        assert!(is_daemon_address(
+            &format!("0.0.0.0:{}", address.port()).parse().unwrap()
+        ));
+        assert!(url_addresses(&url, true).await.is_err());
     }
     #[test]
     fn metadata_is_always_denied_and_internal_ranges_require_opt_in() {
         for ip in [
+            "0.0.0.0",
+            "0.1.2.3",
+            "::",
+            "::ffff:0.0.0.0",
             "169.254.169.254",
             "169.254.170.2",
             "169.254.1.1",
@@ -807,7 +818,6 @@ mod tool_safety_tests {
             "192.168.0.1",
             "100.64.0.1",
             "198.18.0.1",
-            "0.0.0.0",
             "::1",
             "fe80::1",
             "fc00::1",

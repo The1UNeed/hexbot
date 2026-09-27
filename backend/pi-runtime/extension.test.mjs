@@ -237,7 +237,7 @@ for (const command of ['env -S "rm -rf /"', 'xargs -I{} rm -rf /', 'nice --adjus
 test('dynamic commands and secret references require approval', async t => {
   for (const mode of ['manual', 'smart']) {
     const f = fixture(t, mode);
-    for (const command of ['$(echo whoami)', '`echo whoami`', '$CMD arg', 'eval "pwd"', 'true; $CMD', 'FOO=x $CMD', 'cat $HEXBOT_HOME/.env', 'cat ~/.ssh/id_rsa', `cat ${f.home}/anything`, 'sqlite3 hexbot.db']) {
+    for (const command of ['$(echo whoami)', '`echo whoami`', '$CMD arg', 'eval "pwd"', 'true; $CMD', 'FOO=x $CMD', 'cat $HEXBOT_HOME/.env', 'cat ~/.ssh/id_rsa', `cat ${f.home}/auth.json`, 'sqlite3 hexbot.db']) {
       assert.equal((await f.gate('bash', {command}))?.block, true, command);
     }
   }
@@ -276,4 +276,34 @@ test('grep match and context delimiters inside bot names cannot expose detail te
   const result = sanitizeSearchResult({content:[{type:'text',text:lines}],details:{truncation:{content:lines},nested:{output:lines}}}, 'grep', f.home, f.home);
   assert.doesNotMatch(JSON.stringify(result), /SECRET|\.env/);
   assert.match(result.details.truncation.content, /public/);
+});
+
+for (const command of ['if rm -rf /; then :; fi', 'elif rm -rf /; then :; fi', 'while rm -rf ~; do :; done', 'until rm -rf /; do :; done', 'case x in x) rm -rf /;; esac', 'exec -a x rm -rf /']) {
+  test(`control flow hard block: ${command}`, () => assert.ok(hardlineCommand(command)));
+}
+test('credential prompts name secrets and leave skill scripts and examples alone', async t => {
+  const f = fixture(t);
+  for (const command of [`python '${f.home}/skills/pdf/run.py'`, `bash '${f.home}/profiles/owl/skills/test.sh'`, 'echo $HOME', 'cat .env.example', 'node -e "console.log(process.env)"']) {
+    assert.equal(await f.gate('bash', {command}), undefined, command);
+    assert.equal(dangerousCommand(command, f.home).includes('credential access'), false, command);
+  }
+  for (const command of ['cat .env', `cat '${f.home}/auth.json'`, 'cat ~/.ssh/id_ed25519', `cat '${f.home}/desktop-data/Local Storage/data'`]) assert.ok(dangerousCommand(command, f.home).includes('credential access'), command);
+  for (const name of ['known_hosts', 'config', 'id_ed25519.pub']) assert.equal(credentialPath(join(homedir(), '.ssh', name), f.home), false);
+  for (const name of ['id_ed25519', 'work.pem', 'deploy.key']) assert.equal(credentialPath(join(homedir(), '.ssh', name), f.home), true);
+  assert.equal(credentialPath(join(f.home, 'desktop-data/Local Storage/token'), f.home), true);
+  assert.equal(credentialPath(join(f.home, '../connect.json'), f.home), false);
+  assert.equal(credentialPath(join(homedir(), '.codex/auth.json'), f.home), false);
+  assert.deepEqual(shellEnvironment({SSH_AUTH_SOCK:'/tmp/agent', AWS_PROFILE:'secret', AWS_SECRET_ACCESS_KEY:'secret', GOOGLE_APPLICATION_CREDENTIALS:'secret', GOOGLE_CLOUD_PROJECT:'secret', CLOUDSDK_CONFIG:'secret'}), {SSH_AUTH_SOCK:'/tmp/agent'});
+});
+
+test('direct file tools cannot rewrite daemon configuration in any approval mode', async t => {
+  for (const mode of ['manual','smart','off']) {
+    const f=fixture(t,mode,['file']);
+    for (const path of ['config.yaml','bin/script','hooks/script','profiles/owl/config.yaml','skills/script']) {
+      for (const tool of ['write','edit']) assert.equal((await f.gate(tool,{path:join(f.home,path)}))?.block,true,`${mode} ${path}`);
+      await assert.rejects(f.tools.write.execute('write',{path:join(f.home,path),content:'bad'}),/protected/);
+    }
+    f.settings.cwd=join(f.home,'workspace'); mkdirSync(f.settings.cwd);
+    assert.equal(await f.gate('write',{path:join(f.settings.cwd,'notes.txt')}),undefined);
+  }
 });

@@ -436,3 +436,29 @@ fn empty_native_history_never_resurrects_legacy_messages() {
         0
     );
 }
+
+#[test]
+fn failed_section_delete_removes_tombstone() {
+    let home = setup();
+    let created = create(home.path());
+    let id = created["section"]["id"].as_str().unwrap();
+    runtime_store::mark_deleted(home.path(), id).unwrap();
+    db::open(home.path()).unwrap().execute_batch("CREATE TRIGGER refuse_delete BEFORE DELETE ON sections BEGIN SELECT RAISE(FAIL, 'busy'); END;").unwrap();
+    assert!(
+        catalog::call(
+            home.path(),
+            "alice",
+            "hexbot.sections.delete",
+            &json!({"id":id})
+        )
+        .unwrap()
+        .is_err()
+    );
+    assert!(catalog::section(home.path(), "alice", id).is_ok());
+    runtime_store::append(
+        home.path(),
+        id,
+        json!({"role":"user","text":"Still usable"}),
+    )
+    .unwrap();
+}

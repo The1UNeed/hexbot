@@ -92,7 +92,7 @@ async fn request(request: reqwest::RequestBuilder) -> Result<Value> {
     serde_json::from_slice(&body).map_err(|_| failure("tool service returned invalid JSON"))
 }
 tokio::task_local! { static SECTION_CWD: PathBuf; }
-fn workdir(home: &Path, bot: &str) -> Result<PathBuf> {
+pub(crate) fn workdir(home: &Path, bot: &str) -> Result<PathBuf> {
     if let Ok(cwd) = SECTION_CWD.try_with(Clone::clone) {
         return Ok(cwd);
     }
@@ -900,7 +900,11 @@ async fn execute_code(
                 &configured
             },
         );
-        let mut command = crate::credentials::isolated_command(home, python)?;
+        let mut command = crate::credentials::isolated_command(
+            home,
+            python,
+            &[workdir(home, bot)?, artifacts_dir(home, bot)?],
+        )?;
         desktop_env(&mut command);
         let mut child = command
             .args(["-u", "-c", KERNEL])

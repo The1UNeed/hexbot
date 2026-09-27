@@ -733,3 +733,56 @@ async fn internal_mcp_config_isolates_credentials_and_resolves_explicit_env_refs
     );
     connectors::close_bot(home.path(), "owl").await;
 }
+
+#[tokio::test]
+async fn discovery_runs_concurrently_and_caches_failed_servers() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let home = setup();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let app = Router::new().route("/stalled", post({
+        let attempts = attempts.clone();
+        move || { let attempts = attempts.clone(); async move {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            std::future::pending::<StatusCode>().await
+        }}
+    })).route("/healthy", post(|axum::Json(message): axum::Json<Value>| async move {
+        axum::Json(json!({"jsonrpc":"2.0","id":message["id"],"result":match message["method"].as_str() {
+            Some("initialize") => json!({"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}),
+            _ => json!({"tools":[{"name":"echo","inputSchema":{"type":"object"}}]})
+        }}))
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    common::write_config(
+        home.path(),
+        &json!({"mcp_servers":{
+            "a":{"url":format!("{url}/stalled"),"transport":"http"},
+            "b":{"url":format!("{url}/stalled"),"transport":"http"},
+            "c":{"url":format!("{url}/healthy"),"transport":"http"}
+        }}),
+    )
+    .unwrap();
+    let (tools, failed) = tokio::time::timeout(
+        std::time::Duration::from_secs(28),
+        connectors::mcp_tools_with_failures(home.path(), "owl"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(failed);
+    assert_eq!(tools.len(), 1);
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    let (tools, failed) = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        connectors::mcp_tools_with_failures(home.path(), "owl"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(failed);
+    assert_eq!(tools.len(), 1);
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    connectors::close_bot(home.path(), "owl").await;
+    server.abort();
+}

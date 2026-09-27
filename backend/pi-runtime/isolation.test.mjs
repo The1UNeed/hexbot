@@ -1,0 +1,73 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {spawn} from 'node:child_process';
+import {mkdtempSync, mkdirSync, writeFileSync, rmSync} from 'node:fs';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {createInterface} from 'node:readline';
+import {isolatedCommand} from './isolation.ts';
+
+test('sandbox protects newly created secrets and home writes but permits workspace and unrelated files', {skip:process.platform !== 'darwin'}, async t => {
+  const base = mkdtempSync(join(tmpdir(), 'hexbot-isolation-'));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const home = join(base, 'home'), work = join(home, 'workspace');
+  for (const dir of [work, join(home,'profiles/owl'), join(home,'bin'), join(home,'hooks'), join(home,'skills'), join(home,'profiles/owl/artifacts'), join(home,'runtime/sessions/one/attachments')]) mkdirSync(dir,{recursive:true});
+  writeFileSync(join(base,'auth.json'),'outside');
+  writeFileSync(join(base,'.env'),'outside');
+  const script = `echo ready; read -r go; cat '${home}/profiles/owl/.env' >/dev/null 2>&1 && exit 10; cat '${home}/profiles/owl/auth.json' >/dev/null 2>&1 && exit 13; cat '${base}/auth.json' || exit 11; cat '${base}/.env' || exit 14; for p in config.yaml bin/script hooks/script skills/script profiles/owl/config.yaml; do (echo bad > '${home}'/"$p") 2>/dev/null && exit 12; done; echo ok > '${work}/result'; echo ok > '${home}/profiles/owl/artifacts/result'; echo ok > '${home}/runtime/sessions/one/attachments/result'; echo ok > '${base}/normal-workspace'; echo done`;
+  const child = spawn('/bin/bash', ['-c',isolatedCommand(script,home,work,[join(home,'profiles/owl/artifacts'),join(home,'runtime/sessions/one/attachments')])], {stdio:['pipe','pipe','pipe']});
+  t.after(() => {if(child.exitCode === null) child.kill();});
+  let stderr=''; child.stderr.on('data',c=>stderr+=c);
+  const exited = new Promise(resolve => child.on('close',resolve));
+  const lines = createInterface({input:child.stdout});
+  for await (const line of lines) {
+    if (line === 'ready') {writeFileSync(join(home,'profiles/owl/.env'),'secret'); writeFileSync(join(home,'profiles/owl/auth.json'),'secret'); child.stdin.end('go\n');}
+  }
+  assert.equal(await exited,0,stderr);
+});
+
+test('walk skips heavy trees while policy still covers their names', {skip:process.platform !== 'darwin'}, t => {
+  const home=mkdtempSync(join(tmpdir(),'hexbot-walk-'));
+  t.after(()=>rmSync(home,{recursive:true,force:true}));
+  mkdirSync(join(home,'python/deep'),{recursive:true});
+  writeFileSync(join(home,'python/deep/auth.json'),'secret');
+  const command=isolatedCommand('true',home);
+  assert.doesNotMatch(command,/subpath[^)]*python\/deep\/auth/);
+  assert.doesNotMatch(command,/regex #/);
+});
+
+test('an unusable bubblewrap is probed once and commands fall back to approval guards', async t => {
+  const {execFileSync} = await import('node:child_process');
+  const {chmodSync, readFileSync} = await import('node:fs');
+  const home = mkdtempSync(join(tmpdir(), 'hexbot-bwrap-'));
+  t.after(()=>rmSync(home,{recursive:true,force:true}));
+  const counter=join(home,'count');
+  const executable=join(home,'bwrap');
+  writeFileSync(executable, `#!/bin/sh\necho probe >> '${counter}'\nexit 1\n`); chmodSync(executable,0o755);
+  const moduleUrl=new URL('./isolation.ts',import.meta.url).href;
+  const script=`Object.defineProperty(process,'platform',{value:'linux'}); const {isolatedCommand,probeIsolation}=await import(${JSON.stringify(moduleUrl)}); probeIsolation(); console.log(isolatedCommand('echo first',${JSON.stringify(home)})); console.log(isolatedCommand('echo second',${JSON.stringify(home)}));`;
+  const output=execFileSync(process.execPath,['--input-type=module','-e',script],{env:{...process.env,PATH:home},encoding:'utf8'});
+  assert.equal(output,'echo first\necho second\n');
+  assert.equal(readFileSync(counter,'utf8'),'probe\n');
+});
+
+test('bubblewrap binds the home read-only and only reopens the requested output directories', async t => {
+  const {execFileSync} = await import('node:child_process');
+  const {chmodSync, realpathSync} = await import('node:fs');
+  const home=mkdtempSync(join(tmpdir(),'hexbot-bwrap-bind-'));
+  t.after(()=>rmSync(home,{recursive:true,force:true}));
+  const workspace=join(home,'workspace'), outputs=join(home,'profiles/owl/artifacts');
+  for (const dir of [workspace,outputs,join(home,'desktop-data')]) mkdirSync(dir,{recursive:true});
+  const executable=join(home,'bwrap'); writeFileSync(executable,'#!/bin/sh\nexit 0\n'); chmodSync(executable,0o755);
+  const user=join(home,'user'); mkdirSync(join(user,'.ssh/nested'),{recursive:true});
+  for (const file of ['known_hosts','config','id_ed25519.pub','nested/id_ed25519']) writeFileSync(join(user,'.ssh',file),'fixture');
+  const moduleUrl=new URL('./isolation.ts',import.meta.url).href;
+  const script=`Object.defineProperty(process,'platform',{value:'linux'}); const {isolatedCommand}=await import(${JSON.stringify(moduleUrl)}); console.log(isolatedCommand('true',${JSON.stringify(home)},${JSON.stringify(workspace)},[${JSON.stringify(outputs)}]));`;
+  const command=execFileSync(process.execPath,['--input-type=module','-e',script],{env:{...process.env,HOME:user,PATH:home},encoding:'utf8'});
+  assert.ok(command.includes(`'--ro-bind' '${home}' '${home}'`));
+  for (const path of [workspace,outputs]) assert.ok(command.includes(`'--bind' '${realpathSync(path)}' '${realpathSync(path)}'`));
+  assert.ok(command.includes(`'--tmpfs' '${join(home,'desktop-data')}' '--remount-ro'`));
+  assert.doesNotMatch(command,/'--tmpfs' '[^']*\/\.ssh'/);
+  assert.ok(command.includes(`'--ro-bind' '/dev/null' '${join(user,'.ssh/nested/id_ed25519')}'`));
+  assert.doesNotMatch(command,/known_hosts|id_ed25519\.pub|\.ssh\/config/);
+});

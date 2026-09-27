@@ -106,6 +106,10 @@ pub fn mark_deleted(home: &Path, stored: &str) -> Result<()> {
     tx.commit()?;
     Ok(())
 }
+pub fn unmark_deleted(home: &Path, stored: &str) -> Result<()> {
+    open(home)?.execute("DELETE FROM native_deleted WHERE session_id=?", [stored])?;
+    Ok(())
+}
 pub fn delete(home: &Path, stored: &str) -> Result<()> {
     common::identifier(stored)?;
     let targets = descendants(home, stored)?;

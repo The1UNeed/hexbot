@@ -200,6 +200,44 @@ impl Drop for CancelRequest {
     }
 }
 
+pub fn inherited_environment(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "PATH"
+            | "HOME"
+            | "USER"
+            | "LOGNAME"
+            | "SHELL"
+            | "TMPDIR"
+            | "TMP"
+            | "TEMP"
+            | "LANG"
+            | "LANGUAGE"
+            | "TZ"
+            | "SYSTEMROOT"
+            | "WINDIR"
+            | "PATHEXT"
+            | "COMSPEC"
+            | "SSH_AUTH_SOCK"
+            | "HTTP_PROXY"
+            | "HTTPS_PROXY"
+            | "NO_PROXY"
+            | "NODE_EXTRA_CA_CERTS"
+            | "SSL_CERT_FILE"
+            | "SSL_CERT_DIR"
+    ) || name.starts_with("LC_")
+}
+pub fn provider_environment(name: &str, provider: &str) -> bool {
+    inherited_environment(name)
+        || match provider {
+            "bedrock" | "amazon-bedrock" => name.starts_with("AWS_"),
+            "vertex" | "google-vertex" => {
+                name.starts_with("GOOGLE_") || name.starts_with("CLOUDSDK_")
+            }
+            _ => false,
+        }
+}
+
 impl PiProcess {
     pub fn spawn(options: PiOptions) -> Result<(Self, PiEvents), PiError> {
         if options.max_record_bytes == 0
@@ -218,26 +256,7 @@ impl PiProcess {
         let mut child = Command::new(&options.executable)
             .args(&options.args)
             .env_clear()
-            .envs(std::env::vars().filter(|(name, _)| {
-                matches!(
-                    name.as_str(),
-                    "PATH"
-                        | "HOME"
-                        | "USER"
-                        | "LOGNAME"
-                        | "SHELL"
-                        | "TMPDIR"
-                        | "TMP"
-                        | "TEMP"
-                        | "LANG"
-                        | "LANGUAGE"
-                        | "TZ"
-                        | "SystemRoot"
-                        | "WINDIR"
-                        | "PATHEXT"
-                        | "COMSPEC"
-                ) || name.starts_with("LC_")
-            }))
+            .envs(std::env::vars().filter(|(name, _)| inherited_environment(name)))
             .envs(&options.env)
             .current_dir(&options.working_dir)
             .env("PI_CODING_AGENT_DIR", &options.agent_dir)
@@ -671,5 +690,47 @@ fn record(
             mpsc::error::TrySendError::Full(_) => PiError::EventOverflow,
             mpsc::error::TrySendError::Closed(_) => PiError::Cancelled,
         })
+    }
+}
+
+#[cfg(test)]
+mod environment_policy_tests {
+    use super::*;
+    #[test]
+    fn provider_and_network_environment_is_selected() {
+        for name in [
+            "HTTP_PROXY",
+            "https_proxy",
+            "No_Proxy",
+            "NODE_EXTRA_CA_CERTS",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "SSH_AUTH_SOCK",
+        ] {
+            assert!(inherited_environment(name));
+        }
+        for name in [
+            "AWS_PROFILE",
+            "AWS_REGION",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_BEARER_TOKEN_BEDROCK",
+        ] {
+            assert!(provider_environment(name, "amazon-bedrock"));
+            assert!(!provider_environment(name, "google-vertex"));
+            assert!(!inherited_environment(name));
+        }
+        for name in [
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "GOOGLE_CLOUD_PROJECT",
+            "GOOGLE_CLOUD_LOCATION",
+            "CLOUDSDK_CONFIG",
+        ] {
+            assert!(provider_environment(name, "google-vertex"));
+            assert!(!provider_environment(name, "amazon-bedrock"));
+            assert!(!inherited_environment(name));
+        }
+        assert!(!inherited_environment("NODE_OPTIONS"));
     }
 }

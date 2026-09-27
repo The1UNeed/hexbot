@@ -830,31 +830,38 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
 }
 fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<()> {
     let row = section_row(home, caller, id)?;
-    if purge {
-        runtime_store::delete(home, id)?;
-        let path = profile(home, row["bot"].as_str().unwrap_or(""))?.join("state.db");
-        safe(home, &path)?;
-        if path.exists() {
-            let mut conn = Connection::open(path)?;
-            conn.busy_timeout(std::time::Duration::from_secs(10))?;
-            let tx = conn.transaction()?;
-            for key in legacy_ids(&tx, id)? {
-                tx.execute("DELETE FROM messages WHERE session_id=?", [&key])?;
-                tx.execute("DELETE FROM sessions WHERE id=?", [&key])?;
+    let result = (|| {
+        if purge {
+            runtime_store::delete(home, id)?;
+            let path = profile(home, row["bot"].as_str().unwrap_or(""))?.join("state.db");
+            safe(home, &path)?;
+            if path.exists() {
+                let mut conn = Connection::open(path)?;
+                conn.busy_timeout(std::time::Duration::from_secs(10))?;
+                let tx = conn.transaction()?;
+                for key in legacy_ids(&tx, id)? {
+                    tx.execute("DELETE FROM messages WHERE session_id=?", [&key])?;
+                    tx.execute("DELETE FROM sessions WHERE id=?", [&key])?;
+                }
+                tx.commit()?;
             }
-            tx.commit()?;
         }
+        let mut conn = db::open(home)?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM sections WHERE id=?", [id])?;
+        tx.execute(
+            "UPDATE bots SET last_activity_at=? WHERE name=?",
+            params![now(), row["bot"].as_str()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        runtime_store::unmark_deleted(home, id)?;
     }
-    let mut conn = db::open(home)?;
-    let tx = conn.transaction()?;
-    tx.execute("DELETE FROM sections WHERE id=?", [id])?;
-    tx.execute(
-        "UPDATE bots SET last_activity_at=? WHERE name=?",
-        params![now(), row["bot"].as_str()],
-    )?;
-    tx.commit()?;
-    Ok(())
+    result
 }
+
 pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result<Value>> {
     if matches!(
         method,

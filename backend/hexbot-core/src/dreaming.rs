@@ -924,6 +924,16 @@ impl Dreaming {
     }
     async fn script(&self, bot: &str, script: &str, workdir: Option<&str>) -> Result<String> {
         let supplied = PathBuf::from(script);
+        if !supplied.is_absolute()
+            && supplied
+                .components()
+                .any(|part| part == std::path::Component::ParentDir)
+        {
+            return Err(Error::new(
+                4302,
+                "Scheduled scripts must stay in the bot scripts folder or workspace.",
+            ));
+        }
         let path = if supplied.is_absolute() {
             supplied
         } else {
@@ -934,26 +944,38 @@ impl Dreaming {
                 .join(supplied)
         };
         let path = fs::canonicalize(path)?;
-        let mut command = match path.extension().and_then(|s| s.to_str()) {
-            Some("sh" | "bash") => {
-                let mut c = tokio::process::Command::new("bash");
-                c.arg(&path);
-                c
-            }
-            Some("py") => {
-                let mut c = tokio::process::Command::new(common::managed_python(&self.home));
-                c.arg(&path);
-                c
-            }
-            _ => tokio::process::Command::new(&path),
-        };
-        command.kill_on_drop(true);
-        if let Some(cwd) = workdir {
-            command.current_dir(cwd);
-        } else {
-            command.current_dir(self.home.join("profiles").join(bot));
+        let workspace = crate::native_tools::workdir(&self.home, bot)?;
+        let scripts = self.home.join("profiles").join(bot).join("scripts");
+        if !path.starts_with(&workspace)
+            && !fs::canonicalize(&scripts).is_ok_and(|root| path.starts_with(root))
+        {
+            return Err(Error::new(
+                4302,
+                "Scheduled scripts must stay in the bot scripts folder or workspace.",
+            ));
         }
-        command.envs(crate::connectors::credentials(&self.home, bot)?);
+        let cwd = workdir
+            .map(PathBuf::from)
+            .unwrap_or_else(|| workspace.clone());
+        let program = match path.extension().and_then(|s| s.to_str()) {
+            Some("sh" | "bash") => "bash".to_owned(),
+            Some("py") => common::managed_python(&self.home)
+                .to_string_lossy()
+                .into_owned(),
+            _ => path.to_string_lossy().into_owned(),
+        };
+        let artifacts = self.home.join("profiles").join(bot).join("artifacts");
+        fs::create_dir_all(&artifacts)?;
+        let mut command =
+            crate::credentials::isolated_command(&self.home, &program, &[workspace, artifacts])?;
+        if matches!(
+            path.extension().and_then(|s| s.to_str()),
+            Some("sh" | "bash" | "py")
+        ) {
+            command.arg(&path);
+        }
+        command.kill_on_drop(true).current_dir(cwd);
+        crate::credentials::shell_environment(&mut command);
         command
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -1477,6 +1499,13 @@ mod interpreter_tests {
             "not valid Python",
         )
         .unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute(
+                "UPDATE bots SET workdir=?",
+                [home.path().join("workspace").to_str().unwrap()],
+            )
+            .unwrap();
         let events = EventHub::new();
         let runtime = Runtime::new(home.path().into(), events.clone(), "unused".into()).unwrap();
         let scheduler = Dreaming::new(home.path().into(), runtime, events);
@@ -1484,5 +1513,74 @@ mod interpreter_tests {
             scheduler.script("owl", "job.py", None).await.unwrap(),
             "managed-interpreter"
         );
+    }
+    #[tokio::test]
+    async fn scheduled_scripts_reject_paths_outside_scripts_and_workspace() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO bots(name,owner_id,workdir) VALUES('owl','local',?)",
+                [home.path().join("workspace").to_str().unwrap()],
+            )
+            .unwrap();
+        fs::create_dir_all(home.path().join("profiles/owl/scripts")).unwrap();
+        let script = home.path().join("outside.sh");
+        fs::write(&script, "echo bad").unwrap();
+        let events = EventHub::new();
+        let runtime = Runtime::new(home.path().into(), events.clone(), "unused".into()).unwrap();
+        let scheduler = Dreaming::new(home.path().into(), runtime, events);
+        assert_eq!(
+            scheduler
+                .script("owl", script.to_str().unwrap(), None)
+                .await
+                .unwrap_err()
+                .code,
+            4302
+        );
+        assert_eq!(
+            scheduler
+                .script("owl", "../../../outside.sh", None)
+                .await
+                .unwrap_err()
+                .code,
+            4302
+        );
+    }
+    #[tokio::test]
+    async fn scheduled_scripts_do_not_receive_provider_credentials() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO bots(name,owner_id,workdir) VALUES('owl','local',?)",
+                [home.path().join("workspace").to_str().unwrap()],
+            )
+            .unwrap();
+        fs::create_dir_all(home.path().join("profiles/owl/scripts")).unwrap();
+        fs::write(
+            home.path().join(".env"),
+            "AWS_SECRET_ACCESS_KEY=private-test-key\n",
+        )
+        .unwrap();
+        let code = if cfg!(target_os = "macos") {
+            "env\nif echo bad > config.yaml; then exit 12; fi\n"
+        } else {
+            "env"
+        };
+        fs::write(home.path().join("profiles/owl/scripts/env.sh"), code).unwrap();
+        let bin = home.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let events = EventHub::new();
+        let runtime = Runtime::new(home.path().into(), events.clone(), "unused".into()).unwrap();
+        let scheduler = Dreaming::new(home.path().into(), runtime, events);
+        let output = scheduler
+            .script("owl", "env.sh", bin.to_str())
+            .await
+            .unwrap();
+        assert!(!output.contains("AWS_SECRET_ACCESS_KEY"));
+        assert!(!output.contains("private-test-key"));
     }
 }

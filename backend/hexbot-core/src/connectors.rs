@@ -1398,25 +1398,50 @@ pub async fn mcp_tools(home: &Path, bot: &str) -> Result<Vec<Value>> {
     Ok(mcp_tools_with_failures(home, bot).await?.0)
 }
 pub async fn mcp_tools_with_failures(home: &Path, bot: &str) -> Result<(Vec<Value>, bool)> {
+    use futures_util::{StreamExt, stream::FuturesUnordered};
+    static FAILURES: OnceLock<Mutex<HashMap<String, std::time::Instant>>> = OnceLock::new();
+    let failures = FAILURES.get_or_init(Default::default);
+    let servers = mcp_servers(home, bot)?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(25);
+    let mut pending = FuturesUnordered::new();
+    for (server, config) in servers.as_object().unwrap() {
+        pending.push(async move {
+            let key = format!("{}\0{bot}\0{server}\0{config}", home.display());
+            {
+                let mut cache = failures.lock().await;
+                cache.retain(|_, at| at.elapsed() < std::time::Duration::from_secs(30));
+                if cache.contains_key(&key) {
+                    return None;
+                }
+            }
+            let result = tokio::time::timeout_at(deadline, async {
+                let session = configured_session(home, bot, server, config).await?;
+                discover_tools(home, bot, server, session).await
+            })
+            .await;
+            match result {
+                Ok(Ok(found)) => Some(found),
+                error => {
+                    failures.lock().await.insert(key, std::time::Instant::now());
+                    close_config(home, bot, server).await;
+                    eprintln!("MCP discovery failed for {server}: {error:?}");
+                    None
+                }
+            }
+        });
+    }
     let mut failed = false;
     let mut tools = vec![];
-    for (server, _) in mcp_servers(home, bot)?.as_object().unwrap() {
-        let result = tokio::time::timeout(std::time::Duration::from_secs(25), async {
-            let session = session(home, bot, server).await?;
-            discover_tools(home, bot, server, session).await
-        })
-        .await;
+    while let Some(result) = pending.next().await {
         match result {
-            Ok(Ok(found)) => tools.extend(found),
-            error => {
-                failed = true;
-                close_config(home, bot, server).await;
-                eprintln!("MCP discovery failed for {server}: {error:?}");
-            }
+            Some(found) => tools.extend(found),
+            None => failed = true,
         }
     }
+    tools.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     Ok((tools, failed))
 }
+
 pub async fn mcp_tools_config(
     home: &Path,
     bot: &str,
