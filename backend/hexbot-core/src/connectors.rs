@@ -629,11 +629,7 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
                 .map_err(|_| Error::new(4202, "credential contains an invalid header character"))?,
         );
     }
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(6))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| Error::new(5200, e.to_string()))?;
+    let client = crate::http::client(6, 0).map_err(|e| Error::new(5200, e.to_string()))?;
     let result = match client.get(url).headers(headers).send().await {
         Ok(response) => {
             let status = response.status().as_u16();

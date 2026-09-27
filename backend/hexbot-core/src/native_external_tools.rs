@@ -17,11 +17,7 @@ fn config(home: &Path, bot: &str, section: &str) -> Result<Value> {
     Ok(value)
 }
 fn client(seconds: u64) -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(seconds))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| Error::new(5200, e.to_string()))
+    crate::http::client(seconds, 0).map_err(|e| Error::new(5200, e.to_string()))
 }
 async fn response(request: reqwest::RequestBuilder) -> Result<Value> {
     let response = request
@@ -30,26 +26,21 @@ async fn response(request: reqwest::RequestBuilder) -> Result<Value> {
         .map_err(|_| Error::new(5200, "Tool provider request failed"))?;
     decode_response(response).await
 }
-async fn decode_response(mut response: reqwest::Response) -> Result<Value> {
+async fn decode_response(response: reqwest::Response) -> Result<Value> {
     if !response.status().is_success() {
         return Err(Error::new(
             5200,
             format!("Tool provider returned HTTP {}", response.status().as_u16()),
         ));
     }
-    let mut body = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| Error::new(5200, "Tool provider response interrupted"))?
-    {
-        if body.len() + chunk.len() > 16 * 1024 * 1024 {
-            return Err(Error::new(5200, "Tool provider response exceeds 16 MiB"));
-        }
-        body.extend_from_slice(&chunk);
-    }
-    serde_json::from_slice(&body)
-        .map_err(|_| Error::new(5200, "Tool provider returned invalid JSON"))
+    crate::http::json(
+        response,
+        16 * 1024 * 1024,
+        |_| Error::new(5200, "Tool provider response interrupted"),
+        Error::new(5200, "Tool provider response exceeds 16 MiB"),
+        Error::new(5200, "Tool provider returned invalid JSON"),
+    )
+    .await
 }
 fn credential(env: &BTreeMap<String, String>, name: &str) -> Result<String> {
     env.get(name)

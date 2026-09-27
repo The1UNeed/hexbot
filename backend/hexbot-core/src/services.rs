@@ -140,11 +140,7 @@ async fn service(home: &Path) -> Result<Arc<Service>> {
         .clone())
 }
 fn client() -> Result<Client> {
-    Client::builder()
-        .timeout(Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| Error::new(5241, "could not create HTTP client"))
+    crate::http::client(15, 0).map_err(|_| Error::new(5241, "could not create HTTP client"))
 }
 fn service_url(value: &str) -> Result<Url> {
     let url = Url::parse(value).map_err(|_| Error::new(5241, "invalid service URL"))?;
@@ -191,7 +187,7 @@ async fn object(
     if let Some(body) = body {
         request = request.json(&body);
     }
-    let mut response = request
+    let response = request
         .send()
         .await
         .map_err(|_| Error::new(5241, "Hex Connect service unreachable"))?;
@@ -204,19 +200,14 @@ async fn object(
             ),
         ));
     }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| Error::new(5241, "Hex Connect response failed"))?
-    {
-        if bytes.len() + chunk.len() > 1024 * 1024 {
-            return Err(Error::new(5241, "Hex Connect response exceeds byte limit"));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    let value: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| Error::new(5241, "Hex Connect returned invalid JSON"))?;
+    let value = crate::http::json(
+        response,
+        1024 * 1024,
+        |_| Error::new(5241, "Hex Connect response failed"),
+        Error::new(5241, "Hex Connect response exceeds byte limit"),
+        Error::new(5241, "Hex Connect returned invalid JSON"),
+    )
+    .await?;
     if !value.is_object() {
         return Err(Error::new(
             5241,
@@ -278,11 +269,8 @@ pub fn apply_public_url(home: &Path, hostname: Option<&str>) -> Result<()> {
 
 async fn download(url: &str, path: &Path, max_bytes: u64, github: bool) -> Result<()> {
     let mut current = service_url(url)?;
-    let http = Client::builder()
-        .timeout(Duration::from_secs(180))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| Error::new(5242, "download client unavailable"))?;
+    let http =
+        crate::http::client(180, 0).map_err(|_| Error::new(5242, "download client unavailable"))?;
     for _ in 0..6 {
         let mut response = http
             .get(current.clone())

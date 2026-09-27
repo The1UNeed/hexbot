@@ -552,27 +552,30 @@ fn model_row(cache: &Value, cfg: &Value, provider: &str, id: &str) -> Value {
     row
 }
 fn client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| Error::new(5200, "HTTP client unavailable"))
+    crate::http::client(20, 0).map_err(|_| Error::new(5200, "HTTP client unavailable"))
 }
 fn http_error(e: reqwest::Error) -> Error {
-    Error::new(
+    crate::http::error(
+        e,
         4211,
-        format!(
-            "provider request failed: {}",
-            if e.is_timeout() {
-                "timeout"
-            } else if e.is_connect() {
-                "connection failed"
-            } else {
-                "invalid response"
-            }
-        ),
+        [
+            "provider request failed: timeout",
+            "provider request failed: connection failed",
+            "provider request failed: invalid response",
+        ],
     )
 }
+async fn limited_json(response: reqwest::Response) -> Result<Value> {
+    crate::http::json(
+        response,
+        16 * 1024 * 1024,
+        http_error,
+        Error::new(4211, "provider response exceeds 16 MiB"),
+        Error::new(4211, "provider request failed: invalid response"),
+    )
+    .await
+}
+
 async fn live_models(home: &Path, p: &Value) -> Result<Vec<String>> {
     let cfg = common::read_config(home)?;
     let slug = string(p, "name");
@@ -610,7 +613,7 @@ async fn live_models(home: &Path, p: &Value) -> Result<Vec<String>> {
             ),
         ));
     }
-    let data: Value = response.json().await.map_err(http_error)?;
+    let data: Value = limited_json(response).await?;
     let mut models = data["data"]
         .as_array()
         .or_else(|| data["models"].as_array())
@@ -1121,7 +1124,7 @@ async fn response_json(response: reqwest::Response) -> Result<Value> {
             format!("provider sign-in request failed (HTTP {})", status.as_u16()),
         ));
     }
-    response.json().await.map_err(http_error)
+    limited_json(response).await
 }
 async fn login_start(home: &Path, caller: &str, provider: &str) -> Result<Value> {
     let slug = canonical_provider(provider);
@@ -1335,7 +1338,7 @@ async fn poll_token(login: &Login) -> Result<Option<Value>> {
     if login.provider == "openai-codex" && matches!(status.as_u16(), 403 | 404) {
         return Ok(None);
     }
-    let data: Value = response.json().await.map_err(http_error)?;
+    let data: Value = limited_json(response).await?;
     if !status.is_success() {
         return match string(&data, "error") {
             "authorization_pending" => Ok(None),

@@ -58,42 +58,34 @@ fn endpoint(env: &std::collections::BTreeMap<String, String>, name: &str, defaul
     }
 }
 fn http() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(90))
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .build()
-        .map_err(|_| failure("HTTP client unavailable"))
+    crate::http::client(90, 5).map_err(|_| failure("HTTP client unavailable"))
 }
 fn http_error(e: reqwest::Error) -> Error {
-    failure(if e.is_timeout() {
-        "tool request timed out"
-    } else if e.is_connect() {
-        "tool service connection failed"
-    } else {
-        "tool service request failed"
-    })
+    crate::http::error(
+        e,
+        4211,
+        [
+            "tool request timed out",
+            "tool service connection failed",
+            "tool service request failed",
+        ],
+    )
 }
-async fn bytes(mut response: reqwest::Response) -> Result<Vec<u8>> {
+
+async fn bytes(response: reqwest::Response) -> Result<Vec<u8>> {
     if !response.status().is_success() {
         return Err(failure(format!(
             "tool service returned HTTP {}",
             response.status().as_u16()
         )));
     }
-    if response
-        .content_length()
-        .is_some_and(|n| n > BODY_LIMIT as u64)
-    {
-        return Err(failure("tool response exceeds 24 MB"));
-    }
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(http_error)? {
-        if body.len() + chunk.len() > BODY_LIMIT {
-            return Err(failure("tool response exceeds 24 MB"));
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(body)
+    crate::http::bytes(
+        response,
+        BODY_LIMIT,
+        http_error,
+        failure("tool response exceeds 24 MB"),
+    )
+    .await
 }
 async fn request(request: reqwest::RequestBuilder) -> Result<Value> {
     let body = bytes(request.send().await.map_err(http_error)?).await?;

@@ -1032,19 +1032,22 @@ impl Dreaming {
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
         let monitor = if let Some(url) = job["monitor_url"].as_str().filter(|s| !s.is_empty()) {
-            Some(
-                reqwest::Client::new()
-                    .get(url)
-                    .timeout(Duration::from_secs(30))
-                    .send()
-                    .await
-                    .map_err(|e| Error::new(5240, e.to_string()))?
-                    .error_for_status()
-                    .map_err(|e| Error::new(5240, e.to_string()))?
-                    .text()
-                    .await
-                    .map_err(|e| Error::new(5240, e.to_string()))?,
+            let response = crate::http::client(30, 10)
+                .map_err(|e| Error::new(5240, e.to_string()))?
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| Error::new(5240, e.to_string()))?
+                .error_for_status()
+                .map_err(|e| Error::new(5240, e.to_string()))?;
+            let body = crate::http::bytes(
+                response,
+                24 * 1024 * 1024,
+                |e| Error::new(5240, e.to_string()),
+                Error::new(5240, "monitor response exceeds 24 MiB"),
             )
+            .await?;
+            Some(String::from_utf8_lossy(&body).into_owned())
         } else if let Some(script) = job["monitor_script"].as_str().filter(|s| !s.is_empty()) {
             Some(self.script(bot, script, cwd.as_deref()).await?)
         } else {

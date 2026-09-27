@@ -8,6 +8,7 @@ pub mod connectors;
 pub mod db;
 pub mod dreaming;
 pub mod events;
+pub mod http;
 pub mod memory;
 pub mod native_external_tools;
 pub mod native_product_tools;
