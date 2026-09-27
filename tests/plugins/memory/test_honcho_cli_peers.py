@@ -1,4 +1,4 @@
-"""Regression tests for #76414: `hermes honcho peers` showed "(not set)"
+"""Regression tests for #76414: `hexbot core honcho peers` showed "(not set)"
 for every non-default profile.
 
 _all_profile_host_configs() built the per-profile host key inline as

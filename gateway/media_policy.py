@@ -9,7 +9,7 @@ from environment variables:
 
 Historically the config.yaml -> env translation ran ONLY in gateway startup
 (gateway/run.py), so any process that delivers media without booting the
-gateway — a manual ``hermes cron run`` in the CLI, ``hermes send``, a
+gateway — a manual ``hexbot core cron run`` in the CLI, ``hexbot core send``, a
 standalone cron tick — filtered MEDIA paths under DIFFERENT policy than the
 gateway's scheduled deliveries. In strict/allowlisted enterprise deployments
 that divergence silently dropped attachments from manual cron runs while

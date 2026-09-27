@@ -1,6 +1,6 @@
 """Windows subprocess compatibility helpers.
 
-Hermes is developed on Linux / macOS and tested natively on Windows too.
+Hexbot is developed on Linux / macOS and tested natively on Windows too.
 Several common subprocess patterns break silently-or-loudly on Windows:
 
 * ``["npm", "install", ...]`` — on Windows ``npm`` is ``npm.cmd``, a batch
@@ -288,7 +288,7 @@ def suppress_platform_ver_console() -> None:
     CPython 3.11 (``platform()`` → ``Windows-10-10.0.xxxxx-SP0`` either way).
 
     Call early, before heavyweight imports — the flash typically happens
-    during a dependency's import, not from Hermes' own code.
+    during a dependency's import, not from Hexbot's own code.
     """
     if not IS_WINDOWS:
         return
@@ -349,7 +349,7 @@ def noninteractive_git_env(
 ) -> dict[str, str]:
     """Environment for *internal* git invocations that must never prompt.
 
-    Hermes shells out to git from many non-interactive contexts — MCP catalog
+    Hexbot shells out to git from many non-interactive contexts — MCP catalog
     installs, plugin install/update, profile distribution staging, worktree
     base fetches, desktop review-pane fetch/push. When the remote is private,
     misconfigured, or requires auth, git's default behavior is to prompt on
@@ -401,13 +401,13 @@ def _process_start_time(pid: int) -> int | None:
 
 
 def _text_names_hermes(text: str) -> bool:
-    """True when *text* names Hermes at a path-segment / token boundary.
+    """True when *text* names Hexbot at a path-segment / token boundary.
 
     A bare ``"hermes" in text`` substring test would also match unrelated
     processes whose paths merely contain the letters (``...\\shermesa\\...``),
     which is exactly the false-positive class this guard exists to prevent.
     Instead, split on path separators and whitespace and require a segment
-    that *starts with* ``hermes`` (``hermes``, ``hermes.exe``, ``hermes_cli``,
+    that *starts with* ``hexbot core`` (``hexbot core``, ``hermes.exe``, ``hermes_cli``,
     ``hermes-agent``, ``hermes-runtime``) or the hidden-dir form
     ``.hermes``/``.hermes-runtime``.
     """
@@ -418,7 +418,7 @@ def _text_names_hermes(text: str) -> bool:
 
 
 def _process_command_is_hermes(pid: int) -> bool:
-    """Best-effort check that *pid* currently runs Hermes code."""
+    """Best-effort check that *pid* currently runs Hexbot code."""
     try:
         import psutil
 
@@ -437,7 +437,7 @@ def pid_is_hermes(
 ) -> bool:
     """Return whether it is safe to use ``taskkill`` for *pid*.
 
-    The PID must be valid, currently exist, and identify a Hermes process. When
+    The PID must be valid, currently exist, and identify a Hexbot process. When
     the caller captured a start-time fingerprint before the destructive action,
     the live process must still have the same ``(pid, start_time)`` identity.
     Any ambiguity fails closed. Non-Windows callers have no ``taskkill`` path,
@@ -581,7 +581,7 @@ def bounded_probe_run(
     ``conhost.exe`` under wmic/powershell) holding duplicates of the captured
     stdout/stderr handles, so the pipes never reach EOF and the reader-thread
     join blocks forever. The wmic / ``Get-CimInstance Win32_Process`` gateway
-    scan hit exactly this during ``hermes update`` on slow-WMI machines
+    scan hit exactly this during ``hexbot core update`` on slow-WMI machines
     (#87134); the git probes hit it first (#68609 / #66037).
 
     The bounded flow: an explicit ``communicate(timeout)``, then on any

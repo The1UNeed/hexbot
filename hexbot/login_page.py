@@ -1,7 +1,7 @@
 """The daemon's sign-in page, shown to a browser that reaches a gated daemon without a session.
 
-Replaces the Hermes page through ``set_login_renderer`` (CORE_EDITS.md). Same routes, forms, and field
-names as the Hermes page, so the auth flow is unchanged; only the look and the words are Hexbot's.
+Replaces the core's page through ``set_login_renderer``. Same routes, forms, and field
+names as the core page, so the auth flow is unchanged; only the look and the words are Hexbot's.
 Self-contained: no bundle, fonts, or network requests, because it renders before the app loads.
 """
 
@@ -73,7 +73,7 @@ PAGE = """<!doctype html>
 </html>
 """
 
-# Posts a pairing form to /auth/password-login, as the Hermes page does, with pairing words for the errors.
+# Posts a pairing form to /auth/password-login, as the core page does, with pairing words for the errors.
 SCRIPT = """<script>
 document.querySelectorAll('form.provider-form').forEach(function (form) {
   form.addEventListener('submit', function (event) {

@@ -287,7 +287,7 @@ def local_models_status():
 
     # A pending engine update exists when the user runs the local engine
     # (enabled + something installed) and the configured tag — pinned or
-    # the Hermes-release default — is newer than anything on disk. The
+    # the Hexbot-release default — is newer than anything on disk. The
     # download is a button click, never automatic.
     update_available = bool(
         section.get("enabled") and have and configured_tag not in have)

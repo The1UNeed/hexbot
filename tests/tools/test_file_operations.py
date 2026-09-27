@@ -75,7 +75,7 @@ class TestIsWriteDenied:
     def test_pairing_dir_denied(self, tmp_path, monkeypatch):
         """Regression: pairing/ must be write-denied under both profile and root.
 
-        PR #30383 introduced ~/.hermes/pairing/{platform}-approved.json as the
+        PR #30383 introduced ~/.hexbot/pairing/{platform}-approved.json as the
         gateway access-control list. Without this block, a prompt-injected agent
         can write arbitrary user IDs into an approved file, granting persistent
         gateway access without going through the pairing code flow — the same
@@ -810,7 +810,7 @@ class TestEscapeNativeToolArg:
     """Regression tests for _escape_native_tool_arg (Windows native-binary paths).
 
     Live failure (Windows, Aug 2026): search_files passed rg the MSYS form
-    (/c/Users/...) that _escape_shell_arg produces, but Hermes sets
+    (/c/Users/...) that _escape_shell_arg produces, but Hexbot sets
     MSYS_NO_PATHCONV=1 / MSYS2_ARG_CONV_EXCL=* for its bash subprocesses,
     so nothing converted the path back for the native (winget) ripgrep
     binary — every search on a drive-letter path failed with

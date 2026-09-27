@@ -146,7 +146,7 @@ def test_turn_wait_seconds_reads_config(monkeypatch):
 
 
 def test_run_delivery_holds_profile_lock_during_turn(root, tmp_path, monkeypatch):
-    """The local `hermes -p <profile>` turn runs UNDER the profile lock."""
+    """The local `hexbot core -p <profile>` turn runs UNDER the profile lock."""
     home = root / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))

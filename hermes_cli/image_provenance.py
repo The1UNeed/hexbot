@@ -1,4 +1,4 @@
-"""Image-authored deployment provenance for immutable Hermes runtimes.
+"""Image-authored deployment provenance for immutable Hexbot runtimes.
 
 The published image bakes ``/etc/hermes/image-provenance.json`` outside both
 ``$HERMES_HOME`` and the mutable checkout.  A bind-mounted checkout (including

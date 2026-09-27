@@ -88,7 +88,7 @@ def _declared_model_ids(value: Any) -> list[str]:
 
     if isinstance(value, dict):
         for model_id in value:
-            # Backward compat: pre-fix Hermes wrote sentinel keys inside the
+            # Backward compat: pre-fix Hexbot wrote sentinel keys inside the
             # user-facing ``models`` mapping. Never list them as model IDs.
             if model_id in {
                 "__explicit_model_allowlist__",
@@ -114,10 +114,10 @@ def _declared_model_ids(value: Any) -> list[str]:
 
 
 def _entry_models_discovered(entry: Any) -> bool:
-    """True when the entry's ``models`` mapping was auto-discovered by Hermes.
+    """True when the entry's ``models`` mapping was auto-discovered by Hexbot.
 
     The current shape is an entry-level ``models_discovered: true`` sibling of
-    ``models``. Older Hermes versions wrote an in-mapping
+    ``models``. Older Hexbot versions wrote an in-mapping
     ``__discovered_model_catalog__: true`` sentinel instead — accept that on
     read for backward compatibility (the next discovery save migrates the
     entry to the clean shape).
@@ -137,17 +137,17 @@ def _models_config_is_allowlist(value: Any, discovered: bool = False) -> bool:
     """Return True when ``models:`` is an intentional ID allowlist.
 
     A mapping like ``{model_id: {context_length: N}}`` is per-model *metadata*
-    written by ``_save_custom_provider`` / the ``hermes model`` wizard — not a
+    written by ``_save_custom_provider`` / the ``hexbot core model`` wizard — not a
     catalog narrow. Treating that shape as an allowlist made Desktop/Telegram
     pickers show only the saved default for local Ollama (no ``api_key``),
-    while ``hermes model`` still live-probed the full ``/v1/models`` list.
+    while ``hexbot core model`` still live-probed the full ``/v1/models`` list.
     Refresh could not help because the same gate skipped probing.
 
     List/string shapes remain allowlists for no-key endpoints. To pin a
     dict-shaped catalog, set ``discover_models: false``.
 
     ``discovered`` is the entry-level ``models_discovered`` flag (see
-    ``_entry_models_discovered``): a catalog Hermes itself persisted after a
+    ``_entry_models_discovered``): a catalog Hexbot itself persisted after a
     successful probe is never a user pin, whatever its shape.
     """
     if discovered:
@@ -219,7 +219,7 @@ def _save_discovered_models_to_config(
             # (e.g. ``{"model-a": {"context_length": 8192}}``) or a list of
             # dicts (e.g. ``[{"id": "model-a", "context_length": 8192}]``),
             # the user has curated metadata per model — do not replace it.
-            # A mapping Hermes itself discovered (``models_discovered: true``
+            # A mapping Hexbot itself discovered (``models_discovered: true``
             # or the legacy in-mapping sentinel) is ours to refresh.
             if isinstance(existing, dict) and not entry_discovered:
                 continue
@@ -357,7 +357,7 @@ def _fetch_picker_live_models(
 
 _HERMES_MODEL_WARNING = (
     "Nous Research Hermes 3 & 4 models are NOT agentic and are not designed "
-    "for use with Hermes Agent. They lack the tool-calling capabilities "
+    "for use with Hexbot. They lack the tool-calling capabilities "
     "required for agent workflows. Consider using an agentic model instead "
     "(Claude, GPT, Gemini, DeepSeek, etc.)."
 )
@@ -562,7 +562,7 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
     neither is set the key is resolved from the alias HOST, never from the
     previously active provider (#83612).
 
-    Also reads ``model.aliases`` (set by ``hermes config set model.aliases.xxx``
+    Also reads ``model.aliases`` (set by ``hexbot core config set model.aliases.xxx``
     or hand-written). String entries (``ds-flash: deepseek/deepseek-v4-flash``)
     are converted into DirectAlias objects with the provider parsed from the
     ``provider/`` prefix in the value; if no slash, the current provider is
@@ -1790,7 +1790,7 @@ def switch_model(
         if pdef is None:
             _switch_err = (
                 f"Unknown provider '{explicit_provider}'. "
-                f"Check 'hermes model' for available providers, or define it "
+                f"Check 'hexbot core model' for available providers, or define it "
                 f"in config.yaml under 'providers:'."
             )
             # Check for common config issues that cause provider resolution failures
@@ -1798,7 +1798,7 @@ def switch_model(
                 from hermes_cli.config import validate_config_structure
                 _cfg_issues = validate_config_structure()
                 if _cfg_issues:
-                    _switch_err += "\n\nRun 'hermes doctor' — config issues detected:"
+                    _switch_err += "\n\nRun 'hexbot core doctor' — config issues detected:"
                     for _ci in _cfg_issues[:3]:
                         _switch_err += f"\n  • {_ci.message}"
             except Exception:
@@ -2711,7 +2711,7 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
     so concurrent writes to ``provider_models_cache.json`` don't clobber each
     other.
 
-    :param provider_slugs: Hermes provider IDs to prefetch (e.g. ``["openrouter",
+    :param provider_slugs: Hexbot provider IDs to prefetch (e.g. ``["openrouter",
         "anthropic", "deepseek"]``).  Unknown providers are silently skipped.
     """
     from hermes_cli.models import cached_provider_model_ids
@@ -2801,7 +2801,7 @@ def _collect_authed_provider_slugs(
     slugs: list[str] = []
     seen: set[str] = set()
 
-    # --- Section 1: Hermes-mapped providers (PROVIDER_TO_MODELS_DEV) ---
+    # --- Section 1: Hexbot-mapped providers (PROVIDER_TO_MODELS_DEV) ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
         _alias_target = _PROVIDER_ALIAS_TABLE.get(hermes_id)
         if (
@@ -2856,7 +2856,7 @@ def _collect_authed_provider_slugs(
             slugs.append(hermes_id)
             seen.add(hermes_id.lower())
 
-    # --- Section 2: Hermes-only providers (HERMES_OVERLAYS) ---
+    # --- Section 2: Hexbot-only providers (HERMES_OVERLAYS) ---
     _mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
     for pid, overlay in HERMES_OVERLAYS.items():
         if pid.lower() in seen:
@@ -3115,7 +3115,7 @@ def list_authenticated_providers(
     # "nous" pulls from the remote model-catalog manifest published at
     # https://hermes-agent.nousresearch.com/docs/api/model-catalog.json so
     # newly added Portal models surface in the /model picker without
-    # requiring a Hermes release. Falls back to the in-repo
+    # requiring a Hexbot release. Falls back to the in-repo
     # _PROVIDER_MODELS["nous"] snapshot when the manifest is unreachable.
     curated["nous"] = get_curated_nous_model_ids()
     # Ollama Cloud uses dynamic discovery (no static curated list)
@@ -3174,7 +3174,7 @@ def list_authenticated_providers(
         except Exception:
             pass  # best-effort; serial path still works as fallback
 
-    # --- 1. Check Hermes-mapped providers ---
+    # --- 1. Check Hexbot-mapped providers ---
     from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS
     from hermes_cli.providers import ALIASES as _PROVIDER_ALIAS_TABLE
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
@@ -3232,7 +3232,7 @@ def list_authenticated_providers(
         # section 2 (HERMES_OVERLAYS) with proper auth store checking.
         if pconfig and pconfig.auth_type != "api_key":
             continue
-        # models.dev catalogs include providers Hermes may not route yet.
+        # models.dev catalogs include providers Hexbot may not route yet.
         # Gate on runtime capability rather than registry membership: special
         # providers and plugin aliases can be routable without a registry row.
         from hermes_cli.auth import is_runtime_provider_routable
@@ -3264,7 +3264,7 @@ def list_authenticated_providers(
             continue
 
         # Unified pathway: route through cached_provider_model_ids() so the
-        # /model picker sees the SAME list `hermes model` would build, with
+        # /model picker sees the SAME list `hexbot core model` would build, with
         # disk caching to keep the picker open snappy. Falls back to the
         # curated static list when the live fetcher returns nothing.
         model_ids = cached_provider_model_ids(hermes_id)
@@ -3306,20 +3306,20 @@ def list_authenticated_providers(
         seen_slugs.add(slug.lower())
         _record_builtin_endpoint(slug)
 
-    # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
+    # --- 2. Check Hexbot-only providers (nous, openai-codex, copilot, opencode-go) ---
     from hermes_cli.providers import HERMES_OVERLAYS
     from hermes_cli.auth import PROVIDER_REGISTRY as _auth_registry
 
-    # Build reverse mapping: models.dev ID → Hermes provider ID.
+    # Build reverse mapping: models.dev ID → Hexbot provider ID.
     # HERMES_OVERLAYS keys may be models.dev IDs (e.g. "github-copilot")
-    # while _PROVIDER_MODELS and config.yaml use Hermes IDs ("copilot").
+    # while _PROVIDER_MODELS and config.yaml use Hexbot IDs ("copilot").
     _mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
 
     for pid, overlay in HERMES_OVERLAYS.items():
         if pid.lower() in seen_slugs:
             continue
 
-        # Resolve Hermes slug — e.g. "github-copilot" → "copilot"
+        # Resolve Hexbot slug — e.g. "github-copilot" → "copilot"
         hermes_slug = _mdev_to_hermes.get(pid, pid)
         if hermes_slug.lower() in seen_slugs:
             continue
@@ -3434,7 +3434,7 @@ def list_authenticated_providers(
         elif hermes_slug == "nous":
             # Nous serves a large live /v1/models catalog (vendor-prefixed
             # models from many providers, returned alphabetically). The
-            # `hermes model` picker deliberately shows ONLY the curated agentic
+            # `hexbot core model` picker deliberately shows ONLY the curated agentic
             # list — augmented with the Portal's free/paid recommendations so
             # newly-launched models surface without a CLI release — in curated
             # order. Mirror that exactly (see _model_flow_nous in main.py) so
@@ -3512,7 +3512,7 @@ def list_authenticated_providers(
     # --- 2b. Cross-check canonical provider list ---
     # Catches providers that are in CANONICAL_PROVIDERS but weren't found
     # in PROVIDER_TO_MODELS_DEV or HERMES_OVERLAYS (keeps /model in sync
-    # with `hermes model`).
+    # with `hexbot core model`).
     try:
         from hermes_cli.models import CANONICAL_PROVIDERS as _canon_provs
     except ImportError:
@@ -3654,7 +3654,7 @@ def list_authenticated_providers(
             # custom_providers entries use, so accept either.
             default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
             # Build models list from both default_model and full models array.
-            # Hermes writes ``models:`` as a dict keyed by model id, but older
+            # Hexbot writes ``models:`` as a dict keyed by model id, but older
             # or hand-edited configs may use strings or ``[{id: ...}]`` rows —
             # _declared_model_ids() owns that contract.
             entry_models: list = []
@@ -3668,7 +3668,7 @@ def list_authenticated_providers(
             if group_key not in ep_groups:
                 # Strip per-model suffix so "Palantir Claude 4.7 Opus" becomes
                 # "Palantir Claude". Em dash and " - " are the separators
-                # Hermes's own writer uses (mirrors section-4 grouping).
+                # Hexbot's own writer uses (mirrors section-4 grouping).
                 grp_display = display_name
                 for sep in ("—", " - "):
                     if sep in grp_display:
@@ -3714,7 +3714,7 @@ def list_authenticated_providers(
             # list: a singular ``default_model``/``model`` is only the active
             # selection and must not suppress discovery (see #40542 / PR
             # #61928). Dict-shaped ``models:`` is context_length metadata from
-            # ``hermes model``, not an allowlist — see
+            # ``hexbot core model``, not an allowlist — see
             # ``_models_config_is_allowlist``.
             if _models_config_is_allowlist(
                 ep_cfg.get("models"), _entry_models_discovered(ep_cfg)
@@ -3751,7 +3751,7 @@ def list_authenticated_providers(
             #   narrowing (mirrors section 4 / #40542).
             # - A dict-shaped ``models:`` is per-model metadata
             #   (context_length), not an allowlist — still probe so local
-            #   Ollama/llama.cpp match ``hermes model``. Pin with
+            #   Ollama/llama.cpp match ``hexbot core model``. Pin with
             #   ``discover_models: false`` instead.
             # - Without an api_key AND no allowlist: probe anyway so bare
             #   local endpoints still show their full model catalog.
@@ -4055,7 +4055,7 @@ def list_authenticated_providers(
             )
 
             # The singular ``model:`` field only holds the currently
-            # active model. Hermes's own writer (main.py::_save_custom_provider)
+            # active model. Hexbot's own writer (main.py::_save_custom_provider)
             # stores every configured model as a dict under ``models:``;
             # downstream readers (agent/models_dev.py, gateway/run.py,
             # run_agent.py, hermes_cli/config.py) already consume that dict.
@@ -4140,7 +4140,7 @@ def list_authenticated_providers(
             # - A dict-shaped ``models:`` is per-model metadata written by
             #   ``_save_custom_provider`` for context_length — not an
             #   allowlist. Still probe so Desktop/Telegram match
-            #   ``hermes model``. Pin a dict catalog with
+            #   ``hexbot core model``. Pin a dict catalog with
             #   ``discover_models: false``.
             # - The singular ``model:`` field is only the current active
             #   selection and must not suppress discovery.

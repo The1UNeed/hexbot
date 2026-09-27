@@ -1,14 +1,14 @@
-"""langfuse — Hermes plugin for Langfuse observability.
+"""langfuse — Hexbot plugin for Langfuse observability.
 
-Traces Hermes conversations, LLM calls, and tool usage to Langfuse.
+Traces Hexbot conversations, LLM calls, and tool usage to Langfuse.
 
-Activation is handled by the Hermes plugin system — standalone plugins only
-load when listed in ``plugins.enabled`` (via ``hermes plugins enable
-observability/langfuse`` or ``hermes tools → Langfuse Observability``). At
+Activation is handled by the Hexbot plugin system — standalone plugins only
+load when listed in ``plugins.enabled`` (via ``hexbot core plugins enable
+observability/langfuse`` or ``hexbot core tools → Langfuse Observability``). At
 runtime the plugin also requires the ``langfuse`` SDK and credentials; if
 either is missing the hooks are inert.
 
-Required env vars (set via ``hermes tools`` or ~/.hermes/.env):
+Required env vars (set via ``hexbot core tools`` or ~/.hexbot/.env):
   HERMES_LANGFUSE_PUBLIC_KEY  - Langfuse project public key (pk-lf-...)
   HERMES_LANGFUSE_SECRET_KEY  - Langfuse project secret key (sk-lf-...)
   HERMES_LANGFUSE_BASE_URL    - Langfuse server URL (default: https://cloud.langfuse.com)
@@ -252,7 +252,7 @@ def _validate_langfuse_key(env_name: str, value: str) -> Optional[str]:
 def _get_langfuse() -> Optional[Langfuse]:
     """Return a cached Langfuse client, or ``None`` if unavailable.
 
-    Activation of this plugin is controlled by the Hermes plugin system —
+    Activation of this plugin is controlled by the Hexbot plugin system —
     this function only handles the runtime-availability gate (SDK installed
     + credentials present). The result is cached: on the first call we try
     to construct a client, and every subsequent call returns that client
@@ -282,7 +282,7 @@ def _get_langfuse() -> Optional[Langfuse]:
         if Langfuse is None:
             logger.warning(
                 "Langfuse plugin is enabled but the langfuse SDK is unavailable; "
-                "tracing is disabled. Run `hermes tools` and configure Langfuse "
+                "tracing is disabled. Run `hexbot core tools` and configure Langfuse "
                 "Observability to reinstall it."
             )
             _LANGFUSE_CLIENT = _INIT_FAILED
@@ -351,7 +351,7 @@ def _get_langfuse() -> Optional[Langfuse]:
         # atexit is LIFO: registering AFTER the SDK's constructor (which installs
         # its own shutdown flush) means our finalizer runs FIRST at exit — root
         # spans ended there are still picked up by the SDK's exporter. Closes the
-        # short-lived-process gap (kanban workers / hermes chat -q / cron): exit
+        # short-lived-process gap (kanban workers / hexbot core chat -q / cron): exit
         # with tool calls still queued left the root span un-ended → anonymous
         # trace with no name/session/metadata on the backend.
         try:
@@ -382,7 +382,7 @@ def _trace_key(
 ) -> str:
     """Build a stable in-process trace scope key for one agent turn.
 
-    Older Hermes paths only expose ``task_id``/``session_id``. Newer paths
+    Older Hexbot paths only expose ``task_id``/``session_id``. Newer paths
     pass ``turn_id`` and ``api_request_id`` in LLM/tool hooks; when present,
     they must scope trace state so concurrent requests sharing one task/session
     never collide. ``turn_id`` is preferred over ``api_request_id`` so the
@@ -767,7 +767,7 @@ def _canonical_usage_and_cost(
     model: str,
     base_url: str,
 ) -> tuple[dict[str, int], dict[str, float]]:
-    """Translate canonical Hermes usage into Langfuse usage and cost maps."""
+    """Translate canonical Hexbot usage into Langfuse usage and cost maps."""
     usage_details: Dict[str, int] = {
         "input": canonical.input_tokens,
         "output": canonical.output_tokens,
@@ -811,7 +811,7 @@ def _canonical_usage_and_cost(
 
     # Langfuse only derives a total for the built-in input/output cost keys.
     # Cache/custom keys therefore need an explicit canonical total.  Use the
-    # Hermes estimate rather than summing components because it also includes
+    # Hexbot estimate rather than summing components because it also includes
     # request-level pricing.  Preserve the existing component-only payload for
     # subscription-included routes; their export policy is handled separately.
     # A zero estimate is not exported either: a priced model that billed no
@@ -1027,7 +1027,7 @@ def _finalize_all_traces() -> None:
 
     Gateway turns normally end their root span via ``_finish_trace`` (final
     assistant message with no tool calls). But short-lived CLI processes —
-    kanban workers, ``hermes chat -q`` one-shots, cron jobs — can exit while
+    kanban workers, ``hexbot core chat -q`` one-shots, cron jobs — can exit while
     the last LLM call still has tool calls queued, leaving the root span
     un-ended. Ended children DO export via the SDK's own atexit flush, so the
     backend shows an anonymous trace (no name/session/metadata) whose
@@ -1148,8 +1148,8 @@ def on_pre_llm_call(*, task_id: str = "", session_id: str = "", platform: str = 
                     api_call_count: int = 0, messages: Any = None, turn_type: str = "user",
                     conversation_history: Any = None, user_message: Any = None,
                     turn_id: str = "", api_request_id: str = "", **_: Any) -> None:
-    # Older Hermes branches used pre_llm_call for request-scoped tracing and
-    # passed the actual API messages. Current Hermes also has a turn-scoped
+    # Older Hexbot branches used pre_llm_call for request-scoped tracing and
+    # passed the actual API messages. Current Hexbot also has a turn-scoped
     # pre_llm_call used for context injection; tracing that hook creates an
     # extra orphan/root trace before the real request trace. Only trace the
     # legacy request-shaped call here.
@@ -1160,8 +1160,8 @@ def on_pre_llm_call(*, task_id: str = "", session_id: str = "", platform: str = 
     if client is None:
         return
 
-    # messages is a list only for legacy Hermes branches that fired
-    # pre_llm_call with API messages directly. Current Hermes fires
+    # messages is a list only for legacy Hexbot branches that fired
+    # pre_llm_call with API messages directly. Current Hexbot fires
     # pre_llm_call for context injection (conversation_history/user_message,
     # no messages list) — tracing that would create orphan traces.
     task_key = _trace_key(
@@ -1786,7 +1786,7 @@ def on_subagent_stop(*, parent_session_id: Any = None, parent_turn_id: str = "",
 
 def register(ctx) -> None:
     # Register for both hook name variants so the plugin works across
-    # Hermes versions.  pre_api_request / post_api_request fire per API
+    # Hexbot versions.  pre_api_request / post_api_request fire per API
     # call (preferred); pre_llm_call / post_llm_call fire once per turn.
     ctx.register_hook("pre_api_request", on_pre_llm_request)
     ctx.register_hook("post_api_request", on_post_llm_call)

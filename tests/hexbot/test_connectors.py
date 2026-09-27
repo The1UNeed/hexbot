@@ -277,13 +277,13 @@ def test_incident_heuristics():
 
 
 def _offered(*names):
-    """Which of these tools Hermes would put in a session's schema right now."""
+    """Which of these tools Hexbot would put in a session's schema right now."""
     from tools.registry import registry
     return {d["function"]["name"] for d in registry.get_definitions(set(names), quiet=True)}
 
 
 def test_connector_tools_stay_hidden_until_set_up(home, gw, monkeypatch):
-    """Hermes alone would offer web search here: its keyless tier is on and an
+    """Hexbot alone would offer web search here: its keyless tier is on and an
     xAI model key counts as a web backend. Hexbot offers it only after setup."""
     import tools.image_generation_tool  # noqa: F401  (importing registers the tools)
     import tools.web_tools  # noqa: F401

@@ -522,7 +522,7 @@ def test_xai_image_field_expands_user_home(tmp_path, monkeypatch):
 
 
 class TestXAIImageFieldReadGuard:
-    """#57698: local image inputs must not read Hermes credential stores."""
+    """#57698: local image inputs must not read Hexbot credential stores."""
 
     def test_xai_image_field_blocks_credential_store(self, tmp_path, monkeypatch):
         from plugins.image_gen.xai import _xai_image_field

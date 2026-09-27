@@ -203,7 +203,7 @@ def adapter():
 
 @pytest.fixture(autouse=True)
 def _redirect_cache(tmp_path, monkeypatch):
-    """Point document cache to tmp_path so tests don't touch ~/.hermes."""
+    """Point document cache to tmp_path so tests don't touch ~/.hexbot."""
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
@@ -559,7 +559,7 @@ class TestSlackConnectCleanup:
     async def test_disconnect_closes_workspace_clients_and_clears_runtime_state(self):
         """Regression for #51465: shutdown must close Slack WebClients.
 
-        ``hermes gateway run --replace`` takes the old process through the
+        ``hexbot core gateway run --replace`` takes the old process through the
         normal adapter.disconnect() path. If Slack leaves AsyncWebClient
         instances open there, aiohttp logs ``Unclosed client session`` while
         the old gateway exits after SIGTERM.
@@ -3521,7 +3521,7 @@ class TestMessageSplitting:
 
     @pytest.mark.asyncio
     async def test_send_coerces_string_unfurl_options(self, adapter):
-        """`hermes config set` / Railway persist YAML booleans as strings.
+        """`hexbot core config set` / Railway persist YAML booleans as strings.
 
         Relay-plane parity: string "false"/"true" must coerce instead of
         being silently dropped (which would leave previews on with no error).

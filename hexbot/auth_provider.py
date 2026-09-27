@@ -1,4 +1,4 @@
-"""Hermes dashboard auth backed by Hexbot device tokens."""
+"""Hexbot dashboard auth backed by Hexbot device tokens."""
 
 from __future__ import annotations
 

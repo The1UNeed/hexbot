@@ -109,13 +109,13 @@ def _base_subprocess_env() -> dict:
 
     env = _build_browser_env()
     # The browser-use CLI runs under its own Python (uv tool / uvx), which
-    # may differ from Hermes's venv Python. PYTHONPATH/PYTHONHOME inherited
-    # from the agent process point at Hermes's venv site-packages, and a
+    # may differ from Hexbot's venv Python. PYTHONPATH/PYTHONHOME inherited
+    # from the agent process point at Hexbot's venv site-packages, and a
     # child interpreter honors them ahead of its own site-packages — so the
     # CLI imports compiled C-extensions (e.g. pydantic_core) built for the
     # wrong interpreter and crashes on ABI mismatch (#83427, #84841, #86006,
     # #86104). Strip both — the CLI manages its own environment and never
-    # needs Hermes's import path.
+    # needs Hexbot's import path.
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
     # Same class of hazard, PATH flavor: profile-spawned workers (kanban
@@ -282,7 +282,7 @@ def default_downgrade_notice() -> Optional[str]:
             pass
         return (
             "Browser Use CLI not found — using the built-in browser tools. "
-            "Run `hermes tools` (Browser Automation → Browser Use) to install it, "
+            "Run `hexbot core tools` (Browser Automation → Browser Use) to install it, "
             "or `browser.backend: off` in config.yaml to silence this."
         )
     except Exception as e:  # pragma: no cover — a notice must never break startup
@@ -291,7 +291,7 @@ def default_downgrade_notice() -> Optional[str]:
 
 
 def _managed_bin_dir() -> Optional[str]:
-    """Hermes' own bin dir ($HERMES_HOME/bin) — where install.sh puts uv/uvx
+    """Hexbot's own bin dir ($HERMES_HOME/bin) — where install.sh puts uv/uvx
     and where install_cli() links the browser-use binary."""
     try:
         from hermes_constants import get_hermes_home
@@ -322,10 +322,10 @@ def _user_local_bin_dir() -> Optional[str]:
 def _find_cli() -> Optional[List[str]]:
     """Locate the browser-use CLI, or None when it can't be run.
 
-    MANAGED-FIRST resolution: Hermes' own ``$HERMES_HOME/bin`` copy — the
+    MANAGED-FIRST resolution: Hexbot's own ``$HERMES_HOME/bin`` copy — the
     one every browser backend selection installs and updates via
     ``install_cli()`` — always wins, so all sessions drive one canonical,
-    Hermes-controlled binary. PATH and the user-level tool dir
+    Hexbot-controlled binary. PATH and the user-level tool dir
     (~/.local/bin / %APPDATA%\\uv\\bin, where a manual ``uv tool install``
     links binaries) are fallbacks for setups that never ran our install,
     and cover Desktop/TUI workers that spawn with a minimal PATH. The uvx
@@ -348,7 +348,7 @@ def _find_cli() -> Optional[List[str]]:
 def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
     """Install the browser-use CLI persistently via ``uv tool install``.
 
-    Resolution order for uv: Hermes' managed uv (bootstrapped on demand via
+    Resolution order for uv: Hexbot's managed uv (bootstrapped on demand via
     ``hermes_cli.managed_uv.ensure_uv``) → uv on PATH. The binary is linked
     into ``$HERMES_HOME/bin`` (``UV_TOOL_BIN_DIR``) so ``_find_cli()``
     resolves it for every profile without touching the user's PATH.
@@ -357,9 +357,9 @@ def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
     """
     # MANAGED-FIRST: only the managed copy short-circuits the install. A
     # browser-use found on PATH is a user-level side install — it must NOT
-    # prevent provisioning the canonical Hermes-managed copy, or resolution
+    # prevent provisioning the canonical Hexbot-managed copy, or resolution
     # stays pinned to a binary we don't control (version drift, no updates
-    # through hermes tools).
+    # through hexbot core tools).
     bin_dir = _managed_bin_dir()
     if bin_dir:
         managed = shutil.which("browser-use", path=bin_dir)
@@ -508,7 +508,7 @@ def _backend_cache_key(task_id: Optional[str], session_name: str = "") -> str:
 def _resolve_lightpanda_cdp(
     env: dict, task_id: Optional[str], session_name: str = ""
 ) -> Optional[str]:
-    """Point the harness at a Hermes-spawned ``lightpanda serve``.
+    """Point the harness at a Hexbot-spawned ``lightpanda serve``.
 
     Only when ``browser.engine`` is ``lightpanda`` and nothing with higher
     precedence (BU_CDP_* env, a CDP override, a cloud provider) claimed the
@@ -533,7 +533,7 @@ def _resolve_lightpanda_cdp(
     except Exception as e:
         return (
             f"Lightpanda could not be started: {e} Set browser.engine to auto "
-            "to use local Chrome, or switch backends via `hermes tools` → "
+            "to use local Chrome, or switch backends via `hexbot core tools` → "
             "Browser Automation."
         )
     cdp = str((session_info or {}).get("cdp_url") or "")
@@ -563,7 +563,7 @@ def _resolve_backend_cdp(
        ``_get_session_info()`` so browser_exec shares the SAME provider
        session machinery — per-task session cache, expiry replacement,
        inactivity reaper, and atexit cleanup — instead of duplicating it.
-    4. ``browser.engine: lightpanda``: a Hermes-spawned ``lightpanda serve``
+    4. ``browser.engine: lightpanda``: a Hexbot-spawned ``lightpanda serve``
        per session key, through the same ``_get_session_info()`` machinery
        (see :func:`_resolve_lightpanda_cdp`).
     5. Nothing configured: return None; the harness attaches to local
@@ -631,7 +631,7 @@ def _resolve_backend_cdp(
         return (
             f"Cloud browser provider {type(provider).__name__} failed to "
             f"provide a session: {e}. Fix the provider configuration or "
-            "switch backends via `hermes tools` → Browser Automation."
+            "switch backends via `hexbot core tools` → Browser Automation."
         )
     cdp = str((session_info or {}).get("cdp_url") or "")
     if not cdp:
@@ -664,7 +664,7 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     """Point the harness at the user's real-profile copy-browser when consented.
 
     With ``browser.use_real_profile`` on, local browsing must mean the user's
-    default Chromium with their logins — a browser Hermes launches on a
+    default Chromium with their logins — a browser Hexbot launches on a
     SNAPSHOT of their real profile (see hermes_cli.browser_connect). Two ways
     in:
 
@@ -1004,7 +1004,7 @@ def _dynamic_schema_overrides() -> dict:
         props["local"] = {
             "type": "boolean",
             "description": (
-                "Drive the user's own local browser (a Hermes-managed copy of "
+                "Drive the user's own local browser (a Hexbot-managed copy of "
                 "their real default-Chromium profile, logins/cookies included) "
                 "instead of the configured cloud browser backend. Use when the "
                 "user asks to act as themselves — their accounts, their "

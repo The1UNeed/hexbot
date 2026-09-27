@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Hermes Agent CLI - Interactive Terminal Interface
+Hexbot CLI - Interactive Terminal Interface
 
-A beautiful command-line interface for the Hermes Agent, inspired by Claude Code.
+A beautiful command-line interface for the Hexbot, inspired by Claude Code.
 Features ASCII art branding, interactive REPL, toolset selection, and rich formatting.
 
 Usage:
@@ -18,7 +18,7 @@ try:
     import hermes_bootstrap  # noqa: F401
 except ModuleNotFoundError:
     # Graceful fallback when hermes_bootstrap isn't registered in the venv
-    # yet — happens during partial ``hermes update`` where git-reset landed
+    # yet — happens during partial ``hexbot core update`` where git-reset landed
     # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
     pass
@@ -136,7 +136,7 @@ def _reverse_alias_for_display(model_name: str) -> str:
     """Return the shortest configured alias for ``model_name``, or ``model_name``.
 
     Looks up both ``model_aliases:`` (dict-based, full DirectAlias entries)
-    and ``model.aliases:`` (string-based, set via ``hermes config set``)
+    and ``model.aliases:`` (string-based, set via ``hexbot core config set``)
     from config.yaml. Multiple aliases pointing at the same model — the
     shortest wins, so ``opus47`` beats ``palantir-claude47``.
     """
@@ -219,7 +219,7 @@ from hermes_cli.banner import _format_context_length, format_banner_version_labe
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 
-# Load .env from ~/.hermes/.env first, then project root as dev fallback.
+# Load .env from ~/.hexbot/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_constants import get_hermes_home, display_hermes_home
 from hermes_cli.browser_connect import (
@@ -346,7 +346,7 @@ def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
     The file should contain a JSON array of {role, content} dicts, e.g.:
         [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello!"}]
     
-    Relative paths are resolved from ~/.hermes/.
+    Relative paths are resolved from ~/.hexbot/.
     Returns an empty list if the path is empty or the file doesn't exist.
     """
     if not file_path:
@@ -416,14 +416,14 @@ def load_cli_config() -> Dict[str, Any]:
     Load CLI configuration from config files.
     
     Config lookup order:
-    1. ~/.hermes/config.yaml (user config - preferred)
+    1. ~/.hexbot/config.yaml (user config - preferred)
     2. ./cli-config.yaml (project config - fallback)
     
     Environment variables take precedence over config file values.
     Returns default values if no config file exists.
 
-    If HERMES_IGNORE_USER_CONFIG=1 is set (via ``hermes chat --ignore-user-config``),
-    the user config at ``~/.hermes/config.yaml`` is skipped entirely and only the
+    If HERMES_IGNORE_USER_CONFIG=1 is set (via ``hexbot core chat --ignore-user-config``),
+    the user config at ``~/.hexbot/config.yaml`` is skipped entirely and only the
     built-in defaults plus the project-level ``cli-config.yaml`` (if any) are used.
     Credentials in ``.env`` are still loaded — this flag only suppresses
     behavioral/config settings.
@@ -620,7 +620,7 @@ def load_cli_config() -> Dict[str, Any]:
     # hermes_cli.config._load_config_impl (which has its own managed merge), so
     # without this the entire interactive CLI/TUI surface — skin, display prefs,
     # etc. read from CLI_CONFIG — would silently ignore managed scope while
-    # `hermes config`/`doctor`/guards (which use load_config) honor it. The
+    # `hexbot core config`/`doctor`/guards (which use load_config) honor it. The
     # shared helper mirrors _load_config_impl (env-only expansion, root-model
     # normalization, leaf-merge) and is fail-open.
     from hermes_cli import managed_scope
@@ -782,7 +782,7 @@ def load_cli_config() -> Dict[str, Any]:
 CLI_CONFIG = load_cli_config()
 
 
-# Initialize centralized logging early — agent.log + errors.log in ~/.hermes/logs/.
+# Initialize centralized logging early — agent.log + errors.log in ~/.hexbot/logs/.
 # This ensures CLI sessions produce a log trail even before AIAgent is instantiated.
 try:
     from hermes_logging import setup_logging
@@ -842,7 +842,7 @@ try:
         """Defer ``AsyncHttpxClientWrapper.__del__`` neutering until import.
 
         Saves ~166ms on cold CLI start where openai is never used (e.g.
-        ``hermes --help`` paths inside the chat command flow).  See
+        ``hexbot core --help`` paths inside the chat command flow).  See
         ``agent.auxiliary_client.neuter_async_httpx_del`` for full rationale
         on why ``__del__`` must be a no-op.
         """
@@ -1144,7 +1144,7 @@ def _arm_exit_watchdog_on_shutdown_signal() -> None:
     parked in a syscall that never observes the unwind, a prompt_toolkit
     teardown that never returns, or an agent worker blocking the ``finally``.
     When that happens the process has NO backstop and a "dead" CLI lingers
-    (observed: ``hermes --tui`` alive ~47 min at 4% CPU after terminal close —
+    (observed: ``hexbot core --tui`` alive ~47 min at 4% CPU after terminal close —
     the #65998 class).
 
     Arming at signal time closes that window. The leash is 2× the normal
@@ -1466,7 +1466,7 @@ def _finalize_single_query(cli) -> None:
         # notify_on_complete=true BEFORE any teardown. The one-shot parent
         # owns those children's stdout pipes; exiting now kills the delivery
         # a few seconds later. Bot Mode handoff replies dispatched from a
-        # short-lived `hermes -p <bot> chat -Q` recipient (message_agent /
+        # short-lived `hexbot core -p <bot> chat -Q` recipient (message_agent /
         # bot_relay spawns) are exactly this shape and were silently
         # destroyed on parent exit (#90879).
         try:
@@ -1645,7 +1645,7 @@ def _maintain_pack_health(repo_root: str) -> None:
     threshold is 50 *and* it counts only non-kept packs). Past a few dozen
     packs every object lookup scans every pack index, and worktree creation
     can blow its 30s timeout under concurrent load (Aug 2026 incident: 39
-    packs, 638MB → ``hermes -w`` timing out; a full repack halved the store
+    packs, 638MB → ``hexbot core -w`` timing out; a full repack halved the store
     and restored 0.5s creates). Threshold 15 keeps lookups fast without
     repacking on every startup; ``nice`` + background thread keeps it off
     the startup path. Fail-soft everywhere.
@@ -1685,7 +1685,7 @@ def _resolve_worktree_base(
     """Resolve the freshest base ref to branch a new worktree from.
 
     The standalone clone's ``HEAD`` can lag the remote by hundreds of commits
-    (the ``~/.hermes/hermes-agent`` clone is updated only by ``hermes update``,
+    (the ``~/.hexbot/hermes-agent`` clone is updated only by ``hexbot core update``,
     not on every session). Branching a worktree from that stale ``HEAD`` roots
     every new branch on an old base — so the PR diff GitHub computes against
     current ``main`` balloons with unrelated changes, and the agent has to
@@ -1702,7 +1702,7 @@ def _resolve_worktree_base(
          old behavior, never worse than before.
 
     "Refresh" is deliberately cheap on the startup path (the fetch here used
-    to stall ``hermes -w`` launches for 30-60s on flaky smart-HTTP
+    to stall ``hexbot core -w`` launches for 30-60s on flaky smart-HTTP
     connections):
 
     - The fetch is SKIPPED entirely when the repo's ``FETCH_HEAD`` is younger
@@ -1838,7 +1838,7 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
     repo_root = repo_root or _git_repo_root()
     if not repo_root:
         _cprint("\033[31m✗ --worktree requires being inside a git repository.\033[0m")
-        print("  cd into your project repo first, then run hermes -w")
+        print("  cd into your project repo first, then run hexbot core -w")
         return None
 
     if name:
@@ -2476,7 +2476,7 @@ def _worktree_branch_pushed_exact(
 def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10):
     """Classify a worktree's git lock as live, dead, or absent.
 
-    ``hermes -w`` locks each worktree with reason ``hermes pid=<pid>`` so a
+    ``hexbot core -w`` locks each worktree with reason ``hermes pid=<pid>`` so a
     concurrent hermes process' startup prune leaves an in-use worktree alone.
     But a *crashed* session leaves the lock behind forever, and
     ``git worktree remove --force`` (single ``-f``) refuses to remove a locked
@@ -2520,7 +2520,7 @@ def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10
             if not m:
                 # Locked by something we don't recognize as a hermes session
                 # (or lock reason unavailable). Treat as dead — a foreign lock
-                # on a hermes -w worktree is almost certainly a leftover, and
+                # on a hexbot core -w worktree is almost certainly a leftover, and
                 # the age/dirty/unpushed gates already ran before we got here.
                 return "dead"
             pid = int(m.group(1))
@@ -2567,7 +2567,7 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
             # about why we're keeping it — the startup pruner deepens the
             # clone in the background and will reap it on a later startup.
             _cprint(f"\n\033[33m⚠ Shallow clone — cannot verify push state, keeping: {wt_path}\033[0m")
-            print("  The next `hermes -w` session deepens the clone and prunes merged worktrees automatically.")
+            print("  The next `hexbot core -w` session deepens the clone and prunes merged worktrees automatically.")
         else:
             _cprint(f"\n\033[33m⚠ Worktree has unpushed commits, keeping: {wt_path}\033[0m")
             print(f"  To clean up manually: git worktree remove --force {wt_path}")
@@ -2691,7 +2691,7 @@ def _run_checkpoint_auto_maintenance() -> None:
         # workdir at startup is ambiguous (deleted project vs. an unmounted
         # external volume / network share / VPN not yet up) and this sweep
         # runs unattended. Orphan cleanup is only ever done via the explicit
-        # `hermes checkpoints prune` command, which the user has to invoke.
+        # `hexbot core checkpoints prune` command, which the user has to invoke.
         maybe_auto_prune_checkpoints(
             retention_days=int(cfg.get("retention_days", 7)),
             min_interval_hours=int(cfg.get("min_interval_hours", 24)),
@@ -2707,7 +2707,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
 
     Covers EVERY directory under ``.worktrees/`` except kanban task trees
     (``t_<hex>`` — owned by the kanban dispatcher's own gc). Scratch trees
-    created by ``hermes -w`` (``hermes-*``) age out fast; named trees created
+    created by ``hexbot core -w`` (``hermes-*``) age out fast; named trees created
     manually for salvage/review lanes age out on a slower schedule:
 
     - ``hermes-*``: skip under 24h; reap 24h+ when clean and merged/pushed;
@@ -2730,7 +2730,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
       forever and were the dominant survivor class (Aug 2026: 24 of 33
       preserved trees, ~18GB).
 
-    Lock handling (orthogonal to age): ``hermes -w`` locks each worktree with
+    Lock handling (orthogonal to age): ``hexbot core -w`` locks each worktree with
     reason ``hermes pid=<pid>`` so a concurrent hermes process leaves an in-use
     worktree alone. A *live*-locked worktree is skipped at any age; a
     *dead*-locked one (owning pid gone — a crashed session) is unlocked first
@@ -2748,7 +2748,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     Also prunes orphaned ``hermes/*`` and ``pr-*`` local branches that
     have no corresponding worktree.
 
-    Performance: this runs on the startup path of every ``hermes -w`` session,
+    Performance: this runs on the startup path of every ``hexbot core -w`` session,
     and each candidate tree costs several git subprocesses (the ``git cherry``
     patch-equivalence probe dominates at ~0.2-1.0s on a large repo). With
     dozens of accumulated worktrees the serial version added ~11-18s of latency
@@ -2785,7 +2785,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     stale_work_cutoff = now - (7 * 24 * 3600)
     preserved_stale: list = []
     # Kanban task worktrees (<repo>/.worktrees/t_<hex>) have their own
-    # dispatcher-driven lifecycle (hermes kanban gc) — never touch them here.
+    # dispatcher-driven lifecycle (hexbot core kanban gc) — never touch them here.
     kanban_re = re.compile(r"^t_[0-9a-f]+$")
 
     # ── Phase 1: age filter (no subprocesses) ───────────────────────────────
@@ -2977,7 +2977,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     if preserved_stale:
         logger.warning(
             "Preserving %d worktree(s) older than 7 days with unmerged work "
-            "(run `hermes worktree prune` to review and reclaim): %s",
+            "(run `hexbot core worktree prune` to review and reclaim): %s",
             len(preserved_stale), ", ".join(sorted(preserved_stale)),
         )
 
@@ -2995,8 +2995,8 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
         if count >= 10 or (size_mb or 0) >= 5120:
             size_txt = f"{size_mb / 1024:.1f}GB" if size_mb else "unknown size"
             logger.warning(
-                ".worktrees/ holds %d tree(s) (%s) — run `hermes worktree list` "
-                "to audit and `hermes worktree prune` to reclaim safely.",
+                ".worktrees/ holds %d tree(s) (%s) — run `hexbot core worktree list` "
+                "to audit and `hexbot core worktree prune` to reclaim safely.",
                 count, size_txt,
             )
     except Exception:
@@ -3006,7 +3006,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
 def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None) -> None:
     """Delete local ``hermes/hermes-*`` and ``pr-*`` branches with no worktree.
 
-    These are auto-generated by ``hermes -w`` sessions and PR review
+    These are auto-generated by ``hexbot core -w`` sessions and PR review
     workflows respectively.  Once their worktree is gone they serve no
     purpose and just accumulate.
 
@@ -3131,7 +3131,7 @@ def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
 #   3. HERMES_TUI_BACKGROUND=#RRGGBB — explicit bg hint
 #   4. COLORFGBG env (set by xterm/Konsole/urxvt) — bg slot 7/15 = light
 #   5. OSC 11 query (\x1b]11;?\x1b\\) — ask the terminal directly
-#   6. Default: assume dark (matches the legacy Hermes assumption)
+#   6. Default: assume dark (matches the legacy Hexbot assumption)
 #
 # Cached after first call so we don't query the terminal repeatedly.
 _LIGHT_MODE_CACHE: bool | None = None
@@ -3280,7 +3280,7 @@ def _heal_cooked_mode_drift(fd: int) -> bool:
     prompt_toolkit's ``run_in_terminal`` / ``in_terminal`` wraps every
     "print above the prompt" in a ``cooked_mode()`` context: it flips the
     tty back to cooked (ICANON/ECHO/ISIG), runs the function, then restores
-    raw mode.  Hermes schedules those windows cross-thread constantly — the
+    raw mode.  Hexbot schedules those windows cross-thread constantly — the
     background self-review's ``💾`` summary, background process notification
     drains, curses pickers — and if a restore is ever lost (coroutine
     cancelled mid-window, racing chains, an external writer touching the
@@ -3561,7 +3561,7 @@ def _strip_markdown_syntax(text: str) -> str:
     plain = _rich_text_from_ansi(text or "").plain
     # Avoid stripping cron-style expressions like "* * * * *" as if they were
     # Markdown horizontal rules. CommonMark treats three or more "*" as an HR,
-    # but in Hermes output it's common to display cron schedules verbatim.
+    # but in Hexbot output it's common to display cron schedules verbatim.
     #
     # Keep the behavior for "-" / "_" HR markers, and only strip "*" HR lines
     # when there are exactly 3 asterisks (with optional whitespace).
@@ -4208,11 +4208,11 @@ def _hermes_call_output_screen_diff(
     size,
     previous_width,
 ):
-    """Call prompt_toolkit ``_output_screen_diff`` with Hermes resize guards.
+    """Call prompt_toolkit ``_output_screen_diff`` with Hexbot resize guards.
 
     1. Inflate ``previous_screen.height`` when the new screen is taller so pt
        skips the reserve-vertical-space cursor move that stamps chrome into
-       scrollback (pt #29 / Hermes #26137).
+       scrollback (pt #29 / Hexbot #26137).
     2. On AttributeError/TypeError from a corrupt previous paint buffer
        (classic after tmux attach with same width), retry once with
        ``previous_screen=None`` so pt first-paints cleanly instead of crashing
@@ -4842,15 +4842,15 @@ class ChatConsole:
         """
         yield self
 
-# ASCII Art - HERMES-AGENT logo (full width, single line - requires ~95 char terminal)
-HERMES_AGENT_LOGO = """[bold #FFD700]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
-[bold #FFD700]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
-[#FFBF00]███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
-[#FFBF00]██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
-[#CD7F32]██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
-[#CD7F32]╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]"""
+# ASCII Art - HEXBOT logo (full width, single line)
+HERMES_AGENT_LOGO = """[bold #FFD700]██╗  ██╗███████╗██╗  ██╗██████╗  ██████╗ ████████╗[/]
+[bold #FFD700]██║  ██║██╔════╝╚██╗██╔╝██╔══██╗██╔═══██╗╚══██╔══╝[/]
+[#FFBF00]███████║█████╗   ╚███╔╝ ██████╔╝██║   ██║   ██║[/]
+[#FFBF00]██╔══██║██╔══╝   ██╔██╗ ██╔══██╗██║   ██║   ██║[/]
+[#CD7F32]██║  ██║███████╗██╔╝ ██╗██████╔╝╚██████╔╝   ██║[/]
+[#CD7F32]╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═════╝  ╚═════╝    ╚═╝[/]"""
 
-# ASCII Art - Hermes Caduceus (compact, fits in left panel)
+# ASCII Art - Hexbot Caduceus (compact, fits in left panel)
 HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#CD7F32]⠀⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣇⠸⣿⣿⠇⣸⣿⣿⣷⣦⣄⡀⠀⠀⠀⠀⠀⠀[/]
 [#FFBF00]⠀⢀⣠⣴⣶⠿⠋⣩⡿⣿⡿⠻⣿⡇⢠⡄⢸⣿⠟⢿⣿⢿⣍⠙⠿⣶⣦⣄⡀⠀[/]
@@ -4883,10 +4883,10 @@ def _build_compact_banner() -> str:
     dim_color = _skin.get_color("banner_dim", "#B8860B") if _skin else "#B8860B"
 
     if skin_name == "default":
-        line1 = "⚕ NOUS HERMES - AI Agent Framework"
-        tiny_line = "⚕ NOUS HERMES"
+        line1 = "⚕ HEXBOT - AI Agent Framework"
+        tiny_line = "⚕ HEXBOT"
     else:
-        agent_name = _skin.get_branding("agent_name", "Hermes Agent") if _skin else "Hermes Agent"
+        agent_name = _skin.get_branding("agent_name", "Hexbot") if _skin else "Hexbot"
         line1 = f"{agent_name} - AI Agent Framework"
         tiny_line = agent_name
 
@@ -4894,7 +4894,7 @@ def _build_compact_banner() -> str:
         from hermes_cli import __release_date__ as _release_date
         from hermes_cli import __version__ as _version
 
-        version_line = f"Hermes Agent v{_version} ({_release_date})"
+        version_line = f"Hexbot v{_version} ({_release_date})"
     else:
         version_line = format_banner_version_label()
 
@@ -5027,7 +5027,7 @@ def save_config_value(key_path: str, value: any) -> bool:
     Save a value to the active config file at the specified key path.
     
     Respects the same lookup order as load_cli_config():
-    1. ~/.hermes/config.yaml (user config - preferred, used if it exists)
+    1. ~/.hexbot/config.yaml (user config - preferred, used if it exists)
     2. ./cli-config.yaml (project config - fallback)
     
     Args:
@@ -5053,7 +5053,7 @@ def save_config_value(key_path: str, value: any) -> bool:
     config_path = get_hermes_home() / 'config.yaml'
     
     try:
-        # Ensure parent directory exists (for ~/.hermes/config.yaml on first use)
+        # Ensure parent directory exists (for ~/.hexbot/config.yaml on first use)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Save back atomically while preserving comments, ordering, quotes, and
@@ -5068,7 +5068,7 @@ def save_config_value(key_path: str, value: any) -> bool:
             pass
 
         # Model/provider changes made through /model and the TUI use this
-        # persistence path rather than ``hermes config set``. Surface the same
+        # persistence path rather than ``hexbot core config set``. Surface the same
         # fail-closed cron drift warning for every operator-facing model switch.
         from hermes_cli.config import (
             warn_unpinned_cron_jobs_after_model_config_change,
@@ -5094,7 +5094,7 @@ def _normalize_moa_model(model: Optional[str]) -> tuple[Optional[str], Optional[
 
     Returns ``("moa", "<preset>")`` when *model* selects the MoA virtual
     provider, otherwise ``(None, model)`` unchanged. This gives non-interactive
-    ``hermes chat -Q -m moa:<preset>`` the same routing the interactive
+    ``hexbot core chat -Q -m moa:<preset>`` the same routing the interactive
     ``/moa`` command and the model picker already use: ``resolve_runtime_provider``
     handles ``requested_provider == "moa"`` and ``agent_init`` builds the
     MoAClient off ``provider == "moa"``. Without this the raw ``moa:<preset>``
@@ -5137,7 +5137,7 @@ class _SeededQueryMessage:
     """Sentinel wrapper for a ``-q/--query`` prompt seeded into an
     interactive session.
 
-    When ``hermes chat -q "…"`` runs on a real TTY, the query is submitted as
+    When ``hexbot core chat -q "…"`` runs on a real TTY, the query is submitted as
     the first turn of a normal interactive session instead of the legacy
     answer-and-exit single-query mode. The prompt is arbitrary user text (an
     OS launcher, a desktop integration, a script) — it must be treated
@@ -5182,7 +5182,7 @@ def _should_seed_interactive(query, image, quiet: bool, oneshot: bool) -> bool:
 
 class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     """
-    Interactive CLI for the Hermes Agent.
+    Interactive CLI for the Hexbot.
     
     Provides a REPL interface with rich formatting, command history,
     and tool execution capabilities.
@@ -5211,7 +5211,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         ignore_rules: bool = False,
     ):
         """
-        Initialize the Hermes CLI.
+        Initialize the Hexbot CLI.
 
         Args:
             model: Model to use (default: from env or claude-sonnet)
@@ -5532,7 +5532,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.checkpoint_max_file_size_mb = cp_cfg.get("max_file_size_mb", 10)
         self.pass_session_id = pass_session_id
         # --ignore-rules: honor either the constructor flag or the env var set
-        # by `hermes chat --ignore-rules` in hermes_cli/main.py. When true we
+        # by `hexbot core chat --ignore-rules` in hermes_cli/main.py. When true we
         # pass skip_context_files=True and skip_memory=True to AIAgent so
         # AGENTS.md/SOUL.md/.cursorrules and persistent memory are not loaded.
         self.ignore_rules = ignore_rules or os.environ.get("HERMES_IGNORE_RULES") == "1"
@@ -5651,7 +5651,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     "this conversation will [bold]NOT be saved[/bold] to disk and "
                     "cannot be resumed later. Searching past sessions is also disabled.\n"
                     f"  Reason: {e}\n"
-                    "  Fix the state.db store (e.g. `hermes update` to rebuild the venv) to restore persistence."
+                    "  Fix the state.db store (e.g. `hexbot core update` to rebuild the venv) to restore persistence."
                 )
             except Exception:
                 # Never let the warning path itself break startup.
@@ -5662,12 +5662,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # Opportunistic state.db maintenance — runs at most once per
         # min_interval_hours, tracked via state_meta in state.db itself so
-        # it's shared across all Hermes processes for this HERMES_HOME.
+        # it's shared across all Hexbot processes for this HERMES_HOME.
         # Never blocks startup on failure.
         _run_state_db_auto_maintenance(self._session_db)
 
         # Opportunistic shadow-repo cleanup — deletes orphan/stale
-        # checkpoint repos under ~/.hermes/checkpoints/.  Opt-in via
+        # checkpoint repos under ~/.hexbot/checkpoints/.  Opt-in via
         # checkpoints.auto_prune, idempotent via .last_prune marker.
         _run_checkpoint_auto_maintenance()
 
@@ -6007,7 +6007,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         Terminals with focus tracking active (Ghostty, iTerm2, xterm builds,
         multiplexers that toggle DECSET 1004 upstream) emit ``\\x1b[I`` when
-        the Hermes tab/window becomes visible again. Emulators can coalesce
+        the Hexbot tab/window becomes visible again. Emulators can coalesce
         or drop hidden-tab output and repaint the surface while we're
         invisible, so on regain prompt_toolkit's incremental diff stacks on
         stale content — a second copy of the composer/prompt chrome next to
@@ -7122,7 +7122,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def _pet_resolve_config(self) -> None:
         """(Re)resolve the active pet from config — picks up live enable/disable/
 
-        switch made via ``/pet`` or ``hermes pets`` without a restart, mirroring
+        switch made via ``/pet`` or ``hexbot core pets`` without a restart, mirroring
         the TUI's steady poll. Cheap and fail-open: any problem disables the pet.
         """
         try:
@@ -7653,7 +7653,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 parts = [f"⚕ {snapshot['model_short']}"]
             return self._right_align_status_title(" │ ".join(parts), session_title, width)
         except Exception:
-            return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+            return f"⚕ {self.model if getattr(self, 'model', None) else 'Hexbot'}"
 
     def _get_status_bar_fragments(self):
         if not self._status_bar_visible or getattr(self, '_model_picker_state', None) or getattr(self, '_command_palette_state', None):
@@ -8487,10 +8487,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             try:
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
-                label = _skin.get_branding("response_label", "⚕ Hermes")
+                label = _skin.get_branding("response_label", "⚕ Hexbot")
                 _text_hex = _skin.get_color("banner_text", "#FFF8DC")
             except Exception:
-                label = "⚕ Hermes"
+                label = "⚕ Hexbot"
                 _text_hex = "#FFF8DC"
             # Build a true-color ANSI escape for the response text color
             # so streamed content matches the Rich Panel appearance.
@@ -8882,9 +8882,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """Show a startup banner if any unacked security advisories match.
 
         Renders a single bold-red box on stderr (so piped stdout remains
-        clean) listing the worst hit and pointing at ``hermes doctor``.
+        clean) listing the worst hit and pointing at ``hexbot core doctor``.
         Banner-cache rate-limits this to once per 24h per advisory; full
-        remediation lives behind ``hermes doctor`` so the banner stays
+        remediation lives behind ``hexbot core doctor`` so the banner stays
         small.
         """
         try:
@@ -8957,7 +8957,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 logger.warning(
                     "Unknown skill(s) requested, skipping: %s. "
                     "Continuing with: %s. "
-                    "List available skills with `hermes skills list`.",
+                    "List available skills with `hexbot core skills list`.",
                     missing_display,
                     ", ".join(loaded_skills),
                 )
@@ -9105,7 +9105,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 f"this is likely too low for agent use with tools.[/]"
             )
             self._console_print(
-                f"[dim]   Hermes needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens. Tool schemas + system prompt use a large fixed prefix.[/]"
+                f"[dim]   Hexbot needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens. Tool schemas + system prompt use a large fixed prefix.[/]"
             )
             base_url = getattr(self, "base_url", "") or ""
             from urllib.parse import urlparse as _urlparse
@@ -9136,7 +9136,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._console_print()
             self._console_print(
                 "[bold yellow]⚠  Nous Research Hermes 3 & 4 models are NOT agentic and are not "
-                "designed for use with Hermes Agent.[/]"
+                "designed for use with Hexbot.[/]"
             )
             self._console_print(
                 "[dim]   They lack tool-calling capabilities required for agent workflows. "
@@ -9147,7 +9147,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             )
 
         # Project-local skills: one-line status. Trusted → show count;
-        # untrusted-with-skills → point at `hermes skills trust`. Never raises.
+        # untrusted-with-skills → point at `hexbot core skills trust`. Never raises.
         try:
             from agent.skill_utils import (
                 get_project_skills_dirs,
@@ -9170,7 +9170,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _root, _n = _untrusted
                     self._console_print(
                         f"[yellow]◆ {_n} project skill(s) found in {_root} but not "
-                        f"loaded — run `hermes skills trust` to enable them.[/]"
+                        f"loaded — run `hexbot core skills trust` to enable them.[/]"
                     )
         except Exception:
             logger.debug("project skills banner notice failed", exc_info=True)
@@ -9463,7 +9463,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def _try_attach_clipboard_image(self) -> bool:
         """Check clipboard for an image and attach it if found.
 
-        Saves the image to ~/.hermes/images/ and appends the path to
+        Saves the image to ~/.hexbot/images/ and appends the path to
         ``_attached_images``.  Returns True if an image was attached.
         """
         from hermes_cli.clipboard import save_clipboard_image
@@ -9702,7 +9702,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     if len(item["tools"]) > 2:
                         tools_str += f", +{len(item['tools'])-2} more"
                     self._console_print(f"   [dim]• {item['name']}[/] [dim italic]({', '.join(item['missing_vars'])})[/]")
-                self._console_print("[dim]   Run 'hermes setup' to configure[/]")
+                self._console_print("[dim]   Run 'hexbot core setup' to configure[/]")
         except Exception:
             pass  # Don't crash on import errors
     
@@ -9831,7 +9831,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             ctx_label = None
 
         lines = [
-            "Hermes CLI Status",
+            "Hexbot CLI Status",
             "",
             f"Session ID: {self.session_id}",
             f"Path: {display_hermes_home()}",
@@ -10285,7 +10285,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
                 continue
 
-            _cli_visible_print(f"\n  [Hermes #{visible_index}]{_ts_suffix(msg)}")
+            _cli_visible_print(f"\n  [Hexbot #{visible_index}]{_ts_suffix(msg)}")
             tool_calls = msg.get("tool_calls") or []
             if content_text:
                 preview = content_text[:preview_limit]
@@ -10333,7 +10333,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         Starting the CLI and immediately quitting (or rotating with /new,
         /clear) used to leave an empty untitled row behind that clutters
-        ``/resume`` and ``hermes sessions list``. Delegates the
+        ``/resume`` and ``hexbot core sessions list``. Delegates the
         check-and-delete to ``SessionDB.delete_session_if_empty``, which
         only removes rows with no messages, no title, and no child
         sessions. Ported from google-gemini/gemini-cli#27770.
@@ -10439,7 +10439,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception:
                 pass
             # Don't let immediately-rotated empty sessions pile up in
-            # /resume and `hermes sessions list` (gemini-cli#27770 port).
+            # /resume and `hexbot core sessions list` (gemini-cli#27770 port).
             self._discard_session_if_empty(old_session_id)
 
         self.session_start = datetime.now()
@@ -10661,7 +10661,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         The snapshot is a convenience export for sharing or off-line
         inspection; every message is already persisted incrementally to the
         SQLite session DB, so the live session remains resumable via
-        ``hermes --resume <id>`` regardless of whether the user ever runs
+        ``hexbot core --resume <id>`` regardless of whether the user ever runs
         ``/save``. ``redact`` runs the export through the force-mode secret
         redaction pass before writing.
         """
@@ -10740,7 +10740,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             label = {"json": "JSON", "md": "Markdown", "html": "HTML"}[fmt]
             print(f"(^_^)v Conversation saved to: {path} ({label})")
             if self.session_id:
-                print(f"       Resume the live session with: hermes --resume {self.session_id}")
+                print(f"       Resume the live session with: hexbot core --resume {self.session_id}")
         except Exception as e:
             print(f"(x_x) Failed to save: {e}")
 
@@ -11585,7 +11585,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return True
 
         choices = [
-            ("once", "Switch anyway", "Use this model for the current Hermes session."),
+            ("once", "Switch anyway", "Use this model for the current Hexbot session."),
             ("cancel", "Cancel", "Keep the current model."),
         ]
         raw = self._prompt_text_input_modal(
@@ -11914,7 +11914,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 return
             provider_data = providers[selected]
             # Use the curated model list from list_authenticated_providers()
-            # (same lists as `hermes model` and gateway pickers).
+            # (same lists as `hexbot core model` and gateway pickers).
             # Only fall back to the live provider catalog when the curated
             # list is empty (e.g. user-defined endpoints with no curated list).
             model_list = provider_data.get("models", [])
@@ -12304,7 +12304,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         Usage:
             /codex-runtime                       — show current state
-            /codex-runtime auto                  — Hermes default (chat_completions)
+            /codex-runtime auto                  — Hexbot default (chat_completions)
             /codex-runtime codex_app_server      — hand turns to codex subprocess
             /codex-runtime on / off              — synonyms for the above
         """
@@ -12930,7 +12930,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_browser_command(cmd_original)
         elif canonical == "plugins":
             try:
-                # Discover from disk (bundled + user), matching `hermes plugins
+                # Discover from disk (bundled + user), matching `hexbot core plugins
                 # list` — so installed-but-not-enabled plugins are visible here
                 # too. The plugin manager only knows about *loaded* plugins, so
                 # using it alone made freshly-installed, not-yet-enabled plugins
@@ -12949,16 +12949,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # `/plugins` is a quick glance — default to user-installed
                 # plugins (what the user actually added). Bundled provider/
                 # platform plugins are summarized on one line; the full
-                # catalog lives behind `hermes plugins list`.
+                # catalog lives behind `hexbot core plugins list`.
                 user_entries = [e for e in entries if e[3] != "bundled"]
                 bundled_count = len(entries) - len(user_entries)
 
                 if not user_entries:
                     print("No user plugins installed.")
-                    print("  Install one: hermes plugins install owner/repo")
+                    print("  Install one: hexbot core plugins install owner/repo")
                     print(f"  Or drop a plugin directory into {display_hermes_home()}/plugins/")
                     if bundled_count:
-                        print(f"  ({bundled_count} bundled plugins available — see: hermes plugins list)")
+                        print(f"  ({bundled_count} bundled plugins available — see: hexbot core plugins list)")
                 else:
                     # Loaded-plugin details (tools/hooks/commands counts, errors)
                     # keyed by name, when available.
@@ -12988,8 +12988,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         error = f" — {info['error']}" if info.get("error") else ""
                         print(f"  {glyph} {name}{ver}{label}{detail}{error}")
                     if bundled_count:
-                        print(f"  (+{bundled_count} bundled — see: hermes plugins list)")
-                    print("  Enable/disable: hermes plugins enable/disable <name>")
+                        print(f"  (+{bundled_count} bundled — see: hexbot core plugins list)")
+                    print("  Enable/disable: hexbot core plugins enable/disable <name>")
             except Exception as e:
                 print(f"Plugin system error: {e}")
         elif canonical == "rollback":
@@ -13576,7 +13576,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """Queue background notifications owned by this visible CLI session.
 
         ``process_registry`` restores durable delegation completions into every
-        process using the same Hermes profile.  Always pass this CLI's stable
+        process using the same Hexbot profile.  Always pass this CLI's stable
         session identity when draining so another window cannot claim and mark
         delivered a completion that belongs to this one.
         """
@@ -13804,7 +13804,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _cprint(labels.get(self.tool_progress_mode, ""))
 
     def _write_terminal_breadcrumb(self) -> None:
-        """Record this terminal's live session for bare ``hermes -c``.
+        """Record this terminal's live session for bare ``hexbot core -c``.
 
         Called at session start and whenever ``self.session_id`` is
         reassigned mid-run (/new, /branch, auto-compression rotation) so a
@@ -13847,7 +13847,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             enable_session_yolo(new_session_id)
             disable_session_yolo(old_session_id)
             # Carry the persisted flag onto the continuation row so a later
-            # `hermes --resume <new_id>` restores the bypass too. getattr
+            # `hexbot core --resume <new_id>` restores the bypass too. getattr
             # guard: tests call this unbound against a minimal stand-in.
             _persist = getattr(self, "_persist_session_yolo", None)
             if _persist:
@@ -13945,7 +13945,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """Persist the YOLO flag to the session row so --resume restores it.
 
         Best-effort: the in-memory toggle is authoritative for this process;
-        persistence only affects a future ``hermes --resume``. Skipped when the
+        persistence only affects a future ``hexbot core --resume``. Skipped when the
         session store is unavailable or the row doesn't exist yet (the row is
         created lazily on the first turn — ``_toggle_yolo`` before any chat
         writes nothing, and the launch-time ``--yolo`` flag is carried into the
@@ -14231,7 +14231,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         normalized = str(provider or "").strip().lower()
         if normalized != "openai-codex":
             print("  Banked usage resets are only available on the openai-codex provider.")
-            print("  Switch with `/model` or `hermes auth` first.")
+            print("  Switch with `/model` or `hexbot core auth` first.")
             return
         base_url = (getattr(self.agent, "base_url", None) if self.agent else None) or getattr(self, "base_url", None)
         api_key = (getattr(self.agent, "api_key", None) if self.agent else None) or getattr(self, "api_key", None)
@@ -14466,7 +14466,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
           re-sends the full input prefix, expensive on long-context /
           high-reasoning models).  This stops silent cache-breaking reloads
           when config.yaml is rewritten frequently by external tooling or
-          other Hermes instances.
+          other Hexbot instances.
         """
 
         import yaml as _yaml
@@ -14856,7 +14856,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print(f"  ❌ MCP reload failed: {e}")
 
     def _reload_skills(self) -> None:
-        """Reload skills: rescan ~/.hermes/skills/ and queue a note for the
+        """Reload skills: rescan ~/.hexbot/skills/ and queue a note for the
         next user turn.
 
         Skills don't need to live in the system prompt for the model to use
@@ -15672,7 +15672,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # Fail-closed echo guard (#75780): a playback-phase capture
                 # has no acoustic echo cancellation, so speaker bleed alone
                 # can trip the barge trigger. If the transcript is a close
-                # match for what Hermes just spoke, treat it as self-capture
+                # match for what Hexbot just spoke, treat it as self-capture
                 # instead of queuing it as a user turn.
                 if getattr(self, "_voice_barge_phase", None) == "playback":
                     from tools.voice_mode import is_tts_echo
@@ -15980,7 +15980,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             from tools.wake_word import _active_profile_name
             if _match[1] != _active_profile_name():
                 _cprint(f"\n{_DIM}Wake phrase for profile '{_match[1]}' — "
-                        f"run: hermes -p {_match[1]}{_RST}")
+                        f"run: hexbot core -p {_match[1]}{_RST}")
                 self._wake_suspended = True  # watchdog resumes the listener
                 return
 
@@ -17137,7 +17137,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         if not _streaming_box_opened:
                             _streaming_box_opened = True
                             w = self._scrollback_box_width(getattr(self.console, "width", 80))
-                            label = " ⚕ Hermes "
+                            label = " ⚕ Hexbot "
                             if self.show_timestamps:
                                 label = f"{label}{datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))} "
                             fill = w - 2 - HermesCLI._status_bar_display_width(label)
@@ -17569,11 +17569,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 try:
                     from hermes_cli.skin_engine import get_active_skin
                     _skin = get_active_skin()
-                    label = _skin.get_branding("response_label", "⚕ Hermes")
+                    label = _skin.get_branding("response_label", "⚕ Hexbot")
                     _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
                     _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
                 except Exception:
-                    label = "⚕ Hermes"
+                    label = "⚕ Hexbot"
                     _resp_color = _maybe_remap_for_light_mode("#CD7F32")
                     _resp_text = _maybe_remap_for_light_mode("#FFF8DC")
 
@@ -17925,9 +17925,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             profile_flag = (
                 "" if _active_profile in ("default", "custom") else f" -p {_active_profile}"
             )
-            print(f"  hermes --resume {self.session_id}{profile_flag}")
+            print(f"  hexbot core --resume {self.session_id}{profile_flag}")
             if session_title:
-                print(f"  hermes -c \"{session_title}\"{profile_flag}")
+                print(f"  hexbot core -c \"{session_title}\"{profile_flag}")
             print()
             print(f"Session:        {self.session_id}")
             if session_title:
@@ -18200,7 +18200,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # First-run: a completely unconfigured install must route into
         # provider onboarding, not a chat that cannot work. Previously a
-        # keyless `hermes` accepted a message, spun for ~30s, then failed
+        # keyless `hexbot core` accepted a message, spun for ~30s, then failed
         # with a provider-specific error the user never chose. Only fires
         # on a real TTY; quiet/single-query paths keep their own handling.
         try:
@@ -18218,10 +18218,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         try:
             from hermes_cli.skin_engine import get_active_skin
             _welcome_skin = get_active_skin()
-            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Hermes Agent! Type your message or /help for commands.")
+            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Hexbot! Type your message or /help for commands.")
             _welcome_color = _welcome_skin.get_color("banner_text", "#FFF8DC")
         except Exception:
-            _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
+            _welcome_text = "Welcome to Hexbot! Type your message or /help for commands."
             _welcome_color = "#FFF8DC"
         self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
 
@@ -18276,7 +18276,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             pass
         # First-time OpenClaw-residue banner — fires once if ~/.openclaw/ exists
-        # after an OpenClaw→Hermes migration (especially migrations done by
+        # after an OpenClaw→Hexbot migration (especially migrations done by
         # OpenClaw's own tool, which doesn't archive the source directory).
         try:
             from agent.onboarding import (
@@ -19563,7 +19563,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             import signal as _sig
             from prompt_toolkit.application import run_in_terminal
             from hermes_cli.skin_engine import get_active_skin
-            agent_name = get_active_skin().get_branding("agent_name", "Hermes Agent")
+            agent_name = get_active_skin().get_branding("agent_name", "Hexbot")
             msg = f"\n{agent_name} has been suspended. Run `fg` to bring {agent_name} back."
             def _suspend():
                 os.write(1, msg.encode())
@@ -19774,7 +19774,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # No image found — show a hint
                 pass  # silent when no image (avoid noise on accidental press)
 
-        # Dynamic prompt: shows Hermes symbol when agent is working,
+        # Dynamic prompt: shows Hexbot symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
         cli_ref = self
 
@@ -20114,7 +20114,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             multi_select = state.get("multi_select", False)
             selected_indices = state.get("selected_indices", set()) if multi_select else set()
 
-            title = "Hermes needs your input"
+            title = "Hexbot needs your input"
             header = f"{len(questions_list)} questions"
 
             def _status_rows(width):
@@ -20266,7 +20266,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     else f"  {other_num_prefix}. Other (type your answer)"
                 )
             preview_lines.extend(_wrap_panel_text(other_label, 60, subsequent_indent="    "))
-            box_width = _panel_box_width("Hermes needs your input", preview_lines)
+            box_width = _panel_box_width("Hexbot needs your input", preview_lines)
             inner_text_width = max(8, box_width - 2)
 
             # Pre-wrap choices + Other option — these are mandatory.
@@ -20378,8 +20378,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             lines = []
             # Box top border
             lines.append(('class:clarify-border', '╭─ '))
-            lines.append(('class:clarify-title', 'Hermes needs your input'))
-            lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len("Hermes needs your input") - 3)) + '╮\n'))
+            lines.append(('class:clarify-title', 'Hexbot needs your input'))
+            lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len("Hexbot needs your input") - 3)) + '╮\n'))
             if not use_compact_chrome:
                 _append_blank_panel_line(lines, 'class:clarify-border', box_width)
 
@@ -21420,7 +21420,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print(
                 "Error: stdin (fd 0) is not available.\n"
                 "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
-                "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
+                "Try reinstalling Python via pyenv or Homebrew, then re-run: hexbot core setup"
             )
             _run_cleanup()
             self._print_exit_summary()
@@ -21494,7 +21494,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     f"\nError: stdin is not usable ({_stdin_err}).\n"
                     "This can happen with certain Python installations (e.g. uv-managed cPython on macOS)\n"
                     "where kqueue cannot register fd 0.\n"
-                    "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
+                    "Try reinstalling Python via pyenv or Homebrew, then re-run: hexbot core setup"
                 )
             else:
                 raise
@@ -21549,7 +21549,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not close session in DB: %s", e)
                 # Started-and-immediately-quit sessions never gained content;
-                # drop the empty row so /resume and `hermes sessions list`
+                # drop the empty row so /resume and `hexbot core sessions list`
                 # stay clean (gemini-cli#27770 port). No-op for resumed or
                 # titled sessions and anything with messages or children.
                 if not getattr(self, '_delete_session_on_exit', False):
@@ -21736,7 +21736,7 @@ def main(
     ignore_rules: bool = False,
 ):
     """
-    Hermes Agent CLI - Interactive AI Assistant
+    Hexbot CLI - Interactive AI Assistant
     
     Args:
         query: Query to run. On a real TTY this seeds an interactive session
@@ -21799,7 +21799,7 @@ def main(
         except Exception:
             pass
         from gateway.run import start_gateway
-        print("Starting Hermes Gateway (messaging platforms)...")
+        print("Starting Hexbot Gateway (messaging platforms)...")
         asyncio.run(start_gateway())
         return
 
@@ -21815,7 +21815,7 @@ def main(
             # worktree setup (base fetch + parallel `git worktree add`
             # release the GIL for most of their wall time). show_banner()
             # then hits the warm cache instead of paying ~0.4s serially.
-            # Only done on the -w path: on plain `hermes` there is no I/O
+            # Only done on the -w path: on plain `hexbot core` there is no I/O
             # wait to hide and the extra thread just contends for CPU.
             def _prewarm_tools() -> None:
                 try:
@@ -21901,7 +21901,7 @@ def main(
                 else:
                     toolsets_list.append(str(t))
     else:
-        # Coding posture (base Hermes): with no explicit --toolsets, collapse
+        # Coding posture (base Hexbot): with no explicit --toolsets, collapse
         # to the coding toolset (+ enabled MCP servers) when sitting in a code
         # workspace. See agent/coding_context.py.
         _coding = None
@@ -22121,7 +22121,7 @@ def main(
             sys.exit(1)
         try:
             query, single_query_images = _collect_query_images(query, image)
-            # Kanban workers spawn with ``hermes chat -q "work kanban task <id>"``;
+            # Kanban workers spawn with ``hexbot core chat -q "work kanban task <id>"``;
             # the actual task description lives in the task body. Mirror the
             # gateway/CLI behaviour for inbound images by scanning the body for
             # local image paths and http(s) image URLs and attaching them to the
@@ -22232,7 +22232,7 @@ def main(
                         cli.agent.quiet_mode = True
                         cli.agent.suppress_status_output = True
                         # Suppress streaming display callbacks so stdout stays
-                        # machine-readable (no styled "Hermes" box, no tool-gen
+                        # machine-readable (no styled "Hexbot" box, no tool-gen
                         # status lines, no reasoning box).  The response is
                         # printed once below.
                         cli.agent.stream_delta_callback = None
@@ -22331,7 +22331,7 @@ def main(
                 # Exit with error code if credentials or agent init fails
                 sys.exit(1)
             else:
-                # Single-query mode (`hermes chat -q "…"`): skip the welcome
+                # Single-query mode (`hexbot core chat -q "…"`): skip the welcome
                 # banner. Building the banner takes ~420 ms on cold start —
                 # ~200 ms of that is the version-update check, the rest is
                 # toolset / skill enumeration and Rich panel rendering. None

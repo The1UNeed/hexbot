@@ -128,7 +128,7 @@ def _xai_headers(api_key: str) -> Dict[str, str]:
 
 
 def _raise_if_blocked_local_input(ref: str) -> None:
-    """Refuse to read a local media path that Hermes' read deny-list blocks.
+    """Refuse to read a local media path that Hexbot's read deny-list blocks.
 
     Thin wrapper over the shared ``agent.file_safety.raise_if_read_blocked``
     chokepoint so xAI video inputs enforce the same credential-store guard as
@@ -769,7 +769,7 @@ async def _extend_xai_video_async(
 def _auth_required_response(prompt: str) -> Dict[str, Any]:
     return error_response(
         error=(
-            "No xAI credentials found. Sign in via `hermes auth add xai-oauth` "
+            "No xAI credentials found. Sign in via `hexbot core auth add xai-oauth` "
             "(SuperGrok / Premium+) or set XAI_API_KEY from "
             "https://console.x.ai/."
         ),

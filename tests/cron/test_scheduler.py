@@ -2220,7 +2220,7 @@ class TestCronDeliveryTargets:
 class TestHomeTargetEnvVarRegistry:
     """Regression: ``_HOME_TARGET_ENV_VARS`` must include every gateway
     platform that supports cron-driven outbound delivery. Missing an
-    entry means ``hermes cron create --deliver=<platform>`` silently
+    entry means ``hexbot core cron create --deliver=<platform>`` silently
     fails to route through the platform's home channel."""
 
 
@@ -2822,7 +2822,7 @@ class TestFailureStreakNudge:
         with patch("cron.scheduler.load_config", return_value={}):
             out = _failure_streak_nudge(self._job(2))
         assert "failed 3 runs in a row" in out
-        assert "hermes cron pause scout" in out
+        assert "hexbot core cron pause scout" in out
 
     def test_silent_below_threshold(self):
         from cron.scheduler import _failure_streak_nudge

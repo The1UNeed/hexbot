@@ -115,7 +115,7 @@ def active_session_limit_message(
     held = summarize_holders(entries or [])
     detail = f" Held by: {held}." if held else ""
     return (
-        f"Hermes is at the active session limit ({active_count}/{max_sessions})."
+        f"Hexbot is at the active session limit ({active_count}/{max_sessions})."
         f"{detail} Try again when another session finishes."
     )
 
@@ -578,7 +578,7 @@ def try_acquire_active_session(
             )
             return None, ActiveSessionRefusal(
                 (
-                    "Hermes could not read the active-session registry at "
+                    "Hexbot could not read the active-session registry at "
                     f"{state_path}, so it cannot prove this session has no other "
                     "live owner. Fix or remove that file and try again."
                 ),
@@ -761,7 +761,7 @@ def release_orphaned_leases(live_lease_ids: set[str]) -> int:
     """Drop this process's registry entries that no live session owns.
 
     ``_prune_dead`` only reclaims leases whose owning process died. A server
-    that runs for days (``hermes dashboard`` / ``serve``) never trips that
+    that runs for days (``hexbot core dashboard`` / ``serve``) never trips that
     check, so a lease whose session skipped teardown is held until restart.
     The owning process is the only authority on which of its own leases are
     real, so it drops the rest itself — exact, with no heartbeat write on the

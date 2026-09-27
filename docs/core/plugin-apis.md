@@ -1,4 +1,6 @@
-# Hermes Agent v0.21.0 — extension APIs for `hexbot`
+# Core extension APIs used by `hexbot/`
+
+Read at the v0.21.0 fork point.
 
 Paths relative to `/tmp/hermes-agent-research`.
 
@@ -6,7 +8,7 @@ Paths relative to `/tmp/hermes-agent-research`.
 
 **Discovery (module docstring, lines 1–32).** Four sources, later overrides earlier on name collision:
 1. bundled `<repo>/plugins/<name>/` (`get_bundled_plugins_dir()`; `HERMES_BUNDLED_PLUGINS` override; `memory/` and `context_engine/` excluded — own discovery)
-2. user `~/.hermes/plugins/<name>/` (really `$HERMES_HOME/plugins`, so per-profile)
+2. user `~/.hexbot/plugins/<name>/` (really `$HERMES_HOME/plugins`, so per-profile)
 3. project `./.hermes/plugins/<name>/`, opt-in via `HERMES_ENABLE_PROJECT_PLUGINS`
 4. pip entry points, group `hermes_agent.plugins` (`ENTRY_POINTS_GROUP`, line 457); capability declarations in `hermes_agent.plugin_capabilities`.
 
@@ -52,7 +54,7 @@ Fire sites and return semantics:
 
 ## 2. Profiles (`hermes_cli/profiles.py`)
 
-Layout: default profile = `~/.hermes`; named = `~/.hermes/profiles/<id>/`. Ids must match `^[a-z0-9][a-z0-9_-]{0,63}$`.
+Layout: default profile = `~/.hexbot`; named = `~/.hexbot/profiles/<id>/`. Ids must match `^[a-z0-9][a-z0-9_-]{0,63}$`.
 
 ```python
 create_profile(name, clone_from=None, clone_all=False, clone_config=False,
@@ -85,7 +87,7 @@ model:
 
 **Secrets.** Each profile has its own `<home>/.env` (chmod 0600). `load_hermes_dotenv(hermes_home=…)` loads `<home>/.env` with `override=True`, then `<home>/.op.env`, then external secret sources. Under multiplexing, `agent/secret_scope.py` is authoritative: `set_multiplex_active(True)` makes `get_secret(name)` raise `UnscopedSecretError` when no scope is installed; `build_profile_secret_scope(hermes_home)` builds the mapping, `set_secret_scope(mapping)`/`reset_secret_scope(token)` install it per turn. `_GLOBAL_ENV_EXACT` names (HERMES_HOME, PATH, API_SERVER_*) always read `os.environ`.
 
-**Root-install credential reuse.** *Yes for `auth.json` OAuth grants only.* `hermes_cli/auth._global_auth_file_path()` returns `~/.hermes/auth.json` when the process is in profile mode, and `_load_provider_state_with_source()` falls back to it ("borrowing"); rotations are written back to root (`agent/credential_pool._write_through_provider_state_to_global_root`). `--clone-all` deliberately strips cloned single-use OAuth grants so the clone borrows root instead. **`.env` API keys are NOT inherited** — a named profile only sees its own `.env` (plus shell exports, which are not scrubbed).
+**Root-install credential reuse.** *Yes for `auth.json` OAuth grants only.* `hermes_cli/auth._global_auth_file_path()` returns `~/.hexbot/auth.json` when the process is in profile mode, and `_load_provider_state_with_source()` falls back to it ("borrowing"); rotations are written back to root (`agent/credential_pool._write_through_provider_state_to_global_root`). `--clone-all` deliberately strips cloned single-use OAuth grants so the clone borrows root instead. **`.env` API keys are NOT inherited** — a named profile only sees its own `.env` (plus shell exports, which are not scrubbed).
 
 ## 3. Memory
 
@@ -144,7 +146,7 @@ create_job(prompt, schedule, name=None, repeat=None, deliver=None, origin=None,
            reasoning_effort=None) -> dict
 cron.scheduler.create_job_with_scheduler_registration(**kwargs) -> dict   # also registers first trigger
 ```
-CLI: `hermes -p <profile> cron create <schedule> "<prompt>" [--name --deliver --repeat --skill --script ...]` (`hermes_cli/subcommands/cron.py`).
+CLI: `hexbot core -p <profile> cron create <schedule> "<prompt>" [--name --deliver --repeat --skill --script ...]` (`hermes_cli/subcommands/cron.py`).
 
 **Schedule** (`parse_schedule`) → `{"kind": "once"|"interval"|"cron", ...}`: `"30m"`/`"2h"`/`"every 30m"` → interval minutes; `"every day at 9am"`, `"every monday 9am"`, `"weekdays at 9am"`, `"0 9 * * *"` → cron (needs `croniter`); ISO timestamp → once. `compute_next_run(schedule, last_run_at=None)` fills `next_run_at`.
 
@@ -152,7 +154,7 @@ CLI: `hermes -p <profile> cron create <schedule> "<prompt>" [--name --deliver --
 
 **Delivery.** `deliver` is a comma-separated string of tokens: `local` (no send), `origin`, `all`, `<platform>` (telegram/discord/signal/… using the configured home channel), `<platform>:<chat_id>[:<thread_id>]`, and `bot-chat[:<profile>]` (injects the output into a local profile's canonical Bot Chat as a message the bot answers). Resolved by `_resolve_delivery_targets(job)`; `parse_bot_chat_deliver_token(part)` handles the bot-chat form.
 
-**Execution.** `cron.scheduler.tick(verbose=True, adapters=None, loop=None, sync=True, *, can_dispatch=None)` runs every 60s from the gateway under a file lock (`~/.hermes/cron/.tick.lock`). Per due job: `run_one_job(job, ...)` → `run_job(job, ...) -> (success, full_output_doc, final_response, error)`. `run_job` builds the prompt with `_build_job_prompt` (job prompt + optional script stdout / monitor diff / `context_from` prior outputs), then constructs `run_agent.AIAgent(..., quiet_mode=True, skip_context_files=not workdir, load_soul_identity=True, skip_memory=False, skip_background_review=True, platform="cron", session_id=..., session_db=...)` and calls `agent.run_conversation(prompt, task_id=...)` on a pool with an inactivity watchdog (`HERMES_CRON_TIMEOUT`, default 600s; 0 = unlimited). So **yes — a normal agent turn, with SOUL.md and MEMORY.md/USER.md loaded**, which is exactly what a per-bot "dreaming" job needs. Results: `save_job_output(job_id, output)` writes the markdown doc (pruned to `cron.output_keep`), then `_deliver_result(...)`, then `mark_job_run(job_id, success, ...)`. Empty/`[SILENT]` output suppresses delivery.
+**Execution.** `cron.scheduler.tick(verbose=True, adapters=None, loop=None, sync=True, *, can_dispatch=None)` runs every 60s from the gateway under a file lock (`~/.hexbot/cron/.tick.lock`). Per due job: `run_one_job(job, ...)` → `run_job(job, ...) -> (success, full_output_doc, final_response, error)`. `run_job` builds the prompt with `_build_job_prompt` (job prompt + optional script stdout / monitor diff / `context_from` prior outputs), then constructs `run_agent.AIAgent(..., quiet_mode=True, skip_context_files=not workdir, load_soul_identity=True, skip_memory=False, skip_background_review=True, platform="cron", session_id=..., session_db=...)` and calls `agent.run_conversation(prompt, task_id=...)` on a pool with an inactivity watchdog (`HERMES_CRON_TIMEOUT`, default 600s; 0 = unlimited). So **yes — a normal agent turn, with SOUL.md and MEMORY.md/USER.md loaded**, which is exactly what a per-bot "dreaming" job needs. Results: `save_job_output(job_id, output)` writes the markdown doc (pruned to `cron.output_keep`), then `_deliver_result(...)`, then `mark_job_run(job_id, success, ...)`. Empty/`[SILENT]` output suppresses delivery.
 
 ## 5. Approvals, limits, usage
 

@@ -73,7 +73,7 @@ def _resolve_provider_key(env_var: str, provider_id: str) -> str:
 
     Delegates to ``tools.tool_backend_helpers.resolve_provider_secret`` —
     the single owner of STT/TTS key resolution (config > env/.env > the
-    credential pool populated by ``hermes auth add <provider_id>``).
+    credential pool populated by ``hexbot core auth add <provider_id>``).
     Resolved at call time so tests that reload the helpers module see the
     live function.
     """
@@ -360,7 +360,7 @@ def _try_lazy_install_stt() -> bool:
     except Exception as exc:
         logger.warning(
             "Lazy install of faster-whisper failed: %s. "
-            "This is often a permission issue: the Hermes process user cannot "
+            "This is often a permission issue: the Hexbot process user cannot "
             "write to the virtual environment. Try running manually as the "
             "venv owner: `stat -c '%%u' '$(dirname $(dirname $(which python3)))'` "
             "then `su - <owner> -c 'VIRTUAL_ENV=/opt/hermes/.venv "
@@ -485,7 +485,7 @@ def _resolve_command_stt_provider_config(
 
 
 def _is_local_stt_provider(provider: str, stt_config: Dict[str, Any]) -> bool:
-    """Return whether *provider* is exempt from Hermes's remote upload cap."""
+    """Return whether *provider* is exempt from Hexbot's remote upload cap."""
     key = (provider or "").lower().strip()
     if key in {"local", "local_command"}:
         return True
@@ -696,7 +696,7 @@ def _command_stt_env_passthrough(config: Dict[str, Any]) -> list:
     """Return the provider's ``env_passthrough`` allowlist (opt-out of scrub).
 
     Command providers legitimately reference their own API keys in the shell
-    template (curl one-liners). The child env is scrubbed of Hermes secrets by
+    template (curl one-liners). The child env is scrubbed of Hexbot secrets by
     default; ``env_passthrough: [MY_API_KEY, ...]`` copies the named variables
     back from the parent environment so a trusted template keeps working.
     Mirrors ``tools.tts_tool._command_provider_env_passthrough``.
@@ -718,7 +718,7 @@ def _run_command_stt(
     timeout, reset whenever the command emits output on stdout/stderr —
     a slow-but-alive provider survives, a silently stalled one is killed
     (same progress-based stuck detection as the TTS runner, #50081).
-    Child env is scrubbed of Hermes secrets (salvage of #56332) while still
+    Child env is scrubbed of Hexbot secrets (salvage of #56332) while still
     propagating delegated-child lineage markers when applicable.
     """
     from agent.delegation_context import delegated_child_subprocess_env
@@ -1194,7 +1194,7 @@ def _unregistered_stt_provider_error(provider: str) -> Dict[str, Any]:
         "error_type": "provider_not_registered",
         "error": (
             f"stt.provider='{key}' is set but no built-in, command, or plugin "
-            "provider registered that name. Run `hermes plugins list` to see "
+            "provider registered that name. Run `hexbot core plugins list` to see "
             "installed STT plugins, or configure a command provider under "
             f"`stt.providers.{key}.command`."
         ),
@@ -2123,7 +2123,7 @@ def _transcribe_local_command(
                 language=shlex.quote(language),
                 model=shlex.quote(normalized_model),
             )
-            # Scrub Hermes secrets from the child env (sibling path to #56332 /
+            # Scrub Hexbot secrets from the child env (sibling path to #56332 /
             # _run_command_stt — this local-whisper path previously inherited
             # the full process environment).
             from tools.environments.local import hermes_subprocess_env
@@ -2476,7 +2476,7 @@ def _transcribe_xai(
         return {
             "success": False,
             "transcript": "",
-            "error": "No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY",
+            "error": "No xAI credentials found. Configure xAI OAuth in `hexbot core model` or set XAI_API_KEY",
         }
 
     stt_config = _load_stt_config()
@@ -3171,7 +3171,7 @@ def _dispatch_stt_provider(
 
     # An explicit openai selection flattened to "none" carries a
     # selection-specific reason (e.g. the managed openai-audio gateway is
-    # unavailable). Surface it — with its `hermes tools` remediation —
+    # unavailable). Surface it — with its `hexbot core tools` remediation —
     # instead of the all-provider setup hint (#93045).
     if provider_key == "none" and str(stt_config.get("provider") or "") == "openai" and _HAS_OPENAI:
         try:

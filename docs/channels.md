@@ -24,8 +24,8 @@ cannot read back. Back up the directory before opening a nightly.
 
 ## Which files belong to which channel
 
-Everything under `hexbot/`, `apps/`, and the Hermes core is shared. Channel
-behaviour lives in a small set of files:
+Everything under `hexbot/`, `apps/`, and the core at the repository root is
+shared. Channel behaviour lives in a small set of files:
 
 | File | Channel | Role |
 | --- | --- | --- |

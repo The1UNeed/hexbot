@@ -3,7 +3,7 @@
 The seam between the existing provider mechanism and the managed runtime:
 ``provider: llamacpp`` with no explicit base_url resolves, in order, to
 
-1. the managed server this Hermes is supervising (state file written by
+1. the managed server this Hexbot is supervising (state file written by
    LlamaServerSupervisor.start, removed on stop, staleness-checked), or
 2. a detected external llama-server.
 

@@ -12,9 +12,10 @@
 - End to end: `pnpm --filter ./apps/desktop run e2e` (Playwright driving the built Electron app against a daemon in a temp home).
 - Connect: `HEXBOT_CONNECT_E2E=1 ./venv/bin/pytest tests/hexbot/test_connect_e2e.py -q` (a real Connect service with the in-memory store, a real daemon, and the CLI, web, desktop, and browser sign-in HTTP calls; no Cloudflare).
 
-## Upstream Hermes suites
+## Core suites
 
-Run the suites that cover the seams Hexbot edits (see `CORE_EDITS.md`):
+Run these when you change the core at the repository root, plus the
+suites under `tests/` that cover the files you touched:
 
 ```
 ./venv/bin/pytest tests/plugins tests/test_plugins_manage_profile_scope.py \
@@ -28,16 +29,15 @@ state into the `tests/hexbot` fakes when both run in one process.
 
 Baseline on 2026-09-03 at the import commit, with the venv built by
 `uv sync --extra all --locked`: 1773 passed, 5 skipped, 16 failed. The
-failures are pre-existing and identical on pristine upstream v0.21.0 in this
-environment: `tests/plugins/memory/test_hindsight_provider.py` (missing
+failures are pre-existing and identical on the unmodified v0.21.0 import in
+this environment: `tests/plugins/memory/test_hindsight_provider.py` (missing
 optional module `hindsight_client_api`),
 `tests/plugins/memory/test_openviking_optional_peer.py`,
 `tests/plugins/video_gen/test_fal_plugin.py` (optional fal client), and one
 order-dependent case in `tests/plugins/test_a2a_plugin.py` that passes in
 isolation. Treat any new failure outside that list as a regression.
 
-The universal prompt text is Hexbot's (`CORE_EDITS.md` row 7). The upstream
-suites that pin that wording were updated with it and must stay green:
+These suites pin the universal system prompt text and must stay green:
 
 ```
 ./venv/bin/pytest tests/agent/test_system_prompt.py tests/agent/test_prompt_builder.py \

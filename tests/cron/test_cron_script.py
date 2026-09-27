@@ -109,7 +109,7 @@ class TestRunJobScript:
 
 
     def test_script_subprocess_env_sanitized(self, cron_env, monkeypatch):
-        """Cron scripts must not inherit Hermes provider env (SECURITY.md §2.3)."""
+        """Cron scripts must not inherit Hexbot provider env (SECURITY.md §2.3)."""
         from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
         from cron.scheduler import _run_job_script
 
@@ -492,7 +492,7 @@ class TestScriptPathContainment:
     """
 
     def test_absolute_path_outside_scripts_dir_blocked(self, cron_env):
-        """Absolute paths outside ~/.hermes/scripts/ must be rejected."""
+        """Absolute paths outside ~/.hexbot/scripts/ must be rejected."""
         from cron.scheduler import _run_job_script
 
         # Create a script outside the scripts dir

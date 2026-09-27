@@ -28,7 +28,7 @@ def preview_close(url: str = "") -> str:
     except Exception as exc:  # noqa: BLE001
         return tool_error(f"Failed to close the preview: {exc}")
     if not ok:
-        return tool_error("The preview pane is only available in the Hermes desktop app.")
+        return tool_error("The preview pane is only available in the Hexbot desktop app.")
     return json.dumps({"success": True, "closed": target or "all"}, ensure_ascii=False)
 
 

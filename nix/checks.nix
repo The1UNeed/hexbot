@@ -407,7 +407,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
 
             # The agent package that the module installs, and the runtime
             # that the launcher pins. These must be the same store path: a
-            # second Hermes runtime beside the services is the fault that
+            # second Hexbot runtime beside the services is the fault that
             # `programs.enable` plus a plain desktop package would give.
             agentPackages = builtins.filter (p: (p.pname or "") == "hermes-agent") cfg.home.packages;
 
@@ -1126,7 +1126,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         '';
 
         # Verify HERMES_NODE is set in wrapper and points to Node 26+
-        # (Hermes pins its toolchain to Node 26 everywhere)
+        # (Hexbot pins its toolchain to Node 26 everywhere)
         hermes-node = pkgs.runCommand "hermes-node-version" { } ''
           set -e
           echo "=== Checking HERMES_NODE in wrapper ==="
@@ -1140,7 +1140,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
 
           NODE_MAJOR=$("$HERMES_NODE" --version | sed 's/^v//' | cut -d. -f1)
           test "$NODE_MAJOR" -ge 26 || \
-            (echo "FAIL: Node v$NODE_MAJOR < 26, Hermes requires Node 26"; exit 1)
+            (echo "FAIL: Node v$NODE_MAJOR < 26, Hexbot requires Node 26"; exit 1)
           echo "PASS: Node v$NODE_MAJOR >= 26"
 
           echo "=== All HERMES_NODE checks passed ==="

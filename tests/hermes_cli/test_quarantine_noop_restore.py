@@ -5,7 +5,7 @@ On Windows, ``_run_quarantined_install`` / ``_run_install_cmd`` rename live
 installer so uv/pip can write fresh replacements. When the install SUCCEEDS
 but never rewrites entry points (uv audits an already-satisfied editable
 install as a no-op), the old code only restored the shims on FAILURE — the
-quarantined shims stayed renamed aside and ``hermes`` vanished from PATH
+quarantined shims stayed renamed aside and ``hexbot core`` vanished from PATH
 after a green install.
 
 These tests exercise both wrapper sites with a fake installer and assert the

@@ -5,7 +5,7 @@ exists to prevent the auth.json ownership-mismatch bug where
 `docker exec <c> hermes login` would write /opt/data/auth.json as
 root:root mode 0600, leaving the supervised gateway (UID 10000) unable
 to read its own credentials and returning "Provider authentication
-failed: Hermes is not logged into Nous Portal" on every message.
+failed: Hexbot is not logged into Nous Portal" on every message.
 
 These tests verify:
 
@@ -152,6 +152,30 @@ def test_shim_drops_root_to_hermes_uid(sleep_container: str) -> None:
 
 
 
+def test_hexbot_shim_drops_root_to_hermes_uid(sleep_container: str) -> None:
+    """`docker exec <c> hexbot core ...` goes through the same drop as `hermes`."""
+    subprocess.run(
+        ["docker", "exec", "--user", "root", sleep_container,
+         "rm", "-f", "/opt/data/config.yaml"],
+        capture_output=True, check=False,
+    )
+    r = subprocess.run(
+        ["docker", "exec", sleep_container,
+         "hexbot", "core", "config", "set", "_test.shim_marker", "1"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert r.returncode == 0, f"config set failed: stdout={r.stdout!r} stderr={r.stderr!r}"
+    r = subprocess.run(
+        ["docker", "exec", sleep_container,
+         "stat", "-c", "%U:%G", "/opt/data/config.yaml"],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert r.stdout.strip() == "hermes:hermes", (
+        f"config.yaml owned by {r.stdout.strip()!r}, expected hermes:hermes; "
+        "`hexbot` bypassed the privilege-drop shim or wrote outside /opt/data."
+    )
+
+
 def test_main_cmd_path_unaffected(built_image: str) -> None:
     """The CMD path (docker run <image> <args>) must still work.
 
@@ -183,7 +207,7 @@ def test_e2e_login_then_supervised_gateway_can_read_auth(
     /opt/data/auth.json as root:root 0600. The supervised gateway (UID
     10000) couldn't read it, _load_auth_store swallowed PermissionError
     as a parse failure, and resolve_nous_runtime_credentials raised
-    "Hermes is not logged into Nous Portal" on every message.
+    "Hexbot is not logged into Nous Portal" on every message.
 
     We can't do a real OAuth login in a unit test, but we can stand in
     for it by writing the same file shape via `hermes config set`-style

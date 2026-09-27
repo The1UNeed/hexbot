@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 def test_oneshot_replaces_lone_surrogate_and_exits_zero():
-    """hermes -z must print U+FFFD and exit 0 when the model returns U+D800."""
+    """hexbot core -z must print U+FFFD and exit 0 when the model returns U+D800."""
     program = textwrap.dedent(
         """
         import hermes_cli.oneshot as oneshot

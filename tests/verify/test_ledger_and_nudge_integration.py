@@ -2,9 +2,9 @@
 
 Covers the closed loop the rescoped PR is about:
 
-- ``hermes verify`` records into the evidence ledger (pass and fail),
+- ``hexbot core verify`` records into the evidence ledger (pass and fail),
 - a passing run satisfies the verify-on-stop guard,
-- the verify-on-stop nudge names ``hermes verify --json`` when the workspace
+- the verify-on-stop nudge names ``hexbot core verify --json`` when the workspace
   has a runnable recipe (start command or saved manifest),
 - the CLI's detect path merges ``detect_project_facts`` verify commands the
   recipe missed.
@@ -121,7 +121,7 @@ def test_cli_run_uses_hermes_session_id_env(hermes_home, capsys, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# closed loop: edit -> stop guard nudge -> hermes verify -> guard satisfied
+# closed loop: edit -> stop guard nudge -> hexbot core verify -> guard satisfied
 # ---------------------------------------------------------------------------
 
 
@@ -137,7 +137,7 @@ def test_passing_verify_run_satisfies_stop_guard(hermes_home, capsys):
 
 
 # ---------------------------------------------------------------------------
-# nudge wording: recipe-aware `hermes verify --json` suggestion
+# nudge wording: recipe-aware `hexbot core verify --json` suggestion
 # ---------------------------------------------------------------------------
 
 
@@ -147,7 +147,7 @@ def test_nudge_mentions_hermes_verify_when_recipe_has_start(hermes_home):
     mark_workspace_edited(session_id="s1", cwd=project, paths=[changed])
     nudge = build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed])
     assert nudge is not None
-    assert "hermes verify --json" in nudge
+    assert "hexbot core verify --json" in nudge
     # The cheap verify commands are still listed first.
     assert "npm run test" in nudge
 
@@ -163,7 +163,7 @@ def test_nudge_mentions_hermes_verify_when_manifest_exists(hermes_home):
     mark_workspace_edited(session_id="s1", cwd=project, paths=[changed])
     nudge = build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed])
     assert nudge is not None
-    assert "hermes verify --json" in nudge
+    assert "hexbot core verify --json" in nudge
 
 
 def test_nudge_keeps_plain_wording_without_recipe_start(hermes_home):

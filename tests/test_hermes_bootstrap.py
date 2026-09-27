@@ -1,6 +1,6 @@
 """Tests for hermes_bootstrap — Windows UTF-8 stdio shim.
 
-The bootstrap module is imported at the top of every Hermes entry point
+The bootstrap module is imported at the top of every Hexbot entry point
 (hermes, hermes-agent, hermes-acp, gateway, batch_runner, cli.py).  It
 fixes Python's Windows UTF-8 defaults so print("café") doesn't crash and
 subprocess children inherit UTF-8 mode.
@@ -12,7 +12,7 @@ Key invariants covered by these tests:
   3. Idempotent: safe to call multiple times
   4. Respects user opt-out: if the user explicitly sets PYTHONUTF8=0 or
      PYTHONIOENCODING=something-else, we leave those alone
-  5. Load order: every Hermes entry point imports hermes_bootstrap as its
+  5. Load order: every Hexbot entry point imports hermes_bootstrap as its
      first non-docstring import (before anything that might do file I/O
      or print to stdout)
 """
@@ -59,7 +59,7 @@ class TestWindowsBehavior:
 
     @pytest.mark.windows_only
     def test_stdout_reconfigured_to_utf8_on_windows(self):
-        # The live process's stdout should now be UTF-8 (the Hermes CLI
+        # The live process's stdout should now be UTF-8 (the Hexbot CLI
         # runs on Windows with a pytest console that's cp1252 by default).
         # If reconfigure succeeded, sys.stdout.encoding is 'utf-8'.
         _fresh_import()
@@ -187,12 +187,12 @@ class TestStdioReconfigureErrorHandling:
 
 
 class TestEntryPointsImportBootstrap:
-    """Every Hermes entry point must import hermes_bootstrap as its
+    """Every Hexbot entry point must import hermes_bootstrap as its
     first non-docstring import.  We check this by scanning source files
     rather than invoking the entry points (which would require a full
     agent context)."""
 
-    # Entry points that invoke Hermes as a process.  Each one must
+    # Entry points that invoke Hexbot as a process.  Each one must
     # import hermes_bootstrap before doing any file I/O or stdout writes.
     ENTRY_POINTS = [
         "hermes_cli/main.py",   # hermes CLI (console_script)
@@ -214,7 +214,7 @@ class TestEntryPointsImportBootstrap:
 
         Also lenient about a try/except wrapper around the import: entry
         points may guard the import against ``ModuleNotFoundError`` so a
-        half-finished ``hermes update`` (git-reset landed new code but
+        half-finished ``hexbot core update`` (git-reset landed new code but
         ``uv pip install -e .`` didn't finish re-registering
         ``hermes_bootstrap`` as a top-level module) leaves hermes
         recoverable instead of crashing on every invocation.  When the
@@ -270,7 +270,7 @@ class TestEntryPointsImportBootstrap:
 
 class TestHardenImportPath:
     """harden_import_path() must keep a same-named package in the launch
-    directory from shadowing Hermes's own top-level modules — covering both
+    directory from shadowing Hexbot's own top-level modules — covering both
     the relative ('' / '.') and absolute-path forms the cwd can take on
     sys.path (issue #51286)."""
 
@@ -306,12 +306,12 @@ class TestHardenImportPath:
     def test_absolute_cwd_path_loses_to_src_root(self):
         # The real #51286 bug: the launch dir is present as its own absolute
         # path (venv activation / a project on PYTHONPATH), ahead of the
-        # Hermes root.  The guard must relocate Hermes to the front.
+        # Hexbot root.  The guard must relocate Hexbot to the front.
         hb = _fresh_import()
         result = self._run(hb, ["/home/user/tg-ws-proxy", "/opt/hermes"])
         assert result[0] == "/opt/hermes"
         # The cwd absolute path may still appear (it can hold legit deps),
-        # but only AFTER the Hermes root.
+        # but only AFTER the Hexbot root.
         assert result.index("/opt/hermes") < result.index("/home/user/tg-ws-proxy")
 
 

@@ -1,4 +1,4 @@
-"""``hermes gateway`` and ``hermes proxy`` subcommand parsers.
+"""``hexbot core gateway`` and ``hexbot core proxy`` subcommand parsers.
 
 Extracted verbatim from ``hermes_cli/main.py:main()`` (god-file Phase 2).
 Both parsers are built together because they shared one inline block (the
@@ -228,7 +228,7 @@ def build_gateway_parser(
         "migrate-legacy",
         help="Remove legacy hermes.service units from pre-rename installs",
         description=(
-            "Stop, disable, and remove legacy Hermes gateway unit files "
+            "Stop, disable, and remove legacy Hexbot gateway unit files "
             "(e.g. hermes.service) left over from older installs. Profile "
             "units (hermes-gateway-<profile>.service) and unrelated "
             "third-party services are never touched."
@@ -261,8 +261,8 @@ def build_gateway_parser(
             "Authenticates as your Nous Portal account (the connector derives the "
             "authoritative tenant from it), mints this gateway's per-gateway secret "
             "and per-tenant delivery key, and writes GATEWAY_RELAY_ID / "
-            "GATEWAY_RELAY_SECRET / GATEWAY_RELAY_DELIVERY_KEY into ~/.hermes/.env. "
-            "Requires being logged in (hermes setup). Not available in managed installs."
+            "GATEWAY_RELAY_SECRET / GATEWAY_RELAY_DELIVERY_KEY into ~/.hexbot/.env. "
+            "Requires being logged in (hexbot core setup). Not available in managed installs."
         ),
     )
     gateway_enroll.add_argument(
@@ -300,7 +300,7 @@ def build_gateway_parser(
             "Phase 5 §5.2 wake URL: a reachable URL the connector pokes "
             "(payload-free GET) to wake this gateway when buffered work arrives "
             "while it's idle/suspended, so it reconnects and drains. Persisted as "
-            "GATEWAY_RELAY_WAKE_URL in ~/.hermes/.env and forwarded at provision. "
+            "GATEWAY_RELAY_WAKE_URL in ~/.hexbot/.env and forwarded at provision. "
             "Optional — without it the gateway still drains whenever it next "
             "reconnects on its own."
         ),
@@ -331,7 +331,7 @@ def build_gateway_parser(
     proxy_start.add_argument(
         "--provider",
         default="nous",
-        help="Upstream provider: nous or xai (default: nous). See `hermes proxy providers`.",
+        help="Upstream provider: nous or xai (default: nous). See `hexbot core proxy providers`.",
     )
     proxy_start.add_argument(
         "--host",

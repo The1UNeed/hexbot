@@ -1,7 +1,7 @@
 """Post-loop turn finalization for ``run_conversation``.
 
 Extracted from ``agent/conversation_loop.py`` as part of the god-file
-decomposition campaign (``~/.hermes/plans/god-file-decomposition.md``, Phase 1
+decomposition campaign (``~/.hexbot/plans/god-file-decomposition.md``, Phase 1
 step 4 — the post-loop ``TurnFinalizer`` seam). ``run_conversation``'s tail
 (everything after the main tool-calling ``while`` loop) is lifted here verbatim:
 budget-exhaustion summary, trajectory save, session persist, turn diagnostics,
@@ -744,7 +744,7 @@ def finalize_turn(
         "cost_status": agent.session_cost_status,
         "cost_source": agent.session_cost_source,
         # Requested service tier (from request_overrides.extra_body), for
-        # billing audits by callers like `hermes -z --usage-file`.
+        # billing audits by callers like `hexbot core -z --usage-file`.
         "service_tier": (
             (getattr(agent, "request_overrides", {}) or {}).get("extra_body") or {}
         ).get("service_tier"),
@@ -758,7 +758,7 @@ def finalize_turn(
     if failed and str(_turn_exit_reason) == "session_persistence_failed":
         result["error"] = final_response or (
             "session storage could not be written — check the state database "
-            "health (`hermes doctor`), then send your message again"
+            "health (`hexbot core doctor`), then send your message again"
         )
         # Machine-readable cause for the gateway/desktop: exactly
         # 'session_persistence_failed:<locked|compression|turn_lease|corrupt|replaced|disk|unknown>'.

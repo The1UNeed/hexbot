@@ -15,7 +15,7 @@ def gw(fake_gateway):
 
 
 def rename_tool(*args, **kwargs):
-    """The real handler returns a JSON string, as Hermes requires."""
+    """The real handler returns a JSON string, as Hexbot requires."""
     from hexbot.sections import rename_tool as handler
     reply = handler(*args, **kwargs)
     assert isinstance(reply, str)
@@ -28,7 +28,7 @@ def test_bot_names_its_section_and_the_user_can_take_it_back(gw):
     sections.create_section("scout")
     gw.calls.clear()
 
-    # Hermes hands tools the stored key; the live id must work too.
+    # Hexbot hands tools the stored key; the live id must work too.
     reply = rename_tool({"title": '"Budget for the Lisbon trip."'}, session_id="live1")
     assert reply == {"renamed": True, "title": "Budget for the Lisbon trip"}
     assert gw.params_for("session.title") == [

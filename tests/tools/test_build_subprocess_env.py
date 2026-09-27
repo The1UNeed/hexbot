@@ -100,14 +100,14 @@ def test_e2e_no_scrub_child_keeps_planted_secret(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# E2E regression (#93082): cron/no_agent children keep bare `hermes` on PATH
+# E2E regression (#93082): cron/no_agent children keep bare `hexbot core` on PATH
 # ---------------------------------------------------------------------------
 
 
 def test_e2e_scrubbed_env_resolves_bare_hermes_under_minimal_parent_path(monkeypatch):
     """Regression for #92998/#93082: a gateway launched by systemd/cron with a
     minimal PATH (no hermes console-script dir) must still hand cron job
-    children an env whose PATH resolves bare ``hermes``.
+    children an env whose PATH resolves bare ``hexbot core``.
 
     Exercises the REAL factory and the REAL bin-dir resolver — no mocks of the
     helpers. cron/scheduler._run_job_script builds its child env via exactly

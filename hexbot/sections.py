@@ -1,9 +1,9 @@
-"""Persistent bot sections backed by Hermes sessions.
+"""Persistent bot sections backed by Hexbot sessions.
 
 Two identifiers exist for every section and they are never interchangeable:
 
 ``stored id``
-    ``session.create``'s ``stored_session_id`` (== the Hermes ``session_key``).
+    ``session.create``'s ``stored_session_id`` (== the Hexbot ``session_key``).
     Durable, survives restarts, and is the Hexbot section id. It is what
     ``session.resume``, ``session.delete`` and ``session.list`` take.
 
@@ -11,12 +11,12 @@ Two identifiers exist for every section and they are never interchangeable:
     ``session.create`` / ``session.resume``'s ``session_id``. Valid only while
     the gateway holds the session in memory. It is what ``session.history``,
     ``session.title``, ``session.close``, ``session.status`` and
-    ``prompt.submit`` take; passing a stored id to those returns Hermes error
+    ``prompt.submit`` take; passing a stored id to those returns Hexbot error
     4001 "session not found".
 
 ``_LIVE`` maps stored -> live for the sections this process has opened. It is
 refreshed by every ``open_section`` (a ``session.resume`` on the stored id) and
-dropped for a section as soon as Hermes reports 4001 for its live id.
+dropped for a section as soon as Hexbot reports 4001 for its live id.
 """
 
 from __future__ import annotations
@@ -29,10 +29,10 @@ from hexbot.errors import GatewayError, HexbotError
 
 logger = logging.getLogger(__name__)
 
-#: stored section id -> live Hermes session id (this process only).
+#: stored section id -> live Hexbot session id (this process only).
 _LIVE: dict[str, str] = {}
 
-#: Hermes ``session.active_list`` statuses that mean a turn is in flight.
+#: Hexbot ``session.active_list`` statuses that mean a turn is in flight.
 BUSY_STATUSES = frozenset({"working", "waiting"})
 
 #: The title a section carries until someone names it.
@@ -75,14 +75,14 @@ def _remember_live(section_id: str, live_id: str) -> None:
 
 
 def live_id(section_id: str) -> str | None:
-    """Return the live Hermes session id for *section_id*, or None."""
+    """Return the live Hexbot session id for *section_id*, or None."""
     return _LIVE.get(section_id)
 
 
 def section_for_session(session_id: str):
-    """Resolve a section row from either a stored or a live Hermes session id.
+    """Resolve a section row from either a stored or a live Hexbot session id.
 
-    Hermes hands plugins ``agent.session_id``, which is the *stored* key, while
+    Hexbot hands plugins ``agent.session_id``, which is the *stored* key, while
     the gateway RPCs speak live ids. Both are accepted here so callers never
     have to guess which flavour they were given.
     """
@@ -142,25 +142,25 @@ def list_sections(bot=None, include_archived=False, *, all_users=False) -> list[
                 "session.list", {"profile": profile, "include_hidden": True})["sessions"]})
         except (GatewayError, KeyError, TypeError):
             logger.debug("session.list unavailable for profile %s", profile, exc_info=True)
-    # A listing is where a Hermes auto-title lands on the row, so this read
+    # A listing is where a Hexbot auto-title lands on the row, so this read
     # writes; the update is conditional and cheap (see _adopt_hermes_title).
     return [_row_shape(_adopt_hermes_title(row, history.get(row["id"])) or row,
                        history.get(row["id"])) for row in rows]
 
 
 def _adopt_hermes_title(row, session):
-    """Take the title Hermes generated for a section nobody has named.
+    """Take the title Hexbot generated for a section nobody has named.
 
-    Hermes titles every untitled session from its opening message (a derived
+    Hexbot titles every untitled session from its opening message (a derived
     slice at once, a small-model title a moment later) and keeps that title in
     its own store. It lands here on the next listing, as a bot-named title,
     while the section is still ``DEFAULT_TITLE`` or was last named by the bot.
     A title the user typed (``title_by`` NULL and not the default) is never
-    touched, and neither is a row whose own rename has not reached Hermes yet.
+    touched, and neither is a row whose own rename has not reached Hexbot yet.
     The update repeats the checks in SQL so a rename that landed between the
     read and the write is left alone (and is what gets listed). A rename the
     bot made with its tool is safe here too: it went through ``session.title``
-    at user authority, which Hermes's auto-titler never overrides, so the two
+    at user authority, which Hexbot's auto-titler never overrides, so the two
     titles stay equal. Returns the fresh row, or None when nothing changed.
     """
     title = str((session or {}).get("title") or "").strip()
@@ -179,8 +179,8 @@ def _adopt_hermes_title(row, session):
 
 
 def create_section(bot: str, title=None) -> dict:
-    """Create a section. Without *title* the Hermes session is left untitled
-    so Hermes's auto-titler names it from the first prompt (see
+    """Create a section. Without *title* the Hexbot session is left untitled
+    so Hexbot's auto-titler names it from the first prompt (see
     :func:`_adopt_hermes_title`); the row shows ``DEFAULT_TITLE`` meanwhile."""
     db.migrate()
     from hexbot.identity import current_user_id
@@ -199,10 +199,10 @@ def create_section(bot: str, title=None) -> dict:
     live = result.get("session_id")
     if not stored:
         # Without the durable key the section could never be resumed or
-        # deleted, so refuse rather than record an id Hermes does not know.
+        # deleted, so refuse rather than record an id Hexbot does not know.
         raise HexbotError(5201, "session.create returned no stored_session_id")
     if live:
-        # Hermes only persists a session once it has messages; save the empty
+        # Hexbot only persists a session once it has messages; save the empty
         # session now so the section can be reopened after a reconnect.
         try:
             gateway.call("session.save", {"session_id": live})
@@ -222,7 +222,7 @@ def create_section(bot: str, title=None) -> dict:
 def open_section(section_id: str) -> dict:
     """Return the section and its messages, attaching the caller to its live session.
 
-    Always ``session.resume`` on the stored id. When Hermes still holds the
+    Always ``session.resume`` on the stored id. When Hexbot still holds the
     session it reuses it (same agent, warm prompt cache), rebinds it to the
     calling transport and cancels the orphan reap that a page reload armed;
     otherwise it rebuilds the session from the store. A ``session.history``
@@ -252,12 +252,12 @@ def open_section(section_id: str) -> dict:
     return opened
 
 
-#: Hermes's ``session.list`` preview length; the shaping below matches it.
+#: Hexbot's ``session.list`` preview length; the shaping below matches it.
 PREVIEW_CHARS = 60
 
 
 def _preview(messages) -> str:
-    """The first user message, shaped like Hermes's ``session.list`` preview."""
+    """The first user message, shaped like Hexbot's ``session.list`` preview."""
     first = next((m for m in messages if isinstance(m, dict) and m.get("role") == "user"), None)
     text = str((first or {}).get("text") or (first or {}).get("content") or "").strip()
     text = text.replace("\n", " ").replace("\r", " ")
@@ -295,11 +295,11 @@ def rename_section(section_id: str, title: str, *, by: str | None = None) -> dic
     skips the owner check that every RPC caller goes through.
 
     The Hexbot row is always updated (it is what every ``hexbot.*`` result
-    reports). The Hermes session title is only settable through
+    reports). The Hexbot session title is only settable through
     ``session.title``, which needs the LIVE session id, so:
 
     * section live in this process -> rename immediately;
-    * section closed, or Hermes answers 4001 -> mark the row ``title_dirty``
+    * section closed, or Hexbot answers 4001 -> mark the row ``title_dirty``
       and push the rename lazily on the next :func:`open_section`, right after
       ``session.resume`` hands back a fresh live id.
     """
@@ -357,8 +357,8 @@ def delete_section(section_id: str, purge_memory=True) -> bool:
 
     Closes the live session first (``session.delete`` refuses with 4023 while
     the stored key is bound to a live record). With ``purge_memory`` the stored
-    Hermes session is deleted too, which drops its transcript; with
-    ``purge_memory=False`` only the Hexbot row goes and the Hermes transcript
+    Hexbot session is deleted too, which drops its transcript; with
+    ``purge_memory=False`` only the Hexbot row goes and the Hexbot transcript
     is left behind. What the bot wrote to its memory stays either way.
     """
     row = _get(section_id)
@@ -367,8 +367,8 @@ def delete_section(section_id: str, purge_memory=True) -> bool:
         try:
             gateway.call("session.delete", {"session_id": section_id, "profile": row["bot"]})
         except GatewayError as exc:
-            # A section that never had a message has no stored Hermes session
-            # (Hermes persists on the first prompt), so there is nothing to
+            # A section that never had a message has no stored Hexbot session
+            # (Hexbot persists on the first prompt), so there is nothing to
             # purge. session.delete says 4007 for that; 4001 is the live-id form.
             if exc.code not in (4001, 4007):
                 raise
@@ -426,13 +426,13 @@ RENAME_SCHEMA = {
 
 
 def rename_tool(args: dict, *, session_id: str = "", **_kwargs) -> str:
-    """Tool handler. Hermes accepts only strings, so the reply is JSON."""
+    """Tool handler. Hexbot accepts only strings, so the reply is JSON."""
     import json
     return json.dumps(_rename_from_tool(args, str(session_id or "")), ensure_ascii=False)
 
 
 def _rename_from_tool(args: dict, session_id: str) -> dict:
-    # Hermes hands tools the stored key, and the tool can only reach the
+    # Hexbot hands tools the stored key, and the tool can only reach the
     # section its own session belongs to, so no owner check applies here;
     # ``rename_section(by="bot")`` skips it and nothing on the wire can pass
     # ``by``.

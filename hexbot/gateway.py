@@ -1,4 +1,4 @@
-"""Calls into the Hermes gateway registry."""
+"""Calls into the Hexbot gateway registry."""
 
 from __future__ import annotations
 

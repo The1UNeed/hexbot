@@ -1,4 +1,4 @@
-"""The test suite must never write into the operator's real Hermes logs.
+"""The test suite must never write into the operator's real Hexbot logs.
 
 `hermes_cli/main.py` calls `setup_logging()` at module scope, which resolves
 `get_hermes_home()` and attaches rotating file handlers to the ROOT logger.

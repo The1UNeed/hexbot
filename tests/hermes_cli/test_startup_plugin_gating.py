@@ -2,8 +2,8 @@
 
 ``hermes_cli.main`` skips eager plugin discovery at argparse-setup time
 when the invocation is clearly targeting a known built-in subcommand.
-This saves 500-650ms on ``hermes --help``, ``hermes --version``,
-``hermes logs``, etc., by not importing ``google.cloud.pubsub_v1``,
+This saves 500-650ms on ``hexbot core --help``, ``hexbot core --version``,
+``hexbot core logs``, etc., by not importing ``google.cloud.pubsub_v1``,
 ``aiohttp``, ``grpc``, and friends.
 
 Two invariants:
@@ -41,7 +41,7 @@ from hermes_cli.main import (
 
 
 def _live_subcommand_names() -> set[str]:
-    """Run ``hermes --help`` in-process and parse the subcommand block.
+    """Run ``hexbot core --help`` in-process and parse the subcommand block.
 
     We patch ``_plugin_cli_discovery_needed`` to always return False so
     plugin-registered commands aren't included — we're validating the
@@ -108,7 +108,7 @@ def test_deferred_platform_cli_resolution_targets_matching_platform():
     """The slow path must import the deferred platform whose name matches the
     invoked command, so its register_cli_command side effect fires.
 
-    Photon registers ``hermes photon`` only when its adapter module is
+    Photon registers ``hexbot core photon`` only when its adapter module is
     imported; on the unknown-command slow path the platform is still a
     deferred entry, so without this resolution step the CLI command stays
     absent and argparse rejects ``photon`` (issue #54678).

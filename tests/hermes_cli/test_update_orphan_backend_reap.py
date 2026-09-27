@@ -4,7 +4,7 @@ The GUI-updater handoff race (ryanc's 2026-08-09 failures): the Desktop app
 fires SIGTERM + app.quit() and spawns hermes-setup, but its Python backend
 (``python.exe -m hermes_cli.main serve``) survives the teardown race. The
 Desktop is gone — nothing will respawn that backend — yet the venv-holder
-guard refused on it and the update dead-ended with "Hermes is still running"
+guard refused on it and the update dead-ended with "Hexbot is still running"
 while the user had zero windows open.
 
 ``_orphaned_desktop_backend_pids`` classifies holders: a ``serve``/

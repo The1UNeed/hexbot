@@ -210,7 +210,7 @@ def test_get_gateway_eligible_tools_treats_explicit_backend_as_configured(monkey
     """A keyless local backend (e.g. searxng) has no credentials to detect,
     but an explicit non-nous selection must still keep it out of
     'unconfigured' — regression for #92647, where it was pre-checked and a
-    single Enter during `hermes model` overwrote it to `web.backend: nous`.
+    single Enter during `hexbot core model` overwrote it to `web.backend: nous`.
     """
     monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True))
     monkeypatch.setattr(
@@ -397,7 +397,7 @@ def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# ensure_nous_portal_access — inline login gate for `hermes tools`
+# ensure_nous_portal_access — inline login gate for `hexbot core tools`
 # ---------------------------------------------------------------------------
 
 
@@ -527,7 +527,7 @@ def test_has_agent_browser_import_failure_falls_back_to_hermes_managed_node_path
     monkeypatch, tmp_path
 ):
     """If tools.browser_tool cannot be imported, the managed-Node rung must
-    still find a runnable agent-browser under the Hermes Node dir even when
+    still find a runnable agent-browser under the Hexbot Node dir even when
     it's absent from the probe process's PATH — the Windows installer shape
     where install succeeded but the GUI still said needs setup."""
     monkeypatch.setitem(sys.modules, "tools.browser_tool", None)

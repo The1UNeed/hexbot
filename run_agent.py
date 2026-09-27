@@ -26,7 +26,7 @@ try:
     import hermes_bootstrap  # noqa: F401
 except ModuleNotFoundError:
     # Graceful fallback when hermes_bootstrap isn't registered in the venv
-    # yet — happens during partial ``hermes update`` where git-reset landed
+    # yet — happens during partial ``hexbot core update`` where git-reset landed
     # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
     pass
@@ -70,7 +70,7 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
     """Working directory to stamp on a new session row, or None.
 
     Only local CLI sessions get a recorded cwd: the directory the process was
-    launched from is meaningful for ``hermes -c`` / ``--resume`` (relaunch
+    launched from is meaningful for ``hexbot core -c`` / ``--resume`` (relaunch
     where you left off). Gateway/cron/remote-backend sessions have no stable
     host cwd to restore, so they record nothing.
 
@@ -405,7 +405,7 @@ def _safe_session_filename_component(session_id: str) -> str:
 
     Session IDs can originate from untrusted input (e.g. the
     ``X-Hermes-Session-Id`` API header) and are otherwise interpolated raw
-    into on-disk artifact filenames under ``~/.hermes/sessions/``.  Without
+    into on-disk artifact filenames under ``~/.hexbot/sessions/``.  Without
     sanitization, a traversal-shaped ID such as ``../../../../etc/pwned``
     would let a caller write the session snapshot / request dump outside the
     sessions directory.  This collapses every non ``[A-Za-z0-9_-]`` character
@@ -713,7 +713,7 @@ class AIAgent:
             # Carry the live YOLO bypass into the creation-time model_config so
             # a session whose /yolo was toggled BEFORE the row existed (the row
             # is created lazily on the first turn) still persists the flag for
-            # `hermes --resume`. set_session_yolo() no-ops on a missing row, so
+            # `hexbot core --resume`. set_session_yolo() no-ops on a missing row, so
             # this is the only chance to record a pre-first-turn toggle.
             _init_model_config = self._session_init_model_config
             try:
@@ -1027,7 +1027,7 @@ class AIAgent:
         all non-forced output is suppressed.
 
         ``suppress_status_output`` is a stricter CLI automation mode used by
-        parseable single-query flows such as ``hermes chat -q``. In that mode,
+        parseable single-query flows such as ``hexbot core chat -q``. In that mode,
         all status/diagnostic prints routed through ``_vprint`` are suppressed
         so stdout stays machine-readable.
         """
@@ -1067,7 +1067,7 @@ class AIAgent:
         quiet mode to be truly silent.
 
         ``suppress_status_output`` (the strict machine-readable mode used by
-        ``hermes chat -Q``) always wins: those flows neutralize the rendering
+        ``hexbot core chat -Q``) always wins: those flows neutralize the rendering
         callbacks, and without this gate the "no callback owns rendering"
         fallback would print ``[tool]``/``[done]`` spinner lines into the
         captured stdout it exists to keep clean (#93220).
@@ -2884,7 +2884,7 @@ class AIAgent:
         That body covers several real causes we cannot distinguish without
         more info from xAI.  The most common (and least obvious) one is
         that **X Premium+ does NOT include API access** — only standalone
-        SuperGrok subscribers can use Hermes against xai-oauth.  Lots of
+        SuperGrok subscribers can use Hexbot against xai-oauth.  Lots of
         users see Grok in their X app, assume it works here too, and hit
         this 403 with no idea why.  Lead the hint with that.
 
@@ -2985,7 +2985,7 @@ class AIAgent:
                 for marker in network_resolution_markers
             ):
                 return (
-                    "Hermes can't reach the model provider. You may be offline. "
+                    "Hexbot can't reach the model provider. You may be offline. "
                     "Check your internet connection and try again."
                 )
             current = current.__cause__ or current.__context__
@@ -3428,7 +3428,7 @@ class AIAgent:
 
         Gated by ``sessions.write_json_snapshots`` (default False).  state.db
         is the canonical message store; this writer exists only for users
-        whose external tooling consumes ``~/.hermes/sessions/session_{sid}.json``
+        whose external tooling consumes ``~/.hexbot/sessions/session_{sid}.json``
         directly.  When the flag is off this is a fast no-op.
 
         When enabled, rewrites the snapshot after every persistence point with
@@ -3745,7 +3745,7 @@ class AIAgent:
             self._pending_redirect = None
 
         # Codex app-server owns its model/tool loop and watches a private
-        # interrupt event rather than Hermes' per-thread flag.
+        # interrupt event rather than Hexbot's per-thread flag.
         if getattr(self, "api_mode", None) == "codex_app_server":
             _codex_session = getattr(self, "_codex_session", None)
             _request_interrupt = getattr(_codex_session, "request_interrupt", None)
@@ -3939,7 +3939,7 @@ class AIAgent:
     def redirect(self, text: str) -> bool:
         """Redirect the active turn without converting it into a new task.
 
-        During a normal Hermes model request this cancels only that request;
+        During a normal Hexbot model request this cancels only that request;
         the conversation loop retains completed messages/tool results, records
         the displayed partial reasoning as plain assistant context, appends the
         correction as a real user message, and retries. During tool execution
@@ -4094,7 +4094,7 @@ class AIAgent:
             if changed is not None:
                 changed.update(landed_paths)
             # Feed the checkpoint agent-write ledger so /rollback's safe mode
-            # can tell Hermes-authored content from later user hand-edits.
+            # can tell Hexbot-authored content from later user hand-edits.
             mgr = getattr(self, "_checkpoint_mgr", None)
             if mgr is not None and getattr(mgr, "enabled", False):
                 for _p in landed_paths:
@@ -4198,7 +4198,7 @@ class AIAgent:
         path and any path echoed inside the tool's error preview — is
         backtick-wrapped via ``_neutralize_footer_paths`` so the gateway's
         bare-path media extractor can never auto-attach a protected file
-        (e.g. ``~/.hermes/config.yaml``) to a messaging channel (#35584).
+        (e.g. ``~/.hexbot/config.yaml``) to a messaging channel (#35584).
         """
         if not failed:
             return ""
@@ -4393,7 +4393,7 @@ class AIAgent:
             if cause == "turn_lease":
                 return (
                     prefix
-                    + "the turn was stopped because another Hermes process "
+                    + "the turn was stopped because another Hexbot process "
                     "took over this session. Your reply was not saved — wait "
                     "for the other process to finish, then send your message "
                     "again."
@@ -4402,7 +4402,7 @@ class AIAgent:
                 return (
                     prefix
                     + "the turn was stopped because session storage was busy "
-                    "(another Hermes process was writing to the state "
+                    "(another Hexbot process was writing to the state "
                     "database). Your message should already be saved — "
                     "please send it again in a moment."
                 )
@@ -4411,7 +4411,7 @@ class AIAgent:
                     prefix
                     + "the turn was stopped because the state database file "
                     "was replaced underneath this process. Do not run "
-                    "`hermes doctor --fix` or in-place FTS repair — stop "
+                    "`hexbot core doctor --fix` or in-place FTS repair — stop "
                     "the process, restore the intended state.db, then "
                     "restart. Unwritten messages were diverted to "
                     "sessions/<session_id>.jsonl and, on the gateway, "
@@ -4424,10 +4424,10 @@ class AIAgent:
                     "reported structural corruption (the transcript would "
                     "have been lost on restart). Freeing disk space will "
                     "not help. Recovery options:\n"
-                    "1. Run `hermes doctor --fix`\n"
-                    "2. Salvage with: sqlite3 ~/.hermes/state.db \".recover\" "
+                    "1. Run `hexbot core doctor --fix`\n"
+                    "2. Salvage with: sqlite3 ~/.hexbot/state.db \".recover\" "
                     "(then replace state.db)\n"
-                    "3. Restore from a backup in ~/.hermes/backups/\n"
+                    "3. Restore from a backup in ~/.hexbot/backups/\n"
                     "Then send your message again."
                 )
             if cause == "disk":
@@ -4443,7 +4443,7 @@ class AIAgent:
                 prefix
                 + "the turn was stopped because session storage could not be "
                 "written (the transcript would have been lost on restart). "
-                "Check the state database health (`hermes doctor`), then "
+                "Check the state database health (`hexbot core doctor`), then "
                 "send your message again."
             )
         # Unknown/diagnostic-only reasons (e.g. "unknown", guardrail_halt
@@ -4720,7 +4720,7 @@ class AIAgent:
             self._credits_session_start_micros = state.remaining_micros
         if _dev:
             # HERMES_DEV_CREDITS: stream each capture to agent.log — watch live with
-            # `hermes logs -f` (grep 'credits ▸'). Dev-only; silent for normal users.
+            # `hexbot core logs -f` (grep 'credits ▸'). Dev-only; silent for normal users.
             spent = self.get_credits_spent_micros()
             used = state.used_fraction
             logger.info(
@@ -5093,7 +5093,7 @@ class AIAgent:
 
         # 4. Release the session-owned computer-use backend.  This ends the
         # exact cua-driver session, drops typed-browser refs/grants, and stops
-        # a private embedded daemon when Hermes YOLO selected unrestricted
+        # a private embedded daemon when Hexbot YOLO selected unrestricted
         # mode.  The import is lazy so sessions without computer_use retain
         # the narrow core footprint.
         try:
@@ -6320,7 +6320,7 @@ class AIAgent:
         # Guard against silent account swap.
         #
         # When an agent is using a non-singleton credential — e.g. a manual
-        # pool entry (``hermes auth add xai-oauth``) whose tokens belong to
+        # pool entry (``hexbot core auth add xai-oauth``) whose tokens belong to
         # a different account than the device_code singleton, or an agent
         # constructed with an explicit ``api_key=`` arg — force-refreshing
         # the singleton here and adopting its tokens silently re-routes the
@@ -6453,9 +6453,9 @@ class AIAgent:
         return True
 
     def _try_refresh_env_client_credentials(self) -> bool:
-        """Adopt ~/.hermes/.env credential/base-url edits at the turn boundary.
+        """Adopt ~/.hexbot/.env credential/base-url edits at the turn boundary.
 
-        A Settings save (desktop ``PUT /api/env``, ``hermes setup``) updates
+        A Settings save (desktop ``PUT /api/env``, ``hexbot core setup``) updates
         ``.env`` and the *saving* process's os.environ, but a live session
         worker keeps the base_url/api_key captured at agent init until it
         restarts — so an open chat silently keeps calling the old endpoint
@@ -9315,7 +9315,7 @@ class AIAgent:
 
         try:
             _review_queue.note_turn_started()
-            # Serialize the full load -> run -> flush region across Hermes
+            # Serialize the full load -> run -> flush region across Hexbot
             # processes. Gateway's asyncio lease closes alias routing inside one
             # process; this durable lease covers Desktop, CLI resume, gateway,
             # and background delivery processes sharing state.db (#84234).
@@ -9370,12 +9370,12 @@ class AIAgent:
                     _lease_waited = True
                     if elapsed < 1.0:
                         self._emit_status(
-                            "⏳ Another Hermes process is using this session; "
+                            "⏳ Another Hexbot process is using this session; "
                             "waiting for it to finish before starting your turn..."
                         )
                     else:
                         self._emit_status(
-                            "⏳ Still waiting for the other Hermes process on "
+                            "⏳ Still waiting for the other Hexbot process on "
                             f"this session ({int(elapsed)}s)..."
                         )
 
@@ -9394,7 +9394,7 @@ class AIAgent:
                         )
                         relay_outcome = "cancelled"
                         interrupt_msg = (
-                            "Stopped waiting for another Hermes process on "
+                            "Stopped waiting for another Hexbot process on "
                             "this session. Your message was not processed."
                         )
                         interrupt_result = {
@@ -9424,7 +9424,7 @@ class AIAgent:
                     # enter load/run/flush, and surface a resend notice instead
                     # of a bare TimeoutError that looks like a hang.
                     timeout_msg = (
-                        "⏳ Another Hermes process kept this session busy too "
+                        "⏳ Another Hexbot process kept this session busy too "
                         "long. Your message was not processed - wait for the "
                         "other process to finish, then send it again."
                     )

@@ -1,4 +1,4 @@
-"""``hermes skills`` subcommand parser.
+"""``hexbot core skills`` subcommand parser.
 
 Extracted from ``hermes_cli/main.py:main()`` (god-file Phase 2 follow-up).
 Handler injected to avoid importing ``main``.
@@ -193,8 +193,8 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         "reset",
         help="Reset a bundled skill — clears 'user-modified' tracking so updates work again",
         description=(
-            "Clear a bundled skill's entry from the sync manifest (~/.hermes/skills/.bundled_manifest) "
-            "so future 'hermes update' runs stop marking it as user-modified. Pass --restore to also "
+            "Clear a bundled skill's entry from the sync manifest (~/.hexbot/skills/.bundled_manifest) "
+            "so future 'hexbot core update' runs stop marking it as user-modified. Pass --restore to also "
             "replace the current copy with the bundled version."
         ),
     )
@@ -215,11 +215,11 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
 
     skills_list_modified = skills_subparsers.add_parser(
         "list-modified",
-        help="List bundled skills you've edited (which `hermes update` keeps)",
+        help="List bundled skills you've edited (which `hexbot core update` keeps)",
         description=(
             "Show the bundled skills whose local copy differs from the version last "
-            "synced, i.e. the ones `hermes update` reports as user-modified and skips. "
-            "Use `hermes skills diff <name>` to see changes and `hermes skills reset "
+            "synced, i.e. the ones `hexbot core update` reports as user-modified and skips. "
+            "Use `hexbot core skills diff <name>` to see changes and `hexbot core skills reset "
             "<name>` to resume updates."
         ),
     )
@@ -235,7 +235,7 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         description=(
             "Print a unified diff between your local copy of a bundled skill and the "
             "current bundled (stock) version, so you can confirm what changed before "
-            "running `hermes skills reset`."
+            "running `hexbot core skills reset`."
         ),
     )
     skills_diff.add_argument(
@@ -247,7 +247,7 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Stop bundled skills from being seeded into this profile",
         description=(
             "Write the .no-bundled-skills marker so the installer, "
-            "`hermes update`, and any direct sync stop seeding bundled skills "
+            "`hexbot core update`, and any direct sync stop seeding bundled skills "
             "into the active profile. By default nothing already on disk is "
             "touched. Pass --remove to ALSO delete bundled skills that are "
             "unmodified (user-edited and hub/local skills are never removed)."
@@ -270,7 +270,7 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Re-enable bundled-skill seeding (undo opt-out)",
         description=(
             "Remove the .no-bundled-skills marker so bundled skills are seeded "
-            "again on the next `hermes update`. Pass --sync to re-seed now."
+            "again on the next `hexbot core update`. Pass --sync to re-seed now."
         ),
     )
     skills_opt_in.add_argument(

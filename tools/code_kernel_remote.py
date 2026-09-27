@@ -57,7 +57,7 @@ _CELL_POLL_INTERVAL = 0.5
 # deliberately transport-agnostic (pure files) and stdlib-only. Cells and
 # tool-RPC share the kernel dir but use distinct prefixes.
 REMOTE_KERNEL_RUNNER_SOURCE = '''\
-"""Auto-generated Hermes REMOTE session-kernel runner (file cell protocol)."""
+"""Auto-generated Hexbot REMOTE session-kernel runner (file cell protocol)."""
 import contextlib
 import io
 import json

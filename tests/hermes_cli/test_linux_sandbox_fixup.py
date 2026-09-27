@@ -2,7 +2,7 @@
 
 ``_desktop_linux_sandbox_fixup`` historically demanded a root-owned 4755
 ``chrome-sandbox`` on every Linux host and shelled out to ``sudo`` to get it
-— which fails silently when the desktop entry launches ``hermes desktop``
+— which fails silently when the desktop entry launches ``hexbot core desktop``
 without a TTY (#88032, #51327), and blocked the updater's relaunch gate
 (#58593). On hosts where unprivileged user namespaces work, Chromium uses
 its namespace sandbox and never consults the setuid helper, so the fixup now

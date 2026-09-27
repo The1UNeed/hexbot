@@ -4,7 +4,7 @@ import { hashToken, randomToken } from "./tokens";
 
 /**
  * Browser sign-in to a daemon, the OAuth-shaped half of Connect (docs/connect.md).
- * The daemon's Hermes login route sends the browser here with a PKCE challenge and
+ * The daemon's Hexbot login route sends the browser here with a PKCE challenge and
  * its callback URL; once the daemon's owner is signed in we hand the browser back
  * with a one-time code, which the daemon exchanges (with its verifier and its own
  * token) for a login grant. Codes are useless to anyone who only sees the URL.

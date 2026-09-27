@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bridge desktop-only tools to Hermes-desktop renderer events.
+"""Bridge desktop-only tools to Hexbot-desktop renderer events.
 
 The preview pane, pane focus, and friends live in the desktop renderer, so
 desktop-gated tools reach them through an emitter the desktop ``tui_gateway``
@@ -37,7 +37,7 @@ def user_enabled(setting: str, default: bool) -> bool:
     whether that gateway is local, SSH, URL, or cloud — where an env var would
     only ever describe the process. Tool ``check_fn``s call it to withdraw
     themselves from the schema when the user has switched the feature off:
-    Hermes should not be told about a surface it isn't allowed to use.
+    Hexbot should not be told about a surface it isn't allowed to use.
 
     An unreadable config falls back to ``default``, which is how a feature that
     ships on stays on rather than disappearing on a transient read error.

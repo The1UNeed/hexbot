@@ -1,4 +1,4 @@
-"""Bot registry layered over Hermes profiles."""
+"""Bot registry layered over Hexbot profiles."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ _UPDATABLE = frozenset(
      "notify", "approval_mode", "workdir"}
 )
 
-#: Tools page keys -> Hermes toolsets. Everything a bot can do on this computer
+#: Tools page keys -> Hexbot toolsets. Everything a bot can do on this computer
 #: with no account. Anything that needs an outside service is a connector
 #: (``hexbot.connectors``) and is never listed here.
 TOOL_TOOLSETS = {"terminal": "terminal", "files": "file", "code_execution": "code_execution",
@@ -57,7 +57,7 @@ def _write_profile_config_key(profile_dir, section: str, key: str, value) -> Non
 def pin_toolsets(name: str, toolsets) -> None:
     """Pin exactly which toolsets a bot's sessions load.
 
-    Two keys, because Hermes reads two: ``tools.enabled_toolsets`` is what
+    Two keys, because Hexbot reads two: ``tools.enabled_toolsets`` is what
     ``profiles.describe`` reports (and what the UI reads back), while a session
     resolves its tools from ``platform_toolsets.cli`` (``_get_platform_tools``
     in ``hermes_cli/tools_config.py``). An explicit platform list turns
@@ -83,7 +83,7 @@ def default_display_name(name: str) -> str:
 
 
 def default_persona(display_name: str, title: str | None = None) -> str:
-    """Persona used when a bot is created without one (never the Hermes default)."""
+    """Persona used when a bot is created without one (never the Hexbot default)."""
     role = f", {title.strip()}" if title and title.strip() else ""
     return (
         f"You are {display_name}{role}, a bot in Hexbot. Be direct and concise: match the "
@@ -103,7 +103,7 @@ def _profile_details(name: str) -> dict:
 def _tools(detail: dict, row) -> list[str]:
     """The Tools tab keys that are on for this bot.
 
-    Hermes is the source of truth: ``profiles.describe`` resolves the
+    Hexbot is the source of truth: ``profiles.describe`` resolves the
     ``enabled_toolsets`` pin (or every toolset when unpinned), so a new bot
     shows all five on, as it really is. The stored list is the fallback when
     the profile cannot be described.
@@ -280,7 +280,7 @@ def get_bot(name: str, *, all_users=False) -> dict:
 
 def create_bot(name: str, *, display_name=None, title=None, description=None,
                persona=None, provider=None, model=None, avatar=None) -> tuple[dict, dict]:
-    """Create a bot: a Hermes profile plus the Hexbot rows and first section.
+    """Create a bot: a Hexbot profile plus the Hexbot rows and first section.
 
     ``display_name`` falls back to the bot name in title case — never to
     ``title``, which is free-form caller text kept verbatim in the ``bots`` row.
@@ -442,7 +442,7 @@ def delete_bot(name: str) -> bool:
         try:
             sections.delete_section(item["id"])
         except (GatewayError, HexbotError):
-            # A stored session Hermes has already lost must not strand the
+            # A stored session Hexbot has already lost must not strand the
             # bot; drop the Hexbot row and keep going.
             logger.warning("could not delete section %s cleanly", item["id"], exc_info=True)
             sections.close_section(item["id"])

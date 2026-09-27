@@ -1,4 +1,6 @@
-# Hermes Agent v0.21.0 — `/api/ws` JSON-RPC reference (chat-client subset)
+# Core `/api/ws` JSON-RPC reference (chat-client subset)
+
+Read at the v0.21.0 fork point.
 
 Route: `hermes_cli/web_server.py:17727` `@app.websocket("/api/ws")` → `tui_gateway/ws.py:handle_ws` →
 `tui_gateway/server.py:dispatch` → `_methods` (`server.py:145`).
@@ -184,7 +186,7 @@ Two ids, always distinguish them:
   the durable `state.db` row id. Used by `session.resume`, `session.delete`, `session.list` output.
 
 Mapping to a bot: pass **`profile`** (profile name) to `session.create` / `session.resume`. `_profile_home`
-(`server.py:2446`) resolves it to `~/.hermes/profiles/<name>` (None ⇒ launch profile) and stores it as
+(`server.py:2446`) resolves it to `~/.hexbot/profiles/<name>` (None ⇒ launch profile) and stores it as
 `session["profile_home"]`, so the agent build, `state.db` writes, and every turn re-bind `HERMES_HOME` to
 that profile. Read-only handlers use the `@_profile_scoped` decorator, which binds the same override for
 the call. **One section = one Hexbot section = one `session.create` with that bot's `profile`; persist the
@@ -227,7 +229,7 @@ there beyond making those public names.
 
 **Codes.** JSON-RPC standard: `-32700` parse error (from `ws.py`), `-32600` invalid request, `-32601`
 unknown method, `-32602` invalid params, `-32603` internal error (dispatch crash), `-32000` handler
-exception. Hermes uses `4xxx` for client faults and `5xxx` for server faults, sub-ranged by area:
+exception. Hexbot uses `4xxx` for client faults and `5xxx` for server faults, sub-ranged by area:
 4000–4025 generic (4001 session not found, 4002 missing text, 4006 missing session_id, 4009 session busy,
 4015–4018 attachments, 4023 delete-active), 4061–4071 profiles, 4090–4094 capacity/relay
 (4090 active-session limit, with `data.reason` machine-readable), 4110–4123 groups/hosted rooms,

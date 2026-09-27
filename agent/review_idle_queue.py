@@ -32,7 +32,7 @@ Queue semantics:
   contract the immediate daemon-thread fork always had.
 
 Idle truth comes from the supervisor's /slots (machine-level: it sees
-every client of the managed server, including other Hermes profiles) and
+every client of the managed server, including other Hexbot profiles) and
 must hold for a settle window so a review is not launched into the gap
 between two quick prompts. Local in-process turn liveness is tracked via
 note_turn_started/note_turn_finished from run_conversation.

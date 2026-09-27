@@ -52,7 +52,7 @@ export interface ApprovalRequest {
   receivedAt: number
   requestId: string
   sessionId: string
-  /** Hermes sets this when the auto-approver refused the action. */
+  /** Hexbot sets this when the auto-approver refused the action. */
   smartDenied?: boolean
   toolName?: string
 }
@@ -118,7 +118,7 @@ export interface Bot {
   workdir?: null | string
 }
 
-/** Keys of `Bot.tools`; each maps to one Hermes toolset on the daemon. */
+/** Keys of `Bot.tools`; each maps to one Hexbot toolset on the daemon. */
 export type BotTool =
   | 'browser'
   | 'code_execution'

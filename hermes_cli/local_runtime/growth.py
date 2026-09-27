@@ -1,7 +1,7 @@
 """In-session context growth for the managed llama.cpp runtime.
 
 The live half of the window ladder (context_policy.growth_decision): when a
-session reaches the edge of its granted window, Hermes grows the window
+session reaches the edge of its granted window, Hexbot grows the window
 toward the model's native max INSTEAD of compressing. Compression becomes
 what the design says it is — the move of last resort, once the window is at
 native (or the speed floor / physics say stop).
@@ -9,7 +9,7 @@ native (or the speed floor / physics say stop).
 Mechanism: growth is re-prefill. A per-model window
 override is persisted, presets regenerate with the bigger window, the
 supervised server bounces, and the next request autoloads the model at the
-new window and re-prefills the conversation. Nothing about the Hermes
+new window and re-prefills the conversation. Nothing about the Hexbot
 conversation mutates — no prompt-cache or role-alternation risk; the whole
 operation is server-side.
 

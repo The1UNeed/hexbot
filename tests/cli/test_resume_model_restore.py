@@ -2,7 +2,7 @@
 
 Covers _restore_session_model, _persist_model_switch_to_session (cli.py) and
 SessionDB.session_gateway_runtime (hermes_state.py) — the round trip that
-makes `hermes --resume` reopen a session on the model/provider it actually
+makes `hexbot core --resume` reopen a session on the model/provider it actually
 used instead of the ambient config default (#57588-class, #79536).
 """
 

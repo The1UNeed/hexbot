@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Hermes Agent WhatsApp Bridge
+ * Hexbot WhatsApp Bridge
  *
  * Standalone Node.js process that connects to WhatsApp via Baileys
  * and exposes HTTP endpoints for the Python gateway adapter.
@@ -113,7 +113,7 @@ const PAIR_JSON = args.includes('--pair-json');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
-const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
+const DEFAULT_REPLY_PREFIX = '⚕ *Hexbot*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
@@ -332,7 +332,7 @@ function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
     || update?.pollUpdates?.[0]?.pollCreationMessageKey?.id
     || update?.pollUpdates?.[0]?.pollUpdateMessageKey?.id
     || '';
-  // Only surface votes on polls Hermes itself created (tracked when
+  // Only surface votes on polls Hexbot itself created (tracked when
   // /send-poll returns). Arbitrary human polls in a group chat must not
   // inject agent-visible messages on every vote.
   if (!pollId || !recentlySentIds.has(pollId)) {
@@ -577,7 +577,7 @@ async function startSocket() {
           // via WHATSAPP_FORWARD_OWNER_MESSAGES so existing deployments see
           // no behavior change. When opted in, we still gate on the
           // customer chatId allowlist — without that gate, any contact
-          // the owner replied to would leak into Hermes and trigger
+          // the owner replied to would leak into Hexbot and trigger
           // implicit handover. See `owner_message_gate.js`.
           const decision = classifyOwnerMessageGate({
             fromMe: true,
@@ -735,7 +735,7 @@ async function startSocket() {
       });
       event.fromOwner = fromOwner;
 
-      // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
+      // Ignore Hexbot's own reply messages in self-chat mode to avoid loops.
       if (msg.key.fromMe && ((REPLY_PREFIX && event.body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
         if (WHATSAPP_DEBUG) {
           emitDebugEvent({

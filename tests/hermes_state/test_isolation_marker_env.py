@@ -7,7 +7,7 @@ child at the same moment the child lost the ``HERMES_HOME`` redirect. That
 pairing is exactly how fixture rows (dm:123 / chat-1 / wx-chat) landed in a
 developer's production state.db.
 
-``HERMES_TEST_ISOLATION`` is Hermes's own marker: the hermetic conftest
+``HERMES_TEST_ISOLATION`` is Hexbot's own marker: the hermetic conftest
 exports it (value = the isolation root) before any test module imports, it
 inherits into children by default, and ``hermes_state`` honors it as a
 test-context signal. These tests pin all three properties.

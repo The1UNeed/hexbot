@@ -1,10 +1,10 @@
-"""Tests for --ignore-user-config and --ignore-rules flags on `hermes chat`.
+"""Tests for --ignore-user-config and --ignore-rules flags on `hexbot core chat`.
 
 Ported from openai/codex#18646 (`feat: add --ignore-user-config and --ignore-rules`).
 Codex's flags fully isolate a run from user-level config and exec-policy .rules
-files. In Hermes the equivalent isolation is:
+files. In Hexbot the equivalent isolation is:
 
-* ``--ignore-user-config`` → skip ``~/.hermes/config.yaml`` in ``load_cli_config()``
+* ``--ignore-user-config`` → skip ``~/.hexbot/config.yaml`` in ``load_cli_config()``
   (credentials in ``.env`` are still loaded).
 * ``--ignore-rules`` → skip AGENTS.md / SOUL.md / .cursorrules auto-injection
   and persistent memory (maps to ``AIAgent(skip_context_files=True,

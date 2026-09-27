@@ -133,7 +133,7 @@ def test_adapter_import_does_not_resolve_sidecar_dir(monkeypatch) -> None:
 
     resolve_sidecar_dir() touch/unlink-probes the source tree and may copy
     files to HERMES_HOME; the adapter and CLI resolve lazily on first use so
-    a bare import (plugin discovery, `hermes --help`, test collection) has
+    a bare import (plugin discovery, `hexbot core --help`, test collection) has
     no filesystem side effects.
     """
     import importlib

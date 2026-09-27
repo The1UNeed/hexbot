@@ -1,4 +1,4 @@
-# nix/web.nix — Hermes Web Dashboard (Vite/React) frontend build
+# nix/web.nix — Hexbot Web Dashboard (Vite/React) frontend build
 { hermesNpmLib, ... }:
 hermesNpmLib.buildPnpmPackage {
   dirs = [

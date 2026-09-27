@@ -1,12 +1,12 @@
-"""``hermes worktree`` — audit and reclaim accumulated git worktrees/branches.
+"""``hexbot core worktree`` — audit and reclaim accumulated git worktrees/branches.
 
 Attended counterpart of the silent startup pruner (see
 ``hermes_cli/worktree_gc.py`` for the policy and shared invariants). Usage:
 
-    hermes worktree list             # audit: verdict + reason per tree
-    hermes worktree prune            # reap safe trees + merged branches
-    hermes worktree prune --dry-run  # show the plan, change nothing
-    hermes worktree prune --trees-only / --branches-only
+    hexbot core worktree list             # audit: verdict + reason per tree
+    hexbot core worktree prune            # reap safe trees + merged branches
+    hexbot core worktree prune --dry-run  # show the plan, change nothing
+    hexbot core worktree prune --trees-only / --branches-only
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def cmd_worktree(args) -> int:
             )
         print(
             f"\n{len(records)} tree(s), {_fmt_size(total_mb)} total — "
-            f"{_fmt_size(reapable_mb)} reclaimable now via `hermes worktree prune`."
+            f"{_fmt_size(reapable_mb)} reclaimable now via `hexbot core worktree prune`."
         )
         branch_records = worktree_gc.audit_branches(repo_root)
         deletable = [b for b in branch_records if b.verdict == "delete"]

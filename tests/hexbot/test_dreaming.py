@@ -80,7 +80,7 @@ def test_record_dream_posts_a_bot_message_without_a_turn(isolated_home, monkeypa
                      ("dreams-1", "scout", "Dreams", now, now))
     profile = isolated_home / "profiles" / "scout"
     profile.mkdir(parents=True)
-    # No stored Hermes session: a section that never had a prompt has none.
+    # No stored Hexbot session: a section that never had a prompt has none.
     calls = []
 
     def gateway_call(method, params=None):

@@ -40,7 +40,7 @@ _RESTART_BACKOFF_S = (1, 5, 15, 60)
 
 
 def state_path() -> Path:
-    """Endpoint state for other Hermes processes (provider resolution reads
+    """Endpoint state for other Hexbot processes (provider resolution reads
     this to route llamacpp-alias requests at the managed server)."""
     return runtimes_root() / "server.json"
 
@@ -102,7 +102,7 @@ def _stable_api_key() -> str:
 
 
 class LlamaServerSupervisor:
-    """Own one llama-server router process for the life of a Hermes session.
+    """Own one llama-server router process for the life of a Hexbot session.
 
     Usage::
 

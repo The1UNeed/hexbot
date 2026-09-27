@@ -251,11 +251,11 @@ def test_quoted_and_brace_paths_are_hardline_blocked(command):
 # inside quotes is part of the argument the shell passes to the program.
 # These previously tripped the hardline floor because the flat command-start
 # class treated every raw newline — even inside quotes — as a command
-# boundary, blocking `hermes send` message bodies, multi-line
+# boundary, blocking `hexbot core send` message bodies, multi-line
 # `git commit -m` messages, and heredoc text that merely MENTION
 # shutdown/reboot commands.
 _QUOTED_NEWLINE_DATA_ALLOW = [
-    # hermes send with a multi-line message body (the reported symptom)
+    # hexbot core send with a multi-line message body (the reported symptom)
     'hermes send -t telegram -s "spark1" "console output:\nsudo reboot\ndone"',
     'hermes send -t telegram "line1\nshutdown -h now\nline3"',
     # git commit -m with a multi-line message
@@ -686,7 +686,7 @@ def test_session_yolo_cannot_bypass_hardline(clean_session):
 
 def test_approvals_mode_off_cannot_bypass_hardline(clean_session, monkeypatch, tmp_path):
     """config approvals.mode=off (yolo-equivalent) must not bypass hardline."""
-    # _get_approval_mode() reads from hermes config; simplest path: monkeypatch the helper.
+    # _get_approval_mode() reads from hexbot core config; simplest path: monkeypatch the helper.
     import tools.approval as approval_mod
     monkeypatch.setattr(approval_mod, "_get_approval_mode", lambda: "off")
 

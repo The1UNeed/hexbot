@@ -331,7 +331,7 @@ def check_systemd_timing_alignment(
     """At startup, sanity-check that systemd's TimeoutStopSec covers stop.
 
     When the gateway is run under a stale systemd unit file (e.g. the user
-    upgraded hermes-agent but never re-ran ``hermes setup`` to regenerate
+    upgraded hermes-agent but never re-ran ``hexbot core setup`` to regenerate
     the unit), ``TimeoutStopSec`` can be smaller than the full stop budget
     (``restart_drain_timeout`` vs ``cron_drain_timeout`` + cleanup reserve,
     plus headroom).  Result: SIGTERM arrives, the drain starts, and systemd

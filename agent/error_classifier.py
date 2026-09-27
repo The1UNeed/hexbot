@@ -19,7 +19,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 # Synthetic error code used when the OpenAI SDK rejects a provider's SSE
-# ``data:`` field before Hermes receives a completion chunk.  Keeping this
+# ``data:`` field before Hexbot receives a completion chunk.  Keeping this
 # distinct from generic JSON parse failures lets the classifier make narrow,
 # provider-stream-specific recovery decisions without inventing an HTTP status.
 PROVIDER_STREAM_NON_JSON_ERROR_CODE = "provider_stream_non_json_data"
@@ -449,7 +449,7 @@ def _model_id_missing_known_prefix(model: str, provider: str) -> bool:
 
 # Malformed-message-array 400s.  Deterministic request-shape rejections that
 # describe the *transcript* being invalid, not a parameter.  The canonical
-# case: a stream dies mid-response and Hermes persists a content-less
+# case: a stream dies mid-response and Hexbot persists a content-less
 # assistant stub; on the next turn the Anthropic message schema (and the
 # litellm/Bedrock proxies in front of it) reject the whole request with
 #   "all messages must have non-empty content except for the optional final
@@ -504,7 +504,7 @@ _REQUEST_VALIDATION_PATTERNS = [
     "unsupported_parameter",
 ]
 
-# Request parameters that Hermes sends on SOME routes only, paired with the
+# Request parameters that Hexbot sends on SOME routes only, paired with the
 # providers/hosts where sending them is deliberate.
 #
 # When a host that is NOT in the allowed set rejects one of these fields, the

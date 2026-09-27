@@ -1,12 +1,12 @@
-# Hermes CLI Reference
+# Hexbot CLI Reference
 
-Live sources when anything looks stale: `hermes --help`, `hermes <command> --help`,
+Live sources when anything looks stale: `hexbot core --help`, `hexbot core <command> --help`,
 https://hermes-agent.nousresearch.com/docs/reference/cli-commands
 
 ### Global Flags
 
 ```
-hermes [flags] [command]        (no subcommand = interactive chat)
+hexbot core [flags] [command]      (no subcommand = interactive chat)
 
   --version, -V             Show version
   -z, --oneshot PROMPT      One-shot: print ONLY the final response (for scripts/pipes)
@@ -27,7 +27,7 @@ hermes [flags] [command]        (no subcommand = interactive chat)
 ### Chat
 
 ```
-hermes chat [flags]
+hexbot core chat [flags]
   -q, --query TEXT          Single query, non-interactive
   --image PATH              Attach a local image to a single query
   -Q, --quiet               Suppress banner, spinner, tool previews
@@ -40,111 +40,111 @@ hermes chat [flags]
 ### Configuration
 
 ```
-hermes setup [section]      Wizard (model|tts|terminal|gateway|tools|agent)
-hermes model                Interactive model/provider picker
-hermes fallback [add|remove|list]  Fallback provider chain
-hermes config [show|edit|get|set|unset|path|env-path|check|migrate]
-hermes login / logout       OAuth sign-in / clear stored auth
-hermes doctor [--fix]       Check dependencies and config
-hermes status [--all]       Component status
+hexbot core setup [section]      Wizard (model|tts|terminal|gateway|tools|agent)
+hexbot core model                Interactive model/provider picker
+hexbot core fallback [add|remove|list]  Fallback provider chain
+hexbot core config [show|edit|get|set|unset|path|env-path|check|migrate]
+hexbot core login / logout       OAuth sign-in / clear stored auth
+hexbot core doctor [--fix]       Check dependencies and config
+hexbot core status [--all]       Component status
 ```
 
 ### Tools & Skills
 
 ```
-hermes tools [list|enable NAME|disable NAME]   Per-platform toolsets (curses UI with no args)
+hexbot core tools [list|enable NAME|disable NAME]   Per-platform toolsets (curses UI with no args)
 
-hermes skills list|browse|search QUERY|inspect ID
-hermes skills install ID    Hub identifier OR a direct https://…/SKILL.md URL
-hermes skills config        Enable/disable skills per platform
-hermes skills check|update|uninstall|publish PATH
-hermes skills tap add REPO  Add a GitHub repo as a skill source
-hermes bundles              Skill bundles (one /<name> alias loads several skills)
+hexbot core skills list|browse|search QUERY|inspect ID
+hexbot core skills install ID    Hub identifier OR a direct https://…/SKILL.md URL
+hexbot core skills config        Enable/disable skills per platform
+hexbot core skills check|update|uninstall|publish PATH
+hexbot core skills tap add REPO  Add a GitHub repo as a skill source
+hexbot core bundles              Skill bundles (one /<name> alias loads several skills)
 ```
 
 ### MCP Servers
 
 ```
-hermes mcp add NAME (--url or --command) | remove | list | test NAME
-hermes mcp catalog | install NAME     Curated catalog install
-hermes mcp configure NAME             Toggle tool selection
-hermes mcp serve                      Run Hermes as an MCP server
+hexbot core mcp add NAME (--url or --command) | remove | list | test NAME
+hexbot core mcp catalog | install NAME     Curated catalog install
+hexbot core mcp configure NAME             Toggle tool selection
+hexbot core mcp serve                      Run Hexbot as an MCP server
 ```
 Details (transport, tool discovery, catalog): `references/native-mcp.md`.
 
 ### Gateway (Messaging Platforms)
 
 ```
-hermes gateway run|install|start|stop|restart|status|setup
+hexbot core gateway run|install|start|stop|restart|status|setup
 ```
 
-20+ platforms: Telegram, Discord, Slack, WhatsApp (Baileys + Business Cloud API), iMessage (Photon — `hermes photon setup`), Signal, Email, SMS, Matrix, Mattermost, Teams, LINE, SimpleX, ntfy, Google Chat, Home Assistant, DingTalk, Feishu, WeCom, Weixin, API Server, Webhooks. Open WebUI connects via the API Server adapter. Most adapters ship under `plugins/platforms/`.
+20+ platforms: Telegram, Discord, Slack, WhatsApp (Baileys + Business Cloud API), iMessage (Photon — `hexbot core photon setup`), Signal, Email, SMS, Matrix, Mattermost, Teams, LINE, SimpleX, ntfy, Google Chat, Home Assistant, DingTalk, Feishu, WeCom, Weixin, API Server, Webhooks. Open WebUI connects via the API Server adapter. Most adapters ship under `plugins/platforms/`.
 Docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/
 
 ### Sessions
 
 ```
-hermes sessions list|browse|rename ID TITLE|delete ID|export OUT|prune|stats
+hexbot core sessions list|browse|rename ID TITLE|delete ID|export OUT|prune|stats
 ```
 
 ### Cron / Webhooks
 
 ```
-hermes cron list|create SCHED|edit ID|pause|resume|run ID|remove|status
+hexbot core cron list|create SCHED|edit ID|pause|resume|run ID|remove|status
     Schedules: '30m', 'every 2h', '0 9 * * *', ISO timestamp
-hermes webhook subscribe NAME|list|remove NAME|test NAME
+hexbot core webhook subscribe NAME|list|remove NAME|test NAME
 ```
 Webhook payloads/routes: `references/webhooks.md`.
 
 ### Profiles
 
 ```
-hermes profile list|create NAME (--clone|--clone-all|--clone-from)|use|show|delete
-hermes profile rename A B | alias NAME | export NAME | import FILE
+hexbot core profile list|create NAME (--clone|--clone-all|--clone-from)|use|show|delete
+hexbot core profile rename A B | alias NAME | export NAME | import FILE
 ```
 
 ### Credentials & Pools
 
 ```
-hermes auth                 Interactive credential manager
-hermes auth add [PROVIDER]  Add OAuth or API-key credential (nous, openai-codex, qwen-oauth, …)
-hermes auth list|remove P IDX|reset PROVIDER|status
+hexbot core auth                 Interactive credential manager
+hexbot core auth add [PROVIDER]  Add OAuth or API-key credential (nous, openai-codex, qwen-oauth, …)
+hexbot core auth list|remove P IDX|reset PROVIDER|status
 ```
 Multiple credentials per provider form a pool that rotates automatically and skips exhausted keys.
 
 ### Other
 
 ```
-hermes desktop / gui        Native desktop app
-hermes dashboard            Web admin panel + embedded chat (--stop / --status)
-hermes proxy                OpenAI-compatible local proxy backed by an OAuth provider
-hermes portal               Quick setup / sign in via Nous Portal
-hermes kanban <verb>        Multi-agent work-queue board
-hermes project              Named multi-folder workspaces
-hermes skin list|use|set    Switch/tweak skins (see references/themes.md)
-hermes pets <verb>          Pet mascots (see references/petdex.md)
-hermes memory setup|status|off|reset   Memory provider
-hermes secrets bitwarden|onepassword   External secret stores
-hermes moa                  Mixture-of-Agents slots
-hermes hooks / security / backup / import / checkpoints / console
-hermes logs [-f] [errors]   View agent/error logs
-hermes send                 One-off message through a gateway platform
-hermes pairing / plugins / insights / journey / computer-use
-hermes acp                  ACP server (IDE integration)
-hermes completion bash|zsh|fish
-hermes update / uninstall / claw migrate
+hexbot core desktop / gui        Native desktop app
+hexbot core dashboard            Web admin panel + embedded chat (--stop / --status)
+hexbot core proxy                OpenAI-compatible local proxy backed by an OAuth provider
+hexbot core portal               Quick setup / sign in via Nous Portal
+hexbot core kanban <verb>        Multi-agent work-queue board
+hexbot core project              Named multi-folder workspaces
+hexbot core skin list|use|set    Switch/tweak skins (see references/themes.md)
+hexbot core pets <verb>          Pet mascots (see references/petdex.md)
+hexbot core memory setup|status|off|reset   Memory provider
+hexbot core secrets bitwarden|onepassword   External secret stores
+hexbot core moa                  Mixture-of-Agents slots
+hexbot core hooks / security / backup / import / checkpoints / console
+hexbot core logs [-f] [errors]   View agent/error logs
+hexbot core send                 One-off message through a gateway platform
+hexbot core pairing / plugins / insights / journey / computer-use
+hexbot core acp                  ACP server (IDE integration)
+hexbot core completion bash|zsh|fish
+hexbot core update / uninstall / claw migrate
 ```
 
-Plugin- and provider-supplied subcommands (e.g. `hermes photon setup`) only appear once their plugin is installed/active.
+Plugin- and provider-supplied subcommands (e.g. `hexbot core photon setup`) only appear once their plugin is installed/active.
 
 ### Where to Find Things
 
 | Looking for... | Location |
 |---|---|
-| Config options | `hermes config edit` · [Configuration docs](https://hermes-agent.nousresearch.com/docs/user-guide/configuration) |
-| Tools / toolsets | `hermes tools list` · [Tools reference](https://hermes-agent.nousresearch.com/docs/reference/tools-reference) |
-| Skills catalog | `hermes skills browse` · [Skills catalog](https://hermes-agent.nousresearch.com/docs/reference/skills-catalog) |
-| Provider setup | `hermes model` · [Providers guide](https://hermes-agent.nousresearch.com/docs/integrations/providers) |
-| Env variables | `hermes config env-path` · [Env vars reference](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) |
-| Gateway logs | `~/.hermes/logs/gateway.log` (or `hermes logs`) |
-| Sessions | `hermes sessions browse` (reads state.db) |
+| Config options | `hexbot core config edit` · [Configuration docs](https://hermes-agent.nousresearch.com/docs/user-guide/configuration) |
+| Tools / toolsets | `hexbot core tools list` · [Tools reference](https://hermes-agent.nousresearch.com/docs/reference/tools-reference) |
+| Skills catalog | `hexbot core skills browse` · [Skills catalog](https://hermes-agent.nousresearch.com/docs/reference/skills-catalog) |
+| Provider setup | `hexbot core model` · [Providers guide](https://hermes-agent.nousresearch.com/docs/integrations/providers) |
+| Env variables | `hexbot core config env-path` · [Env vars reference](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) |
+| Gateway logs | `~/.hexbot/logs/gateway.log` (or `hexbot core logs`) |
+| Sessions | `hexbot core sessions browse` (reads state.db) |

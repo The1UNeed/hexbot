@@ -1,10 +1,10 @@
-"""Live Fireworks smoke test — exercises the Hermes runtime, not a raw SDK client.
+"""Live Fireworks smoke test — exercises the Hexbot runtime, not a raw SDK client.
 
 Opt-in only:
     HERMES_LIVE_TESTS=1 FIREWORKS_API_KEY=fw_... \\
         pytest tests/run_agent/test_fireworks_live.py -q
 
-Unlike a bare OpenAI() client pointed at the endpoint, this drives Hermes'
+Unlike a bare OpenAI() client pointed at the endpoint, this drives Hexbot's
 own provider resolution — ``resolve_provider_client('fireworks')`` — so it
 verifies the auth/config/base-URL/aux-model wiring that the
 bundled provider actually ships, then makes a real call through that client.
@@ -27,7 +27,7 @@ pytestmark = [
 
 
 def _resolve_runtime_client(provider="fireworks"):
-    """Build the Fireworks client the way the Hermes runtime does."""
+    """Build the Fireworks client the way the Hexbot runtime does."""
     from agent.auxiliary_client import resolve_provider_client
 
     client, model = resolve_provider_client(provider)
@@ -45,7 +45,7 @@ def test_hermes_wires_fireworks_client():
 
 
 def test_fireworks_basic_chat_through_runtime():
-    """A single-turn completion via the Hermes-resolved client returns text."""
+    """A single-turn completion via the Hexbot-resolved client returns text."""
     client, model = _resolve_runtime_client()
 
     response = client.chat.completions.create(

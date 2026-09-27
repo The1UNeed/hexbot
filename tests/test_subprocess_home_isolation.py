@@ -1,6 +1,6 @@
 """Tests for subprocess HOME handling in profile mode.
 
-Hermes state stays profile-scoped through HERMES_HOME. Host subprocesses should
+Hexbot state stays profile-scoped through HERMES_HOME. Host subprocesses should
 keep the user's real HOME by default so external CLIs find existing credentials.
 Containers still use the profile home for persistence, and users can explicitly
 opt into profile HOME isolation on the host.

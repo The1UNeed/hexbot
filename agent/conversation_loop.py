@@ -452,7 +452,7 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     "Provider returned an empty response" storms that no retry, nudge, or
     empty-recovery branch can escape (July 2026: four sessions bricked this
     way; every reasoning-free checkpoint that week was untouched — same
-    mechanism as the ~/.hermes/prefill.json incident, 20/20 blocked with
+    mechanism as the ~/.hexbot/prefill.json incident, 20/20 blocked with
     assistant-exposed CoT vs 0/20 without). The interrupted reasoning was
     incomplete by definition; the model regenerates it on the retried turn.
     If a future path needs to preserve interrupted thinking, carry it in a
@@ -625,7 +625,7 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
     tool_count = len(getattr(agent, "tools", None) or [])
 
     logger.warning(
-        "Ollama runtime context too small for Hermes tool use: "
+        "Ollama runtime context too small for Hexbot tool use: "
         "model=%s provider=%s base_url=%s runtime_context=%d "
         "minimum_context=%d estimated_request_tokens=%d tool_count=%d "
         "session=%s",
@@ -641,11 +641,11 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
 
     return (
         f"Ollama loaded `{model}` with only {runtime_ctx:,} tokens of runtime "
-        f"context, but Hermes needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens "
+        f"context, but Hexbot needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens "
         "for reliable tool use.\n\n"
         "Increase the Ollama context for this model and restart/reload the "
         "model before trying again. A known-good starting point is 65,536 "
-        "tokens. In Hermes config, set `model.ollama_num_ctx: 65536` "
+        "tokens. In Hexbot config, set `model.ollama_num_ctx: 65536` "
         "(and `model.context_length: 65536` if you also override the displayed "
         "model context). If you manage the model through an Ollama Modelfile, "
         "set `PARAMETER num_ctx 65536` there instead."
@@ -794,7 +794,7 @@ def _billing_or_entitlement_message(
                 "/model <model> --provider <provider>.",
                 # The exhaustion latch replays the stored error without issuing
                 # a request, so a real fix looks like it didn't work.
-                "Retry with a fresh credential state: `hermes auth reset anthropic`. Until "
+                "Retry with a fresh credential state: `hexbot core auth reset anthropic`. Until "
                 "that cooldown clears, this error can be replayed from cache without "
                 "contacting the API.",
             ]
@@ -1214,7 +1214,7 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
 
         Anchor on the ``User home directory:`` line that immediately precedes
         the working-directory line in that block, and take the FIRST such
-        occurrence, so only Hermes' own emitted block can satisfy the read.
+        occurrence, so only Hexbot's own emitted block can satisfy the read.
         """
         prefix = f"{label}:"
         lines = prompt.splitlines()
@@ -1354,7 +1354,7 @@ _EMPTY_TOOL_RESPONSE_NUDGE = (
 # share one trailer to keep the guidance from drifting between the two sites.
 _CONTENT_POLICY_RECOVERY_HINT = (
     "Try rephrasing the request, narrowing the context, or "
-    "adding a fallback provider with `hermes fallback add`."
+    "adding a fallback provider with `hexbot core fallback add`."
 )
 
 
@@ -2043,7 +2043,7 @@ def run_conversation(
     agent._last_compression_attempt_recorded = False
     agent._last_compression_attempt_in_place = None
 
-    # Adopt any ~/.hermes/.env credential/base-url edits made since the last
+    # Adopt any ~/.hexbot/.env credential/base-url edits made since the last
     # turn — a Settings save updates .env but not this worker's client, which
     # was built at agent init (#67821). No-op when .env is unchanged.
     try:
@@ -2227,7 +2227,7 @@ def run_conversation(
 
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
-    # all run inside Codex). Default Hermes path is bypassed entirely.
+    # all run inside Codex). Default Hexbot path is bypassed entirely.
     # See agent/transports/codex_app_server_session.py for the adapter
     # and references/codex-app-server-runtime.md for the rationale.
     if agent.api_mode == "codex_app_server":
@@ -2596,9 +2596,9 @@ def run_conversation(
         # NOTE: Plugin context from pre_llm_call hooks is injected into the
         # user message (see injection block above), NOT the system prompt.
         # This is intentional — system prompt modifications break the prompt
-        # cache prefix.  The system prompt is reserved for Hermes internals.
+        # cache prefix.  The system prompt is reserved for Hexbot internals.
         #
-        # Hermes invariant: the system prompt is built ONCE per session
+        # Hexbot invariant: the system prompt is built ONCE per session
         # (cached on ``_cached_system_prompt``) and replayed verbatim on
         # every turn. ``apply_anthropic_cache_control`` may split its stable
         # prefix into content blocks on the wire, but the stored string and
@@ -2884,7 +2884,7 @@ def run_conversation(
             failed = True
             _turn_exit_reason = "ollama_runtime_context_too_small"
             append_message(messages, {"role": "assistant", "content": final_response})
-            agent._emit_status("❌ Ollama runtime context is too small for Hermes tool use")
+            agent._emit_status("❌ Ollama runtime context is too small for Hexbot tool use")
             api_call_count -= 1
             agent._api_call_count = api_call_count
             try:
@@ -4074,7 +4074,7 @@ def run_conversation(
                     )
                     _refusal_response = (
                         "⚠️  The model declined to respond to this request "
-                        "(safety refusal — not a Hermes/gateway failure).\n\n"
+                        "(safety refusal — not a Hexbot/gateway failure).\n\n"
                         f"{_refusal_detail}\n\n"
                         f"{_CONTENT_POLICY_RECOVERY_HINT}"
                     )
@@ -5432,7 +5432,7 @@ def run_conversation(
                     if not _print_nous_entitlement_guidance(agent, "Nous model access"):
                         print(f"{agent.log_prefix}   Most likely: Portal OAuth expired, account out of credits, or agent key revoked.")
                     print(f"{agent.log_prefix}   Troubleshooting:")
-                    print(f"{agent.log_prefix}     • Re-authenticate: hermes auth add nous")
+                    print(f"{agent.log_prefix}     • Re-authenticate: hexbot core auth add nous")
                     print(f"{agent.log_prefix}     • Check credits / billing: https://portal.nousresearch.com")
                     print(f"{agent.log_prefix}     • Verify stored credentials: {_dhh}/auth.json")
                     print(f"{agent.log_prefix}     • Switch providers temporarily: /model <model> --provider openrouter")
@@ -5467,7 +5467,7 @@ def run_conversation(
                         # means Azure rejected the JWT (RBAC role missing,
                         # az login expired, IMDS unreachable, etc.).
                         print(f"{agent.log_prefix}   Auth method: Microsoft Entra ID (httpx event hook)")
-                        print(f"{agent.log_prefix}   Run `hermes doctor` for credential-chain diagnostics, or")
+                        print(f"{agent.log_prefix}   Run `hexbot core doctor` for credential-chain diagnostics, or")
                         print(f"{agent.log_prefix}   `az login` if your developer session expired.")
                     else:
                         auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
@@ -5476,12 +5476,12 @@ def run_conversation(
                     print(f"{agent.log_prefix}   Troubleshooting:")
                     from hermes_constants import display_hermes_home as _dhh_fn
                     _dhh = _dhh_fn()
-                    print(f"{agent.log_prefix}     • Check ANTHROPIC_TOKEN in {_dhh}/.env for Hermes-managed OAuth/setup tokens")
+                    print(f"{agent.log_prefix}     • Check ANTHROPIC_TOKEN in {_dhh}/.env for Hexbot-managed OAuth/setup tokens")
                     print(f"{agent.log_prefix}     • Check ANTHROPIC_API_KEY in {_dhh}/.env for API keys or legacy token values")
                     print(f"{agent.log_prefix}     • For API keys: verify at https://platform.claude.com/settings/keys")
                     print(f"{agent.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
-                    print(f"{agent.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_TOKEN \"\"")
-                    print(f"{agent.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"")
+                    print(f"{agent.log_prefix}     • Legacy cleanup: hexbot core config set ANTHROPIC_TOKEN \"\"")
+                    print(f"{agent.log_prefix}     • Clear stale keys: hexbot core config set ANTHROPIC_API_KEY \"\"")
 
                 # Thinking block signature recovery.
                 #
@@ -5582,7 +5582,7 @@ def run_conversation(
                 # field (structured 400 naming the param). One-shot: turn
                 # native compaction off for the rest of the session and
                 # retry — the next _build_api_kwargs re-resolves the gate
-                # and omits the field, and Hermes' local compression takes
+                # and omits the field, and Hexbot's local compression takes
                 # over as the sole owner. Generic 4xx/5xx/timeouts do NOT
                 # match (see is_native_compaction_rejection) and take the
                 # normal retry path.
@@ -5727,7 +5727,7 @@ def run_conversation(
                             f"it is missing its vendor prefix."
                         )
                         agent._buffer_vprint(
-                            f"      Did you mean '{_suggestion}'?  Re-pick it with `hermes model`."
+                            f"      Did you mean '{_suggestion}'?  Re-pick it with `hexbot core model`."
                         )
 
                 # Check for interrupt before deciding to retry
@@ -6031,7 +6031,7 @@ def run_conversation(
                 # this on the next pass and try fallback or bail.
                 #
                 # IMPORTANT: Nous Portal multiplexes multiple upstream
-                # providers (DeepSeek, Kimi, MiMo, Hermes).  A 429 can
+                # providers (DeepSeek, Kimi, MiMo, Hexbot).  A 429 can
                 # also mean an UPSTREAM provider is out of capacity
                 # for one specific model -- transient, clears in
                 # seconds, nothing to do with the caller's quota.
@@ -6095,7 +6095,7 @@ def run_conversation(
 
                 # Actionable hint for GitHub Models (Azure) 413 errors.
                 # The free tier enforces a hard 8K token cap per request,
-                # which Hermes' system prompt + tool schemas alone exceed.
+                # which Hexbot's system prompt + tool schemas alone exceed.
                 # Compression can't help — the floor is the system prompt
                 # itself, not the conversation — so surface a clear "not
                 # compatible" message instead of looping into three futile
@@ -6110,7 +6110,7 @@ def run_conversation(
                         force=True,
                     )
                     agent._vprint(
-                        f"{agent.log_prefix}      request at ~8K tokens. Hermes' system prompt + tool schemas baseline",
+                        f"{agent.log_prefix}      request at ~8K tokens. Hexbot's system prompt + tool schemas baseline",
                         force=True,
                     )
                     agent._vprint(
@@ -6118,11 +6118,11 @@ def run_conversation(
                         force=True,
                     )
                     agent._vprint(
-                        f"{agent.log_prefix}      Use the `copilot` provider with a Copilot subscription token (`hermes",
+                        f"{agent.log_prefix}      Use the `copilot` provider with a Copilot subscription token (`hexbot",
                         force=True,
                     )
                     agent._vprint(
-                        f"{agent.log_prefix}      setup` → GitHub Copilot), or pick any other provider.",
+                        f"{agent.log_prefix}      core setup` → GitHub Copilot), or pick any other provider.",
                         force=True,
                     )
 
@@ -6289,7 +6289,7 @@ def run_conversation(
                         # cap for the failed request, so keep it as an upper
                         # bound.  Also estimate the current API request shape
                         # (system prompt, injected context, tool schemas) because
-                        # Hermes may add API-only content not present in persisted
+                        # Hexbot may add API-only content not present in persisted
                         # messages.  Use the smaller budget and apply a small
                         # safety margin.  Do not alter context_length.
                         request_input_estimate = estimate_request_tokens_rough(
@@ -6769,14 +6769,14 @@ def run_conversation(
                                 agent._vprint(f"{agent.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
                                 agent._vprint(f"{agent.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)
                                 agent._vprint(f"{agent.log_prefix}      1. Run `codex` in your terminal to generate fresh tokens.", force=True)
-                                agent._vprint(f"{agent.log_prefix}      2. Then run `hermes auth` to re-authenticate.", force=True)
+                                agent._vprint(f"{agent.log_prefix}      2. Then run `hexbot core auth` to re-authenticate.", force=True)
                             elif _provider == "xai-oauth":
                                 agent._vprint(f"{agent.log_prefix}   💡 xAI OAuth token was rejected (HTTP 401). To fix:", force=True)
-                                agent._vprint(f"{agent.log_prefix}      re-authenticate with xAI Grok OAuth (SuperGrok / Premium+) from `hermes model`.", force=True)
+                                agent._vprint(f"{agent.log_prefix}      re-authenticate with xAI Grok OAuth (SuperGrok / Premium+) from `hexbot core model`.", force=True)
                             else:  # nous
                                 agent._vprint(f"{agent.log_prefix}   💡 Nous Portal OAuth token was rejected (HTTP 401). Your token may be", force=True)
                                 agent._vprint(f"{agent.log_prefix}      expired, revoked, or your account may be out of credits. To fix:", force=True)
-                                agent._vprint(f"{agent.log_prefix}      1. Re-authenticate: hermes portal", force=True)
+                                agent._vprint(f"{agent.log_prefix}      1. Re-authenticate: hexbot core portal", force=True)
                                 agent._vprint(f"{agent.log_prefix}      2. Check your portal account: https://portal.nousresearch.com", force=True)
                                 # ``:free`` is OpenRouter slug syntax; Nous Portal will reject
                                 # the model name even after a successful re-auth.
@@ -6786,7 +6786,7 @@ def run_conversation(
                                     agent._vprint(f"{agent.log_prefix}         Nous catalog model, or run `/model openrouter:{_model}` to use OpenRouter.", force=True)
                         else:
                             agent._vprint(f"{agent.log_prefix}   💡 Your API key was rejected by the provider. Check:", force=True)
-                            agent._vprint(f"{agent.log_prefix}      • Is the key valid? Run: hermes setup", force=True)
+                            agent._vprint(f"{agent.log_prefix}      • Is the key valid? Run: hexbot core setup", force=True)
                             agent._vprint(f"{agent.log_prefix}      • Does your account have access to {_model}?", force=True)
                             if base_url_host_matches(str(_base), "openrouter.ai"):
                                 agent._vprint(f"{agent.log_prefix}      • Check credits: https://openrouter.ai/settings/credits", force=True)
@@ -6811,7 +6811,7 @@ def run_conversation(
                             force=True,
                         )
                         agent._vprint(
-                            f"{agent.log_prefix}        hermes fallback add   (interactive picker — same as `hermes model`)",
+                            f"{agent.log_prefix}        hexbot core fallback add   (interactive picker — same as `hexbot core model`)",
                             force=True,
                         )
                     # TLS certificate failures are environment problems, not
@@ -6868,7 +6868,7 @@ def run_conversation(
                     if classified.reason == FailoverReason.content_policy_blocked:
                         _policy_response = (
                             "⚠️  The model provider's safety filter blocked this request "
-                            "(not a Hermes/gateway failure).\n\n"
+                            "(not a Hexbot/gateway failure).\n\n"
                             f"Provider message: {_nonretryable_summary}\n\n"
                             f"{_CONTENT_POLICY_RECOVERY_HINT}"
                         )
@@ -7035,8 +7035,8 @@ def run_conversation(
                         agent._vprint(
                             f"{agent.log_prefix}      1. Set "
                             f"`providers.{_provider}.models.{_model}.stale_timeout_seconds: 900` "
-                            f"in `~/.hermes/config.yaml` to extend the per-call "
-                            f"timeout. (Hermes's built-in floor is 600s for "
+                            f"in `~/.hexbot/config.yaml` to extend the per-call "
+                            f"timeout. (Hexbot's built-in floor is 600s for "
                             f"known reasoning models — if you still see this "
                             f"after raising, the upstream cap is even shorter.)",
                             force=True,
@@ -7343,7 +7343,7 @@ def run_conversation(
             # A provider that IS an agent ran its own tools inside its own
             # session before we got here: splice that work into the transcript
             # as completed call/result rows and tick the skill-review nudge
-            # with the iterations Hermes never saw. Appended before this turn's
+            # with the iterations Hexbot never saw. Appended before this turn's
             # assistant message, so the order reads call → result → answer.
             # No-op for ordinary providers; see agent/provider_projection.py.
             splice_provider_projection(agent, response, messages)
@@ -7992,7 +7992,7 @@ def run_conversation(
                 try:
                     # Persist the assistant tool-call turn before any tool
                     # side effects run. If a destructive tool restarts or
-                    # terminates Hermes mid-turn, resume logic still sees the
+                    # terminates Hexbot mid-turn, resume logic still sees the
                     # exact tool-call block that already executed.
                     _tool_turn_persisted = agent._flush_messages_to_session_db(
                         messages, conversation_history
@@ -9065,7 +9065,7 @@ def run_conversation(
                 _turn_exit_reason = "interpreter_shutdown"
                 final_response = (
                     "Session is shutting down. Your conversation can be "
-                    "resumed with: hermes --resume <session-id>"
+                    "resumed with: hexbot core --resume <session-id>"
                 )
                 # Don't append the assistant message here — a thinking-prefill
                 # or interim assistant may already be the tail, and appending

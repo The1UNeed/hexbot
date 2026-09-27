@@ -20,7 +20,7 @@ import pytest
 
 @pytest.fixture
 def fake_hermes(tmp_path, monkeypatch):
-    """Build a two-profile Hermes layout and point HERMES_HOME at
+    """Build a two-profile Hexbot layout and point HERMES_HOME at
     the hermes-security profile (matching the original-incident shape).
     """
     root = tmp_path / "fake-hermes"
@@ -200,7 +200,7 @@ class TestSkillManageCrossProfileErrorUX:
 class TestSystemPromptActiveProfile:
     def test_default_profile_line_in_prompt(self, tmp_path, monkeypatch):
         """When active profile is 'default', the prompt names it and warns
-        about ~/.hermes/profiles/<name>/."""
+        about ~/.hexbot/profiles/<name>/."""
         # Don't set HERMES_HOME — falls back to default.
         import agent.file_safety as fs
         monkeypatch.setattr(fs, "_hermes_home_path", lambda: tmp_path / "fake")
@@ -221,10 +221,10 @@ class TestSystemPromptActiveProfile:
         # explicit user direction.
         from pathlib import Path
         src = Path("agent/system_prompt.py").read_text()
-        # Hexbot wording (CORE_EDITS.md row 7).
+        # Hexbot wording.
         assert "Your own files (skills, memory, scheduled jobs) live under" in src
         assert "cross_profile=True" not in src  # guard retired
-        assert "~/.hermes/profiles/" in src
+        assert "~/.hexbot/profiles/" in src
         # Both branches present (default and named profile).
         assert "Each bot's files live under" in src
         assert "Other bots' files live under" in src

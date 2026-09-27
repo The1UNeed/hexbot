@@ -1,8 +1,8 @@
-"""Centralized logging setup for Hermes Agent.
+"""Centralized logging setup for Hexbot.
 
 Provides a single ``setup_logging()`` entry point that both the CLI and
 gateway call early in their startup path.  All log files live under
-``~/.hermes/logs/`` (profile-aware via ``get_hermes_home()``).
+``~/.hexbot/logs/`` (profile-aware via ``get_hermes_home()``).
 
 Log files produced:
     agent.log   — INFO+, all agent/tool/session activity (the main log)
@@ -42,7 +42,7 @@ from typing import Optional, Sequence
 # On Windows, stdlib ``RotatingFileHandler`` calls ``os.rename()`` in
 # ``doRollover()`` and fails with ``PermissionError [WinError 32]`` whenever
 # another process holds an append-mode handle on ``agent.log`` — which is
-# essentially always in Hermes (TUI, gateway, ``hy_memory`` server, MCP
+# essentially always in Hexbot (TUI, gateway, ``hy_memory`` server, MCP
 # servers, and on-demand CLI commands all log from separate processes),
 # pinning ``agent.log`` at the 5 MiB threshold and spamming stderr with
 # a traceback on every emit. ``concurrent-log-handler`` wraps the rename in a
@@ -240,12 +240,12 @@ class _ComponentFilter(logging.Filter):
 
 
 # Logger name prefixes that belong to each component.
-# Used by _ComponentFilter and exposed for ``hermes logs --component``.
+# Used by _ComponentFilter and exposed for ``hexbot core logs --component``.
 COMPONENT_PREFIXES = {
     # ``plugins.platforms`` covers messaging-platform adapters that migrated
     # out of ``gateway/platforms/`` into bundled plugins (#41112) — they are
     # still gateway components and their logs belong in gateway.log / match
-    # ``hermes logs --component gateway``.
+    # ``hexbot core logs --component gateway``.
     "gateway": ("gateway", "hermes_plugins", "plugins.platforms"),
     "agent": ("agent", "run_agent", "model_tools", "batch_runner"),
     "tools": ("tools",),
@@ -273,7 +273,7 @@ def setup_logging(
     mode: Optional[str] = None,
     force: bool = False,
 ) -> Path:
-    """Configure the Hermes logging subsystem.
+    """Configure the Hexbot logging subsystem.
 
     Safe to call multiple times — the second call is a no-op unless
     *force* is ``True``.
@@ -281,7 +281,7 @@ def setup_logging(
     Parameters
     ----------
     hermes_home
-        Override for the Hermes home directory.  Falls back to
+        Override for the Hexbot home directory.  Falls back to
         ``get_hermes_home()`` (profile-aware).
     log_level
         Minimum level for the ``agent.log`` file handler.  Accepts any
@@ -556,7 +556,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
 
 
 class _ProfileRoutingFileHandler(logging.Handler):
-    """Route queued records to the log file for their Hermes home.
+    """Route queued records to the log file for their Hexbot home.
 
     Dashboard logging is initialized once for the process that launched it,
     while the desktop cron ticker can execute jobs for several profile homes.
@@ -650,7 +650,7 @@ class _ProfileRoutingFileHandler(logging.Handler):
 # Asynchronous file logging — keep the cross-process rotation lock off the loop
 #
 # The rotating file handlers serialize rollover with a cross-process lock (see
-# the module header): when several Hermes processes log to the same file, an
+# the module header): when several Hexbot processes log to the same file, an
 # ``emit`` can block while another process holds that lock.  When the emitting
 # thread is an asyncio event loop, that block stalls the loop and drops
 # WebSocket clients.  To keep file I/O off the hot path, every file handler is

@@ -57,11 +57,14 @@ Docs live at [hexbot.app/docs](https://hexbot.app/docs/) and are built from
 
 ## Develop
 
-Hexbot is a hard fork of [Hermes Agent](https://github.com/NousResearch/hermes-agent).
-The Hermes core sits at the repository root; Hexbot's code sits in `hexbot/`
-(Python daemon extensions) and `apps/` (web bundle, Electron app, site,
-Connect). `AGENTS.md` is the guide for anyone, human or agent, working on the
-code. `CORE_EDITS.md` lists every change to imported Hermes files.
+This version of Hexbot is based on the Hex Hermes backend, a fork of
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research.
+The core (agent loop, tools, providers, gateway) sits at the repository root;
+product code sits in `hexbot/` (daemon: bots, sections, rooms, memory,
+pairing, Connect) and `apps/` (web bundle, Electron app, site, Connect).
+`AGENTS.md` is the guide for anyone, human or agent, working on the code.
+`hexbot core <command>` runs a core CLI command, for example
+`hexbot core doctor`.
 
 Fastest start: open the repository in the dev container (`.devcontainer/`),
 which installs everything. By hand:
@@ -95,8 +98,8 @@ pnpm --filter ./apps/site run check
 pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run
 ```
 
-`docs/testing.md` lists everything, including the upstream Hermes suites and
-the Electron end-to-end test.
+`docs/testing.md` lists everything, including the core suites and the
+Electron end-to-end test.
 
 ## How releases work
 

@@ -248,7 +248,7 @@ def test_absent_config_is_still_created(tmp_path: Path):
 
 
 def test_symlinked_config_stays_a_symlink(tmp_path: Path):
-    """Managed deployments symlink ~/.hermes/config.yaml into a dotfiles repo.
+    """Managed deployments symlink ~/.hexbot/config.yaml into a dotfiles repo.
 
     A plain ``os.replace`` onto the link would detach it into a regular file;
     ``dump_yaml_file`` resolves the link first, as ``utils.atomic_replace`` does.
@@ -585,7 +585,7 @@ def test_skill_installs_cleanly_under_skills_guard():
 
     # The migration script's references to agent config files are legitimate:
     # it mentions AGENTS.md to migrate workspace instructions and points the
-    # user at ~/.hermes/config.yaml in its post-migration summary — it never
+    # user at ~/.hexbot/config.yaml in its post-migration summary — it never
     # writes to either. Under skills-guard-v2 (#92021) these score as
     # informational _ref findings (the old critical agent_config_mod /
     # hermes_config_mod findings no longer fire for bare mentions), so the
@@ -601,15 +601,15 @@ def test_skill_installs_cleanly_under_skills_guard():
 
 def test_rebrand_text_replaces_openclaw_variants():
     mod = load_module()
-    # Mixed-case / capitalized matches → capital-H ``Hermes``.
-    assert mod.rebrand_text("OpenClaw prefers Python 3.11") == "Hermes prefers Python 3.11"
-    assert mod.rebrand_text("I told Open Claw to use dark mode") == "I told Hermes to use dark mode"
-    assert mod.rebrand_text("Open-Claw config is great") == "Hermes config is great"
-    assert mod.rebrand_text("OPENCLAW uses tools well") == "Hermes uses tools well"
-    # All-lowercase matches → lowercase ``hermes``; this preserves the
-    # real filesystem path ``~/.hermes`` (Hermes home) when rebranding
+    # Mixed-case / capitalized matches → capital-H ``Hexbot``.
+    assert mod.rebrand_text("OpenClaw prefers Python 3.11") == "Hexbot prefers Python 3.11"
+    assert mod.rebrand_text("I told Open Claw to use dark mode") == "I told Hexbot to use dark mode"
+    assert mod.rebrand_text("Open-Claw config is great") == "Hexbot config is great"
+    assert mod.rebrand_text("OPENCLAW uses tools well") == "Hexbot uses tools well"
+    # All-lowercase matches → lowercase ``hexbot``; this preserves the
+    # real filesystem path ``~/.hexbot`` (Hexbot home) when rebranding
     # memory entries that reference ``~/.openclaw`` or ``openclaw`` prose.
-    assert mod.rebrand_text("openclaw should always respond concisely") == "hermes should always respond concisely"
+    assert mod.rebrand_text("openclaw should always respond concisely") == "hexbot should always respond concisely"
 
 
 

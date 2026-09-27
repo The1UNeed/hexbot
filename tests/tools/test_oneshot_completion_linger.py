@@ -1,6 +1,6 @@
 """One-shot CLI exit linger for notify_on_complete background processes (#90879).
 
-A Bot Mode agent invoked as a short-lived ``hermes -p <bot> chat -Q
+A Bot Mode agent invoked as a short-lived ``hexbot core -p <bot> chat -Q
 --query-file ...`` process (exactly how DM handoffs deliver) dispatches its
 reply via ``terminal(background=true, notify_on_complete=true)`` and then
 exits.  The reply child writes to a stdout pipe owned by the dying parent and

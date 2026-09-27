@@ -13,7 +13,7 @@ def test_unsupported_providers_point_at_the_cli(monkeypatch):
     monkeypatch.setattr(provider_login, "FLOWS", {})
     result = provider_login.start("openai-codex")
     assert result["supported"] is False
-    assert "hexbot hermes auth login openai-codex" in result["message"]
+    assert "hexbot core auth login openai-codex" in result["message"]
 
 
 def test_login_reports_code_then_completion(monkeypatch):

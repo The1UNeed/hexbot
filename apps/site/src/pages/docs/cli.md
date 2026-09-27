@@ -40,12 +40,14 @@ hexbot send <bot> <text>
 
 The named bot uses its configured provider, model, persona, skills, and memory.
 
-## Reach the underlying CLI
+## Run a core command
 
-Every retained Hermes command is available through:
+The core CLI (setup, config, doctor, logs, and more) runs through:
 
 ```sh
-hexbot hermes <args>
+hexbot core <args>
 ```
+
+For example, `hexbot core doctor` checks the install.
 
 Run `hexbot --help` and command-specific `--help` output for the installed version's exact options. Behavioral settings belong in `~/.hexbot/config.yaml`; API keys and other credentials belong in the private environment file managed by setup.

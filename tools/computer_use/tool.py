@@ -8,7 +8,7 @@ OpenAI function-calling so every tool-capable model can drive it.
 Linux is the most recent runtime (X11 + Wayland, via cua-driver-rs's
 AT-SPI tree path); it is enabled here alongside macOS and Windows. When a
 host's display server or accessibility stack isn't reachable, cua-driver's
-`health_report` (surfaced by `hermes computer-use doctor`) reports the
+`health_report` (surfaced by `hexbot core computer-use doctor`) reports the
 exact blocked check rather than the toolset silently failing.
 
 Return contract
@@ -89,7 +89,7 @@ _DESTRUCTIVE_ACTIONS = frozenset({
 })
 
 # Hard-blocked key combinations. Mirrored from #4562 — these are destructive
-# regardless of approval level (e.g. logout kills the session Hermes runs in).
+# regardless of approval level (e.g. logout kills the session Hexbot runs in).
 _BLOCKED_KEY_COMBOS = {
     frozenset({"cmd", "shift", "backspace"}),   # empty trash
     frozenset({"cmd", "option", "backspace"}),   # force delete
@@ -235,9 +235,9 @@ def _warn_bypass_escalation(session_id: str) -> None:
 
 
 def _cua_permission_mode(session_id: str) -> str:
-    """Map Hermes's explicit approval bypass onto Cua's immutable mode.
+    """Map Hexbot's explicit approval bypass onto Cua's immutable mode.
 
-    Hermes has TWO session-identity namespaces: the tool-dispatch path passes
+    Hexbot has TWO session-identity namespaces: the tool-dispatch path passes
     the DB ``session_id`` (``agent.session_id``), while gateway ``/yolo``
     keys approval state off the gateway ``session_key`` (set per turn via the
     ``set_current_session_key`` contextvar in tools/approval.py). CLI and TUI
@@ -348,7 +348,7 @@ def release_computer_use_session(session_id: str) -> bool:
     removes the exact session backend, its call lock, and its recorded
     permission mode before stopping the backend, so new lookups cannot retain
     the stale target/ref namespace — and stops a private embedded daemon when
-    Hermes YOLO selected unrestricted mode. Approval state is cleared even
+    Hexbot YOLO selected unrestricted mode. Approval state is cleared even
     when no backend was started.
 
     Returns ``True`` when a backend was found and released, ``False`` when the
@@ -376,7 +376,7 @@ def release_computer_use_session(session_id: str) -> bool:
     try:
         # Let an in-flight action finish before ending the driver session and
         # dropping its target/ref state. Do not hold the global cache lock
-        # while waiting: unrelated Hermes sessions remain independent.
+        # while waiting: unrelated Hexbot sessions remain independent.
         if call_lock is not None:
             with call_lock:
                 backend.stop()
@@ -395,7 +395,7 @@ def _shutdown_backend_atexit() -> None:
     """Stop all cached backends so cua-driver children don't outlive us.
 
     Each session backend holds a long-lived ``cua-driver`` subprocess, so
-    without this a driver can survive the Hermes process that spawned it
+    without this a driver can survive the Hexbot process that spawned it
     (#28152 item 3). #69903 kept the orphan from burning a core by disabling
     the cursor overlay; the process itself still lingered.
 
@@ -574,7 +574,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     except Exception as e:
         return json.dumps({
             "error": f"computer_use backend unavailable: {e}",
-            "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
+            "hint": "If the cua-driver binary is missing, run `hexbot core computer-use install`. "
                     "If a Python dependency is missing, the error above shows the exact install command.",
         })
 
@@ -1475,7 +1475,7 @@ _MAX_CAPTURE_FILES = 20
 
 
 def _persist_capture_image(cap: CaptureResult) -> Optional[str]:
-    """Save a capture in Hermes' media cache and return its absolute path.
+    """Save a capture in Hexbot's media cache and return its absolute path.
 
     Captures are normally embedded only in the model's tool context. Persisting
     a bounded copy gives attachment-capable surfaces a real file to deliver
@@ -1682,7 +1682,7 @@ def check_computer_use_requirements() -> bool:
     override via env). cua-driver runs on all three; the Linux path is
     headed/X11 today (Wayland via XWayland), pure-Wayland progress tracked
     upstream. Linux users see specific blocked checks via
-    `hermes computer-use doctor` if their session is incomplete (e.g. no
+    `hexbot core computer-use doctor` if their session is incomplete (e.g. no
     DISPLAY set).
     """
     if sys.platform not in ("darwin", "win32", "linux"):

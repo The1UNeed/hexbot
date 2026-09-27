@@ -61,7 +61,7 @@ class TestSecretCaptureGuidance:
     def test_gateway_secret_capture_message_points_to_local_setup(self):
         message = GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE
         assert "local cli" in message.lower()
-        assert "~/.hermes/.env" in message
+        assert "~/.hexbot/.env" in message
 
 
 class TestSafeUrlForLog:
@@ -612,7 +612,7 @@ class TestMediaDeliveryDefaultMode:
         ],
     )
     def test_denylist_blocks_mcp_oauth_tokens(self, tmp_path, monkeypatch, rel):
-        """Live MCP OAuth tokens/client creds under ~/.hermes/mcp-tokens/ must
+        """Live MCP OAuth tokens/client creds under ~/.hexbot/mcp-tokens/ must
         never deliver as native media — same exfil class as auth.json/.env.
         Sibling to the pairing/ directory denylist entry.
         """
@@ -658,7 +658,7 @@ class TestMediaDeliveryDefaultMode:
 
 
     def test_denylist_blocks_non_cache_file_under_hermes_home(self, tmp_path, monkeypatch):
-        """A non-credential file the agent wrote directly under ~/.hermes
+        """A non-credential file the agent wrote directly under ~/.hexbot
         (not in a cache subdir) is still deliverable via recency trust — we
         did NOT blanket-deny the tree (per #32090/#34425). This guards against
         accidentally re-introducing the rejected whole-tree deny.
@@ -1247,7 +1247,7 @@ class _CapturingAdapter(BasePlatformAdapter):
 
     The four media-send fallbacks (send_voice, send_video, send_document,
     send_image_file) historically forwarded their *_path argument into the
-    chat text. That argument is a host filesystem path inside the Hermes
+    chat text. That argument is a host filesystem path inside the Hexbot
     cache, so any subclass that fell back to super() — like the Telegram
     adapter on a rejected video — would leak the host's directory layout
     into the user's chat.

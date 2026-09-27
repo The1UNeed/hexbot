@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Skills Hub — Source adapters and hub state management for the Hermes Skills Hub.
+Skills Hub — Source adapters and hub state management for the Hexbot Skills Hub.
 
 This is a library module (not an agent tool). It provides:
   - GitHubAuth: Shared GitHub API authentication (PAT, gh CLI, GitHub App)
@@ -3509,7 +3509,7 @@ class OptionalSkillSource(SkillSource):
 
     These skills are official (maintained by Nous Research) but not activated
     by default — they don't appear in the system prompt and aren't copied to
-    ~/.hermes/skills/ during setup.  They are discoverable via the Skills Hub
+    ~/.hexbot/skills/ during setup.  They are discoverable via the Skills Hub
     (search / install / inspect) and labelled "official" with "builtin" trust.
     """
 
@@ -3605,7 +3605,7 @@ class OptionalSkillSource(SkillSource):
 
         # Upstream-maintained entries: the local dir is a catalog stub whose
         # frontmatter points at the real skill in an external repo the
-        # upstream project maintains (e.g. impeccable's Hermes-native bundle
+        # upstream project maintains (e.g. impeccable's Hexbot-native bundle
         # under pbakaus/impeccable:.hermes/skills/impeccable). Install pulls
         # the live content from there instead of vendoring a fork here.
         upstream = self._upstream_pointer(skill_dir)
@@ -3688,7 +3688,7 @@ class OptionalSkillSource(SkillSource):
 
         Local installs lag `main` — a freshly merged optional skill isn't in
         the user's `optional-skills/` checkout until they run
-        ``hermes update``. Rather than telling them to update first, resolve
+        ``hexbot core update``. Rather than telling them to update first, resolve
         the skill against the live default branch.
 
         ``rel`` is the identifier without the ``official/`` prefix — either
@@ -4501,7 +4501,7 @@ def check_for_skill_updates(
 
 
 # ---------------------------------------------------------------------------
-# Hermes centralized index source
+# Hexbot centralized index source
 # ---------------------------------------------------------------------------
 
 HERMES_INDEX_URL = "https://hermes-agent.nousresearch.com/docs/api/skills-index.json"
@@ -4552,7 +4552,7 @@ def _load_hermes_index() -> Optional[dict]:
                 headers={"Accept-Encoding": accept_encoding},
             )
             if resp.status_code != 200:
-                logger.debug("Hermes index fetch returned %d", resp.status_code)
+                logger.debug("Skills index fetch returned %d", resp.status_code)
                 return _load_stale_index_cache()
             data = resp.json()
             break
@@ -4560,13 +4560,13 @@ def _load_hermes_index() -> Optional[dict]:
             # Content-Encoding decode failed — retry once uncompressed before
             # giving up on the network path entirely.
             logger.debug(
-                "Hermes index decode failed (Accept-Encoding=%s): %s",
+                "Skills index decode failed (Accept-Encoding=%s): %s",
                 accept_encoding,
                 e,
             )
             continue
         except (httpx.HTTPError, json.JSONDecodeError) as e:
-            logger.debug("Hermes index fetch failed: %s", e)
+            logger.debug("Skills index fetch failed: %s", e)
             return _load_stale_index_cache()
 
     if data is None:
@@ -4598,7 +4598,7 @@ def _load_stale_index_cache() -> Optional[dict]:
 
 
 class HermesIndexSource(SkillSource):
-    """Skill source backed by the centralized Hermes Skills Index.
+    """Skill source backed by the centralized Hexbot Skills Index.
 
     The index is a JSON catalog published to the docs site and rebuilt
     daily by CI.  It contains metadata + resolved GitHub paths for every

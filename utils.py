@@ -198,7 +198,7 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     ``target``.  When ``target`` is a symlink, the symlink itself is
     replaced with a regular file — silently detaching managed deployments
     that symlink ``config.yaml`` / ``SOUL.md`` / ``auth.json`` etc. from
-    ``~/.hermes/`` to a git-tracked profile package or dotfiles repo
+    ``~/.hexbot/`` to a git-tracked profile package or dotfiles repo
     (GitHub #16743).
 
     This helper resolves the symlink first so ``os.replace`` writes to
@@ -423,7 +423,7 @@ def warn_if_credential_file_broadly_readable(
 ) -> bool:
     """Warn (once per call) when a credential file is group/world-readable.
 
-    Secret-bearing files that users create by hand (or that older Hermes
+    Secret-bearing files that users create by hand (or that older Hexbot
     versions wrote without an explicit mode) commonly end up 0o644 under the
     default umask. This helper is the shared read-time check for that class:
     call it before loading any token/credential file so the owner gets a
@@ -589,7 +589,7 @@ def atomic_roundtrip_yaml_update(
     current = config
     # Honor escaped dots and prefer existing literal dotted keys (e.g. model
     # IDs like ``glm-5.3``) over blind splitting — same navigation as
-    # ``hermes config set``'s ``_set_nested`` (#91607: /model + TUI
+    # ``hexbot core config set``'s ``_set_nested`` (#91607: /model + TUI
     # persistence route through here and used to write ``glm-5: {'3': ...}``
     # phantom siblings while the runtime kept reading the literal key).
     from hermes_cli.config import _greedy_literal_match, _split_key_path

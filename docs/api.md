@@ -1,15 +1,15 @@
 # Hexbot daemon API
 
-The client speaks JSON-RPC 2.0 over the Hermes WebSocket at `/api/ws`
+The client speaks JSON-RPC 2.0 over the daemon WebSocket at `/api/ws`
 (newline-delimited text frames; server events arrive as notifications with
-method `"event"` and `params: {type, session_id, seq, payload}`). Hermes
+method `"event"` and `params: {type, session_id, seq, payload}`). Core
 methods are used as-is for chat. Hexbot adds `hexbot.*` methods for its own
-data model. Reference for the Hermes subset: `/tmp/hexbot-notes/ws-api.md`
-(copied to `docs/upstream/ws-api.md`).
+data model. Reference for the core subset: `/tmp/hexbot-notes/ws-api.md`
+(copied to `docs/core/ws-api.md`).
 
 ## Mapping
 
-| Hexbot | Hermes |
+| Hexbot | Core |
 |---|---|
 | bot | profile (`~/.hexbot/profiles/<name>`), plus a row in `hexbot.db` |
 | section | stored session of that profile (`stored_session_id`), plus a row in `hexbot.db` |
@@ -17,11 +17,11 @@ data model. Reference for the Hermes subset: `/tmp/hexbot-notes/ws-api.md`
 | persona | profile `soul` (SOUL.md) |
 | bot model | profile `model` + `provider` |
 | avatar | profile asset `avatar` |
-| bot memory | profile `memories/MEMORY.md` (the Hermes `USER.md` target is off) |
+| bot memory | profile `memories/MEMORY.md` (the core `USER.md` target is off) |
 | history search | profile `state.db` FTS over its sessions |
 | About you | `~/.hexbot/users/<owner_id>/user.md`, injected every turn by the hexbot plugin |
 
-## Hermes methods the client calls directly
+## Core methods the client calls directly
 
 - Chat: `prompt.submit {session_id, text}`, `session.interrupt`, `session.steer`.
 - History: `session.history {session_id}`, `session.events.since` on reconnect.
@@ -40,7 +40,7 @@ Events the client renders: `message.start`, `message.delta`, `message.interim`,
 
 ## `hexbot.*` methods
 
-All results are objects. Errors use JSON-RPC error objects with Hermes-style
+All results are objects. Errors use JSON-RPC error objects with core-style
 codes. Code `4301` means `admin only`, `4302` means `not the owner`, and `4303`
 means the user's daily token budget is exhausted.
 
@@ -114,17 +114,17 @@ updated_at, archived_at | null, done_at | null, preview, message_count,
 live_session_id | null}`
 
 `title_by` is `"bot"` when the bot named the section, either through the
-`hexbot_rename_section` tool or because the listing adopted the title Hermes
+`hexbot_rename_section` tool or because the listing adopted the title the core
 generates from the first prompt; a user rename clears it. `preview` is the
 first user message, also returned by `open`.
 
 - `hexbot.sections.list {bot?, include_archived?}` → `{sections: [Section]}`.
   A section still called `New section` (or last named by the bot) takes the
-  Hermes session title here, so the auto-title lands without a client hop.
+  core session title here, so the auto-title lands without a client hop.
 - `hexbot.sections.create {bot, title?}` → `{section: Section}` (calls
   `session.create {profile: bot, close_on_disconnect: false}`, records the
-  stored id). `title` is passed to Hermes only when given; an untitled
-  Hermes session is what its auto-titler names from the first prompt, and the
+  stored id). `title` is passed to the core only when given; an untitled
+  core session is what its auto-titler names from the first prompt, and the
   row shows `New section` until then.
 - `hexbot.sections.open {id}` → `{section: Section, messages: [Message]}`
   (resumes the stored session on the bot's profile; idempotent if live).
@@ -132,7 +132,7 @@ first user message, also returned by `open`.
 - `hexbot.sections.archive {id}` / `hexbot.sections.unarchive {id}` → `{section}`
 - `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true}`
   (closes the live session, `session.delete` on the stored row). With
-  `purge_memory: false` only the Hexbot row goes and the Hermes transcript
+  `purge_memory: false` only the Hexbot row goes and the core transcript
   is left in place. The bot's memory is not touched either way.
 - `hexbot.sections.touch {id}` is internal; activity is stamped by the plugin
   on `message.complete`. It also sets the section's `done_at`.
@@ -143,7 +143,7 @@ first user message, also returned by `open`.
 ### Memory
 
 - `hexbot.memory.user.get {}` → `{text, cap: 2000, updated_at}`. The caller's
-  About you text, injected as the Hermes plugin prompt section
+  About you text, injected as the plugin prompt section
   `hexbot.about-you` into every session of a bot they own.
 - `hexbot.memory.user.set {text}` → same as get. Broadcasts
   `hexbot.memory.user.changed`.
@@ -189,7 +189,7 @@ keep `left_at` after departure so old transcripts retain their identities.
 - `hexbot.rooms.delete {id}` → `{deleted: true}`
 - `hexbot.rooms.mark_read {id, seq}` → `{room}`
 
-Room turns use hidden Hermes sessions on each bot profile. The daemon waits
+Room turns use hidden core sessions on each bot profile. The daemon waits
 for the corresponding assistant row through `session.history` after
 `prompt.submit`; it does not depend on the WebSocket that initiated the room.
 
@@ -201,13 +201,13 @@ for the corresponding assistant row through `session.history` after
 The `message_bot {to, text, wait}` tool delivers into the target bot's
 `From <sender>` section. With `wait: false`, a background watcher submits the
 eventual reply to the sender section as hidden input prefixed
-`[reply from <bot>]`. This is the closest supported Hermes mechanism to a
+`[reply from <bot>]`. This is the closest supported core mechanism to a
 hidden note and preserves it in the section context.
 
 The `hexbot_soul {action: read | write, text?}` tool lets a bot read or
 replace its own `SOUL.md` (capped at 4000 characters). It sits in its own
 plugin toolset, `hexbot-soul`, which is never written to
-`known_plugin_toolsets`, so Hermes keeps it on for every bot. A write calls
+`known_plugin_toolsets`, so the core keeps it on for every bot. A write calls
 `profiles.configure {soul}` and broadcasts `hexbot.bots.changed`; it reaches
 new sections only, since a running section's prompt is frozen. The chat
 shows a "Soul updated" mark under the bubble, as it shows "Memory updated"
@@ -227,9 +227,9 @@ are stored once for the daemon; each bot has its own on/off switch.
 A tool that belongs to a connector (`web_search`, `web_extract`,
 `image_generate`, `video_generate`, `x_search`, the Home Assistant tools) is
 left out of every session's tool schema until that connector is `ready`.
-Hermes alone would offer some of them without a key (its keyless web search
+The core alone would offer some of them without a key (its keyless web search
 tier, or an xAI model key); `connectors.gate_tools` adds the "set up" condition
-to each tool's Hermes availability check when the plugin registers. Onboarding
+to each tool's core availability check when the plugin registers. Onboarding
 offers the search and media connectors before the first bot is created
 (`hexbot.connectors.setup` without a `bot`).
 
@@ -251,7 +251,7 @@ or a clear.
   enable_for_bot?, bot_only?}` → `{connector, test: {ok, message}}`. Admin
   only. Writes the values into the root `.env`, every profile `.env` and the
   process environment (`bot_only` writes only that bot's profile), records the
-  backend choice where Hermes reads it, runs the check or probe, and, when
+  backend choice where the core reads it, runs the check or probe, and, when
   it passes, turns the connector on for `bot` unless `enable_for_bot` is
   false. A failed probe leaves the connector off for the bot.
 - `hexbot.connectors.test {id, bot?}` → `{ok, message}`.
@@ -266,9 +266,9 @@ or a clear.
 ### Providers and models
 
 - `hexbot.providers.list {}` → `{providers: [{id, label, configured,
-  auth_type, models_source}]}` (all Hermes providers). `configured` is
+  auth_type, models_source}]}` (all core providers). `configured` is
   always a boolean: key providers are checked against the deployment
-  `.env` and the process env, OAuth providers against the Hermes auth
+  `.env` and the process env, OAuth providers against the core auth
   store (`openai-codex` via `hermes_cli.auth._read_codex_tokens`, the rest
   via their stored provider state). `label` is the provider's display
   name, never the raw slug.
@@ -280,10 +280,10 @@ or a clear.
   `openai` (→ `openai-api`), `chatgpt` (→ `openai-codex`), `claude`,
   `grok`, `glm`. `include_unconfigured` defaults to true when the named
   provider has no credentials; `model.options` returns empty skeleton rows
-  for those, so `all` then falls back to Hermes' offline curated catalog
+  for those, so `all` then falls back to the core's offline curated catalog
   and `all_source` reports `model.options | catalog | mixed | none`.
   `context` is in tokens; `input_cost` / `output_cost` are the $/Mtok
-  strings Hermes formats for its own picker (e.g. `"$3.00"`, `"free"`).
+  strings the core formats for its own picker (e.g. `"$3.00"`, `"free"`).
 
 ### Network and pairing
 
@@ -326,7 +326,7 @@ A client newer than the daemon asks the daemon to update itself
   estimated_cost_usd, by_bot}`. Members may request only their own usage.
 
 The room engine and `hexbot.sections.open` refuse a new turn after the owning
-user reaches `daily_tokens`, and emit `hexbot.usage.limit {user}`. Hermes's
+user reaches `daily_tokens`, and emit `hexbot.usage.limit {user}`. The core's
 `pre_llm_call` plugin hook cannot refuse a request, so it is not used as a
 budget gate.
 
@@ -370,10 +370,10 @@ kind, connector, text, created_at, resolved_at}}` followed by
 ## CLI
 
 - `hexbot serve [--host] [--port] [--lan]`: starts the daemon (wraps
-  `hermes serve`, loads the hexbot plugin, applies `~/.hexbot` as home).
+  `hexbot core serve`, loads the hexbot plugin, applies `~/.hexbot` as home).
 - `hexbot pair`: prints the pairing code, addresses, and a QR.
 - `hexbot connect [status|disconnect]`: registers, inspects, or disconnects
   this daemon from Hex Connect.
 - `hexbot bots list|create|delete`, `hexbot rooms list` (milestone 3),
   `hexbot send <bot> <text>`.
-- Every Hermes command remains reachable as `hexbot hermes <args>`.
+- Every core command is reachable as `hexbot core <args>`.

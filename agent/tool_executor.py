@@ -91,7 +91,7 @@ def _ensure_file_checkpoint(
         return
 
     # File tools resolve relative paths against the task's live/session cwd,
-    # which can differ from the Hermes process cwd (notably in Docker).  Resolve
+    # which can differ from the Hexbot process cwd (notably in Docker).  Resolve
     # through that same path pipeline before asking the checkpoint manager to
     # discover the project root.
     from tools.file_tools import _resolve_path_for_task
@@ -217,7 +217,7 @@ def _flush_session_db_after_tool_progress(
     """Flush tool-call progress before projecting it to any UI surface.
 
     Tool execution can perform side effects that terminate or restart the
-    current Hermes process before the normal turn-end persistence path runs.
+    current Hexbot process before the normal turn-end persistence path runs.
     Flush the already-appended assistant/tool messages immediately so the
     transcript survives destructive-but-valid tool calls.
     """
@@ -593,7 +593,7 @@ def _run_agent_tool_execution_middleware(
     begin_execution=None,
     authorization_gate: _ConcurrentToolAuthorizationGate | None = None,
 ) -> _ManagedToolResult:
-    """Run Relay rewrites before Hermes policy and dispatch exactly once."""
+    """Run Relay rewrites before Hexbot policy and dispatch exactly once."""
     from agent import relay_tools
     from hermes_cli.middleware import (
         apply_tool_request_middleware,
@@ -613,7 +613,7 @@ def _run_agent_tool_execution_middleware(
         with dispatch_lock:
             if state["dispatched"]:
                 raise RuntimeError(
-                    "Hermes tool execution callback invoked more than once"
+                    "Hexbot tool execution callback invoked more than once"
                 )
             state["dispatched"] = True
             state["blocked"] = False

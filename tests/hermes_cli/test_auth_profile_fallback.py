@@ -143,7 +143,7 @@ def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
 # ``resolve_nous_access_token``) call ``_load_provider_state`` directly with
 # a profile-loaded auth store rather than going through
 # ``get_provider_auth_state``. Without the fallback wired into
-# ``_load_provider_state`` itself, those helpers raise ``"Hermes is not
+# ``_load_provider_state`` itself, those helpers raise ``"Hexbot is not
 # logged into Nous Portal"`` even though the user has a valid global Nous
 # login. These tests pin the per-provider shadowing into the helper.
 # ---------------------------------------------------------------------------
@@ -238,7 +238,7 @@ def test_auth_lock_reentrancy_is_scoped_after_profile_context_switch(profile_env
 
 @pytest.fixture()
 def classic_env(tmp_path, monkeypatch):
-    """Classic single-root layout (HERMES_HOME != ~/.hermes, no profiles)."""
+    """Classic single-root layout (HERMES_HOME != ~/.hexbot, no profiles)."""
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: fake_home)

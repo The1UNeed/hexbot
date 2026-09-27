@@ -18,7 +18,7 @@ const faqs: [id: string, question: string, answer: string][] = [
   ['sharing', 'Can my family or team share one Hexbot?', 'Yes. One daemon can host several users, each with their own bots, About you text, and budgets. See <a href="/docs/multi-user/">Multi-user</a>.'],
   ['remote', 'Can I use it away from home?', 'Yes, through Tailscale or Hex Connect. Pairing on your own network never needs Connect. See <a href="/docs/connect/">Hex Connect</a>.'],
   ['browser', 'Do I need the app on every device?', 'No. Once a daemon is registered with Hex Connect, sign in at <a href="https://connect.hexbot.app">connect.hexbot.app</a> on any phone or computer and open it in the browser. The app is nicer on a computer you use every day; the browser is enough for the rest.'],
-  ['hermes', 'How is Hexbot related to Hermes Agent?', 'Hexbot is built on <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a> by Nous Research. Hermes runs each bot; Hexbot adds the faces, rooms, memory and dreaming, pairing, and the app.'],
+  ['hermes', 'How is Hexbot related to Hermes Agent?', 'Hexbot is built on <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a> by Nous Research. Hexbot\'s core began as a fork of it and runs each bot; the faces, rooms, memory and dreaming, pairing, and the app are Hexbot\'s own.'],
   ['bugs', 'Where do I report a bug or ask for a feature?', 'On <a href="' + github + '/issues">GitHub Issues</a>. Include the nightly version from Settings, About.'],
 ]
 const plain = (html: string) => html.replace(/<[^>]+>/g, '')

@@ -28,15 +28,15 @@ intentionally different — do not "deduplicate" them.
   timestamp is stripped later by ``_cache_scope_from_session_id`` exactly as
   before.
 
-A host that mints one physical ``session_id`` per RESPONSE (Hermes Studio's
+A host that mints one physical ``session_id`` per RESPONSE (Hexbot Studio's
 group chat, and ``POST /v1/responses`` with client-managed history, which
 mints ``str(uuid4())`` per request) re-keys every conversation-affinity hint
-Hermes sends — ``prompt_cache_key`` on both OpenAI-wire transports, plus the
+Hexbot sends — ``prompt_cache_key`` on both OpenAI-wire transports, plus the
 OpenRouter/Nous sticky ``session_id`` and xAI's ``x-grok-conv-id`` through
 ``portal_tags`` (issue #96811). Those rows carry no lineage, so the walk
 above correctly returns the physical id and the scope moves every reply.
 
-Hermes must not infer the logical conversation from the id's SYNTAX (that
+Hexbot must not infer the logical conversation from the id's SYNTAX (that
 rule collides independent client-supplied ids and merges Studio members
 truncated past its 96-character boundary — the #79017 failure class). The
 host has to declare it, and one carrier already means exactly that:

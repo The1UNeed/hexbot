@@ -157,7 +157,7 @@ def test_about_you_renders_as_one_prompt_block(isolated_home):
     block = render_user_memory({"session_id": "unknown", "profile_name": "scout"})
     assert block.startswith("About you")
     assert "Name: Alex" in block
-    # Hermes passes a read-only mapping proxy, not a dict, when it renders
+    # Hexbot passes a read-only mapping proxy, not a dict, when it renders
     # plugin sections; the block must survive that.
     assert render_user_memory(MappingProxyType(
         {"session_id": "unknown", "profile_name": "scout"})) == block

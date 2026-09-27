@@ -111,9 +111,9 @@ def register(ctx):
         from hexbot.auth_provider import HexbotAuthProvider
         ctx.register_dashboard_auth_provider(HexbotAuthProvider())
     else:
-        logger.warning("Hexbot auth requires a newer Hermes PluginContext")
+        logger.warning("Hexbot auth requires a newer core PluginContext")
     if not hasattr(ctx, "register_rpc_method"):
-        logger.warning("Hexbot RPC requires a newer Hermes PluginContext")
+        logger.warning("Hexbot RPC requires a newer core PluginContext")
         return
     from hexbot.rpc import register as register_rpc
 
@@ -128,7 +128,7 @@ def register(ctx):
         from hexbot.dreaming import DIGEST_SCHEMA, dream_digest
         ctx.register_tool(name="hexbot_dream_digest", toolset="hexbot",
                           schema=DIGEST_SCHEMA, handler=dream_digest)
-        # Its own toolset, never listed in ``known_plugin_toolsets``, so Hermes
+        # Its own toolset, never listed in ``known_plugin_toolsets``, so Hexbot
         # keeps it on for every bot regardless of the Tools page.
         from hexbot.soul import SCHEMA as SOUL_SCHEMA, soul_tool
         ctx.register_tool(name="hexbot_soul", toolset="hexbot-soul", schema=SOUL_SCHEMA,
@@ -140,7 +140,7 @@ def register(ctx):
     from hexbot.connectors import gate_tools
     gate_tools()
     # Constructing the singleton performs restart reconciliation, then starts
-    # the room supervisor. No Hermes lifecycle code needs to know about it.
+    # the room supervisor. No Hexbot lifecycle code needs to know about it.
     from hexbot.rooms import get_engine
     get_engine()
     if not _rpc_registered():
@@ -148,7 +148,7 @@ def register(ctx):
 
 
 def _rpc_registered() -> bool:
-    """Hermes builds one plugin manager per profile home; the RPC table is
+    """Hexbot builds one plugin manager per profile home; the RPC table is
     process-global, so only the first manager registers the methods."""
     from hermes_cli.plugins import lookup_plugin_rpc_method
 

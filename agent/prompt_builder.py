@@ -157,7 +157,7 @@ DEFAULT_AGENT_IDENTITY = (
     # "targeted and efficient exploration" line was cut deliberately —
     # maintainer: models UNDER-explore by default and miss useful context;
     # never re-add an exploration-thrift instruction here.
-    # Hexbot (CORE_EDITS.md row 7): a bot always has a SOUL.md, so this is
+    # A bot always has a SOUL.md, so this is
     # the fallback for a profile that lost it, not the product's voice.
     "You are a bot in Hexbot. Be direct: match the length of your reply to "
     "the weight of the ask — a one-line question gets a one-line answer, and "
@@ -170,8 +170,8 @@ DEFAULT_AGENT_IDENTITY = (
     "not by default."
 )
 
-# Hexbot (CORE_EDITS.md row 7): the one universal block every bot gets right
-# after its soul. It replaces the Hermes help pointer. It names the product,
+# The one universal block every bot gets right
+# after its soul. It replaces the old help pointer. It names the product,
 # the three texts that shape a bot, how to act versus ask, how rooms work, and
 # what counts as an instruction. Nothing here is about one bot or one user;
 # that is what the soul, memory and About you are for. Kept short on
@@ -215,7 +215,7 @@ HEXBOT_GUIDANCE = (
     "connectors, updates), point them to https://hexbot.app/docs."
 )
 
-# Hermes swaps these two by whether the hermes-agent skill is installed; in
+# Hexbot swaps these two by whether the hermes-agent skill is installed; in
 # Hexbot both slots carry the same block.
 HERMES_AGENT_HELP_GUIDANCE = HEXBOT_GUIDANCE
 HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = HEXBOT_GUIDANCE
@@ -235,8 +235,8 @@ def build_memory_guidance(memory_enabled: bool = True, profile_enabled: bool = T
     """
     if not memory_enabled and not profile_enabled:
         return ""
-    # Hexbot (CORE_EDITS.md row 7): memory is loaded into new sections, not
-    # this one; the profile branch stays for Hermes callers.
+    # Memory is loaded into new sections, not
+    # this one; the profile branch stays for core callers.
     if memory_enabled:
         frame = (
             "Your memory is loaded into every new section; the memory tool's "
@@ -269,7 +269,7 @@ MEMORY_GUIDANCE = build_memory_guidance(True, True)
 USER_PROFILE_GUIDANCE = build_memory_guidance(False, True)
 
 SESSION_SEARCH_GUIDANCE = (
-    # Hexbot (CORE_EDITS.md row 7): Hexbot words.
+    # Hexbot words.
     "When the user refers to something from an earlier section, or you suspect "
     "you have talked about it before, use session_search before asking them to "
     "repeat it."
@@ -308,7 +308,7 @@ SKILLS_GUIDANCE = (
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "
-    "the shared board at `~/.hermes/kanban.db`. Your task id is in "
+    "the shared board at `~/.hexbot/kanban.db`. Your task id is in "
     "`$HERMES_KANBAN_TASK`; your workspace is `$HERMES_KANBAN_WORKSPACE`. "
     "The `kanban_*` tools in your schema are your primary coordination surface — "
     "they write directly to the shared SQLite DB and work regardless of terminal "
@@ -401,12 +401,12 @@ KANBAN_GUIDANCE = (
     "or paste ids; the kernel rejects the completion on any phantom id.\n"
     "- **Orchestrating: discover profiles first.** The dispatcher SILENTLY "
     "drops a card with an unknown assignee (it sits in `ready` forever). Ground "
-    "every assignee in a real profile (`hermes profile list`, or ask the user), "
+    "every assignee in a real profile (`hexbot core profile list`, or ask the user), "
     "and express dependencies via `parents=[...]` on `kanban_create`, not prose.\n"
     "\n"
     "## Do NOT\n"
     "\n"
-    "- Do not shell out to `hermes kanban <verb>` for board operations. Use "
+    "- Do not shell out to `hexbot core kanban <verb>` for board operations. Use "
     "the `kanban_*` tools — they work across all terminal backends.\n"
     "- Do not complete a task you didn't actually finish. Block it.\n"
     "- Do not call `clarify` to ask questions. You are running headless — "
@@ -476,7 +476,7 @@ EXECUTION_GUIDANCE_MODELS = (
 # in the cached system prompt — token cost is paid once at install and
 # then amortised across all sessions via prefix caching.  Keep it tight.
 TASK_COMPLETION_GUIDANCE = (
-    # Hexbot (CORE_EDITS.md row 7): the same contract without the coding
+    # The same contract without the coding
     # framing. A bot is asked to do things far more often than to build them.
     "# Finishing the job\n"
     "When the user asks you to do something, the result is the thing done, "
@@ -732,8 +732,8 @@ STEER_CHANNEL_NOTE = (
 def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
     """Per-turn note for a message typed into the desktop's floating HUD.
 
-    HUD mode is a strip of Hermes floating over another application, so the
-    user is rarely asking about Hermes — they are asking about the thing behind
+    HUD mode is a strip of Hexbot floating over another application, so the
+    user is rarely asking about Hexbot — they are asking about the thing behind
     it, and the work they want done usually belongs in that app rather than in
     a surface of our own. Left to itself the model answers from its own
     browser and panes, which is the wrong half of the screen.
@@ -760,10 +760,10 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
         return ""
 
     sentences = [
-        "[Note: this message came from HUD mode — a small floating Hermes "
+        "[Note: this message came from HUD mode — a small floating Hexbot "
         "window sitting over whatever the user is actually working in, so an "
         'unqualified "this" or "here" usually means the app behind the HUD '
-        "rather than anything inside Hermes. read_window_below identifies "
+        "rather than anything inside Hexbot. read_window_below identifies "
         "that app.",
         "They move the HUD from app to app mid-conversation, so one you "
         "identified on an earlier turn is still a live target: a reference "
@@ -904,7 +904,7 @@ PLATFORM_HINTS = {
     "tui": (
         # Same file-delivery reality as the CLI (maintainer-confirmed):
         # no MEDIA: interception in tui/ — tags would print literally.
-        "You are in the Hermes terminal UI (TUI). Files: there is no "
+        "You are in the Hexbot terminal UI (TUI). Files: there is no "
         "attachment channel and MEDIA:/path tags are NOT intercepted "
         "here (they print as literal text) — deliver a file by stating "
         "its absolute path or URL in plain text. "
@@ -921,7 +921,7 @@ PLATFORM_HINTS = {
         # Mechanics cited from inline-preview-directive.tsx. The setup_mcp
         # sentence moved out entirely — its tool schema teaches the same
         # trigger + consent-card + never-hand-edit rule on every call.
-        "You are chatting inside the Hermes desktop app, a graphical chat "
+        "You are chatting inside the Hexbot desktop app, a graphical chat "
         "surface. Markdown renders with full GitHub flavor (tables, "
         "syntax-highlighted code, math via $...$, task lists, callouts). "
         "Deliver files by writing MEDIA:/absolute/path/to/file — any file "
@@ -1090,7 +1090,7 @@ WSL_ENVIRONMENT_HINT = (
 
 # Non-local terminal backends that run commands (and therefore every file
 # tool: read_file, write_file, patch, search_files) inside a separate
-# container / remote host rather than on the machine where Hermes itself
+# container / remote host rather than on the machine where Hexbot itself
 # runs. For these backends, host info (Windows/Linux/macOS, $HOME, cwd) is
 # misleading — the agent should only see the machine it can actually touch.
 _REMOTE_TERMINAL_BACKENDS = frozenset({
@@ -1147,7 +1147,7 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
 # on the first prompt build of a session. Keyed by (env_type, cwd_hint) so
 # a mid-process backend switch rebuilds the string. Kept in-module (not on
 # disk) because the probe captures live backend state that may change
-# across Hermes restarts.
+# across Hexbot restarts.
 _BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
 
 
@@ -1201,7 +1201,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
     Returns a pre-formatted multi-line string describing the backend's OS,
     $HOME, cwd, and user — or None if the probe failed. Result is cached
     per process. Used only for non-local backends where the agent's tools
-    operate on a different machine than the host Hermes runs on.
+    operate on a different machine than the host Hexbot runs on.
     """
     cwd_hint = os.getenv("TERMINAL_CWD", "")
     cache_key = (env_type, cwd_hint)
@@ -1395,8 +1395,8 @@ def build_environment_hints() -> str:
                 f"Terminal backend: {backend}. Your `terminal`, `read_file`, "
                 f"`write_file`, `patch`, and `search_files` tools all operate "
                 f"inside this {backend} environment — NOT on the machine "
-                f"where Hermes itself is running. The host OS, home, and cwd "
-                f"of the Hermes process are irrelevant; only the following "
+                f"where Hexbot itself is running. The host OS, home, and cwd "
+                f"of the Hexbot process are irrelevant; only the following "
                 f"backend state matters:\n{probe}"
             )
         else:
@@ -1408,7 +1408,7 @@ def build_environment_hints() -> str:
             hints.append(
                 f"Terminal backend: {backend}. Your `terminal`, `read_file`, "
                 f"`write_file`, `patch`, and `search_files` tools all operate "
-                f"inside {description} — NOT on the machine where Hermes "
+                f"inside {description} — NOT on the machine where Hexbot "
                 f"itself runs. The backend probe didn't respond at "
                 f"prompt-build time, so the sandbox's current user, $HOME, "
                 f"and working directory are unknown from here. If you need "
@@ -1419,7 +1419,7 @@ def build_environment_hints() -> str:
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)
 
-    # Embedder-supplied environment description. Lets a host that wraps Hermes
+    # Embedder-supplied environment description. Lets a host that wraps Hexbot
     # (e.g. a sandbox runner / managed platform) explain the environment the
     # agent is running in — proxy, credential handling, mount layout — without
     # forking the identity slot (SOUL.md). Read once at prompt-build time, so
@@ -1798,7 +1798,7 @@ def build_skills_system_prompt(
     Falls back to a full filesystem scan when both layers miss.
 
     External skill directories (``skills.external_dirs`` in config.yaml) are
-    scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
+    scanned alongside the local ``~/.hexbot/skills/`` directory.  External dirs
     are read-only — they appear in the index but new skills are always created
     in the local dir (or ``skills.create_dir`` when configured).  Local skills
     take precedence when names collide.
@@ -2450,14 +2450,14 @@ def build_context_files_prompt(
     cwd_path = Path(cwd).resolve()
     sections = []
 
-    # Never let a FALLBACK-picked directory inside the Hermes install/source
+    # Never let a FALLBACK-picked directory inside the Hexbot install/source
     # tree gain system-prompt authority. A backend that self-spawns into that
     # tree (the desktop app default) would otherwise load this repo's
     # contributor AGENTS.md as authoritative project context (#64590). An
-    # explicitly configured cwd is honored verbatim — the Hermes tree is a
+    # explicitly configured cwd is honored verbatim — the Hexbot tree is a
     # legitimate workspace when the user deliberately points a session at it —
     # and CLI-style surfaces pass allow_install_tree_fallback=True because
-    # their launch dir IS the user's shell cwd (developing Hermes in-tree).
+    # their launch dir IS the user's shell cwd (developing Hexbot in-tree).
     from agent.runtime_cwd import _is_install_tree
 
     if (
@@ -2467,7 +2467,7 @@ def build_context_files_prompt(
     ):
         logger.warning(
             "skipping project-context discovery: working-directory resolution "
-            "fell back to the Hermes install tree (%s) — set terminal.cwd to "
+            "fell back to the Hexbot install tree (%s) — set terminal.cwd to "
             "your project directory",
             cwd_path,
         )

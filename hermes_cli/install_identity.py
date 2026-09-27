@@ -1,4 +1,4 @@
-"""Stable opaque identity shared by every profile in one Hermes install."""
+"""Stable opaque identity shared by every profile in one Hexbot install."""
 
 from __future__ import annotations
 
@@ -131,7 +131,7 @@ def get_install_id(
     *,
     cache: dict[str, Optional[str]] | None = None,
 ) -> Optional[str]:
-    """Return the process-cached stable id for the active Hermes root."""
+    """Return the process-cached stable id for the active Hexbot root."""
     root = get_default_hermes_root()
     root_key = str(root)
     target_cache = _INSTALL_ID_CACHE if cache is None else cache

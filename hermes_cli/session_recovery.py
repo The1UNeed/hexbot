@@ -1,4 +1,4 @@
-"""Offline, non-destructive recovery for a damaged Hermes session database.
+"""Offline, non-destructive recovery for a damaged Hexbot session database.
 
 The recovery path deliberately avoids in-place repair:
 
@@ -362,13 +362,13 @@ def _snapshot_and_inspect(
         if before != after:
             raise SessionRecoverySafetyError(
                 "The source database bundle changed while it was being copied. "
-                "Stop every Hermes process using this profile and retry. "
-                "This includes the interactive `hermes` CLI session this "
+                "Stop every Hexbot process using this profile and retry. "
+                "This includes the interactive `hexbot core` CLI session this "
                 "command may have been launched from: a running parent CLI "
                 "writes session bookkeeping (compression ticks, context "
                 "tracking) to state.db in the background and counts as a "
-                "Hermes process even after the gateway is stopped. Run the "
-                "recovery from a fresh shell with no `hermes` session open, "
+                "Hexbot process even after the gateway is stopped. Run the "
+                "recovery from a fresh shell with no `hexbot core` session open, "
                 "or point --source at an immutable snapshot copy of the "
                 "database."
             )

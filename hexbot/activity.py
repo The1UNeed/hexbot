@@ -100,7 +100,7 @@ def message_bot(args, *, session_id="", task_id="", watcher=None, **_kwargs):
     to_bot = str(args.get("to") or "").strip()
     text = str(args.get("text") or "").strip()
     if not to_bot or not text: return {"error": "to and text are required"}
-    # Hermes assigns a fresh task id to each originating human turn. Relayed
+    # Hexbot assigns a fresh task id to each originating human turn. Relayed
     # calls retain it, so old turns do not consume the next turn's allowance.
     origin = str(args.get("origin_session_id") or _SESSION_ORIGINS.get(session_id)
                  or task_id or session_id)

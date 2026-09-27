@@ -1,15 +1,15 @@
-"""Hermes-tools-as-MCP server for the codex_app_server runtime.
+"""Hexbot-tools-as-MCP server for the codex_app_server runtime.
 
 When the user runs `openai/*` turns through the codex app-server, codex
 owns the loop and builds its own tool list. By default, that means
-Hermes' richer tool surface — web search, browser automation,
+Hexbot's richer tool surface — web search, browser automation,
 delegate_task subagents, vision analysis, persistent memory, skills,
 cross-session search, image generation, TTS — is unreachable.
 
-This module exposes a curated subset of those Hermes tools to the
+This module exposes a curated subset of those Hexbot tools to the
 spawned codex subprocess via stdio MCP. Codex registers it as a normal
 MCP server (per `~/.codex/config.toml [mcp_servers.hermes-tools]`) and
-the user gets full Hermes capability inside a Codex turn.
+the user gets full Hexbot capability inside a Codex turn.
 
 Scope (what we expose):
   - web_search, web_extract              — Firecrawl, no codex equivalent
@@ -18,18 +18,18 @@ Scope (what we expose):
     _get_images / _console / _vision
   - vision_analyze                       — image inspection by vision model
   - image_generate                       — image generation
-  - skill_view, skills_list              — Hermes' skill library
+  - skill_view, skills_list              — Hexbot's skill library
   - text_to_speech                       — TTS
   - kanban_* (complete/block/comment/    — kanban worker + orchestrator
     heartbeat/show/list/create/            handoff (stateless: read env var,
-    unblock/link)                          write ~/.hermes/kanban.db)
+    unblock/link)                          write ~/.hexbot/kanban.db)
 
 What we DO NOT expose:
   - terminal / shell                     — codex's own shell tool
   - read_file / write_file / patch       — codex's apply_patch + shell
   - search_files / process               — codex's shell
   - clarify                              — codex's own UX
-  - delegate_task / memory /             — `_AGENT_LOOP_TOOLS` in Hermes
+  - delegate_task / memory /             — `_AGENT_LOOP_TOOLS` in Hexbot
     session_search / todo                  (model_tools.py). They require
                                            the running AIAgent context to
                                            dispatch (mid-loop state), so a
@@ -97,7 +97,7 @@ def _signature_from_schema(schema: dict | None) -> tuple[inspect.Signature, dict
     return inspect.Signature(params, return_annotation=str), annots
 
 
-# Tools we expose. Each name MUST match a registered Hermes tool that
+# Tools we expose. Each name MUST match a registered Hexbot tool that
 # `model_tools.handle_function_call()` can dispatch.
 #
 # What we deliberately DO NOT expose:
@@ -105,9 +105,9 @@ def _signature_from_schema(schema: dict | None) -> tuple[inspect.Signature, dict
 #     process — codex's built-ins cover these and approval routes through
 #     codex's own UI.
 #   - delegate_task / memory / session_search / todo — these are
-#     `_AGENT_LOOP_TOOLS` in Hermes (model_tools.py:493). They require
+#     `_AGENT_LOOP_TOOLS` in Hexbot (model_tools.py:493). They require
 #     the running AIAgent context to dispatch (mid-loop state), so a
-#     stateless MCP callback can't drive them. Hermes' default runtime
+#     stateless MCP callback can't drive them. Hexbot's default runtime
 #     keeps these working; the codex_app_server runtime cannot.
 EXPOSED_TOOLS: tuple[str, ...] = (
     "web_search",
@@ -132,7 +132,7 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     # in the callback, a worker spawned with openai_runtime=codex_app_server
     # could do the work but couldn't report completion back to the kernel,
     # making it hang until timeout. Stateless dispatch — they just read
-    # the env var and write to ~/.hermes/kanban.db.
+    # the env var and write to ~/.hexbot/kanban.db.
     "kanban_complete",
     "kanban_block",
     "kanban_request_review",
@@ -152,7 +152,7 @@ EXPOSED_TOOLS: tuple[str, ...] = (
 
 
 def _build_server() -> Any:
-    """Create the MCP server with Hermes tools attached. Lazy imports
+    """Create the MCP server with Hexbot tools attached. Lazy imports
     so the module can be imported without the mcp package installed
     (we degrade to a clear error only when actually run)."""
     try:
@@ -164,7 +164,7 @@ def _build_server() -> Any:
             f"hermes-tools MCP server requires the 'mcp' package: {exc}"
         ) from exc
 
-    # Discover Hermes tools so dispatch works.
+    # Discover Hexbot tools so dispatch works.
     from model_tools import (
         get_tool_definitions,
         handle_function_call,
@@ -173,7 +173,7 @@ def _build_server() -> Any:
     mcp = MCPServer(
         "hermes-tools",
         instructions=(
-            "Hermes Agent's tool surface, exposed for use inside a Codex "
+            "Hexbot's tool surface, exposed for use inside a Codex "
             "session. Use these for capabilities Codex's built-in toolset "
             "doesn't cover: web search/extract, browser automation, "
             "subagent delegation, vision, image generation, persistent "
@@ -181,8 +181,8 @@ def _build_server() -> Any:
         ),
     )
 
-    # Pull authoritative Hermes tool schemas for the ones we expose, so
-    # MCP clients see the same parameter docs Hermes gives the model.
+    # Pull authoritative Hexbot tool schemas for the ones we expose, so
+    # MCP clients see the same parameter docs Hexbot gives the model.
     all_defs = {
         td["function"]["name"]: td["function"]
         for td in (get_tool_definitions(quiet_mode=True) or [])
@@ -195,18 +195,18 @@ def _build_server() -> Any:
         spec = all_defs.get(name)
         if spec is None:
             logger.debug(
-                "skipping %s — not registered in this Hermes process", name
+                "skipping %s — not registered in this Hexbot process", name
             )
             continue
 
-        description = spec.get("description") or f"Hermes {name} tool"
+        description = spec.get("description") or f"Hexbot {name} tool"
         params_schema = spec.get("parameters") or {"type": "object", "properties": {}}
 
         # The SDK wants a Python callable and derives the input schema from
         # its signature — there is no inputSchema parameter on either the
         # decorator or add_tool(). So build a closure that takes the arguments
         # dict, dispatches via handle_function_call, returns the result
-        # string, and carries a __signature__ synthesized from the Hermes
+        # string, and carries a __signature__ synthesized from the Hexbot
         # JSON Schema (see _signature_from_schema) for the SDK to read.
         def _make_handler(tool_name: str, schema: dict | None):
             sig, annots = _signature_from_schema(schema)
@@ -262,7 +262,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    # Quiet mode: keep Hermes' own banners off stdout (which is the MCP wire).
+    # Quiet mode: keep Hexbot's own banners off stdout (which is the MCP wire).
     os.environ.setdefault("HERMES_QUIET", "1")
     os.environ.setdefault("HERMES_REDACT_SECRETS", "true")
 
