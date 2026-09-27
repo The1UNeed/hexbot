@@ -4,6 +4,8 @@ import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir } from 'node:os';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
 import { registerAcp } from './acp.ts';
+import { lazyStream } from '@earendil-works/pi-ai';
+import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
 
 export default function hexbot(pi: any) {
   const config = JSON.parse(readFileSync(process.env.HEXBOT_SESSION_CONFIG!, 'utf8'));
@@ -17,6 +19,34 @@ export default function hexbot(pi: any) {
     if (reply.error) throw new Error(reply.error);
     return reply.result;
   });
+  // Pi resolves auth before its header hook, and Codex then rebuilds Authorization.
+  // Pass the daemon's current token into the native stream itself. Refresh tokens
+  // stay in the daemon; the transcript and native transport options pass through.
+  const nativeProviders = builtinProviders();
+  for (const [provider, api] of [
+    ['openai-codex', 'openai-codex-responses'],
+    ['anthropic', 'anthropic-messages'],
+    ['xai', 'openai-responses'],
+  ]) {
+    const native = nativeProviders.find((item: any) => item.id === provider)!;
+    pi.registerProvider(provider, {api, streamSimple(model: any, context: any, options: any = {}) {
+      return lazyStream(model, async () => {
+        if (provider === 'xai') {
+          const auth = JSON.parse(readFileSync(process.env.PI_CODING_AGENT_DIR + '/auth.json', 'utf8'));
+          if (auth.xai?.type !== 'oauth') return native.streamSimple(model, context, options);
+        }
+        if (!currentContext) throw new Error('Provider authentication is unavailable');
+        const raw = await currentContext.ui.input('__HEXBOT_TOOL__' + JSON.stringify({name: 'hexbot_provider_auth', args: {provider: provider === 'xai' ? 'xai-oauth' : provider}}));
+        if (!raw) throw new Error('Provider authentication interrupted');
+        const reply = JSON.parse(raw);
+        if (reply.error) throw new Error(reply.error);
+        const headers = reply.result?.headers ?? {};
+        const apiKey = headers['x-api-key'] || headers.authorization?.replace(/^Bearer /, '');
+        if (!apiKey) throw new Error('Provider authentication returned no token');
+        return native.streamSimple(model, context, {...options, apiKey, headers: {...options.headers, ...headers}});
+      });
+    }});
+  }
   const allowed = new Set<string>();
   let fallbackUsed = false;
   let iterations = 0;

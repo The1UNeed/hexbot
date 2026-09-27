@@ -495,7 +495,7 @@ async fn fal_video_uses_model_capabilities_for_images_and_optional_upscale() {
         "/fal-ai/seedvr/upscale/video",
         json!({"video":{"url":"https://cdn.example.test/upscaled.mp4"}}),
     );
-    let out=call(home.path(),"fox","video_generate",json!({"prompt":"Animate clouds","model":"minimax-h3","image_url":"https://cdn.example.test/image.png","duration":99,"resolution":"1080p","aspect_ratio":"9:16","seed":6,"upscale":true})).await.unwrap();
+    let out=call(home.path(),"fox","video_generate",json!({"prompt":"Animate clouds","model":"minimax-h3","image_url":"data:image/png;base64,aW1hZ2U=","duration":99,"resolution":"1080p","aspect_ratio":"9:16","seed":6,"upscale":true})).await.unwrap();
     assert_eq!(out["video"], "https://cdn.example.test/upscaled.mp4");
     assert_eq!(out["upscaled"], true);
     assert_eq!(out["modality"], "image");

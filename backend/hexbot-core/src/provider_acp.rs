@@ -369,7 +369,7 @@ impl Wire {
             if !self.session.is_empty() && params["sessionId"]!=self.session {return Err(failure("ACP request belongs to another session"));}
             match method {
                 "session/request_permission"=>{
-                    let option=params["options"].as_array().and_then(|v|v.iter().find(|v|v["kind"]=="allow_once").or_else(||v.iter().find(|v|v["kind"]=="allow_always")));
+                    let option=allow_once(params);
                     if let Some(option)=option && option["optionId"].is_string() && permission(params.clone()).await? {
                         Ok(json!({"outcome":{"outcome":"selected","optionId":option["optionId"]}}))
                     }else{Ok(json!({"outcome":{"outcome":"cancelled"}}))}
@@ -380,8 +380,7 @@ impl Wire {
                     let request=json!({"sessionId":self.session,"toolCall":{"title":method,"kind":if method=="fs/read_text_file"{"read"}else{"edit"},"rawInput":params,"locations":[{"path":path}]},"options":[{"optionId":"once","kind":"allow_once","name":"Allow once"},{"optionId":"deny","kind":"reject_once","name":"Deny"}]});
                     if !permission(request).await?{return Err(failure("The user denied this action"));}
                     if method=="fs/read_text_file" {
-                        if std::fs::metadata(&path).is_ok_and(|v|v.len()>MAX_FRAME as u64){return Err(failure("File exceeds the ACP read limit"));}
-                        let content=match std::fs::read_to_string(path){Ok(v)=>v,Err(e) if e.kind()==std::io::ErrorKind::NotFound=>String::new(),Err(e)=>return Err(e.into())};
+                        let content=if path.try_exists()? { common::read_regular_text(&path, MAX_FRAME)? } else { String::new() };
                         let start=params["line"].as_u64().unwrap_or(1).max(1)-1;let limit=params["limit"].as_u64().unwrap_or(u64::MAX);
                         Ok(json!({"content":content.split_inclusive('\n').skip(start as usize).take(limit.min(usize::MAX as u64) as usize).collect::<String>()}))
                     }else{
@@ -521,4 +520,24 @@ fn extract_calls(response: &str) -> Result<(String, Vec<Value>)> {
         return extract_calls(&format!("<tool_call>{raw}</tool_call>"));
     }
     Ok((text.trim().into(), calls))
+}
+
+fn allow_once(params: &Value) -> Option<&Value> {
+    params["options"]
+        .as_array()?
+        .iter()
+        .find(|v| v["kind"] == "allow_once" && v["optionId"].is_string())
+}
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+    #[test]
+    fn approval_never_selects_a_persistent_grant() {
+        assert!(
+            allow_once(&json!({"options":[{"kind":"allow_always","optionId":"forever"}]}))
+                .is_none()
+        );
+        assert!(allow_once(&json!({"options":[{"kind":"allow_once"}]})).is_none());
+        assert_eq!(allow_once(&json!({"options":[{"kind":"allow_always","optionId":"forever"},{"kind":"allow_once","optionId":"once"}]})).unwrap()["optionId"], "once");
+    }
 }

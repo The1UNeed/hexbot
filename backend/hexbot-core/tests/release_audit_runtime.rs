@@ -33,16 +33,25 @@ async fn audit_python_uses_the_section_working_directory() {
     .unwrap();
     let workspace = home.path().join("workspace");
     fs::create_dir_all(&workspace).unwrap();
-    let result = hexbot_core::native_tools::call(
-        home.path(),
-        "alice",
-        "owl",
-        "section-a",
-        "execute_code",
-        &json!({"code":"import os\nprint(os.getcwd())"}),
+    let executable = fake_pi(home.path());
+    let source = fs::read_to_string(&executable).unwrap().replace(
+        "const rl=",
+        "require('node:fs').writeFileSync('shared.txt', 'same directory');\nconst rl=",
+    );
+    fs::write(&executable, source).unwrap();
+    let runtime = Runtime::new(home.path().into(), EventHub::new(), executable).unwrap();
+    open(&runtime, "alice").await;
+    let options: Value = serde_json::from_slice(
+        &fs::read(home.path().join("runtime/sessions/section-a/config.json")).unwrap(),
     )
-    .await
     .unwrap();
+    let pi_cwd = std::path::Path::new(options["cwd"].as_str().unwrap());
+    assert_eq!(
+        fs::read_to_string(pi_cwd.join("shared.txt")).unwrap(),
+        "same directory"
+    );
+    let result = hexbot_core::native_tools::call(home.path(), "alice", "owl", "section-a", "execute_code", &json!({"code":"import os\nassert open('shared.txt').read() == 'same directory'\nprint(os.getcwd())"})).await.unwrap();
+    runtime.shutdown().await;
     hexbot_core::native_tools::close_session(home.path(), "section-a").await;
     assert_eq!(
         result["output"].as_str().unwrap().trim(),

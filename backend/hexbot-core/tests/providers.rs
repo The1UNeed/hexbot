@@ -519,10 +519,21 @@ async fn oauth_refresh_rotates_nous_qwen_and_minimax_grants() {
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         let auth: Value =
             serde_json::from_slice(&fs::read(home.path().join("auth.json")).unwrap()).unwrap();
-        assert_eq!(
-            auth["providers"][provider]["refresh_token"],
-            "rotated-refresh"
-        );
+        if provider == "xai-oauth" {
+            assert_eq!(auth["providers"][provider]["refresh_token"], "old-refresh");
+            let entry = fs::read_dir(home.path().join("runtime/provider-auth"))
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap();
+            let shared: Value = serde_json::from_slice(&fs::read(entry.path()).unwrap()).unwrap();
+            assert_eq!(shared["refresh_token"], "rotated-refresh");
+        } else {
+            assert_eq!(
+                auth["providers"][provider]["refresh_token"],
+                "rotated-refresh"
+            );
+        }
         providers::clear_key(home.path(), provider).unwrap();
         assert!(
             providers::request_auth(home.path(), "owl", provider)

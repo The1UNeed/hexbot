@@ -22,7 +22,7 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
         tools.push(descriptor("todo_list","Track multi-step work. Omit todos to read. Writes replace the list unless merge is true. Complete tasks only after verifying them.",json!({"todos":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed","cancelled"]},"parent":{"type":"string"}},"required":["id","content","status"]}},"merge":{"type":"boolean"}}),&[]));
     }
     if enabled.iter().any(|s| s == "session_search") {
-        tools.push(descriptor("session_search","Recall earlier conversations. Query searches history; session_id reads it; add around_message_id to scroll. No arguments browses recent sessions. This does not search external sources.",json!({"query":{"type":"string"},"limit":{"type":"integer","default":3,"maximum":10},"sort":{"type":"string","enum":["newest","oldest"]},"detail":{"type":"string","enum":["adaptive","full"]},"session_id":{"type":"string"},"around_message_id":{"type":"integer"},"window":{"type":"integer","default":5,"maximum":20},"role_filter":{"type":"string"},"profile":{"type":"string"}}),&[]));
+        tools.push(descriptor("session_search","Recall earlier conversations. Query searches history; session_id reads it; add around_message_id to scroll. No arguments browses recent conversations. This does not search external sources.",json!({"query":{"type":"string"},"limit":{"type":"integer","default":3,"maximum":10},"sort":{"type":"string","enum":["newest","oldest"]},"detail":{"type":"string","enum":["adaptive","full"]},"session_id":{"type":"string"},"around_message_id":{"type":"integer"},"window":{"type":"integer","default":5,"maximum":20},"role_filter":{"type":"string"},"profile":{"type":"string"}}),&[]));
     }
     if enabled.iter().any(|s| s == "skills") {
         tools.push(descriptor(
@@ -32,7 +32,7 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
             &[],
         ));
         tools.push(descriptor("skill_view","Read a skill or a file inside it. Omit file_path to read SKILL.md and list supporting files.",json!({"name":{"type":"string"},"file_path":{"type":"string"}}),&["name"]));
-        tools.push(descriptor("skill_manage","Create, patch, or delete bot skills. Operations apply as one batch. Inherited skills are copied into this bot's profile before editing.",json!({"operations":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"action":{"type":"string","enum":["create","patch","delete","write_file","remove_file"]},"content":{"type":"string"},"category":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"},"file_path":{"type":"string"},"file_content":{"type":"string"}},"required":["name","action"]}}}),&["operations"]));
+        tools.push(descriptor("skill_manage","Create, patch, or delete bot skills. Operations apply as one batch. Inherited skills are copied into this bot before editing.",json!({"operations":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"action":{"type":"string","enum":["create","patch","delete","write_file","remove_file"]},"content":{"type":"string"},"category":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"},"file_path":{"type":"string"},"file_content":{"type":"string"}},"required":["name","action"]}}}),&["operations"]));
     }
     Ok(tools)
 }
@@ -79,13 +79,11 @@ fn todo_path(home: &Path, session: &str) -> Result<PathBuf> {
 }
 fn read_todos(home: &Path, session: &str) -> Result<Value> {
     let path = todo_path(home, session)?;
-    match fs::read(path) {
-        Ok(bytes) => {
-            serde_json::from_slice(&bytes).map_err(|_| Error::new(5200, "invalid saved task list"))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(json!({"todos":[],"revision":0})),
-        Err(e) => Err(e.into()),
+    if !path.try_exists()? {
+        return Ok(json!({"todos":[],"revision":0}));
     }
+    serde_json::from_slice(&common::read_regular(&path, 4 * 1024 * 1024)?)
+        .map_err(|_| Error::new(5200, "invalid saved task list"))
 }
 fn normalize_item(p: &Value) -> Value {
     let id = text(p, "id").trim();
@@ -253,7 +251,7 @@ fn relative(value: &str) -> Result<PathBuf> {
 fn safe_path(root: &Path, path: &Path) -> Result<()> {
     let relative = path
         .strip_prefix(root)
-        .map_err(|_| Error::new(4202, "path is outside the bot profile"))?;
+        .map_err(|_| Error::new(4202, "path is outside the bot directory"))?;
     let mut cursor = root.to_path_buf();
     for part in relative.components() {
         if !matches!(part, Component::Normal(_)) {
@@ -371,7 +369,7 @@ fn view_skill(home: &Path, bot: &str, p: &Value) -> Result<Value> {
     if metadata.len() > 2 * 1024 * 1024 {
         return Err(Error::new(4202, "skill file exceeds 2 MiB"));
     }
-    let content = fs::read_to_string(&path)?;
+    let content = common::read_regular_text(&path, 1024 * 1024)?;
     if !requested.is_empty() {
         return Ok(
             json!({"success":true,"name":row["name"],"file_path":requested,"content":content,"path":path}),
@@ -553,7 +551,7 @@ fn manage_skills(home: &Path, bot: &str, p: &Value) -> Result<Value> {
                         relative(text(op, "file_path"))?
                     };
                     let path = work.join(file);
-                    let current = fs::read_to_string(&path)?;
+                    let current = common::read_regular_text(&path, 1024 * 1024)?;
                     let content = if let Some(full) = op["content"].as_str() {
                         full.to_owned()
                     } else {

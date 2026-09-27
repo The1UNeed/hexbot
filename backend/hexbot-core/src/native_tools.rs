@@ -99,22 +99,121 @@ async fn request(request: reqwest::RequestBuilder) -> Result<Value> {
     let body = bytes(request.send().await.map_err(http_error)?).await?;
     serde_json::from_slice(&body).map_err(|_| failure("tool service returned invalid JSON"))
 }
+tokio::task_local! { static SECTION_CWD: PathBuf; }
 fn workdir(home: &Path, bot: &str) -> Result<PathBuf> {
-    let conn = crate::db::open(home)?;
+    if let Ok(cwd) = SECTION_CWD.try_with(Clone::clone) {
+        return Ok(cwd);
+    }
     let path: Option<String> =
-        conn.query_row("SELECT workdir FROM bots WHERE name=?", [bot], |r| r.get(0))?;
-    let path = path
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or(crate::catalog::profile(home, bot)?.join("workspace"));
+        crate::db::open(home)?
+            .query_row("SELECT workdir FROM bots WHERE name=?", [bot], |r| r.get(0))?;
+    let settings = crate::settings::get(home)?;
+    let configured = path
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| settings["workspace_dir"].as_str().unwrap_or("~/Hexbot"));
+    let path = if let Some(suffix) = configured.strip_prefix("~/") {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.to_owned())
+            .join(suffix)
+    } else {
+        PathBuf::from(configured)
+    };
     fs::create_dir_all(&path)?;
+    Ok(fs::canonicalize(path)?)
+}
+fn section_workdir(home: &Path, bot: &str, stored: &str) -> Result<PathBuf> {
+    use rusqlite::OptionalExtension;
+    let saved: Option<String> = crate::runtime_store::open(home)?
+        .query_row(
+            "SELECT options FROM native_sessions WHERE stored_id=?",
+            [stored],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(saved) = saved {
+        let options: Value =
+            serde_json::from_str(&saved).map_err(|_| failure("invalid conversation options"))?;
+        return options["cwd"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .ok_or_else(|| failure("conversation working directory is missing"));
+    }
+    workdir(home, bot)
+}
+/// Resolve existing symlinks before checking both allowed roots, including new output paths.
+fn media_path(home: &Path, bot: &str, value: &str) -> Result<PathBuf> {
+    let cwd = workdir(home, bot)?;
+    let artifacts = artifacts_dir(home, bot)?;
+    let input = PathBuf::from(value);
+    if input
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(Error::new(
+            4302,
+            "media path cannot contain parent traversal",
+        ));
+    }
+    let input = if input.is_absolute() {
+        input
+    } else {
+        cwd.join(input)
+    };
+    let mut ancestor = input.as_path();
+    let mut suffix = Vec::new();
+    while !ancestor.try_exists()? {
+        if fs::symlink_metadata(ancestor).is_ok() {
+            return Err(failure("invalid media path"));
+        }
+        suffix.push(
+            ancestor
+                .file_name()
+                .ok_or_else(|| failure("invalid media path"))?,
+        );
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| failure("invalid media path"))?;
+    }
+    let mut path = fs::canonicalize(ancestor)?;
+    for part in suffix.iter().rev() {
+        path.push(part);
+    }
+    if !path.starts_with(fs::canonicalize(cwd)?) && !path.starts_with(fs::canonicalize(artifacts)?)
+    {
+        return Err(Error::new(
+            4302,
+            "media path must be inside the working directory or artifacts folder",
+        ));
+    }
     Ok(path)
 }
-fn artifact(home: &Path, bot: &str, kind: &str, extension: &str) -> Result<PathBuf> {
-    let dir = crate::catalog::profile(home, bot)?
-        .join("artifacts")
-        .join(kind);
+fn artifacts_dir(home: &Path, bot: &str) -> Result<PathBuf> {
+    let profile = crate::catalog::profile(home, bot)?;
+    let dir = profile.join("artifacts");
     fs::create_dir_all(&dir)?;
+    let canonical = fs::canonicalize(&dir)?;
+    if !canonical.starts_with(fs::canonicalize(profile)?) {
+        return Err(Error::new(
+            4302,
+            "artifacts folder must stay inside the bot directory",
+        ));
+    }
+    Ok(dir)
+}
+fn artifact(home: &Path, bot: &str, kind: &str, extension: &str) -> Result<PathBuf> {
+    let root = artifacts_dir(home, bot)?;
+    let dir = root.join(kind);
+    fs::create_dir_all(&dir)?;
+    let canonical = fs::canonicalize(&dir)?;
+    if !canonical.starts_with(fs::canonicalize(root)?) {
+        return Err(Error::new(
+            4302,
+            "artifact path escapes the artifacts folder",
+        ));
+    }
     Ok(dir.join(format!("{}.{}", common::id(), extension)))
 }
 fn enabled(home: &Path, bot: &str, family: &str) -> Result<bool> {
@@ -327,7 +426,8 @@ pub async fn call(
             .or_insert_with(|| tokio::sync::watch::channel(false).0)
             .subscribe()
     };
-    let request = async {
+    let cwd = section_workdir(home, bot, stored)?;
+    let request = SECTION_CWD.scope(cwd, async {
         if let Some(result) =
             crate::native_product_tools::call(home, owner, bot, stored, name, args).await
         {
@@ -362,7 +462,7 @@ pub async fn call(
             }
             _ => Err(Error::new(4204, format!("unknown native tool: {name}"))),
         }
-    };
+    });
     tokio::select! {
         result=request=>result,
         _=async {while !*stopped.borrow(){if stopped.changed().await.is_err(){break}}}=>Err(Error::new(5201,"tool interrupted")),
@@ -467,19 +567,17 @@ async fn extract(
         .as_array()
         .filter(|v| !v.is_empty() && v.len() <= 5)
         .ok_or_else(|| Error::new(4202, "urls must contain one to five URLs"))?;
-    let urls = urls
-        .iter()
-        .map(|v| {
-            v.as_str()
-                .ok_or_else(|| Error::new(4202, "URL must be a string"))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    for url in &urls {
-        let parsed = url::Url::parse(url).map_err(|_| Error::new(4202, "invalid URL"))?;
-        if !matches!(parsed.scheme(), "http" | "https") {
-            return Err(Error::new(4202, "URL must use http or https"));
-        }
+    let allow_private = common::allow_private_urls(home, bot)?;
+    let mut checked_urls = Vec::with_capacity(urls.len());
+    for value in urls {
+        let url = value
+            .as_str()
+            .ok_or_else(|| Error::new(4202, "URL must be a string"))?;
+        // Check every redirect before handing the final URL to an extraction service.
+        let response = common::safe_get(url, allow_private).await?;
+        checked_urls.push(response.url().to_string());
     }
+    let urls = checked_urls;
     let limit = args
         .get("char_limit")
         .map(|v| {
@@ -809,29 +907,11 @@ async fn execute_code(
                 &configured
             },
         );
-        let mut child = Command::new(python)
+        let mut command = Command::new(python);
+        desktop_env(&mut command);
+        let mut child = command
             .args(["-u", "-c", KERNEL])
             .current_dir(workdir(home, bot)?)
-            .env_clear()
-            .envs(std::env::vars_os().filter(|(key, _)| {
-                matches!(
-                    key.to_str(),
-                    Some(
-                        "PATH"
-                            | "HOME"
-                            | "USER"
-                            | "LOGNAME"
-                            | "TMPDIR"
-                            | "TEMP"
-                            | "TMP"
-                            | "LANG"
-                            | "LC_ALL"
-                            | "SystemRoot"
-                            | "WINDIR"
-                            | "USERPROFILE"
-                    )
-                )
-            }))
             .env("HEXBOT_HOME", home)
             .env("PYTHONUNBUFFERED", "1")
             .stdin(Stdio::piped())
@@ -1002,22 +1082,33 @@ async fn browser_exec(
     )
     .await
 }
-async fn image_data(home: &Path, bot: &str, value: &str) -> Result<String> {
-    if value.starts_with("https://")
-        || value.starts_with("http://")
-        || value.starts_with("data:image/")
-    {
+pub(crate) async fn image_data(home: &Path, bot: &str, value: &str) -> Result<String> {
+    if value.starts_with("https://") || value.starts_with("http://") {
+        let response = common::safe_get(value, common::allow_private_urls(home, bot)?).await?;
+        let mime = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("image/png")
+            .split(';')
+            .next()
+            .unwrap_or("image/png")
+            .to_owned();
+        if !["image/png", "image/jpeg", "image/webp", "image/gif"].contains(&mime.as_str()) {
+            return Err(Error::new(4202, "URL did not return an image"));
+        }
+        return Ok(format!(
+            "data:{mime};base64,{}",
+            STANDARD.encode(bytes(response).await?)
+        ));
+    }
+    if value.starts_with("data:image/") {
+        if value.len() > BODY_LIMIT * 2 {
+            return Err(Error::new(4202, "image exceeds size limit"));
+        }
         return Ok(value.to_owned());
     }
-    let path = PathBuf::from(value);
-    let path = if path.is_absolute() {
-        path
-    } else {
-        workdir(home, bot)?.join(path)
-    };
-    if fs::metadata(&path)?.len() > 20 * 1024 * 1024 {
-        return Err(Error::new(4202, "image exceeds 20 MB"));
-    }
+    let path = media_path(home, bot, value)?;
     let mime = match path
         .extension()
         .and_then(|v| v.to_str())
@@ -1038,7 +1129,7 @@ async fn image_data(home: &Path, bot: &str, value: &str) -> Result<String> {
     };
     Ok(format!(
         "data:{mime};base64,{}",
-        STANDARD.encode(fs::read(path)?)
+        STANDARD.encode(common::read_regular(&path, 20 * 1024 * 1024)?)
     ))
 }
 async fn vision(
@@ -1131,7 +1222,7 @@ async fn vision(
         {
             (meta.trim_end_matches(";base64").to_owned(), data.to_owned())
         } else {
-            let response = http()?.get(&image).send().await.map_err(http_error)?;
+            let response = common::safe_get(&image, common::allow_private_urls(home, bot)?).await?;
             let mime = response
                 .headers()
                 .get("content-type")
@@ -1214,12 +1305,7 @@ async fn speech(
         return Err(Error::new(4202, "speed must be between 0.25 and 4"));
     }
     let output = if let Some(path) = args["output_path"].as_str() {
-        let path = PathBuf::from(path);
-        if path.is_absolute() {
-            path
-        } else {
-            workdir(home, bot)?.join(path)
-        }
+        media_path(home, bot, path)?
     } else {
         artifact(home, bot, "audio", "mp3")?
     };
@@ -1555,7 +1641,7 @@ if let Some(url)=result["result"]["url"].as_str(){return Ok(json!({"images":[{"u
                 .decode(encoded)
                 .map_err(|_| failure("invalid encoded image"))?
         } else if let Some(url) = image["url"].as_str() {
-            bytes(http()?.get(url).send().await.map_err(http_error)?).await?
+            bytes(common::safe_get(url, common::allow_private_urls(home, bot)?).await?).await?
         } else {
             return Err(failure(
                 "image response contains neither URL nor encoded image",
@@ -1586,11 +1672,18 @@ async fn browser_cdp(
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
     let method = common::required(args, "method")?;
-    if args.get("frame_id").is_some() {
+    if matches!(
+        method,
+        "Page.navigate" | "Page.navigateToHistoryEntry" | "Target.createTarget"
+    ) || args["params"]["url"].is_string()
+    {
         return Err(Error::new(
-            4202,
-            "frame_id sessions are unavailable; use target_id",
+            4302,
+            "Use browser_navigate for URLs so network safety settings are enforced",
         ));
+    }
+    if args.get("frame_id").is_some() {
+        return Err(Error::new(4202, "frame_id is unavailable; use target_id"));
     }
     let configured = credential(env, "BROWSER_CDP_URL");
     let url = text(&cfg["browser"], "cdp_url", &configured);
@@ -1996,22 +2089,10 @@ async fn image_bytes(home: &Path, bot: &str, value: &str) -> Result<(String, Vec
                 .map_err(|_| Error::new(4202, "invalid base64 image"))?,
         ));
     }
-    let response = http()?.get(value).send().await.map_err(http_error)?;
-    let mime = response
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("image/png")
-        .split(';')
-        .next()
-        .unwrap_or("image/png")
-        .to_owned();
-    if !["image/png", "image/jpeg", "image/webp", "image/gif"].contains(&mime.as_str()) {
-        return Err(Error::new(4202, "URL did not return an image"));
-    }
-    Ok((mime, bytes(response).await?))
+    Err(Error::new(4202, "invalid image data"))
 }
 struct Browser {
+    proxy: common::BrowserProxy,
     name: String,
     command: Vec<String>,
     directory: PathBuf,
@@ -2148,6 +2229,7 @@ async fn launch_browser(
         .join(stored);
     fs::create_dir_all(&directory)?;
     let mut browser = Browser {
+        proxy: common::BrowserProxy::start(common::allow_private_urls(home, bot)?).await?,
         name: format!("hexbot-{}", common::id()),
         command: browser_command(cfg),
         directory,
@@ -2235,6 +2317,12 @@ fn agent_command(browser: &Browser, verb: &str, args: &[String]) -> Command {
     if !browser.cdp.is_empty() {
         command.arg("--cdp").arg(&browser.cdp);
     }
+    if browser.cdp.is_empty() {
+        command
+            .arg("--proxy")
+            .arg(format!("http://{}", browser.proxy.address))
+            .args(["--proxy-bypass", "<-loopback>", "--args", "--disable-quic"]);
+    }
     if browser.headed {
         command.arg("--headed");
     }
@@ -2263,6 +2351,24 @@ async fn browser_tool(
     name: &str,
     args: &Value,
 ) -> Result<Value> {
+    if name == "browser_navigate" {
+        let url = url::Url::parse(common::required(args, "url")?)
+            .map_err(|_| Error::new(4202, "invalid browser URL"))?;
+        common::url_addresses(&url, common::allow_private_urls(home, bot)?).await?;
+        if !text(
+            &cfg["browser"],
+            "cdp_url",
+            &credential(env, "BROWSER_CDP_URL"),
+        )
+        .is_empty()
+            || !matches!(text(&cfg["browser"], "cloud_provider", ""), "" | "local")
+        {
+            return Err(Error::new(
+                4302,
+                "Safe navigation requires a local browser managed by Hexbot",
+            ));
+        }
+    }
     let state = browsers()
         .lock()
         .await
@@ -2293,7 +2399,7 @@ async fn browser_tool(
         "browser_press"=>("press",vec![common::required(args,"key")?.to_owned()]),
         "browser_get_images"=>("eval",vec!["JSON.stringify(Array.from(document.images).map(i=>({src:i.currentSrc||i.src,alt:i.alt,width:i.naturalWidth,height:i.naturalHeight})))".into()]),
         "browser_console"=>if let Some(expression)=args["expression"].as_str(){("eval",vec![expression.into()])}else{("console",if args["clear"]==true{vec!["--clear".into()]}else{vec![]})},
-        "browser_vision"=>{let path=artifact(home,bot,"screenshots","png")?;let mut args=vec![path.to_string_lossy().into_owned()];if args.len()==1&&cfg["browser"]["annotate"]==true{args.push("--annotate".into());}agent_browser(browser,"screenshot",&args).await?;let data=STANDARD.encode(fs::read(&path)?);return Ok(json!({"screenshot_path":path,"content":[{"type":"text","text":format!("Browser screenshot saved to {}",path.display())},{"type":"image","mimeType":"image/png","data":data}]}));},
+        "browser_vision"=>{let path=artifact(home,bot,"screenshots","png")?;let mut args=vec![path.to_string_lossy().into_owned()];if args.len()==1&&cfg["browser"]["annotate"]==true{args.push("--annotate".into());}agent_browser(browser,"screenshot",&args).await?;let data=STANDARD.encode(common::read_regular(&path, BODY_LIMIT)?);return Ok(json!({"screenshot_path":path,"content":[{"type":"text","text":format!("Browser screenshot saved to {}",path.display())},{"type":"image","mimeType":"image/png","data":data}]}));},
         _=>return Err(Error::new(4204,"unknown browser tool")),
     };
     let result = agent_browser(browser, verb, &arguments).await;
@@ -2479,4 +2585,170 @@ async fn fal_image(
     )
     .await?;
     Ok(response)
+}
+
+#[cfg(test)]
+mod safety_tests {
+    use super::*;
+    fn fixture() -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        crate::db::migrate(home.path()).unwrap();
+        crate::db::open(home.path()).unwrap().execute("INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0)", []).unwrap();
+        crate::db::open(home.path())
+            .unwrap()
+            .execute("INSERT INTO bots(name,owner_id) VALUES('owl','alice')", [])
+            .unwrap();
+        let cwd = home.path().join("workspace");
+        fs::create_dir_all(&cwd).unwrap();
+        crate::db::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO settings(key,value) VALUES('workspace_dir',?)",
+                [json!(cwd).to_string()],
+            )
+            .unwrap();
+        common::write_config(home.path(), &json!({"tools":{"enabled_toolsets":["code_execution","image_gen","tts","browser","web"]}})).unwrap();
+        home
+    }
+    #[tokio::test]
+    async fn kernel_uses_frozen_cwd_without_connector_secrets() {
+        let home = fixture();
+        fs::write(
+            home.path().join(".env"),
+            "OPENAI_API_KEY=secret\nAWS_SECRET_ACCESS_KEY=secret\nPYTHONPATH=/wrong\n",
+        )
+        .unwrap();
+        let cwd = home.path().join("scheduled-directory");
+        fs::create_dir(&cwd).unwrap();
+        fs::write(cwd.join("from-pi.txt"), "shared cwd").unwrap();
+        crate::runtime_store::open(home.path()).unwrap().execute("INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES('section','alice','owl','frozen',?)",[json!({"cwd":cwd}).to_string()]).unwrap();
+        let result = call(home.path(), "alice", "owl", "section", "execute_code", &json!({"code":"import os\nassert 'OPENAI_API_KEY' not in os.environ\nassert 'AWS_SECRET_ACCESS_KEY' not in os.environ\nassert 'PYTHONPATH' not in os.environ\nprint(open('from-pi.txt').read())"})).await.unwrap();
+        close_session(home.path(), "section").await;
+        assert_eq!(result["success"], true, "{result}");
+        assert_eq!(result["output"], "shared cwd\n");
+        assert_eq!(
+            workdir(home.path(), "owl").unwrap(),
+            home.path().join("workspace").canonicalize().unwrap()
+        );
+    }
+    #[tokio::test]
+    async fn media_paths_reject_escapes_and_nonregular_files() {
+        let home = fixture();
+        let cwd = workdir(home.path(), "owl").unwrap();
+        fs::write(cwd.join("image.png"), b"image").unwrap();
+        assert!(
+            image_data(home.path(), "owl", "image.png")
+                .await
+                .unwrap()
+                .starts_with("data:image/png")
+        );
+        for path in [
+            "../outside.png",
+            "/etc/passwd",
+            "/dev/zero",
+            "/tmp/../../etc/passwd",
+        ] {
+            assert!(media_path(home.path(), "owl", path).is_err(), "{path}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(home.path(), cwd.join("escape")).unwrap();
+            assert!(media_path(home.path(), "owl", "escape/private.png").is_err());
+            std::os::unix::fs::symlink("/dev/zero", cwd.join("device.png")).unwrap();
+            assert!(image_data(home.path(), "owl", "device.png").await.is_err());
+        }
+        assert_eq!(
+            media_path(home.path(), "owl", "new/audio.mp3").unwrap(),
+            cwd.join("new/audio.mp3")
+        );
+        let output = artifact(home.path(), "owl", "images", "png").unwrap();
+        assert_eq!(
+            media_path(home.path(), "owl", output.to_str().unwrap()).unwrap(),
+            output
+                .parent()
+                .unwrap()
+                .canonicalize()
+                .unwrap()
+                .join(output.file_name().unwrap())
+        );
+        assert!(
+            speech(
+                home.path(),
+                "owl",
+                &json!({}),
+                &Default::default(),
+                &json!({"text":"hello","output_path":"/etc/passwd"})
+            )
+            .await
+            .is_err()
+        );
+    }
+    #[tokio::test]
+    async fn model_url_tools_reject_metadata_before_calling_services() {
+        let home = fixture();
+        for (name, args) in [
+            ("browser_navigate", json!({"url":"http://169.254.169.254/"})),
+            ("web_extract", json!({"urls":["http://127.0.0.1:9119/"]})),
+        ] {
+            assert!(
+                call(home.path(), "alice", "owl", "section", name, &args)
+                    .await
+                    .is_err(),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            image_data(home.path(), "owl", "http://169.254.169.254/image.png")
+                .await
+                .unwrap_err()
+                .code,
+            4302
+        );
+    }
+    #[tokio::test]
+    async fn extraction_blocks_metadata_redirects_before_calling_the_backend() {
+        let home = fixture();
+        common::write_config(
+            home.path(),
+            &json!({"security":{"allow_private_urls":true}}),
+        )
+        .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::get(|| async {
+                axum::response::Redirect::temporary("http://169.254.169.254/latest")
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let error = extract(
+            home.path(),
+            "owl",
+            &json!({}),
+            &Default::default(),
+            &json!({"urls":[format!("http://{address}/")]}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, 4302);
+        server.abort();
+    }
+    #[test]
+    fn bot_tool_descriptions_use_product_words() {
+        let home = fixture();
+        common::write_config(
+            home.path(),
+            &json!({"tools":{"enabled_toolsets":["session_search","skills"]}}),
+        )
+        .unwrap();
+        let tools = crate::native_product_tools::descriptors(home.path(), "owl").unwrap();
+        assert!(!tools.is_empty());
+        for tool in tools {
+            let description = tool["description"].as_str().unwrap();
+            for word in ["sessions", "profile", "Hermes"] {
+                assert!(!description.contains(word), "{description}");
+            }
+        }
+    }
 }

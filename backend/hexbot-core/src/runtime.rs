@@ -493,7 +493,13 @@ impl Runtime {
         store::reconcile(&self.home, bot, stored, owner)?;
         let agent_dir = profile.join("pi");
         fs::create_dir_all(&agent_dir)?;
-        crate::providers::prepare_pi_for_bot(&self.home, bot, &agent_dir)?;
+        crate::providers::prepare_pi_for_request(
+            &self.home,
+            bot,
+            &agent_dir,
+            options["provider"].as_str(),
+        )
+        .await?;
         let mut pi = PiOptions::new(&self.pi_executable, &cwd, &agent_dir);
         // Large attachment batches retain the existing transport envelope.
         // The bound is checked while serializing; it does not preallocate RAM.
@@ -1725,6 +1731,15 @@ impl Runtime {
                 options.args.extend(["--model".into(), model.into()]);
             }
         }
+        crate::providers::prepare_pi_for_request(
+            &self.home,
+            &s.bot,
+            &profile.join("pi"),
+            model
+                .and_then(|m| m.split_once('/').map(|(provider, _)| provider))
+                .or(saved["provider"].as_str()),
+        )
+        .await?;
         let (process, mut events) = PiProcess::spawn(options).map_err(pi_error)?;
         let result = tokio::time::timeout(Duration::from_secs(45), async {
             let response = process
@@ -1815,7 +1830,7 @@ impl Runtime {
                         )?;
                         return match name.as_str() {
                             "read_file" => {
-                                let text = fs::read_to_string(path)?;
+                                let text = common::read_regular_text(&path, 256 * 1024)?;
                                 Ok(
                                     json!({"content":text.chars().take(256*1024).collect::<String>()}),
                                 )
@@ -1830,7 +1845,7 @@ impl Runtime {
                             "patch" => {
                                 let old = required(&args, "old_string")?;
                                 let new = args["new_string"].as_str().unwrap_or("");
-                                let text = fs::read_to_string(&path)?;
+                                let text = common::read_regular_text(&path, 256 * 1024)?;
                                 if text.matches(old).count() != 1 {
                                     return Err(Error::new(4202, "patch must match exactly once"));
                                 }
