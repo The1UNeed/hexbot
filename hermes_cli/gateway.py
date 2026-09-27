@@ -3917,7 +3917,7 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
     current_default = Path.home() / ".hermes"
     target_default = Path(target_home_dir) / ".hermes"
 
-    # Default ~/.hexbot → remap to target user's default
+    # Default ~/.hermes → remap to target user's default
     if current_hermes == current_default:
         return str(target_default)
 

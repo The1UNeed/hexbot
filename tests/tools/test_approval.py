@@ -337,6 +337,9 @@ class TestHermesConfigWriteProtection:
             "echo x | tee ~/.hermes/config.yaml",
             "echo x | tee $HERMES_HOME/config.yaml",
             "cp /tmp/evil.yaml ~/.hermes/config.yaml",
+            "sed -i 's/manual/off/' ~/.hexbot/config.yaml",
+            "echo x | tee $HEXBOT_HOME/config.yaml",
+            "echo KEY=x >> ~/.hexbot/.env",
         ):
             dangerous, key, desc = detect_dangerous_command(command)
             assert dangerous is True, command
@@ -687,6 +690,16 @@ class TestGatewayProtection:
         ):
             assert detect_dangerous_command(variant)[0] is True, variant
 
+
+    @pytest.mark.parametrize("cmd", [
+        "hexbot core update",
+        "hexbot hermes update",
+        "hexbot core gateway restart",
+        "hexbot core -p ade gateway stop",
+    ])
+    def test_hexbot_core_lifecycle_flagged(self, cmd):
+        """Prompts tell bots to run `hexbot core`; it must hit the same gate as `hermes`."""
+        assert detect_dangerous_command(cmd)[0] is True
 
     def test_systemctl_restart_flagged(self):
         """systemctl restart kills running agents and should require approval."""

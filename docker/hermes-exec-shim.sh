@@ -40,7 +40,12 @@
 
 set -e
 
-REAL=/opt/hermes/.venv/bin/hermes
+# Installed as both /opt/hermes/bin/hermes and /opt/hermes/bin/hexbot; exec
+# the venv binary of the same name.
+case "$(basename "$0")" in
+    hexbot) REAL=/opt/hermes/.venv/bin/hexbot ;;
+    *) REAL=/opt/hermes/.venv/bin/hermes ;;
+esac
 
 # Defensive: if the venv binary is missing (corrupted image, partial
 # install), fail loudly rather than silently masking it.

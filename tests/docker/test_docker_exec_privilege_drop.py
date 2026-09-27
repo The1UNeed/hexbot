@@ -152,6 +152,30 @@ def test_shim_drops_root_to_hermes_uid(sleep_container: str) -> None:
 
 
 
+def test_hexbot_shim_drops_root_to_hermes_uid(sleep_container: str) -> None:
+    """`docker exec <c> hexbot core ...` goes through the same drop as `hermes`."""
+    subprocess.run(
+        ["docker", "exec", "--user", "root", sleep_container,
+         "rm", "-f", "/opt/data/config.yaml"],
+        capture_output=True, check=False,
+    )
+    r = subprocess.run(
+        ["docker", "exec", sleep_container,
+         "hexbot", "core", "config", "set", "_test.shim_marker", "1"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert r.returncode == 0, f"config set failed: stdout={r.stdout!r} stderr={r.stderr!r}"
+    r = subprocess.run(
+        ["docker", "exec", sleep_container,
+         "stat", "-c", "%U:%G", "/opt/data/config.yaml"],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert r.stdout.strip() == "hermes:hermes", (
+        f"config.yaml owned by {r.stdout.strip()!r}, expected hermes:hermes; "
+        "`hexbot` bypassed the privilege-drop shim or wrote outside /opt/data."
+    )
+
+
 def test_main_cmd_path_unaffected(built_image: str) -> None:
     """The CMD path (docker run <image> <args>) must still work.
 

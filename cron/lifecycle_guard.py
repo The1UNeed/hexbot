@@ -71,7 +71,7 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # matching via the `/hermes` tail, while every real command position
     # (start of text, whitespace, `;`/`&`/`|`, `$(`, backtick, even a
     # U+FFFD from binary-content decoding) still matches.
-    r"(?:(?<![/\w.\-])hermes\s+gateway\s+(?:restart|stop|uninstall)\b)"
+    r"(?:(?<![/\w.\-])(?:hermes|hexbot\s+(?:core|hermes))\s+gateway\s+(?:restart|stop|uninstall)\b)"
     # Branch B: launchctl ops on a hermes-gateway label. macOS launchd
     # labels look like `ai.hermes.gateway` / `hermes-gateway`. Requiring the
     # gateway identifier prevents blocking unrelated hermes services (e.g.
@@ -98,8 +98,8 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # token orders because real reproductions show both.
     # Leading \b ensures we match "pkill" or "kill" as whole words, not as
     # suffixes of other words (e.g. "skill" -> "kill").
-    r"|(?:\bp?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
-    r"|(?:\bp?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
+    r"|(?:\bp?kill\b[^\n]*\b(?:hermes|hexbot)\b[^\n]*\bgateway)"
+    r"|(?:\bp?kill\b[^\n]*\bgateway\b[^\n]*\b(?:hermes|hexbot))"
 )
 
 
@@ -134,7 +134,7 @@ _ARGV_LIST_PUNCTUATION = re.compile(r"[\[\],]+")
 # `start` stays excluded for the same reason as Branch A.
 _PROFILE_FLAG_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
-    r"hermes\s+"
+    r"(?:hermes|hexbot\s+(?:core|hermes))\s+"
     # Any global flags before the profile selector (each may carry a value).
     r"(?:-{1,2}\S+(?:\s+\S+)?\s+)*"
     # The selector itself: `--profile=<name>` or the space-separated

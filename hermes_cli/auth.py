@@ -1982,7 +1982,7 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str,
         return None  # classic mode: nothing to consolidate into
     if os.environ.get("PYTEST_CURRENT_TEST"):
         # Same seat belt as the write-through paths: never touch the real
-        # user's ~/.hexbot/auth.json from a test that forgot to isolate HOME.
+        # user's ~/.hermes/auth.json from a test that forgot to isolate HOME.
         real_home_env = os.environ.get("HOME", "")
         if real_home_env and _same_path(root_path, Path(real_home_env) / ".hermes" / "auth.json"):
             return None

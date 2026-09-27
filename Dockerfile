@@ -303,7 +303,8 @@ RUN uv pip install --no-cache-dir --no-deps -e "."
 USER root
 RUN mkdir -p /opt/hermes/bin && \
     cp /opt/hermes/docker/hermes-exec-shim.sh /opt/hermes/bin/hermes && \
-    chmod 0755 /opt/hermes /opt/hermes/bin/hermes && \
+    cp /opt/hermes/docker/hermes-exec-shim.sh /opt/hermes/bin/hexbot && \
+    chmod 0755 /opt/hermes /opt/hermes/bin/hermes /opt/hermes/bin/hexbot && \
     printf 'docker\n' > /opt/hermes/.install_method
 # The ``.install_method`` stamp is baked next to the running code (the install
 # tree), NOT into $HERMES_HOME. $HERMES_HOME (/opt/data) is a shared data
@@ -384,6 +385,8 @@ ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 # bundle sidesteps the whole check.
 ENV HERMES_TUI_DIR=/opt/hermes/ui-tui
 ENV HERMES_HOME=/opt/data
+# `hexbot core` resolves the core home from HEXBOT_HOME.
+ENV HEXBOT_HOME=/opt/data
 ENV HERMES_WRITE_SAFE_ROOT=/opt/data
 ENV HERMES_DISABLE_LAZY_INSTALLS=1
 # The published image seals /opt/hermes (root-owned, read-only) so a runtime
@@ -412,6 +415,7 @@ ENV HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
 # absolute path (/opt/hermes/.venv/bin/hermes). See the shim source for
 # the opt-out env var (HERMES_DOCKER_EXEC_AS_ROOT=1).
 COPY --chmod=0755 docker/hermes-exec-shim.sh /opt/hermes/bin/hermes
+COPY --chmod=0755 docker/hermes-exec-shim.sh /opt/hermes/bin/hexbot
 COPY --chmod=0755 docker/entrypoint-dispatch.sh /opt/hermes/docker/entrypoint-dispatch.sh
 
 # Pre-s6 entrypoint.sh did `source .venv/bin/activate` which exported

@@ -360,6 +360,7 @@
           (lib.mkIf cfg.addToSystemPackages {
             environment.systemPackages = [ effectivePackage ];
             environment.variables.HERMES_HOME = hermesHome;
+            environment.variables.HEXBOT_HOME = hermesHome;
           })
 
           # ── Host user group membership ─────────────────────────────────────
@@ -638,6 +639,7 @@
                     --env HERMES_UID="$HERMES_UID" \
                     --env HERMES_GID="$HERMES_GID" \
                     --env HERMES_HOME=${containerDataDir}/.hermes \
+                    --env HEXBOT_HOME=${containerDataDir}/.hermes \
                     --env HERMES_MANAGED=true \
                     --env HOME=${containerHomeDir} \
                     ${lib.concatStringsSep " " cfg.container.extraOptions} \

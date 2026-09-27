@@ -12,13 +12,13 @@ from pathlib import Path
 
 
 def _set_home(core: bool = False) -> None:
-    explicit = "HEXBOT_HOME" in os.environ
     home = str(Path(os.environ.get("HEXBOT_HOME", "~/.hexbot")).expanduser())
     os.environ["HEXBOT_HOME"] = home
     current = os.environ.get("HERMES_HOME")
-    # `hexbot core` acts on the core home it runs in: a bot's profile inside
-    # the Hexbot home, or a container/Nix home when no HEXBOT_HOME is set.
-    if core and current and (not explicit or Path(current).expanduser().resolve().is_relative_to(Path(home).resolve())):
+    # A bot's terminal runs with HERMES_HOME set to its profile inside the
+    # Hexbot home; `hexbot core` there must act on that profile. Any other
+    # HERMES_HOME (say a separate ~/.hermes install) is ignored.
+    if core and current and Path(current).expanduser().resolve().is_relative_to(Path(home).resolve()):
         return
     os.environ["HERMES_HOME"] = home
 

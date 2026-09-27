@@ -2357,7 +2357,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
             target.write_text(content, encoding="utf-8")
 
     if canon == "default":
-        # The default profile IS ~/.hexbot itself — its parent is ~/ and its
+        # The default profile IS ~/.hermes itself — its parent is ~/ and its
         # directory name is ".hermes", not "default".  We stage a clean copy
         # under a temp dir so the archive contains ``default/...``.
         with tempfile.TemporaryDirectory() as tmpdir:

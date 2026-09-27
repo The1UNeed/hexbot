@@ -833,7 +833,7 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
         # Scope: the file's IMMEDIATE parent must be ``.hermes`` — matching
         # any ancestor named .hermes would gate every write inside a
         # checkout that happens to live under ~/.hexbot (e.g. the
-        # hermes-agent repo itself at ~/.hexbot/hermes-agent).
+        # hermes-agent repo itself at ~/.hermes/hermes-agent).
         parts = candidate.replace("\\", "/").rstrip("/").split("/")
         if len(parts) >= 2 and parts[-2] == ".hermes":
             return candidate

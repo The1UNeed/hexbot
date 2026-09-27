@@ -388,9 +388,9 @@ def _should_fall_through_to_cli_approval(
 # hermetic test conftest or any deferred-profile-resolution path).
 _SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
 _HERMES_ENV_PATH = (
-    r'(?:~\/\.hermes/|'
-    r'(?:\$home|\$\{home\})/\.hermes/|'
-    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'(?:~\/\.(?:hermes|hexbot)/|'
+    r'(?:\$home|\$\{home\})/\.(?:hermes|hexbot)/|'
+    r'(?:\$(?:hermes|hexbot)_home|\$\{(?:hermes|hexbot)_home\})/)'
     r'\.env\b'
 )
 # ~/.hexbot/config.yaml IS the security policy: approvals.mode, yolo, and the
@@ -402,9 +402,9 @@ _HERMES_ENV_PATH = (
 # theater. Mirrors _HERMES_ENV_PATH; matches the HERMES_HOME override form as
 # well as ~/.hexbot/.
 _HERMES_CONFIG_PATH = (
-    r'(?:~\/\.hermes/|'
-    r'(?:\$home|\$\{home\})/\.hermes/|'
-    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'(?:~\/\.(?:hermes|hexbot)/|'
+    r'(?:\$home|\$\{home\})/\.(?:hermes|hexbot)/|'
+    r'(?:\$(?:hermes|hexbot)_home|\$\{(?:hermes|hexbot)_home\})/)'
     r'config\.yaml\b'
 )
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
@@ -1091,8 +1091,8 @@ DANGEROUS_PATTERNS = [
     # terminates all running agents mid-work.  Allow global flags between
     # `hexbot core` and `gateway` (e.g. `hexbot core -p ade gateway restart`) so a
     # profile flag can't slip the agent past the guard.
-    (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
-    (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
+    (r'\b(?:hermes|hexbot\s+(?:core|hermes))\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
+    (r'\b(?:hermes|hexbot\s+(?:core|hermes))\s+update\b', "hermes update (restarts gateway, kills running agents)"),
     # Docker container lifecycle — any user with docker.sock mounted (a common
     # Docker Compose pattern) gives the agent the ability to restart/stop/kill
     # containers without approval.  These are agent-initiated lifecycle operations

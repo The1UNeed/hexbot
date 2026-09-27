@@ -298,6 +298,7 @@
         (lib.mkIf cfgPrograms.enable {
           home.packages = [ cfgPrograms.package ];
           home.sessionVariables.HERMES_HOME = cfg.hermesHome;
+          home.sessionVariables.HEXBOT_HOME = cfg.hermesHome;
         })
 
         # A launcher from the desktop menu reads no shell profile, so the

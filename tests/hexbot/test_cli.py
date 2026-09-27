@@ -40,14 +40,15 @@ def test_core_keeps_a_profile_home_inside_the_hexbot_home(tmp_path, monkeypatch)
     assert homes == [str(profile), str(tmp_path)]
 
 
-def test_core_keeps_a_container_home_when_no_hexbot_home_is_set(tmp_path, monkeypatch):
+def test_core_ignores_a_separate_hermes_home_when_no_hexbot_home_is_set(tmp_path, monkeypatch):
     from hexbot import cli
 
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("HEXBOT_HOME", raising=False)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     homes = []
     monkeypatch.setattr("hermes_cli.main.main", lambda: homes.append(os.environ["HERMES_HOME"]) or 0)
 
     cli.main(["core", "pairing", "list"])
 
-    assert homes == [str(tmp_path / "data")]
+    assert homes == [str(tmp_path / ".hexbot")]

@@ -32,6 +32,10 @@ class TestGatewayLifecyclePattern:
         "hermes  gateway  restart",         # double spaces
         "Hermez Gateway Restart".lower().replace("z", "s"),  # case handled
         "HERMES GATEWAY RESTART",           # uppercase
+        "hexbot core gateway restart",      # the spelling bots are told to use
+        "hexbot hermes gateway stop",       # hidden alias
+        "hexbot core -p default gateway restart",
+        "pkill -f 'hexbot core gateway'",
     ])
     def test_hermes_gateway_commands(self, text):
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"

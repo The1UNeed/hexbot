@@ -51,7 +51,7 @@ const sections: [string, string][] = [
   </section>
   <section id="scope">
     <h2>What is in scope</h2>
-    <p>In scope: the Hexbot app and daemon code in <code>hexbot/</code> and <code>apps/</code>, the Connect service at connect.hexbot.app, the hostnames it issues, and this website. Issues in the core Hexbot inherits from Hermes Agent that are not specific to Hexbot should go to <a href="https://github.com/NousResearch/hermes-agent/security">Nous Research</a>; if you are not sure, send it to us and we will pass it on. Out of scope: reports that require a daemon configured with authentication deliberately turned off, findings that only defeat the in-process approval heuristics (we treat those as hardening, not vulnerabilities), volumetric denial of service, and issues in third-party services such as Clerk or Cloudflare, which have their own programmes.</p>
+    <p>In scope: the Hexbot app and daemon code in <code>hexbot/</code> and <code>apps/</code>, the Connect service at connect.hexbot.app, the hostnames it issues, and this website. That includes the core Hexbot inherited from <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>; if an issue also affects Hermes Agent, we will tell Nous Research. Out of scope: reports that require a daemon configured with authentication deliberately turned off, findings that only defeat the in-process approval heuristics (we treat those as hardening, not vulnerabilities), volumetric denial of service, and issues in third-party services such as Clerk or Cloudflare, which have their own programmes.</p>
   </section>
   <section id="safe-harbor">
     <h2>Safe harbour for researchers</h2>
