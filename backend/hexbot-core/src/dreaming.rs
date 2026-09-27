@@ -944,7 +944,10 @@ impl Dreaming {
                 .join(supplied)
         };
         let path = fs::canonicalize(path)?;
-        let workspace = crate::native_tools::workdir(&self.home, bot)?;
+        let workspace = match workdir {
+            Some(dir) => fs::canonicalize(dir)?,
+            None => crate::native_tools::workdir(&self.home, bot)?,
+        };
         let scripts = self.home.join("profiles").join(bot).join("scripts");
         if !path.starts_with(&workspace)
             && !fs::canonicalize(&scripts).is_ok_and(|root| path.starts_with(root))
@@ -1476,6 +1479,36 @@ impl Drop for ScriptProcess {
 #[cfg(all(test, unix))]
 mod interpreter_tests {
     use super::*;
+    #[tokio::test]
+    async fn scheduled_script_uses_section_workspace_for_validation_and_execution() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute("INSERT INTO bots(name,owner_id) VALUES('owl','local')", [])
+            .unwrap();
+        let workdir = home.path().join("section-workspace");
+        fs::create_dir(&workdir).unwrap();
+        let script = workdir.join("job.sh");
+        fs::write(&script, "printf ok > result; cat result").unwrap();
+        let events = EventHub::new();
+        let runtime = Runtime::new(home.path().into(), events.clone(), "unused".into()).unwrap();
+        let scheduler = Dreaming::new(home.path().into(), runtime, events);
+        assert_eq!(
+            scheduler
+                .script("owl", script.to_str().unwrap(), workdir.to_str())
+                .await
+                .unwrap(),
+            "ok"
+        );
+        assert_eq!(fs::read_to_string(workdir.join("result")).unwrap(), "ok");
+        assert!(
+            scheduler
+                .script("owl", script.to_str().unwrap(), None)
+                .await
+                .is_err()
+        );
+    }
     #[tokio::test]
     async fn scheduled_python_script_runs_with_the_managed_interpreter() {
         use std::os::unix::fs::PermissionsExt;

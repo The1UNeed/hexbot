@@ -58,9 +58,9 @@ test('bubblewrap binds the home read-only and only reopens the requested output 
   t.after(()=>rmSync(home,{recursive:true,force:true}));
   const workspace=join(home,'workspace'), outputs=join(home,'profiles/owl/artifacts');
   for (const dir of [workspace,outputs,join(home,'desktop-data')]) mkdirSync(dir,{recursive:true});
-  const executable=join(home,'bwrap'); writeFileSync(executable,'#!/bin/sh\nexit 0\n'); chmodSync(executable,0o755);
+  const executable=join(home,'bwrap'); writeFileSync(executable,'#!/bin/sh\ncase "$*" in *"/usr/bin/env true") exit 0;; *) exit 1;; esac\n'); chmodSync(executable,0o755);
   const user=join(home,'user'); mkdirSync(join(user,'.ssh/nested'),{recursive:true});
-  for (const file of ['known_hosts','config','id_ed25519.pub','nested/id_ed25519']) writeFileSync(join(user,'.ssh',file),'fixture');
+  for (const file of ['known_hosts','config','id_ed25519.pub','nested/id_ed25519','github','deploy_key','authorized_keys']) writeFileSync(join(user,'.ssh',file),'fixture');
   const moduleUrl=new URL('./isolation.ts',import.meta.url).href;
   const script=`Object.defineProperty(process,'platform',{value:'linux'}); const {isolatedCommand}=await import(${JSON.stringify(moduleUrl)}); console.log(isolatedCommand('true',${JSON.stringify(home)},${JSON.stringify(workspace)},[${JSON.stringify(outputs)}]));`;
   const command=execFileSync(process.execPath,['--input-type=module','-e',script],{env:{...process.env,HOME:user,PATH:home},encoding:'utf8'});
@@ -68,6 +68,41 @@ test('bubblewrap binds the home read-only and only reopens the requested output 
   for (const path of [workspace,outputs]) assert.ok(command.includes(`'--bind' '${realpathSync(path)}' '${realpathSync(path)}'`));
   assert.ok(command.includes(`'--tmpfs' '${join(home,'desktop-data')}' '--remount-ro'`));
   assert.doesNotMatch(command,/'--tmpfs' '[^']*\/\.ssh'/);
-  assert.ok(command.includes(`'--ro-bind' '/dev/null' '${join(user,'.ssh/nested/id_ed25519')}'`));
-  assert.doesNotMatch(command,/known_hosts|id_ed25519\.pub|\.ssh\/config/);
+  assert.ok(command.includes(`'--tmpfs' '${join(user,'.ssh/nested')}'`));
+  for (const file of ['github','deploy_key']) assert.ok(command.includes(`'--ro-bind' '/dev/null' '${join(user,'.ssh',file)}'`));
+  assert.doesNotMatch(command,/known_hosts|id_ed25519\.pub|\.ssh\/config|authorized_keys/);
+});
+
+test('fake user home protects uncommon SSH keys and explicit auth files', async t => {
+  const {execFileSync} = await import('node:child_process');
+  const base = mkdtempSync(join(tmpdir(), 'hexbot-ssh-policy-'));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const script = `const {credentialPath}=await import(${JSON.stringify(new URL('./extension.ts',import.meta.url).href)}); const {isolatedCommand}=await import(${JSON.stringify(new URL('./isolation.ts',import.meta.url).href)}); const home=process.env.HOME; for(const file of ['github','deploy_key','nested/config']) if(!credentialPath(home+'/.ssh/'+file,home+'/hexbot')) throw Error(file); for(const file of ['config','known_hosts.old','id.pub','authorized_keys']) if(credentialPath(home+'/.ssh/'+file,home+'/hexbot')) throw Error(file); for(const file of ['.codex/auth.json','.hermes/auth.json','.hermes/.env']) if(!credentialPath(home+'/'+file,home+'/hexbot')) throw Error(file); console.log(isolatedCommand('true',home));`;
+  const result = execFileSync(process.execPath, ['--input-type=module','-e',script], {env:{...process.env,HOME:base},encoding:'utf8'});
+  if (process.platform === 'darwin') for (const binary of ['/usr/bin/open','/bin/launchctl','/usr/bin/osascript']) assert.ok(result.includes(`(literal "${binary}")`));
+});
+
+test('macOS sandbox denies process brokers', {skip:process.platform !== 'darwin'}, async t => {
+  const {spawnSync} = await import('node:child_process');
+  const home = mkdtempSync(join(tmpdir(), 'hexbot-brokers-'));
+  t.after(() => rmSync(home, {recursive:true, force:true}));
+  // An invalid option prevents opening Calculator even if exec is accidentally allowed.
+  const label = `hexbot.test.${process.pid}`;
+  t.after(() => spawnSync('/bin/launchctl', ['remove',label]));
+  for (const command of ['open -a Calculator --hexbot-test-invalid-option', `launchctl submit -l ${label} -- /usr/bin/true`, 'osascript -e "return 0"']) {
+    const result = spawnSync('/bin/bash',['-c',isolatedCommand(command,home)],{encoding:'utf8'});
+    assert.match(result.stderr, /Operation not permitted/);
+    assert.doesNotMatch(result.stderr, /sandbox_(init|apply)/,'sandbox itself must start');
+  }
+});
+
+test('macOS sandbox denies fake HOME SSH keys while allowing public SSH files', {skip:process.platform !== 'darwin'}, async t => {
+  const {execFileSync} = await import('node:child_process');
+  const base = mkdtempSync(join(tmpdir(), 'hexbot-ssh-exec-'));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  mkdirSync(join(base,'.ssh'));
+  for (const name of ['github','deploy_key','config','known_hosts','key.pub','authorized_keys']) writeFileSync(join(base,'.ssh',name),'fixture');
+  const command = `for key in github deploy_key; do cat '${base}/.ssh/'"$key" >/dev/null 2>&1 && exit 10; done; for public in config known_hosts key.pub authorized_keys; do cat '${base}/.ssh/'"$public" >/dev/null || exit 11; done`;
+  const script = `const {isolatedCommand}=await import(${JSON.stringify(new URL('./isolation.ts',import.meta.url).href)}); const {spawnSync}=await import('node:child_process'); const r=spawnSync('/bin/bash',['-c',isolatedCommand(${JSON.stringify(command)},process.env.HOME)],{encoding:'utf8'}); if(r.status!==0) throw Error(r.stderr+'status '+r.status);`;
+  execFileSync(process.execPath, ['--input-type=module','-e',script], {env:{...process.env,HOME:base},encoding:'utf8'});
 });

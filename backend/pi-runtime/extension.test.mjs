@@ -27,10 +27,10 @@ function fixture(t, mode = 'manual', enabledToolsets = []) {
   return {home, handlers, tools, settings, ctx, requests, choices, models, gate:(toolName,input)=>handlers.tool_call({toolName,input},ctx)};
 }
 
-for (const command of ['rm -rf /','rm -rf /*','sudo -u root rm -rf /','env -u KEY rm -rf /','rm / -rf','rm -rf ~','rm -rf "$HOME"','rm --recursive /tmp/..','sudo rm -rf /etc','sh -c "rm -rf /"','echo $(rm -rf /)','mkfs.ext4 /dev/sda','dd if=x of=/dev/disk2','cat x > /dev/sda',':(){ :|:& };:','reboot','kill -9 -1']) {
+for (const command of ['coproc rm -rf /','rm -rf /','rm -rf /*','sudo -u root rm -rf /','env -u KEY rm -rf /','rm / -rf','rm -rf ~','rm -rf "$HOME"','rm --recursive /tmp/..','sudo rm -rf /etc','sh -c "rm -rf /"','echo $(rm -rf /)','mkfs.ext4 /dev/sda','dd if=x of=/dev/disk2','cat x > /dev/sda',':(){ :|:& };:','reboot','kill -9 -1']) {
   test(`hard block ${command}`, () => assert.ok(hardlineCommand(command)));
 }
-for (const command of ['pwd','rm -rf ./build','echo "rm -rf /"','git commit -m "mkfs and reboot guards"','echo shutdown','echo "cat x > /dev/sda"']) {
+for (const command of ['echo $(date) rm -rf /', 'echo $(echo $(date)) rm -rf /','pwd','rm -rf ./build','echo "rm -rf /"','git commit -m "mkfs and reboot guards"','echo shutdown','echo "cat x > /dev/sda"']) {
   test(`does not hard block ${command}`, () => assert.equal(hardlineCommand(command), undefined));
 }
 test('dangerous patterns cover stock gates and reference operations', () => {
@@ -292,7 +292,7 @@ test('credential prompts name secrets and leave skill scripts and examples alone
   for (const name of ['id_ed25519', 'work.pem', 'deploy.key']) assert.equal(credentialPath(join(homedir(), '.ssh', name), f.home), true);
   assert.equal(credentialPath(join(f.home, 'desktop-data/Local Storage/token'), f.home), true);
   assert.equal(credentialPath(join(f.home, '../connect.json'), f.home), false);
-  assert.equal(credentialPath(join(homedir(), '.codex/auth.json'), f.home), false);
+  assert.equal(credentialPath(join(homedir(), '.codex/auth.json'), f.home), true);
   assert.deepEqual(shellEnvironment({SSH_AUTH_SOCK:'/tmp/agent', AWS_PROFILE:'secret', AWS_SECRET_ACCESS_KEY:'secret', GOOGLE_APPLICATION_CREDENTIALS:'secret', GOOGLE_CLOUD_PROJECT:'secret', CLOUDSDK_CONFIG:'secret'}), {SSH_AUTH_SOCK:'/tmp/agent'});
 });
 
@@ -306,4 +306,19 @@ test('direct file tools cannot rewrite daemon configuration in any approval mode
     f.settings.cwd=join(f.home,'workspace'); mkdirSync(f.settings.cwd);
     assert.equal(await f.gate('write',{path:join(f.settings.cwd,'notes.txt')}),undefined);
   }
+});
+
+ test('credential fallback catches recursive roots, globs and interpreter reads', t => {
+  const f = fixture(t);
+  for (const command of [
+    `grep -r token '${f.home}'`, `tar cf out.tar '${f.home}/..'`, `cp -r '${f.home}' copy`,
+    `rsync -a '${f.home}' copy`, `zip -r out.zip '${f.home}'`, `find '${f.home}'`,
+    'cat ~/.ssh/*', `cat '${f.home}/profiles/*/.e*'`,
+    `python -c "open('${f.home}/config.yaml').read()"`,
+    `node -e "require('fs').readFileSync('${f.home}/config.yaml')"`,
+    'cat ~/.codex/auth.json', 'cat ~/.hermes/auth.json', 'cat ~/.hermes/.env',
+  ]) assert.ok(dangerousCommand(command, f.home).includes('credential access'), command);
+  assert.ok(dangerousCommand('find .', f.home, f.home).includes('credential access'));
+  const env = Object.fromEntries(['HTTP_PROXY','https_proxy','No_Proxy','SSL_CERT_FILE','SSL_CERT_DIR','NODE_EXTRA_CA_CERTS'].map(k => [k,'fixture']));
+  assert.deepEqual(shellEnvironment({...env, NODE_OPTIONS:'bad'}), env);
 });

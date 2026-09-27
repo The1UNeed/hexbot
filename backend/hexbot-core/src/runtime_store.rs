@@ -97,17 +97,23 @@ pub fn descendants(home: &Path, stored: &str) -> Result<Vec<String>> {
     common::rows(&open(home)?, "WITH RECURSIVE tree(id) AS (SELECT ?1 UNION SELECT s.stored_id FROM native_sessions s JOIN tree t ON json_extract(s.options,'$.parent_session')=t.id) SELECT id FROM tree", &[&stored])?
         .into_iter().map(|row| common::required(&row,"id").map(str::to_owned)).collect()
 }
-pub fn mark_deleted(home: &Path, stored: &str) -> Result<()> {
+pub fn mark_deleted(home: &Path, stored: &str) -> Result<Vec<String>> {
     let mut conn = open(home)?;
     let tx = conn.transaction()?;
-    for target in descendants(home, stored)? {
+    let targets = descendants(home, stored)?;
+    for target in &targets {
         tx.execute("INSERT OR IGNORE INTO native_deleted VALUES(?)", [target])?;
     }
     tx.commit()?;
-    Ok(())
+    Ok(targets)
 }
 pub fn unmark_deleted(home: &Path, stored: &str) -> Result<()> {
-    open(home)?.execute("DELETE FROM native_deleted WHERE session_id=?", [stored])?;
+    let mut conn = open(home)?;
+    let tx = conn.transaction()?;
+    for target in descendants(home, stored)? {
+        tx.execute("DELETE FROM native_deleted WHERE session_id=?", [target])?;
+    }
+    tx.commit()?;
     Ok(())
 }
 pub fn delete(home: &Path, stored: &str) -> Result<()> {

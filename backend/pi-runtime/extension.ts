@@ -89,7 +89,7 @@ export default function hexbot(pi: any) {
         const reason = hardlineCommand(event.input.command, cwd);
         if (reason) return {block: true, reason: 'Command blocked: ' + reason};
       }
-      const patterns = event.toolName === 'bash' ? dangerousCommand(event.input.command, home) :
+      const patterns = event.toolName === 'bash' ? dangerousCommand(event.input.command, home, cwd) :
         event.toolName === 'browser_console' && typeof event.input.expression === 'string' ? ['browser_console:expression'] : [];
       if (live.approvalMode === 'off' || !patterns.length) return;
       if (patterns.every(key => allowed.has(key) || live.allowedPatterns?.includes(key))) return;
@@ -657,7 +657,13 @@ export function credentialPath(path: string, home: string): boolean {
   return credentialName(path, home);
 }
 function credentialName(path: string, home: string): boolean {
-  if ((under(path, canonicalPath(join(homedir(), '.ssh'), process.cwd())) || under(path, join(homedir(), '.ssh'))) && privateKeyName(basename(path))) return true;
+  for (const ssh of [join(homedir(), '.ssh'), canonicalPath(join(homedir(), '.ssh'), process.cwd())]) {
+    if (under(path, ssh) && (dirname(path) !== ssh || privateKeyName(basename(path)))) return true;
+  }
+  if (credentialPolicy.user.some((local: string) => {
+    const secret = join(homedir(), local);
+    return under(path, secret) || under(path, canonicalPath(secret, process.cwd()));
+  })) return true;
   const name = basename(path);
 
   if (!home) throw new Error('Hexbot home is unavailable');
@@ -680,7 +686,7 @@ export function protectedPath(path: string, home: string, writable: string[] = [
 export function shellEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   // Explicit inheritance prevents unfamiliar connector keys and runtime injection
   // variables (BASH_ENV, NODE_OPTIONS, etc.) from reaching code children.
-  return Object.fromEntries(Object.entries(env).filter(([name]) => /^(SSH_AUTH_SOCK|PATH|HOME|USER|LOGNAME|SHELL|TMPDIR|TMP|TEMP|LANG|LANGUAGE|LC_[A-Z_]+|TERM|COLORTERM|TZ|SystemRoot|WINDIR|PATHEXT|COMSPEC)$/i.test(name)));
+  return Object.fromEntries(Object.entries(env).filter(([name]) => /^(HTTP_PROXY|HTTPS_PROXY|NO_PROXY|SSL_CERT_FILE|SSL_CERT_DIR|NODE_EXTRA_CA_CERTS|SSH_AUTH_SOCK|PATH|HOME|USER|LOGNAME|SHELL|TMPDIR|TMP|TEMP|LANG|LANGUAGE|LC_[A-Z_]+|TERM|COLORTERM|TZ|SystemRoot|WINDIR|PATHEXT|COMSPEC)$/i.test(name)));
 }
 
 // Tokenize enough shell syntax to distinguish commands from quoted prose and to
@@ -711,17 +717,25 @@ export function hardlineCommand(command: string, cwd = process.cwd(), depth = 0)
   if (depth > 8) return 'Nested command cannot be checked';
   const unquoted = command.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, '');
   if (/:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/.test(unquoted)) return 'fork bomb';
-  // Inspect command substitutions even inside a quoted argument.
-  for (const match of command.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
-    const reason = hardlineCommand(match[1] ?? match[2], cwd, depth + 1);
-    if (reason) return reason;
+  // Check substitutions separately, then replace their output with an argument.
+  // Their closing parenthesis is not a new command position (unlike case arms).
+  let plain = command;
+  const substitution = /\$\(([^()]*)\)|`([^`]*)`/g;
+  while (substitution.test(plain)) {
+    substitution.lastIndex = 0;
+    let blocked: string | undefined;
+    plain = plain.replace(substitution, (_match, dollar, backtick) => {
+      blocked ??= hardlineCommand(dollar ?? backtick, cwd, depth + 1);
+      return 'SUBSTITUTION';
+    });
+    if (blocked) return blocked;
   }
-  const tokens = shellTokens(command);
+  const tokens = shellTokens(plain);
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i] === '>' && /^\/dev\/(sd|nvme|hd|mmcblk|vd|xvd|disk|rdisk)/.test(tokens[i + 1] ?? '')) return 'write to raw disk';
     if (i && ![';', '|', '&', '(', '{', 'then', 'do', 'else', 'if', 'elif', 'while', 'until', ')', '!', '\n', '`'].includes(tokens[i - 1])) continue;
     let start = i;
-    while (['sudo', 'env', 'exec', 'nohup', 'setsid', 'time', 'command', 'timeout', 'nice', 'ionice', 'stdbuf', 'doas', 'xargs', 'busybox'].includes(basename(tokens[start] ?? '')) || /^\w+=/.test(tokens[start] ?? '')) {
+    while (['coproc', 'sudo', 'env', 'exec', 'nohup', 'setsid', 'time', 'command', 'timeout', 'nice', 'ionice', 'stdbuf', 'doas', 'xargs', 'busybox'].includes(basename(tokens[start] ?? '')) || /^\w+=/.test(tokens[start] ?? '')) {
       const wrapper = basename(tokens[start++]);
       while (tokens[start]?.startsWith('-') || /^\w+=/.test(tokens[start] ?? '')) {
         const flag = tokens[start++];
@@ -755,10 +769,10 @@ export function hardlineCommand(command: string, cwd = process.cwd(), depth = 0)
     }
   }
 }
-export function dangerousCommand(command: string, home?: string): string[] {
+export function dangerousCommand(command: string, home?: string, cwd = process.cwd()): string[] {
   const normalized = shellTokens(command).join(' ').replaceAll(' ; ', '\n').replaceAll(' | ', '\n').replaceAll(' & ', '\n');
   return [...new Set([
-    ...(namesCredentials(command, home) ? ['credential access'] : []),
+    ...(namesCredentials(command, home, cwd) ? ['credential access'] : []),
     ...(/\$\(|`|(?:^|[;|&\n{}]|\b(?:then|do|else)\s)\s*(?:\w+=\S+\s+)*(?:eval\b|\$)/.test(command) ? ['dynamic command'] : []),
     ...dangerousPatterns.filter(([pattern]) => new RegExp(pattern, 'im').test(command) || new RegExp(pattern, 'im').test(normalized)).map(([pattern]) => pattern),
     ...(/\bsudo\b/i.test(normalized) ? ['\\bsudo\\b'] : []),
@@ -766,11 +780,29 @@ export function dangerousCommand(command: string, home?: string): string[] {
   ])];
 }
 
-function namesCredentials(command: string, home?: string): boolean {
-  return shellTokens(command).some(token => {
-    const path = token.replace(/^.*?=/, '').replace(/\$\{?HEXBOT_HOME\}?/g, home ?? '').replace(/\$\{?HOME\}?/g, homedir()).replace(/^~(?=\/)/, homedir());
-    if (new RegExp(credentialPolicy.basename).test(basename(path))) return true;
-    if (basename(path) === '.env') return true;
-    return !!home && credentialPath(resolve(path), home);
+function namesCredentials(command: string, home?: string, cwd = process.cwd()): boolean {
+  cwd = canonicalPath(cwd, process.cwd());
+  const tokens = shellTokens(command);
+  const recursive = tokens.some(token => ['tar', 'rsync', 'zip', 'find'].includes(basename(token)))
+    || tokens.some(token => /^--recursive$|^-[^-]*[rR]/.test(token));
+  const inlineCode = tokens.some(token => /^(python[0-9.]*|node)$/.test(basename(token)))
+    && tokens.some(token => ['-c', '-e', '--eval'].includes(token));
+  const root = home ? canonicalPath(home, cwd) : undefined;
+  return tokens.some(token => {
+    // Also inspect quoted path literals inside interpreter one-liners.
+    const candidates = inlineCode ? [token, ...Array.from(token.matchAll(/['"]([^'"\n]+)['"]/g), m => m[1])] : [token];
+    return candidates.some(candidate => {
+      const path = candidate.replace(/^.*?=/, '').replace(/\$\{HEXBOT_HOME\}|\$HEXBOT_HOME\b/g, home ?? '').replace(/\$\{HOME\}|\$HOME\b/g, homedir()).replace(/^~(?=\/|$)/, homedir());
+      if (new RegExp(credentialPolicy.basename).test(basename(path)) || basename(path) === '.env') return true;
+      const resolved = canonicalPath(path, cwd);
+      if (home && credentialPath(resolved, home)) return true;
+      if (recursive && root && under(root, resolved)) return true;
+      const glob = path.search(/[*?[]/);
+      if (glob >= 0) {
+        const prefix = canonicalPath(path.slice(0, path.lastIndexOf('/', glob) + 1) || '.', cwd);
+        if (root && under(prefix, root) || under(prefix, canonicalPath(join(homedir(), '.ssh'), cwd))) return true;
+      }
+      return !!(inlineCode && (candidate !== token || path.includes('/')) && root && under(resolved, root));
+    });
   });
 }

@@ -11,6 +11,7 @@ use std::{
 struct Policy {
     basename: String,
     home: String,
+    user: Vec<String>,
 }
 fn policy() -> &'static Policy {
     static POLICY: OnceLock<Policy> = OnceLock::new();
@@ -27,17 +28,44 @@ pub fn credential_name(home: &Path, path: &Path) -> bool {
             regex::Regex::new(&policy().home).unwrap(),
         )
     });
+    if std::env::var_os("HOME").is_some_and(|user| {
+        user_credential_name(Path::new(&user), path) || ssh_credential_name(Path::new(&user), path)
+    }) {
+        return true;
+    }
     path.strip_prefix(home).is_ok_and(|p| {
         name.is_match(path.file_name().and_then(|s| s.to_str()).unwrap_or(""))
             || local.is_match(&p.to_string_lossy().replace('\\', "/"))
     })
 }
+fn user_credential_name(user: &Path, path: &Path) -> bool {
+    policy().user.iter().any(|local| {
+        let secret = user.join(local);
+        path.starts_with(&secret)
+            || std::fs::canonicalize(secret).is_ok_and(|p| path.starts_with(p))
+    })
+}
+fn ssh_credential_name(user: &Path, path: &Path) -> bool {
+    let ssh = user.join(".ssh");
+    [ssh.clone(), std::fs::canonicalize(&ssh).unwrap_or(ssh)]
+        .iter()
+        .any(|root| {
+            path.starts_with(root)
+                && (path.parent() != Some(root.as_path())
+                    || path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(private_key))
+        })
+}
 fn entries(dir: &Path) -> impl Iterator<Item = std::fs::DirEntry> {
     std::fs::read_dir(dir).into_iter().flatten().flatten()
 }
 pub(crate) fn private_key(name: &str) -> bool {
-    (name.starts_with("id_") || name.ends_with(".pem") || name.ends_with(".key"))
-        && !name.ends_with(".pub")
+    !(name == "config"
+        || name.starts_with("known_hosts")
+        || name.ends_with(".pub")
+        || name == "authorized_keys")
 }
 fn secret_paths(home: &Path) -> Vec<PathBuf> {
     type Cache = HashMap<PathBuf, (Instant, Vec<PathBuf>)>;
@@ -80,15 +108,19 @@ fn secret_paths(home: &Path) -> Vec<PathBuf> {
     let mut paths = vec![];
     fn walk_ssh(dir: &Path, paths: &mut Vec<PathBuf>) {
         for entry in entries(dir) {
-            if private_key(&entry.file_name().to_string_lossy()) {
+            if entry.file_type().is_ok_and(|t| t.is_dir())
+                || private_key(&entry.file_name().to_string_lossy())
+            {
                 add(entry.path(), paths);
-            } else if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                walk_ssh(&entry.path(), paths);
             }
         }
     }
     if let Some(user) = std::env::var_os("HOME") {
-        walk_ssh(&PathBuf::from(user).join(".ssh"), &mut paths);
+        let user = PathBuf::from(user);
+        walk_ssh(&user.join(".ssh"), &mut paths);
+        for local in &policy().user {
+            add(user.join(local), &mut paths);
+        }
     }
     walk(home, home, &mut paths);
     paths.sort();
@@ -118,7 +150,8 @@ fn bwrap() -> Option<&'static Path> {
                     "--proc",
                     "/proc",
                     "--",
-                    "/bin/true",
+                    "/usr/bin/env",
+                    "true",
                 ])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -156,12 +189,12 @@ fn sandbox_profile(roots: &[PathBuf], paths: &[PathBuf], writable: &[PathBuf]) -
         let ssh = PathBuf::from(user).join(".ssh");
         for root in [ssh.clone(), std::fs::canonicalize(&ssh).unwrap_or(ssh)] {
             filters.push(format!(
-                "(require-all (regex {}) (require-not (regex {})))",
+                "(require-all (subpath {}) (require-not (regex {})))",
+                quoted(root.to_string_lossy()),
                 quoted(format!(
-                    r"^{}/(.*/)?(id_[^/]*|[^/]*\.(pem|key))$",
+                    r"^{}/(config|known_hosts[^/]*|[^/]*\.pub|authorized_keys)$",
                     regex::escape(&root.to_string_lossy())
-                )),
-                quoted(r"\.pub$")
+                ))
             ));
         }
     }
@@ -186,7 +219,7 @@ fn sandbox_profile(roots: &[PathBuf], paths: &[PathBuf], writable: &[PathBuf]) -
         )
     };
     format!(
-        "(version 1)(allow default)(deny file-write* (require-all (require-any {inside_home}) {except_writable}))(deny file-read* file-write* {})",
+        "(version 1)(allow default)(deny process-exec (literal \"/usr/bin/open\") (literal \"/bin/launchctl\") (literal \"/usr/bin/osascript\"))(deny file-write* (require-all (require-any {inside_home}) {except_writable}))(deny file-read* file-write* {})",
         filters.join(" ")
     )
 }
@@ -265,7 +298,19 @@ pub fn shell_environment(command: &mut tokio::process::Command) {
                     | "PATHEXT"
                     | "COMSPEC"
             ) || name.starts_with("LC_")
+                || network_environment(name)
         }));
+}
+fn network_environment(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "HTTP_PROXY"
+            | "HTTPS_PROXY"
+            | "NO_PROXY"
+            | "SSL_CERT_FILE"
+            | "SSL_CERT_DIR"
+            | "NODE_EXTRA_CA_CERTS"
+    )
 }
 /// Cheap floor for literal catastrophic Python actions. Approval remains required
 /// for arbitrary code, including indirection that a textual guard cannot prove safe.
@@ -309,6 +354,49 @@ pub fn check_code(code: &str) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn user_auth_paths_and_network_environment_are_explicit() {
+        let user = tempfile::tempdir().unwrap();
+        for path in [".codex/auth.json", ".hermes/auth.json", ".hermes/.env"] {
+            assert!(user_credential_name(user.path(), &user.path().join(path)));
+        }
+        assert!(!user_credential_name(
+            user.path(),
+            &user.path().join("project/auth.json")
+        ));
+        for name in [
+            "HTTP_PROXY",
+            "https_proxy",
+            "No_Proxy",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "NODE_EXTRA_CA_CERTS",
+        ] {
+            assert!(network_environment(name));
+        }
+        assert!(!network_environment("NODE_OPTIONS"));
+        for name in ["github", "deploy_key", "nested/config"] {
+            assert!(ssh_credential_name(
+                user.path(),
+                &user.path().join(".ssh").join(name)
+            ));
+        }
+        for name in [
+            "config",
+            "known_hosts.old",
+            "id_ed25519.pub",
+            "authorized_keys",
+        ] {
+            assert!(!ssh_credential_name(
+                user.path(),
+                &user.path().join(".ssh").join(name)
+            ));
+        }
+        let profile = sandbox_profile(&[user.path().to_owned()], &[], &[]);
+        for binary in ["/usr/bin/open", "/bin/launchctl", "/usr/bin/osascript"] {
+            assert!(profile.contains(&format!("(literal {})", quoted(binary))));
+        }
+    }
+    #[test]
     fn policy_is_scoped_and_walk_skips_heavy_trees() {
         let home = tempfile::tempdir().unwrap();
         for name in [
@@ -343,7 +431,14 @@ mod tests {
         for name in ["known_hosts", "config", "id_ed25519.pub"] {
             assert!(!private_key(name));
         }
-        for name in ["id_rsa", "id_ed25519", "work.pem", "work.key"] {
+        for name in [
+            "id_rsa",
+            "id_ed25519",
+            "work.pem",
+            "work.key",
+            "github",
+            "deploy_key",
+        ] {
             assert!(private_key(name));
         }
         let profile = sandbox_profile(&[home.path().to_owned()], &paths, &[]);

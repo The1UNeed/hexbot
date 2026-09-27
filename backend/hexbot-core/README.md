@@ -139,7 +139,7 @@ by running the tests. App install count is not a daemon capacity measurement.
 Python code execution uses the same live approval mode as shell actions. Manual
 asks before each script; Auto consults the approver and asks when it declines;
 Off skips consent. A small destructive-operation guard applies in every mode.
-New or changed memory and soul text is scanned with adjacent lines before bot writes. Removing memory text is allowed.
+Memory and soul edits, including removals, scan the complete result before bot writes. Existing flagged text may remain; newly assembled matches are rejected.
 
 `../pi-runtime/credential-policy.json` supplies the credential paths for both
 file guards and child isolation. macOS shell and Python children use
