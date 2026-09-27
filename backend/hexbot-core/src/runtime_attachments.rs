@@ -1,6 +1,7 @@
 use super::*;
 use std::process::Stdio;
 
+const SESSION_LIMIT: u64 = 512 * 1024 * 1024;
 const ENVELOPE_LIMIT: usize = 768 * 1024 * 1024;
 impl Runtime {
     pub(super) async fn attach(&self, s: &Live, method: &str, p: &Value) -> Result<Value> {
@@ -73,17 +74,19 @@ impl Runtime {
         } else {
             None
         };
-        let path = store::session_dir(&self.home, &s.stored)?
-            .join("attachments")
-            .join(format!("{}-{name}", common::id()));
         let mut state = s.state.lock().unwrap();
         if state.closed {
             return Err(Error::new(4001, "session not found"));
         }
+        let path = store::session_dir(&self.home, &s.stored)?
+            .join("attachments")
+            .join(format!("{}-{name}", common::id()));
         if let Some(image) = &image {
             ensure_envelope(&state.attachments, std::slice::from_ref(image))?;
         }
+        ensure_total(path.parent().unwrap(), bytes.len() as u64)?;
         common::atomic_write(&path, &bytes)?;
+        state.staged_files.push(path.clone());
         if let Some(image) = image {
             state.attachments.push(image);
         } else {
@@ -198,10 +201,15 @@ impl Runtime {
         ensure_envelope(&state.attachments, &images)?;
         let dir = store::session_dir(&self.home, &s.stored)?.join("attachments");
         fs::create_dir_all(&dir)?;
+        let total = rendered.iter().try_fold(0u64, |sum, (_, path)| {
+            fs::metadata(path).map(|m| sum.saturating_add(m.len()))
+        })?;
+        ensure_total(&dir, total)?;
         let mut pages = vec![];
         for (page, path) in &rendered {
             let destination = dir.join(format!("{}-pdf_p{page}.png", common::id()));
             fs::copy(path, &destination)?;
+            state.staged_files.push(destination.clone());
             pages.push(json!({"path":destination,"page":page}));
         }
         state.attachments.extend(images);
@@ -221,8 +229,36 @@ fn ensure_envelope(existing: &[Value], additional: &[Value]) -> Result<()> {
     if bytes > ENVELOPE_LIMIT - 2 * 1024 * 1024 {
         return Err(Error::new(
             4018,
-            "staged images exceed the Pi request size limit",
+            "staged images exceed the bot request size limit",
         ));
     }
     Ok(())
+}
+
+fn ensure_total(dir: &Path, additional: u64) -> Result<()> {
+    let mut total = additional;
+    if dir.exists() {
+        for entry in fs::read_dir(dir)? {
+            total = total.saturating_add(entry?.metadata()?.len());
+        }
+    }
+    if total > SESSION_LIMIT {
+        return Err(Error::new(
+            4018,
+            "Attachments in this section exceed 512 MiB",
+        ));
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn total_includes_files_from_prior_turns_and_rendered_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = fs::File::create(dir.path().join("old.bin")).unwrap();
+        file.set_len(SESSION_LIMIT - 10).unwrap();
+        assert!(ensure_total(dir.path(), 10).is_ok());
+        assert_eq!(ensure_total(dir.path(), 11).unwrap_err().code, 4018);
+    }
 }

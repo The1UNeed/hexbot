@@ -25,27 +25,27 @@ use tokio::{
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PiError {
-    #[error("invalid Pi transport configuration: {0}")]
+    #[error("invalid bot transport configuration: {0}")]
     Configuration(&'static str),
-    #[error("invalid Pi command: {0}")]
+    #[error("invalid bot command: {0}")]
     InvalidCommand(&'static str),
-    #[error("Pi process I/O failed during {0}")]
+    #[error("Bot connection failed during {0}")]
     Io(&'static str),
-    #[error("invalid Pi protocol record: {0}")]
+    #[error("invalid bot response: {0}")]
     Protocol(&'static str),
-    #[error("Pi process closed stdout")]
+    #[error("The bot stopped unexpectedly")]
     Exited,
-    #[error("Pi request deadline exceeded; process terminated")]
+    #[error("The bot request timed out")]
     Timeout,
-    #[error("Pi request cancelled; process terminated")]
+    #[error("The bot request was cancelled")]
     Cancelled,
-    #[error("Pi process shut down")]
+    #[error("The bot stopped")]
     Shutdown,
-    #[error("Pi event queue overflowed; process terminated")]
+    #[error("The bot stopped because its event queue was full")]
     EventOverflow,
-    #[error("Pi request capacity exceeded")]
+    #[error("Too many pending bot requests")]
     Capacity,
-    #[error("Pi process cleanup failed or exceeded its deadline")]
+    #[error("The bot could not stop cleanly")]
     Cleanup,
 }
 
@@ -252,14 +252,15 @@ impl PiProcess {
     }
 
     /// Commands must be objects with a string `type`, without a caller-supplied
-    /// `id`. Request cancellation/deadlines terminate the process, since a
-    /// command may already have caused side effects and cannot be safely retried.
+    /// `id`. Cancellation abandons the reply, not the shared bot process.
+    /// Timed out commands may still have side effects and must not be retried.
     pub async fn request(
         &self,
         mut command: Value,
         deadline: Duration,
     ) -> Result<PiResponse, PiError> {
-        self.request_preserving(&mut command, deadline).await
+        self.request_with_policy(&mut command, Some(deadline), false)
+            .await
     }
 
     /// Retain the payload so rejected prompts can restore staged attachments.
@@ -267,6 +268,32 @@ impl PiProcess {
         &self,
         command: &mut Value,
         deadline: Duration,
+    ) -> Result<PiResponse, PiError> {
+        self.request_with_policy(command, Some(deadline), false)
+            .await
+    }
+
+    /// Dedicated callers may opt into terminating the process on cancellation.
+    pub async fn request_cancellable(
+        &self,
+        mut command: Value,
+        deadline: Duration,
+    ) -> Result<PiResponse, PiError> {
+        self.request_with_policy(&mut command, Some(deadline), true)
+            .await
+    }
+
+    /// Prompt acceptance can include auto-compaction. Terminal events, Stop, or
+    /// shutdown bound its lifetime rather than a short acknowledgement timer.
+    pub async fn prompt(&self, command: &mut Value) -> Result<PiResponse, PiError> {
+        self.request_with_policy(command, None, false).await
+    }
+
+    async fn request_with_policy(
+        &self,
+        command: &mut Value,
+        deadline: Option<Duration>,
+        kill_on_cancel: bool,
     ) -> Result<PiResponse, PiError> {
         let _admission = self
             .inner
@@ -308,6 +335,7 @@ impl PiProcess {
             },
             response,
             deadline,
+            kill_on_cancel,
         )
         .await
     }
@@ -325,7 +353,8 @@ impl PiProcess {
         let _admission = self
             .inner
             .extension_admission
-            .try_acquire()
+            .acquire()
+            .await
             .map_err(|_| PiError::Capacity)?;
         if id.is_empty() {
             return Err(PiError::InvalidCommand("extension request id is empty"));
@@ -342,8 +371,13 @@ impl PiProcess {
         object.insert("id".into(), Value::String(id.to_owned()));
         let bytes = self.serialize(&fields)?;
         let (reply, response) = oneshot::channel();
-        self.send(Request::Extension { bytes, reply }, response, deadline)
-            .await
+        self.send(
+            Request::Extension { bytes, reply },
+            response,
+            Some(deadline),
+            false,
+        )
+        .await
     }
 
     fn serialize(&self, value: &Value) -> Result<Vec<u8>, PiError> {
@@ -361,7 +395,8 @@ impl PiProcess {
         &self,
         request: Request,
         response: oneshot::Receiver<Result<T, PiError>>,
-        deadline: Duration,
+        deadline: Option<Duration>,
+        kill_on_cancel: bool,
     ) -> Result<T, PiError> {
         let mut done = self.inner.done.clone();
         if let Some(error) = done.borrow().clone() {
@@ -369,9 +404,9 @@ impl PiProcess {
         }
         let mut guard = CancelRequest {
             stop: self.inner.stop.clone(),
-            armed: true,
+            armed: kill_on_cancel,
         };
-        let outcome = tokio::time::timeout(deadline, async {
+        let wait = async {
             tokio::select! {
                 biased;
                 result = async {
@@ -381,14 +416,20 @@ impl PiProcess {
                 } => result,
                 error = terminal(&mut done) => Err(error),
             }
-        })
-        .await;
+        };
+        let outcome = if let Some(deadline) = deadline {
+            tokio::time::timeout(deadline, wait).await
+        } else {
+            Ok(wait.await)
+        };
         guard.armed = false;
         match outcome {
             Ok(result) => result,
             Err(_) => {
-                self.inner.stop.send_replace(Some(PiError::Timeout));
-                terminal(&mut self.inner.done.clone()).await;
+                if kill_on_cancel {
+                    self.inner.stop.send_replace(Some(PiError::Timeout));
+                    terminal(&mut self.inner.done.clone()).await;
+                }
                 Err(PiError::Timeout)
             }
         }
@@ -490,6 +531,7 @@ async fn supervise(
                 if exited { request.reject(PiError::Exited); continue; }
                 match request {
                     Request::Command { id, command, bytes, reply } => {
+                        if pending.len() >= options.request_capacity { let _ = reply.send(Err(PiError::Capacity)); continue; }
                         match writes.try_send(WriteRecord { bytes, written: None }) {
                             Ok(()) => { pending.insert(id, Pending { command, reply }); }
                             Err(mpsc::error::TrySendError::Full(_)) => { let _ = reply.send(Err(PiError::Capacity)); }

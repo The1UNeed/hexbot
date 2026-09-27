@@ -99,7 +99,7 @@ export default function hexbot(pi: any) {
           const answer = await ctx.ui.input('__HEXBOT_CLARIFY__' + JSON.stringify(args));
           return { content: [{ type: 'text', text: answer ?? 'The question was cancelled.' }], details: {} };
         }
-        const reply = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({ name: tool.name, args }));
+        const reply = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({ name: tool.name, args }), undefined, { signal });
         if (reply === undefined) throw new Error('Tool interrupted');
         const result = JSON.parse(reply);
         if (result.error) throw new Error(result.error);

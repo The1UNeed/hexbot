@@ -24,7 +24,16 @@ pub fn open(home: &Path) -> Result<Connection> {
       CREATE TABLE IF NOT EXISTS native_pi_journal(journal_id TEXT PRIMARY KEY,session_id TEXT NOT NULL,raw_json TEXT NOT NULL,entry_id TEXT,projection_seq INTEGER,usage_id INTEGER UNIQUE,active INTEGER NOT NULL DEFAULT 1,UNIQUE(session_id,entry_id));
       CREATE INDEX IF NOT EXISTS idx_native_pi_journal_session ON native_pi_journal(session_id);
       CREATE TABLE IF NOT EXISTS native_prompt_intents(id TEXT PRIMARY KEY,session_id TEXT NOT NULL,text TEXT NOT NULL,display_kind TEXT NOT NULL,created_at REAL NOT NULL,consumed_by TEXT);
-      CREATE INDEX IF NOT EXISTS idx_native_prompt_intents_session ON native_prompt_intents(session_id,consumed_by);")?;
+      CREATE INDEX IF NOT EXISTS idx_native_prompt_intents_session ON native_prompt_intents(session_id,consumed_by);
+      CREATE TABLE IF NOT EXISTS native_summaries(session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL, preview TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS native_deleted(session_id TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS native_quarantine(session_id TEXT PRIMARY KEY, error TEXT NOT NULL);
+      CREATE TRIGGER IF NOT EXISTS summary_session_insert AFTER INSERT ON native_sessions BEGIN DELETE FROM native_summaries WHERE session_id=NEW.stored_id; END;
+      CREATE TRIGGER IF NOT EXISTS summary_journal_insert AFTER INSERT ON native_pi_journal BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;
+      CREATE TRIGGER IF NOT EXISTS summary_message_insert AFTER INSERT ON native_messages BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;
+      CREATE TRIGGER IF NOT EXISTS summary_message_update AFTER UPDATE ON native_messages BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;
+      CREATE TRIGGER IF NOT EXISTS summary_message_delete AFTER DELETE ON native_messages BEGIN DELETE FROM native_summaries WHERE session_id=OLD.session_id; END;
+      CREATE TRIGGER IF NOT EXISTS summary_journal_update AFTER UPDATE ON native_pi_journal BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;")?;
     Ok(conn)
 }
 pub fn history(home: &Path, stored: &str) -> Result<Vec<Value>> {
@@ -40,6 +49,7 @@ pub fn history(home: &Path, stored: &str) -> Result<Vec<Value>> {
 }
 pub fn append(home: &Path, stored: &str, mut message: Value) -> Result<()> {
     let conn = open(home)?;
+    check_deleted(&conn, stored)?;
     if message.get("timestamp").is_none() {
         message["timestamp"] = json!(common::now());
     }
@@ -49,39 +59,70 @@ pub fn append(home: &Path, stored: &str, mut message: Value) -> Result<()> {
     conn.execute("INSERT INTO native_messages(session_id,seq,message_json) SELECT ?1,COALESCE(MAX(seq),0)+1,?2 FROM native_messages WHERE session_id=?1",params![stored,message.to_string()])?;
     Ok(())
 }
+pub fn preview(text: &str) -> String {
+    let mut chars = text.chars();
+    let mut result = chars.by_ref().take(60).collect::<String>();
+    if chars.next().is_some() {
+        result.push_str("...");
+    }
+    result
+}
 pub fn summary(home: &Path, stored: &str) -> Result<Value> {
-    let messages = history(home, stored)?;
-    let preview = messages
-        .iter()
-        .rev()
-        .find(|m| m["role"] == "user" && m["display_kind"] != "hidden")
-        .and_then(|m| m["text"].as_str())
-        .unwrap_or("")
-        .chars()
-        .take(180)
-        .collect::<String>();
-    Ok(json!({"preview":preview,"message_count":messages.len()}))
+    let mut conn = open(home)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let cached: Option<(i64, String)> = tx
+        .query_row(
+            "SELECT message_count,preview FROM native_summaries WHERE session_id=?",
+            [stored],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let (count, preview) = if let Some(cached) = cached {
+        cached
+    } else {
+        let count: i64 = tx.query_row("SELECT COUNT(*) FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? AND (p.active IS NULL OR p.active=1)", [stored], |r| r.get(0))?;
+        let text: String = tx.query_row("SELECT COALESCE(json_extract(m.message_json,'$.text'),'') FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? AND (p.active IS NULL OR p.active=1) AND json_extract(m.message_json,'$.role')='user' AND COALESCE(json_extract(m.message_json,'$.display_kind'),'normal')<>'hidden' ORDER BY m.seq LIMIT 1", [stored], |r| r.get(0)).optional()?.unwrap_or_default();
+        let preview = preview(&text);
+        tx.execute(
+            "INSERT INTO native_summaries VALUES(?,?,?)",
+            params![stored, count, preview],
+        )?;
+        (count, preview)
+    };
+    tx.commit()?;
+    Ok(json!({"preview":preview,"message_count":count}))
+}
+pub fn descendants(home: &Path, stored: &str) -> Result<Vec<String>> {
+    common::rows(&open(home)?, "WITH RECURSIVE tree(id) AS (SELECT ?1 UNION SELECT s.stored_id FROM native_sessions s JOIN tree t ON json_extract(s.options,'$.parent_session')=t.id) SELECT id FROM tree", &[&stored])?
+        .into_iter().map(|row| common::required(&row,"id").map(str::to_owned)).collect()
 }
 pub fn delete(home: &Path, stored: &str) -> Result<()> {
     common::identifier(stored)?;
-    let mut conn = open(home)?;
-    let tx = conn.transaction()?;
-    tx.execute("DELETE FROM native_pi_journal WHERE session_id=?", [stored])?;
-    tx.execute(
-        "DELETE FROM native_prompt_intents WHERE session_id=?",
-        [stored],
-    )?;
-    tx.execute("DELETE FROM native_messages WHERE session_id=?", [stored])?;
-    tx.execute("DELETE FROM native_sessions WHERE stored_id=?", [stored])?;
-    tx.commit()?;
-    let path = home.join("runtime/sessions").join(stored);
-    if path.exists() {
-        fs::remove_dir_all(path)?;
+    let targets = descendants(home, stored)?;
+    for stored in targets.iter().rev() {
+        let mut conn = open(home)?;
+        let tx = conn.transaction()?;
+        tx.execute("INSERT OR IGNORE INTO native_deleted VALUES(?)", [stored])?;
+        tx.execute("DELETE FROM native_summaries WHERE session_id=?", [stored])?;
+        tx.execute("DELETE FROM native_quarantine WHERE session_id=?", [stored])?;
+        tx.execute("DELETE FROM native_pi_journal WHERE session_id=?", [stored])?;
+        tx.execute(
+            "DELETE FROM native_prompt_intents WHERE session_id=?",
+            [stored],
+        )?;
+        tx.execute("DELETE FROM native_messages WHERE session_id=?", [stored])?;
+        tx.execute("DELETE FROM native_sessions WHERE stored_id=?", [stored])?;
+        tx.commit()?;
+        let path = home.join("runtime/sessions").join(stored);
+        if path.exists() {
+            fs::remove_dir_all(path)?;
+        }
     }
     Ok(())
 }
 pub fn session_dir(home: &Path, stored: &str) -> Result<PathBuf> {
     common::identifier(stored)?;
+    check_deleted(&open(home)?, stored)?;
     let path = home.join("runtime/sessions").join(stored);
     fs::create_dir_all(&path)?;
     Ok(path)
@@ -125,28 +166,166 @@ pub fn text(content: &Value) -> String {
         })
         .unwrap_or_default()
 }
+/// Resolve a continuation without crossing explicit branch or delegation boundaries.
+pub fn legacy_lineage(conn: &Connection, stored: &str) -> Result<Vec<String>> {
+    let all = common::rows(conn, "SELECT * FROM sessions", &[])?;
+    let fork = |row: &Value| {
+        let config: Value = row["model_config"]
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(Value::Null);
+        !config["_branched_from"].is_null()
+            || !config["_delegate_from"].is_null()
+            || row["source"] == "tool"
+    };
+    let by_id = all
+        .iter()
+        .filter_map(|r| r["id"].as_str().map(|id| (id, r)))
+        .collect::<HashMap<_, _>>();
+    let Some(mut current) = by_id
+        .get(stored)
+        .copied()
+        .or_else(|| {
+            all.iter()
+                .find(|r| r["session_key"] == stored && r["parent_session_id"].is_null())
+        })
+        .or_else(|| all.iter().find(|r| r["session_key"] == stored))
+    else {
+        return Ok(vec![]);
+    };
+    let continuation = |child: &Value, parent: &Value| {
+        !fork(child)
+            && (parent["end_reason"] == "compression" || parent.get("end_reason").is_none())
+    };
+    let mut seen = HashSet::new();
+    while !fork(current) {
+        if !seen.insert(current["id"].as_str().unwrap()) {
+            return Err(crate::Error::new(
+                5200,
+                "Conversation lineage contains a cycle",
+            ));
+        }
+        let Some(parent) = current["parent_session_id"]
+            .as_str()
+            .and_then(|id| by_id.get(id).copied())
+        else {
+            break;
+        };
+        if !continuation(current, parent) {
+            break;
+        }
+        current = parent;
+    }
+    let mut lineage = vec![];
+    seen.clear();
+    loop {
+        let id = common::required(current, "id")?;
+        if !seen.insert(id) {
+            return Err(crate::Error::new(
+                5200,
+                "Conversation lineage contains a cycle",
+            ));
+        }
+        lineage.push(id.to_owned());
+        let mut children = all
+            .iter()
+            .filter(|c| c["parent_session_id"] == id && continuation(c, current))
+            .collect::<Vec<_>>();
+        children.sort_by(|a, b| {
+            let rank = |r: &Value| {
+                if r["end_reason"] == "compression" {
+                    0
+                } else if r["ended_at"].is_null() {
+                    1
+                } else {
+                    2
+                }
+            };
+            rank(a)
+                .cmp(&rank(b))
+                .then_with(|| {
+                    b["last_active"]
+                        .as_f64()
+                        .unwrap_or(0.)
+                        .total_cmp(&a["last_active"].as_f64().unwrap_or(0.))
+                })
+                .then_with(|| {
+                    b["started_at"]
+                        .as_f64()
+                        .unwrap_or(0.)
+                        .total_cmp(&a["started_at"].as_f64().unwrap_or(0.))
+                })
+                .then_with(|| b["id"].as_str().cmp(&a["id"].as_str()))
+        });
+        let Some(next) = children.first() else { break };
+        current = next;
+    }
+    Ok(lineage)
+}
+pub fn legacy_rows(conn: &Connection, stored: &str) -> Result<(Vec<Value>, String)> {
+    let lineage = legacy_lineage(conn, stored)?;
+    let columns = common::rows(conn, "PRAGMA table_info(messages)", &[])?;
+    let has = |name: &str| columns.iter().any(|c| c["name"] == name);
+    let active = if has("compacted") {
+        " AND (active=1 OR compacted=1)"
+    } else if has("active") {
+        " AND active=1"
+    } else {
+        ""
+    };
+    let mut result: Vec<Value> = vec![];
+    let mut seen = HashMap::new();
+    for id in &lineage {
+        for row in common::rows(
+            conn,
+            &format!("SELECT * FROM messages WHERE session_id=?{active} ORDER BY id"),
+            &[&id],
+        )? {
+            let key = json!([
+                row["role"],
+                row["content"],
+                row["timestamp"],
+                row["tool_call_id"],
+                row["tool_calls"],
+                row["tool_name"]
+            ])
+            .to_string();
+            if let Some(index) = seen.get(&key).copied() {
+                let previous: &Value = &result[index];
+                if previous["session_id"] == row["session_id"]
+                    && previous["active"] == 1
+                    && row["active"] == 0
+                {
+                    continue;
+                }
+                result[index] = row;
+            } else {
+                seen.insert(key, result.len());
+                result.push(row);
+            }
+        }
+    }
+    Ok((result, lineage.last().cloned().unwrap_or_default()))
+}
 /// Read the old store without changing it, retaining hidden rows and tool results.
 /// Imported Pi files are written once; subsequent launches let Pi own the log.
 pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result<()> {
     common::identifier(bot)?;
+    check_quarantine(home, stored)?;
     let dir = session_dir(home, stored)?;
     let target = dir.join("conversation.jsonl");
     if target.exists() {
         return Ok(());
     }
     let path = home.join("profiles").join(bot).join("state.db");
-    let mut raw = Vec::<Value>::new();
+    let mut raw = Vec::<(i64, Value, Value)>::new();
     let mut projected = Vec::<Value>::new();
     if path.exists() {
         let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        let session:Option<String>=conn.query_row("SELECT id FROM sessions WHERE session_key=?1 OR id=?1 ORDER BY CASE WHEN session_key=?1 THEN 0 ELSE 1 END LIMIT 1",[stored],|r|r.get(0)).optional()?;
-        if let Some(session) = session {
-            let rows = common::rows(
-                &conn,
-                "SELECT * FROM messages WHERE session_id=? AND active=1 ORDER BY id",
-                &[&session],
-            )?;
+        let (rows, tip) = legacy_rows(&conn, stored)?;
+        {
             for row in rows {
+                let context = row["session_id"] == tip && row["active"] != 0;
                 let role = row["role"].as_str().unwrap_or("");
                 let content = row["content"].as_str().unwrap_or("");
                 let parsed = serde_json::from_str::<Value>(content)
@@ -195,7 +374,9 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
                     }
                     _ => continue,
                 };
-                raw.push(message);
+                if context {
+                    raw.push((row["id"].as_i64().unwrap_or(0), message, projection.clone()));
+                }
                 projected.push(projection);
             }
         }
@@ -206,7 +387,8 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
             .to_string(),
     ];
     let mut parent = Value::Null;
-    for (message, projection) in raw.into_iter().zip(&projected) {
+    raw.sort_by_key(|(id, _, _)| *id);
+    for (_, message, projection) in raw {
         let next = id();
         lines.push(json!({"type":"message","id":next,"parentId":parent,"timestamp":timestamp,"message":message,"hexbot":projection}).to_string());
         parent = json!(next);
@@ -267,6 +449,7 @@ pub fn project_message(
     common::identifier(bot)?;
     let mut conn = open(home)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    check_deleted(&tx, stored)?;
     persist_pi_message(
         &tx,
         PiRoute { stored, owner, bot },
@@ -481,6 +664,7 @@ fn legacy_projection(
 pub fn reconcile(home: &Path, bot: &str, stored: &str, owner: &str) -> Result<()> {
     common::identifier(bot)?;
     common::identifier(stored)?;
+    check_quarantine(home, stored)?;
     let path = home
         .join("runtime/sessions")
         .join(stored)
@@ -500,7 +684,7 @@ pub fn reconcile(home: &Path, bot: &str, stored: &str, owner: &str) -> Result<()
         if !active.insert(id) {
             return Err(crate::Error::new(
                 5200,
-                "Pi session contains a parent cycle",
+                "conversation contains a parent cycle",
             ));
         }
         current = entry["parentId"]
@@ -533,7 +717,7 @@ pub fn reconcile(home: &Path, bot: &str, stored: &str, owner: &str) -> Result<()
     }) {
         return Err(crate::Error::new(
             5200,
-            "Pi session lost previously recorded entries; restore its JSONL backup",
+            "conversation lost previously recorded entries; restore its JSONL backup",
         ));
     }
     let mut order = Vec::new();
@@ -656,7 +840,7 @@ fn read_pi_entries(path: &Path) -> Result<Vec<Value>> {
             Err(error) => {
                 return Err(crate::Error::new(
                     5200,
-                    format!("invalid Pi session JSONL at byte {offset}: {error}"),
+                    format!("invalid conversation JSONL at byte {offset}: {error}"),
                 ));
             }
         };
@@ -664,28 +848,31 @@ fn read_pi_entries(path: &Path) -> Result<Vec<Value>> {
             if entry["type"] != "session" || entry["version"] != 3 {
                 return Err(crate::Error::new(
                     5200,
-                    "expected a version 3 Pi session header",
+                    "expected a version 3 conversation header",
                 ));
             }
             header = true;
         } else {
             let id = common::required(&entry, "id")?;
             if !seen.insert(id.to_owned()) {
-                return Err(crate::Error::new(5200, "duplicate Pi session entry id"));
+                return Err(crate::Error::new(5200, "duplicate conversation entry id"));
             }
             if let Some(parent) = entry["parentId"].as_str()
                 && (parent == id || !seen.contains(parent))
             {
                 return Err(crate::Error::new(
                     5200,
-                    "Pi session parent must name an earlier entry",
+                    "conversation parent must name an earlier entry",
                 ));
             }
             if !entry["parentId"].is_null() && !entry["parentId"].is_string() {
-                return Err(crate::Error::new(5200, "invalid Pi session parent id"));
+                return Err(crate::Error::new(5200, "invalid conversation parent id"));
             }
             if entry["type"] == "message" && !entry["message"].is_object() {
-                return Err(crate::Error::new(5200, "invalid Pi message entry"));
+                return Err(crate::Error::new(
+                    5200,
+                    "invalid conversation message entry",
+                ));
             }
             entries.push(entry);
         }
@@ -693,7 +880,7 @@ fn read_pi_entries(path: &Path) -> Result<Vec<Value>> {
         offset = end;
     }
     if !header {
-        return Err(crate::Error::new(5200, "missing Pi session header"));
+        return Err(crate::Error::new(5200, "missing conversation header"));
     }
     if torn {
         // Preserve the complete damaged file, then remove only its incomplete
@@ -775,12 +962,62 @@ pub fn reconcile_all(home: &Path) -> Result<()> {
         &[],
     )?;
     for session in sessions {
-        reconcile(
+        let stored = common::required(&session, "stored_id")?;
+        if let Err(error) = reconcile(
             home,
             common::required(&session, "bot")?,
-            common::required(&session, "stored_id")?,
+            stored,
             common::required(&session, "owner")?,
-        )?;
+        ) {
+            eprintln!("Quarantining conversation {stored}: {}", error.message);
+            let path = home
+                .join("runtime/sessions")
+                .join(stored)
+                .join("conversation.jsonl");
+            // Record the failure first, so a failed rename cannot permit reopening.
+            open(home)?.execute(
+                "INSERT OR REPLACE INTO native_quarantine VALUES(?,?)",
+                params![
+                    stored,
+                    "This conversation could not be recovered. Its files have been kept for repair."
+                ],
+            )?;
+            if path.exists()
+                && let Err(error) = fs::rename(
+                    &path,
+                    path.with_file_name(format!("conversation.quarantine-{}.jsonl", id())),
+                )
+            {
+                eprintln!("Could not move damaged conversation {stored}: {error}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_quarantine(home: &Path, stored: &str) -> Result<()> {
+    check_deleted(&open(home)?, stored)?;
+    let error: Option<String> = open(home)?
+        .query_row(
+            "SELECT error FROM native_quarantine WHERE session_id=?",
+            [stored],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(error) = error {
+        return Err(crate::Error::new(5200, error));
+    }
+    Ok(())
+}
+
+fn check_deleted(conn: &Connection, stored: &str) -> Result<()> {
+    let deleted: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=?)",
+        [stored],
+        |r| r.get(0),
+    )?;
+    if deleted {
+        return Err(crate::Error::new(4001, "The section was deleted"));
     }
     Ok(())
 }

@@ -90,6 +90,14 @@ fn lifecycle_preserves_memory_and_reopens_archived_sections() {
         json!({"name":"research-owl"}),
     );
     assert!(!h.join("profiles/research-owl").exists());
+    let archived = fs::read_dir(h.join("runtime/deleted-bots"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path()
+        .join("MEMORY.md");
+    assert_eq!(fs::read_to_string(archived).unwrap(), "Durable memory");
     assert_eq!(
         call(h, "alice", "hexbot.bots.list", json!({}))["bots"],
         json!([])
