@@ -65,10 +65,12 @@ fn string<'a>(p: &'a Value, name: &str, default: &'a str) -> &'a str {
         .unwrap_or(default)
 }
 pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
-    let schemas: Vec<Value> =
-        serde_json::from_str(include_str!("external_tool_schemas.json")).expect("tool schemas");
+    static SCHEMAS: std::sync::OnceLock<Vec<Value>> = std::sync::OnceLock::new();
+    let schemas = SCHEMAS.get_or_init(|| {
+        serde_json::from_str(include_str!("external_tool_schemas.json")).expect("tool schemas")
+    });
     let mut output = vec![];
-    for mut schema in schemas {
+    for mut schema in schemas.iter().cloned() {
         let name = schema["name"].as_str().unwrap();
         if !connectors::tool_available(home, bot, name)? {
             continue;
@@ -525,7 +527,10 @@ async fn video(home: &Path, bot: &str, env: &BTreeMap<String, String>, p: &Value
             format!("Video provider {provider} is not configured through the Hexbot FAL connector"),
         ));
     }
-    let catalog: Value = serde_json::from_str(include_str!("fal_video_models.json")).unwrap();
+    static CATALOG: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    let catalog = CATALOG.get_or_init(|| {
+        serde_json::from_str(include_str!("fal_video_models.json")).expect("FAL video catalog")
+    });
     let model = p["model"]
         .as_str()
         .or_else(|| env.get("FAL_VIDEO_MODEL").map(String::as_str))
