@@ -39,10 +39,12 @@ pub struct App {
     logins: Mutex<HashMap<String, BrowserLogin>>,
     auth_connection: Mutex<rusqlite::Connection>,
     pub address: SocketAddr,
+    _network_guard: common::DaemonListener,
     pub web_dist: Option<PathBuf>,
     stop: tokio::sync::watch::Sender<bool>,
 }
 struct BrowserLogin {
+    client: String,
     verifier: String,
     next: String,
     expires: f64,
@@ -97,6 +99,7 @@ impl App {
             tickets: Mutex::new(HashMap::new()),
             logins: Mutex::new(HashMap::new()),
             address,
+            _network_guard: common::DaemonListener::register(address),
             web_dist,
             stop,
         }))
@@ -122,7 +125,7 @@ impl App {
         if method == "hexbot.sections.delete" {
             let stored = common::required(p, "id")?;
             catalog::section(&self.home, owner, stored)?;
-            self.runtime.close_stored(owner, stored).await?;
+            self.runtime.delete_stored(owner, stored).await?;
         }
         if method == "hexbot.bots.delete" {
             let bot = common::required(p, "name")?;
@@ -161,9 +164,8 @@ impl App {
             for session in sessions {
                 let stored = session["id"].as_str().unwrap_or("");
                 self.runtime
-                    .close_stored(session["owner_id"].as_str().unwrap_or(""), stored)
+                    .delete_stored(session["owner_id"].as_str().unwrap_or(""), stored)
                     .await?;
-                crate::runtime_store::delete(&self.home, stored)?;
             }
         }
         let result = match method {
@@ -491,6 +493,7 @@ fn pkce_cookie(app: &App, headers: &HeaderMap, value: &str, max_age: u32) -> Hea
 }
 async fn browser_login(
     State(app): State<Arc<App>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     Query(p): Query<HashMap<String, String>>,
 ) -> Response {
@@ -499,6 +502,14 @@ async fn browser_login(
             return Err(Error::new(4231, "invalid provider"));
         }
         let config = registered(&app)?;
+        if !tunnel_host(&headers, &config.tunnel_hostname) {
+            let mut target =
+                url::Url::parse(&format!("https://{}/auth/login", config.tunnel_hostname))
+                    .map_err(|_| Error::new(4231, "invalid tunnel hostname"))?;
+            target.query_pairs_mut().extend_pairs(p.iter());
+            return Ok(axum::response::Redirect::to(target.as_str()).into_response());
+        }
+        let client = client_address(&app, peer, &headers);
         let state = format!("{}{}", common::id(), common::id());
         let verifier = format!("{}{}", common::id(), common::id());
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
@@ -513,12 +524,19 @@ async fn browser_login(
         ]);
         let mut logins = app.logins.lock().unwrap_or_else(|e| e.into_inner());
         logins.retain(|_, login| login.expires > common::now());
-        if logins.len() >= 4096 {
+        if logins.len() >= 4096
+            || logins
+                .values()
+                .filter(|login| login.client == client)
+                .count()
+                >= 8
+        {
             return Err(Error::new(4232, "too many attempts"));
         }
         logins.insert(
             state.clone(),
             BrowserLogin {
+                client,
                 verifier: verifier.clone(),
                 next: safe_next(p.get("next").map(String::as_str).unwrap_or("/")),
                 expires: common::now() + 600.,
@@ -786,7 +804,7 @@ async fn login(
     headers: HeaderMap,
     Json(p): Json<Value>,
 ) -> Response {
-    let client = client_address(peer);
+    let client = client_address(&app, peer, &headers);
     let result = async {
         if p["provider"].as_str().unwrap_or("hexbot") != "hexbot" {
             return Err(Error::new(4231, "invalid provider"));
@@ -821,13 +839,54 @@ async fn login(
         Err(e) => http_error(e),
     }
 }
-fn client_address(peer: Option<Extension<ConnectInfo<SocketAddr>>>) -> String {
-    peer.map(|Extension(ConnectInfo(address))| address.ip().to_string())
-        .unwrap_or_else(|| "unknown".into())
+fn tunnel_host(headers: &HeaderMap, hostname: &str) -> bool {
+    headers
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|host| {
+            host.eq_ignore_ascii_case(hostname)
+                || host.eq_ignore_ascii_case(&format!("{hostname}:443"))
+        })
+}
+fn client_address(
+    app: &App,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: &HeaderMap,
+) -> String {
+    let Some(Extension(ConnectInfo(address))) = peer else {
+        return "unknown".into();
+    };
+    let mut ip = address.ip();
+    // Trust Cloudflare's overwritten header only at the tunnel's local origin.
+    if ip.is_loopback()
+        && services::ConnectConfig::load(&app.home)
+            .ok()
+            .flatten()
+            .is_some_and(|config| {
+                !config.tunnel_hostname.is_empty() && tunnel_host(headers, &config.tunnel_hostname)
+            })
+        && let Some(forwarded) = headers
+            .get("cf-connecting-ip")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|h| h.parse().ok())
+    {
+        ip = forwarded;
+    }
+    match ip {
+        std::net::IpAddr::V4(ip) => ip.to_string(),
+        std::net::IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
+            Some(ip) => ip.to_string(),
+            None => {
+                let bits = u128::from(ip) & (u128::MAX << 64);
+                format!("{}/64", std::net::Ipv6Addr::from(bits))
+            }
+        },
+    }
 }
 async fn pair(
     State(app): State<Arc<App>>,
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     Json(p): Json<Value>,
 ) -> Response {
     match common::required(&p, "code").and_then(|code| {
@@ -836,7 +895,7 @@ async fn pair(
             code,
             p["device_name"].as_str().unwrap_or("Unnamed device"),
             p["platform"].as_str().unwrap_or("browser"),
-            &client_address(peer),
+            &client_address(&app, peer, &headers),
         )
     }) {
         Ok(value) => Json(value).into_response(),
@@ -1188,6 +1247,86 @@ document.querySelectorAll('form.provider-form').forEach(function (form) {
 #[cfg(test)]
 mod auth_tests {
     use super::*;
+    fn connect_fixture() -> (tempfile::TempDir, Arc<App>) {
+        let home = tempfile::tempdir().unwrap();
+        let app = App::new(
+            home.path().into(),
+            "127.0.0.1:9119".parse().unwrap(),
+            PathBuf::from("unused"),
+            None,
+        )
+        .unwrap();
+        common::atomic_write(&home.path().join("connect.json"), json!({"api_base":"https://connect.hexbot.app","daemon_id":"daemon","owner_id":"alice","issuer":"https://issuer.test","keys":[{}],"tunnel_hostname":"owl.hexbot.app"}).to_string().as_bytes()).unwrap();
+        (home, app)
+    }
+    #[tokio::test]
+    async fn lan_signin_redirects_before_setting_cookie_and_tunnel_logins_are_bounded() {
+        let (_home, app) = connect_fixture();
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "localhost:9119".parse().unwrap());
+        let params = HashMap::from([
+            ("provider".into(), "connect".into()),
+            ("next".into(), "/rooms?x=1".into()),
+        ]);
+        let response = browser_login(
+            State(app.clone()),
+            None,
+            headers.clone(),
+            Query(params.clone()),
+        )
+        .await;
+        assert!(
+            response.headers()["location"]
+                .to_str()
+                .unwrap()
+                .starts_with("https://owl.hexbot.app/auth/login?")
+        );
+        assert!(!response.headers().contains_key("set-cookie"));
+        assert!(app.logins.lock().unwrap().is_empty());
+        headers.insert("host", "owl.hexbot.app".parse().unwrap());
+        headers.insert("cf-connecting-ip", "2001:db8::1".parse().unwrap());
+        for _ in 0..8 {
+            let response = browser_login(
+                State(app.clone()),
+                Some(Extension(ConnectInfo("127.0.0.1:4000".parse().unwrap()))),
+                headers.clone(),
+                Query(params.clone()),
+            )
+            .await;
+            assert!(response.headers().contains_key("set-cookie"));
+        }
+        headers.insert("cf-connecting-ip", "2001:db8::2".parse().unwrap());
+        let response = browser_login(
+            State(app.clone()),
+            Some(Extension(ConnectInfo("127.0.0.1:4000".parse().unwrap()))),
+            headers,
+            Query(params),
+        )
+        .await;
+        assert!(!response.headers().contains_key("set-cookie"));
+        assert_eq!(app.logins.lock().unwrap().len(), 8);
+    }
+    #[test]
+    fn tunnel_client_keys_trust_only_local_tunnel_requests_and_group_ipv6() {
+        let (_home, app) = connect_fixture();
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "owl.hexbot.app".parse().unwrap());
+        headers.insert(
+            "cf-connecting-ip",
+            "2001:db8:abcd:1234::1234".parse().unwrap(),
+        );
+        let key = |peer: &str, headers: &HeaderMap| {
+            client_address(
+                &app,
+                Some(Extension(ConnectInfo(peer.parse().unwrap()))),
+                headers,
+            )
+        };
+        assert_eq!(key("127.0.0.1:4000", &headers), "2001:db8:abcd:1234::/64");
+        assert_eq!(key("192.168.1.2:4000", &headers), "192.168.1.2");
+        headers.insert("host", "localhost:9119".parse().unwrap());
+        assert_eq!(key("127.0.0.1:4000", &headers), "127.0.0.1");
+    }
     #[test]
     fn callback_state_expiry_single_use_and_safe_redirects() {
         let home = tempfile::tempdir().unwrap();
@@ -1204,6 +1343,7 @@ mod auth_tests {
             "hermes_session_pkce=state.verifier".parse().unwrap(),
         );
         let login = |expires| BrowserLogin {
+            client: "test".into(),
             verifier: "verifier".into(),
             next: "/rooms".into(),
             expires,

@@ -29,11 +29,20 @@ pub struct MemoryStore {
 
 impl MemoryStore {
     pub fn new(home: PathBuf) -> Self {
-        let managed_dir = std::env::var("HERMES_MANAGED_DIR")
+        let managed_dir = std::env::var("HEXBOT_MANAGED_DIR")
+            .or_else(|_| std::env::var("HERMES_MANAGED_DIR"))
             .ok()
             .filter(|path| !path.trim().is_empty())
             .map(|path| PathBuf::from(path.trim()))
-            .unwrap_or_else(|| PathBuf::from("/etc/hermes"));
+            .unwrap_or_else(|| {
+                PathBuf::from(
+                    if Path::new("/etc/hexbot").exists() || !Path::new("/etc/hermes").exists() {
+                        "/etc/hexbot"
+                    } else {
+                        "/etc/hermes"
+                    },
+                )
+            });
         Self {
             home,
             managed_dir: Some(managed_dir),

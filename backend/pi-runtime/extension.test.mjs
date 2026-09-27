@@ -3,7 +3,7 @@ import test from 'node:test';
 import {mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync} from 'node:fs';
 import {tmpdir, homedir} from 'node:os';
 import {join} from 'node:path';
-import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, hardlineCommand, dangerousCommand} from './extension.ts';
+import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, hardlineCommand, dangerousCommand, sanitizeSearchResult} from './extension.ts';
 
 function fixture(t, mode = 'manual', enabledToolsets = []) {
   const home = mkdtempSync(join(tmpdir(), 'hexbot-gates-'));
@@ -42,7 +42,7 @@ for (const mode of ['manual','smart','off']) {
   test(`${mode} keeps hard blocks and credential checks`, async t => {
     const f = fixture(t,mode);
     for (const tool of ['read','write','edit','grep','find','ls']) {
-      for (const file of ['.env','profiles/owl/.env','profiles/owl/pi/auth.json','connect.json','local-device.token','hexbot.db-wal','hexbot-runtime.db-shm','pi-approvals.json','users/alice/approvals/owl.json']) {
+      for (const file of ['.env','.anthropic_oauth.json','profiles/owl/.anthropic_oauth.json','runtime/provider-auth/grant.json','profiles/owl/.env','profiles/owl/pi/auth.json','connect.json','local-device.token','hexbot.db-wal','hexbot-runtime.db-shm','pi-approvals.json','users/alice/approvals/owl.json']) {
         assert.equal((await f.gate(tool,{path:join(f.home,file)}))?.block,true,`${tool} ${file}`);
       }
     }
@@ -229,4 +229,51 @@ test('Codex stream uses the current daemon token on every request and stops on a
     if (saved === undefined) delete process.env.HEXBOT_SESSION_CONFIG; else process.env.HEXBOT_SESSION_CONFIG = saved;
     rmSync(home, {recursive: true, force: true});
   }
+});
+
+for (const command of ['env -S "rm -rf /"', 'xargs -I{} rm -rf /', 'nice --adjustment 5 rm -rf /', 'timeout 5 rm -rf /', 'nice -n 10 rm -rf /', 'ionice -c 3 rm -rf /', 'stdbuf -o L rm -rf /', 'doas rm -rf /', 'xargs -I ITEM rm -rf /', 'busybox rm -rf /', '{ rm -rf /; }', 'if true; then rm -rf /; fi', 'while true; do rm -rf /; done', '! rm -rf /', 'true && rm -rf /', 'false || rm -rf /', 'rm -rf /Users/$USER', 'rm -rf /Users/${USER}']) {
+  test(`wrapper and command position floor: ${command}`, () => assert.ok(hardlineCommand(command), command));
+}
+test('dynamic commands and secret references require approval', async t => {
+  for (const mode of ['manual', 'smart']) {
+    const f = fixture(t, mode);
+    for (const command of ['$(echo whoami)', '`echo whoami`', '$CMD arg', 'eval "pwd"', 'true; $CMD', 'FOO=x $CMD', 'cat $HEXBOT_HOME/.env', 'cat ~/.ssh/id_rsa', `cat ${f.home}/anything`, 'sqlite3 hexbot.db']) {
+      assert.equal((await f.gate('bash', {command}))?.block, true, command);
+    }
+  }
+});
+test('the gate and execution reject a secret name symlink to an ordinary file', async t => {
+  const f = fixture(t, 'off', ['file']);
+  writeFileSync(join(f.home, 'ordinary'), 'never read');
+  symlinkSync(join(f.home, 'ordinary'), join(f.home, '.env'));
+  assert.equal((await f.gate('read', {path:join(f.home, '.env')}))?.block, true);
+  await assert.rejects(() => f.tools.read.execute('read', {path:join(f.home, '.env')}), /Credential/);
+});
+test('grep redacts numbered bot names and all detail text', async t => {
+  const f = fixture(t, 'off', ['file']);
+  const dir = join(f.home, 'profiles/owl-2-beta'); mkdirSync(dir, {recursive:true});
+  writeFileSync(join(dir, '.env'), 'hiddenneedle\nSECRET-CONTEXT');
+  writeFileSync(join(dir, 'notes.txt'), 'public needle');
+  const result = await f.tools.grep.execute('grep', {path:f.home, pattern:'needle', hidden:true, context:1});
+  assert.doesNotMatch(JSON.stringify(result), /hiddenneedle|SECRET-CONTEXT|\.env/);
+  assert.match(JSON.stringify(result), /public needle/);
+});
+
+test('grep truncation details cannot retain filtered credential matches', async t => {
+  const f = fixture(t, 'off', ['file']);
+  const dir = join(f.home, 'profiles/owl-2-beta'); mkdirSync(dir, {recursive:true});
+  writeFileSync(join(dir, 'auth.json'), 'SECRET needle');
+  writeFileSync(join(dir, 'safe.txt'), Array.from({length:100}, (_, i) => `needle ${i} ` + 'x'.repeat(1800)).join('\n'));
+  const result = await f.tools.grep.execute('grep', {path:f.home, pattern:'needle', limit:200});
+  assert.ok(result.details?.truncation);
+  assert.doesNotMatch(JSON.stringify(result), /SECRET|auth\.json/);
+  assert.match(result.details.truncation.content, /safe\.txt/);
+});
+
+test('grep match and context delimiters inside bot names cannot expose detail text', t => {
+  const f = fixture(t, 'off');
+  const lines = 'profiles/owl-2-beta/.env:3: SECRET-MATCH\nprofiles/owl-2-beta/.env-2- SECRET-CONTEXT\nprofiles/owl-2-beta/notes.txt:1: public';
+  const result = sanitizeSearchResult({content:[{type:'text',text:lines}],details:{truncation:{content:lines},nested:{output:lines}}}, 'grep', f.home, f.home);
+  assert.doesNotMatch(JSON.stringify(result), /SECRET|\.env/);
+  assert.match(result.details.truncation.content, /public/);
 });

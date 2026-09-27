@@ -195,8 +195,11 @@ export async function runningNativeDirectory(): Promise<string | null | undefine
   try {
     const running = JSON.parse(await readFile(join(runtimeDir(), 'native-running.json'), 'utf8')) as { pid: number; executable: string }
     if (!Number.isSafeInteger(running.pid) || running.pid <= 0) return null
-    if (!alive(running.pid)) return undefined
-    return dirname(await realpath(running.executable))
+    if (!alive(running.pid)) {
+      const pid = Number(await readFile(join(hexbotHome(), 'native-daemon.lock'), 'utf8').catch(() => ''))
+      return Number.isSafeInteger(pid) && pid > 0 && alive(pid) ? null : undefined
+    }
+    return await realpath(running.executable).then(dirname).catch(() => null)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return null
     // Older native versions only recorded a PID. Defer cleanup until restart
@@ -290,7 +293,7 @@ async function installNativeRuntime(deps: BootstrapDeps): Promise<void> {
   }
   await installCodeRuntime(deps)
   await activateNativeRuntime(destination, deps, signedHashes)
-  await migrateLegacyService()
+  await migrateLegacyService().catch(error => appendLog(`Service migration: ${String(error)}\n`).catch(() => undefined))
   deps.emit({ stage: 'done', message: 'Hexbot runtime is ready', percent: 100 })
 }
 

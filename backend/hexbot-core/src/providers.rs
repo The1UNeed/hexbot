@@ -1523,6 +1523,22 @@ fn import_qwen(home: &Path) -> Result<Value> {
 }
 /// Resolve OAuth at the HTTP boundary, including long-running sessions. Returned headers
 /// belong only on the private Pi bridge and must never be published as client events.
+fn grant_refresh_lock(path: PathBuf) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    use std::sync::{Arc, Mutex, OnceLock, Weak};
+    type Locks = std::collections::HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>;
+    static LOCKS: OnceLock<Mutex<Locks>> = OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(&path).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(path, Arc::downgrade(&lock));
+    lock
+}
 pub async fn request_auth(home: &Path, bot: &str, provider: &str) -> Result<Value> {
     common::identifier(bot)?;
     let slug = canonical_provider(provider);
@@ -1532,8 +1548,7 @@ pub async fn request_auth(home: &Path, bot: &str, provider: &str) -> Result<Valu
     ) {
         return Ok(json!({"headers":{}}));
     }
-    static REFRESH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    let _refresh = REFRESH.lock().await;
+
     let disabled = read_json(&home.join("providers-disabled.json"))?;
     if disabled[&slug] == true {
         return Err(Error::new(
@@ -1593,6 +1608,36 @@ pub async fn request_auth(home: &Path, bot: &str, provider: &str) -> Result<Valu
             tokens = shared;
         }
     }
+    let refresh_lock = grant_refresh_lock(
+        shared_path
+            .clone()
+            .unwrap_or_else(|| credential_home.join(format!("{slug}.grant"))),
+    );
+    let _refresh = if expires_at(&tokens) <= common::now() + 120.0
+        || slug == "nous" && validate_nous(&tokens).is_err()
+    {
+        let guard = refresh_lock.lock().await;
+        // Re-read after waiting so a rotated grant is refreshed only once.
+        if let Some(path) = &shared_path {
+            let shared = read_json(path)?;
+            if shared["access_token"].is_string() {
+                tokens = shared;
+            }
+        } else {
+            let latest = oauth(credential_home, &slug)?;
+            if latest.is_object() {
+                state = latest;
+                tokens = if state["tokens"].is_object() {
+                    state["tokens"].clone()
+                } else {
+                    state.clone()
+                };
+            }
+        }
+        Some(guard)
+    } else {
+        None
+    };
     let should_refresh = expires_at(&tokens) <= common::now() + 120.0
         || (slug == "nous" && validate_nous(&tokens).is_err());
     if should_refresh {
@@ -1725,8 +1770,10 @@ pub async fn request_auth(home: &Path, bot: &str, provider: &str) -> Result<Valu
             ));
         }
         if let Some(path) = &shared_path {
-            write_json(path, &tokens)?;
-        } else {
+            if _refresh.is_some() {
+                write_json(path, &tokens)?;
+            }
+        } else if _refresh.is_some() {
             let mut auth = read_json(&credential_home.join("auth.json"))?;
             if !auth["providers"].is_object() {
                 auth["providers"] = json!({})
@@ -1788,11 +1835,15 @@ pub async fn xai_credentials(home: &Path, bot: &str) -> Result<Value> {
     let root_env = common::env_values(home)?;
     let profile_env = common::env_values(&profile_home)?;
     let base = profile_env
-        .get("HERMES_XAI_BASE_URL")
-        .or_else(|| profile_env.get("XAI_BASE_URL"))
-        .or_else(|| root_env.get("HERMES_XAI_BASE_URL"))
-        .or_else(|| root_env.get("XAI_BASE_URL"))
+        .get("HEXBOT_XAI_BASE_URL")
+        .or_else(|| root_env.get("HEXBOT_XAI_BASE_URL"))
         .cloned()
+        .or_else(|| std::env::var("HEXBOT_XAI_BASE_URL").ok())
+        .or_else(|| profile_env.get("HERMES_XAI_BASE_URL").cloned())
+        .or_else(|| profile_env.get("XAI_BASE_URL").cloned())
+        .or_else(|| root_env.get("HERMES_XAI_BASE_URL").cloned())
+        .or_else(|| root_env.get("XAI_BASE_URL").cloned())
+        .or_else(|| std::env::var("HERMES_XAI_BASE_URL").ok())
         .or_else(|| std::env::var("XAI_BASE_URL").ok())
         .unwrap_or_else(|| "https://api.x.ai/v1".to_owned());
     let disabled = read_json(&home.join("providers-disabled.json"))?;

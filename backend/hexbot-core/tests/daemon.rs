@@ -133,6 +133,7 @@ async fn listener_restart_single_owner_and_graceful_shutdown() {
         .unwrap()
         .unwrap();
     assert!(status.success());
+    assert!(!home.path().join("serve-state.json").exists());
     let mut restarted = start(home.path());
     let mut output = BufReader::new(restarted.stdout.take().unwrap());
     ready(&mut output).await;

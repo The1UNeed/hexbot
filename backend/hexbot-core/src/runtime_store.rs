@@ -97,6 +97,15 @@ pub fn descendants(home: &Path, stored: &str) -> Result<Vec<String>> {
     common::rows(&open(home)?, "WITH RECURSIVE tree(id) AS (SELECT ?1 UNION SELECT s.stored_id FROM native_sessions s JOIN tree t ON json_extract(s.options,'$.parent_session')=t.id) SELECT id FROM tree", &[&stored])?
         .into_iter().map(|row| common::required(&row,"id").map(str::to_owned)).collect()
 }
+pub fn mark_deleted(home: &Path, stored: &str) -> Result<()> {
+    let mut conn = open(home)?;
+    let tx = conn.transaction()?;
+    for target in descendants(home, stored)? {
+        tx.execute("INSERT OR IGNORE INTO native_deleted VALUES(?)", [target])?;
+    }
+    tx.commit()?;
+    Ok(())
+}
 pub fn delete(home: &Path, stored: &str) -> Result<()> {
     common::identifier(stored)?;
     let targets = descendants(home, stored)?;
@@ -970,6 +979,12 @@ pub fn reconcile_all(home: &Path) -> Result<()> {
             stored,
             common::required(&session, "owner")?,
         ) {
+            if !matches!(error.code, 5200 | 4302)
+                || error.data.as_ref().is_some_and(|d| d["transient"] == true)
+            {
+                eprintln!("Could not recover conversation {stored}: {error}");
+                continue;
+            }
             eprintln!("Quarantining conversation {stored}: {}", error.message);
             let path = home
                 .join("runtime/sessions")

@@ -3,6 +3,7 @@ import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync } from 'n
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir } from 'node:os';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
+import {credentialPolicy, isolatedCommand} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -78,7 +79,7 @@ export default function hexbot(pi: any) {
       const home = live.home;
       if (['read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName)) {
         const path = canonicalPath(event.input.path ?? '.', cwd);
-        if (credentialPath(path, home)) return {block: true, reason: 'Credential files are private.'};
+        if (credentialPath(resolve(cwd, event.input.path ?? '.'), home) || credentialPath(path, home)) return {block: true, reason: 'Credential files are private.'};
         if (live.approvalMode !== 'off' && ['write', 'edit'].includes(event.toolName) && protectedPath(path, home)) {
           return {block: true, reason: 'This path is protected. Use the soul or memory tool for bot notes.'};
         }
@@ -87,7 +88,7 @@ export default function hexbot(pi: any) {
         const reason = hardlineCommand(event.input.command, cwd);
         if (reason) return {block: true, reason: 'Command blocked: ' + reason};
       }
-      const patterns = event.toolName === 'bash' ? dangerousCommand(event.input.command) :
+      const patterns = event.toolName === 'bash' ? dangerousCommand(event.input.command, home) :
         event.toolName === 'browser_console' && typeof event.input.expression === 'string' ? ['browser_console:expression'] : [];
       if (live.approvalMode === 'off' || !patterns.length) return;
       if (patterns.every(key => allowed.has(key) || live.allowedPatterns?.includes(key))) return;
@@ -116,7 +117,7 @@ export default function hexbot(pi: any) {
     config.enabledToolsets?.includes(name === 'bash' ? 'terminal' : 'file');
   for (const [name, factory] of Object.entries(factories) as [string, any][]) {
     if (!enabled(name)) continue;
-    const options = () => name === 'bash' ? {spawnHook: (c: any) => { const reason = hardlineCommand(c.command, c.cwd); if (reason) throw new Error('Command blocked: ' + reason); return {...c, env: shellEnvironment(c.env)}; }} :
+    const options = () => name === 'bash' ? {spawnHook: (c: any) => { const reason = hardlineCommand(c.command, c.cwd); if (reason) throw new Error('Command blocked: ' + reason); return {...c, command: isolatedCommand(c.command, live.home), env: shellEnvironment(c.env)}; }} :
       name === 'grep' ? {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: (path: string) => credentialPath(path, live.home) ? '' : readFileSync(path, 'utf8')}} : {};
     const tool = factory(config.cwd, options());
     pi.registerTool({...tool, async execute(id: string, args: any, signal: any, update: any) {
@@ -124,7 +125,7 @@ export default function hexbot(pi: any) {
       // of '..' must not select a different file after a symlink was checked.
       if (name !== 'bash') {
         const path = canonicalPath(args.path ?? '.', live.cwd ?? config.cwd);
-        if (credentialPath(path, live.home)) throw new Error('Credential files are private.');
+        if (credentialPath(resolve(live.cwd ?? config.cwd, args.path ?? '.'), live.home) || credentialPath(path, live.home)) throw new Error('Credential files are private.');
         if (live.approvalMode !== 'off' && ['write', 'edit'].includes(name) && protectedPath(path, live.home)) throw new Error('This path is protected.');
         args = {...args, path};
       }
@@ -133,10 +134,7 @@ export default function hexbot(pi: any) {
       if (['grep', 'find', 'ls'].includes(name)) {
         const search = canonicalPath(args.path ?? '.', live.cwd ?? config.cwd);
         const base = statSync(search).isDirectory() ? search : dirname(search);
-        result.content = result.content.map((part: any) => part.type !== 'text' ? part : {...part, text: part.text.split('\n').filter((line: string) => {
-          const path = name === 'grep' ? line.split(/:\d+:|-[0-9]+-/)[0] : line.replace(/\/$/, '');
-          return !credentialPath(canonicalPath(path, base), live.home);
-        }).join('\n')});
+        return sanitizeSearchResult(result, name, base, live.home);
       }
       return result;
     }});
@@ -148,7 +146,7 @@ export default function hexbot(pi: any) {
       const {createLocalBashOperations} = await import('@earendil-works/pi-coding-agent');
       const reason = hardlineCommand(command, live.cwd ?? cwd);
       if (reason) throw new Error('Command blocked: ' + reason);
-      return createLocalBashOperations().exec(command, live.cwd ?? cwd, {...opts, env: shellEnvironment(opts.env ?? process.env)});
+      return createLocalBashOperations().exec(isolatedCommand(command, live.home), live.cwd ?? cwd, {...opts, env: shellEnvironment(opts.env ?? process.env)});
     }}};
   });
 
@@ -620,6 +618,18 @@ const dangerousPatterns: [string, string][] = [
   ]
 ];
 
+// Filenames can contain grep's line delimiters too (for example owl-2-beta).
+// Check every possible path prefix, including text nested in truncation details.
+export function sanitizeSearchResult(value: any, name: string, base: string, home: string): any {
+  if (typeof value === 'string') return value.split('\n').filter(line => {
+    const paths = name === 'grep' ? [...line.matchAll(/(:\d+:|-\d+-)/g)].map(match => line.slice(0, match.index)) : [line.replace(/\/$/, '')];
+    return !paths.some(path => credentialPath(resolve(base, path), home) || credentialPath(canonicalPath(path, base), home));
+  }).join('\n');
+  if (Array.isArray(value)) return value.map(part => sanitizeSearchResult(part, name, base, home));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, part]) => [key, sanitizeSearchResult(part, name, base, home)]));
+  return value;
+}
+
 export function canonicalPath(path: string, cwd: string, depth = 0): string {
   if (depth > 40) throw new Error("Too many symbolic links");
   const expanded = path === '~' ? homedir() : path.startsWith('~/') ? join(homedir(), path.slice(2)) : path;
@@ -648,11 +658,11 @@ export function credentialPath(path: string, home: string): boolean {
 function credentialName(path: string, home: string): boolean {
   if (under(path, canonicalPath(join(homedir(), '.ssh'), process.cwd())) || under(path, join(homedir(), '.ssh'))) return true;
   const name = basename(path);
-  if (/^(auth\.json|connect\.json|local-device\.token|hexbot(?:-runtime)?\.db.*|pi-approvals.*\.json)$/.test(name)) return true;
+  if (new RegExp(credentialPolicy.basename).test(name)) return true;
   if (!home) throw new Error('Hexbot home is unavailable');
   const root = under(path, resolve(home)) ? resolve(home) : canonicalPath(home, process.cwd());
   const local = relative(root, path).split(sep).join('/');
-  return local === '.env' || /^profiles\/[^/]+\/\.env$/.test(local) || /^users\/[^/]+\/approvals(?:\/|$)/.test(local);
+  return new RegExp(credentialPolicy.home).test(local);
 }
 export function protectedPath(path: string, home: string): boolean {
   path = canonicalPath(path, process.cwd());
@@ -674,7 +684,12 @@ function shellTokens(command: string): string[] {
     if (c === '\\' && quote !== "'") { if (command[i + 1] !== '\n') word += command[++i] ?? ''; else i++; continue; }
     if (quote) { if (c === quote) quote = ''; else word += c; continue; }
     if (c === '"' || c === "'") { quote = c; continue; }
-    if (/\s|[;|&()<>`]/.test(c)) {
+    if (c === '{' && word.endsWith('$')) {
+      const end = command.indexOf('}', i + 1);
+      if (end >= 0) { word += command.slice(i, end + 1); i = end; continue; }
+    }
+    if ((c === '{' || c === '}') && word) { word += c; continue; }
+    if (/\s|[;|&(){}<>`]/.test(c)) {
       if (word) tokens.push(word);
       word = '';
       if (!/\s/.test(c) || c === '\n') tokens.push(c);
@@ -695,14 +710,16 @@ export function hardlineCommand(command: string, cwd = process.cwd(), depth = 0)
   const tokens = shellTokens(command);
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i] === '>' && /^\/dev\/(sd|nvme|hd|mmcblk|vd|xvd|disk|rdisk)/.test(tokens[i + 1] ?? '')) return 'write to raw disk';
-    if (i && ![';', '|', '&', '(', '\n', '`'].includes(tokens[i - 1])) continue;
+    if (i && ![';', '|', '&', '(', '{', 'then', 'do', 'else', '!', '\n', '`'].includes(tokens[i - 1])) continue;
     let start = i;
-    while (['sudo', 'env', 'exec', 'nohup', 'setsid', 'time', 'command'].includes(basename(tokens[start] ?? '')) || /^\w+=/.test(tokens[start] ?? '')) {
+    while (['sudo', 'env', 'exec', 'nohup', 'setsid', 'time', 'command', 'timeout', 'nice', 'ionice', 'stdbuf', 'doas', 'xargs', 'busybox'].includes(basename(tokens[start] ?? '')) || /^\w+=/.test(tokens[start] ?? '')) {
       const wrapper = basename(tokens[start++]);
       while (tokens[start]?.startsWith('-') || /^\w+=/.test(tokens[start] ?? '')) {
         const flag = tokens[start++];
-        if (wrapper === 'sudo' && ['-u', '-g', '-h', '-p', '-C', '-T', '--user', '--group', '--host', '--prompt', '--chdir'].includes(flag) || wrapper === 'env' && ['-u', '--unset', '-C', '--chdir'].includes(flag)) start++;
+        if (wrapper === 'env' && ['-S', '--split-string'].includes(flag)) { const reason = hardlineCommand(tokens[start++] ?? '', cwd, depth + 1); if (reason) return reason; }
+        if (['sudo', 'doas'].includes(wrapper) && ['-u', '-g', '-h', '-p', '-C', '-T', '--user', '--group', '--host', '--prompt', '--chdir'].includes(flag) || wrapper === 'env' && ['-u', '--unset', '-C', '--chdir'].includes(flag) || ['nice', 'ionice', 'stdbuf', 'xargs', 'timeout'].includes(wrapper) && ['-n', '-p', '-c', '-t', '-i', '-o', '-e', '-a', '-I', '-L', '-P', '-d', '-s', '-k', '--adjustment', '--class', '--classdata', '--pid', '--input', '--output', '--error', '--max-lines', '--max-args', '--max-procs', '--arg-file', '--delimiter', '--signal', '--kill-after'].includes(flag)) start++;
       }
+      if (wrapper === 'timeout' && /^[0-9.]+[smhd]?$/.test(tokens[start] ?? '')) start++;
     }
     const name = basename(tokens[start] ?? '');
     const args: string[] = [];
@@ -721,7 +738,7 @@ export function hardlineCommand(command: string, cwd = process.cwd(), depth = 0)
       const flags = end < 0 ? args : args.slice(0, end);
       if (!flags.some(a => /^-[^-]*[rR]/.test(a) || a === '--recursive')) continue;
       for (const arg of args.filter(a => !a.startsWith('-'))) {
-        const expanded = arg.replace(/^\$\{?HOME\}?/, homedir()).replace(/\/\*$/, '') || '/';
+        const expanded = arg.replace(/\$\{HOME\}|\$HOME\b/g, homedir()).replace(/\$\{USER\}|\$USER\b/g, process.env.USER ?? basename(homedir())).replace(/\/\*$/, '') || '/';
         const path = canonicalPath(expanded, cwd);
         const roots = ['/', '/home', '/root', '/etc', '/usr', '/var', '/bin', '/sbin', '/boot', '/lib', '/private', '/System', '/Library', '/Users', homedir()];
         if (roots.some(root => path === canonicalPath(root, cwd))) return 'recursive delete of home or system directory';
@@ -729,9 +746,11 @@ export function hardlineCommand(command: string, cwd = process.cwd(), depth = 0)
     }
   }
 }
-export function dangerousCommand(command: string): string[] {
+export function dangerousCommand(command: string, home?: string): string[] {
   const normalized = shellTokens(command).join(' ').replaceAll(' ; ', '\n').replaceAll(' | ', '\n').replaceAll(' & ', '\n');
   return [...new Set([
+    ...((home && (command.includes(home) || command.includes(canonicalPath(home, process.cwd()))) || /\$\{?HEXBOT_HOME\}?|[~$]HOME|~\/\.hexbot|\.ssh|\.env|auth\.json|connect\.json|local-device\.token|hexbot(?:-runtime)?\.db|pi-approvals|provider-auth|\.anthropic_oauth\.json/.test(command)) ? ['credential access'] : []),
+    ...(/\$\(|`|(?:^|[;|&\n{}]|\b(?:then|do|else)\s)\s*(?:\w+=\S+\s+)*(?:eval\b|\$)/.test(command) ? ['dynamic command'] : []),
     ...dangerousPatterns.filter(([pattern]) => new RegExp(pattern, 'im').test(command) || new RegExp(pattern, 'im').test(normalized)).map(([pattern]) => pattern),
     ...(/\bsudo\b/i.test(normalized) ? ['\\bsudo\\b'] : []),
     ...(/\b(chmod|chown)\b.*777/i.test(normalized) ? ['\\b(chmod|chown)\\b.*777'] : []),

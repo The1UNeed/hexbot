@@ -178,7 +178,7 @@ def _refuse_running_daemon(home: Path) -> None:
     try:
         with socket.create_connection((host, port), timeout=1):
             pass
-    except ConnectionRefusedError:
+    except OSError:
         return
     raise RuntimeError("Stop the existing Hexbot daemon before starting the native daemon")
 

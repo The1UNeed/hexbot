@@ -694,3 +694,75 @@ fn response_providers_and_acp_keep_their_transport() {
         );
     }
 }
+
+#[tokio::test]
+async fn refreshing_one_provider_does_not_block_another() {
+    use axum::{Json, Router, routing::post};
+    use tokio::sync::Notify;
+    let home = setup();
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let started = entered.clone();
+    let resume = release.clone();
+    let app = Router::new()
+        .route("/oauth/token", post(move || { let started = started.clone(); let resume = resume.clone(); async move {
+            started.notify_one(); resume.notified().await;
+            Json(json!({"access_token":"codex-new","refresh_token":"codex-refresh","expires_in":3600}))
+        }}))
+        .route("/v1/oauth/token", post(|| async { Json(json!({"access_token":"anthropic-new","refresh_token":"anthropic-refresh","expires_in":3600})) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let issuer = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    common::write_config(
+        home.path(),
+        &json!({"provider_auth":{"openai-codex":{"issuer":issuer},"anthropic":{"issuer":issuer}}}),
+    )
+    .unwrap();
+    fs::write(home.path().join("auth.json"), json!({"providers":{
+        "openai-codex":{"access_token":"expired","refresh_token":"codex-refresh","expires_at":1},
+        "anthropic":{"access_token":"expired","refresh_token":"anthropic-refresh","expires_at":1}
+    }}).to_string()).unwrap();
+    let path = home.path().to_owned();
+    let codex =
+        tokio::spawn(async move { providers::request_auth(&path, "owl", "openai-codex").await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+        .await
+        .unwrap();
+    let auth = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        providers::request_auth(home.path(), "owl", "anthropic"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(auth["headers"]["authorization"], "Bearer anthropic-new");
+    release.notify_one();
+    assert_eq!(
+        codex.await.unwrap().unwrap()["headers"]["authorization"],
+        "Bearer codex-new"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn xai_hexbot_base_url_precedes_legacy_name() {
+    let home = setup();
+    fs::write(home.path().join(".env"), "XAI_API_KEY=test-key\nHEXBOT_XAI_BASE_URL=https://new.test/v1\nHERMES_XAI_BASE_URL=https://old.test/v1\n").unwrap();
+    assert_eq!(
+        providers::xai_credentials(home.path(), "owl")
+            .await
+            .unwrap()["base_url"],
+        "https://new.test/v1"
+    );
+    fs::write(
+        home.path().join(".env"),
+        "XAI_API_KEY=test-key\nHERMES_XAI_BASE_URL=https://old.test/v1\n",
+    )
+    .unwrap();
+    assert_eq!(
+        providers::xai_credentials(home.path(), "owl")
+            .await
+            .unwrap()["base_url"],
+        "https://old.test/v1"
+    );
+}

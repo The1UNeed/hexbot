@@ -95,6 +95,10 @@ class NativeTransitionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Stop the existing"):
                 transition._refuse_running_daemon(self.home)
         transition._refuse_running_daemon(self.home)
+        from unittest.mock import patch
+        for error in [TimeoutError("timeout"), OSError("network unreachable")]:
+            with patch("socket.create_connection", side_effect=error):
+                transition._refuse_running_daemon(self.home)
 
     def test_migration_updates_only_this_homes_service_and_removes_venv_path(self):
         user = self.root / "user"

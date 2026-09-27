@@ -917,6 +917,7 @@ async fn browser_pkce_exchange_checks_state_and_redirects_to_same_origin() {
             "{}/auth/login?provider=connect&next=//evil.test",
             fixture.base
         ))
+        .header("host", "fixture.test")
         .header("x-forwarded-proto", "https")
         .send()
         .await

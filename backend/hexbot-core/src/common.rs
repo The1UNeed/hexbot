@@ -506,6 +506,46 @@ fn blocked_ip(ip: std::net::IpAddr, allow_private: bool) -> bool {
     }
 }
 /// Resolve once and return the checked addresses for the actual connection.
+// Keep this process's listeners out of tool traffic even when LAN access is enabled.
+fn daemon_listeners()
+-> &'static std::sync::Mutex<std::collections::HashMap<std::net::SocketAddr, usize>> {
+    static LISTENERS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<std::net::SocketAddr, usize>>,
+    > = std::sync::OnceLock::new();
+    LISTENERS.get_or_init(Default::default)
+}
+pub struct DaemonListener(std::net::SocketAddr);
+impl DaemonListener {
+    pub fn register(address: std::net::SocketAddr) -> Self {
+        *daemon_listeners()
+            .lock()
+            .unwrap()
+            .entry(address)
+            .or_default() += 1;
+        Self(address)
+    }
+}
+impl Drop for DaemonListener {
+    fn drop(&mut self) {
+        let mut listeners = daemon_listeners().lock().unwrap();
+        if let Some(count) = listeners.get_mut(&self.0) {
+            *count -= 1;
+            if *count == 0 {
+                listeners.remove(&self.0);
+            }
+        }
+    }
+}
+fn is_daemon_address(address: &std::net::SocketAddr) -> bool {
+    daemon_listeners().lock().unwrap().keys().any(|listener| {
+        listener.port() == address.port()
+            && (listener.ip().to_canonical() == address.ip().to_canonical()
+                || listener.ip().is_unspecified()
+                    && (address.ip().is_loopback()
+                        || std::net::UdpSocket::bind(std::net::SocketAddr::new(address.ip(), 0))
+                            .is_ok()))
+    })
+}
 pub async fn url_addresses(
     url: &url::Url,
     allow_private: bool,
@@ -535,7 +575,11 @@ pub async fn url_addresses(
     .map_err(|_| denied())?
     .map_err(|_| denied())?
     .collect();
-    if addresses.is_empty() || addresses.iter().any(|a| blocked_ip(a.ip(), allow_private)) {
+    if addresses.is_empty()
+        || addresses
+            .iter()
+            .any(|a| is_daemon_address(a) || blocked_ip(a.ip(), allow_private))
+    {
         return Err(denied());
     }
     Ok(addresses)
@@ -732,6 +776,15 @@ mod tool_safety_tests {
             managed_python(dir.path()),
             dir.path().join("bin/python3.11")
         );
+    }
+    #[tokio::test]
+    async fn own_listener_is_denied_even_with_private_urls_enabled() {
+        let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let _guard = DaemonListener::register(address);
+        let url =
+            url::Url::parse(&format!("http://127.0.0.1:{}/auth/session", address.port())).unwrap();
+        assert!(url_addresses(&url, true).await.is_err());
     }
     #[test]
     fn metadata_is_always_denied_and_internal_ranges_require_opt_in() {

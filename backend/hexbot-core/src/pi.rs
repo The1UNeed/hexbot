@@ -149,6 +149,8 @@ impl std::io::Write for BoundedRecord {
 }
 
 struct Inner {
+    #[cfg(test)]
+    cleanup_failure: std::sync::atomic::AtomicBool,
     requests: mpsc::Sender<Request>,
     stop: watch::Sender<Option<PiError>>,
     done: watch::Receiver<Option<PiError>>,
@@ -215,6 +217,27 @@ impl PiProcess {
         // the OS boundary rather than retaining or returning them with errors.
         let mut child = Command::new(&options.executable)
             .args(&options.args)
+            .env_clear()
+            .envs(std::env::vars().filter(|(name, _)| {
+                matches!(
+                    name.as_str(),
+                    "PATH"
+                        | "HOME"
+                        | "USER"
+                        | "LOGNAME"
+                        | "SHELL"
+                        | "TMPDIR"
+                        | "TMP"
+                        | "TEMP"
+                        | "LANG"
+                        | "LANGUAGE"
+                        | "TZ"
+                        | "SystemRoot"
+                        | "WINDIR"
+                        | "PATHEXT"
+                        | "COMSPEC"
+                ) || name.starts_with("LC_")
+            }))
             .envs(&options.env)
             .current_dir(&options.working_dir)
             .env("PI_CODING_AGENT_DIR", &options.agent_dir)
@@ -238,6 +261,8 @@ impl PiProcess {
         Ok((
             Self {
                 inner: Arc::new(Inner {
+                    #[cfg(test)]
+                    cleanup_failure: std::sync::atomic::AtomicBool::new(false),
                     requests,
                     stop,
                     done: done.clone(),
@@ -438,9 +463,18 @@ impl PiProcess {
     /// Request SIGTERM cleanup on Unix, then force termination after one second.
     /// Success means the owned child was reaped. Forced reaping also has a one
     /// second deadline; OS cleanup failures are reported, never awaited forever.
+    #[cfg(test)]
+    pub(crate) fn fail_cleanup(&self) {
+        self.inner.cleanup_failure.store(true, Ordering::Release);
+    }
     pub async fn shutdown(&self) -> Result<(), PiError> {
         self.inner.stop.send_replace(Some(PiError::Shutdown));
-        match terminal(&mut self.inner.done.clone()).await {
+        let result = terminal(&mut self.inner.done.clone()).await;
+        #[cfg(test)]
+        if self.inner.cleanup_failure.load(Ordering::Acquire) {
+            return Err(PiError::Cleanup);
+        }
+        match result {
             PiError::Cleanup => Err(PiError::Cleanup),
             _ => Ok(()),
         }

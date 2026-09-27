@@ -133,3 +133,37 @@ network deployment, or workload. Real paid-provider accounts, Cloudflare and
 Tailscale deployments, Linux/Intel package execution, and sustained resource
 limits need their corresponding environment checks. No release is published
 by running the tests. App install count is not a daemon capacity measurement.
+
+## Tool boundaries
+
+Python code execution uses the same live approval mode as shell actions. Manual
+asks before each script; Auto consults the approver and asks when it declines;
+Off skips consent. A small destructive-operation guard applies in every mode.
+The complete resulting memory and soul documents are scanned before bot writes.
+
+`../pi-runtime/credential-policy.json` supplies the credential paths for both
+file guards and child isolation. macOS shell and Python children use
+`sandbox-exec` and fail closed if the profile cannot be applied. Linux uses
+bubblewrap when available, with credential paths masked and a private process
+namespace. Without bubblewrap, a warning records the lack of OS isolation.
+Provider keys reach the agent through its auth file, not its environment.
+The Python environment does not include `HEXBOT_HOME`.
+
+Managed browser traffic uses the safety proxy, including loopback. The
+[agent-browser implementation](https://github.com/vercel-labs/agent-browser/blob/main/cli/src/native/cdp/chrome.rs)
+forwards the proxy bypass setting to Chromium;
+[Chromium documents `<-loopback>`](https://chromium.googlesource.com/chromium/src/+/HEAD/net/docs/proxy.md#overriding-the-implicit-bypass-rules)
+as disabling implicit bypass. Unmanaged browsers allow inspection only, and
+browser code execution is refused without interception. URL tools always deny
+the daemon listener and metadata addresses, even with private URLs enabled.
+
+MCP discovery has a 25-second deadline per server and preserves successful
+results. Hidden turns include prompt submission in their 30-minute deadline.
+Recovery quarantines damaged data; transient I/O or SQLite failures leave the
+files in place for a later attempt.
+
+Prefer `HEXBOT_MANAGED_DIR`, `HEXBOT_MAX_TURNS`,
+`HEXBOT_COPILOT_ACP_COMMAND`, `HEXBOT_COPILOT_ACP_ARGS`,
+`HEXBOT_CUA_DRIVER_CMD`, and `HEXBOT_XAI_BASE_URL`. The corresponding old
+`HERMES_*` names remain fallbacks. Managed config defaults to `/etc/hexbot`,
+with `/etc/hermes` as the fallback when the new directory is absent.

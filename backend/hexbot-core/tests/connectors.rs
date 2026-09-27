@@ -481,6 +481,10 @@ async fn http_mcp_keeps_session_headers_and_decodes_sse() {
     let calls = Arc::new(Mutex::new(vec![]));
     let app = Router::new()
         .route("/mcp", post(mcp_http))
+        .route(
+            "/broken",
+            post(|| async { std::future::pending::<axum::Json<Value>>().await }),
+        )
         .with_state(calls.clone());
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     rpc(
@@ -489,6 +493,9 @@ async fn http_mcp_keeps_session_headers_and_decodes_sse() {
         json!({"name":"fixture","url":url}),
     )
     .await;
+    let mut cfg = common::read_config(home.path()).unwrap();
+    cfg["mcp_servers"]["broken"] = json!({"url":url.replace("/mcp", "/broken")});
+    common::write_config(home.path(), &cfg).unwrap();
     assert_eq!(
         connectors::mcp_tools(home.path(), "owl").await.unwrap()[0]["tool"],
         "echo"
@@ -628,13 +635,11 @@ async fn mcp_refuses_existing_and_new_malicious_shell_entries() {
         4202
     );
     common::write_config(home.path(), &json!({"mcp_servers":{"bad":entry}})).unwrap();
-    assert_eq!(
-        connectors::mcp_tools(home.path(), "owl")
-            .await
-            .unwrap_err()
-            .code,
-        4202
-    );
+    let (tools, failed) = connectors::mcp_tools_with_failures(home.path(), "owl")
+        .await
+        .unwrap();
+    assert!(tools.is_empty());
+    assert!(failed);
 }
 
 #[tokio::test]

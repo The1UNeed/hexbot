@@ -84,10 +84,12 @@ where
             .or_else(|| std::env::var(name).ok())
             .filter(|v| !v.trim().is_empty())
     };
-    let executable = value("HERMES_COPILOT_ACP_COMMAND")
+    let executable = value("HEXBOT_COPILOT_ACP_COMMAND")
+        .or_else(|| value("HERMES_COPILOT_ACP_COMMAND"))
         .or_else(|| value("COPILOT_CLI_PATH"))
         .unwrap_or_else(|| "copilot".into());
-    let command_args = value("HERMES_COPILOT_ACP_ARGS")
+    let command_args = value("HEXBOT_COPILOT_ACP_ARGS")
+        .or_else(|| value("HERMES_COPILOT_ACP_ARGS"))
         .map(|v| split_args(&v))
         .transpose()?
         .unwrap_or_else(|| vec!["--acp".into(), "--stdio".into()]);
@@ -121,7 +123,7 @@ where
         entries.insert(key.clone(), (id.clone(), sender));
     }
     let _lease = Lease { key, id };
-    let mut child = command.spawn().map_err(|_|failure(format!("Could not start Copilot ACP command '{executable}'. Install GitHub Copilot CLI or configure HERMES_COPILOT_ACP_COMMAND.")))?;
+    let mut child = command.spawn().map_err(|_|failure(format!("Could not start Copilot ACP command '{executable}'. Install GitHub Copilot CLI or configure HEXBOT_COPILOT_ACP_COMMAND.")))?;
     let input = child
         .stdin
         .take()
@@ -249,7 +251,7 @@ fn split_args(raw: &str) -> Result<Vec<String>> {
         }
     }
     if escaped || quote.is_some() {
-        return Err(failure("Invalid HERMES_COPILOT_ACP_ARGS quoting"));
+        return Err(failure("Invalid HEXBOT_COPILOT_ACP_ARGS quoting"));
     }
     if started {
         args.push(current);

@@ -530,8 +530,8 @@ async fn search(
     let backend = web_backend(cfg, env, false);
     let client = http()?;
     let response=match backend.as_str(){
-        "keenable"=>request(authorize(client.post(format!("{}/v1/search",endpoint(env,"KEENABLE_BASE_URL","https://api.keenable.ai").trim_end_matches('/'))).header("X-Keenable-Title","hermes-agent").json(&json!({"query":query,"max_results":limit.min(20)})),env,"KEENABLE_API_KEY",None)).await?,
-        "tavily"=>{let req=client.post(format!("{}/search",endpoint(env,"TAVILY_BASE_URL","https://api.tavily.com").trim_end_matches('/'))).header("X-Client-Name", "hermes-agent").json(&json!({"query":query,"max_results":limit.min(20)}));let req=if credential(env,"TAVILY_API_KEY").is_empty(){req.header("X-Tavily-Access-Mode","keyless")}else{authorize(req,env,"TAVILY_API_KEY",None)};request(req).await?},
+        "keenable"=>request(authorize(client.post(format!("{}/v1/search",endpoint(env,"KEENABLE_BASE_URL","https://api.keenable.ai").trim_end_matches('/'))).header("X-Keenable-Title","hexbot").json(&json!({"query":query,"max_results":limit.min(20)})),env,"KEENABLE_API_KEY",None)).await?,
+        "tavily"=>{let req=client.post(format!("{}/search",endpoint(env,"TAVILY_BASE_URL","https://api.tavily.com").trim_end_matches('/'))).header("X-Client-Name", "hexbot").json(&json!({"query":query,"max_results":limit.min(20)}));let req=if credential(env,"TAVILY_API_KEY").is_empty(){req.header("X-Tavily-Access-Mode","keyless")}else{authorize(req,env,"TAVILY_API_KEY",None)};request(req).await?},
         "exa"=>request(authorize(client.post(format!("{}/search",endpoint(env,"EXA_BASE_URL","https://api.exa.ai").trim_end_matches('/'))).json(&json!({"query":query,"numResults":limit,"contents":{"highlights":true}})),env,"EXA_API_KEY",Some("x-api-key"))).await?,
         "parallel"=>request(authorize(client.post(format!("{}/v1beta/search",endpoint(env,"PARALLEL_BASE_URL","https://api.parallel.ai").trim_end_matches('/'))).json(&json!({"search_queries":[query],"objective":query,"mode":"agentic","max_results":limit.min(20)})),env,"PARALLEL_API_KEY",Some("x-api-key"))).await?,
         "firecrawl"=>request(authorize(client.post(format!("{}/v2/search",endpoint(env,"FIRECRAWL_API_URL","https://api.firecrawl.dev").trim_end_matches('/'))).json(&json!({"query":query,"limit":limit})),env,"FIRECRAWL_API_KEY",None)).await?,
@@ -593,7 +593,7 @@ async fn extract(
                             endpoint(env, "KEENABLE_BASE_URL", "https://api.keenable.ai")
                                 .trim_end_matches('/')
                         ))
-                        .header("X-Keenable-Title", "hermes-agent")
+                        .header("X-Keenable-Title", "hexbot")
                         .query(&[("url", url)]),
                     env,
                     "KEENABLE_API_KEY",
@@ -617,7 +617,7 @@ async fn extract(
                     endpoint(env, "TAVILY_BASE_URL", "https://api.tavily.com")
                         .trim_end_matches('/')
                 ))
-                .header("X-Client-Name", "hermes-agent")
+                .header("X-Client-Name", "hexbot")
                 .json(&json!({"urls":urls,"format":"markdown"}));
             let req = if credential(env, "TAVILY_API_KEY").is_empty() {
                 req.header("X-Tavily-Access-Mode", "keyless")
@@ -862,6 +862,7 @@ async fn execute_code(
     args: &Value,
 ) -> Result<Value> {
     let code = common::required(args, "code")?;
+    crate::credentials::check_code(code)?;
     let key = (home.to_owned(), bot.to_owned(), stored.to_owned());
     let kernel = kernels()
         .lock()
@@ -899,12 +900,11 @@ async fn execute_code(
                 &configured
             },
         );
-        let mut command = Command::new(python);
+        let mut command = crate::credentials::isolated_command(home, python)?;
         desktop_env(&mut command);
         let mut child = command
             .args(["-u", "-c", KERNEL])
             .current_dir(workdir(home, bot)?)
-            .env("HEXBOT_HOME", home)
             .env("PYTHONUNBUFFERED", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1021,59 +1021,19 @@ async fn run(mut command: Command, input: &[u8], seconds: u64) -> Result<Value> 
     }
 }
 async fn browser_exec(
-    home: &Path,
-    bot: &str,
-    stored: &str,
-    cfg: &Value,
-    env: &std::collections::BTreeMap<String, String>,
-    args: &Value,
+    _home: &Path,
+    _bot: &str,
+    _stored: &str,
+    _cfg: &Value,
+    _env: &std::collections::BTreeMap<String, String>,
+    _args: &Value,
 ) -> Result<Value> {
-    if text(&cfg["browser"], "backend", "") != "browser-use" {
-        return Err(failure(
-            "browser_exec requires browser.backend: browser-use",
-        ));
-    }
-    let code = common::required(args, "code")?;
-    let executable = browser_use_command(home, cfg)
-        .ok_or_else(|| failure("browser-use requires browser-use or uvx to be installed"))?;
-    let state = browsers()
-        .lock()
-        .await
-        .entry((home.to_owned(), bot.to_owned(), stored.to_owned()))
-        .or_insert_with(|| Arc::new(Mutex::new(None)))
-        .clone();
-    let mut state = state.lock().await;
-    if state.is_none() {
-        *state = Some(launch_browser(home, bot, stored, cfg, env).await?)
-    }
-    let browser = state.as_ref().expect("browser initialized");
-    let mut command = Command::new(&executable[0]);
-    command.args(&executable[1..]);
-    desktop_env(&mut command);
-    command
-        .arg("exec")
-        .env("BU_NAME", &browser.name)
-        .env("BH_AGENT_WORKSPACE", workdir(home, bot)?)
-        .env_remove("PYTHONHOME")
-        .env_remove("PYTHONPATH");
-    if !browser.cdp.is_empty() {
-        let url = &browser.cdp;
-        command.env(
-            if url.starts_with("ws") {
-                "BU_CDP_WS"
-            } else {
-                "BU_CDP_URL"
-            },
-            url,
-        );
-    }
-    run(
-        command,
-        code.as_bytes(),
-        args["timeout_s"].as_u64().unwrap_or(300).clamp(5, 1800),
-    )
-    .await
+    Err(Error::new(
+        4302,
+        "Browser code execution requires network interception. Use the managed browser tools.",
+    ))
 }
+
 pub(crate) async fn image_data(home: &Path, bot: &str, value: &str) -> Result<String> {
     if value.starts_with("https://") || value.starts_with("http://") {
         let response = common::safe_get(value, common::allow_private_urls(home, bot)?).await?;
@@ -1664,14 +1624,21 @@ async fn browser_cdp(
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
     let method = common::required(args, "method")?;
-    if matches!(
+    // Direct CDP has no enforcing network interceptor. Allow only inspection;
+    // evaluation, input dispatch and navigation can all trigger arbitrary URLs.
+    if !matches!(
         method,
-        "Page.navigate" | "Page.navigateToHistoryEntry" | "Target.createTarget"
-    ) || args["params"]["url"].is_string()
-    {
+        "Target.getTargets"
+            | "Browser.getVersion"
+            | "Page.captureScreenshot"
+            | "Page.getLayoutMetrics"
+            | "DOM.getDocument"
+            | "DOMSnapshot.captureSnapshot"
+            | "Accessibility.getFullAXTree"
+    ) {
         return Err(Error::new(
             4302,
-            "Use browser_navigate for URLs so network safety settings are enforced",
+            "This browser operation requires a browser managed by Hexbot",
         ));
     }
     if args.get("frame_id").is_some() {
@@ -1719,7 +1686,10 @@ fn computers() -> &'static Mutex<ComputerMap> {
     COMPUTERS.get_or_init(Default::default)
 }
 fn computer_config(cfg: &Value, env: &std::collections::BTreeMap<String, String>) -> Value {
-    let mut command = credential(env, "HERMES_CUA_DRIVER_CMD");
+    let mut command = credential(env, "HEXBOT_CUA_DRIVER_CMD");
+    if command.is_empty() {
+        command = credential(env, "HERMES_CUA_DRIVER_CMD");
+    }
     if command.is_empty() {
         command = on_path("cua-driver")
             .map(|p| p.to_string_lossy().into_owned())
@@ -2313,6 +2283,8 @@ fn agent_command(browser: &Browser, verb: &str, args: &[String]) -> Command {
         command
             .arg("--proxy")
             .arg(format!("http://{}", browser.proxy.address))
+            // Chromium's subtractive rule disables implicit localhost bypass.
+            // agent-browser forwards proxy-bypass to --proxy-bypass-list.
             .args(["--proxy-bypass", "<-loopback>", "--args", "--disable-quic"]);
     }
     if browser.headed {
@@ -2347,19 +2319,23 @@ async fn browser_tool(
         let url = url::Url::parse(common::required(args, "url")?)
             .map_err(|_| Error::new(4202, "invalid browser URL"))?;
         common::url_addresses(&url, common::allow_private_urls(home, bot)?).await?;
-        if !text(
-            &cfg["browser"],
-            "cdp_url",
-            &credential(env, "BROWSER_CDP_URL"),
+    }
+    if (!text(
+        &cfg["browser"],
+        "cdp_url",
+        &credential(env, "BROWSER_CDP_URL"),
+    )
+    .is_empty()
+        || !matches!(text(&cfg["browser"], "cloud_provider", ""), "" | "local"))
+        && !matches!(
+            name,
+            "browser_snapshot" | "browser_vision" | "browser_get_images"
         )
-        .is_empty()
-            || !matches!(text(&cfg["browser"], "cloud_provider", ""), "" | "local")
-        {
-            return Err(Error::new(
-                4302,
-                "Safe navigation requires a local browser managed by Hexbot",
-            ));
-        }
+    {
+        return Err(Error::new(
+            4302,
+            "This browser operation requires a browser managed by Hexbot",
+        ));
     }
     let state = browsers()
         .lock()
@@ -2582,6 +2558,62 @@ async fn fal_image(
 #[cfg(test)]
 mod safety_tests {
     use super::*;
+    #[tokio::test]
+    async fn managed_browser_sends_loopback_through_the_proxy() {
+        let home = fixture();
+        let cfg = json!({"browser":{"command":"/bin/echo"}});
+        let browser = launch_browser(home.path(), "owl", "test", &cfg, &Default::default())
+            .await
+            .unwrap();
+        let command = agent_command(&browser, "open", &["https://example.com".into()]);
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--proxy-bypass", "<-loopback>"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--proxy" && w[1] == format!("http://{}", browser.proxy.address))
+        );
+    }
+    #[tokio::test]
+    async fn unmanaged_browsers_refuse_actions_that_can_navigate() {
+        let home = fixture();
+        let env = std::collections::BTreeMap::new();
+        for cfg in [
+            json!({"browser":{"cdp_url":"http://127.0.0.1:9222"}}),
+            json!({"browser":{"cloud_provider":"browserbase"}}),
+        ] {
+            for name in [
+                "browser_click",
+                "browser_press",
+                "browser_back",
+                "browser_type",
+                "browser_console",
+            ] {
+                assert_eq!(
+                    browser_tool(home.path(), "owl", "section", &cfg, &env, name, &json!({}))
+                        .await
+                        .unwrap_err()
+                        .code,
+                    4302
+                );
+            }
+        }
+        for method in [
+            "Runtime.evaluate",
+            "Runtime.callFunctionOn",
+            "Page.navigate",
+            "Input.dispatchMouseEvent",
+            "Target.createTarget",
+        ] {
+            assert_eq!(browser_cdp(&json!({}), &env, &json!({"method":method,"params":{"expression":"location='http://169.254.169.254/'"}})).await.unwrap_err().code, 4302);
+        }
+    }
     fn fixture() -> tempfile::TempDir {
         let home = tempfile::tempdir().unwrap();
         crate::db::migrate(home.path()).unwrap();

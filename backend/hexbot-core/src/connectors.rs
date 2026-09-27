@@ -1395,12 +1395,27 @@ async fn configured_session(
     Ok(session)
 }
 pub async fn mcp_tools(home: &Path, bot: &str) -> Result<Vec<Value>> {
+    Ok(mcp_tools_with_failures(home, bot).await?.0)
+}
+pub async fn mcp_tools_with_failures(home: &Path, bot: &str) -> Result<(Vec<Value>, bool)> {
+    let mut failed = false;
     let mut tools = vec![];
     for (server, _) in mcp_servers(home, bot)?.as_object().unwrap() {
-        let session = session(home, bot, server).await?;
-        tools.extend(discover_tools(home, bot, server, session).await?);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(25), async {
+            let session = session(home, bot, server).await?;
+            discover_tools(home, bot, server, session).await
+        })
+        .await;
+        match result {
+            Ok(Ok(found)) => tools.extend(found),
+            error => {
+                failed = true;
+                close_config(home, bot, server).await;
+                eprintln!("MCP discovery failed for {server}: {error:?}");
+            }
+        }
     }
-    Ok(tools)
+    Ok((tools, failed))
 }
 pub async fn mcp_tools_config(
     home: &Path,

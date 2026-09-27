@@ -245,3 +245,9 @@ signing key.
 - End to end (`HEXBOT_CONNECT_E2E=1`): a real Connect dev server with the
   in-memory store, a real daemon, and every HTTP call the CLI, the app, and a
   browser make, including the browser sign-in round trip.
+
+Browser sign-in started on LAN, Tailscale, or localhost redirects to the registered
+tunnel hostname before creating PKCE state or setting its cookie. Pending sign-ins
+are capped at eight per client and 4096 globally. Pairing and grant attempts use
+Cloudflare's client IP only for loopback peers with the registered tunnel Host;
+IPv6 clients share a /64 rate-limit key.

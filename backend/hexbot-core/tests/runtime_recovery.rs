@@ -431,3 +431,28 @@ fn stale_unsent_intents_do_not_hide_future_equal_text_and_timestampless_events_s
         2
     );
 }
+
+#[test]
+fn startup_leaves_io_failures_in_place_but_quarantines_bad_data() {
+    let home = setup();
+    let path = store::session_dir(home.path(), "chat")
+        .unwrap()
+        .join("conversation.jsonl");
+    fs::create_dir(&path).unwrap();
+    store::reconcile_all(home.path()).unwrap();
+    assert!(path.is_dir());
+    let quarantined: i64 = store::open(home.path())
+        .unwrap()
+        .query_row("SELECT count(*) FROM native_quarantine", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(quarantined, 0);
+    fs::remove_dir(&path).unwrap();
+    fs::write(&path, "{bad json}\n").unwrap();
+    store::reconcile_all(home.path()).unwrap();
+    assert!(!path.exists());
+    let quarantined: i64 = store::open(home.path())
+        .unwrap()
+        .query_row("SELECT count(*) FROM native_quarantine", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(quarantined, 1);
+}

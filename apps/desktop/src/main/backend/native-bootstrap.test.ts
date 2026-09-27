@@ -7,7 +7,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { uvAsset } from './uv'
 import { performBootstrap, pruneNativeRuntimes, type BootstrapDeps } from './bootstrap'
 
-vi.mock('../service', () => ({ migrateLegacyService: async () => undefined }))
+const migration = vi.hoisted(() => vi.fn(async () => undefined))
+vi.mock('../service', () => ({ migrateLegacyService: migration }))
 
 describe('native runtime bootstrap', () => {
   it('installs verified Rust/Pi and managed code and voice runtimes', async () => {
@@ -45,6 +46,7 @@ describe('native runtime bootstrap', () => {
       const piRuns = (): number => commands.filter(item => item.command.endsWith('/pi/hexbot-pi')).length
       const options = { appIsPackaged: true, appVersion: '1.0.0', resourcesPath: join(root, 'resources'),
         exists: existsSync, run, download: async () => uvAsset('darwin', 'arm64').sha256, platform: 'darwin' as const, arch: 'arm64' }
+      migration.mockRejectedValueOnce(new Error('service unavailable'))
       await performBootstrap(options)
       let installed = join(root, 'home/runtime/native/1.0.0')
       const stable = join(root, 'home/runtime/native-executable')
@@ -163,9 +165,17 @@ it('pruning protects a running runtime until its process has exited', async () =
     await pruneNativeRuntimes(actual[3]!, actual[2])
     expect(existsSync(paths[0]!)).toBe(true)
     expect(existsSync(paths[1]!)).toBe(false)
+    await writeFile(marker, JSON.stringify({ pid: process.pid, executable: join(root, 'missing') }))
+    await pruneNativeRuntimes(actual[3]!, actual[2])
+    expect(existsSync(paths[0]!)).toBe(true)
     await writeFile(marker, 'broken metadata')
     await pruneNativeRuntimes(actual[3]!, actual[2])
     expect(existsSync(paths[0]!)).toBe(true)
+    await writeFile(marker, JSON.stringify({ pid: 2147483647, executable: actual[0] }))
+    await writeFile(join(root, 'native-daemon.lock'), String(process.pid))
+    await pruneNativeRuntimes(actual[3]!, actual[2])
+    expect(existsSync(paths[0]!)).toBe(true)
+    await rm(join(root, 'native-daemon.lock'))
     await rm(marker)
     await pruneNativeRuntimes(actual[3]!, actual[2])
     expect(existsSync(paths[0]!)).toBe(false)

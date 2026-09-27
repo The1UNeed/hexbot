@@ -212,7 +212,7 @@ async fn cdp_attaches_to_target_and_routes_response() {
         let message = socket.next().await.unwrap().unwrap();
         let command: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
         assert_eq!(command["sessionId"], "session-id");
-        assert_eq!(command["method"], "Runtime.evaluate");
+        assert_eq!(command["method"], "Page.getLayoutMetrics");
         socket
             .send(Message::Text(
                 json!({"method":"Page.frameNavigated","params":{}})
@@ -242,7 +242,7 @@ async fn cdp_attaches_to_target_and_routes_response() {
     let result = call(
         h.path(),
         "browser_cdp",
-        json!({"method":"Runtime.evaluate","params":{"expression":"40+2"},"target_id":"tab-id"}),
+        json!({"method":"Page.getLayoutMetrics","params":{},"target_id":"tab-id"}),
     )
     .await
     .unwrap();
@@ -464,9 +464,13 @@ print(json.dumps({'success':True,'data':{'snapshot':'[e1] Button','refs':{'e1':'
     );
     let result = call(h.path(), "browser_snapshot", json!({})).await.unwrap();
     assert_eq!(result["data"]["snapshot"], "[e1] Button");
-    call(h.path(), "browser_click", json!({"ref":"e1"}))
-        .await
-        .unwrap();
+    assert_eq!(
+        call(h.path(), "browser_click", json!({"ref":"e1"}))
+            .await
+            .unwrap_err()
+            .code,
+        4302
+    );
     native_tools::close_session(h.path(), "conversation").await;
     let saved = requests.lock().unwrap();
     assert_eq!(saved.len(), 2);
@@ -504,7 +508,15 @@ for line in sys.stdin:
 "#,
     );
     let mut cfg = common::read_config(h.path()).unwrap();
-    cfg["computer_use"] = json!({"command":driver,"args":[]});
+    cfg["computer_use"] = json!({"args":[]});
+    std::fs::write(
+        h.path().join(".env"),
+        format!(
+            "HEXBOT_CUA_DRIVER_CMD={}\nHERMES_CUA_DRIVER_CMD=/nonexistent\n",
+            driver.display()
+        ),
+    )
+    .unwrap();
     common::write_config(h.path(), &cfg).unwrap();
     assert!(
         native_tools::descriptors(h.path(), "tester")
@@ -514,7 +526,7 @@ for line in sys.stdin:
     );
     std::fs::write(
         h.path().join(".env"),
-        "OPENAI_API_KEY=must-not-reach-driver\n",
+        format!("OPENAI_API_KEY=must-not-reach-driver\nHEXBOT_CUA_DRIVER_CMD={}\nHERMES_CUA_DRIVER_CMD=/nonexistent\n", driver.display()),
     )
     .unwrap();
     assert!(
@@ -594,7 +606,7 @@ async fn keenable_mistral_and_krea_use_selected_vendor_contracts() {
     let image=call(h.path(),"image_generate",json!({"prompt":"Test image","aspect_ratio":"landscape","reference_image_urls":["data:image/png;base64,aW1hZ2U="]})).await.unwrap();
     assert!(std::fs::metadata(image["images"][0]["path"].as_str().unwrap()).is_ok());
     let saved = records.lock().unwrap();
-    assert_eq!(saved[0].0["x-keenable-title"], "hermes-agent");
+    assert_eq!(saved[0].0["x-keenable-title"], "hexbot");
     assert_eq!(saved[1].1["response_format"], "mp3");
     assert_eq!(saved[2].1["aspect_ratio"], "16:9");
     assert_eq!(saved[2].1["image_style_references"][0]["strength"], 0.6);
@@ -725,7 +737,7 @@ fn missing_explicit_optional_commands_are_not_advertised() {
 }
 #[cfg(unix)]
 #[tokio::test]
-async fn browser_use_resolves_managed_uvx_and_preserves_exec_stdin() {
+async fn browser_use_exec_requires_network_interception() {
     let h =
         home(json!({"tools":{"enabled_toolsets":["browser"]},"browser":{"backend":"browser-use"}}));
     std::fs::create_dir_all(h.path().join("bin")).unwrap();
@@ -740,13 +752,12 @@ async fn browser_use_resolves_managed_uvx_and_preserves_exec_stdin() {
             .iter()
             .any(|d| d["name"] == "browser_exec")
     );
-    let result = call(h.path(), "browser_exec", json!({"code":"print('test')"}))
-        .await
-        .unwrap();
-    assert_eq!(result["success"], true);
-    let output: Value = serde_json::from_str(result["output"].as_str().unwrap()).unwrap();
-    assert_eq!(output["args"], json!(["browser-use", "exec"]));
-    assert_eq!(output["code"], "print('test')");
-    assert!(output["session"].as_str().unwrap().starts_with("hexbot-"));
+    assert_eq!(
+        call(h.path(), "browser_exec", json!({"code":"print('test')"}))
+            .await
+            .unwrap_err()
+            .code,
+        4302
+    );
     native_tools::close_session(h.path(), "conversation").await;
 }

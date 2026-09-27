@@ -56,7 +56,7 @@ fn setup(mode: &str, file: bool) -> tempfile::TempDir {
     fs::write(
         home.path().join(".env"),
         format!(
-            "HERMES_COPILOT_ACP_COMMAND=node\nHERMES_COPILOT_ACP_ARGS={}\n",
+            "HEXBOT_COPILOT_ACP_COMMAND=node\nHEXBOT_COPILOT_ACP_ARGS={}\nHERMES_COPILOT_ACP_COMMAND=/nonexistent\nHERMES_COPILOT_ACP_ARGS=invalid\n",
             serde_json::to_string(&command_args).unwrap()
         ),
     )

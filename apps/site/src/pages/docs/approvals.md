@@ -10,6 +10,8 @@ Tools can read files, run commands, use a browser, and change data. Approval mod
 
 Manual is the default. Hexbot asks before a protected action. Depending on the request, you can allow it once, allow similar actions for the section, always allow it, or deny it.
 
+Python code execution always asks in Manual mode. Auto mode asks its approver first and falls back to your decision. Off skips this prompt. Obvious commands that destroy the system stay blocked in every mode.
+
 Read the requested command and target before approving. A familiar tool can still perform a destructive action when given broad arguments.
 
 ## Auto mode
@@ -27,3 +29,9 @@ Off disables approval prompts where the configured policy permits that behavior.
 ## A practical default
 
 Start with Manual. Grant section-scoped approval for repeated, well-understood work. Try Auto mode only after you understand what the bot's tools can reach. Revoke persistent approvals when a project or device changes hands.
+
+## Credential and browser access
+
+Shell and Python tools cannot read Hexbot credential files or SSH keys on macOS. If the operating system cannot apply that isolation, the command fails. Linux uses bubblewrap when installed; otherwise Hexbot logs that isolation is unavailable and keeps the command approval guards.
+
+Navigation and page actions require a local browser managed by Hexbot. Browsers connected through a debugging address or a cloud provider support inspection only until network interception is available. Browser code execution is unavailable without interception. Allowing private URLs still blocks cloud metadata and the daemon's own listener.

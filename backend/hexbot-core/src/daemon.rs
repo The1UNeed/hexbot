@@ -44,6 +44,9 @@ fn pi_executable() -> Result<PathBuf> {
     ))
 }
 fn refuse_legacy_listener(home: &Path) -> Result<()> {
+    if !home.join("runtime/native-transition-pending").exists() {
+        return Ok(());
+    }
     let path = home.join("serve-state.json");
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -73,7 +76,7 @@ fn refuse_legacy_listener(home: &Path) -> Result<()> {
         &SocketAddr::new(ip, port),
         std::time::Duration::from_secs(1),
     ) {
-        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => Ok(()),
+        Err(_) => Ok(()),
         _ => Err(Error::new(
             4208,
             "A previous daemon may still own this home. Stop the existing Hexbot daemon before starting this one.",
@@ -337,7 +340,7 @@ async fn run() -> Result<()> {
         loop {
             tokio::select! {
                 _=&mut signal=>{terminated=true;break;}
-                result=&mut serving=>{app.shutdown().await;let _=services::shutdown(&home).await;return result.map_err(|e|Error::new(5200,e.to_string()))?.map_err(Into::into);}
+                result=&mut serving=>{app.shutdown().await;let _=services::shutdown(&home).await;let _=std::fs::remove_file(home.join("serve-state.json"));return result.map_err(|e|Error::new(5200,e.to_string()))?.map_err(Into::into);}
                 _=tick.tick()=>{
                     if let Some(path)=services::take_restart(&home).await? {update=Some(path);break;}
                     if hexbot_core::settings::get(&home)?["lan_enabled"].as_bool().unwrap_or(false)!=enabled {break;}
@@ -347,6 +350,7 @@ async fn run() -> Result<()> {
         // Close established WebSockets as well as listeners before waiting for Axum.
         app.shutdown().await;
         let _ = services::shutdown(&home).await;
+        let _ = std::fs::remove_file(home.join("serve-state.json"));
         let _ = stop.send(());
         if tokio::time::timeout(std::time::Duration::from_secs(10), &mut serving)
             .await
@@ -415,6 +419,8 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        std::fs::create_dir_all(home.path().join("runtime")).unwrap();
+        std::fs::write(home.path().join("runtime/native-transition-pending"), "1").unwrap();
         std::fs::write(
             home.path().join("serve-state.json"),
             format!(r#"{{"host":"0.0.0.0","port":{port}}}"#),
@@ -426,6 +432,8 @@ mod tests {
                 .to_string()
                 .contains("Stop the existing Hexbot daemon")
         );
+        std::fs::remove_file(home.path().join("runtime/native-transition-pending")).unwrap();
+        assert!(lock_home(home.path()).is_ok());
         drop(listener);
         assert!(lock_home(home.path()).is_ok());
     }

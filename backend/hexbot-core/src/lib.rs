@@ -5,6 +5,7 @@ pub mod catalog;
 pub mod cli;
 pub mod common;
 pub mod connectors;
+pub mod credentials;
 pub mod db;
 pub mod dreaming;
 pub mod events;
@@ -63,13 +64,13 @@ impl Error {
 
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
-        Self::new(5200, error.to_string())
+        Self::new(5200, error.to_string()).with_data(serde_json::json!({"transient":true}))
     }
 }
 
 impl From<rusqlite::Error> for Error {
     fn from(error: rusqlite::Error) -> Self {
-        Self::new(5200, error.to_string())
+        Self::new(5200, error.to_string()).with_data(serde_json::json!({"transient":true}))
     }
 }
 
