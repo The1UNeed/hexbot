@@ -1599,7 +1599,7 @@ mod interpreter_tests {
         )
         .unwrap();
         let code = if cfg!(target_os = "macos") {
-            "env\nif echo bad > config.yaml; then exit 12; fi\n"
+            "env\nif echo bad > ../config.yaml; then exit 12; fi\n"
         } else {
             "env"
         };
