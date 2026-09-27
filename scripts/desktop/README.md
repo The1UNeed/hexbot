@@ -9,7 +9,9 @@
 | `release-version.mjs` | Resolves channel and version (tag must match `package.json`; nightly is `<next>-nightly.<date>.<run>`) and the product name per channel. Prints GitHub Actions outputs. |
 | `set-version.mjs <version>` | Writes the version into `apps/desktop/package.json` and `hexbot/__init__.py`. |
 | `dist.mjs --mac\|--linux [--client] [--channel stable\|nightly\|dev]` | Builds one package. The channel sets the product name (`Hexbot [alpha]`, `Hexbot Nightly`, `Hexbot (dev)`) and app id. |
-| `stage-python-src.mjs`, `python-src-manifest.mjs` | Copy the daemon's Python source into `apps/desktop/resources/hexbot-src` for the full package. |
+| `stage-runtime.mjs`, `native-runtime.mjs`, `native-build.mjs` | Build Rust for the target, bundle Node and locked agent dependencies, prune unused files and verify the result. |
+| `make-native-update.mjs` | Write a relocatable archive and SHA-256 manifest under `daemon/native/<version>/<target>/`. |
+| `stage-python-src.mjs`, `python-src-manifest.mjs` | Stage the one-release legacy service handoff archive with `--native-transition`. |
 | `after-pack.cjs` | Ad-hoc signs macOS builds when no Developer ID is configured, so they launch on Apple Silicon. |
 | `make-update-feed.mjs --channel stable\|nightly [--version v] [--client] <builder-output> [feed-root]` | Builds the `updates.hexbot.app` tree: artifacts plus `latest-*.yml` or `nightly-*.yml`. |
 | `finalize-release.mjs <version> <full-dir> <client-dir>` | Rewrites the website downloads manifest and both Homebrew casks after a stable release. |
@@ -24,7 +26,7 @@ Tests: `node --test scripts/desktop/*.test.mjs && node scripts/desktop/release-s
 
 Two packages are built from one code base:
 
-- **full** (`Hexbot-*`, `electron-builder.yml`): bundles the Python source in `resources/hexbot-src` and installs the daemon runtime on first launch.
+- **full** (`Hexbot-*`, `electron-builder.yml`): bundles the native daemon, Node, agent dependencies, web assets and skills in `resources/hexbot-native`. First launch installs managed Python for code tools and edge-tts for voice.
 - **client** (`HexbotClient-*`, `electron-builder.client.yml`, built with `HEXBOT_EDITION=client`): the same app with no runtime; it can only pair with a daemon elsewhere. `apps/desktop/src/main/edition.ts` reads the edition at runtime.
 
 Each is built for macOS arm64, macOS x64, and Linux x64.
@@ -68,3 +70,12 @@ Release signing uses electron-builder's standard environment variables. Set `CSC
 ## Crash reports
 
 Crash reports remain off unless the user opts in and the build sets `HEXBOT_CRASH_URL` (`release.yml` takes it from the repository variable of the same name). Pass the URL when building, for example `HEXBOT_CRASH_URL=https://crashes.example.com/minidump node scripts/desktop/dist.mjs --mac --channel stable`. The endpoint must accept Electron Crashpad multipart minidump uploads. An empty URL leaves uploads disabled even when the saved preference is true.
+
+Native staging uses `native-build.mjs` for target validation and
+`native-runtime.mjs` to build Rust, download the target Node binary and install
+locked npm dependencies. It removes foreign optional binaries, source maps,
+type declarations and development docs/examples, then probes the packaged
+runtime. The Intel macOS target can be built on Apple Silicon with Rosetta.
+`make-native-update.mjs` writes archives and manifests below `daemon/native/`.
+There is no Python package or `--backend` option. Source staging remains only
+for the legacy service handoff described in `docs/release.md`.

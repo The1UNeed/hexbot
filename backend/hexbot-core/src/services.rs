@@ -846,6 +846,57 @@ fn native_directory(home: &Path) -> Result<PathBuf> {
     Ok(directory)
 }
 
+// Preserve the selected runtime, its predecessor, and any daemon still using an
+// older runtime. Directory names may include the updater's random suffix.
+fn prune_native(
+    native: &Path,
+    active: &Path,
+    previous: Option<&Path>,
+    running: Option<&Path>,
+) -> Result<()> {
+    for entry in fs::read_dir(native)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_dir()
+            || !path.join("hexbot").is_file()
+            || entry.file_name().to_string_lossy().starts_with('.')
+            || entry.file_name().to_string_lossy().contains(".staging-")
+        {
+            continue;
+        }
+        if [Some(active), previous, running]
+            .into_iter()
+            .flatten()
+            .any(|exe| exe.parent() == Some(path.as_path()))
+        {
+            continue;
+        }
+        fs::remove_dir_all(path)?;
+    }
+    Ok(())
+}
+
+/// Retry deferred cleanup after restart, when the former daemon no longer uses
+/// its bundle. Called only after this process holds the home lock.
+pub fn prune_current_native(home: &Path) -> Result<()> {
+    let runtime = home.join("runtime");
+    let metadata = match fs::read(runtime.join("native-current.json")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let metadata: Value =
+        serde_json::from_slice(&metadata).map_err(|error| Error::new(5243, error.to_string()))?;
+    let active = runtime.join("native-executable").canonicalize()?;
+    let native = native_directory(home)?;
+    if !active.starts_with(&native) {
+        return Err(Error::new(5243, "invalid native runtime selection"));
+    }
+    let previous = metadata["previous"].as_str().map(Path::new);
+    let running = std::env::current_exe().ok();
+    prune_native(&native, &active, previous, running.as_deref())
+}
+
 fn activate_native(native: &Path, version: &str, executable: &Path) -> Result<()> {
     let runtime = native
         .parent()
@@ -858,6 +909,7 @@ fn activate_native(native: &Path, version: &str, executable: &Path) -> Result<()
         ));
     }
     let stable = runtime.join("native-executable");
+    let previous = stable.canonicalize().ok();
     // Replacing a symlink never follows its previous target. A directory cannot
     // be replaced this way and must be rejected before updating the metadata.
     if fs::symlink_metadata(&stable).is_ok_and(|m| m.file_type().is_dir()) {
@@ -874,12 +926,20 @@ fn activate_native(native: &Path, version: &str, executable: &Path) -> Result<()
     };
     common::atomic_write(
         &runtime.join("native-current.json"),
-        &serde_json::to_vec(&json!({"version":version,"executable":executable})).unwrap(),
+        &serde_json::to_vec(
+            &json!({"version":version,"executable":executable,"previous":previous}),
+        )
+        .unwrap(),
     )?;
     #[cfg(unix)]
     {
         fs::rename(staged_link.path().join("launcher"), stable)?;
         fs::File::open(runtime)?.sync_all()?;
+    }
+    let running = std::env::current_exe().ok();
+    // Activation has committed. Cleanup failure must not turn it into a failed update.
+    if let Err(error) = prune_native(native, &executable, previous.as_deref(), running.as_deref()) {
+        eprintln!("Runtime cleanup: {error}");
     }
     Ok(())
 }
@@ -890,7 +950,7 @@ mod activation_tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     #[test]
-    fn service_pointer_follows_consecutive_updates_without_changing_old_targets() {
+    fn service_pointer_follows_consecutive_updates_and_keeps_one_predecessor() {
         let home = tempfile::tempdir().unwrap();
         let native = native_directory(home.path()).unwrap();
         let runtime = native.parent().unwrap();
@@ -898,7 +958,7 @@ mod activation_tests {
         let outside = home.path().join("unrelated");
         fs::write(&outside, "keep me").unwrap();
         symlink(&outside, &stable).unwrap();
-        for version in ["9.8.7", "9.8.8"] {
+        for version in ["9.8.7", "9.8.8", "9.8.9"] {
             let directory = native.join(version);
             fs::create_dir(&directory).unwrap();
             let executable = directory.join("hexbot");
@@ -918,7 +978,45 @@ mod activation_tests {
             assert_eq!(stable.canonicalize().unwrap(), executable);
         }
         assert_eq!(fs::read_to_string(outside).unwrap(), "keep me");
-        assert!(native.join("9.8.7/hexbot").is_file());
+        assert!(!native.join("9.8.7").exists());
+        assert!(native.join("9.8.8/hexbot").is_file());
+    }
+
+    #[test]
+    fn pruning_keeps_active_previous_and_running_and_failed_activation_keeps_all() {
+        let home = tempfile::tempdir().unwrap();
+        let native = native_directory(home.path()).unwrap();
+        let executables: Vec<_> = ["1.0.0-first", "2.0.0-second", "3.0.0-third", "4.0.0-fourth"]
+            .into_iter()
+            .map(|name| {
+                let directory = native.join(name);
+                fs::create_dir(&directory).unwrap();
+                let executable = directory.join("hexbot");
+                fs::write(&executable, "runtime").unwrap();
+                executable
+            })
+            .collect();
+        assert!(activate_native(&native, "bad", &native.join("missing")).is_err());
+        assert!(executables.iter().all(|exe| exe.is_file()));
+        prune_native(
+            &native,
+            &executables[3],
+            Some(&executables[2]),
+            Some(&executables[0]),
+        )
+        .unwrap();
+        assert!(executables[0].is_file());
+        assert!(!executables[1].exists());
+        assert!(executables[2].is_file());
+        assert!(executables[3].is_file());
+        prune_native(
+            &native,
+            &executables[3],
+            Some(&executables[2]),
+            Some(&executables[3]),
+        )
+        .unwrap();
+        assert!(!executables[0].exists());
     }
 
     #[test]
@@ -979,7 +1077,7 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
     let staging = tempfile::tempdir_in(&native)?;
     let tmp = tempfile::NamedTempFile::new_in(&native)?;
     update_state(service, "downloading", None, None).await;
-    download(url, tmp.path(), 256 * 1024 * 1024, false).await?;
+    download(url, tmp.path(), 1024 * 1024 * 1024, false).await?;
     let mut hash = Sha256::new();
     let mut source = fs::File::open(tmp.path())?;
     let mut chunk = [0; 65536];
@@ -1023,7 +1121,7 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
             size = size
                 .checked_add(entry.size())
                 .ok_or_else(|| Error::new(5243, "native update archive exceeds byte limit"))?;
-            if size > 1024 * 1024 * 1024 {
+            if size > 4 * 1024 * 1024 * 1024 {
                 return Err(Error::new(5243, "native update archive exceeds byte limit"));
             }
             if !entry.unpack_in(staging.path())? {

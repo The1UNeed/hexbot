@@ -3,3 +3,9 @@ extends: ./electron-builder.base.yml
 extraResources:
   - from: resources/hexbot-native
     to: hexbot-native
+mac:
+  # Paths are relative to Contents. Sign both bundled executables with the
+  # inherited hardened-runtime entitlements, including Node's MAP_JIT support.
+  binaries:
+    - Resources/hexbot-native/node
+    - Resources/hexbot-native/hexbot-core

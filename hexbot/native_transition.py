@@ -9,6 +9,7 @@ import platform
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -18,8 +19,8 @@ import urllib.request
 from pathlib import Path, PurePosixPath
 
 MARKER = "HEXBOT_NATIVE_TRANSITION.json"
-MAX_ARCHIVE = 256 * 1024 * 1024
-MAX_UNPACKED = 1024 * 1024 * 1024
+MAX_ARCHIVE = 1024 * 1024 * 1024
+MAX_UNPACKED = 4 * 1024 * 1024 * 1024
 MAX_ENTRIES = 100_000
 
 
@@ -139,7 +140,9 @@ def install(home: Path, version: str, *, download=_download) -> Path:
         os.replace(bundle, destination)
         _sync_directory(native)
     executable = destination / "hexbot"
-    _atomic(runtime / "native-current.json", json.dumps({"version": version, "executable": str(executable)}))
+    stable = runtime / "native-executable"
+    previous = str(stable.resolve()) if stable.is_file() else None
+    _atomic(runtime / "native-current.json", json.dumps({"version": version, "executable": str(executable), "previous": previous}))
     link = runtime / f".native-executable-{destination.name}"
     try:
         link.symlink_to(executable)
@@ -150,17 +153,66 @@ def install(home: Path, version: str, *, download=_download) -> Path:
     # Existing launchd/systemd definitions already point here. Keep that path stable.
     launcher = runtime / "venv/bin/hexbot"
     if launcher.is_file() and not launcher.is_symlink():
-        python = launcher.with_name("python")
         script = ("#!/bin/sh\nset -eu\n"
-                  f'if [ "${{HEXBOT_BACKEND:-rust}}" = python ]; then exec {shlex.quote(str(python))} -m hexbot.cli "$@"; fi\n'
                   f'exec {shlex.quote(str(runtime / "native-executable"))} "$@"\n')
         _atomic(launcher, script, 0o755)
+    _atomic(runtime / "native-transition-pending", "1")
     return executable
 
 
-def handoff(argv=None) -> None:
-    if os.environ.get("HEXBOT_BACKEND") == "python":
+def _refuse_running_daemon(home: Path) -> None:
+    """The legacy restart uses exec, which closes its listener before this runs.
+
+    A separate invocation must never start native alongside that old process.
+    There is no trustworthy legacy pid file, so do not signal a guessed PID.
+    """
+    state_path = home / "serve-state.json"
+    if not state_path.exists():
         return
+    state = json.loads(state_path.read_text())
+    host = state.get("host", "127.0.0.1")
+    host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+    port = state.get("port")
+    if not isinstance(port, int) or isinstance(port, bool) or not 0 < port <= 65535:
+        raise ValueError("Cannot verify the previous daemon's port")
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            pass
+    except ConnectionRefusedError:
+        return
+    raise RuntimeError("Stop the existing Hexbot daemon before starting the native daemon")
+
+
+def _migrate_service(home: Path, user_home: Path | None = None) -> None:
+    """Update persistent service definitions; the current restart uses exec."""
+    import html
+    user_home = user_home or Path.home()
+    legacy = str(home / "runtime/venv/bin/hexbot")
+    native = str(home / "runtime/native-executable")
+    for file, encode in [
+        (user_home / "Library/LaunchAgents/app.hexbot.daemon.plist", lambda text: html.escape(text, quote=False).replace('"', "&quot;")),
+        (user_home / ".config/systemd/user/hexbot.service", lambda text: text.replace("\\", "\\\\").replace('"', '\\"')),
+    ]:
+        if not file.is_file():
+            continue
+        old = file.read_text()
+        legacy_entry = (f'<string>{encode(legacy)}</string>' if file.suffix == ".plist"
+                        else f'ExecStart="{encode(legacy)}" serve')
+        if legacy_entry not in old:
+            continue
+        updated = old.replace(encode(legacy), encode(native))
+        obsolete = encode(str(home / "runtime/venv/bin"))
+        pattern = (r'(<key>PATH</key>\s*<string>)([^<]*)(</string>)' if file.suffix == ".plist"
+                   else r'(Environment=PATH=")(.*)("$)')
+        updated = re.sub(pattern, lambda match: match[1] + ":".join(
+            part for part in match[2].split(":") if part and part != obsolete) + match[3],
+            updated, flags=re.MULTILINE)
+        _atomic(file, updated)
+        if file.suffix == ".service":
+            subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, timeout=30)
+
+
+def handoff(argv=None) -> None:
     marker = Path(__file__).resolve().parent.parent / MARKER
     if not marker.is_file():
         return
@@ -179,4 +231,9 @@ def handoff(argv=None) -> None:
         pass
     if executable is None:
         executable = install(home, version)
-    os.execv(str(executable), [str(executable), *(sys.argv[1:] if argv is None else argv)])
+    arguments = sys.argv[1:] if argv is None else argv
+    if arguments and arguments[0] == "serve":
+        _refuse_running_daemon(home)
+        _migrate_service(home)
+    # Replace this process, never spawn native while the old daemon is alive.
+    os.execv(str(executable), [str(executable), *arguments])

@@ -126,7 +126,7 @@ try {
     const desktopRoot = path.join(root, 'apps/desktop')
     // Build into a private directory so testing one edition cannot overwrite another.
     await promisify(execFile)(path.join(desktopRoot, 'node_modules/.bin/electron-vite'), ['build', '--outDir', path.join(desktopBuild, 'out')], {
-      cwd: desktopRoot, env: { ...process.env, HEXBOT_EDITION: edition, HEXBOT_BACKEND: 'rust' }, timeout: 120_000
+      cwd: desktopRoot, env: { ...process.env, HEXBOT_EDITION: edition }, timeout: 120_000
     })
     const manifest = JSON.parse(await readFile(path.join(desktopRoot, 'package.json'), 'utf8'))
     await writeFile(path.join(desktopBuild, 'package.json'), JSON.stringify(manifest))
@@ -136,7 +136,7 @@ try {
     for (const name of await readdir(path.join(desktopRoot, 'resources'))) {
       if (name.endsWith('.png')) await copyFile(path.join(desktopRoot, 'resources', name), path.join(desktopBuild, 'resources', name))
     }
-    const electronEnv = { ...process.env, HEXBOT_HOME: desktopHome, HEXBOT_BACKEND: 'rust', HEXBOT_PI_EXECUTABLE: piPath, HEXBOT_E2E_TARGET: base, HEXBOT_WEB_DEV_URL: 'http://127.0.0.1:1' }
+    const electronEnv = { ...process.env, HEXBOT_HOME: desktopHome, HEXBOT_PI_EXECUTABLE: piPath, HEXBOT_E2E_TARGET: base, HEXBOT_WEB_DEV_URL: 'http://127.0.0.1:1' }
     // Agent hosts may themselves run in Electron's Node mode; the app must not inherit it.
     delete electronEnv.ELECTRON_RUN_AS_NODE
     electronApp = await electron.launch({

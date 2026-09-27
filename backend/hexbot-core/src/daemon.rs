@@ -43,6 +43,97 @@ fn pi_executable() -> Result<PathBuf> {
         "Pi runtime missing. Set HEXBOT_PI_EXECUTABLE or run npm ci --prefix backend/pi-runtime --ignore-scripts",
     ))
 }
+fn refuse_legacy_listener(home: &Path) -> Result<()> {
+    let path = home.join("serve-state.json");
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let state: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| {
+        Error::new(
+            4208,
+            "Cannot verify the previous daemon's address in serve-state.json",
+        )
+    })?;
+    let port = state["port"]
+        .as_u64()
+        .filter(|port| *port > 0 && *port <= 65535)
+        .ok_or_else(|| Error::new(4208, "Cannot verify the previous daemon's port"))?
+        as u16;
+    let host = state["host"].as_str().unwrap_or("127.0.0.1");
+    let ip: IpAddr = match host {
+        "localhost" | "0.0.0.0" => "127.0.0.1".parse().unwrap(),
+        "::" => "::1".parse().unwrap(),
+        host => host
+            .parse()
+            .map_err(|_| Error::new(4208, "Cannot verify the previous daemon's address"))?,
+    };
+    match std::net::TcpStream::connect_timeout(
+        &SocketAddr::new(ip, port),
+        std::time::Duration::from_secs(1),
+    ) {
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => Ok(()),
+        _ => Err(Error::new(
+            4208,
+            "A previous daemon may still own this home. Stop the existing Hexbot daemon before starting this one.",
+        )),
+    }
+}
+
+fn finish_native_transition(home: &Path) -> Result<()> {
+    let runtime = home.join("runtime");
+    let marker = runtime.join("native-transition-pending");
+    if !marker.is_file() {
+        return Ok(());
+    }
+    if !std::fs::symlink_metadata(&runtime)?.file_type().is_dir() {
+        return Err(Error::new(
+            5243,
+            "Runtime directory cannot be a symbolic link",
+        ));
+    }
+    let venv = runtime.join("venv");
+    // launchd may still have the old executable path loaded until its next reload.
+    // Keep only a tiny forwarding script, never the Python environment.
+    let keep_shim = std::fs::read_to_string(&marker)? != "remove-shim"
+        && std::fs::symlink_metadata(&venv).is_ok_and(|m| m.file_type().is_dir())
+        && std::fs::symlink_metadata(venv.join("bin")).is_ok_and(|m| m.file_type().is_dir())
+        && std::fs::read(venv.join("bin/hexbot"))
+            .is_ok_and(|bytes| bytes.starts_with(b"#!/bin/sh\n"));
+    fn remove(path: &Path) -> Result<()> {
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_dir() => std::fs::remove_dir_all(path)?,
+            Ok(_) => std::fs::remove_file(path)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+    if keep_shim {
+        // Leave the old entrypoint continuously available, including if cleanup
+        // is interrupted by a crash or the service manager restarting us.
+        for entry in std::fs::read_dir(&venv)? {
+            let entry = entry?;
+            if entry.file_name() == "bin" {
+                for binary in std::fs::read_dir(entry.path())? {
+                    let binary = binary?;
+                    if binary.file_name() != "hexbot" {
+                        remove(&binary.path())?;
+                    }
+                }
+            } else {
+                remove(&entry.path())?;
+            }
+        }
+    } else {
+        remove(&venv)?;
+    }
+    remove(&runtime.join("src"))?;
+    std::fs::remove_file(marker)?;
+    Ok(())
+}
+
 fn lock_home(home: &Path) -> Result<std::fs::File> {
     std::fs::create_dir_all(home)?;
     let path = home.join("native-daemon.lock");
@@ -61,6 +152,7 @@ fn lock_home(home: &Path) -> Result<std::fs::File> {
             return Err(Error::new(4208, "a daemon already owns this home"));
         }
     }
+    refuse_legacy_listener(home)?;
     file.set_len(0)?;
     write!(file, "{}", std::process::id())?;
     file.sync_all()?;
@@ -173,6 +265,12 @@ async fn run() -> Result<()> {
         }
     }
     let _lock = lock_home(&home)?;
+    let executable = std::env::current_exe()?;
+    common::atomic_write(
+        &home.join("runtime/native-running.json"),
+        &serde_json::to_vec(&serde_json::json!({"pid":std::process::id(),"executable":executable}))
+            .unwrap(),
+    )?;
     db::migrate(&home)?;
     if let Some(lan) = lan {
         hexbot_core::settings::update(&home, "local", &serde_json::json!({"lan_enabled":lan}))?;
@@ -225,6 +323,12 @@ async fn run() -> Result<()> {
             })
             .await
         });
+        if let Err(error) = services::prune_current_native(&home) {
+            eprintln!("Runtime cleanup: {error}");
+        }
+        if let Err(error) = finish_native_transition(&home) {
+            eprintln!("Runtime cleanup: {error}");
+        }
         println!("HERMES_BACKEND_READY port={port}");
         std::io::stdout().flush()?;
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
@@ -300,5 +404,71 @@ async fn main() {
     if let Err(error) = run().await {
         eprintln!("{error}");
         std::process::exit(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn legacy_listener_blocks_a_second_daemon_even_on_another_port() {
+        let home = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::fs::write(
+            home.path().join("serve-state.json"),
+            format!(r#"{{"host":"0.0.0.0","port":{port}}}"#),
+        )
+        .unwrap();
+        assert!(
+            lock_home(home.path())
+                .unwrap_err()
+                .to_string()
+                .contains("Stop the existing Hexbot daemon")
+        );
+        drop(listener);
+        assert!(lock_home(home.path()).is_ok());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn transition_cleanup_refuses_symlink_runtime_roots() {
+        let home = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        common::atomic_write(&outside.path().join("native-transition-pending"), b"1").unwrap();
+        common::atomic_write(&outside.path().join("src/data"), b"keep").unwrap();
+        std::os::unix::fs::symlink(outside.path(), home.path().join("runtime")).unwrap();
+        assert!(finish_native_transition(home.path()).is_err());
+        assert!(outside.path().join("src/data").is_file());
+    }
+    #[test]
+    fn transition_cleanup_removes_python_but_preserves_data_and_service_shim() {
+        let home = tempfile::tempdir().unwrap();
+        for file in [
+            "runtime/venv/bin/python",
+            "runtime/venv/lib/dependency",
+            "runtime/src/old/source.py",
+            "runtime/native-transition-pending",
+            "state.db",
+            "bots/owl/MEMORY.md",
+        ] {
+            common::atomic_write(&home.path().join(file), b"keep user data").unwrap();
+        }
+        let shim = home.path().join("runtime/venv/bin/hexbot");
+        common::atomic_write(&shim, b"#!/bin/sh\nexec native").unwrap();
+        finish_native_transition(home.path()).unwrap();
+        assert!(!home.path().join("runtime/src").exists());
+        assert!(!home.path().join("runtime/venv/lib").exists());
+        assert!(!home.path().join("runtime/venv/bin/python").exists());
+        assert!(shim.is_file());
+        assert!(home.path().join("state.db").is_file());
+        assert!(home.path().join("bots/owl/MEMORY.md").is_file());
+        finish_native_transition(home.path()).unwrap();
+        common::atomic_write(
+            &home.path().join("runtime/native-transition-pending"),
+            b"remove-shim",
+        )
+        .unwrap();
+        finish_native_transition(home.path()).unwrap();
+        assert!(!home.path().join("runtime/venv").exists());
     }
 }

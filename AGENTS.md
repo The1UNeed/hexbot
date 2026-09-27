@@ -10,7 +10,7 @@ face, a model, skills, and its own memory, talk to you and to each other in
 **rooms**. A Rust **daemon** runs Pi agent sessions and serves a WebSocket API plus a
 web UI; an Electron **app** connects to it over LAN, Tailscale, or **Hex
 Connect**. The native daemon is in `backend/hexbot-core/`, with pinned Pi and
-its private extension in `backend/pi-runtime/`. The former Hermes/Python backend
+its private extension in `backend/pi-runtime/`. The former Python backend
 stays in `hexbot/` and the repository root for one release, so existing
 background services can hand over to the native daemon.
 
@@ -58,19 +58,20 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 | --- | --- | --- |
 | `backend/hexbot-core/` | Rust daemon, CLI, storage, rooms, tools, scheduling, providers, Connect | all |
 | `backend/pi-runtime/` | Pinned Pi runtime and private Hexbot extension | all |
-| `hexbot/` | Legacy Python daemon and compatibility reference | explicit legacy builds |
+| `hexbot/` | Legacy Python daemon and compatibility reference | one-release service handoff |
 | `apps/web/` | React bundle (Vite, Tailwind). Used by the app and served to browsers | all |
-| `apps/desktop/` | Electron shell, updater, runtime bootstrap, two electron-builder configs | all |
+| `apps/desktop/` | Electron shell, updater, runtime bootstrap, three electron-builder configs: base, full, client | all |
 | `apps/shared/` | `@hermes/shared`. `apps/web` imports its gateway client and event types; the core `web/` dashboard uses the rest | all |
 | `apps/site/` | Astro site at hexbot.app: landing page, docs, pairing page | stable |
 | `apps/connect/` | Next.js Connect service at connect.hexbot.app | all |
-| `tests/hexbot/` | Hexbot Python tests. Core suites stay under `tests/` | all |
+| `tests/hexbot/` | Legacy Python and service-handoff tests. Core suites stay under `tests/` | compatibility |
 | `scripts/desktop/` | Version, build, icon, update feed, and cask scripts, each with tests | stable, nightly |
 | `scripts/dev/` | `run.mjs` (`pnpm dev`) and the live smoke scripts | dev |
 | `.github/workflows/` | `ci.yml` (tests, also called by release), `release.yml` (stable and nightly) | see file |
 | `.devcontainer/` | Dev environment | dev |
 | `docs/` | Design and operations docs. `docs/core/` covers the core: development guide, plugin APIs, the WebSocket API | |
-| Root `*.py`, `agent/`, `tools/`, `hermes_cli/`, `tui_gateway/`, `gateway/`, `plugins/`, `skills/` | The core: agent loop, tools, providers, gateway, core CLI (`hexbot core <command>`) | |
+| Root `*.py`, `agent/`, `tools/`, `hermes_cli/`, `tui_gateway/`, `gateway/`, `plugins/` | Legacy Python core, retained for comparison and the service handoff | compatibility |
+| `skills/` | Skills bundled by the native runtime | all |
 
 `DESIGN.md` is the product design; `docs/channels.md` explains how the three
 channels map to files, GitHub, and the update server, and what was borrowed
@@ -82,13 +83,14 @@ from T3 Code; `docs/release.md` is the release procedure and one-time setup;
 Install once:
 
 ```sh
-rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
+rustup show active-toolchain # installs the toolchain pinned in rust-toolchain.toml
 pnpm install --frozen-lockfile
 ```
 
 The development runner builds Rust and installs locked Pi dependencies. For
 legacy comparison tests, also install the Python environment documented in
-`docs/testing.md`; `--backend python` selects the retained daemon explicitly.
+`docs/testing.md`. `pnpm dev --backend python` is removed; the runner always
+starts the native daemon.
 
 Run Hexbot from the checkout (the Dev channel):
 
@@ -122,9 +124,9 @@ Three ways to hurt yourself:
    never start a server against it.
 2. **Killing by pattern.** Do not `pkill -f hexbot` or `pkill -f python`;
    your own agent process may match. Kill only PIDs you started.
-3. **Growing the core for a product feature.** Prefer a plugin hook, a
-   `hexbot/` module, or the RPC registration in `hexbot/plugin.py`. Change
-   the core when the fix belongs there.
+3. **Adding new daemon work to the legacy backend.** Use
+   `backend/hexbot-core/` or the private extension in `backend/pi-runtime/`.
+   The Python tree exists for compatibility and comparison only.
 
 ## Verifying
 
@@ -205,7 +207,7 @@ exercise the graph.
 ## Taste
 
 - Simple over clever. The smallest change that fixes the whole bug class.
-- Complexity belongs at boundaries: the core plugin seam, the WebSocket
+- Complexity belongs at boundaries: the private extension, the WebSocket
   RPC layer, the Electron main process. Components and daemon handlers stay
   plain.
 - Users notice dropped frames and stale labels. No continuous repaint
@@ -213,8 +215,8 @@ exercise the graph.
 - Copy is short, concrete, and uses glossary words. No "seamless", no
   exclamation marks.
 
-## Core reference
+## Legacy core reference
 
-`docs/core/development.md` is the development guide for the core (tools,
-plugins, skills, cron, the AIAgent class, prompt caching rules). Read it
-before editing anything at the repository root.
+`docs/core/development.md` covers the retained Python core only: tools,
+plugins, cron, and the AIAgent class. Read it before changing legacy Python
+code. New daemon work follows `backend/hexbot-core/README.md`.

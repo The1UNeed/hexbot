@@ -8,9 +8,9 @@
   of truth. `DESIGN.md` explains why; `docs/channels.md` explains Stable,
   Nightly, and Dev and what was borrowed from T3 Code; `docs/release.md` is
   the release procedure.
-- Put product behaviour in a `hexbot/` module, a core plugin hook, or
-  `apps/`. Change the core at the repository root when the fix belongs
-  there, and read `docs/core/development.md` first.
+- Put daemon behaviour in `backend/hexbot-core/` or the private extension in
+  `backend/pi-runtime/`. Client code lives in `apps/`. The Python tree and
+  `docs/core/development.md` are legacy compatibility references only.
 - Run Hexbot from the checkout with `pnpm dev` (state in
   `<checkout>/.hexbot`). If you start a daemon by hand, set `HEXBOT_HOME` to a
   temp directory. Never point a dev daemon at `~/.hexbot`.

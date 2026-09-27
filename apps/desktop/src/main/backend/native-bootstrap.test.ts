@@ -3,8 +3,11 @@ import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from '
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { existsSync } from 'node:fs'
-import { describe, expect, it } from 'vitest'
-import { performBootstrap, type BootstrapDeps } from './bootstrap'
+import { describe, expect, it, vi } from 'vitest'
+import { uvAsset } from './uv'
+import { performBootstrap, pruneNativeRuntimes, type BootstrapDeps } from './bootstrap'
+
+vi.mock('../service', () => ({ migrateLegacyService: async () => undefined }))
 
 describe('native runtime bootstrap', () => {
   it('installs verified Rust/Pi and managed code and voice runtimes', async () => {
@@ -25,6 +28,11 @@ describe('native runtime bootstrap', () => {
       const commands: { command: string; args: string[] }[] = []
       const run: BootstrapDeps['run'] = async (command, args, _options, onLine) => {
         commands.push({ command, args })
+        if (command === 'tar') {
+          const path = join(args[args.indexOf('-C') + 1]!, uvAsset('darwin', 'arm64').directory, 'uv')
+          await mkdir(dirname(path), { recursive: true })
+          await writeFile(path, 'uv')
+        }
         if (args[0] === 'python' && args[1] === 'find') {
           const python = join(root, 'home', 'python', 'managed', 'bin', 'python3.11')
           await mkdir(dirname(python), { recursive: true })
@@ -36,9 +44,9 @@ describe('native runtime bootstrap', () => {
       }
       const piRuns = (): number => commands.filter(item => item.command.endsWith('/pi/hexbot-pi')).length
       const options = { appIsPackaged: true, appVersion: '1.0.0', resourcesPath: join(root, 'resources'),
-        exists: existsSync, run, download: async () => '', platform: 'darwin' as const, arch: 'arm64' }
+        exists: existsSync, run, download: async () => uvAsset('darwin', 'arm64').sha256, platform: 'darwin' as const, arch: 'arm64' }
       await performBootstrap(options)
-      const installed = join(root, 'home/runtime/native/1.0.0')
+      let installed = join(root, 'home/runtime/native/1.0.0')
       const stable = join(root, 'home/runtime/native-executable')
       expect(await realpath(stable)).toBe(await realpath(join(installed, 'hexbot')))
       expect(await readFile(join(installed, 'hexbot-core'), 'utf8')).toBe('hexbot-core')
@@ -51,6 +59,7 @@ describe('native runtime bootstrap', () => {
       await writeFile(join(installed, 'hexbot-core'), 'broken')
       await performBootstrap(options)
       expect(piRuns()).toBe(2)
+      installed = dirname(await realpath(stable))
       expect(await readFile(join(installed, 'hexbot-core'), 'utf8')).toBe('hexbot-core')
       // Reopening this app preserves a newer verified service update.
       const newer = join(root, 'home/runtime/native/2.0.0')
@@ -68,6 +77,8 @@ describe('native runtime bootstrap', () => {
       await performBootstrap({ ...options, appVersion: '3.0.0' })
       const newest = join(root, 'home/runtime/native/3.0.0/hexbot')
       expect(await realpath(stable)).toBe(await realpath(newest))
+      expect(existsSync(installed)).toBe(false)
+      expect(existsSync(newer)).toBe(true)
       await writeFile(join(source, 'manifest.json'), JSON.stringify({ version: '1.0.0', target: 'darwin-arm64', files }))
       await performBootstrap(options)
       expect(await realpath(stable)).toBe(await realpath(newest))
@@ -134,3 +145,41 @@ it.skipIf(!process.env.HEXBOT_NATIVE_TEST_BUNDLE)('boots a real packaged native 
     await rm(root, { recursive: true, force: true })
   }
 }, 120_000)
+
+it('pruning protects a running runtime until its process has exited', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-prune-'))
+  const oldHome = process.env.HEXBOT_HOME
+  process.env.HEXBOT_HOME = root
+  try {
+    const native = join(root, 'runtime/native')
+    const paths = ['old-random', 'unused-random', 'previous-random', 'active-random'].map(name => join(native, name, 'hexbot'))
+    for (const path of paths) {
+      await mkdir(dirname(path), { recursive: true })
+      await writeFile(path, 'runtime')
+    }
+    const actual = await Promise.all(paths.map(path => realpath(path)))
+    const marker = join(root, 'runtime/native-running.json')
+    await writeFile(marker, JSON.stringify({ pid: process.pid, executable: actual[0] }))
+    await pruneNativeRuntimes(actual[3]!, actual[2])
+    expect(existsSync(paths[0]!)).toBe(true)
+    expect(existsSync(paths[1]!)).toBe(false)
+    await writeFile(marker, 'broken metadata')
+    await pruneNativeRuntimes(actual[3]!, actual[2])
+    expect(existsSync(paths[0]!)).toBe(true)
+    await rm(marker)
+    await pruneNativeRuntimes(actual[3]!, actual[2])
+    expect(existsSync(paths[0]!)).toBe(false)
+    expect(existsSync(paths[2]!)).toBe(true)
+    expect(existsSync(paths[3]!)).toBe(true)
+    const { rename } = await import('node:fs/promises')
+    const moved = join(root, 'elsewhere')
+    await rename(native, moved)
+    await symlink(moved, native)
+    await expect(pruneNativeRuntimes(actual[3]!, actual[2])).rejects.toThrow('symbolic links')
+    expect(existsSync(join(moved, 'previous-random/hexbot'))).toBe(true)
+  } finally {
+    if (oldHome === undefined) delete process.env.HEXBOT_HOME
+    else process.env.HEXBOT_HOME = oldHome
+    await rm(root, { recursive: true, force: true })
+  }
+})

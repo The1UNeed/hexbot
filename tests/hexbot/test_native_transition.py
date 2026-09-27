@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -66,7 +67,7 @@ class NativeTransitionTests(unittest.TestCase):
         launcher.with_name("python").symlink_to(sys.executable)
         return launcher
 
-    def test_service_launcher_and_explicit_python_rollback_preserve_data(self):
+    def test_service_launcher_always_runs_native_and_preserves_data(self):
         launcher = self.launcher()
         database = self.home / "state.db"
         database.write_bytes(b"existing conversations")
@@ -81,10 +82,32 @@ class NativeTransitionTests(unittest.TestCase):
         self.assertEqual(result.stdout, "serve\n--port\n9119\n")
         env.update(HEXBOT_BACKEND="python", PYTHONPATH=str(Path(__file__).resolve().parents[2]))
         result = subprocess.run([str(launcher), "version"], env=env, check=True, text=True, capture_output=True)
-        from hexbot import __version__
-        self.assertEqual(result.stdout.strip(), __version__)
+        self.assertEqual(result.stdout.strip(), self.version)
         self.assertEqual(database.read_bytes(), b"existing conversations")
         self.assertEqual(memory.read_text(), "remember this")
+
+    def test_live_legacy_listener_blocks_handoff_until_stopped(self):
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            (self.home / "serve-state.json").write_text(json.dumps({"host": "0.0.0.0", "port": port}))
+            with self.assertRaisesRegex(RuntimeError, "Stop the existing"):
+                transition._refuse_running_daemon(self.home)
+        transition._refuse_running_daemon(self.home)
+
+    def test_migration_updates_only_this_homes_service_and_removes_venv_path(self):
+        user = self.root / "user"
+        file = user / "Library/LaunchAgents/app.hexbot.daemon.plist"
+        file.parent.mkdir(parents=True)
+        legacy = str(self.home / "runtime/venv/bin/hexbot")
+        file.write_text(f"<string>{legacy}</string><key>PATH</key><string>/usr/bin:{self.home}/runtime/venv/bin</string>")
+        transition._migrate_service(self.home, user)
+        self.assertIn(str(self.home / "runtime/native-executable"), file.read_text())
+        self.assertNotIn("venv", file.read_text())
+        first = file.stat().st_mtime_ns
+        transition._migrate_service(self.home, user)
+        self.assertEqual(file.stat().st_mtime_ns, first)
 
     def test_failed_download_checksum_and_runtime_probe_keep_old_launcher(self):
         launcher = self.launcher()

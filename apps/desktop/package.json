@@ -14,8 +14,7 @@
     "dist:linux:client": "node ../../scripts/desktop/dist.mjs --client --linux",
     "e2e": "playwright test",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "build:native": "HEXBOT_BACKEND=rust pnpm run build"
+    "test": "vitest run"
   },
   "dependencies": {
     "electron-updater": "6.8.9",

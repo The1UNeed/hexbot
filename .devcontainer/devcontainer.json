@@ -10,12 +10,12 @@
     },
     "ghcr.io/devcontainers/features/github-cli:1": {},
     "ghcr.io/devcontainers/features/rust:1": {
-      "version": "1.97.1",
+      "version": "latest",
       "profile": "minimal",
       "components": "rustfmt,clippy"
     }
   },
-  "postCreateCommand": "pip install uv && uv venv venv --python 3.11 && UV_PROJECT_ENVIRONMENT=venv uv sync --extra all --extra dev --locked && npm install -g pnpm@10.29.3 && pnpm install --frozen-lockfile && npm ci --prefix backend/pi-runtime --ignore-scripts",
+  "postCreateCommand": "rustup show active-toolchain && pip install uv && uv venv venv --python 3.11 && UV_PROJECT_ENVIRONMENT=venv uv sync --extra all --extra dev --locked && npm install -g pnpm@10.29.3 && pnpm install --frozen-lockfile && npm ci --prefix backend/pi-runtime --ignore-scripts",
   "forwardPorts": [
     9119,
     5173,

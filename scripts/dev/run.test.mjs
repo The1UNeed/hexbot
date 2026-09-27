@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { derivePorts, selectBackend } from './run.mjs'
+import { derivePorts, validateDevArgs } from './run.mjs'
 
 test('dev ports derive from the checkout path and stay apart per worktree', () => {
   const a = derivePorts('/home/alex/hexbot')
@@ -12,12 +12,8 @@ test('dev ports derive from the checkout path and stay apart per worktree', () =
 })
 
 
-test('dev defaults to Rust and permits explicit Python rollback', () => {
-  assert.equal(selectBackend([], {}), 'rust')
-  assert.equal(selectBackend(['--backend', 'rust'], {}), 'rust')
-  assert.equal(selectBackend([], { HEXBOT_BACKEND: 'rust' }), 'rust')
-  assert.equal(selectBackend([], { HEXBOT_BACKEND: 'python' }), 'python')
-  assert.equal(selectBackend(['--backend', 'python'], { HEXBOT_BACKEND: 'rust' }), 'python')
-  assert.throws(() => selectBackend(['--backend'], {}), /backend/)
-  assert.throws(() => selectBackend(['--backend', 'other'], {}), /backend/)
+test('dev rejects removed backend selection', () => {
+  validateDevArgs([])
+  assert.throws(() => validateDevArgs(['--backend', 'python']), /removed/)
+  assert.throws(() => validateDevArgs(['--backend=rust']), /removed/)
 })

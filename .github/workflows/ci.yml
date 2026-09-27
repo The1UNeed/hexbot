@@ -32,17 +32,20 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 26
-      - run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
-      - run: cargo +1.97.1 fmt --check
-      - run: cargo +1.97.1 test --locked
-      - run: cargo +1.97.1 clippy --locked --all-targets -- -D warnings
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend/hexbot-core
+      - run: cargo fmt --check
+      - run: cargo test --locked
+      - run: cargo clippy --locked --all-targets -- -D warnings
       - name: Verify real Pi sessions and native tools
         run: |
           npm ci --prefix ../pi-runtime --ignore-scripts --no-audit --no-fund
           node --test ../pi-runtime/acp.test.mjs
-          HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo +1.97.1 test --locked --test pi_live -- --ignored
-          HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo +1.97.1 test --locked --test runtime -- --ignored
-          HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo +1.97.1 test --locked --test runtime_recovery -- --ignored
+          HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test pi_live -- --ignored
+          HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test runtime -- --ignored
+          HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test runtime_recovery -- --ignored
       - uses: pnpm/action-setup@v4
       - run: pnpm install --frozen-lockfile
         working-directory: .
@@ -103,8 +106,10 @@ jobs:
       - run: pnpm --filter ./apps/desktop run test --run
       - name: Prepare the native desktop compiler
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
-          rustup default 1.97.1
+          rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend/hexbot-core
       - run: pnpm --filter ./apps/desktop run build
       - name: Install the native desktop runtime in isolated state
         run: HEXBOT_NATIVE_TEST_BUNDLE="$GITHUB_WORKSPACE/apps/desktop/resources/hexbot-native" pnpm --filter ./apps/desktop run test --run src/main/backend/native-bootstrap.test.ts

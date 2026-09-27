@@ -54,7 +54,8 @@ user. Get and mutation methods always check ownership.
   auth_required, lan_enabled, addresses: [string], platform, home,
   update_capability}`. `update_capability` is `desktop` when the Hexbot app
   on that machine runs the daemon, `service` when launchd or systemd does,
-  and `null` for a checkout or a hand-started daemon.
+  and `null` for a checkout or a hand-started daemon. The compatibility field
+  `hermes_version` carries the pinned agent core version.
 - `hexbot.settings.get {}` → `{approval_mode, auto_approver_model, lan_enabled,
   service_installed, workspace_dir, billing_notice_ack, dream_time, dream_enabled}`
 - `hexbot.settings.set {patch}` → same shape; only whitelisted keys.
@@ -303,8 +304,9 @@ A client newer than the daemon asks the daemon to update itself
 - `hexbot.update.request {version}` (admin) → `{accepted: true, method,
   version}`. `method` is the daemon's `update_capability`. With `desktop` the
   app running the daemon downloads and installs its own update and relaunches;
-  with `service` the daemon fetches `daemon/hexbot-src-<version>.tar.gz`
-  from the update server, syncs its runtime, and restarts itself. Errors: 4210
+  with `service` the daemon fetches
+  `daemon/native/<version>/<target>/manifest.json`, verifies the target archive
+  and its SHA-256, activates the runtime, and restarts itself. Errors: 4210
   no capability, 4211 an update is already running, 4212 already on that
   version.
 - `hexbot.update.status {}` → `{capability, status, requested, version,
@@ -337,7 +339,8 @@ budget gate.
 - `hexbot.connect.register_start {daemon_name?}` → `{device_code, user_code,
   verify_url, interval}`
 - `hexbot.connect.register_poll {device_code}` → `{status}`. An approved result
-  also stores the daemon and tunnel credentials and mirrors `dashboard.public_url`.
+  stores the daemon and tunnel credentials on the daemon and mirrors
+  `dashboard.public_url`. The RPC returns only status, never those credentials.
 - `hexbot.connect.disconnect {}` stops Connect, deletes `connect.json`, and
   removes the mirrored public URL.
 
@@ -358,6 +361,10 @@ kind, connector, text, created_at, resolved_at}}` followed by
 `hexbot.bots.changed {name}`.
 
 ## Pairing and auth over HTTP
+
+- `GET /auth/login` starts browser sign-in through Hex Connect with a
+  one-time state cookie. `GET /auth/callback` validates the state and grant,
+  then sets the browser cookie and returns to the web bundle.
 
 - `POST /hexbot/pair {code, device_name, platform}` → `{device_token,
   device_id, daemon_name}`; the code is single-use and expires in 10 minutes.

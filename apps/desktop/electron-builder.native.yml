@@ -1,2 +1,0 @@
-# Compatibility alias for builds that explicitly selected this native config.
-extends: ./electron-builder.yml

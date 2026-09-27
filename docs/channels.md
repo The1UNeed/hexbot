@@ -24,8 +24,9 @@ cannot read back. Back up the directory before opening a nightly.
 
 ## Which files belong to which channel
 
-Everything under `hexbot/`, `apps/`, and the core at the repository root is
-shared. Channel behaviour lives in a small set of files:
+The native daemon under `backend/` and clients under `apps/` are shared.
+The Python tree remains for one release of service handoff. Channel behaviour
+lives in a small set of files:
 
 | File | Channel | Role |
 | --- | --- | --- |
@@ -38,10 +39,10 @@ shared. Channel behaviour lives in a small set of files:
 | `scripts/desktop/finalize-release.mjs` | stable | Rewrites `apps/site/public/downloads/manifest.json` and both Homebrew casks for a version |
 | `scripts/desktop/release-smoke.mjs` | stable, nightly | Runs the scripts above the way `release.yml` does, against synthetic packages. CI runs it on every push |
 | `scripts/dev/run.mjs` | dev | `pnpm dev`: daemon and web bundle (or Electron) from the checkout with a per-checkout home and ports |
-| `.devcontainer/devcontainer.json` | dev | One-command development environment with Python 3.11, uv, and Node 26 |
+| `.devcontainer/devcontainer.json` | dev | Rust from `rust-toolchain.toml`, Node 26 and locked agent dependencies; Python 3.11 and uv for legacy comparison tests |
 | `apps/desktop/electron-builder.yml`, `electron-builder.client.yml` | all | Full and client-only package definitions and their feed URLs; channel flags override `productName` and `appId` |
 | `apps/desktop/src/main/updater.ts`, `update-state.ts`, `desktop-state.ts` | stable, nightly | The in-app updater: a check 15 s after launch and every 4 minutes, one action at a time, logged to `<home>/logs/desktop.log`. The track defaults to the one the build came from and can be switched in Settings, Updates |
-| `apps/desktop/src/main/remote-update.ts`, `hexbot/update.py` | stable, nightly | A daemon updating on a client's request: the app that runs it updates itself, or a service-run daemon fetches `daemon/hexbot-src-<v>.tar.gz` and restarts |
+| `apps/desktop/src/main/remote-update.ts`, `backend/hexbot-core/src/services.rs` | stable, nightly | A daemon updating on a client's request: the app that runs it updates itself, or a service-run daemon verifies `daemon/native/<v>/<target>/manifest.json` and its archive, then restarts |
 | `apps/web/src/app/update-pill.tsx`, `stores/updates.ts` | all | The roster pill and the Settings, Updates page: download, restart, and "Update daemon" |
 | `apps/site/public/downloads/manifest.json` | stable | Names the downloadable artifacts on hexbot.app; written by `finalize` |
 | `scripts/desktop/update-nightly-index.mjs` | nightly | Prepends each nightly to `nightlies.json` on `updates.hexbot.app` (last 30) so hexbot.app can list earlier builds. Tested in `packaging.test.mjs` |
@@ -90,8 +91,8 @@ otherwise. They are notarized only when the Apple secrets are set.
 
 ## Dev
 
-The dev channel is the source tree. `pnpm dev` starts the daemon and the
-web bundle from the checkout with `HEXBOT_HOME=<checkout>/.hexbot` and ports
+The dev channel is the source tree. `--backend python` is removed.
+`pnpm dev` starts the daemon and the web bundle from the checkout with `HEXBOT_HOME=<checkout>/.hexbot` and ports
 derived from the checkout path; `pnpm dev --desktop` starts the Electron
 app as `Hexbot (dev)` instead (it runs the daemon itself). Its window, app
 menus, Dock, and app switcher use this name and the blue icon from the
@@ -125,7 +126,9 @@ full/mac/arm64/Hexbot-<v>-mac-arm64.zip|.dmg
 full/mac/x64/...
 full/linux/x64/latest-linux.yml, nightly-linux.yml, Hexbot-<v>-linux-x64.AppImage|.deb
 client/...                          the same for HexbotClient-*
-daemon/hexbot-src-<v>.tar.gz        the daemon source the full package stages, for daemons updating themselves
+daemon/native/<v>/<target>/manifest.json   native archive URL, version, target and SHA-256
+daemon/native/<v>/<target>/hexbot-native-<v>-<target>.tar.gz
+daemon/hexbot-src-<v>.tar.gz               one-release handoff for existing Python services
 ```
 
 Artifacts are immutable (their names carry the version); the `.yml` files are
@@ -165,12 +168,14 @@ its machine. The daemon says how, through `update_capability` in
   `<home>/runtime/update-status.json` for `hexbot.update.status`, then
   relaunches and starts the new daemon. The app's track decides what is
   installed, so an app on the stable track cannot be pushed a nightly.
-- `service`: launchd or systemd runs the daemon (`service-files.ts` sets the
-  variable). The daemon downloads `daemon/hexbot-src-<v>.tar.gz` from
-  `updates.hexbot.app` into `<home>/runtime/src/<v>`, runs
-  `uv sync --extra all --locked` into the shared runtime venv the way the
-  app's bootstrap does, checks that `hexbot version` prints `<v>`, and
-  restarts itself. `HEXBOT_UPDATE_URL` points a daemon at another server.
+- `service`: launchd or systemd runs the daemon. It downloads the manifest at
+  `daemon/native/<v>/<target>/manifest.json` and the matching archive, checks
+  its SHA-256 and reported version, then switches `runtime/native-executable`
+  and restarts. Targets are `macos-aarch64`, `macos-x86_64` and `linux-x86_64`.
+  It retains the active runtime and its predecessor, protecting any older
+  runtime still used by a running daemon. `HEXBOT_UPDATE_URL` selects another
+  server. For one release, existing Python services can use the historical
+  source feed to install this native runtime and hand over their home.
 - unset: a checkout or a hand-started daemon. The page says to update by
   hand.
 

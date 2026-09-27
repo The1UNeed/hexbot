@@ -4,7 +4,7 @@ title: CLI
 description: Start, pair, and manage Hexbot from the command line.
 ---
 
-The `hexbot` command wraps the agent core and adds commands for the Hexbot daemon and data model.
+The native `hexbot` command starts the daemon and manages bots, rooms, devices and Hex Connect.
 
 ## Start a daemon
 
@@ -30,7 +30,7 @@ hexbot bots create
 hexbot bots delete
 ```
 
-Use command help before destructive actions. Deleting a bot removes its profile and associated sections when the daemon accepts the request.
+Use command help before destructive actions. Deleting a bot removes its settings and associated sections when the daemon accepts the request.
 
 ## Send a message
 
@@ -40,14 +40,8 @@ hexbot send <bot> <text>
 
 The named bot uses its configured provider, model, persona, skills, and memory.
 
-## Run a core command
+## Available commands
 
-The core CLI (setup, config, doctor, logs, and more) runs through:
-
-```sh
-hexbot core <args>
-```
-
-For example, `hexbot core doctor` checks the install.
-
-Run `hexbot --help` and command-specific `--help` output for the installed version's exact options. Behavioral settings belong in `~/.hexbot/config.yaml`; API keys and other credentials belong in the private environment file managed by setup.
+Run `hexbot --help` to see the native commands. Legacy core administration
+commands are not part of the native daemon. Manage provider keys and settings
+in the app.

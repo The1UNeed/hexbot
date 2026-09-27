@@ -37,17 +37,59 @@ page is the procedure and the one-time setup. Modelled on T3 Code's
 resolution, feed, manifest, and cask scripts against synthetic packages, so
 a broken release script fails before tag day.
 
-Full packages use the Rust daemon with pinned Node and Pi. Release builds run
-on matching architectures, including Intel macOS runners for the Intel daemon.
-The native update archive and SHA-256 manifest are published under
-`daemon/native/<version>/<os>-<arch>/`. Rust releases also publish a compatibility
-source archive at the historical daemon URL. An installed Python service updates
-through that archive, verifies the native bundle and its version, then switches
-its existing launcher to `runtime/native-executable`. The home and stored data stay
-in place. Set `HEXBOT_BACKEND=python` to run the retained Python source explicitly;
-this does not convert conversations newly created by Pi back to Hermes sessions.
-A manual `backend: python` dispatch selects a legacy package without the transition
-marker; release channels and full/client editions keep their meanings.
+Full packages bundle the native daemon, pinned Node and Pi, web assets and
+skills. Targets are macOS arm64, macOS x64 and Linux x64. Both macOS jobs use
+the arm64 `macos-26` runner; the Intel job builds with Cargo's
+`x86_64-apple-darwin` target, downloads darwin-x64 Node and installs npm
+packages with `--cpu=x64 --os=darwin`. Rosetta runs the Intel runtime probe.
+`rust-toolchain.toml` is the single toolchain pin. CI and releases cache Cargo
+artifacts with `Swatinem/rust-cache`.
+
+The pinned agent still loads extensions through jiti. Precompiling our extension
+alone would not remove that runtime dependency, so the loaders remain bundled.
+
+Native archives and SHA-256 manifests live under
+`daemon/native/<version>/<os>-<arch>/`. For one release we also publish
+`daemon/hexbot-src-<version>.tar.gz` using `stage-python-src --native-transition`.
+Existing Python background services follow that source feed, validate the native
+bundle and version, then replace their process with the native daemon. Their
+home, conversations and bot memory stay in place. Native startup refuses a home
+whose previous listener is still reachable. Python rollback packages,
+`HEXBOT_BACKEND` selection and `pnpm dev --backend python` are removed.
+
+Activation retains the selected runtime and the previous one, plus any older
+runtime still in use. Failed validation leaves the selection alone. Successful
+handoff removes the old Python environment and source copies. A small forwarding
+script can remain at the old launchd path until the app reloads the service.
+Bootstrap rewrites old launchd/systemd definitions and removes the venv PATH.
+
+Known gap: update manifests are not signed yet. HTTPS and archive SHA-256 checks
+protect transport and detect corruption, but do not authenticate a manifest
+independently of the update server. Manifest signing is a follow-up.
+
+First launch downloads uv 0.12.18 directly from its release archive and checks a
+SHA-256 pinned in the app before executing it. It installs managed Python 3.11
+for code tools and edge-tts 7.2.7 for voice. These are not daemon dependencies.
+
+macOS uses the hardened runtime with inherited `allow-jit` and
+`allow-unsigned-executable-memory` entitlements. The latter is required by
+bundled x64 Node 26.5.0: the Intel probe under Rosetta traps in V8's
+`OS::SetPermissions` with `allow-jit` alone. Arm64 Node passes without that
+exception; the shared entitlements support both architectures. A local test
+signs copies of both binaries, runs a Node JIT loop, loads the packaged agent
+CLI, and probes the daemon version:
+
+```sh
+HEXBOT_NATIVE_TEST_BUNDLE="$PWD/apps/desktop/resources/hexbot-native" \
+  node --test scripts/desktop/runtime-signing.test.mjs
+```
+
+The September 27 darwin-arm64 staging check reduced dependency files from
+463,982,503 to 86,636,413 bytes, about 81%. The complete bundle contains
+259,448,216 bytes, down from 636,794,306 before pruning; its archive is
+75,642,999 bytes. An Intel cross-build on the same Apple Silicon host also
+stages successfully and passes its runtime probe. Both updaters allow 1 GiB of
+compressed data and 4 GiB unpacked, with archive path/type checks unchanged.
 
 Local native package verification does not publish:
 
@@ -65,7 +107,7 @@ node scripts/desktop/dist.mjs --mac --dir
    concerns, known issues. Without it GitHub generates notes from commits.
    hexbot.app renders every file in that directory at `/changelog/`.
 4. If `apps/desktop/build/Hexbot.icon` changed, run
-   `./venv/bin/python scripts/desktop/make-icons.py` and commit the icons.
+   `uv run --no-project --with pillow python scripts/desktop/make-icons.py` and commit the icons.
 5. Run the desktop suite and the script tests (`docs/testing.md`). Build one
    package locally if the packaging changed:
    `node scripts/desktop/dist.mjs --mac --channel stable`.

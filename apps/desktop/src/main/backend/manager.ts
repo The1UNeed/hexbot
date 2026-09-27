@@ -7,7 +7,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 
 import { app } from 'electron'
 
-import { activeSourceDir, binDir, hexbotExecutable, hexbotHome, venvDir } from './paths'
+import { activeSourceDir, binDir, hexbotExecutable, hexbotHome } from './paths'
 
 export type DaemonState = 'stopped' | 'starting' | 'running' | 'crashed'
 export interface DaemonStatus {
@@ -105,7 +105,7 @@ export class DaemonManager extends EventEmitter {
         HEXBOT_SUPERVISOR: 'desktop',
         // Runs the Hex Connect sidecar with this app's Electron as Node (hexbot/connect.py).
         HEXBOT_NODE: process.env.APPIMAGE ?? process.execPath,
-        PATH: [binDir(), join(venvDir(), 'bin'), process.env.PATH ?? ''].join(delimiter)
+        PATH: [binDir(), process.env.PATH ?? ''].join(delimiter)
       }
     })
     this.child = child

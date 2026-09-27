@@ -66,9 +66,11 @@ stays for one release so existing background services can move to the native
 daemon. `AGENTS.md` is the guide for anyone, human or agent, working on the
 code; `backend/hexbot-core/README.md` covers storage compatibility.
 
-Install Rust 1.97.1 and Node 26, then:
+Install rustup and Node 26, then use the Rust toolchain pinned in
+`rust-toolchain.toml`:
 
 ```sh
+rustup show active-toolchain
 pnpm install --frozen-lockfile
 ```
 

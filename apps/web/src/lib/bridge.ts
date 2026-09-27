@@ -12,12 +12,9 @@ export interface DaemonProgress {
     | 'dependencies'
     | 'done'
     | 'error'
-    | 'git'
     | 'python'
-    | 'ripgrep'
-    | 'source'
+    | 'runtime'
     | 'uv'
-    | 'venv'
     | (string & {})
 }
 
