@@ -812,7 +812,26 @@ async fn execute_code(
         let mut child = Command::new(python)
             .args(["-u", "-c", KERNEL])
             .current_dir(workdir(home, bot)?)
-            .envs(env)
+            .env_clear()
+            .envs(std::env::vars_os().filter(|(key, _)| {
+                matches!(
+                    key.to_str(),
+                    Some(
+                        "PATH"
+                            | "HOME"
+                            | "USER"
+                            | "LOGNAME"
+                            | "TMPDIR"
+                            | "TEMP"
+                            | "TMP"
+                            | "LANG"
+                            | "LC_ALL"
+                            | "SystemRoot"
+                            | "WINDIR"
+                            | "USERPROFILE"
+                    )
+                )
+            }))
             .env("HEXBOT_HOME", home)
             .env("PYTHONUNBUFFERED", "1")
             .stdin(Stdio::piped())
