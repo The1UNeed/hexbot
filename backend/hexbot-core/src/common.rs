@@ -403,3 +403,447 @@ pub fn credentials_lock() -> &'static std::sync::Mutex<()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     &LOCK
 }
+
+/// Open without blocking on a FIFO, then check the opened object and bound the read.
+pub fn read_regular(path: &Path, limit: usize) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(Error::new(4202, "path must be a regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(Error::new(4202, "file exceeds the read limit"));
+    }
+    Ok(bytes)
+}
+pub fn read_regular_text(path: &Path, limit: usize) -> Result<String> {
+    String::from_utf8(read_regular(path, limit)?)
+        .map_err(|_| Error::new(4202, "file is not UTF-8 text"))
+}
+pub fn managed_python(home: &Path) -> std::path::PathBuf {
+    let managed = home.join("bin/python3.11");
+    if managed.is_file() {
+        managed
+    } else {
+        "python3".into()
+    }
+}
+
+pub fn allow_private_urls(home: &Path, bot: &str) -> Result<bool> {
+    let mut env = env_values(home)?;
+    env.extend(env_values(&home.join("profiles").join(bot))?);
+    let setting = env
+        .get("HERMES_ALLOW_PRIVATE_URLS")
+        .cloned()
+        .or_else(|| std::env::var("HERMES_ALLOW_PRIVATE_URLS").ok());
+    match setting
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_lowercase)
+        .as_deref()
+    {
+        Some("true" | "1" | "yes") => return Ok(true),
+        Some("false" | "0" | "no") => return Ok(false),
+        _ => (),
+    }
+    let global = read_config(home)?;
+    let local = read_config(&home.join("profiles").join(bot))?;
+    Ok(["security", "browser"].iter().any(|section| {
+        local[section]["allow_private_urls"]
+            .as_bool()
+            .or(global[section]["allow_private_urls"].as_bool())
+            .unwrap_or(false)
+    }))
+}
+fn blocked_ip(ip: std::net::IpAddr, allow_private: bool) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(ip) => {
+            let [a, b, c, d] = ip.octets();
+            if (a == 169 && b == 254) || [a, b, c, d] == [100, 100, 100, 200] {
+                return true;
+            }
+            !allow_private
+                && (ip.is_private()
+                    || ip.is_loopback()
+                    || ip.is_link_local()
+                    || ip.is_multicast()
+                    || ip.is_broadcast()
+                    || ip.is_documentation()
+                    || a == 0
+                    || a >= 240
+                    || (a == 100 && (64..128).contains(&b))
+                    || (a == 198 && (b == 18 || b == 19))
+                    || (a == 192 && b == 0 && c == 0))
+        }
+        IpAddr::V6(ip) => {
+            if let Some(ip) = ip.to_ipv4_mapped() {
+                return blocked_ip(IpAddr::V4(ip), allow_private);
+            }
+            if ip == "fd00:ec2::254".parse::<std::net::Ipv6Addr>().unwrap() {
+                return true;
+            }
+            !allow_private
+                && (ip.is_loopback()
+                    || ip.is_unspecified()
+                    || ip.is_multicast()
+                    || ip.is_unique_local()
+                    || ip.is_unicast_link_local()
+                    || (ip.segments()[0] & 0xe000 != 0x2000)
+                    || (ip.segments()[0] == 0x2001 && ip.segments()[1] <= 0x1ff)
+                    || (ip.segments()[0] == 0x2001 && ip.segments()[1] == 0xdb8)
+                    || ip.segments()[0] == 0x2002)
+        }
+    }
+}
+/// Resolve once and return the checked addresses for the actual connection.
+pub async fn url_addresses(
+    url: &url::Url,
+    allow_private: bool,
+) -> Result<Vec<std::net::SocketAddr>> {
+    let denied = || Error::new(4302, "URL is blocked by network safety settings");
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(denied());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(denied)?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.');
+    if ["metadata.google.internal", "metadata.goog"].contains(&host) {
+        return Err(denied());
+    }
+    let port = url.port_or_known_default().ok_or_else(denied)?;
+    let addresses: Vec<_> = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::net::lookup_host((host, port)),
+    )
+    .await
+    .map_err(|_| denied())?
+    .map_err(|_| denied())?
+    .collect();
+    if addresses.is_empty() || addresses.iter().any(|a| blocked_ip(a.ip(), allow_private)) {
+        return Err(denied());
+    }
+    Ok(addresses)
+}
+/// Redirects are checked independently and DNS answers are pinned on every hop.
+pub async fn safe_get(value: &str, allow_private: bool) -> Result<reqwest::Response> {
+    let mut url = url::Url::parse(value).map_err(|_| Error::new(4202, "invalid URL"))?;
+    for _ in 0..6 {
+        let addresses = url_addresses(&url, allow_private).await?;
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(90))
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve_to_addrs(url.host_str().unwrap(), &addresses)
+            .build()
+            .map_err(|_| Error::new(4211, "HTTP client unavailable"))?;
+        let response = client
+            .get(url.clone())
+            .send()
+            .await
+            .map_err(|_| Error::new(4211, "URL request failed"))?;
+        if !response.status().is_redirection() {
+            return Ok(response);
+        }
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| Error::new(4211, "invalid URL redirect"))?;
+        url = url
+            .join(location)
+            .map_err(|_| Error::new(4211, "invalid URL redirect"))?;
+    }
+    Err(Error::new(4211, "too many URL redirects"))
+}
+
+/// A browser proxy validates each new HTTP request or HTTPS tunnel and connects to
+/// the checked address. Keeping the guard alive keeps the listener alive.
+pub struct BrowserProxy {
+    pub address: std::net::SocketAddr,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Drop for BrowserProxy {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+impl BrowserProxy {
+    pub async fn start(allow_private: bool) -> Result<Self> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let task = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                tokio::select! {
+                    accepted = listener.accept() => {
+                        let Ok((mut client, _)) = accepted else { break };
+                        connections.spawn(async move {
+                            if tokio::time::timeout(std::time::Duration::from_secs(120), proxy_request(&mut client, allow_private)).await.is_err() {
+                                use tokio::io::AsyncWriteExt;
+                                let _ = client.shutdown().await;
+                            }
+                        });
+                    }
+                    _ = connections.join_next(), if !connections.is_empty() => (),
+                }
+            }
+        });
+        Ok(Self { address, task })
+    }
+}
+async fn proxy_request(client: &mut tokio::net::TcpStream, allow_private: bool) -> Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut header = Vec::new();
+    while !header.ends_with(b"\r\n\r\n") {
+        if header.len() >= 32 * 1024 {
+            return Err(Error::new(4202, "browser request header is too large"));
+        }
+        header.push(client.read_u8().await?);
+    }
+    let header =
+        std::str::from_utf8(&header).map_err(|_| Error::new(4202, "invalid browser request"))?;
+    let mut lines = header.split("\r\n");
+    let request = lines
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    if request.len() != 3 {
+        return Err(Error::new(4202, "invalid browser request"));
+    }
+    let tunnel = request[0] == "CONNECT";
+    let target = if tunnel {
+        format!("https://{}/", request[1])
+    } else {
+        request[1].to_owned()
+    };
+    let url = url::Url::parse(&target).map_err(|_| Error::new(4202, "invalid browser URL"))?;
+    let addresses = match url_addresses(&url, allow_private).await {
+        Ok(addresses) => addresses,
+        Err(error) => {
+            client
+                .write_all(
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await?;
+            return Err(error);
+        }
+    };
+    let mut upstream = tokio::net::TcpStream::connect(addresses.as_slice()).await?;
+    if tunnel {
+        client
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await?;
+        tokio::io::copy_bidirectional(client, &mut upstream).await?;
+    } else {
+        // One origin per connection. Do not permit absolute-form targets to be
+        // reinterpreted by the upstream or keep-alive requests to skip validation.
+        let path = &url[url::Position::BeforePath..url::Position::AfterQuery];
+        let mut forwarded = format!(
+            "{} {} HTTP/1.1\r\nHost: {}\r\n",
+            request[0],
+            path,
+            &url[url::Position::BeforeHost..url::Position::AfterPort]
+        );
+        let mut length = None;
+        for line in lines.filter(|line| !line.is_empty()) {
+            let (name, value) = line
+                .split_once(':')
+                .ok_or_else(|| Error::new(4202, "invalid browser header"))?;
+            let name = name.to_ascii_lowercase();
+            match name.as_str() {
+                "content-length" => {
+                    let size = value
+                        .trim()
+                        .parse::<u64>()
+                        .map_err(|_| Error::new(4202, "invalid browser body length"))?;
+                    if length.replace(size).is_some() || size > 24 * 1024 * 1024 {
+                        return Err(Error::new(4202, "invalid browser body length"));
+                    }
+                }
+                "transfer-encoding" | "upgrade" => {
+                    return Err(Error::new(4202, "unsupported browser request framing"));
+                }
+                "host" | "connection" | "proxy-connection" | "proxy-authorization" | "expect" => (),
+                _ => {
+                    forwarded.push_str(line);
+                    forwarded.push_str("\r\n");
+                }
+            }
+        }
+        if let Some(size) = length {
+            forwarded.push_str(&format!("Content-Length: {size}\r\n"));
+        }
+        forwarded.push_str("Connection: close\r\n\r\n");
+        upstream.write_all(forwarded.as_bytes()).await?;
+        if let Some(size) = length
+            && tokio::io::copy(&mut (&mut *client).take(size), &mut upstream).await? != size
+        {
+            return Err(Error::new(4202, "incomplete browser request body"));
+        }
+        tokio::io::copy(&mut upstream, client).await?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tool_safety_tests {
+    use super::*;
+    #[test]
+    fn reads_reject_devices_directories_and_oversize_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("text");
+        fs::write(&file, b"12345").unwrap();
+        assert_eq!(read_regular(&file, 5).unwrap(), b"12345");
+        assert!(read_regular(&file, 4).is_err());
+        assert!(read_regular(dir.path(), 5).is_err());
+        #[cfg(unix)]
+        {
+            assert!(read_regular(Path::new("/dev/zero"), 5).is_err());
+            let fifo = dir.path().join("fifo");
+            let name = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            assert!(read_regular(&fifo, 5).is_err());
+        }
+    }
+    #[test]
+    fn managed_interpreter_precedes_path_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(managed_python(dir.path()), Path::new("python3"));
+        fs::create_dir(dir.path().join("bin")).unwrap();
+        fs::write(dir.path().join("bin/python3.11"), "managed").unwrap();
+        assert_eq!(
+            managed_python(dir.path()),
+            dir.path().join("bin/python3.11")
+        );
+    }
+    #[test]
+    fn metadata_is_always_denied_and_internal_ranges_require_opt_in() {
+        for ip in [
+            "169.254.169.254",
+            "169.254.170.2",
+            "169.254.1.1",
+            "100.100.100.200",
+            "fd00:ec2::254",
+            "::ffff:169.254.169.254",
+        ] {
+            for allow in [false, true] {
+                assert!(blocked_ip(ip.parse().unwrap(), allow), "{ip}");
+            }
+        }
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "172.16.0.1",
+            "192.168.0.1",
+            "100.64.0.1",
+            "198.18.0.1",
+            "0.0.0.0",
+            "::1",
+            "fe80::1",
+            "fc00::1",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(blocked_ip(ip.parse().unwrap(), false), "{ip}");
+            assert!(!blocked_ip(ip.parse().unwrap(), true), "{ip}");
+        }
+        for ip in ["8.8.8.8", "2606:4700:4700::1111"] {
+            assert!(!blocked_ip(ip.parse().unwrap(), false));
+        }
+    }
+    #[tokio::test]
+    async fn dns_failures_and_metadata_names_fail_closed() {
+        for url in [
+            "http://metadata.google.internal./",
+            "http://metadata.goog/",
+            "file:///etc/passwd",
+            "http://does-not-exist.invalid",
+            "http://user:pass@localhost/",
+        ] {
+            assert!(
+                url_addresses(&url::Url::parse(url).unwrap(), true)
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(
+            url_addresses(&url::Url::parse("http://localhost/").unwrap(), false)
+                .await
+                .is_err()
+        );
+    }
+    #[tokio::test]
+    async fn local_http_redirects_and_browser_proxy_enforce_the_same_policy() {
+        use axum::{
+            Router,
+            response::Redirect,
+            routing::{get, post},
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/ok", get(|| async { "fixture" }))
+            .route("/echo", post(|body: String| async move { body }))
+            .route("/redirect", get(|| async { Redirect::temporary("/ok") }))
+            .route(
+                "/metadata",
+                get(|| async { Redirect::temporary("http://169.254.169.254/latest") }),
+            );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let url = format!("http://{address}");
+        assert!(safe_get(&format!("{url}/ok"), false).await.is_err());
+        assert_eq!(
+            safe_get(&format!("{url}/redirect"), true)
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+            "fixture"
+        );
+        assert!(safe_get(&format!("{url}/metadata"), true).await.is_err());
+        for allow in [false, true] {
+            let proxy = BrowserProxy::start(allow).await.unwrap();
+            let client = reqwest::Client::builder()
+                .proxy(reqwest::Proxy::all(format!("http://{}", proxy.address)).unwrap())
+                .build()
+                .unwrap();
+            let response = client.get(format!("{url}/ok")).send().await.unwrap();
+            assert_eq!(response.status().is_success(), allow);
+            if allow {
+                assert_eq!(
+                    client
+                        .post(format!("{url}/echo"))
+                        .body("upload")
+                        .send()
+                        .await
+                        .unwrap()
+                        .text()
+                        .await
+                        .unwrap(),
+                    "upload"
+                );
+            }
+            assert!(client.get("https://169.254.169.254/").send().await.is_err());
+            let response = client.get(format!("{url}/metadata")).send().await.unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+        }
+        server.abort();
+    }
+}

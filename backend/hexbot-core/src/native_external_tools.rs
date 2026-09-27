@@ -555,7 +555,19 @@ async fn video(home: &Path, bot: &str, env: &BTreeMap<String, String>, p: &Value
         .unwrap_or("https://queue.fal.run")
         .trim_end_matches('/');
     let client = client(180)?;
-    let mut data = fal_request(&client, base, &key, endpoint, &fal_payload(family, p)).await?;
+    let mut payload_args = p.clone();
+    if is_image {
+        payload_args["image_url"] =
+            json!(crate::native_tools::image_data(home, bot, string(p, "image_url", "")).await?);
+    }
+    let mut data = fal_request(
+        &client,
+        base,
+        &key,
+        endpoint,
+        &fal_payload(family, &payload_args),
+    )
+    .await?;
     let mut url = data["video"]["url"]
         .as_str()
         .or(data["video"].as_str())

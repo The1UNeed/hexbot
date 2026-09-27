@@ -946,7 +946,7 @@ impl Dreaming {
                 c
             }
             Some("py") => {
-                let mut c = tokio::process::Command::new("python3");
+                let mut c = tokio::process::Command::new(common::managed_python(&self.home));
                 c.arg(&path);
                 c
             }
@@ -1450,5 +1450,41 @@ impl Drop for ScriptProcess {
                 libc::kill(-(pid as i32), libc::SIGKILL);
             }
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod interpreter_tests {
+    use super::*;
+    #[tokio::test]
+    async fn scheduled_python_script_runs_with_the_managed_interpreter() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute("INSERT INTO bots(name,owner_id) VALUES('owl','local')", [])
+            .unwrap();
+        fs::create_dir_all(home.path().join("profiles/owl/scripts")).unwrap();
+        fs::create_dir(home.path().join("bin")).unwrap();
+        let python = home.path().join("bin/python3.11");
+        fs::write(
+            &python,
+            "#!/bin/sh\n[ -f \"$1\" ] || exit 1\nprintf managed-interpreter",
+        )
+        .unwrap();
+        fs::set_permissions(&python, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(
+            home.path().join("profiles/owl/scripts/job.py"),
+            "not valid Python",
+        )
+        .unwrap();
+        let events = EventHub::new();
+        let runtime = Runtime::new(home.path().into(), events.clone(), "unused".into()).unwrap();
+        let scheduler = Dreaming::new(home.path().into(), runtime, events);
+        assert_eq!(
+            scheduler.script("owl", "job.py", None).await.unwrap(),
+            "managed-interpreter"
+        );
     }
 }

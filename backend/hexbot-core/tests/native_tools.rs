@@ -5,7 +5,7 @@ use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
-fn home(config: Value) -> tempfile::TempDir {
+fn home(mut config: Value) -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     db::migrate(home.path()).unwrap();
     db::open(home.path())
@@ -16,6 +16,14 @@ fn home(config: Value) -> tempfile::TempDir {
         )
         .unwrap();
     std::fs::create_dir_all(home.path().join("profiles/tester")).unwrap();
+    db::open(home.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO settings(key,value) VALUES('workspace_dir',?)",
+            [json!(home.path()).to_string()],
+        )
+        .unwrap();
+    config["security"] = json!({"allow_private_urls":true});
     common::write_config(home.path(), &config).unwrap();
     home
 }
@@ -165,7 +173,7 @@ async fn configured_web_search_extract_headers_payload_and_artifacts() {
     let extracted = call(
         h.path(),
         "web_extract",
-        json!({"urls":["https://example.test/page"],"char_limit":2000}),
+        json!({"urls":[format!("http://{address}/page")],"char_limit":2000}),
     )
     .await
     .unwrap();
@@ -445,13 +453,16 @@ print(json.dumps({'success':True,'data':{'snapshot':'[e1] Button','refs':{'e1':'
     config["browser"]["command"] = json!(cli);
     common::write_config(h.path(), &config).unwrap();
     std::fs::write(h.path().join(".env"),format!("BROWSERBASE_API_KEY=browser-key\nBROWSERBASE_PROJECT_ID=project\nBROWSERBASE_BASE_URL=http://{address}\n")).unwrap();
-    let result = call(
-        h.path(),
-        "browser_navigate",
-        json!({"url":"https://example.test"}),
-    )
-    .await
-    .unwrap();
+    assert!(
+        call(
+            h.path(),
+            "browser_navigate",
+            json!({"url":format!("http://{address}/")})
+        )
+        .await
+        .is_err()
+    );
+    let result = call(h.path(), "browser_snapshot", json!({})).await.unwrap();
     assert_eq!(result["data"]["snapshot"], "[e1] Button");
     call(h.path(), "browser_click", json!({"ref":"e1"}))
         .await
@@ -568,7 +579,7 @@ async fn keenable_mistral_and_krea_use_selected_vendor_contracts() {
     let extracted = call(
         h.path(),
         "web_extract",
-        json!({"urls":["https://example.test"]}),
+        json!({"urls":[format!("http://{address}/page")]}),
     )
     .await
     .unwrap();
@@ -580,7 +591,7 @@ async fn keenable_mistral_and_krea_use_selected_vendor_contracts() {
         std::fs::read(audio["file_path"].as_str().unwrap()).unwrap(),
         b"ID3mistral-audio"
     );
-    let image=call(h.path(),"image_generate",json!({"prompt":"Test image","aspect_ratio":"landscape","reference_image_urls":["https://example.test/style.png"]})).await.unwrap();
+    let image=call(h.path(),"image_generate",json!({"prompt":"Test image","aspect_ratio":"landscape","reference_image_urls":["data:image/png;base64,aW1hZ2U="]})).await.unwrap();
     assert!(std::fs::metadata(image["images"][0]["path"].as_str().unwrap()).is_ok());
     let saved = records.lock().unwrap();
     assert_eq!(saved[0].0["x-keenable-title"], "hermes-agent");

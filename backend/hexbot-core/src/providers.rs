@@ -99,7 +99,7 @@ fn key(home: &Path, p: &Value) -> Result<Option<String>> {
         return Ok(None);
     }
     let values = common::env_values(home)?;
-    Ok(p["env_vars"]
+    let explicit = p["env_vars"]
         .as_array()
         .into_iter()
         .flatten()
@@ -111,11 +111,118 @@ fn key(home: &Path, p: &Value) -> Result<Option<String>> {
                 .cloned()
                 .or_else(|| std::env::var(name).ok())
                 .filter(|s| !s.is_empty())
-        }))
+        });
+    if explicit.is_some() {
+        return Ok(explicit
+            .filter(|key| string(p, "name") != "copilot" || !key.trim().starts_with("ghp_")));
+    }
+    let slug = string(p, "name");
+    if let Some(entry) = pool_entry(home, slug, false)? {
+        return Ok(Some(string(&entry, "access_token").to_owned()));
+    }
+    if slug == "copilot"
+        && home
+            .parent()
+            .and_then(Path::file_name)
+            .is_none_or(|name| name != "profiles")
+    {
+        return Ok(github_cli_token("gh".as_ref()));
+    }
+    Ok(None)
+}
+fn github_cli_token(program: &Path) -> Option<String> {
+    // Bound the credential helper as well as its output; never print its diagnostics.
+    let mut child = std::process::Command::new(program)
+        .args(["auth", "token"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                use std::io::Read;
+                let mut output = String::new();
+                child
+                    .stdout
+                    .take()?
+                    .take(16384)
+                    .read_to_string(&mut output)
+                    .ok()?;
+                let token = output.trim();
+                return (!token.is_empty() && !token.starts_with("ghp_")).then(|| token.to_owned());
+            }
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+fn pool_entry(home: &Path, slug: &str, oauth: bool) -> Result<Option<Value>> {
+    let auth = read_json(&home.join("auth.json"))?;
+    Ok(auth["credential_pool"][slug]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|v| {
+            (v["auth_type"] == "oauth" || string(v, "access_token").starts_with("sk-ant-oat"))
+                == oauth
+        })
+        .filter(|v| {
+            !string(v, "access_token").is_empty()
+                && v["disabled"] != true
+                && v["source"] != "claude_code"
+        })
+        .min_by_key(|v| v["priority"].as_i64().unwrap_or(0))
+        .cloned())
 }
 fn oauth(home: &Path, slug: &str) -> Result<Value> {
-    Ok(read_json(&home.join("auth.json"))?["providers"][slug].clone())
+    let auth = read_json(&home.join("auth.json"))?;
+    let state = &auth["providers"][slug];
+    if state.is_object() {
+        return Ok(state.clone());
+    }
+    if let Some(mut entry) = pool_entry(home, slug, true)? {
+        if let Some(ms) = entry["expires_at_ms"].as_f64() {
+            entry["expires_at"] = json!(ms / 1000.0);
+        }
+        return Ok(entry);
+    }
+    if slug == "anthropic" {
+        let login = read_json(&home.join(".anthropic_oauth.json"))?;
+        if !string(&login, "accessToken").is_empty() {
+            return Ok(
+                json!({"access_token":login["accessToken"],"refresh_token":login["refreshToken"],"expires_at":login["expiresAt"].as_f64().unwrap_or(0.0)/1000.0}),
+            );
+        }
+    }
+    Ok(Value::Null)
 }
+// A grant copied into several legacy bot directories still maps to one daemon store.
+// The import files remain read-only. Rotated tokens are committed here before use.
+fn shared_grant_path(home: &Path, slug: &str, tokens: &Value) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let identity = tokens["refresh_token"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(string(tokens, "access_token"));
+    let digest = Sha256::digest(format!("{slug}:{identity}").as_bytes());
+    home.join("runtime/provider-auth")
+        .join(format!("{digest:x}.json"))
+}
+fn daemon_oauth(slug: &str) -> bool {
+    matches!(slug, "openai-codex" | "anthropic" | "xai-oauth")
+}
+
 fn configured(home: &Path, p: &Value) -> Result<bool> {
     let slug = string(p, "name");
     if read_json(&home.join("providers-disabled.json"))?[slug] == true {
@@ -640,14 +747,35 @@ pub async fn list_models(home: &Path, p: &Value) -> Result<Value> {
     Ok(output)
 }
 
-/// Copy Hermes grants into a dedicated Pi directory without exposing credentials to RPC clients.
-/// Pi refreshes supported OAuth credentials in this store. Never rewrite an existing newer grant.
+/// Prepare transport credentials. The daemon alone owns and rotates OAuth refresh tokens.
 pub fn prepare_pi(home: &Path, agent_dir: &Path) -> Result<()> {
     prepare_pi_config(home, None, agent_dir)
 }
 pub fn prepare_pi_for_bot(home: &Path, bot: &str, agent_dir: &Path) -> Result<()> {
     common::identifier(bot)?;
     prepare_pi_config(home, Some(&home.join("profiles").join(bot)), agent_dir)
+}
+/// Short-lived callers without the extension also start with a current access token.
+pub async fn prepare_pi_for_request(
+    home: &Path,
+    bot: &str,
+    agent_dir: &Path,
+    provider: Option<&str>,
+) -> Result<()> {
+    prepare_pi_for_bot(home, bot, agent_dir)?;
+    let Some(provider) = provider else {
+        return Ok(());
+    };
+    let mut slug = canonical_provider(provider);
+    let auth = read_json(&agent_dir.join("auth.json"))?;
+    if slug == "xai" && auth["xai"]["type"] == "oauth" {
+        slug = "xai-oauth".into();
+    }
+    if daemon_oauth(&slug) && auth[pi_provider(&slug)]["type"] == "oauth" {
+        request_auth(home, bot, &slug).await?;
+        prepare_pi_for_bot(home, bot, agent_dir)?;
+    }
+    Ok(())
 }
 fn prepare_pi_config(home: &Path, profile_home: Option<&Path>, agent_dir: &Path) -> Result<()> {
     let _lock = credentials_lock()
@@ -747,33 +875,26 @@ fn prepare_pi_config(home: &Path, profile_home: Option<&Path>, agent_dir: &Path)
         };
         let access = string(tokens, "access_token");
         if access.is_empty() {
+            if daemon_oauth(slug) && auth[&pi]["type"] == "oauth" {
+                auth.as_object_mut().unwrap().remove(&pi);
+            }
             continue;
         }
-        let expires = tokens["expires_at"]
-            .as_f64()
-            .map(|v| v * 1000.0)
-            .or_else(|| {
-                tokens["expires_at"]
-                    .as_str()
-                    .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
-                    .map(|v| v.timestamp_millis() as f64)
-            })
-            .unwrap_or(0.0);
-        if auth[&pi]["type"] == "oauth" && auth[&pi]["expires"].as_f64().unwrap_or(0.0) >= expires {
-            continue;
-        }
-        if matches!(slug, "openai-codex" | "xai-oauth" | "anthropic") {
-            let mut credential = json!({"type":"oauth","access":access,"refresh":string(tokens,"refresh_token"),"expires":expires});
+        if daemon_oauth(slug) {
+            let shared = read_json(&shared_grant_path(home, slug, tokens))?;
+            let access = shared["access_token"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(access);
+            // Pi retains its OAuth transport behavior, but only the daemon can refresh.
+            auth[&pi] =
+                json!({"type":"oauth","access":access,"refresh":"","expires":8640000000000000u64});
             if slug == "openai-codex"
                 && let Some(claims) = jwt_claims(access)
             {
-                credential["accountId"] =
+                auth[&pi]["accountId"] =
                     claims["https://api.openai.com/auth"]["chatgpt_account_id"].clone();
-                if expires == 0.0 {
-                    credential["expires"] = json!(claims["exp"].as_f64().unwrap_or(0.0) * 1000.0)
-                }
             }
-            auth[&pi] = credential;
         } else {
             auth[&pi] = json!({"type":"api_key","key":state["agent_key"].as_str().filter(|s|!s.is_empty()).unwrap_or(access)});
         }
@@ -1402,7 +1523,7 @@ pub async fn request_auth(home: &Path, bot: &str, provider: &str) -> Result<Valu
     let slug = canonical_provider(provider);
     if !matches!(
         slug.as_str(),
-        "nous" | "qwen-oauth" | "minimax-oauth" | "xai-oauth"
+        "nous" | "qwen-oauth" | "minimax-oauth" | "xai-oauth" | "openai-codex" | "anthropic"
     ) {
         return Ok(json!({"headers":{}}));
     }
@@ -1431,7 +1552,11 @@ pub async fn request_auth(home: &Path, bot: &str, provider: &str) -> Result<Valu
         }
     });
     if let Some(key) = inline.or(key(&profile_home, p)?).or(key(home, p)?) {
-        return Ok(json!({"headers":{"authorization":format!("Bearer {key}")}}));
+        return Ok(if slug == "anthropic" {
+            json!({"headers":{"x-api-key":key,"authorization":null}})
+        } else {
+            json!({"headers":{"authorization":format!("Bearer {key}")}})
+        });
     }
     let profile_state = oauth(&profile_home, &slug)?;
     let credential_home = if !string(&profile_state, "access_token").is_empty()
@@ -1456,15 +1581,11 @@ pub async fn request_auth(home: &Path, bot: &str, provider: &str) -> Result<Valu
             format!("No {slug} credentials are available. Sign in again."),
         ));
     }
-    if slug == "xai-oauth" {
-        let pi = read_json(&profile_home.join("pi/auth.json"))?;
-        let credential = &pi["xai"];
-        if credential["type"] == "oauth"
-            && credential["expires"].as_f64().unwrap_or(0.0) / 1000.0 > expires_at(&tokens)
-        {
-            tokens["access_token"] = credential["access"].clone();
-            tokens["refresh_token"] = credential["refresh"].clone();
-            tokens["expires_at"] = json!(credential["expires"].as_f64().unwrap_or(0.0) / 1000.0);
+    let shared_path = daemon_oauth(&slug).then(|| shared_grant_path(home, &slug, &tokens));
+    if let Some(path) = &shared_path {
+        let shared = read_json(path)?;
+        if shared["access_token"].is_string() {
+            tokens = shared;
         }
     }
     let should_refresh = expires_at(&tokens) <= common::now() + 120.0
@@ -1478,6 +1599,16 @@ pub async fn request_auth(home: &Path, bot: &str, provider: &str) -> Result<Valu
             ));
         }
         let (default, path, default_client) = match slug.as_str() {
+            "openai-codex" => (
+                "https://auth.openai.com",
+                "/oauth/token",
+                "app_EMoamEEZ73f0CkXaXp7hrann",
+            ),
+            "anthropic" => (
+                "https://platform.claude.com",
+                "/v1/oauth/token",
+                "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+            ),
             "nous" => (
                 "https://portal.nousresearch.com",
                 "/api/oauth/token",
@@ -1518,16 +1649,18 @@ pub async fn request_auth(home: &Path, bot: &str, provider: &str) -> Result<Valu
             .as_str()
             .filter(|s| !s.is_empty())
             .unwrap_or(default_client);
-        let response = client()?
-            .post(format!("{issuer}{path}"))
-            .form(&[
+        let request = client()?.post(format!("{issuer}{path}"));
+        let request = if slug == "anthropic" {
+            request
+                .json(&json!({"grant_type":"refresh_token","client_id":id,"refresh_token":refresh}))
+        } else {
+            request.form(&[
                 ("grant_type", "refresh_token"),
                 ("client_id", id),
                 ("refresh_token", refresh),
             ])
-            .send()
-            .await
-            .map_err(http_error)?;
+        };
+        let response = request.send().await.map_err(http_error)?;
         let response = response_json(response).await?;
         if string(&response, "access_token").is_empty()
             || (slug == "minimax-oauth" && response["status"] != "success")
@@ -1586,17 +1719,21 @@ pub async fn request_auth(home: &Path, bot: &str, provider: &str) -> Result<Valu
                 "Provider was disconnected during token refresh.",
             ));
         }
-        let mut auth = read_json(&credential_home.join("auth.json"))?;
-        if !auth["providers"].is_object() {
-            auth["providers"] = json!({})
-        }
-        if state["tokens"].is_object() {
-            state["tokens"] = tokens.clone();
-            auth["providers"][&slug] = state
+        if let Some(path) = &shared_path {
+            write_json(path, &tokens)?;
         } else {
-            auth["providers"][&slug] = tokens.clone()
+            let mut auth = read_json(&credential_home.join("auth.json"))?;
+            if !auth["providers"].is_object() {
+                auth["providers"] = json!({})
+            }
+            if state["tokens"].is_object() {
+                state["tokens"] = tokens.clone();
+                auth["providers"][&slug] = state
+            } else {
+                auth["providers"][&slug] = tokens.clone()
+            }
+            write_json(&credential_home.join("auth.json"), &auth)?;
         }
-        write_json(&credential_home.join("auth.json"), &auth)?;
     }
     // Persist rotated refresh tokens before validation, because an upstream rotation is irreversible.
     if slug == "nous" {
@@ -1873,4 +2010,154 @@ pub fn xai_configured(home: &Path, bot: &str) -> Result<bool> {
     }
     let pi = read_json(&profile_home.join("pi/auth.json"))?;
     Ok(pi["xai"]["type"] == "oauth" && pi["xai"]["access"].as_str().is_some_and(|s| !s.is_empty()))
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    #[test]
+    fn reads_credential_pool_and_hexbot_anthropic_login_without_changing_imports() {
+        let home = tempfile::tempdir().unwrap();
+        let original = json!({"credential_pool":{"test":[{"auth_type":"api_key","access_token":"pooled-key","priority":0}],"anthropic":[{"auth_type":"oauth","access_token":"sk-ant-oat-pool","refresh_token":"refresh","expires_at_ms":999000}]}}).to_string();
+        fs::write(home.path().join("auth.json"), &original).unwrap();
+        assert_eq!(
+            key(
+                home.path(),
+                &json!({"name":"test","env_vars":["HEXBOT_W3_TEST_KEY"]})
+            )
+            .unwrap()
+            .as_deref(),
+            Some("pooled-key")
+        );
+        assert_eq!(
+            oauth(home.path(), "anthropic").unwrap()["expires_at"],
+            999.0
+        );
+        assert_eq!(
+            fs::read_to_string(home.path().join("auth.json")).unwrap(),
+            original
+        );
+        fs::write(home.path().join(".env"), "HEXBOT_W3_TEST_KEY=explicit\n").unwrap();
+        assert_eq!(
+            key(
+                home.path(),
+                &json!({"name":"test","env_vars":["HEXBOT_W3_TEST_KEY"]})
+            )
+            .unwrap()
+            .as_deref(),
+            Some("explicit")
+        );
+        fs::write(home.path().join("auth.json"), "{}").unwrap();
+        let login = json!({"accessToken":"sk-ant-oat-login","refreshToken":"login-refresh","expiresAt":1234000});
+        write_json(&home.path().join(".anthropic_oauth.json"), &login).unwrap();
+        assert_eq!(
+            oauth(home.path(), "anthropic").unwrap()["access_token"],
+            "sk-ant-oat-login"
+        );
+        assert_eq!(
+            read_json(&home.path().join(".anthropic_oauth.json")).unwrap(),
+            login
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn github_cli_fallback_reads_only_a_successful_supported_token() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let program = home.path().join("gh");
+        for (script, expected) in [
+            (
+                "#!/bin/sh\n[ \"$1 $2\" = 'auth token' ] || exit 1\nprintf 'ghu_test\\n'",
+                Some("ghu_test"),
+            ),
+            ("#!/bin/sh\nprintf ghp_unsupported", None),
+            ("#!/bin/sh\nprintf ghu_test; exit 1", None),
+        ] {
+            fs::write(&program, script).unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(github_cli_token(&program).as_deref(), expected);
+        }
+    }
+    #[tokio::test]
+    async fn bots_share_rotating_oauth_tokens_and_never_receive_refresh_tokens() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let home = tempfile::tempdir().unwrap();
+        crate::db::migrate(home.path()).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let issuer = format!("http://{}", listener.local_addr().unwrap());
+        let count = Arc::new(AtomicUsize::new(0));
+        let calls = count.clone();
+        let app = axum::Router::new().route("/oauth/token", axum::routing::post(move |body: String| {
+            let calls = calls.clone();
+            async move {
+                let n = calls.fetch_add(1, Ordering::SeqCst);
+                assert!(body.contains(if n == 0 { "refresh_token=original" } else { "refresh_token=rotated-1" }), "{body}");
+                axum::Json(json!({"access_token":format!("access-{}", n+1),"refresh_token":format!("rotated-{}",n+1),"expires_in":3600}))
+            }
+        }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        common::write_config(
+            home.path(),
+            &json!({"provider_auth":{"openai-codex":{"issuer":issuer}}}),
+        )
+        .unwrap();
+        let tokens = json!({"access_token":"expired","refresh_token":"original","expires_at":1});
+        let original = json!({"providers":{"openai-codex":tokens}}).to_string();
+        fs::write(home.path().join("auth.json"), &original).unwrap();
+        for bot in ["owl", "fox"] {
+            fs::create_dir_all(home.path().join("profiles").join(bot)).unwrap();
+            fs::write(
+                home.path().join("profiles").join(bot).join("auth.json"),
+                &original,
+            )
+            .unwrap();
+        }
+        let (a, b) = tokio::join!(
+            request_auth(home.path(), "owl", "openai-codex"),
+            request_auth(home.path(), "fox", "openai-codex")
+        );
+        assert_eq!(a.unwrap()["headers"]["authorization"], "Bearer access-1");
+        assert_eq!(b.unwrap()["headers"]["authorization"], "Bearer access-1");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let path = shared_grant_path(home.path(), "openai-codex", &tokens);
+        let mut shared = read_json(&path).unwrap();
+        assert_eq!(shared["refresh_token"], "rotated-1");
+        shared["expires_at"] = json!(0);
+        write_json(&path, &shared).unwrap();
+        let short_lived = home.path().join("profiles/owl/pi");
+        prepare_pi_for_request(home.path(), "owl", &short_lived, Some("codex"))
+            .await
+            .unwrap();
+        assert_eq!(
+            read_json(&short_lived.join("auth.json")).unwrap()["openai-codex"]["access"],
+            "access-2"
+        );
+        assert_eq!(
+            request_auth(home.path(), "fox", "openai-codex")
+                .await
+                .unwrap()["headers"]["authorization"],
+            "Bearer access-2"
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        for bot in ["owl", "fox"] {
+            let dir = home.path().join("profiles").join(bot).join("pi");
+            prepare_pi_for_bot(home.path(), bot, &dir).unwrap();
+            let exported = read_json(&dir.join("auth.json")).unwrap();
+            assert_eq!(exported["openai-codex"]["refresh"], "");
+            assert_eq!(exported["openai-codex"]["access"], "access-2");
+            assert_eq!(
+                fs::read_to_string(home.path().join("profiles").join(bot).join("auth.json"))
+                    .unwrap(),
+                original
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(home.path().join("auth.json")).unwrap(),
+            original
+        );
+        server.abort();
+    }
 }

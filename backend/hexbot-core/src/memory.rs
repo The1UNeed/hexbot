@@ -305,11 +305,10 @@ fn check_cap(text: &str, cap: i64, label: &str) -> Result<()> {
 }
 
 fn read_optional(path: &Path) -> Result<String> {
-    match fs::read_to_string(path) {
-        Ok(text) => Ok(text),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(error) => Err(error.into()),
+    if !path.try_exists()? {
+        return Ok(String::new());
     }
+    crate::common::read_regular_text(path, 4 * 1024 * 1024)
 }
 
 #[cfg(test)]
