@@ -8,6 +8,13 @@ use crate::{Error, Result};
 
 pub const SCHEMA_VERSION: i64 = 11;
 
+/// Native scheduler tables live in hexbot-runtime.db, separate from the legacy schema.
+pub(crate) fn migrate_runtime(conn: &Connection) -> Result<()> {
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS native_jobs(id TEXT PRIMARY KEY,owner TEXT NOT NULL,bot TEXT NOT NULL,job_json TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS native_job_imports(bot TEXT PRIMARY KEY);")?;
+    Ok(())
+}
+
 const TABLES: &str = "
 CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS bots(name TEXT PRIMARY KEY, display_name TEXT, title TEXT,

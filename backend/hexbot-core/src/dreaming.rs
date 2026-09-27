@@ -40,11 +40,6 @@ pub async fn tool_call(home: &Path, owner: &str, bot: &str, p: &Value) -> Result
     scheduler.tool_call(owner, bot, p).await
 }
 
-fn scheduler_db(home: &Path) -> Result<rusqlite::Connection> {
-    let conn = runtime_store::open(home)?;
-    conn.execute_batch("CREATE TABLE IF NOT EXISTS native_jobs(id TEXT PRIMARY KEY,owner TEXT NOT NULL,bot TEXT NOT NULL,job_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS native_job_imports(bot TEXT PRIMARY KEY);")?;
-    Ok(conn)
-}
 fn now_iso(now: f64) -> String {
     Utc.timestamp_opt(now as i64, 0)
         .single()
@@ -473,7 +468,7 @@ impl Dreaming {
         if ticker.is_some() {
             return Ok(());
         }
-        scheduler_db(&self.home)?.execute("UPDATE native_jobs SET job_json=json_set(job_json,'$.state',CASE WHEN json_extract(job_json,'$.enabled')=0 THEN 'paused' ELSE 'scheduled' END,'$.last_status','error','$.last_error','Daemon stopped before the job finished') WHERE json_extract(job_json,'$.state')='running'",[])?;
+        runtime_store::open(&self.home)?.execute("UPDATE native_jobs SET job_json=json_set(job_json,'$.state',CASE WHEN json_extract(job_json,'$.enabled')=0 THEN 'paused' ELSE 'scheduled' END,'$.last_status','error','$.last_error','Daemon stopped before the job finished') WHERE json_extract(job_json,'$.state')='running'",[])?;
         db::open(&self.home)?.execute("UPDATE dreams SET status='failed',finished_at=?,summary='Daemon stopped before the dream finished' WHERE status='running'",[common::now()])?;
         self.import_jobs()?;
         let this = self.clone();
@@ -512,17 +507,17 @@ impl Dreaming {
         .remove(0))
     }
     fn job(&self, owner: &str, bot: &str, id: &str) -> Result<Value> {
-        let row:Option<String>=scheduler_db(&self.home)?.query_row("SELECT job_json FROM native_jobs WHERE owner=? AND bot=? AND (id=? OR json_extract(job_json,'$.name')=?)",params![owner,bot,id,id],|r|r.get(0)).optional()?;
+        let row:Option<String>=runtime_store::open(&self.home)?.query_row("SELECT job_json FROM native_jobs WHERE owner=? AND bot=? AND (id=? OR json_extract(job_json,'$.name')=?)",params![owner,bot,id,id],|r|r.get(0)).optional()?;
         row.map(|s| serde_json::from_str(&s).map_err(|e| Error::new(5200, e.to_string())))
             .unwrap_or_else(|| Err(Error::new(4240, "scheduled job not found")))
     }
     fn save_job(&self, owner: &str, bot: &str, job: &Value) -> Result<()> {
-        scheduler_db(&self.home)?.execute("INSERT INTO native_jobs(id,owner,bot,job_json) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET job_json=excluded.job_json",params![common::required(job,"id")?,owner,bot,job.to_string()])?;
+        runtime_store::open(&self.home)?.execute("INSERT INTO native_jobs(id,owner,bot,job_json) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET job_json=excluded.job_json",params![common::required(job,"id")?,owner,bot,job.to_string()])?;
         Ok(())
     }
     fn jobs(&self, owner: &str, bot: &str) -> Result<Vec<Value>> {
         common::rows(
-            &scheduler_db(&self.home)?,
+            &runtime_store::open(&self.home)?,
             "SELECT job_json FROM native_jobs WHERE owner=? AND bot=? ORDER BY id",
             &[&owner, &bot],
         )?
@@ -541,7 +536,7 @@ impl Dreaming {
         )? {
             let name = bot["name"].as_str().unwrap_or("");
             common::identifier(name)?;
-            let conn = scheduler_db(&self.home)?;
+            let conn = runtime_store::open(&self.home)?;
             let imported: bool = conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM native_job_imports WHERE bot=?)",
                 [name],
@@ -764,7 +759,7 @@ impl Dreaming {
             }
         }
         for row in common::rows(
-            &scheduler_db(&self.home)?,
+            &runtime_store::open(&self.home)?,
             "SELECT owner,bot,job_json FROM native_jobs",
             &[],
         )? {
@@ -1268,7 +1263,7 @@ impl Dreaming {
                     );
                 }
                 if action == "remove" {
-                    scheduler_db(&self.home)?.execute(
+                    runtime_store::open(&self.home)?.execute(
                         "DELETE FROM native_jobs WHERE id=? AND owner=?",
                         params![job["id"].as_str(), owner],
                     )?;
