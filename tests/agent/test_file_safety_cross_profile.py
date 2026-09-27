@@ -1,13 +1,13 @@
 """Tests for the cross-Hermes-profile write guard in agent/file_safety.
 
-The guard fires when a tool tries to write into another Hermes profile's
+The guard fires when a tool tries to write into another Hexbot profile's
 skills/plugins/cron/memories directory. It's a soft guard — defense in
 depth, NOT a security boundary — but it prevents the agent from silently
 corrupting a profile that belongs to a different session.
 
 Reference: May 2026 incident — a hermes-security profile session
-accidentally edited skills under both ~/.hermes/profiles/hermes-security/skills/
-AND ~/.hermes/skills/ (the default profile's skills), realizing only
+accidentally edited skills under both ~/.hexbot/profiles/hermes-security/skills/
+AND ~/.hexbot/skills/ (the default profile's skills), realizing only
 afterwards that the second path belonged to a different profile.
 """
 from __future__ import annotations
@@ -18,14 +18,14 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Helpers — set up a fake Hermes root with two profiles, monkeypatch the
+# Helpers — set up a fake Hexbot root with two profiles, monkeypatch the
 # resolver helpers so the classifier sees the test layout.
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def fake_hermes(tmp_path, monkeypatch):
-    """Build a fake Hermes layout:
+    """Build a fake Hexbot layout:
 
         <tmp>/
           skills/foo/SKILL.md           # default profile

@@ -16,8 +16,8 @@ from hexbot.models_curated import CURATED_MODELS
 
 logger = logging.getLogger(__name__)
 
-#: Slugs callers reach for that Hermes spells differently. Applied BEFORE the
-#: Hermes alias tables because ``hermes_cli.providers.normalize_provider``
+#: Slugs callers reach for that Hexbot spells differently. Applied BEFORE the
+#: Hexbot alias tables because ``hermes_cli.providers.normalize_provider``
 #: resolves "openai" to "openrouter", which is not what a client asking for
 #: "the OpenAI provider" means.
 _ALIASES = {
@@ -34,7 +34,7 @@ _ALIASES = {
 
 
 def canonical_provider(name: str | None) -> str:
-    """Best-effort canonical Hermes slug for a caller-supplied provider name."""
+    """Best-effort canonical Hexbot slug for a caller-supplied provider name."""
     slug = (name or "").strip().lower()
     if not slug:
         return ""
@@ -90,7 +90,7 @@ def _auth_type(slug: str) -> str:
 
 
 def _label(slug: str) -> str:
-    """Human display name: providers/ registry, else the Hermes label table."""
+    """Human display name: providers/ registry, else the Hexbot label table."""
     if slug == "custom":
         return "Custom endpoint"
     profile = _registry_profile(slug)
@@ -139,7 +139,7 @@ def _oauth_credentials_present(slug: str) -> bool:
 
 
 def _known_slugs() -> list[str]:
-    """Every provider Hermes can route to, canonical picker order first."""
+    """Every provider Hexbot can route to, canonical picker order first."""
     slugs: list[str] = []
     try:
         from hermes_cli.models import CANONICAL_PROVIDERS
@@ -161,7 +161,7 @@ def _known_slugs() -> list[str]:
 
 
 def list_providers() -> list[dict]:
-    """All Hermes providers with a real ``configured`` boolean."""
+    """All Hexbot providers with a real ``configured`` boolean."""
     from dotenv import dotenv_values
 
     values = dotenv_values(hexbot_home() / ".env")
@@ -260,7 +260,7 @@ def _model(slug: str, model_id: str, pricing: dict | None) -> dict:
     price = (pricing or {}).get(model_id) or {}
     # ``model.options`` pre-formats prices as "$3.00" per million tokens (or
     # "free"); they are passed through verbatim so every Hexbot surface reads
-    # the same string the Hermes picker shows.
+    # the same string the Hexbot picker shows.
     if price.get("input"):
         entry["input_cost"] = price["input"]
     if price.get("output"):
@@ -287,11 +287,11 @@ def _static_catalog(slug: str) -> list[str]:
 def list_models(provider=None, include_unconfigured=None, refresh=False) -> dict:
     """Return ``{curated, all}`` model lists, optionally filtered by provider.
 
-    ``all`` comes from the Hermes ``model.options`` picker payload. That payload
+    ``all`` comes from the Hexbot ``model.options`` picker payload. That payload
     only carries model ids for providers that already have credentials —
     unconfigured providers appear as empty skeleton rows — so when the caller
     names a provider with no key we ask for ``include_unconfigured`` and, if the
-    row is still empty, fall back to Hermes' offline curated catalog. ``refresh``
+    row is still empty, fall back to Hexbot's offline curated catalog. ``refresh``
     forwards the picker's live-catalog refresh.
     """
     slug = canonical_provider(provider)

@@ -1,23 +1,23 @@
 # Hexbot authentication
 
-Hexbot uses Hermes's dashboard authentication gate. A daemon bound to a LAN
+Hexbot uses the core's dashboard authentication gate. A daemon bound to a LAN
 address requires authentication. A loopback-only daemon does not.
 
 Every WebSocket RPC resolves its Hexbot user from the server-authenticated
-transport identity, never from request parameters. Hermes supplies
+transport identity, never from request parameters. The core supplies
 `user_id = "device:<id>"`; Hexbot looks up that device and uses its `owner_id`.
 An ungated loopback connection resolves to the seeded `local` admin. Revoked
 devices, disabled users, and ownership mismatches are rejected.
 
 ## Loopback daemon
 
-When the daemon binds to `127.0.0.1`, Hermes injects its process session token
+When the daemon binds to `127.0.0.1`, the core injects its process session token
 and `window.__HERMES_AUTH_REQUIRED__ = false` into the web bundle. The local
 browser uses that injected token. No pairing code or device cookie is needed.
 
 ## LAN browser
 
-Run `hexbot pair`, then open the daemon in a browser. Hermes redirects an
+Run `hexbot pair`, then open the daemon in a browser. The core redirects an
 unauthenticated browser to `/login`. Select "Hexbot pairing", enter a device
 name as the username, and enter the eight-character pairing code as the
 password.
@@ -28,7 +28,7 @@ cookies over plain HTTP:
 - `hermes_session_at`, containing the long-lived Hexbot device token
 - `hermes_session_provider`, containing `hexbot`
 
-The browser sends the cookie to `POST /api/auth/ws-ticket`. Hermes returns a
+The browser sends the cookie to `POST /api/auth/ws-ticket`. The core returns a
 single-use ticket valid for 30 seconds. The browser then opens
 `/api/ws?ticket=<ticket>`.
 

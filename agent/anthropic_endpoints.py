@@ -1,6 +1,6 @@
 """Endpoint-family detection for Anthropic-compatible base URLs.
 
-Hermes talks to a dozen services that speak the Anthropic Messages API but
+Hexbot talks to a dozen services that speak the Anthropic Messages API but
 differ in auth style, accepted beta headers, and request quirks: MiniMax,
 Kimi/Moonshot, DeepSeek, OpenCode, Azure AI Foundry, the Nous portal, Bedrock.
 Every one of those differences is decided by inspecting the configured base

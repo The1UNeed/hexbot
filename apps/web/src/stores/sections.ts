@@ -1,7 +1,7 @@
 /**
  * Sections (= conversations = threads), keyed by id and grouped per bot.
  * Refreshed on `hexbot.sections.changed`. `liveSessionId` maps an open
- * section to the Hermes live session its events arrive on.
+ * section to the Hexbot live session its events arrive on.
  */
 
 import { create } from 'zustand'
@@ -57,9 +57,11 @@ function indexSections(sections: Section[]): Pick<SectionsState, 'byId' | 'idsBy
 
 function mergeSection(state: SectionsState, section: Section): Partial<SectionsState> {
   const existing = state.idsByBot[section.bot] ?? []
+  // Only the list carries the preview; a rename or archive reply must not blank it.
+  const preview = section.preview || state.byId[section.id]?.preview || ''
 
   return {
-    byId: { ...state.byId, [section.id]: section },
+    byId: { ...state.byId, [section.id]: { ...section, preview } },
     idsByBot: {
       ...state.idsByBot,
       [section.bot]: existing.includes(section.id) ? existing : [section.id, ...existing]
@@ -113,7 +115,7 @@ export const useSections = create<SectionsState>((set, get) => ({
           live,
           id,
           messagesFromHistory(messages ?? []).filter(
-            // Hermes replays an interrupted hidden kickoff as a plain user turn.
+            // Hexbot replays an interrupted hidden kickoff as a plain user turn.
             message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
           )
         )

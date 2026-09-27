@@ -183,6 +183,12 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
       return
 
+    // Hexbot named the session from its first prompt; the list adopts it.
+    case 'session.title':
+      effects.refreshSections()
+
+      return
+
     default:
       break
   }

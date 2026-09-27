@@ -1,1 +1,1 @@
-# Hermes plugins package
+# Hexbot plugins package

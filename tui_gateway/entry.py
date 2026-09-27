@@ -2,7 +2,7 @@ import os
 import sys
 
 # Stop a ``utils/`` (or ``proxy/``, ``ui/``) package in the launch directory
-# from shadowing Hermes's own top-level modules.  ``hermes_bootstrap`` lives at
+# from shadowing Hexbot's own top-level modules.  ``hermes_bootstrap`` lives at
 # the repo root next to this package, so importing it is safe before the guard
 # runs (its name won't collide with a user package), and it owns the canonical
 # path-hardening logic shared with the other entry points.
@@ -184,7 +184,7 @@ def _log_signal(signum: int, frame) -> None:
 #
 # SIGPIPE and SIGHUP don't exist on Windows; guard each installation
 # with hasattr so ``python -m tui_gateway.entry`` (spawned by
-# ``hermes --tui``) imports cleanly there.  SIGBREAK (Windows' Ctrl+Break)
+# ``hexbot core --tui``) imports cleanly there.  SIGBREAK (Windows' Ctrl+Break)
 # is installed when available as a weaker equivalent of SIGHUP.
 #
 # signal.signal() is only legal in the MAIN thread. On the Desktop/WebSocket
@@ -322,9 +322,9 @@ def mcp_discovery_in_flight() -> bool:
     and the banner/tool count will be stale until they arrive.
 
     There are two independent discovery-thread owners by surface: the stdio
-    ``hermes --tui`` path spawns ITS thread here (``_mcp_discovery_thread``),
+    ``hexbot core --tui`` path spawns ITS thread here (``_mcp_discovery_thread``),
     while the desktop app + dashboard WebSocket sidecar (``tui_gateway/ws.py``)
-    and ``hermes dashboard`` spawn theirs via
+    and ``hexbot core dashboard`` spawn theirs via
     ``hermes_cli.mcp_startup.start_background_mcp_discovery``. The late-refresh
     scheduler imports this function regardless of surface, so it MUST consult
     both — checking only the entry thread left the desktop/dashboard surfaces
@@ -469,7 +469,7 @@ def main():
         _log_exit("startup write failed (broken stdout pipe before first event)")
         sys.exit(0)
 
-    # Live-apply skins Hermes activates mid-conversation.
+    # Live-apply skins Hexbot activates mid-conversation.
     server._ensure_skin_watcher()
 
     # Warm the /model picker's provider-models cache off-thread during this

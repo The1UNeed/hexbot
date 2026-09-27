@@ -24,4 +24,4 @@ Tailscale access control lists can restrict who reaches the daemon. Allow only t
 
 Run `tailscale status` on both computers. Confirm that the daemon's Tailscale address responds and that your tailnet policy permits the port. Then check Hexbot's LAN setting and generate a new pairing code.
 
-Hexbot Connect will offer a managed remote path later. Tailscale works without Hexbot Connect and keeps the route under your control.
+Hex Connect will offer a managed remote path later. Tailscale works without Hex Connect and keeps the route under your control.

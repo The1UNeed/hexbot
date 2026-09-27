@@ -30,6 +30,7 @@ import {
   type UpdateState
 } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
+import { connectBaseUrl } from '../../lib/connect-url'
 import { pairWithDaemon, targetOrigin } from '../../lib/connection'
 import type { ApprovalMode, ModelOption, PairingCode, Provider } from '../../lib/types'
 import { daemonBehind } from '../../lib/version-skew'
@@ -45,6 +46,7 @@ import {
 } from '../../stores/updates'
 import { useUsers } from '../../stores/users'
 import { MemoryEditor } from '../bot-settings/memory'
+import { ConfirmUpdate, updateNow, updateTarget } from '../confirm-update'
 
 export const SETTINGS_TABS = [
   'providers',
@@ -198,16 +200,50 @@ export function ConnectSettings() {
   return (
     <>
       <Heading description="Reach this daemon securely when you are away from your local network.">
-        Hexbot Connect
+        Hex Connect
       </Heading>
       {status?.registered ? (
         <div>
           <dl className="grid grid-cols-[auto_1fr] gap-2">
+            <dt className="text-muted">Address</dt>
+            <dd>
+              <a
+                className="text-accent hover:underline"
+                href={`https://${status.tunnel_hostname}`}
+                onClick={event => {
+                  if (getBridge()) {
+                    event.preventDefault()
+                    void open(`https://${status.tunnel_hostname}`)
+                  }
+                }}
+                rel="noreferrer"
+                target="_blank"
+              >
+                {status.tunnel_hostname}
+              </a>
+            </dd>
             <dt className="text-muted">Tunnel</dt>
-            <dd>{status.tunnel_hostname}</dd>
-            <dt className="text-muted">Status</dt>
             <dd>{status.tunnel_running ? 'Running' : 'Stopped'}</dd>
           </dl>
+          <p className="mt-3 text-secondary text-muted">
+            Open the address in any browser and sign in with Hex Connect, or manage this
+            daemon and your signed-in apps at{' '}
+            <a
+              className="text-accent hover:underline"
+              href={`${connectBaseUrl()}/connect`}
+              onClick={event => {
+                if (getBridge()) {
+                  event.preventDefault()
+                  void open(`${connectBaseUrl()}/connect`)
+                }
+              }}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {connectBaseUrl().replace(/^https?:\/\//, '')}
+            </a>
+            .
+          </p>
           <Button
             className="mt-5"
             onClick={() =>
@@ -1199,6 +1235,7 @@ export function UpdatesSettings(): React.JSX.Element {
   const bridge = getBridge()
   const app = useUpdates(state => state.app)
   const [pending, setPending] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   const action = app ? updateAction(app) : 'check'
   const busy = pending || app?.status === 'checking' || app?.status === 'downloading'
 
@@ -1223,22 +1260,13 @@ export function UpdatesSettings(): React.JSX.Element {
           </p>
           {app?.status !== 'disabled' ? (
             <div className="mt-3 flex flex-wrap gap-2">
-              {action === 'download' ? (
-                <Button
-                  disabled={busy}
-                  onClick={() => run(() => bridge.updater.download())}
-                  variant="primary"
-                >
-                  {app?.errorContext === 'download' ? 'Retry download' : 'Download update'}
-                </Button>
-              ) : null}
-              {action === 'install' ? (
-                <Button
-                  disabled={busy}
-                  onClick={() => run(() => bridge.updater.install())}
-                  variant="primary"
-                >
-                  Restart and install
+              {action === 'download' || action === 'install' ? (
+                <Button disabled={busy} onClick={() => setConfirming(true)} variant="primary">
+                  {action === 'install'
+                    ? 'Restart and install'
+                    : app?.errorContext === 'download'
+                      ? 'Retry update'
+                      : 'Update'}
                 </Button>
               ) : null}
               <Button
@@ -1268,6 +1296,13 @@ export function UpdatesSettings(): React.JSX.Element {
           </label>
         </div>
       ) : null}
+      {bridge ? (
+        <ConfirmUpdate
+          onClose={() => setConfirming(false)}
+          onConfirm={() => run(() => updateNow(bridge))}
+          version={confirming ? updateTarget(app) : null}
+        />
+      ) : null}
       <h3 className={cn('font-medium', bridge ? 'mt-8' : '')}>Daemon</h3>
       <div className="mt-2">
         <DaemonUpdates appVersion={bridge?.version ?? null} />
@@ -1288,7 +1323,7 @@ export function AboutSettings(): React.JSX.Element {
 
   return (
     <>
-      <Heading description="Hexbot is a self-hosted multi-agent app built on Hermes Agent.">
+      <Heading description="Hexbot is a self-hosted multi-agent app.">
         About
       </Heading>
       <dl className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-2">
@@ -1300,10 +1335,10 @@ export function AboutSettings(): React.JSX.Element {
             <dd>{bridge.edition === 'client' ? 'Client only' : 'Full'}</dd>
           </>
         ) : null}
-        <dt className="text-muted">Hermes Agent</dt>
+        <dt className="text-muted">Agent core</dt>
         <dd>{info?.hermes_version ?? '—'}</dd>
         <dt className="text-muted">License</dt>
-        <dd>MIT</dd>
+        <dd>AGPL-3.0</dd>
       </dl>
       <div className="mt-6 flex gap-2">
         <Button

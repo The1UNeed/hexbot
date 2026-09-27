@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Telegram inline command picker — searchable access to EVERY command/skill.
 
-Telegram's BotCommand menu is capped (100 per scope, ~4KB payload; Hermes
+Telegram's BotCommand menu is capped (100 per scope, ~4KB payload; Hexbot
 defaults to 60 slots), so most skill commands can never appear in the ``/``
 menu. Inline mode has no such cap: typing ``@yourbot <query>`` in any chat
 asks the bot for results live, per keystroke, paginated 50 at a time — the

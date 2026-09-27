@@ -120,7 +120,7 @@ TOOLSETS = {
             "x_search Responses tool. Read-only public X discovery; use the "
             "xurl skill for authenticated X API reads and account actions. "
             "Available when xAI credentials are configured (SuperGrok OAuth "
-            "or XAI_API_KEY). Off by default; enable in `hermes tools` → "
+            "or XAI_API_KEY). Off by default; enable in `hexbot core tools` → "
             "X (Twitter) Search."
         ),
         "tools": ["x_search"],
@@ -151,7 +151,7 @@ TOOLSETS = {
             "text-to-video (prompt only) and image-to-video (prompt + "
             "image_url), plus reference-to-video. Provider-specific edit/"
             "extend workflows may appear as separate tools. Configure via "
-            "``hermes tools`` → Video Generation."
+            "``hexbot core tools`` → Video Generation."
         ),
         "tools": ["video_generate", "xai_video_edit", "xai_video_extend"],
         "includes": []
@@ -379,7 +379,7 @@ TOOLSETS = {
         "includes": ["web", "vision", "image_gen"]
     },
 
-    # Coding posture (base Hermes — CLI/TUI/desktop/ACP). Auto-selected in a
+    # Coding posture (base Hexbot — CLI/TUI/desktop/ACP). Auto-selected in a
     # code workspace; see agent/coding_context.py. Keeps everything you reach
     # for while pairing on code and drops the rest (messaging, tts, image_gen,
     # spotify, home-assistant, cron, computer-use).
@@ -413,12 +413,12 @@ TOOLSETS = {
     },
     
     # ==========================================================================
-    # Full Hermes toolsets (CLI + messaging platforms)
+    # Full Hexbot toolsets (CLI + messaging platforms)
     #
     # All platforms share the same core tools. Note: agents do NOT get an
     # agent-callable send_message tool — outbound platform messaging is handled
     # outside the agent loop (cron delivery, the gateway kanban notifier, and
-    # the `hermes send` CLI), not by the model deciding to send on its own.
+    # the `hexbot core send` CLI), not by the model deciding to send on its own.
     # ==========================================================================
 
     "hermes-acp": {
@@ -483,11 +483,11 @@ TOOLSETS = {
 
     "hermes-cron": {
         # Mirrors hermes-cli so cron's "default" toolset is the same set of
-        # core tools users see interactively — then `hermes tools` filters
+        # core tools users see interactively — then `hexbot core tools` filters
         # them down per the platform config. _DEFAULT_OFF_TOOLSETS (moa,
         # homeassistant) are excluded by _get_platform_tools() unless
         # the user explicitly enables them.
-        "description": "Default cron toolset - same core tools as hermes-cli; gated by `hermes tools`",
+        "description": "Default cron toolset - same core tools as hermes-cli; gated by `hexbot core tools`",
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
@@ -538,7 +538,7 @@ TOOLSETS = {
     },
 
     "hermes-email": {
-        "description": "Email bot toolset - interact with Hermes via email (IMAP/SMTP)",
+        "description": "Email bot toolset - interact with Hexbot via email (IMAP/SMTP)",
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
@@ -611,7 +611,7 @@ TOOLSETS = {
     },
 
     "hermes-sms": {
-        "description": "SMS bot toolset - interact with Hermes via SMS (Twilio)",
+        "description": "SMS bot toolset - interact with Hexbot via SMS (Twilio)",
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },

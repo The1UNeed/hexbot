@@ -9,7 +9,7 @@ launcher for the path where no agent-browser daemon is involved.
 Lifecycle: ``tools.browser_tool`` owns the session cache, the inactivity
 reaper and the atexit sweep; it calls :func:`launch_lightpanda` /
 :func:`stop_lightpanda` and :func:`reap_orphaned_lightpanda` for processes
-left behind by a crashed Hermes.
+left behind by a crashed Hexbot.
 """
 
 import json
@@ -69,7 +69,7 @@ def _home_candidates() -> list:
 
         candidates.append(Path(get_hermes_home()) / "bin" / "lightpanda")
     except Exception as e:  # pragma: no cover - defensive
-        logger.debug("hermes home unavailable for lightpanda lookup: %s", e)
+        logger.debug("Hexbot home unavailable for lightpanda lookup: %s", e)
     return candidates
 
 
@@ -207,7 +207,7 @@ def launch_lightpanda(
         if os.name == "nt":
             return None, (
                 "browser.engine is 'lightpanda' but Lightpanda has no Windows "
-                "build. Set browser.engine to auto (or run Hermes under WSL2)."
+                "build. Set browser.engine to auto (or run Hexbot under WSL2)."
             )
         return None, (
             "browser.engine is 'lightpanda' but no lightpanda binary was found "
@@ -343,10 +343,10 @@ def _is_lightpanda_process(pid: int, port, start_time) -> bool:
 
 
 def reap_orphaned_lightpanda() -> int:
-    """Kill ``lightpanda serve`` processes whose owning Hermes is gone.
+    """Kill ``lightpanda serve`` processes whose owning Hexbot is gone.
 
     Records are written by :func:`launch_lightpanda`; a live owner (another
-    Hermes process, or this one still tracking the session) is never
+    Hexbot process, or this one still tracking the session) is never
     touched, and a PID is only signalled after psutil confirms it is still
     a ``lightpanda serve`` on the recorded port. Returns the reap count.
     """

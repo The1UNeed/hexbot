@@ -1,8 +1,8 @@
 """Tests for subprocess env sanitization in LocalEnvironment.
 
-Verifies that Hermes-managed provider, tool, and gateway env vars are
+Verifies that Hexbot-managed provider, tool, and gateway env vars are
 stripped from subprocess environments so external CLIs are not silently
-misrouted or handed Hermes secrets.
+misrouted or handed Hexbot secrets.
 
 See: https://github.com/NousResearch/hermes-agent/issues/1002
 See: https://github.com/NousResearch/hermes-agent/issues/1264
@@ -70,7 +70,7 @@ def _run_with_env(extra_os_env=None, self_env=None):
 
 
 class TestProviderEnvBlocklist:
-    """Provider env vars loaded from ~/.hermes/.env must not leak."""
+    """Provider env vars loaded from ~/.hexbot/.env must not leak."""
 
     def test_blocked_vars_are_stripped(self):
         """OPENAI_BASE_URL and other provider vars must not appear in subprocess env."""
@@ -106,14 +106,14 @@ class TestProviderEnvBlocklist:
             assert var not in result_env, f"{var} leaked into subprocess env"
 
     def test_bedrock_bearer_token_is_stripped(self):
-        """The Bedrock-specific bearer token is a Hermes inference secret
+        """The Bedrock-specific bearer token is a Hexbot inference secret
         (analogous to OPENAI_API_KEY) and must not leak into subprocesses.
 
         Regression for #32314: AWS_BEARER_TOKEN_BEDROCK leaked into terminal /
         execute_code children because the ``bedrock`` ProviderConfig declares
         ``api_key_env_vars=()`` (auth_type="aws_sdk") and the blocklist builder
         only consulted that field. The reporter caught it when ``opencode
-        models`` run inside a Hermes terminal enumerated the entire Bedrock
+        models`` run inside a Hexbot terminal enumerated the entire Bedrock
         catalog off the leaked bearer token.
         """
         result_env = _run_with_env(extra_os_env={
@@ -159,7 +159,7 @@ class TestProviderEnvBlocklist:
         unconditionally — and (b) be unrecoverable, because env_passthrough.py
         refuses to re-allow anything in _HERMES_PROVIDER_ENV_BLOCKLIST
         (GHSA-rhgp-j443-p4rf). Only the Bedrock inference bearer token is
-        Hermes-managed; the rest belongs to the user.
+        Hexbot-managed; the rest belongs to the user.
         """
         general_chain = {
             "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
@@ -241,7 +241,7 @@ class TestProviderEnvBlocklist:
         assert "PATH" in result_env
 
     def test_bare_hermes_resolves_from_sanitized_subprocess_path(self):
-        """Cron children can resolve Hermes even when the gateway PATH cannot."""
+        """Cron children can resolve Hexbot even when the gateway PATH cannot."""
         from tools.environments.local import _sanitize_subprocess_env
 
         with patch(
@@ -559,9 +559,9 @@ class TestActiveVenvMarkerStripping:
     VIRTUAL_ENV (and possibly CONDA_PREFIX). If those leak into commands the
     agent runs against ANOTHER Python project, ``uv``/``poetry`` treat the
     inherited value as the active environment and build that project's deps
-    into the Hermes venv path instead of the project's own ``.venv`` —
-    silently clobbering the Hermes environment (and, when the other project
-    pins a different Python, breaking the gateway outright). The Hermes venv
+    into the Hexbot venv path instead of the project's own ``.venv`` —
+    silently clobbering the Hexbot environment (and, when the other project
+    pins a different Python, breaking the gateway outright). The Hexbot venv
     stays reachable via PATH, so stripping the markers is safe.
     """
 
@@ -635,25 +635,25 @@ def _physical_repo_root(tmp_path: Path) -> Path:
 
 
 class TestPythonpathSelectiveStrip:
-    """PYTHONPATH Hermes-owned entry stripping (#74817).
+    """PYTHONPATH Hexbot-owned entry stripping (#74817).
 
-    The Desktop Electron app injects the Hermes repo root and the Hermes
+    The Desktop Electron app injects the Hexbot repo root and the Hexbot
     venv's site-packages (Python 3.11) into PYTHONPATH.  When this leaks
     into subprocesses running a different Python (e.g. 3.13), 3.11 C
     extensions appear on sys.path and crash with ImportError.
     ``_strip_hermes_owned_pythonpath`` surgically removes only the
-    entries Hermes itself owns (repo root, own venv site-packages),
+    entries Hexbot itself owns (repo root, own venv site-packages),
     preserving user paths — including user paths whose names merely
     contain another Python version.
     """
 
     def test_owned_entries_stripped_matrix(self):
-        """Exact Hermes-owned entries are removed; everything else survives
+        """Exact Hexbot-owned entries are removed; everything else survives
         verbatim (ordering, duplicates, empty components).
 
         Covers: the running venv's site-packages, the repo root (computed
         independently via parents[2] so an off-by-one in _hermes_repo_root
-        cannot silently pass), duplicate Hermes entries, all-owned input
+        cannot silently pass), duplicate Hexbot entries, all-owned input
         (PYTHONPATH key removed), and mixed user/Hermes ordering with an
         empty component preserved.
         """
@@ -688,7 +688,7 @@ class TestPythonpathSelectiveStrip:
         "",
     ])
     def test_non_owned_entries_preserved(self, user_pp):
-        """Anything not proven Hermes-owned is preserved byte-for-byte.
+        """Anything not proven Hexbot-owned is preserved byte-for-byte.
 
         One invariant, one matrix: ordinary user paths, Nix store paths,
         other-major/minor-version site-packages, paths merely containing a
@@ -704,7 +704,7 @@ class TestPythonpathSelectiveStrip:
 
     def test_non_owned_runtime_shaped_entries_preserved(self):
         """Runtime-derived user spellings are preserved: site-packages for a
-        different interpreter version, a descendant of the Hermes venv
+        different interpreter version, a descendant of the Hexbot venv
         site-packages, and direct/deeper children of the repo root.  The
         repo root is computed independently (parents[2] of this file) so an
         off-by-one in _hermes_repo_root cannot silently pass; no launcher
@@ -733,16 +733,16 @@ class TestPythonpathSelectiveStrip:
             assert env["PYTHONPATH"] == user_pp
 
     def test_windows_backslash_paths(self):
-        """Windows-style backslash paths are handled for Hermes-owned entries.
+        """Windows-style backslash paths are handled for Hexbot-owned entries.
 
         On Windows, os.pathsep is ';'.  We mock it so the test runs
         correctly on POSIX CI.  On a POSIX host a backslash path is a
         single path component, so ``Path`` cannot identify it as
-        Hermes-owned — the critical invariant is that user Windows paths
+        Hexbot-owned — the critical invariant is that user Windows paths
         (including site-packages paths for another Python version) are
         never destroyed.  On a real Windows host, Path splits on
-        backslashes and Hermes venv site-packages entries are stripped
-        by the same Hermes-owned check (covered by the Windows-only test
+        backslashes and Hexbot venv site-packages entries are stripped
+        by the same Hexbot-owned check (covered by the Windows-only test
         below).
         """
         from tools.environments.local import _strip_hermes_owned_pythonpath
@@ -760,14 +760,14 @@ class TestPythonpathSelectiveStrip:
         assert "PYTHONPATH" in env
         entries = env["PYTHONPATH"].split(";")
         # Both survive on POSIX: user paths must always be preserved, and
-        # the Hermes-owned check cannot match a backslash path here.
+        # the Hexbot-owned check cannot match a backslash path here.
         assert hermes_win in entries
         assert user_win in entries
 
     @pytest.mark.windows_only
     def test_windows_hermes_owned_paths_stripped(self):
-        """On Windows, a Hermes venv site-packages entry written with
-        backslashes is stripped by the same Hermes-owned check, while a
+        """On Windows, a Hexbot venv site-packages entry written with
+        backslashes is stripped by the same Hexbot-owned check, while a
         user Windows path is preserved.  Windows-only: POSIX ``Path`` does
         not split on backslashes, so this cannot be meaningfully simulated
         on a POSIX host."""
@@ -826,9 +826,9 @@ class TestPythonpathSelectiveStrip:
     def test_base_python_sanitizer_uses_validated_separate_runtime_venv(self, tmp_path, monkeypatch):
         """A base interpreter strips the exact Windows runtime site-packages.
 
-        This deliberately uses a synthetic Hermes venv separate from the test
+        This deliberately uses a synthetic Hexbot venv separate from the test
         runner: sys.prefix represents base Python, while validated VIRTUAL_ENV
-        identifies ``<repo>/venv`` as the Hermes runtime producer contract.
+        identifies ``<repo>/venv`` as the Hexbot runtime producer contract.
         """
         import tools.environments.local as local
 
@@ -896,7 +896,7 @@ class TestPythonpathSelectiveStrip:
     ])
     def test_builders_strip_hermes_venv_pythonpath(self, builder):
         """Every subprocess env builder applies the same sanitation contract:
-        Hermes venv site-packages is stripped, user entries survive.
+        Hexbot venv site-packages is stripped, user entries survive.
         """
         from tools.environments import local as local_mod
 
@@ -919,7 +919,7 @@ class TestPythonpathSelectiveStrip:
         assert "/home/user/my-lib" in entries
 
     def test_scrub_child_env_strips_hermes_venv_pythonpath(self):
-        """execute_code's _scrub_child_env path: after scrubbing, Hermes venv
+        """execute_code's _scrub_child_env path: after scrubbing, Hexbot venv
         site-packages entries should be stripped when
         _strip_hermes_owned_pythonpath is applied (as the spawn path does),
         while user entries (even for another Python version) are preserved.
@@ -949,12 +949,12 @@ class TestPythonpathSelectiveStrip:
     def test_execute_code_composition_strips_inherited_hermes_entries(self, same_env):
         """Integration: execute_code's real spawn path composes a clean PYTHONPATH.
 
-        Seeds a contaminated inherited PYTHONPATH (Hermes repo root + Hermes
+        Seeds a contaminated inherited PYTHONPATH (Hexbot repo root + Hexbot
         venv site-packages + user entries) through os.environ and drives
         execute_code all the way to Popen.  Proves the #84500 conditional
         composition and the #82581 selective strip compose correctly:
 
-        * inherited Hermes venv site-packages never survive into the sandbox;
+        * inherited Hexbot venv site-packages never survive into the sandbox;
         * the staging tmpdir stays the first entry;
         * the repo root is deliberately re-added exactly once for a same-env
           child (the single occurrence proves the inherited copy was stripped
@@ -1280,11 +1280,11 @@ class TestPythonpathSelectiveStrip:
 
 
 class TestPythonhomeSanitized:
-    """PYTHONHOME must not leak from the Hermes runtime into subprocesses.
+    """PYTHONHOME must not leak from the Hexbot runtime into subprocesses.
 
     The gateway inherits/sets PYTHONHOME in its process environment; a child
     interpreter (system Python, another venv, cron no_agent scripts) that
-    inherits it redirects its stdlib search to the Hermes venv and crashes
+    inherits it redirects its stdlib search to the Hexbot venv and crashes
     with version-mismatch errors before importing anything (#75018).
     """
 
@@ -1407,7 +1407,7 @@ class TestBlocklistCoverage:
         must appear in the blocklist — ensures no drift.
 
         CLAUDE_CODE_OAUTH_TOKEN is the one deliberate exemption: it is owned
-        by the user's Claude Code install, not Hermes (#55878).
+        by the user's Claude Code install, not Hexbot (#55878).
         """
         from hermes_cli.auth import PROVIDER_REGISTRY
 
@@ -1426,7 +1426,7 @@ class TestBlocklistCoverage:
                 )
 
     def test_bedrock_bearer_token_is_in_blocklist(self):
-        """auth_type='aws_sdk' providers contribute their Hermes-managed
+        """auth_type='aws_sdk' providers contribute their Hexbot-managed
         inference token (the Bedrock bearer) to the blocklist, keyed off
         auth_type so any future SDK-cred provider is covered automatically."""
         assert "AWS_BEARER_TOKEN_BEDROCK" in _HERMES_PROVIDER_ENV_BLOCKLIST
@@ -1434,7 +1434,7 @@ class TestBlocklistCoverage:
     def test_general_aws_chain_not_in_blocklist(self):
         """The general AWS credential chain must NOT be in the blocklist —
         no-regression guard for #32314. These belong to the user's trusted
-        operator shell (SECURITY.md §3.2), not to Hermes, and blocklisting
+        operator shell (SECURITY.md §3.2), not to Hexbot, and blocklisting
         them would be unrecoverable via env_passthrough (GHSA-rhgp-j443-p4rf).
         """
         general_chain = {
@@ -1463,7 +1463,7 @@ class TestBlocklistCoverage:
 
     def test_claude_code_oauth_token_is_inheritable(self):
         """CLAUDE_CODE_OAUTH_TOKEN is owned by the user's Claude Code install
-        (subscription OAuth), not a Hermes inference credential. Stripping it
+        (subscription OAuth), not a Hexbot inference credential. Stripping it
         made agent-spawned ``claude`` fall through to the shared Keychain /
         ~/.claude credential store and clobber the user's interactive login
         on auth failure (#55878). It must stay inheritable."""
@@ -1553,7 +1553,7 @@ class TestSanePathIncludesHomebrew:
     def _disable_hermes_bin_injection(self):
         """These tests assert the sane-path merge in isolation. Disable the
         hermes-install-dir prepend (a separate concern, covered by
-        TestHermesBinDirOnPath) so a real ``hermes`` on the test runner's PATH
+        TestHermesBinDirOnPath) so a real ``hexbot core`` on the test runner's PATH
         doesn't shift the asserted PATH layout."""
         from tools.environments import local as local_mod
         saved = local_mod._HERMES_BIN_DIR
@@ -1630,7 +1630,7 @@ class TestSanePathIncludesHomebrew:
 class TestHermesBinDirOnPath:
     """The hermes install dir is reachable in the terminal subshell PATH.
 
-    Plugins shelling out to bare ``hermes`` via the terminal tool must work
+    Plugins shelling out to bare ``hexbot core`` via the terminal tool must work
     even when the gateway was launched without the hermes install dir on
     PATH (systemd, service managers, cron). See the discussion that motivated
     _resolve_hermes_bin_dir / _prepend_hermes_bin_dir.
@@ -1646,7 +1646,21 @@ class TestHermesBinDirOnPath:
         monkeypatch.setattr(local_mod.shutil, "which",
                             lambda name: "/opt/hermes/bin/hermes" if name == "hermes" else None)
         monkeypatch.setattr(local_mod.os.path, "isdir", lambda p: p == "/opt/hermes/bin")
+        monkeypatch.setattr(local_mod.sys, "executable", "/nonexistent/venv/bin/python")
         assert local_mod._resolve_hermes_bin_dir() == "/opt/hermes/bin"
+
+    def test_prefers_running_install_when_path_hermes_has_no_hexbot(self, monkeypatch, tmp_path):
+        """A lone ``hermes`` on PATH must not hide ``hexbot core`` from bots."""
+        from tools.environments import local as local_mod
+        self._reset_cache()
+        lone = tmp_path / "local-bin"; lone.mkdir(); (lone / "hermes").write_text("")
+        venv_bin = tmp_path / "venv-bin"; venv_bin.mkdir()
+        for name in ("hermes", "hexbot", "python"):
+            (venv_bin / name).write_text("")
+        monkeypatch.setattr(local_mod.shutil, "which",
+                            lambda name: str(lone / "hermes") if name == "hermes" else None)
+        monkeypatch.setattr(local_mod.sys, "executable", str(venv_bin / "python"))
+        assert local_mod._resolve_hermes_bin_dir() == str(venv_bin)
 
 
     def test_prepend_noop_when_unresolved(self, monkeypatch):
@@ -1676,7 +1690,7 @@ class TestHermesBinDirOnPath:
 
 
 class TestHermesInternalDynamicSecrets:
-    """Dynamically-named Hermes secrets injected at gateway/CLI startup must
+    """Dynamically-named Hexbot secrets injected at gateway/CLI startup must
     not leak into terminal subprocesses.
 
     The static ``_HERMES_PROVIDER_ENV_BLOCKLIST`` is name-based and derived

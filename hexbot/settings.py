@@ -25,10 +25,10 @@ DEFAULTS = {"approval_mode": "manual", "auto_approver_model": None,
             # back to when their own provider fails. Both optional.
             "default_model": None, "fallback_model": None}
 
-#: Hermes calls the auto-approval mode ``smart``; the Hexbot UI labels it "Auto".
+#: The core calls the auto-approval mode ``smart``; the UI labels it "Auto".
 APPROVAL_MODES = ("manual", "smart", "off")
 
-#: Replaces the Hermes platform hint, which for a section (platform ``tui``,
+#: Replaces the Hexbot platform hint, which for a section (platform ``tui``,
 #: the gateway's default) tells the bot it is in a terminal where markdown does
 #: not render, and for a room (source ``hexbot_room``) says nothing. Tools are
 #: resolved under ``cli`` (``SESSION_PLATFORM``); that key plays no part in the
@@ -117,7 +117,7 @@ def mirror_deployment_config(profile_dir: Path) -> None:
     mode = override.get("approval_mode") or settings["approval_mode"]
     data.setdefault("approvals", {})["mode"] = mode
     workdir = Path(override.get("workdir") or settings["workspace_dir"]).expanduser()
-    # A missing cwd makes Hermes fall back to the daemon's launch directory and
+    # A missing cwd makes Hexbot fall back to the daemon's launch directory and
     # load whatever AGENTS.md it finds there as project context.
     try:
         workdir.mkdir(parents=True, exist_ok=True)
@@ -128,7 +128,7 @@ def mirror_deployment_config(profile_dir: Path) -> None:
     for platform in HINT_PLATFORMS:
         hints[platform] = {"replace": PLATFORM_HINT}
     # A bot keeps one memory file. Facts about the user live in the shared
-    # About you text, so the Hermes USER.md target stays off.
+    # About you text, so the Hexbot USER.md target stays off.
     data.setdefault("memory", {})["user_profile_enabled"] = False
     choice = settings["auto_approver_model"]
     if choice:

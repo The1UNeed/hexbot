@@ -1,3 +1,5 @@
+import { CircleHelp, type LucideIcon, Wrench } from 'lucide-react'
+
 import { cn } from '../../lib/cn'
 import type { BotStatus } from '../../lib/types'
 
@@ -45,5 +47,37 @@ export function StatusDot({
       data-status={status}
       role="img"
     />
+  )
+}
+
+/** The two states that get a word beside an icon; the rest only colour a dot. */
+const TAGS: Partial<Record<DotStatus, { icon: LucideIcon; text: string; word: string }>> = {
+  needs_you: { icon: CircleHelp, text: 'text-accent', word: 'Waiting' },
+  working: { icon: Wrench, text: 'text-info', word: 'Working' }
+}
+
+/**
+ * An icon and a word at the end of a roster row: "Waiting" while the bot
+ * needs you, "Working" while it works. Any other state draws nothing.
+ */
+export function StatusTag({ className, status }: { className?: string; status?: DotStatus }) {
+  const tag = status ? TAGS[status] : undefined
+
+  if (!tag) {
+    return null
+  }
+
+  return (
+    <span
+      className={cn(
+        'inline-flex shrink-0 items-center gap-1 text-[length:var(--text-meta)] font-medium',
+        tag.text,
+        className
+      )}
+      data-testid="status-tag"
+    >
+      <tag.icon aria-hidden size={12} />
+      {tag.word}
+    </span>
   )
 }

@@ -1,20 +1,20 @@
-"""Fold an agent-as-provider's own activity back into Hermes' turn state.
+"""Fold an agent-as-provider's own activity back into Hexbot's turn state.
 
-Most providers are models: they ask Hermes to run a tool and Hermes runs it, so
+Most providers are models: they ask Hexbot to run a tool and Hexbot runs it, so
 the transcript and the loop's counters see every tool iteration. Some providers
 are *agents* — an ACP CLI reached through a client shim, or the codex
 app-server, which takes an analogous path in ``agent/codex_runtime.py``. They
 execute their own read/edit/execute tools inside their own session, and by the
-time Hermes sees the response that work is already done.
+time Hexbot sees the response that work is already done.
 
-Those calls must never come back as pending ``tool_calls`` — Hermes would re-run
+Those calls must never come back as pending ``tool_calls`` — Hexbot would re-run
 finished work. But two subsystems go blind if they are merely summarised into
 the ``reasoning`` field:
 
 * the **self-improvement loop**, which distils memories and skills by replaying
   ``messages`` — a one-line activity feed teaches it nothing;
 * the **skill-review nudge**, whose counter (``_iters_since_skill``) only moves
-  on Hermes tool iterations, of which there are none.
+  on Hexbot tool iterations, of which there are none.
 
 So the provider client hands both back on the completion object and this helper
 applies them: ``hermes_projected_messages`` (already-completed

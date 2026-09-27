@@ -15,6 +15,8 @@ import { daemonBehind } from '../lib/version-skew'
 import { useConnection } from '../stores/connection'
 import { type DaemonUpdate, useUpdates } from '../stores/updates'
 
+import { ConfirmUpdate, updateNow, updateTarget } from './confirm-update'
+
 export interface PillContent {
   action: 'download' | 'install' | 'settings' | null
   busy: boolean
@@ -63,7 +65,7 @@ export function describePill(
       return {
         action: 'download',
         busy: false,
-        label: app.errorContext === 'download' ? 'Retry download' : 'Download update',
+        label: app.errorContext === 'download' ? 'Retry update' : 'Update',
         title:
           app.errorContext === 'download'
             ? `Download failed: ${app.message ?? 'unknown error'}`
@@ -108,6 +110,7 @@ export function UpdatePill({ className }: { className?: string }) {
   const daemonUpdate = useUpdates(state => state.daemon)
   const daemon = useConnection(state => state.daemon)
   const [pending, setPending] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   const bridge = getBridge()
   const pill = describePill(app, daemonUpdate, bridge?.version ?? null, daemon?.version ?? null)
 
@@ -126,29 +129,44 @@ export function UpdatePill({ className }: { className?: string }) {
       return
     }
 
-    setPending(true)
-    const run = pill.action === 'download' ? bridge.updater.download() : bridge.updater.install()
+    setConfirming(true)
+  }
 
-    void run.catch(() => undefined).finally(() => setPending(false))
+  const update = () => {
+    if (!bridge) {
+      return
+    }
+
+    setPending(true)
+    void updateNow(bridge)
+      .catch(() => undefined)
+      .finally(() => setPending(false))
   }
 
   const Icon =
     pill.action === 'install' ? RefreshCw : pill.action === 'download' ? Download : CircleArrowUp
 
   return (
-    <button
-      className={cn(
-        'hex-no-drag inline-flex h-8 items-center gap-2 rounded-panel border border-border px-3 text-[length:var(--text-secondary)] font-medium whitespace-nowrap text-foreground transition-colors hover:bg-surface-2 disabled:opacity-60',
-        className
-      )}
-      data-testid="update-pill"
-      disabled={pill.busy || pending}
-      onClick={act}
-      title={pill.title}
-      type="button"
-    >
-      {pill.busy || pending ? <Spinner size="sm" /> : <Icon aria-hidden size={14} />}
-      <span className="truncate">{pill.label}</span>
-    </button>
+    <>
+      <button
+        className={cn(
+          'hex-no-drag inline-flex h-8 items-center gap-2 rounded-panel border border-border px-3 text-[length:var(--text-secondary)] font-medium whitespace-nowrap text-foreground transition-colors hover:bg-surface-2 disabled:opacity-60',
+          className
+        )}
+        data-testid="update-pill"
+        disabled={pill.busy || pending}
+        onClick={act}
+        title={pill.title}
+        type="button"
+      >
+        {pill.busy || pending ? <Spinner size="sm" /> : <Icon aria-hidden size={14} />}
+        <span className="truncate">{pill.label}</span>
+      </button>
+      <ConfirmUpdate
+        onClose={() => setConfirming(false)}
+        onConfirm={update}
+        version={confirming ? updateTarget(app) : null}
+      />
+    </>
   )
 }

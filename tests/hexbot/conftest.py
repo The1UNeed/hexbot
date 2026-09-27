@@ -7,7 +7,7 @@ import pytest
 def isolated_home(tmp_path, monkeypatch):
     """Point HEXBOT_HOME (and therefore HERMES_HOME) at a temp dir.
 
-    ``~/.hexbot`` and ``~/.hermes`` must never be touched by the suite, so this
+    ``~/.hexbot`` and ``~/.hexbot`` must never be touched by the suite, so this
     is autouse and also clears the process-global live-session map that
     ``hexbot.sections`` keeps.
     """
@@ -42,7 +42,7 @@ def fake_gateway(monkeypatch):
 
     Records every ``(method, params)`` pair and answers from ``responses``,
     which maps a method name to a dict or to a callable taking ``params``. A
-    callable may raise ``GatewayError`` to exercise a Hermes error path.
+    callable may raise ``GatewayError`` to exercise a Hexbot error path.
     """
     class Fake:
         def __init__(self):

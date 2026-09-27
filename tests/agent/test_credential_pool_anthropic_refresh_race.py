@@ -4,7 +4,7 @@
 above the ``if self.provider in ("openai-codex", "xai-oauth", "anthropic"):`` branch in
 ``agent/credential_pool.py``) that single-use OAuth refresh tokens require
 the whole sync -> POST -> write-back sequence to be serialized across
-Hermes *processes* via the cross-process ``_auth_store_lock`` flock,
+Hexbot *processes* via the cross-process ``_auth_store_lock`` flock,
 otherwise "two processes can both adopt the same on-disk token, both POST
 it, and the loser gets ``refresh_token_reused``".
 
@@ -16,7 +16,7 @@ rotates the pair and invalidates the old refresh token." Before the PR, ``"anthr
 and the *only* on-failure recovery path
 (``CredentialPool._sync_anthropic_entry_from_credentials_file``) was
 hard-scoped to ``entry.source == "claude_code"``. Entries sourced from
-Hermes's own PKCE login (``manual:hermes_pkce`` / ``hermes_pkce``) got no
+Hexbot's own PKCE login (``manual:hermes_pkce`` / ``hermes_pkce``) got no
 recovery at all and were marked exhausted on a lost race, even though a
 fresh, valid token pair existed on disk (written by the winner). The old
 dashboard source ``manual:dashboard_pkce`` is now retired with the removed
@@ -62,7 +62,7 @@ def _entry(*, id: str, access_token: str, refresh_token: str, source: str) -> Po
 def _fake_pool_store(monkeypatch):
     """Back write/read_credential_pool with a shared in-memory dict.
 
-    This stands in for ``~/.hermes/auth.json`` so the two "process-local"
+    This stands in for ``~/.hexbot/auth.json`` so the two "process-local"
     CredentialPool instances used by the race tests can actually see each
     other's persisted writes (exactly what the real cross-process recovery
     path depends on), without touching the real filesystem.
@@ -163,7 +163,7 @@ def test_anthropic_refresh_is_protected_by_cross_process_lock(monkeypatch):
 
 
 def test_concurrent_hermes_pkce_refresh_loses_credential_despite_valid_token_on_disk(monkeypatch):
-    """Two 'Hermes processes' race to refresh the same stale hermes_pkce
+    """Two 'Hexbot processes' race to refresh the same stale hermes_pkce
     refresh token. The winner gets a valid new pair. The loser -- despite a
     fresh, valid credential now existing -- has no recovery path and is
     marked exhausted, because ``_sync_anthropic_entry_from_credentials_file``

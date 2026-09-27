@@ -94,7 +94,7 @@ class TestGatewayCommandWSLMessages:
 
     @pytest.mark.linux_only
     def test_install_wsl_no_systemd(self, monkeypatch, capsys):
-        """hermes gateway install on WSL without systemd shows guidance.
+        """hexbot core gateway install on WSL without systemd shows guidance.
 
         Linux-gated: WSL *is* a Linux host, and the guidance branch sits after
         the macOS/Windows arms in ``gateway_command``. Reaching it on another
@@ -124,7 +124,7 @@ class TestGatewayCommandWSLMessages:
 
     @pytest.mark.linux_only
     def test_status_wsl_running_manual(self, monkeypatch, capsys):
-        """hermes gateway status on WSL with manual process shows WSL note.
+        """hexbot core gateway status on WSL with manual process shows WSL note.
 
         Linux-gated for the same reason as the install case: the WSL note is
         printed only after the macOS/Windows service branches decline.

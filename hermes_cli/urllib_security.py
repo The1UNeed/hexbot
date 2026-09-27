@@ -97,7 +97,7 @@ class _CrossOriginRequestSanitizer(urllib.request.BaseHandler):
 
 
 def _resolved_https_context() -> ssl.SSLContext | None:
-    """Return the explicit CA context for Hermes-owned urllib openers."""
+    """Return the explicit CA context for Hexbot-owned urllib openers."""
     ca_bundle = next(
         (
             value
@@ -143,7 +143,7 @@ def _secure_opener_from_installed_policy(original_url: str, *, ssl_context=None)
 
     When ``ssl_context`` is provided, the cloned HTTPS handler is replaced with
     one bound to that context so per-provider TLS settings (``ssl_ca_cert`` /
-    ``ssl_verify``) apply to this request. When it is None, Hermes-owned
+    ``ssl_verify``) apply to this request. When it is None, Hexbot-owned
     openers get an explicit CA default via ``_resolved_https_context`` (env
     bundle first, certifi on macOS); an application-installed opener's TLS
     policy is preserved unchanged.

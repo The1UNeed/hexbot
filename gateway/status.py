@@ -5,7 +5,7 @@ Provides PID-file based detection of whether the gateway daemon is running,
 used by send_message's check_fn to gate availability in the CLI.
 
 The PID file lives at ``{HERMES_HOME}/gateway.pid``.  HERMES_HOME defaults to
-``~/.hermes`` but can be overridden via the environment variable.  This means
+``~/.hexbot`` but can be overridden via the environment variable.  This means
 separate HERMES_HOME directories naturally get separate PID files — a property
 that will be useful when we add named profiles (multiple agents running
 concurrently under distinct configurations).
@@ -166,7 +166,7 @@ def _profile_label_for_home(home: Path | str) -> Optional[str]:
     """Best-effort profile label for a HERMES_HOME path.
 
     Returns the profile name for ``<root>/profiles/<name>`` layouts (both
-    ``~/.hermes/profiles/coder`` and Docker ``/opt/data/profiles/coder``),
+    ``~/.hexbot/profiles/coder`` and Docker ``/opt/data/profiles/coder``),
     ``"default"`` for the deployment's root home, and ``None`` when no label
     can be inferred.  Never raises — this feeds diagnostics only.
     """
@@ -246,7 +246,7 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# Reject epoch values before 2000-01-01T00:00:00Z: nothing in Hermes' lifetime
+# Reject epoch values before 2000-01-01T00:00:00Z: nothing in Hexbot's lifetime
 # legitimately produced a gateway heartbeat last century, so anything older is
 # a corrupt or hand-edited state file (e.g. an accidental 0 / tiny int).
 _EPOCH_MIN_PLAUSIBLE = 946684800.0  # 2000-01-01T00:00:00Z
@@ -463,7 +463,7 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
 
 
 def _gateway_command_subcommand(command: str | None) -> str | None:
-    """Return the Hermes gateway lifecycle subcommand from a command line.
+    """Return the Hexbot gateway lifecycle subcommand from a command line.
 
     Lifecycle decisions (is the gateway up? did restart relaunch it?) must not
     fire on loose substring matches.  The previous ``"... gateway" in cmdline``
@@ -477,7 +477,7 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
 
     Tokenizes quote-aware (``shlex``) so quoted Windows paths with spaces
     (``"C:\\Program Files\\...\\hermes-gateway.exe"``) survive, and strips
-    ``--profile``/``-p`` selectors from anywhere in argv -- Hermes's
+    ``--profile``/``-p`` selectors from anywhere in argv -- Hexbot's
     ``_apply_profile_override`` removes them before argparse, so the profile
     flag (and a profile literally named ``gateway``) can legally appear on
     either side of the ``gateway`` subcommand.
@@ -531,7 +531,7 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
         if token != "gateway":
             continue
         if i + 1 >= len(filtered):
-            return "run"  # bare `hermes gateway` defaults to `run`
+            return "run"  # bare `hexbot core gateway` defaults to `run`
         return filtered[i + 1]
     return None
 
@@ -549,14 +549,14 @@ def looks_like_gateway_runtime_command_line(command: str | None) -> bool:
     fallback executes ``run_gateway()`` in that same process, so its argv stays
     as ``gateway restart`` while it owns the webhook port and writes runtime
     state. Keep the public ``looks_like_gateway_command_line()`` strict, and
-    use this broader matcher only when validating Hermes-owned runtime records
+    use this broader matcher only when validating Hexbot-owned runtime records
     or no-supervisor cleanup scans.
     """
     return _gateway_command_subcommand(command) in {"run", "restart"}
 
 
 def _looks_like_gateway_process(pid: int) -> bool:
-    """Return True when the live PID still looks like the Hermes gateway."""
+    """Return True when the live PID still looks like the Hexbot gateway."""
     cmdline = _read_process_cmdline(pid)
     if not cmdline:
         return False
@@ -580,7 +580,7 @@ def _profile_name_for_home(profile_home: Path) -> Optional[str]:
     """Return the profile id a HERMES_HOME directory represents, or None.
 
     A named profile's home is ``<root>/profiles/<name>`` (immediate parent is
-    ``profiles``).  The root/default home (``~/.hermes`` or ``$HERMES_HOME``)
+    ``profiles``).  The root/default home (``~/.hexbot`` or ``$HERMES_HOME``)
     has no such parent, so it maps to the default profile (``None`` here, which
     callers treat as "the bare, flag-less gateway").
     """
@@ -681,7 +681,7 @@ def _get_code_identity_fields() -> dict[str, Any]:
     Lazy import so ``gateway.status`` keeps no import-time dependency on
     ``hermes_cli``; the helper itself is cached per process. A gateway
     keeps serving the module versions it imported at startup, so stamping
-    the identity into ``gateway_state.json`` lets `hermes update` (and the
+    the identity into ``gateway_state.json`` lets `hexbot core update` (and the
     dashboard) prove whether a running gateway actually picked up new code
     after the restart phase — instead of assuming it did (#88654, #69754).
     Never raises; degrades to absent fields.
@@ -1223,7 +1223,7 @@ def write_runtime_status(
         payload["active_agents"] = parse_active_agents(active_agents)
     if served_profiles is not _UNSET:
         # Profiles this gateway multiplexes (multi-profile mode). Absent/empty
-        # for a single-profile gateway. Lets `hermes status` show per-profile
+        # for a single-profile gateway. Lets `hexbot core status` show per-profile
         # coverage without a second probe.
         payload["served_profiles"] = list(served_profiles or [])
     if session_store is not _UNSET:
@@ -1928,7 +1928,7 @@ def _consume_pid_marker_for_self(
     # platforms without ``/proc`` (macOS, native Windows — the very
     # platform the planned-stop watcher exists for). Requiring a non-None
     # match there would make every consume return False, so a legitimate
-    # ``hermes gateway stop`` on Windows would be misclassified as an
+    # ``hexbot core gateway stop`` on Windows would be misclassified as an
     # unexpected ``UNKNOWN`` exit (exit 1) and revived by the service
     # manager. So: when both start_times are known they must match; when
     # either is unknown, fall back to PID equality alone (bounded by the

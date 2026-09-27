@@ -1,6 +1,6 @@
-"""Tests for the stale-dashboard handling run at the end of ``hermes update``.
+"""Tests for the stale-dashboard handling run at the end of ``hexbot core update``.
 
-``hermes update`` detects ``hermes dashboard`` processes left over from the
+``hexbot core update`` detects ``hexbot core dashboard`` processes left over from the
 previous version and kills them (SIGTERM + SIGKILL grace, or ``taskkill /F``
 on Windows).  Without this, the running backend silently serves stale Python
 against a freshly-updated JS bundle, producing 401s / empty data.
@@ -334,7 +334,7 @@ class TestDashboardUpdateCleanup:
 
 class TestWindowsWmicEncoding:
     """Regression tests for #17049 — the Windows wmic branch must not crash
-    `hermes update` on non-UTF-8 system locales (e.g. cp936 on zh-CN).
+    `hexbot core update` on non-UTF-8 system locales (e.g. cp936 on zh-CN).
     """
 
     def test_wmic_routed_through_bounded_probe_run_with_ignore_errors(self):
@@ -421,7 +421,7 @@ class TestSupervisedBackendRestart:
         assert "when you're ready" not in out
 
     def test_already_restarted_unit_is_left_untouched(self):
-        """Review on #83595: hermes update's systemd fleet-restart loop may
+        """Review on #83595: hexbot core update's systemd fleet-restart loop may
         already have restarted this PID's owning unit directly (e.g. a
         Serve-only install). Passing it via already_restarted_units must
         skip killing/restarting it again here."""
@@ -861,7 +861,7 @@ class TestCmdlineCapture:
 class TestPostUpdateStaleModuleReload:
     """Regression tests for the post-update stale-module ImportError.
 
-    ``hermes update`` runs in the PRE-pull Python process. When the update
+    ``hexbot core update`` runs in the PRE-pull Python process. When the update
     adds a new symbol to ``hermes_cli._subprocess_compat`` (as #87134 added
     ``bounded_probe_run``), the post-update dashboard cleanup's lazy
     ``from hermes_cli._subprocess_compat import bounded_probe_run`` hits the

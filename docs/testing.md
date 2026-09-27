@@ -14,7 +14,8 @@
   Uses a local streaming model with actual Pi; no provider credentials needed.
   Add `--desktop --edition=full` or `--desktop --edition=client` for Electron.
   On headless Linux run these Electron checks through `xvfb-run -a`.
-- Python: `./venv/bin/pytest tests/hexbot -q`
+- Python: `./venv/bin/pytest tests/hexbot -q` (the Connect tests also run the Node sidecar; they skip without `node`)
+- Connect sidecar: `node --test tests/hexbot/*.test.mts`
 - Legacy service handoff: `python3 -m unittest tests/hexbot/test_native_transition.py -v`
   (also included in the Python suite). Uses temporary homes and local archives to
   check the old service's upgrade, native restart, explicit Python override,
@@ -23,11 +24,11 @@
 - Desktop: `pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run && pnpm --filter ./apps/desktop run build`
 - Packaging and release scripts: `node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs`
 - Site: `pnpm --filter ./apps/site run check`
-- Connect (unit): `pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run`
+- Connect (unit): `pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run && pnpm --filter ./apps/connect run lint`
 - End to end: `pnpm --filter ./apps/desktop run e2e` (Playwright driving the built Electron app against a daemon in a temp home).
-- Connect: `HEXBOT_CONNECT_E2E=1 ./venv/bin/pytest tests/hexbot/test_connect_e2e.py -q` (a real Connect service with the in-memory store, a real daemon, and the CLI, web, and desktop HTTP calls; no Cloudflare).
+- Connect: `HEXBOT_CONNECT_E2E=1 ./venv/bin/pytest tests/hexbot/test_connect_e2e.py -q` (a real Connect service with the in-memory store, a real daemon, and the CLI, web, desktop, and browser sign-in HTTP calls; no Cloudflare).
 
-## Upstream Hermes suites
+## Core suites
 
 Install the retained Python environment before running comparison or legacy tests:
 
@@ -36,7 +37,8 @@ uv venv venv --python 3.11
 UV_PROJECT_ENVIRONMENT=venv uv sync --extra all --extra dev --locked
 ```
 
-Run the suites that cover the seams Hexbot edits (see `CORE_EDITS.md`):
+Run these when you change the core at the repository root, plus the
+suites under `tests/` that cover the files you touched:
 
 ```
 ./venv/bin/pytest tests/plugins tests/test_plugins_manage_profile_scope.py \
@@ -50,16 +52,15 @@ state into the `tests/hexbot` fakes when both run in one process.
 
 Baseline on 2026-09-03 at the import commit, with the venv built by
 `uv sync --extra all --locked`: 1773 passed, 5 skipped, 16 failed. The
-failures are pre-existing and identical on pristine upstream v0.21.0 in this
-environment: `tests/plugins/memory/test_hindsight_provider.py` (missing
+failures are pre-existing and identical on the unmodified v0.21.0 import in
+this environment: `tests/plugins/memory/test_hindsight_provider.py` (missing
 optional module `hindsight_client_api`),
 `tests/plugins/memory/test_openviking_optional_peer.py`,
 `tests/plugins/video_gen/test_fal_plugin.py` (optional fal client), and one
 order-dependent case in `tests/plugins/test_a2a_plugin.py` that passes in
 isolation. Treat any new failure outside that list as a regression.
 
-The universal prompt text is Hexbot's (`CORE_EDITS.md` row 7). The upstream
-suites that pin that wording were updated with it and must stay green:
+These suites pin the universal system prompt text and must stay green:
 
 ```
 ./venv/bin/pytest tests/agent/test_system_prompt.py tests/agent/test_prompt_builder.py \

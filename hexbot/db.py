@@ -11,7 +11,7 @@ from hexbot.home import DATABASE_NAME, ensure_layout, hexbot_home
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);
@@ -56,6 +56,9 @@ _ADDED_COLUMNS: dict[int, list[tuple[str, str, str]]] = {
     # The bot's memory file before and after a dream, so the log can show
     # what changed and put it back.
     9: [("dreams", "memory_before", "TEXT"), ("dreams", "memory_after", "TEXT")],
+    # 'bot' when the bot named the section with hexbot_rename_section; NULL
+    # once the user renames it (or for the default title).
+    10: [("sections", "title_by", "TEXT")],
 }
 
 _MIGRATION_DDL: dict[int, str] = {
@@ -122,6 +125,10 @@ CREATE INDEX IF NOT EXISTS idx_bot_incidents_bot_open ON bot_incidents(bot,resol
     8: """
 DROP TABLE IF EXISTS core_memory;
 DROP TABLE IF EXISTS memory_entries;
+""",
+    # v11: Connect grants log in once, and a restart must not forget which ones did.
+    11: """
+CREATE TABLE IF NOT EXISTS spent_grants(jti TEXT PRIMARY KEY, exp REAL NOT NULL);
 """,
 }
 

@@ -1,8 +1,8 @@
 """
 Cron job storage and management.
 
-Jobs are stored in ~/.hermes/cron/jobs.json
-Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
+Jobs are stored in ~/.hexbot/cron/jobs.json
+Output is saved to ~/.hexbot/cron/output/{job_id}/{timestamp}.md
 """
 
 import contextlib
@@ -68,7 +68,7 @@ def _ensure_croniter() -> bool:
 # Cron is per-profile by design (issue #4707). Each profile owns its own cron
 # store under its own HERMES_HOME, and a profile-scoped gateway runs that
 # profile's jobs under that same HERMES_HOME — so a job authored in profile
-# `coder` lives in `~/.hermes/profiles/coder/cron/jobs.json` and executes with
+# `coder` lives in `~/.hexbot/profiles/coder/cron/jobs.json` and executes with
 # `coder`'s `.env`, `config.yaml`, and skills. We deliberately anchor on
 # `get_hermes_home()` (the active profile home), NOT `get_default_hermes_root()`
 # (the shared root). Anchoring at the root would funnel every profile's jobs
@@ -84,7 +84,7 @@ HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 # Heartbeat file the in-process ticker touches on every loop iteration. The
-# gateway process and the (separate) ``hermes cron status`` process share it
+# gateway process and the (separate) ``hexbot core cron status`` process share it
 # so status can tell whether the ticker THREAD is alive, not just whether the
 # gateway PROCESS exists — a ticker that dies silently inside a live gateway
 # would otherwise report healthy (#32612, #32895).
@@ -94,7 +94,7 @@ TICKER_HEARTBEAT_FILE = CRON_DIR / "ticker_heartbeat"
 TICKER_SUCCESS_FILE = CRON_DIR / "ticker_last_success"
 # Default ticker loop interval (seconds). The single source of truth shared by
 # the in-process ticker (cron/scheduler_provider.py) and the staleness
-# threshold in `hermes cron status` (hermes_cli/cron.py), so the two never
+# threshold in `hexbot core cron status` (hermes_cli/cron.py), so the two never
 # drift apart.
 TICKER_INTERVAL_SECONDS = 60
 
@@ -277,7 +277,7 @@ def _jobs_lock():
     Combines the in-process threading lock (cheap mutual exclusion between
     the gateway's parallel tick threads) with a cross-process advisory file
     lock on ``<cron dir>/.jobs.lock`` (mutual exclusion between the gateway process
-    and standalone ``hermes`` CLI invocations, which previously shared no lock
+    and standalone ``hexbot core`` CLI invocations, which previously shared no lock
     at all — a `cron pause` could be silently clobbered by a concurrent
     gateway write, leaving a "paused" job still firing).
 
@@ -714,7 +714,7 @@ def _preserve_file_ownership(path: Path, before: Optional[os.stat_result]) -> No
 
     The atomic-write pattern (mkstemp + replace) makes the rewritten file owned
     by the *writer's* euid. When a root shell runs a state-writing cron CLI
-    command (``docker exec hermes hermes cron create ...`` — ``docker exec``
+    command (``docker exec hermes hexbot core cron create ...`` — ``docker exec``
     defaults to root) against a store owned by the unprivileged gateway user,
     the replace flips ``jobs.json`` to ``root:root`` mode 600 and the gateway's
     ticker (uid 1000) is silently locked out of every subsequent tick (#68483).
@@ -752,7 +752,7 @@ def _is_named_profile_path(path: Path) -> bool:
 
     Named profiles live under ``<hermes_home>/profiles/<name>/``.  The
     default profile lives at ``<hermes_home>`` directly (no ``profiles``
-    parent), as do custom ``HERMES_HOME`` paths outside ``~/.hermes``.
+    parent), as do custom ``HERMES_HOME`` paths outside ``~/.hexbot``.
 
     Checks both the resolved path (handles symlinks in the parent chain)
     and the raw path (catches symlinked profile homes whose resolve()
@@ -773,7 +773,7 @@ def _ensure_cron_dir(cron_dir: Path) -> None:
     multiplex scheduler may still hold a path to a deleted profile after the
     user removes it; ``parents=False`` makes that race fail closed
     (FileNotFoundError) instead of silently restoring the directory tree.
-    Default and custom Hermes homes keep ``parents=True`` so first-run
+    Default and custom Hexbot homes keep ``parents=True`` so first-run
     directory creation still works.
     """
     if _is_named_profile_path(cron_dir):
@@ -1061,7 +1061,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             # Make naive timestamps timezone-aware at parse time so the stored
             # value doesn't depend on the system timezone matching at check time.
             #
-            # Anchor to the CONFIGURED Hermes timezone, not the server's local
+            # Anchor to the CONFIGURED Hexbot timezone, not the server's local
             # timezone. The due-check (`get_due_jobs`) compares `next_run_at`
             # against `hermes_time.now()`, which uses the configured zone. If a
             # naive "20:07" were interpreted as server-local (e.g. UTC) while
@@ -1122,13 +1122,13 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
 
 
 def _ensure_aware(dt: datetime) -> datetime:
-    """Return a timezone-aware datetime in Hermes configured timezone.
+    """Return a timezone-aware datetime in Hexbot configured timezone.
 
     Backward compatibility:
     - Older stored timestamps may be naive.
     - Naive values are interpreted as *system-local wall time* (the timezone
       `datetime.now()` used when they were created), then converted to the
-      configured Hermes timezone.
+      configured Hexbot timezone.
 
     This preserves relative ordering for legacy naive timestamps across
     timezone changes and avoids false not-due results.
@@ -1155,7 +1155,7 @@ def _timezone_offset_mismatch(stored: datetime, current: datetime) -> bool:
 def _stored_wall_clock_is_future(stored: datetime, current: datetime) -> bool:
     """Return True when the stored local wall-clock time has not arrived yet.
 
-    Cron schedules express local wall-clock intent. If Hermes/system local time
+    Cron schedules express local wall-clock intent. If Hexbot/system local time
     changes after next_run_at was persisted, an old offset can make a future
     wall-clock run look due at the converted absolute time (for example
     21:00+10 becomes 13:00+02). Comparing naive wall-clock values lets us
@@ -1575,7 +1575,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 
 
 # =============================================================================
-# Ticker heartbeat (liveness signal for `hermes cron status`)
+# Ticker heartbeat (liveness signal for `hexbot core cron status`)
 # =============================================================================
 
 def _atomic_write_epoch(path: Path) -> None:
@@ -1583,7 +1583,7 @@ def _atomic_write_epoch(path: Path) -> None:
 
     Delegates to :func:`utils.atomic_write_text` (tmpfile + fsync +
     ``atomic_replace``, same pattern as ``save_jobs``) so a concurrent reader
-    in another process (``hermes cron status``) never sees a torn/truncated
+    in another process (``hexbot core cron status``) never sees a torn/truncated
     file. Best-effort: failures are swallowed by callers.
     """
     ensure_dirs()
@@ -1613,7 +1613,7 @@ def record_ticker_heartbeat(success: bool = False) -> None:
 
     The ticker calls this once per loop iteration. ``success=True`` additionally
     bumps the *last successful tick* marker. We track two distinct signals so
-    `hermes cron status` can tell a thread that is merely *alive and looping*
+    `hexbot core cron status` can tell a thread that is merely *alive and looping*
     (heartbeat fresh, success stale) from one that is actually *firing jobs*
     (both fresh) — a ticker stuck failing every tick would otherwise keep the
     plain heartbeat fresh and falsely report healthy (#32612, #32895).
@@ -1652,7 +1652,7 @@ def get_ticker_heartbeat_age() -> Optional[float]:
 
     Resolution uses ``_current_cron_store()`` so the heartbeat is correctly
     scoped to the active profile — critical under multiplex_profiles where
-    ``hermes cron status`` must report per-profile liveness (#69377).
+    ``hexbot core cron status`` must report per-profile liveness (#69377).
     """
     store = _current_cron_store()
     return _epoch_file_age(store.cron_dir / "ticker_heartbeat")
@@ -1663,7 +1663,7 @@ def get_ticker_success_age() -> Optional[float]:
 
     Resolution uses ``_current_cron_store()`` so the heartbeat is correctly
     scoped to the active profile — critical under multiplex_profiles where
-    ``hermes cron status`` must report per-profile liveness (#69377).
+    ``hexbot core cron status`` must report per-profile liveness (#69377).
     """
     store = _current_cron_store()
     return _epoch_file_age(store.cron_dir / "ticker_last_success")
@@ -1685,7 +1685,7 @@ def record_catch_up_occurrence() -> None:
 def record_ticker_error(message: str) -> None:
     """Persist the most recent tick failure so other processes can surface it.
 
-    The ticker thread lives inside the gateway process; ``hermes cron
+    The ticker thread lives inside the gateway process; ``hexbot core cron
     status``/``list`` run in a separate process and previously could only
     infer "ticks may be failing" from marker staleness, with no clue WHY.
     A root-owned ``jobs.json`` (#68483) failed every tick for ~14h with the
@@ -2372,7 +2372,7 @@ def create_job(
                 delivered verbatim. Without ``no_agent``, its stdout is
                 injected into the agent's prompt as context (data-collection /
                 change-detection pattern). Paths resolve under
-                ~/.hermes/scripts/; ``.sh`` / ``.bash`` files run via bash,
+                ~/.hexbot/scripts/; ``.sh`` / ``.bash`` files run via bash,
                 anything else via Python.
         context_from: Optional job ID (or list of job IDs) whose most recent output
                       is injected into the prompt as context before each run.
@@ -2396,7 +2396,7 @@ def create_job(
                 watchdogs and periodic alerts that don't need LLM reasoning.
         monitor_script: Optional path to a cheap monitor source script (same
                 resolution/containment rules as ``script``: relative to
-                ~/.hermes/scripts/, .sh/.bash via bash, else Python). Each
+                ~/.hexbot/scripts/, .sh/.bash via bash, else Python). Each
                 tick the script runs FIRST and its output is hashed as exact
                 bytes: unchanged output suppresses the agent run entirely
                 (recorded as a silent 'no_change' tick); changed output
@@ -2408,7 +2408,7 @@ def create_job(
                 of a script — fetched with a bounded GET each tick. Same
                 hash-suppression semantics as ``monitor_script``.
         reasoning_effort: Optional per-job reasoning effort pin. One of the
-                canonical Hermes levels (none|minimal|low|medium|high|xhigh|
+                canonical Hexbot levels (none|minimal|low|medium|high|xhigh|
                 max|ultra, case-insensitive). When set, it wins over BOTH the
                 global ``agent.reasoning_effort`` and per-model
                 ``agent.reasoning_overrides`` at fire time. Capability is NOT
@@ -2487,7 +2487,7 @@ def create_job(
     # agent-driven SIGTERM-respawn loops under launchd/systemd KeepAlive
     # (#30719). Enforced here (not only in the CLI layer) so the agent's
     # `cronjob` model tool — which calls create_job directly — is also
-    # covered, not just `hermes cron create`.
+    # covered, not just `hexbot core cron create`.
     from cron.lifecycle_guard import check_gateway_lifecycle
     check_gateway_lifecycle(prompt_text, normalized_script)
 
@@ -2890,7 +2890,7 @@ def trigger_job(
         name = job.get("name", job_id)
         raise ValueError(
             f"Cannot run: job '{name}' is {state} (terminal). "
-            f"Create a new occurrence with 'hermes cron resume {name} "
+            f"Create a new occurrence with 'hexbot core cron resume {name} "
             "--run-now' or '--at <ISO-8601>'."
         )
     manual_run_at = _hermes_now().isoformat()
@@ -4310,7 +4310,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                     "WITHOUT firing. This record was re-armed "
                                     "without a budget reset (pre-#93615 store "
                                     "or hand edit); re-run it with "
-                                    "'hermes cron resume <job> --run-now' "
+                                    "'hexbot core cron resume <job> --run-now' "
                                     "(#93524).",
                                     job.get("name", job.get("id", "?")),
                                     completed,
@@ -4364,8 +4364,8 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             break
 
                 # Missed-run visibility (#99879): persist scheduled-vs-actual
-                # dispatch timing on the job record so `hermes cron list` /
-                # `hermes cron status` (separate CLI processes) can show a
+                # dispatch timing on the job record so `hexbot core cron list` /
+                # `hexbot core cron status` (separate CLI processes) can show a
                 # late catch-up run as such instead of an ordinary on-time
                 # run. Recurring schedules only — one-shots beyond grace are
                 # retired above, and manual triggers have no scheduled

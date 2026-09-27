@@ -38,7 +38,7 @@ _LOGIN_HTML_TEMPLATE = """\
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in — Hermes Agent</title>
+<title>Sign in — Hexbot</title>
 <style>
   /* Brand fonts shipped by @nous-research/ui — same files the SPA loads. */
   @font-face {{
@@ -305,7 +305,7 @@ _LOGIN_HTML_TEMPLATE = """\
   <div class="brand">Nous<span class="dot"></span>Research</div>
   <div class="card">
     <h1>Sign in</h1>
-    <p class="subtitle">Choose a sign-in method to continue to the Hermes Agent dashboard.</p>
+    <p class="subtitle">Choose a sign-in method to continue to the Hexbot dashboard.</p>
     <div class="provider-list">
 {provider_buttons}
     </div>
@@ -325,7 +325,7 @@ _EMPTY_HTML = """\
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign-in unavailable — Hermes Agent</title>
+<title>Sign-in unavailable — Hexbot</title>
 <style>
   @font-face {
     font-family: 'Collapse';
@@ -458,6 +458,15 @@ _PASSWORD_FORM_SCRIPT = """\
 """
 
 
+_renderer = None  # a replacement page, set by an embedding app (Hexbot: hexbot/login_page.py)
+
+
+def set_login_renderer(renderer) -> None:
+    """Serve ``renderer(next_path=...)`` for ``GET /login`` instead of the page below."""
+    global _renderer
+    _renderer = renderer
+
+
 def render_login_html(*, next_path: str = "") -> str:
     """Return the full HTML for ``GET /login``.
 
@@ -468,6 +477,8 @@ def render_login_html(*, next_path: str = "") -> str:
     validating ``next_path`` against the same-origin rules before we
     emit it; we still HTML-escape it as defence in depth.
     """
+    if _renderer is not None:
+        return _renderer(next_path=next_path)
     providers = list_session_providers()
     if not providers:
         return _EMPTY_HTML

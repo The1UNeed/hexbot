@@ -1011,7 +1011,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
 
 # GPT-5.6 "-pro" high-effort variants bill at the same per-token rates as
 # their base tiers (more tokens per task, not a higher rate). Alias them
-# onto the base entries so the snapshot stays single-source. The Hermes-side
+# onto the base entries so the snapshot stays single-source. The Hexbot-side
 # "-900k" large-context Codex picker variants are the same underlying model
 # (the suffix is stripped on the wire), so they alias identically.
 for _base_56 in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):

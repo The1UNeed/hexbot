@@ -112,7 +112,7 @@ def _lazy_call_llm(*args, **kwargs):
 # Browser-specific tool keys passed through to the agent-browser subprocess
 # AFTER credential stripping.  agent-browser is a Node process loading npm
 # deps; handing it the full operator keyring (#29157 / GHSA-m4m8-xjp4-5rmm)
-# means a compromised transitive dependency could read every Hermes secret
+# means a compromised transitive dependency could read every Hexbot secret
 # straight out of process.env.  Strip by default, then re-add only the
 # browser-backend keys the worker legitimately needs.
 _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
@@ -128,7 +128,7 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
 def _build_browser_env() -> dict:
     """Credential-scrubbed env for an agent-browser subprocess.
 
-    Strips Hermes-managed secrets (provider keys, gateway tokens, GitHub auth,
+    Strips Hexbot-managed secrets (provider keys, gateway tokens, GitHub auth,
     infra secrets) then re-adds only the browser-backend keys the worker needs.
     The ``hermes_subprocess_env`` import is deferred to keep ``browser_tool``
     importable under test harnesses that load it against a stubbed ``tools``
@@ -566,7 +566,7 @@ def _get_cdp_override_raw() -> str:
     This is the availability-check variant: callers that only need to know
     *whether* a CDP override is configured (tool ``check_fn`` gates,
     ``_is_local_mode`` / ``_is_local_backend`` routing decisions,
-    ``hermes doctor``) MUST use this instead of :func:`_get_cdp_override`.
+    ``hexbot core doctor``) MUST use this instead of :func:`_get_cdp_override`.
 
     Rationale: ``_get_cdp_override`` resolves the endpoint over HTTP
     (``/json/version`` discovery, 10s timeout). Tool-schema assembly runs at
@@ -726,7 +726,7 @@ def _stop_cdp_supervisor(task_id: str) -> None:
 # When the test patches ``_PROVIDER_REGISTRY``, we honour it (so the cache
 # unit tests still drive the function); otherwise the registry-backed path
 # wins. This keeps the test surface stable while letting third-party
-# plugins drop in under ``~/.hermes/plugins/browser/<vendor>/``.
+# plugins drop in under ``~/.hexbot/plugins/browser/<vendor>/``.
 
 _PROVIDER_REGISTRY: Dict[str, type] = {
     "browserbase": BrowserbaseProvider,
@@ -800,7 +800,7 @@ def _ensure_browser_plugins_loaded() -> None:
 
 
 def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
-    """Return the provider cached for the active Hermes profile."""
+    """Return the provider cached for the active Hexbot profile."""
     global _cached_cloud_provider, _cloud_provider_resolved
     global _cached_cloud_provider_scope
 
@@ -850,7 +850,7 @@ def _resolve_cloud_provider_uncached() -> Optional[CloudBrowserProvider]:
     :data:`agent.browser_registry._LEGACY_PREFERENCE` walk.
 
     Selection routes through :mod:`agent.browser_registry` so third-party
-    browser plugins (``~/.hermes/plugins/browser/<vendor>/``) participate
+    browser plugins (``~/.hexbot/plugins/browser/<vendor>/``) participate
     in explicit-config resolution. Test fixtures that override
     ``_PROVIDER_REGISTRY`` or ``BrowserUseProvider`` / ``BrowserbaseProvider``
     on this module still drive the function — see
@@ -1150,7 +1150,7 @@ def lightpanda_engine_status() -> Tuple[bool, str]:
     ``_should_inject_engine`` (built-in tools) and
     ``browser_use_cli._resolve_backend_cdp`` (Browser Use mode) using gates
     that do no network I/O (config reads only), so ``/browser status`` and
-    ``hermes doctor`` can call it.
+    ``hexbot core doctor`` can call it.
     """
     if not _using_lightpanda_engine():
         return False, ""
@@ -1189,7 +1189,7 @@ def lightpanda_engine_status() -> Tuple[bool, str]:
         except Exception as e:
             logger.debug("legacy Browser Use cloud check failed: %s", e)
     if bu_mode:
-        return True, "Browser Use mode: Hermes spawns `lightpanda serve` per session"
+        return True, "Browser Use mode: Hexbot spawns `lightpanda serve` per session"
     return True, "built-in browser tools: agent-browser --engine lightpanda"
 
 
@@ -1197,7 +1197,7 @@ def _lightpanda_fallback_reason(engine: str, command: str, result: Dict[str, Any
     """Return the user-visible reason a Lightpanda result needs Chrome fallback.
 
     ``None`` means no fallback should run.  The returned string is copied into
-    the fallback result so CLI/TUI/gateway users can see when Hermes silently
+    the fallback result so CLI/TUI/gateway users can see when Hexbot silently
     switched from Lightpanda to Chrome for completeness.
     """
     if engine != "lightpanda":
@@ -1339,7 +1339,7 @@ def _run_chrome_fallback_command(
         return {"success": False, "error": hint}
 
     # Resolve npx via the same PATH + extended-PATH cascade _find_agent_browser
-    # uses, not a bare shutil.which("npx") — Hermes-managed-Node-only setups
+    # uses, not a bare shutil.which("npx") — Hexbot-managed-Node-only setups
     # resolve npx only through the extended fallback path, and a bare lookup
     # would let a broken system npx shadow a healthy managed one. If npx isn't
     # found at all (Termux, bare container), fall back to the bare name and
@@ -1395,7 +1395,7 @@ def _run_chrome_fallback_command(
             #   and that grandchild's CreateProcess dies silently
             #   ("Daemon process exited during startup with no error output")
             #   when inherited parent handles are in a weird state. Observed
-            #   in the Hermes CLI where sys.stdout and sys.stderr both report
+            #   in the Hexbot CLI where sys.stdout and sys.stderr both report
             #   fileno=1 (stderr dup'd onto stdout at the OS level).
             # * close_fds=True → block inheritance of every other handle.
             #   (Default on POSIX; must be explicit on Windows for stdio.)
@@ -1746,7 +1746,7 @@ def _real_profile_cdp() -> tuple:
                 return None, (
                     body + " To close it (only after the user approves — it "
                     "quits their browser and loses unsaved tabs), run: "
-                    "`hermes browser close-profile`, then retry."
+                    "`hexbot core browser close-profile`, then retry."
                 )
             return None, f"browser.use_real_profile is on, but {err}"
         copy_dir = snap_dir
@@ -2647,7 +2647,7 @@ def _reap_orphaned_browser_sessions():
         pid_file = os.path.join(socket_dir, f"{session_name}.pid")
         if not os.path.isfile(pid_file):
             # A newly-created session directory exists briefly before
-            # agent-browser writes its PID/owner files. Another Hermes process
+            # agent-browser writes its PID/owner files. Another Hexbot process
             # may run this global reaper during that window. Treat a pidless
             # directory as stale only after the orphan grace period; deleting
             # it immediately races the creator's first stdout/stderr open.
@@ -2898,7 +2898,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_vision",
-        "description": "Take a screenshot of the current page so you can inspect it visually. Use this when you need to understand what the page looks like - especially for CAPTCHAs, visual verification challenges, complex layouts, or cases where the text snapshot misses important visual information. When your active model has native vision, the screenshot is attached to your context directly and you inspect it on the next turn; otherwise Hermes falls back to an auxiliary vision model and returns a text analysis. Includes a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
+        "description": "Take a screenshot of the current page so you can inspect it visually. Use this when you need to understand what the page looks like - especially for CAPTCHAs, visual verification challenges, complex layouts, or cases where the text snapshot misses important visual information. When your active model has native vision, the screenshot is attached to your context directly and you inspect it on the next turn; otherwise Hexbot falls back to an auxiliary vision model and returns a text analysis. Includes a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -2975,7 +2975,7 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
             }
 
     # Browser Use mode drives whatever CDP endpoint it is handed; with
-    # ``browser.engine: lightpanda`` that endpoint is a Hermes-spawned
+    # ``browser.engine: lightpanda`` that endpoint is a Hexbot-spawned
     # ``lightpanda serve``. The built-in tools never reach this branch —
     # they are hidden in Browser Use mode — and keep driving Lightpanda via
     # ``agent-browser --engine lightpanda`` on the plain local session below.
@@ -3201,11 +3201,11 @@ def _agent_browser_candidate_present(path: str | None) -> bool:
 
 
 def _resolve_npx_bin() -> Optional[str]:
-    """Resolve a runnable npx binary, preferring the Hermes-managed/Homebrew
+    """Resolve a runnable npx binary, preferring the Hexbot-managed/Homebrew
     extended search over a bare ambient PATH lookup.
 
     Checking bare PATH first would let a broken or unrelated system npx
-    shadow a healthy Hermes-managed one with no recovery — every candidate
+    shadow a healthy Hexbot-managed one with no recovery — every candidate
     is therefore validated with ``node_tool_runnable`` (the same check
     ``find_hermes_node_executable`` uses to self-heal a managed Node tree)
     before being trusted, falling through to the next candidate otherwise.
@@ -3225,7 +3225,7 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     """
     Find the agent-browser CLI executable.
 
-    Checks in order: current PATH, Homebrew/common bin dirs, Hermes-managed
+    Checks in order: current PATH, Homebrew/common bin dirs, Hexbot-managed
     node, local node_modules/.bin/, npx fallback.
 
     Returns:
@@ -3251,7 +3251,7 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     # Every candidate below is validated with ``agent_browser_runnable`` before
     # it is cached. A bare ``shutil.which`` hit is NOT trusted: agent-browser's
     # npm postinstall re-points a global install symlink at our local
-    # node_modules binary, which disappears on the next ``hermes update`` and
+    # node_modules binary, which disappears on the next ``hexbot core update`` and
     # leaves a dangling link that ``which`` still reports but exec fails on with
     # exit 127 (issue #48521). Validating lets a dead candidate fall through to
     # the next working resolution (extended PATH → local .bin → npx) instead of
@@ -3268,7 +3268,7 @@ def _find_agent_browser(*, validate: bool = True) -> str:
         _agent_browser_resolved = True
         return which_result
 
-    # Build an extended search PATH including Hermes-managed Node, macOS
+    # Build an extended search PATH including Hexbot-managed Node, macOS
     # versioned Homebrew installs, and fallback system dirs like Termux.
     extended_path = _merge_browser_path("")
     if extended_path:
@@ -3431,7 +3431,7 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
     out of the npm workspace install graph entirely (nothing to prune it
     anymore) but means the first real invocation in a session would
     otherwise pay npx's registry-lookup/fetch cost. Calling this during
-    ``hermes update`` (or ``hermes doctor --fix``) warms npx's own cache
+    ``hexbot core update`` (or ``hexbot core doctor --fix``) warms npx's own cache
     ahead of time, restoring the "available before any session starts"
     property agent-browser had while it was an eager root dependency —
     without re-entangling it with the workspace graph.
@@ -3439,8 +3439,8 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
     Runs a credential-scrubbed, PATH-propagated environment matching every
     other agent-browser subprocess spawn (see ``_build_browser_env``) —
     this used to inherit the full parent environment, including every
-    provider/gateway credential Hermes holds, while running registry-fetched
-    npm code on every ``hermes update`` (the GHSA-m4m8-xjp4-5rmm class of
+    provider/gateway credential Hexbot holds, while running registry-fetched
+    npm code on every ``hexbot core update`` (the GHSA-m4m8-xjp4-5rmm class of
     risk ``_build_browser_env`` exists specifically to prevent). Runs in its
     own process group and kills the *whole* group — not just the top-level
     npx PID — on timeout, since a surviving descendant can otherwise hold a
@@ -3475,7 +3475,7 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
         # range, not an exact pin — a compromised future 0.26.x patch must
         # not get to run its own install-time lifecycle scripts here.
         "--ignore-scripts",
-        # --prefer-offline: once cached, repeat `hermes update`/`doctor
+        # --prefer-offline: once cached, repeat `hexbot core update`/`doctor
         # --fix` runs shouldn't hit the registry just to re-confirm
         # "latest" is still latest — that would defeat the point of
         # warming the cache in the first place.
@@ -5426,7 +5426,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
 
     Captures what's visually displayed in the browser. When the active model
     supports native vision, the screenshot is attached directly to the
-    conversation so the model can inspect it on the next turn; otherwise Hermes
+    conversation so the model can inspect it on the next turn; otherwise Hexbot
     falls back to the auxiliary vision model and returns a text analysis. Useful
     for visual content the text-based snapshot may not capture (CAPTCHAs,
     verification challenges, images, complex layouts, etc.).
@@ -5877,7 +5877,7 @@ def _cleanup_single_browser_session(task_id: str) -> None:
         # Stop auto-recording before closing (saves the file)
         _maybe_stop_recording(task_id)
 
-        # A Lightpanda session is a process Hermes spawned itself (Browser
+        # A Lightpanda session is a process Hexbot spawned itself (Browser
         # Use mode); there is no agent-browser daemon to send ``close`` to.
         # An expired cloud CDP URL cannot accept an agent-browser close command.
         # Avoid feeding it back through _get_session_info(), which would try to

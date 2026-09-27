@@ -10,4 +10,4 @@ class HexbotError(Exception):
 
 
 class GatewayError(HexbotError):
-    """An error returned by an in-process Hermes RPC call."""
+    """An error returned by an in-process Hexbot RPC call."""

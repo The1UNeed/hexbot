@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /pair/
+
+Sitemap: https://hexbot.app/sitemap-index.xml

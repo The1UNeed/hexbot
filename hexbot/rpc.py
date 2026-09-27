@@ -3,9 +3,9 @@
 Every handler returns a JSON-RPC frame built with ``tui_gateway.server._ok`` /
 ``_err``. Error codes: 4200-4299 for client mistakes (missing/unknown
 parameters, unknown ids, cap violations, busy resources), 5200-5299 for server
-faults, and any Hermes code that reaches us through
+faults, and any core code that reaches us through
 :class:`hexbot.errors.GatewayError` is passed through unchanged so a caller can
-tell "Hermes said 4001" from "Hexbot said 4204".
+tell "the core said 4001" from "Hexbot said 4204".
 """
 
 from __future__ import annotations
@@ -151,13 +151,12 @@ def _connect_register_start(params) -> dict:
 def _connect_register_poll(params) -> dict:
     client = connect.ConnectClient()
     result = client.register_poll(_required(params, "device_code"))
-    state = result.get("status", "approved" if result.get("daemon_token") else "pending")
-    result["status"] = state
+    state = result["status"]
     if state == "approved":
         connect.save_registration(result, client.api_base)
         from hexbot import serve
         connect.start_daemon(serve.state()["port"])
-    return result
+    return {"status": state}  # the tokens stay in connect.json, never in the renderer
 
 
 def _rooms_create(p):

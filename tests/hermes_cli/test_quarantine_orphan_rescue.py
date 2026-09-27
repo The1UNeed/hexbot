@@ -1,9 +1,9 @@
-"""Regression tests: a failed quarantine restore must never strand `hermes`.
+"""Regression tests: a failed quarantine restore must never strand `hexbot core`.
 
 On Windows the updater renames the live ``hermes*.exe`` shims aside
 (``hermes.exe.old.<unix-ms>``) so uv can write replacements. Gaps in the
-recovery path ended with ``hermes`` gone from PATH — and, because the command
-that repairs it IS ``hermes update``, unrecoverable without a manual reinstall
+recovery path ended with ``hexbot core`` gone from PATH — and, because the command
+that repairs it IS ``hexbot core update``, unrecoverable without a manual reinstall
 (#75584):
 
 1. Restoring a shim got a single attempt whose ``OSError`` was swallowed in

@@ -569,7 +569,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     # bridge. We deliberately do NOT assert on os.environ here: a third-party
     # import (microsoft_teams/apps/app.py) runs load_dotenv(find_dotenv(usecwd=True))
     # at import time, which walks up from cwd and can repopulate TELEGRAM_* vars
-    # from a developer's real ~/.hermes/.env, defeating the env-over-YAML bridge
+    # from a developer's real ~/.hexbot/.env, defeating the env-over-YAML bridge
     # for any key present there. The PlatformConfig.extra values below are parsed
     # straight from the test's config.yaml and are immune to that ambient leak.
     assert config is not None

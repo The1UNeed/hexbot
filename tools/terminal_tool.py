@@ -21,7 +21,7 @@ Features:
 
 Cloud sandbox note:
 - Persistent filesystems preserve working state across sandbox recreation
-- Persistent filesystems do NOT guarantee the same live sandbox or long-running processes survive cleanup, idle reaping, or Hermes exit
+- Persistent filesystems do NOT guarantee the same live sandbox or long-running processes survive cleanup, idle reaping, or Hexbot exit
 
 Usage:
     from terminal_tool import terminal_tool
@@ -69,7 +69,7 @@ def _redact_terminal_error_text(value: Any) -> str:
 from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
 from tools.registry import tool_error
 from tools.shell_heredoc import strip_inert_heredoc_bodies
-# display_hermes_home imported lazily at call site (stale-module safety during hermes update)
+# display_hermes_home imported lazily at call site (stale-module safety during hexbot core update)
 
 
 
@@ -1084,11 +1084,11 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     )
 
     # Local hosts with sudoers NOPASSWD should not be forced through the
-    # interactive Hermes password prompt or the sudo -S password-pipe path.
+    # interactive Hexbot password prompt or the sudo -S password-pipe path.
     # Scoped to the local terminal backend so Docker/SSH/Modal/etc. can't
     # inherit host sudo state. Re-probes every call (no process-lifetime
     # cache) so an expired sudo timestamp doesn't make a later command block
-    # silently without Hermes prompting.
+    # silently without Hexbot prompting.
     if not has_configured_password and not sudo_password and _sudo_nopasswd_works():
         return command, None
 
@@ -1162,7 +1162,7 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
 
     Sweeps long-Exited containers labeled ``hermes-agent=1`` for the current
     profile that match the issue #20561 leak class — containers left behind
-    by Hermes processes that exited without firing ``atexit`` (SIGKILL,
+    by Hexbot processes that exited without firing ``atexit`` (SIGKILL,
     OOM, terminal-window-close). The reaper is conservative by default:
     only Exited containers older than ``2 × lifetime_seconds`` and scoped to
     the current profile.
@@ -1171,7 +1171,7 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
 
     * ``terminal.docker_orphan_reaper: false`` disables it entirely (the
       operator opted out — usually because they're running multiple
-      Hermes processes in the same profile and don't trust the
+      Hexbot processes in the same profile and don't trust the
       conservative defaults).
     * ``_docker_orphan_reaper_ran`` flag — sweep runs once per Python
       interpreter, not on every subagent / RL-rollout / parallel
@@ -1189,7 +1189,7 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
             return
         _docker_orphan_reaper_ran = True
 
-    # 2 × lifetime_seconds gives sibling Hermes processes a generous grace
+    # 2 × lifetime_seconds gives sibling Hexbot processes a generous grace
     # window. Floor at 60s so an operator with TERMINAL_LIFETIME_SECONDS=0
     # doesn't get an instant-reap that races their own setup.
     # ``container_config`` only carries container_* keys, so read
@@ -1408,7 +1408,7 @@ def _docker_persistent_profile_scoped() -> bool:
     """True when the persistent Docker container is shared per PROFILE.
 
     The product contract for ``TERMINAL_ENV=docker`` +
-    ``container_persistent: true`` is ONE long-lived container per Hermes
+    ``container_persistent: true`` is ONE long-lived container per Hexbot
     profile, shared by every session of that profile (CLI, gateway chats,
     WebUI). Commit a270c4ade added a session-key fallback to
     :func:`_resolve_container_task_id` to stop cross-profile SSH environment
@@ -1425,7 +1425,7 @@ def _docker_persistent_profile_scoped() -> bool:
 
 
 def _current_session_profile() -> str:
-    """Return the active session's Hermes profile name, or "" when unset.
+    """Return the active session's Hexbot profile name, or "" when unset.
 
     Same lookup discipline as :func:`_current_session_key`: the ContextVar
     (bound per message by the gateway, per session by the WebUI streaming
@@ -1612,7 +1612,7 @@ def _parse_env_var(name: str, default: str, converter: Any = int, type_label: st
     except (ValueError, json.JSONDecodeError):
         raise ValueError(
             f"Invalid value for {name}: {raw!r} (expected {type_label}). "
-            f"Check ~/.hermes/.env or environment variables."
+            f"Check ~/.hexbot/.env or environment variables."
         )
 
 
@@ -1725,7 +1725,7 @@ def _ensure_terminal_env_bridged() -> None:
 
     Explicit terminal config keys win: when config.yaml has a ``terminal``
     section, each key present there overrides its matching env value (which may
-    be stale from ``hermes setup``). Environment values for omitted terminal
+    be stale from ``hexbot core setup``). Environment values for omitted terminal
     keys are preserved. When no terminal section exists, exported/.env values
     keep working unchanged.
     """
@@ -1983,7 +1983,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     
     elif env_type == "docker":
         # One-shot orphan reaper: clean up labeled containers left behind by
-        # prior Hermes processes that hit SIGKILL / OOM / a closed terminal
+        # prior Hexbot processes that hit SIGKILL / OOM / a closed terminal
         # before the atexit cleanup hook could run.  Gated to once per
         # process so concurrent _create_environment calls (parallel
         # subagents, RL benchmarks) don't run the reaper N times.
@@ -2727,7 +2727,7 @@ def _foreground_background_guidance(command: str) -> str | None:
         return (
             "Foreground command uses shell-level background wrappers (nohup/disown/setsid). "
             "Re-send WITHOUT the wrapper as terminal(command=\"<cmd>\", background=true, "
-            "notify_on_complete=true) so Hermes tracks the process, then run readiness "
+            "notify_on_complete=true) so Hexbot tracks the process, then run readiness "
             "checks and tests in separate commands."
         )
 
@@ -2883,7 +2883,7 @@ def terminal_tool(
         # a registered env override (RL benchmarks) get isolated sandboxes.
         effective_task_id = _resolve_container_task_id(task_id)
         if _host_local:
-            # Hermes-owned control-plane children must run beside the current
+            # Hexbot-owned control-plane children must run beside the current
             # interpreter, never inside the model's configured Docker/SSH/etc.
             # Keep their environment cache separate from the configured backend.
             effective_task_id = f"host-local-{effective_task_id}"
@@ -3071,14 +3071,14 @@ def terminal_tool(
         # restart|stop|uninstall targeting hermes-gateway) must never run inside the
         # gateway process itself. The restart would SIGTERM the gateway, which
         # kills this very subprocess before it can complete — the service may
-        # never restart. This mirrors the `hermes gateway restart` guard in
+        # never restart. This mirrors the `hexbot core gateway restart` guard in
         # hermes_cli/gateway.py and the cron-path guard in hermes_cli/cron.py,
         # but applies unconditionally (force=True cannot help here).
         # Gate on the SUPERVISED-gateway probe, not the raw _HERMES_GATEWAY
         # marker: gateway.run sets it at import time, so it leaks into every
-        # process that merely imports gateway.run (hermes serve --isolated,
+        # process that merely imports gateway.run (hexbot core serve --isolated,
         # CLI, web server) which are NOT the gateway and must be able to
-        # restart it. A plain foreground `hermes gateway run` (env set, PID
+        # restart it. A plain foreground `hexbot core gateway run` (env set, PID
         # owned, no supervisor) now also PASSES this guard: intentional and
         # harmless, since without a supervisor there is no KeepAlive to turn a
         # self-restart into a respawn loop.
@@ -3097,7 +3097,7 @@ def terminal_tool(
                     "error": (
                         "Blocked: launchctl submit/bootstrap registers a persistent "
                         "KeepAlive job and is unsafe from inside the gateway process. "
-                        "Use Hermes cron for one-shot delayed work, or install an "
+                        "Use Hexbot cron for one-shot delayed work, or install an "
                         "explicit LaunchAgent from a separate shell."
                     ),
                     "status": "error",
@@ -3179,7 +3179,7 @@ def terminal_tool(
                         "Blocked: command or referenced script cannot restart, stop, or "
                         "uninstall the gateway from inside the gateway process. The gateway would "
                         "kill this command before it could complete (SIGTERM propagates "
-                        "to child processes). Run `hermes gateway restart` from a "
+                        "to child processes). Run `hexbot core gateway restart` from a "
                         "separate shell outside the running gateway."
                     ),
                     "status": "error",
@@ -3465,7 +3465,7 @@ def terminal_tool(
                         result_data["notify_unsupported"] = (
                             "notify_on_complete / watch_patterns are not available in "
                             "this session — it cannot receive an async completion after "
-                            "the turn ends (a one-shot runner such as `hermes -z`, a "
+                            "the turn ends (a one-shot runner such as `hexbot core -z`, a "
                             "cron job, a Kanban worker, or a stateless HTTP endpoint). "
                             "The process is "
                             "running in the background; retrieve its result with "

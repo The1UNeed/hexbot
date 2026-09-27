@@ -1,6 +1,6 @@
 """Regression tests for the Photon sidecar stale-dependency self-heal.
 
-A `hermes update` that bumps the spectrum-ts pin rewrites the sidecar's
+A `hexbot core update` that bumps the spectrum-ts pin rewrites the sidecar's
 ``pnpm-lock.yaml`` but never reinstalls ``node_modules``, so the sidecar
 spawns against stale deps and dies on every reconnect. ``_sidecar_deps_stale``
 detects that skew (lockfile newer than pnpm's install marker, or no marker at

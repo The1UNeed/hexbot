@@ -273,7 +273,7 @@ class TestOrgPullIsWiredIn:
 
 
 class TestSkillSyncIsOneCommand:
-    """Every Skill Sync verb lives under `hermes sync` for launch.
+    """Every Skill Sync verb lives under `hexbot core sync` for launch.
 
     The surface is deliberately encapsulated: one command to learn, one to
     document, and top-level `sync` stays free of skill-management verbs that
@@ -303,7 +303,7 @@ class TestSkillSyncIsOneCommand:
 
     def test_sync_usage_lists_propose(self):
         main_src = self._src("hermes_cli", "main.py")
-        usage_start = main_src.index("usage: hermes sync ")
+        usage_start = main_src.index("usage: hexbot core sync ")
         usage_block = main_src[usage_start : usage_start + 1400]
         assert "propose" in usage_block, (
             "`hermes sync` usage must list the propose verb."

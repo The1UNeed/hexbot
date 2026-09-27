@@ -40,7 +40,7 @@ drop() { [ "$(id -u)" = 0 ] && set -- s6-setuidgid hermes "$@"; exec "$@"; }
 cur_uid="$(id -u)"
 if [ "$cur_uid" != 0 ] && [ "$cur_uid" != "$(id -u hermes)" ]; then
     cat >&2 <<EOF
-[hermes] ERROR: container started with --user $cur_uid (an arbitrary, non-hermes UID) — not supported.
+[hexbot] ERROR: container started with --user $cur_uid (an arbitrary, non-hermes UID) — not supported.
 
 To make container-written files match your HOST user, don't use --user.
 Start as root (the default) and pass your host UID/GID instead:
@@ -87,5 +87,5 @@ if command -v "$1" >/dev/null 2>&1; then
     drop "$@"
 fi
 
-# Hermes subcommand pass-through.
+# Hexbot subcommand pass-through.
 drop hermes "$@"

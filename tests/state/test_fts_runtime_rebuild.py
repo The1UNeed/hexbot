@@ -231,7 +231,7 @@ class TestRuntimeFtsRebuild:
         self, db, tmp_path, monkeypatch
     ):
         """A process whose fd table is unreadable (different user) is still
-        flagged when /proc/<pid>/cmdline identifies it as a Hermes process."""
+        flagged when /proc/<pid>/cmdline identifies it as a Hexbot process."""
         db_path = tmp_path / "state.db"
 
         proc_root = tmp_path / "proc"
@@ -239,7 +239,7 @@ class TestRuntimeFtsRebuild:
             (proc_root / str(pid) / "fd").mkdir(parents=True)
         # PID 222's fd dir is unreadable (PermissionError)
         os.chmod(proc_root / "222" / "fd", 0o000)
-        # PID 222's cmdline is world-readable and looks like Hermes
+        # PID 222's cmdline is world-readable and looks like Hexbot
         cmdline_path = proc_root / "222" / "cmdline"
         cmdline_path.write_bytes(b"python3\x00hermes_cli.main\x00chat\x00")
 

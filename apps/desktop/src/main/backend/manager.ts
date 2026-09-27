@@ -103,6 +103,8 @@ export class DaemonManager extends EventEmitter {
         HEXBOT_HOME: hexbotHome(),
         // Tells the daemon it may ask this app to update it (hexbot/update.py).
         HEXBOT_SUPERVISOR: 'desktop',
+        // Runs the Hex Connect sidecar with this app's Electron as Node (hexbot/connect.py).
+        HEXBOT_NODE: process.env.APPIMAGE ?? process.execPath,
         PATH: [binDir(), join(venvDir(), 'bin'), process.env.PATH ?? ''].join(delimiter)
       }
     })

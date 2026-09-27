@@ -19,7 +19,7 @@ Usage:
 Environment:
   ABEVAL_ROOT    working/results root   (default: ./abeval-workspace)
   ABEVAL_HOME    HERMES_HOME for runs   (default: $ABEVAL_ROOT/home)
-                 Must be a configured Hermes home with credentials for the
+                 Must be a configured Hexbot home with credentials for the
                  models under test. See README.md for a minimal setup.
 
 Results append to $ABEVAL_ROOT/results/<model>/<arm>/meta.jsonl (resume-safe:

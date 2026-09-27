@@ -282,7 +282,7 @@ def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
                 logger.error(
                     "state.db FAILED integrity check after an unclean gateway "
                     "exit: %s — sessions may read as missing until it is "
-                    "repaired. Run `hermes doctor`.",
+                    "repaired. Run `hexbot core doctor`.",
                     verdict,
                 )
             record = {

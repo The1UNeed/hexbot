@@ -20,6 +20,7 @@ const updateStatuses = new Set([
   'available',
   'downloading',
   'downloaded',
+  'installing',
   'up-to-date',
   'error'
 ])

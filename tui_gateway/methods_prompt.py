@@ -421,7 +421,7 @@ def _(rid, params: dict) -> dict:
                                 if hosted
                                 else "This room is managed by its home host. "
                             )
-                            + "Update Hermes Desktop to continue it.",
+                            + "Update the Hexbot app to continue it.",
                         )
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         # The refusal reason travels as machine-readable data, not as prose.
@@ -445,7 +445,7 @@ def _(rid, params: dict) -> dict:
     # Which desktop window this message was typed into. Rewritten on every
     # submit, because one session can be driven from the app window and the HUD
     # in turn: a stale "hud" would tell the model the user is still floating
-    # over another app when they are back in Hermes.
+    # over another app when they are back in Hexbot.
     session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
     has_truncation = (
         truncate_user_ordinal is not None
@@ -586,7 +586,7 @@ def _(rid, params: dict) -> dict:
                     4029,
                     "truncation parameters require confirm_truncate=true; "
                     "an ordinary prompt.submit must not drop session history "
-                    "(update your Hermes client if a rewind was intended)",
+                    "(update your Hexbot client if a rewind was intended)",
                 )
             # Desktop/TUI ordinals count the full displayed lineage. After
             # compression, session["history"] holds only the tip segment while
@@ -1626,14 +1626,14 @@ def _(rid, params: dict) -> dict:
                 if has_history
                 else None
             ),
-            "Restart exactly the app intended for the Preview URL, not Hermes Desktop itself.",
+            "Restart exactly the app intended for the Preview URL, not the Hexbot app itself.",
             "The Preview URL and port are the target. Preserve that target unless you conclude it is impossible.",
             "If the prior conversation shows a specific command that bound this URL/port, prefer re-running THAT exact command (in the same cwd) over guessing a new one.",
-            "First inspect what process, if any, owns the Preview URL port. If a stale server exists, inspect its cwd and prefer that cwd over the Hermes/Desktop process cwd.",
+            "First inspect what process, if any, owns the Preview URL port. If a stale server exists, inspect its cwd and prefer that cwd over the Hexbot desktop process cwd.",
             "The Current working directory is only a hint. Do not assume it is the preview app root when the port owner or files indicate another root.",
             "If the console shows a module-script MIME error for src/main.tsx or similar, a static server is serving source files. Do not restart python -m http.server or any dumb static server for that app.",
             "For module-script MIME failures, inspect package.json/vite config in the candidate app root and start the real dev server/bundler (for example npm/pnpm/yarn dev) so module transforms happen.",
-            "Before declaring success, verify the Preview URL responds with the intended app, not Hermes Desktop. If it serves Hermes/Desktop UI or another unrelated app, stop that process and report failure.",
+            "Before declaring success, verify the Preview URL responds with the intended app, not the Hexbot app. If it serves the Hexbot UI or another unrelated app, stop that process and report failure.",
             "Do not modify files. Do not ask the user unless blocked.",
             "Prefer existing project scripts or commands when they are clear.",
             "If a stale process owns the needed port, handle it safely.",
@@ -1765,7 +1765,7 @@ def _(rid, params: dict) -> dict:
 
 @method("window.read.respond")
 def _(rid, params: dict) -> dict:
-    # `text` is a JSON string describing the OS window underneath the Hermes
+    # `text` is a JSON string describing the OS window underneath the Hexbot
     # window (read_window_below tool). allow_expired=True for the same reason
     # as terminal.read: the tool's bounded wait can expire while the renderer's
     # round-trip to the main process is still in flight.

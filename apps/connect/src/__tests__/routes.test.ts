@@ -23,26 +23,29 @@ async function registration() {
 }
 
 describe("registration lifecycle", () => {
-  it("starts, approves, returns credentials once, then reports consumption", async () => { const { started } = await registration(); const firstResponse = await poll(request("/api/register/poll", { device_code: started.device_code })); expect(firstResponse.status).toBe(200); const first = await firstResponse.json(); expect(first).toMatchObject({ status: "approved", slug: expect.any(String), daemon_token: expect.stringMatching(/^hxd_/), tunnel_token: expect.stringMatching(/^fake-tunnel-token-/) }); const second = await poll(request("/api/register/poll", { device_code: started.device_code })); expect(second.status).toBe(410); expect((await second.json()).error).toBe("consumed"); });
+  it("starts, approves, returns credentials once, then reports consumption", async () => { const { started } = await registration(); const firstResponse = await poll(request("/api/register/poll", { device_code: started.device_code })); expect(firstResponse.status).toBe(200); const first = await firstResponse.json(); expect(first).toMatchObject({ status: "approved", slug: expect.any(String), daemon_token: expect.stringMatching(/^hxd_/), tunnel_token: expect.stringMatching(/^fake-tunnel-token-/) }); expect(first).toMatchObject({ owner_id: store.users[0].id, issuer: "https://connect.hexbot.app", keys: [expect.objectContaining({ kty: "EC", crv: "P-256" })] }); expect(store.daemons[0].tokenHash).toBe(hashToken(first.daemon_token)); expect(JSON.stringify(store)).not.toContain(first.daemon_token); expect(JSON.stringify(store)).not.toContain(first.tunnel_token); const second = await poll(request("/api/register/poll", { device_code: started.device_code })); expect(second.status).toBe(410); expect((await second.json()).error).toBe("consumed"); });
+});
+
+describe("registration of a daemon revoked before it polls", () => {
+  it("reports denied and hands out no credentials", async () => { const { started } = await registration(); store.daemons[0].revokedAt = new Date(); expect(await (await poll(request("/api/register/poll", { device_code: started.device_code }))).json()).toEqual({ status: "denied" }); });
 });
 
 describe("authenticated daemon routes", () => {
-  it("requires a client session before issuing a grant", async () => { const { approved } = await registration(); const denied = await grant(request(`/api/daemons/${approved.daemon_id}/grant`), { params: Promise.resolve({ id: approved.daemon_id }) }); expect(denied.status).toBe(401); const user = store.users[0]; const clientToken = randomToken("hxc_"); await store.createClientSession({ userId: user.id, tokenHash: hashToken(clientToken), deviceName: "Laptop" }); const allowed = await grant(request(`/api/daemons/${approved.daemon_id}/grant`, undefined, clientToken), { params: Promise.resolve({ id: approved.daemon_id }) }); expect(allowed.status).toBe(200); expect((await allowed.json()).grant.split(".")).toHaveLength(3); });
+  it("requires a client session before issuing a grant", async () => { const { approved } = await registration(); const denied = await grant(request(`/api/daemons/${approved.daemon_id}/grant`), { params: Promise.resolve({ id: approved.daemon_id }) }); expect(denied.status).toBe(401); const user = store.users[0]; const clientToken = randomToken("hxc_"); await store.createClientSession({ userId: user.id, tokenHash: hashToken(clientToken), deviceName: "Laptop" }); const allowed = await grant(request(`/api/daemons/${approved.daemon_id}/grant`, undefined, clientToken), { params: Promise.resolve({ id: approved.daemon_id }) }); expect(allowed.status).toBe(200); const body = await allowed.json(); expect(body.grant.split(".")).toHaveLength(3); expect(body.daemon).toMatchObject({ host: "127.0.0.1", port: 9119, tls: false }); });
   it("updates last_seen_at on heartbeat", async () => { const { started, approved } = await registration(); const polled = await poll(request("/api/register/poll", { device_code: started.device_code })); const credentials = await polled.json(); const response = await heartbeat(request(`/api/daemons/${approved.daemon_id}/heartbeat`, { port: 8000 }, credentials.daemon_token), { params: Promise.resolve({ id: approved.daemon_id }) }); expect(response.status).toBe(200); expect(store.daemons[0].lastSeenAt).toBeInstanceOf(Date); });
   it("revokes the daemon and deletes its tunnel", async () => { const { approved } = await registration(); const user = store.users[0]; const clientToken = randomToken("hxc_"); await store.createClientSession({ userId: user.id, tokenHash: hashToken(clientToken), deviceName: "Laptop" }); const response = await remove(request(`/api/daemons/${approved.daemon_id}`, undefined, clientToken, "DELETE"), { params: Promise.resolve({ id: approved.daemon_id }) }); expect(response.status).toBe(200); expect(store.daemons[0].revokedAt).toBeInstanceOf(Date); expect(tunnels.deleted).toEqual([store.daemons[0].tunnelId]); });
 });
 
 describe("tunnel hostnames and ports", () => {
-  it("places daemons one label under the zone and moves the tunnel to the heartbeat port", async () => {
-    process.env.CONNECT_DOMAIN = "hexbot.app";
+  it("places daemons one label under the zone and records the heartbeat port without touching the tunnel", async () => {
+    process.env.CONNECT_DOMAIN = "hexbot-tunnels.test";
     const { started, approved } = await registration();
-    expect(approved.hostname).toMatch(/^[a-z]+-[a-z]+-\d+\.hexbot\.app$/);
+    expect(approved.hostname).toMatch(/^[0-9a-f]{16}\.hexbot-tunnels\.test$/);
     const credentials = await (await poll(request("/api/register/poll", { device_code: started.device_code }))).json();
     expect(store.daemons[0].ingressPort).toBe(9119);
     const response = await heartbeat(request(`/api/daemons/${approved.daemon_id}/heartbeat`, { port: 9200 }, credentials.daemon_token), { params: Promise.resolve({ id: approved.daemon_id }) });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true, hostname: approved.hostname, port: 9200 });
-    expect(tunnels.ingress).toEqual({ [store.daemons[0].tunnelId]: 9200 });
     expect(store.daemons[0].ingressPort).toBe(9200);
   });
 });

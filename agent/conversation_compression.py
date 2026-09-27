@@ -2386,7 +2386,7 @@ def _direct_messages_for_pre_compress_memory(messages: Any) -> list[dict[str, An
 
     Compression summaries are derivative context, not new source evidence.
     Tool rows and system messages are likewise omitted so memory providers
-    receive one normalized host contract instead of having to infer Hermes
+    receive one normalized host contract instead of having to infer Hexbot
     transcript internals independently. Assistant messages that carry both
     prose and ``tool_calls`` keep their prose (the ``tool_calls`` payload is
     stripped); pure tool-call wrappers without prose are dropped.
@@ -2567,7 +2567,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 msg = (
                     "⚠ No auxiliary LLM provider configured — context "
                     "compression will drop middle turns without a summary. "
-                    "Run `hermes setup` or set OPENROUTER_API_KEY."
+                    "Run `hexbot core setup` or set OPENROUTER_API_KEY."
                 )
             agent._compression_warning = msg
             agent._emit_status(msg)
@@ -2610,7 +2610,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
             raise ValueError(
                 f"Auxiliary compression model {aux_model} has a context "
                 f"window of {aux_context:,} tokens, which is below the "
-                f"minimum {MINIMUM_CONTEXT_LENGTH:,} required by Hermes "
+                f"minimum {MINIMUM_CONTEXT_LENGTH:,} required by Hexbot "
                 f"Agent.  Choose a compression model with at least "
                 f"{MINIMUM_CONTEXT_LENGTH // 1000}K context (set "
                 f"auxiliary.compression.model in config.yaml), or set "
@@ -2731,7 +2731,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
                     f"           model: <model-with-{old_threshold:,}+-context>\n"
                     f"  (Lowering compression.threshold cannot help here — "
                     f"with {_main_label}'s {main_ctx:,}-token window, "
-                    f"Hermes's small-context floor and output reservation "
+                    f"Hexbot's small-context floor and output reservation "
                     f"would recompute the trigger to "
                     f"{recomputed_threshold:,} tokens, still above the "
                     f"compression model's {aux_context:,}.)"
@@ -3279,11 +3279,11 @@ def compress_context(
         pass
 
     # Codex app-server sessions: the codex agent owns the real thread context;
-    # Hermes' summarizer would only rewrite a local mirror without shrinking
+    # Hexbot's summarizer would only rewrite a local mirror without shrinking
     # the actual thread (#36801). Route compaction to the app server's own
     # thread/compact mechanism. Behavior is controlled by
     # ``compression.codex_app_server_auto`` (native|hermes|off).
-    # The memory-provider context handoff below is intentionally Hermes-only:
+    # The memory-provider context handoff below is intentionally Hexbot-only:
     # the app server does not expose its native summary prompt, so there is no
     # truthful injection point for ``on_pre_compress()`` return text here.
     # `is True` (not bool()): unit tests drive this path with bare MagicMock
@@ -3519,7 +3519,7 @@ def compress_context(
                     "compression lock subsystem unavailable for session=%s "
                     "— proceeding without lock. This usually means a stale "
                     "in-memory module after an update; restart the process "
-                    "(or `hermes update`) to resync.",
+                    "(or `hexbot core update`) to resync.",
                     _lock_sid,
                 )
             _lock_acquired = True  # acquired-but-unlocked compatibility path
@@ -5548,9 +5548,9 @@ def _compress_context_via_codex_app_server(
 ) -> Tuple[list, str]:
     """Route compaction to Codex app-server for Codex-owned threads.
 
-    Hermes' normal compressor rewrites the local OpenAI-style transcript.
+    Hexbot's normal compressor rewrites the local OpenAI-style transcript.
     That does not shrink the actual Codex app-server thread context. For this
-    runtime, ask Codex to compact its own thread and keep Hermes' transcript
+    runtime, ask Codex to compact its own thread and keep Hexbot's transcript
     unchanged.
     """
     auto_mode = str(
@@ -5573,7 +5573,7 @@ def _compress_context_via_codex_app_server(
         return messages, existing_prompt
 
     # Automatic entrypoints must honor the compressor-owned cooldown, the same
-    # way the Hermes path below does. An active cooldown means a recent
+    # way the Hexbot path below does. An active cooldown means a recent
     # compaction already failed; retrying every turn is what thrashes.
     if not force:
         _cooldown_remaining = _codex_compaction_cooldown_remaining(agent)

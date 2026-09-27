@@ -1,4 +1,4 @@
-"""Shared constants for Hermes Agent.
+"""Shared constants for Hexbot.
 
 Import-safe module with no dependencies — can be imported from anywhere
 without risk of circular imports.
@@ -29,7 +29,7 @@ DEFAULT_INDICATOR_STYLE: str = "kaomoji"
 
 
 def set_hermes_home_override(path: str | Path | None) -> Token:
-    """Set a context-local Hermes home override and return its reset token.
+    """Set a context-local Hexbot home override and return its reset token.
 
     This is for in-process, per-task scoping.  It deliberately does not mutate
     ``os.environ`` because that is shared by every thread in the process.
@@ -39,12 +39,12 @@ def set_hermes_home_override(path: str | Path | None) -> Token:
 
 
 def reset_hermes_home_override(token: Token) -> None:
-    """Restore the previous context-local Hermes home override."""
+    """Restore the previous context-local Hexbot home override."""
     _HERMES_HOME_OVERRIDE.reset(token)
 
 
 def get_hermes_home_override() -> str | None:
-    """Return the active context-local Hermes home override, if any."""
+    """Return the active context-local Hexbot home override, if any."""
     override = _HERMES_HOME_OVERRIDE.get()
     if override is _UNSET or not override:
         return None
@@ -52,7 +52,7 @@ def get_hermes_home_override() -> str | None:
 
 
 def _get_platform_default_hermes_home() -> Path:
-    """Return the platform-native default Hermes home path."""
+    """Return the platform-native default Hexbot home path."""
     if sys.platform == "win32":
         local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
         base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
@@ -113,7 +113,7 @@ def _warn_profile_fallback_once() -> None:
 
 
 def get_hermes_home() -> Path:
-    """Return the Hermes home directory (default: platform-native path).
+    """Return the Hexbot home directory (default: platform-native path).
 
     Resolution order: context-local override (see
     :func:`set_hermes_home_override`) → ``HERMES_HOME`` env var → the
@@ -141,7 +141,7 @@ def get_hermes_home() -> Path:
 
 
 def hermes_home_key(path: str | Path | None = None) -> str:
-    """Return a stable key for a Hermes home/profile directory.
+    """Return a stable key for a Hexbot home/profile directory.
 
     Runtime registries use this key to isolate plugin-owned entries while
     keeping built-in registrations process-global.  ``strict=False`` preserves
@@ -153,7 +153,7 @@ def hermes_home_key(path: str | Path | None = None) -> str:
 
 
 def get_process_hermes_home() -> Path:
-    """Return the Hermes home for the running process, ignoring task overrides.
+    """Return the Hexbot home for the running process, ignoring task overrides.
 
     Unlike :func:`get_hermes_home`, this never follows the context-local
     override set by :func:`set_hermes_home_override`.  It resolves only the
@@ -182,18 +182,19 @@ _default_hermes_root_memo: "tuple[str, str, Path] | None" = None
 
 
 def get_default_hermes_root() -> Path:
-    """Return the root Hermes directory for profile-level operations.
+    """Return the root Hexbot directory for profile-level operations.
 
-    In standard deployments this is the platform-native Hermes home
-    (``~/.hermes`` on POSIX, ``%LOCALAPPDATA%\\hermes`` on native Windows).
+    In standard deployments this is the platform-native home
+    (``~/.hermes`` on POSIX, ``%LOCALAPPDATA%\\hermes`` on native Windows;
+    Hexbot sets ``HERMES_HOME=~/.hexbot``).
 
     In Docker or custom deployments where ``HERMES_HOME`` points outside
-    ``~/.hermes`` (e.g. ``/opt/data``), returns ``HERMES_HOME`` directly
+    the native home (e.g. ``/opt/data``), returns ``HERMES_HOME`` directly
     — that IS the root.
 
     In profile mode where ``HERMES_HOME`` is ``<root>/profiles/<name>``,
     returns ``<root>`` so that ``profile list`` can see all profiles.
-    Works both for standard (``~/.hermes/profiles/coder``) and Docker
+    Works both for standard (``~/.hexbot/profiles/coder``) and Docker
     (``/opt/data/profiles/coder``) layouts.
 
     Import-safe — no dependencies beyond stdlib.
@@ -212,7 +213,7 @@ def get_default_hermes_root() -> Path:
         env_path = Path(env_home)
         try:
             env_path.resolve().relative_to(native_home.resolve())
-            # HERMES_HOME is under ~/.hermes (normal or profile mode)
+            # HERMES_HOME is under ~/.hexbot (normal or profile mode)
             result = native_home
         except ValueError:
             # Docker / custom deployment.
@@ -233,7 +234,7 @@ def get_default_hermes_root() -> Path:
 # erase the fact that the profile was deleted.
 _DELETED_PROFILES_DIR = ".deleted"
 
-# Files whose presence marks a directory as a real Hermes home. A fresh home
+# Files whose presence marks a directory as a real Hexbot home. A fresh home
 # always gains at least one of these on first use (config save, env backfill,
 # session DB), while arbitrary directories that merely contain a ``profiles``
 # path segment (e.g. ``/srv/profiles/buildcache``) do not.
@@ -244,11 +245,11 @@ def _is_hermes_profiles_root(profiles_dir: Path) -> bool:
     """Return True when *profiles_dir* is a canonical ``<hermes-home>/profiles``.
 
     Anchors named-profile recognition so it only fires for directories that
-    provably live under a Hermes home: the classic ``~/.hermes`` layout, a
-    root carrying Hermes-home marker files (Docker/custom ``HERMES_HOME``
+    provably live under a Hexbot home: the classic ``~/.hexbot`` layout, a
+    root carrying Hexbot-home marker files (Docker/custom ``HERMES_HOME``
     like ``/opt/data``), a ``profiles/.deleted`` tombstone directory (only
-    ever created by ``hermes profile delete``), or the process's resolved
-    default Hermes root.
+    ever created by ``hexbot core profile delete``), or the process's resolved
+    default Hexbot root.
     """
     root = profiles_dir.parent
     if root.name == ".hermes":
@@ -273,7 +274,7 @@ def named_profile_home(path: str | Path) -> Path | None:
 
     A named profile home is only ``.../profiles/<id>`` where ``<id>`` does
     not start with ``.`` AND the ``profiles`` directory's parent is a real
-    Hermes home (see :func:`_is_hermes_profiles_root`). A default Hermes home
+    Hexbot home (see :func:`_is_hermes_profiles_root`). A default Hexbot home
     whose path merely contains a ``profiles`` segment
     (e.g. ``/tmp/foo/profiles/notahome/.hermes``) is not a named profile,
     and neither is an unrelated custom home like
@@ -288,7 +289,7 @@ def named_profile_home(path: str | Path) -> Path | None:
             and _is_hermes_profiles_root(candidate.parent)
         ):
             return candidate
-        # Stop at a default Hermes home so a coincidental ``profiles/``
+        # Stop at a default Hexbot home so a coincidental ``profiles/``
         # ancestor is not treated as a named-profile root.
         if candidate.name == ".hermes":
             return None
@@ -388,7 +389,7 @@ def get_hermes_dir(
     *,
     home: Path | None = None,
 ) -> Path:
-    """Resolve a Hermes subdirectory with backward compatibility.
+    """Resolve a Hexbot subdirectory with backward compatibility.
 
     New installs get the consolidated layout (e.g. ``cache/images``).
     Existing installs that already have the old path (e.g. ``image_cache``)
@@ -405,7 +406,7 @@ def get_hermes_dir(
     Args:
         new_subpath: Preferred path relative to HERMES_HOME (e.g. ``"cache/images"``).
         old_name: Legacy path relative to HERMES_HOME (e.g. ``"image_cache"``).
-        home: Optional explicit Hermes home. Profile-aware callers that manage
+        home: Optional explicit Hexbot home. Profile-aware callers that manage
             more than one home in the same process use this instead of
             temporarily mutating the process or context-local HERMES_HOME.
 
@@ -421,7 +422,7 @@ def get_hermes_dir(
 
 
 def iter_hermes_node_dirs(home: Path | None = None) -> list[Path]:
-    """Return Hermes-managed Node.js directories in preferred lookup order.
+    """Return Hexbot-managed Node.js directories in preferred lookup order.
 
     Windows installs from ``scripts/install.ps1`` unpack portable Node directly
     into ``%LOCALAPPDATA%\\hermes\\node``. POSIX installs use
@@ -468,11 +469,11 @@ _INSTALL_ROOT = Path(__file__).resolve().parent
 def node_tool_runnable(path: str | None) -> bool:
     """Return True only when *path* is a Node/npm/npx/pnpm binary that actually runs.
 
-    Hermes-managed Node trees live under ``$HERMES_HOME/node`` (or a profile's
+    Hexbot-managed Node trees live under ``$HERMES_HOME/node`` (or a profile's
     ``HERMES_HOME``). A partial upgrade or interrupted install can leave
     ``bin/npm`` behind while ``lib/cli.js`` is missing — the wrapper exists but
     immediately throws ``MODULE_NOT_FOUND``. ``find_hermes_node_executable``
-    used to trust file presence alone, so ``hermes update`` would pick that
+    used to trust file presence alone, so ``hexbot core update`` would pick that
     broken npm and fail the Node refresh / web UI build.
 
     Probe with ``--version`` (same pattern as :func:`agent_browser_runnable`) so
@@ -508,7 +509,7 @@ def node_tool_runnable(path: str | None) -> bool:
 
 
 def hermes_managed_node_tree_present(home: Path | None = None) -> bool:
-    """Return True when any Hermes-managed node/npm/npx shim exists on disk."""
+    """Return True when any Hexbot-managed node/npm/npx shim exists on disk."""
     names = set()
     for command in ("node", "npm", "npx"):
         names.update(_candidate_node_command_names(command))
@@ -602,8 +603,8 @@ def _print_managed_node_in_use_notice() -> None:
         return
     _managed_node_in_use_notice_printed = True
     print(
-        "→ Hermes-managed Node.js is in use by a running app; deferring its "
-        "upgrade until the app is closed (re-run `hermes update` afterwards).",
+        "→ Hexbot-managed Node.js is in use by a running app; deferring its "
+        "upgrade until the app is closed (re-run `hexbot core update` afterwards).",
         flush=True,
     )
 
@@ -797,11 +798,11 @@ def _bootstrap_managed_node_posix() -> bool:
 
 
 def bootstrap_hermes_managed_node() -> str | None:
-    """Install a Hermes-managed Node tree and return its npm path.
+    """Install a Hexbot-managed Node tree and return its npm path.
 
     Used when the only Node/npm on the machine belongs to the user (system,
     nvm, brew, Nix) and cannot satisfy the repo's ``engines`` requirements —
-    Hermes never modifies a toolchain it does not own, so instead it provisions
+    Hexbot never modifies a toolchain it does not own, so instead it provisions
     its own tree under ``$HERMES_HOME/node`` (the same tree a fresh install
     creates) and works with that.
 
@@ -833,7 +834,7 @@ def bootstrap_hermes_managed_node() -> str | None:
 
 
 def heal_hermes_managed_node() -> bool:
-    """Redownload Hermes-managed Node when the tree exists but is broken.
+    """Redownload Hexbot-managed Node when the tree exists but is broken.
 
     Runs at most once per process. POSIX installs shell out to
     ``heal_managed_node`` in ``scripts/lib/node-bootstrap.sh``; Windows
@@ -926,7 +927,7 @@ def _managed_node_tree_outdated(home: Path | None = None) -> bool:
 
 
 def find_hermes_node_executable(command: str) -> str | None:
-    """Return a Hermes-managed Node/npm/pnpm executable path, healing broken trees.
+    """Return a Hexbot-managed Node/npm/pnpm executable path, healing broken trees.
 
     Outdated trees (node major below ``_HERMES_NODE_TARGET_MAJOR``) heal the
     same way broken ones do — the once-per-process heal redownloads the target
@@ -966,7 +967,7 @@ def find_node_executable_on_path(command: str) -> str | None:
 
     ``shutil.which("npm")`` can resolve an extensionless npm shim before the
     ``.cmd`` shim on Windows. Python's CreateProcess cannot execute that shim
-    directly, so prefer the launchable variants explicitly for Hermes-owned
+    directly, so prefer the launchable variants explicitly for Hexbot-owned
     subprocesses.
     """
     if sys.platform != "win32":
@@ -990,9 +991,9 @@ def find_node_executable_on_path(command: str) -> str | None:
 
 
 def find_node_executable(command: str) -> str | None:
-    """Resolve a Node.js command, preferring healthy Hermes-managed installs.
+    """Resolve a Node.js command, preferring healthy Hexbot-managed installs.
 
-    This is for Hermes-owned subprocesses that should not be broken by a bad,
+    This is for Hexbot-owned subprocesses that should not be broken by a bad,
     missing, or elevation-triggering system Node/npm on PATH. When a managed
     tree exists but cannot be healed, returns ``None`` instead of falling back
     to system npm on PATH.
@@ -1030,7 +1031,7 @@ def install_managed_pnpm(npm: str, prefix: Path):
     ``--prefix`` targets the managed tree explicitly: a managed install writes
     ``prefix=~/.local`` into ``$HERMES_HOME/node/etc/npmrc`` so that global
     installs land on PATH, and without the override pnpm would land outside
-    the tree Hermes resolves from.
+    the tree Hexbot resolves from.
 
     Returns the finished ``CompletedProcess``, or ``None`` when npm could not
     be started.
@@ -1075,9 +1076,9 @@ def install_managed_pnpm(npm: str, prefix: Path):
 def ensure_hermes_pnpm() -> str | None:
     """Return a usable pnpm, installing the pinned one when none exists.
 
-    Order: pnpm in the Hermes-managed Node tree; else pnpm on PATH; else
+    Order: pnpm in the Hexbot-managed Node tree; else pnpm on PATH; else
     install the ``packageManager`` pin into the managed tree with that tree's
-    own npm (provisioning the tree first when there is none). Hermes never
+    own npm (provisioning the tree first when there is none). Hexbot never
     installs pnpm into a system/nvm/brew Node.
     """
     existing = find_hermes_node_executable("pnpm") or find_node_executable_on_path(
@@ -1096,7 +1097,7 @@ def ensure_hermes_pnpm() -> str | None:
 
 
 def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
-    """Return *env* with Hermes-managed Node directories prepended to PATH."""
+    """Return *env* with Hexbot-managed Node directories prepended to PATH."""
     merged = dict(os.environ if env is None else env)
     existing = merged.get("PATH", "")
     parts = [p for p in existing.split(os.pathsep) if p]
@@ -1115,7 +1116,7 @@ def agent_browser_runnable(path: str | None) -> bool:
     agent-browser's npm ``postinstall`` re-points a *global* install symlink
     (e.g. ``/opt/homebrew/bin/agent-browser``) at our local
     ``node_modules/agent-browser/bin/...`` binary, which then disappears on the
-    next ``hermes update`` — leaving a **dangling symlink** that ``which`` still
+    next ``hexbot core update`` — leaving a **dangling symlink** that ``which`` still
     reports but exec fails on with exit 127 (issue #48521). Callers that trust
     such a path silently break every browser tool.
 
@@ -1210,12 +1211,12 @@ def display_hermes_home() -> str:
 
     Uses ``~/`` shorthand for readability::
 
-        default:  ``~/.hermes``
-        profile:  ``~/.hermes/profiles/coder``
+        default:  ``~/.hexbot``
+        profile:  ``~/.hexbot/profiles/coder``
         custom:   ``/opt/hermes-custom``
 
     Use this in **user-facing** print/log messages instead of hardcoding
-    ``~/.hermes``.  For code that needs a real ``Path``, use
+    ``~/.hexbot``.  For code that needs a real ``Path``, use
     :func:`get_hermes_home` instead.
     """
     home = get_hermes_home()
@@ -1263,8 +1264,8 @@ def secure_parent_dir(path: Path) -> None:
 
         logging.getLogger(__name__).warning(
             "Not restricting permissions on %s: it is inside the "
-            "hermes-agent install directory (%s). Credential files are "
-            "normally stored under the hermes home directory instead.",
+            "Hexbot install directory (%s). Credential files are "
+            "normally stored under the Hexbot home directory instead.",
             parent,
             _INSTALL_ROOT,
         )
@@ -1333,9 +1334,9 @@ def _iter_real_home_candidates(env: dict[str, str] | None = None) -> list[str]:
 
 
 def get_real_home(env: dict[str, str] | None = None) -> str:
-    """Return the OS user's real home directory, avoiding Hermes profile HOME.
+    """Return the OS user's real home directory, avoiding Hexbot profile HOME.
 
-    ``HERMES_HOME`` scopes Hermes state. ``HOME`` is reserved for the OS/user
+    ``HERMES_HOME`` scopes Hexbot state. ``HOME`` is reserved for the OS/user
     account and the many external CLIs that store credentials under ``~``.
     If a parent process is already running with ``HOME={HERMES_HOME}/home``,
     this helper repairs back to the account home when possible.
@@ -1389,7 +1390,7 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
 
 
 def apply_subprocess_home_env(env: dict[str, str]) -> None:
-    """Apply Hermes' subprocess HOME contract to *env* in-place."""
+    """Apply Hexbot's subprocess HOME contract to *env* in-place."""
     real_home = get_real_home(env)
     if real_home:
         env["HERMES_REAL_HOME"] = real_home
@@ -1673,7 +1674,7 @@ def wsl_unc_path_to_posix(path: str) -> str | None:
 
 
 def translate_cwd_for_wsl_backend(cwd: str) -> str:
-    """Normalize a cross-boundary cwd when Hermes itself runs inside WSL.
+    """Normalize a cross-boundary cwd when Hexbot itself runs inside WSL.
 
     A Windows-host UI (native picker / drive path / ``\\\\wsl.localhost\\`` UNC)
     can hand the WSL backend a path it can't ``chdir`` into. Map it to the POSIX
@@ -1883,7 +1884,7 @@ def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:
 
 # ─── Partial-update diagnostics ──────────────────────────────────────────────
 
-# Top-level packages/modules that ship as part of Hermes itself. An ImportError
+# Top-level packages/modules that ship as part of Hexbot itself. An ImportError
 # naming one of these means our own tree is inconsistent; anything else is a
 # third-party problem with different remediation. Single source of truth —
 # `hermes_cli.update_cmd`'s post-update probe consumes this same set so the
@@ -1908,7 +1909,7 @@ FIRST_PARTY_MODULE_ROOTS = frozenset(
 
 
 def is_first_party_module(name: str | None) -> bool:
-    """True when *name* is a module that ships with Hermes.
+    """True when *name* is a module that ships with Hexbot.
 
     Matches on the first dotted segment against an exact set — a substring or
     ``startswith`` test would also claim third-party ``agents``, ``agentops``,
@@ -1930,7 +1931,7 @@ def partial_update_hint(exc: BaseException) -> list[str]:
     ``ImportError: cannot import name 'X' from 'y'`` on every startup.
 
     Users hit this as an opaque crash with no indication that the *install*,
-    rather than their config, is the problem — and `hermes update` is exactly
+    rather than their config, is the problem — and `hexbot core update` is exactly
     the command they need but are least likely to trust after a failed update.
     Return the guidance so callers can print it alongside the raw error.
 
@@ -1951,7 +1952,7 @@ def partial_update_hint(exc: BaseException) -> list[str]:
         "This looks like a partially-updated install: one module was refreshed "
         "and a related one was not.",
         "Re-run the update to bring the whole tree to the same version:",
-        "    hermes update",
+        "    hexbot core update",
         "If that also fails, reinstall: https://hermes-agent.nousresearch.com",
     ]
 

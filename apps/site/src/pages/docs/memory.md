@@ -22,7 +22,7 @@ Archiving a section hides it from the active list. Deleting a section removes th
 
 ## About you
 
-About you is one text that every bot you own reads: your name, what you do, and how you like to be spoken to. Only you write it, in Settings under Memory. Onboarding asks for it once.
+About you is one text that every bot you own reads: your name, what you do, and how you like to be spoken to. Only you write it. Hexbot asks for it once, at the first startup: your name, what you do, and how bots should talk to you. After that it lives in Settings under Memory.
 
 Put durable facts there, such as preferred units or a standing rule. Do not use memory as a password store.
 

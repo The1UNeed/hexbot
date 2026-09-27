@@ -530,12 +530,12 @@ def to_agent_visible_cache_path(
 
     Per-backend base (mirrors ``_agent_cache_base_for_env`` in
     tools/image_generation_tool.py, the proven heuristics for where each
-    backend's Hermes cache lands):
+    backend's Hexbot cache lands):
 
     * docker / modal — bind-mounted (docker) or per-file-synced (modal) at
       ``/root/.hermes`` (the *container_base* default).
     * ssh / daytona / vercel_sandbox — file-synced under the remote user's
-      home; ``~/.hermes`` is shell-expanded by the remote shell, so tool
+      home; ``~/.hexbot`` is shell-expanded by the remote shell, so tool
       commands resolve it regardless of the actual remote home. Previously
       these backends synced the bytes but still rendered the dangling host
       path (#76577 gap).

@@ -2,7 +2,7 @@
 
 Regression guard for the multi-profile ``/handoff`` bug: ``/handoff`` writes
 ``handoff_state='pending'`` into the store of the profile the CLI ran under
-(``hermes -p medicina``), while the gateway's watcher resolves ``_session_db``
+(``hexbot core -p medicina``), while the gateway's watcher resolves ``_session_db``
 from whatever HERMES_HOME is active on its task. Unscoped that is always the
 ROOT store, so the pending row was never seen and the CLI timed out with the
 gateway plainly alive and connected.

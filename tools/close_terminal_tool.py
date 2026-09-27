@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Close a read-only agent terminal tab in the Hermes desktop GUI.
+"""Close a read-only agent terminal tab in the Hexbot desktop GUI.
 
 Each ``terminal(background=true)`` process is mirrored as a read-only tab in the
 desktop's terminal pane. This tool lets the agent drop a tab it no longer needs
@@ -31,7 +31,7 @@ CLOSE_TERMINAL_SCHEMA = {
     "name": "close_terminal",
     "description": (
         "Hide a background process's terminal tab (process keeps running) in "
-        "the Hermes desktop GUI (the tabs mirroring terminal(background=true) runs). "
+        "the Hexbot desktop GUI (the tabs mirroring terminal(background=true) runs). "
         "This does NOT kill the process — it only drops the tab/view; the output "
         "keeps buffering and the user can reopen it from the status stack. Use it "
         "to tidy up when a background process's live terminal is no longer worth "

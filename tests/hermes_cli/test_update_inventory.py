@@ -61,7 +61,7 @@ class TestCollectInventory:
         assert by_profile["work"].restart_via == "manual"
         from hermes_cli.update_inventory import describe_restart_mechanism
 
-        assert "hermes -p work gateway restart" in describe_restart_mechanism(
+        assert "hexbot core -p work gateway restart" in describe_restart_mechanism(
             by_profile["work"].restart_via, "work"
         )
 

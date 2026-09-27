@@ -11,7 +11,7 @@
 # unreadable to the supervised gateway. The most common manifestation: the
 # user runs `docker exec <c> hermes login`, this writes
 # /opt/data/auth.json as root:root mode 0600, and from then on the gateway
-# returns "Provider authentication failed: Hermes is not logged into Nous
+# returns "Provider authentication failed: Hexbot is not logged into Nous
 # Portal" on every incoming message — even though `docker exec <c> hermes
 # chat -q ping` (also running as root) succeeds because root happens to be
 # able to read its own root-owned file. See systematic-debugging skill
@@ -40,7 +40,12 @@
 
 set -e
 
-REAL=/opt/hermes/.venv/bin/hermes
+# Installed as both /opt/hermes/bin/hermes and /opt/hermes/bin/hexbot; exec
+# the venv binary of the same name.
+case "$(basename "$0")" in
+    hexbot) REAL=/opt/hermes/.venv/bin/hexbot ;;
+    *) REAL=/opt/hermes/.venv/bin/hermes ;;
+esac
 
 # Defensive: if the venv binary is missing (corrupted image, partial
 # install), fail loudly rather than silently masking it.

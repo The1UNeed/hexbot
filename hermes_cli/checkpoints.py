@@ -1,20 +1,20 @@
-"""`hermes checkpoints` CLI subcommand.
+"""`hexbot core checkpoints` CLI subcommand.
 
 Gives users direct visibility and control over the filesystem checkpoint
-store at ``~/.hermes/checkpoints/``.  Actions:
+store at ``~/.hexbot/checkpoints/``.  Actions:
 
-    hermes checkpoints               # same as `status`
-    hermes checkpoints status        # total size, project count, breakdown
-    hermes checkpoints list          # per-project checkpoint counts + workdir
-    hermes checkpoints prune [opts]  # force a sweep (ignores the 24h marker)
-    hermes checkpoints clear [-f]    # nuke the entire base (asks first)
-    hermes checkpoints clear-legacy  # delete just the legacy-* archives
+    hexbot core checkpoints               # same as `status`
+    hexbot core checkpoints status        # total size, project count, breakdown
+    hexbot core checkpoints list          # per-project checkpoint counts + workdir
+    hexbot core checkpoints prune [opts]  # force a sweep (ignores the 24h marker)
+    hexbot core checkpoints clear [-f]    # nuke the entire base (asks first)
+    hexbot core checkpoints clear-legacy  # delete just the legacy-* archives
 
 Examples::
 
-    hermes checkpoints
-    hermes checkpoints prune --retention-days 3 --max-size-mb 200
-    hermes checkpoints clear -f
+    hexbot core checkpoints
+    hexbot core checkpoints prune --retention-days 3 --max-size-mb 200
+    hexbot core checkpoints clear -f
 
 None of these require the agent to be running.  Safe to call any time.
 """
@@ -89,7 +89,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         for arch in sorted(legacy, key=lambda a: a.get("mtime", 0), reverse=True):
             print(f"  {arch['name']:<40}  {_fmt_bytes(arch['size_bytes']):>10}")
         print()
-        print("Clear with: hermes checkpoints clear-legacy")
+        print("Clear with: hexbot core checkpoints clear-legacy")
     return 0
 
 
@@ -230,8 +230,8 @@ def cmd_clear_legacy(args: argparse.Namespace) -> int:
 
 
 def register_cli(parser: argparse.ArgumentParser) -> None:
-    """Wire subcommands onto the ``hermes checkpoints`` parser."""
-    parser.set_defaults(func=cmd_status)  # bare `hermes checkpoints` → status
+    """Wire subcommands onto the ``hexbot core checkpoints`` parser."""
+    parser.set_defaults(func=cmd_status)  # bare `hexbot core checkpoints` → status
     subs = parser.add_subparsers(dest="checkpoints_command", metavar="COMMAND")
 
     p_status = subs.add_parser(

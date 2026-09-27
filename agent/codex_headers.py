@@ -37,7 +37,7 @@ def codex_cloudflare_headers(
     """Identity and account headers for chatgpt.com/backend-api/codex.
 
     OpenAI requires third-party harnesses to identify themselves. Requests to
-    the official endpoint always send Hermes' originator and version. Custom
+    the official endpoint always send Hexbot's originator and version. Custom
     endpoints retain the existing compatibility identity. In either case,
     preserve ``ChatGPT-Account-ID`` from the OAuth JWT's
     ``chatgpt_account_id`` claim.

@@ -78,7 +78,7 @@ def _(rid, params: dict) -> dict:
 
     Params: ``profile`` (target on this install), ``message`` (already
     attribution-prefixed by the sender gateway). Runs the same one-turn
-    ``hermes -p <profile> chat -c "Bot Chat"`` transport local DMs use and
+    ``hexbot core -p <profile> chat -c "Bot Chat"`` transport local DMs use and
     returns ``{reply}`` — the target agent's response text. Blocking by
     design (the Desktop calls it from its relay worker, off any UI path;
     the RPC pool keeps it off the WS reader thread).

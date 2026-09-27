@@ -1,7 +1,7 @@
-"""On-demand worktree + branch reclaim (``hermes worktree`` / ``/worktree prune``).
+"""On-demand worktree + branch reclaim (``hexbot core worktree`` / ``/worktree prune``).
 
 The startup pruner in ``cli._prune_stale_worktrees`` is deliberately
-conservative and silent: it runs before the banner on every ``hermes -w``
+conservative and silent: it runs before the banner on every ``hexbot core -w``
 launch, so it only reaps clean, fully-merged scratch trees past an age tier
 and preserves everything else. That policy is correct for an unattended
 startup path — but it means real installs accumulate two kinds of debris the
@@ -25,7 +25,7 @@ safe. Invariants shared with the startup pruner (never violated here either):
 - live-locked trees (owning pid alive) are never touched;
 - a branch is deleted only after its worktree removal succeeded — a failed
   removal must not orphan reachable commits;
-- untracked-only dirt is ARCHIVED to ``~/.hermes/archive/worktree-prune/``
+- untracked-only dirt is ARCHIVED to ``~/.hexbot/archive/worktree-prune/``
   before its tree is reaped, never destroyed.
 
 Classification primitives are imported from ``cli`` so the two paths can
@@ -216,7 +216,7 @@ def audit_worktrees(repo_root: str, *, with_sizes: bool = True) -> List[TreeReco
 
         lock_state = _cli._worktree_lock_is_live(repo_root, str(entry), timeout=5)
         if lock_state == "live":
-            rec("keep", "in use by a running hermes session")
+            rec("keep", "in use by a running Hexbot session")
             continue
 
         tracked_dirty, untracked = _dirty_split(str(entry))

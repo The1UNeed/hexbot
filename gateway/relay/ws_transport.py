@@ -327,9 +327,9 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
     text = raw.get("text", "")
     if platform_enum == Platform.SLACK:
         # Team Gateway carries Slack slash text over the authenticated message
-        # relay, bypassing Hermes' native Slack command callback. Normalize at
+        # relay, bypassing Hexbot's native Slack command callback. Normalize at
         # the wire boundary so adapter-level active-session gates see the real
-        # gateway command rather than the legacy `hermes` parent name.
+        # gateway command rather than the legacy `hexbot core` parent name.
         text, msg_type = _normalize_slack_parent_command(text, msg_type)
 
     return MessageEvent(

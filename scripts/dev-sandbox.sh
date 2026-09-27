@@ -392,7 +392,7 @@ if [ -n "$(git -C "$GIT_ROOT" status --porcelain)" ]; then
   SNAPSHOT_REPO="$(mktemp -d -t hermes-sandbox-snapshot.XXXXXX)"
   git -C "$SNAPSHOT_REPO" init -q
   git -C "$SNAPSHOT_REPO" fetch -q "$GIT_ROOT" "$COMMIT"
-  git -C "$SNAPSHOT_REPO" config user.name 'Hermes sandbox'
+  git -C "$SNAPSHOT_REPO" config user.name 'Hexbot sandbox'
   git -C "$SNAPSHOT_REPO" config user.email 'sandbox@invalid'
   GIT_DIR="$SNAPSHOT_REPO/.git" GIT_WORK_TREE="$GIT_ROOT" git read-tree "$COMMIT"
   GIT_DIR="$SNAPSHOT_REPO/.git" GIT_WORK_TREE="$GIT_ROOT" \
@@ -435,7 +435,7 @@ cp "$SANDBOX_ASSETS/openssl.cnf" "$SANDBOX_ROOT/root/certs/openssl.cnf"
 if [ ! -f "$SANDBOX_ROOT/root/certs/ca.pem" ]; then
   if ! ca_error="$(OPENSSL_CONF="$SANDBOX_ROOT/root/certs/openssl.cnf" \
     openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
-    -subj '/CN=Hermes dev sandbox CA' \
+    -subj '/CN=Hexbot dev sandbox CA' \
     -extensions sandbox_ca_ext \
     -keyout "$SANDBOX_ROOT/root/certs/ca.key" \
     -out "$SANDBOX_ROOT/root/certs/ca.pem" 2>&1 >/dev/null)"; then

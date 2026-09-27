@@ -1,8 +1,8 @@
 """Process identity: spawn tags, the machine-wide spawn ledger, and the
 Windows job-object self-attach.
 
-Three layers that make every long-lived Hermes process positively
-identifiable, so reapers (``hermes update``, Desktop startup sweeps) never
+Three layers that make every long-lived Hexbot process positively
+identifiable, so reapers (``hexbot core update``, Desktop startup sweeps) never
 have to guess lineage from PPID archaeology or cmdline pattern-matching:
 
 1. **Spawn tag** (``HERMES_SPAWN`` env var): every spawner stamps its children
@@ -10,7 +10,7 @@ have to guess lineage from PPID archaeology or cmdline pattern-matching:
    that can read the child's environment classifies it instantly: which
    install, what it is, who spawned it, and when.
 
-2. **Spawn ledger** (``spawn-ledger.json`` at the machine Hermes root): every
+2. **Spawn ledger** (``spawn-ledger.json`` at the machine Hexbot root): every
    long-lived process (serve/dashboard backend, gateway) self-registers
    ``pid + create_time + purpose + spawner`` at startup. ``pid`` alone is
    forgeable by reuse; the ``(pid, create_time)`` pair is not. Reapers
@@ -70,7 +70,7 @@ _LEDGER_LOCK = threading.Lock()
 def install_id(project_root: Optional[Path] = None) -> str:
     """Stable 12-hex identifier for THIS install (derived from its path).
 
-    Lets a reaper reject processes from a different Hermes install on the
+    Lets a reaper reject processes from a different Hexbot install on the
     same machine without path comparisons at scan time.
     """
     if project_root is None:
@@ -290,7 +290,7 @@ def register_self(
     try:
         import sys as _sys
 
-        # 10 tokens (was 6): enough for `hermes serve --host X --port N
+        # 10 tokens (was 6): enough for `hexbot core serve --host X --port N
         # --profile P` — the relaunch shapes #63206 needs — while still
         # bounding pathological argv. Structured detail above is the
         # canonical identity; argv is the human-readable fallback.
@@ -346,7 +346,7 @@ def register_child(
 
     Mirror of :func:`register_self` for children that cannot register
     themselves (stdio MCP helper subprocesses, #61514: arbitrary
-    ``npx``/binary servers never import Hermes code). The entry records the
+    ``npx``/binary servers never import Hexbot code). The entry records the
     child's ``(pid, create_time)`` with THIS process as the spawner, so
     reapers get the same positive-identity contract:
 

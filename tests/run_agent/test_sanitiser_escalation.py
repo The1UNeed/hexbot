@@ -155,7 +155,7 @@ class TestOneTimeUserNotice:
         assert notice is not None
         assert "repeated repair" in notice
         assert "/debug share" in notice
-        assert "hermes doctor" in notice
+        assert "hexbot core doctor" in notice
 
         # drained: never delivered twice
         assert consume_pending_sanitizer_heal_notice() is None

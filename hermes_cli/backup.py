@@ -1,10 +1,10 @@
 """
-Backup and import commands for hermes CLI.
+Backup and import commands for the Hexbot core CLI.
 
-`hermes backup` creates a zip archive of the entire ~/.hermes/ directory
+`hexbot core backup` creates a zip archive of the entire ~/.hexbot/ directory
 (excluding the hermes-agent repo and transient files).
 
-`hermes import` restores from a backup zip, overlaying onto the current
+`hexbot core import` restores from a backup zip, overlaying onto the current
 HERMES_HOME root.
 """
 
@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 # Exclusion rules
 # ---------------------------------------------------------------------------
 
-# Where ``hermes backup --quick`` / ``/snapshot`` / the pre-update safety net
+# Where ``hexbot core backup --quick`` / ``/snapshot`` / the pre-update safety net
 # write their state snapshots (see ``create_quick_snapshot`` below). Defined up
 # here because the exclusion set needs it.
 _QUICK_SNAPSHOTS_DIR = "state-snapshots"
@@ -107,7 +107,7 @@ _EXCLUDED_DIRS = {
     ".ruff_cache",
 }
 
-# Hermes-managed runtime downloads that only exist at the top of a profile
+# Hexbot-managed runtime downloads that only exist at the top of a profile
 # home: local GGUF models, llama.cpp runtime binaries, and the managed Node
 # installation. All of them are re-downloaded on demand (model catalog,
 # runtime bootstrap, node installer) and routinely reach tens to hundreds of
@@ -125,7 +125,7 @@ _EXCLUDED_ROOT_DIRS = {
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
     """True when *rel_path* (relative to HERMES_HOME) is, or sits inside, a
-    Hermes-managed runtime tree at the top of a profile home."""
+    Hexbot-managed runtime tree at the top of a profile home."""
     parts = rel_path.parts
     if not parts:
         return False
@@ -166,7 +166,7 @@ _EXCLUDED_PREFIXES = (
     "state.db.pre-update-emergency-",
 )
 
-# File names that ``hermes import`` must never overwrite, matched by basename so
+# File names that ``hexbot core import`` must never overwrite, matched by basename so
 # they're caught for the root profile (``gateway_state.json``) and for named
 # profiles alike (``profiles/<name>/gateway_state.json``).
 #
@@ -211,7 +211,7 @@ _EXTERNAL_PREFIX = "_external/"
 
 
 class BackupInProgressError(RuntimeError):
-    """Raised when another process already owns the Hermes backup slot."""
+    """Raised when another process already owns the Hexbot backup slot."""
 
 
 class _SQLiteSnapshotError(RuntimeError):
@@ -245,7 +245,7 @@ def _backup_operation_lock(hermes_home: Path, timeout_seconds: float = 0.25):
                     break
                 except (OSError, PermissionError):
                     if time.monotonic() >= deadline:
-                        raise BackupInProgressError("another Hermes backup is already running")
+                        raise BackupInProgressError("another Hexbot backup is already running")
                     time.sleep(0.05)
         else:
             import fcntl
@@ -257,7 +257,7 @@ def _backup_operation_lock(hermes_home: Path, timeout_seconds: float = 0.25):
                     break
                 except (BlockingIOError, OSError):
                     if time.monotonic() >= deadline:
-                        raise BackupInProgressError("another Hermes backup is already running")
+                        raise BackupInProgressError("another Hexbot backup is already running")
                     time.sleep(0.05)
 
         yield
@@ -426,7 +426,7 @@ def _iter_backup_files(
     The one owner of the backup walk policy: directory pruning (so os.walk
     never descends a multi-GB excluded tree), the root-only ``hermes-agent``
     carve-out, profile-home-root runtime trees, and the per-file exclusion
-    rules — shared by the manual ``hermes backup`` path and the automatic
+    rules — shared by the manual ``hexbot core backup`` path and the automatic
     pre-update/pre-migration path so the two can never drift.
 
     ``skipped_dirs``, when given, collects pruned directories (root-relative,
@@ -577,7 +577,7 @@ _SQLITE_HEADER = b"SQLite format 3\0"
 # of the (O(1)) header + structural probe. ``integrity_check`` walks every
 # b-tree page in the file, so its cost scales with database size: on a 30 GB
 # state.db it runs for many minutes of pegged CPU with no output, which reads
-# to the user as a hung `hermes update` (#70553 follow-up). Sessions databases
+# to the user as a hung `hexbot core update` (#70553 follow-up). Sessions databases
 # in the tens of GB are normal for heavy users, so the size-unbounded check is
 # never an acceptable default on the update path.
 DEFAULT_INTEGRITY_CHECK_MAX_BYTES = 2 << 30  # 2 GiB
@@ -893,7 +893,7 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
         except LiveConnectionError as exc2:
             logger.error(
                 "Refusing unlink+move restore of %s: %s Close the in-process "
-                "database handles (or restart Hermes) and retry.",
+                "database handles (or restart Hexbot) and retry.",
                 dst, exc2,
             )
             return False
@@ -907,11 +907,11 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 def run_backup(args) -> None:
-    """Create a zip backup of the Hermes home directory."""
+    """Create a zip backup of the Hexbot home directory."""
     hermes_root = get_default_hermes_root()
 
     if not hermes_root.is_dir():
-        print(f"Error: Hermes home directory not found at {hermes_root}")
+        print(f"Error: Hexbot home directory not found at {hermes_root}")
         sys.exit(1)
 
     try:
@@ -1104,7 +1104,7 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
             print(f"  ... and {len(errors) - 10} more")
 
     if not errors:
-        print(f"\nRestore with: hermes import {out_path.name}")
+        print(f"\nRestore with: hexbot core import {out_path.name}")
 
 
 # ---------------------------------------------------------------------------
@@ -1112,7 +1112,7 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
-    """Check that a zip looks like a Hermes backup.
+    """Check that a zip looks like a Hexbot backup.
 
     Returns (ok, reason).
     """
@@ -1131,7 +1131,7 @@ def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
 
     if not found:
         return False, (
-            "zip does not appear to be a Hermes backup "
+            "zip does not appear to be a Hexbot backup "
             "(no config.yaml, .env, or state databases found)"
         )
 
@@ -1194,7 +1194,7 @@ def _extract_member_atomically(
     ``open(target, "wb")`` truncates the user's existing file to zero *before*
     any replacement bytes exist.  A Ctrl-C, an ENOSPC, a corrupt member, or a
     crash between the truncate and the write therefore leaves that file empty
-    with nothing behind it — during ``hermes import``, which is the
+    with nothing behind it — during ``hexbot core import``, which is the
     disaster-recovery path a user reaches for *because* they already lost
     something.  Staging into the target's own directory and publishing with a
     rename means the target only ever moves from its old contents to the
@@ -1213,7 +1213,7 @@ def _extract_member_atomically(
     Permission bits *and* ownership are carried across the replace so routing
     through mkstemp does not change the file the caller would otherwise have
     produced.  ``os.replace`` swaps in a temp file owned by the *writing* user,
-    so without the chown a ``sudo hermes import`` would silently re-own every
+    so without the chown a ``sudo hexbot core import`` would silently re-own every
     restored file to root — on the disaster-recovery path, and on exactly the
     Docker/NAS installs ``utils._restore_file_owner`` documents.  Both concerns
     delegate to the shared ``utils`` helpers rather than being re-derived here.
@@ -1241,9 +1241,9 @@ def _extract_member_atomically(
         # ``_preserve_file_mode`` returns ``stat.S_IMODE``, i.e. all twelve
         # bits, and the content replacing this file comes from the archive.
         # Carrying the elevated bits across would let archive-controlled bytes
-        # take over an existing setuid/setgid file, so ``hermes import`` would
+        # take over an existing setuid/setgid file, so ``hexbot core import`` would
         # hand whoever produced the zip the identity that file runs as.  Nothing
-        # constrains that to Hermes' own state either: the ``_external/`` branch
+        # constrains that to Hexbot's own state either: the ``_external/`` branch
         # of ``run_import`` publishes members anywhere under ``$HOME``.  The
         # sticky bit is kept — it is inert on a regular file.
         mode &= ~(stat.S_ISUID | stat.S_ISGID)
@@ -1287,7 +1287,7 @@ def _extract_member_atomically(
 
 
 def run_import(args) -> None:
-    """Restore a Hermes backup from a zip file."""
+    """Restore a Hexbot backup from a zip file."""
     zip_path = Path(args.zipfile).expanduser().resolve()
 
     if not zip_path.is_file():
@@ -1328,7 +1328,7 @@ def run_import(args) -> None:
 
         if (has_config or has_env) and not args.force:
             print()
-            print("Warning: Target directory already has Hermes configuration.")
+            print("Warning: Target directory already has Hexbot configuration.")
             print("Importing will overwrite existing files with backup contents.")
             print()
             try:
@@ -1495,19 +1495,19 @@ def run_import(args) -> None:
                 # hermes_cli.profiles might not be available (fresh install)
                 if any(profiles_dir.iterdir()):
                     print("\n  Profiles detected but aliases could not be created.")
-                    print("  Run: hermes profile list  (after installing hermes)")
+                    print("  Run: hexbot core profile list  (after installing Hexbot)")
 
         # Guidance
         print()
         if not (hermes_root / "hermes-agent").is_dir():
             print("Note: The hermes-agent codebase was not included in the backup.")
-            print("  If this is a fresh install, run: hermes update")
+            print("  If this is a fresh install, run: hexbot core update")
 
         if restored_profiles:
             gw_profiles = [n for n, _ in restored_profiles]
             print("\nTo re-enable gateway services for profiles:")
             for pname in gw_profiles:
-                print(f"  hermes -p {pname} gateway install")
+                print(f"  hexbot core -p {pname} gateway install")
 
         # Bring the restored install to life: the backup may contain bot
         # tokens and registered cron jobs, but they're inert without a
@@ -1531,7 +1531,7 @@ def run_import(args) -> None:
                 "alone to avoid clashing with the install at "
                 f"{native_default}."
             )
-            print("To start a gateway for this home, run:  hermes gateway install")
+            print("To start a gateway for this home, run:  hexbot core gateway install")
         else:
             try:
                 from hermes_cli.gateway import ensure_gateway_service, _is_service_running
@@ -1541,13 +1541,13 @@ def run_import(args) -> None:
                     ensure_gateway_service(context="import")
             except Exception:
                 print("\nStart the gateway to activate cron jobs and messaging:")
-                print("  hermes gateway install")
+                print("  hexbot core gateway install")
 
-        print("Done. Your Hermes configuration has been restored.")
+        print("Done. Your Hexbot configuration has been restored.")
 
 
 # ---------------------------------------------------------------------------
-# Quick state snapshots (used by /snapshot slash command and hermes backup --quick)
+# Quick state snapshots (used by /snapshot slash command and hexbot core backup --quick)
 # ---------------------------------------------------------------------------
 
 # Critical state files to include in quick snapshots (relative to HERMES_HOME).
@@ -1557,7 +1557,7 @@ def run_import(args) -> None:
 # Entries may be individual files OR directories.  Directories are captured
 # recursively; missing entries are silently skipped.  Pairing data lives in
 # platform-specific JSON blobs outside state.db, so it's listed here explicitly
-# — `hermes update` snapshots this set before pulling so approved-user lists
+# — `hexbot core update` snapshots this set before pulling so approved-user lists
 # are recoverable if anything goes wrong (issue #15733).
 _QUICK_STATE_FILES = (
     "state.db",
@@ -1631,10 +1631,10 @@ def _create_quick_snapshot_locked(
         max_file_size: When set, individual files larger than this many bytes
             are skipped (with a printed warning) instead of copied. Used by
             the pre-update safety snapshot so a multi-GB ``state.db`` can
-            never stall ``hermes update`` or silently eat disk — the small
+            never stall ``hexbot core update`` or silently eat disk — the small
             pairing/cron/config files the snapshot exists to protect are
             always captured. ``None`` (default) copies everything, which
-            preserves manual ``/snapshot`` and ``hermes backup --quick``
+            preserves manual ``/snapshot`` and ``hexbot core backup --quick``
             behavior.
 
     Returns:
@@ -1775,7 +1775,7 @@ def _create_quick_snapshot_locked(
         )
         print(
             "  ⚠ If sessions disappear after update, check "
-            f"{root} and run: hermes snapshot list"
+            f"{root} and run: hexbot core snapshot list"
         )
         logger.error(
             "Quick snapshot failed to capture DB file(s): %s",
@@ -1985,7 +1985,7 @@ def restore_cron_jobs_if_emptied(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Safety net for silent cron-job loss across ``hermes update``.
+    """Safety net for silent cron-job loss across ``hexbot core update``.
 
     Config-version migrations have been observed to leave ``cron/jobs.json``
     valid-but-empty after an update, silently dropping every scheduled job
@@ -2006,7 +2006,7 @@ def restore_cron_jobs_if_emptied(
     Args:
         snapshot_id: The pre-update quick-snapshot id (from
             :func:`create_quick_snapshot`).
-        hermes_home: Override for the Hermes home directory (tests).
+        hermes_home: Override for the Hexbot home directory (tests).
 
     Returns:
         ``None`` when no action was taken (the common, healthy path). On a
@@ -2174,7 +2174,7 @@ def restore_config_model_settings_if_rewritten(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Safety net for silent config.yaml model/MoA loss across ``hermes update``.
+    """Safety net for silent config.yaml model/MoA loss across ``hexbot core update``.
 
     Desktop update/repair cycles have been observed to rewrite user-set
     ``model.provider``/``model.default`` and drop the ``moa:`` section
@@ -2193,7 +2193,7 @@ def restore_config_model_settings_if_rewritten(
     Args:
         snapshot_id: The pre-update quick-snapshot id (from
             :func:`create_quick_snapshot`).
-        hermes_home: Override for the Hermes home directory (tests/siblings).
+        hermes_home: Override for the Hexbot home directory (tests/siblings).
 
     Returns:
         ``None`` when no action was taken (the common, healthy path). On a
@@ -2356,7 +2356,7 @@ def prune_quick_snapshots(
 
 
 def run_quick_backup(args) -> None:
-    """CLI entry point for hermes backup --quick."""
+    """CLI entry point for hexbot core backup --quick."""
     label = getattr(args, "label", None)
     snap_id = create_quick_snapshot(label=label)
     if snap_id:
@@ -2523,7 +2523,7 @@ def create_pre_update_backup(
 
     Returns the path to the created zip, or ``None`` if no files were
     found or the backup could not be created.  Never raises — the caller
-    (``hermes update``) should continue even if the backup fails.
+    (``hexbot core update``) should continue even if the backup fails.
     """
     hermes_root = hermes_home or get_default_hermes_root()
     if not hermes_root.is_dir():
@@ -2548,7 +2548,7 @@ def create_pre_update_backup(
 
 
 # ---------------------------------------------------------------------------
-# Pre-migration auto-backup (used by `hermes claw migrate`)
+# Pre-migration auto-backup (used by `hexbot core claw migrate`)
 # ---------------------------------------------------------------------------
 
 _PRE_MIGRATION_PREFIX = "pre-migration-"
@@ -2588,11 +2588,11 @@ def create_pre_migration_backup(
     keep: int = _PRE_MIGRATION_DEFAULT_KEEP,
 ) -> Optional[Path]:
     """Create a full zip backup of HERMES_HOME under ``backups/`` before a
-    ``hermes claw migrate`` apply.
+    ``hexbot core claw migrate`` apply.
 
     Shares implementation with :func:`create_pre_update_backup` via
     ``_write_full_zip_backup`` — same exclusions, same SQLite safe-copy,
-    restorable with ``hermes import <archive>``.  Writes to
+    restorable with ``hexbot core import <archive>``.  Writes to
     ``<HERMES_HOME>/backups/pre-migration-<timestamp>.zip`` and auto-prunes
     old pre-migration backups.
 
@@ -2604,7 +2604,7 @@ def create_pre_migration_backup(
     if not hermes_root.is_dir():
         return None
 
-    # Reuses the shared backups/ directory so `hermes import` and the
+    # Reuses the shared backups/ directory so `hexbot core import` and the
     # update-backup listing pick up pre-migration archives too.
     backup_dir = _pre_update_backup_dir(hermes_root)
     try:

@@ -155,7 +155,7 @@ class TestPlatformHasBotCredential:
         Guards the #64674 intent, and specifically pins "read extra, not the
         environment". A fully-populated MATRIX_* environment is set here on
         purpose: on a real host those vars are present (build_config exports
-        them, and importing gateway.run loads ~/.hermes/.env), so an
+        them, and importing gateway.run loads ~/.hexbot/.env), so an
         implementation that falls back to os.getenv would report every Matrix
         config as credentialed and never evict anything.
 

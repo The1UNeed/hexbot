@@ -17,7 +17,7 @@ rather than stored::
 This is the established pattern for agent tooling — Claude Code's
 ``apiKeyHelper``, the ``gcloud auth print-access-token`` / ``aws ecr
 get-login-password`` idiom, and vendor helpers such as ``databricks auth
-token`` all expose exactly this contract. Hermes already accepts a callable
+token`` all expose exactly this contract. Hexbot already accepts a callable
 API key on both wire clients (the Entra ID / Azure identity path) and invokes
 it per request, so nothing downstream changes: the token is simply always
 fresh. It is cached until shortly before expiry, so the command runs about

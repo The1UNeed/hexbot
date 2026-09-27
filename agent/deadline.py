@@ -113,7 +113,7 @@ class DeadlineExpired(TimeoutError):
 
     Distinct from transport/provider timeout types on purpose: when this is
     raised (or a :class:`BoundedResult` reports ``timed_out``), the timeout
-    was Hermes's own bound — error classification must not attribute it to
+    was Hexbot's own bound — error classification must not attribute it to
     the provider (#59549 / #80323 misattribution class).
     """
 

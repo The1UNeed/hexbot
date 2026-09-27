@@ -24,7 +24,7 @@ from hermes_cli.local_runtime.binaries import runtimes_root
 
 logger = logging.getLogger(__name__)
 
-_SUPERVISOR = None  # process-wide singleton; one router per Hermes process
+_SUPERVISOR = None  # process-wide singleton; one router per Hexbot process
 
 
 def _detect_gpu_vendor() -> str | None:
@@ -195,7 +195,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
         logger.info("local runtime enabled but no models staged; not booting")
         return None
 
-    # Another Hermes process may already be supervising — reuse via state,
+    # Another Hexbot process may already be supervising — reuse via state,
     # but ONLY while its launch policy still covers every staged model. A
     # server whose preset file predates a download serves the new model
     # with no policy at all (--models-autoload + stock fit: f16 KV at max
@@ -228,7 +228,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
             backend = select_backend(_detect_gpu_vendor())
         # Boot ladder: serve what is INSTALLED, never download here. The
         # configured tag (config root-of-trust; deep-merge supplies the
-        # Hermes-release default when unpinned) is preferred; when it isn't
+        # Hexbot-release default when unpinned) is preferred; when it isn't
         # installed yet, the newest installed tag serves and the status
         # endpoint reports the pending update — the download is a deliberate
         # button click in the pane, not a boot-path surprise (a multi-minute

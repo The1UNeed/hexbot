@@ -1,12 +1,12 @@
-# Hermes dashboard-auth: interface map for a Hexbot device-pairing provider
+# Core dashboard-auth: interface map for a Hexbot device-pairing provider
 
-Read at Hexbot HEAD (fork of Hermes Agent v0.21.0). Line numbers are as read.
+Read at the v0.21.0 fork point. Line numbers are as read.
 
 ## 1. `DashboardAuthProvider`
 
 `/Users/alex/Desktop/Projects/Hexbot/hermes_cli/dashboard_auth/base.py`
 
-Dataclasses: `Session` (L9-25) — `user_id, email, display_name, org_id, provider, expires_at (unix s), access_token, refresh_token`, all mandatory, tokens opaque to Hermes. `TokenPrincipal` (L28-53) — `principal, provider, scopes: tuple[str,...]`. `LoginStart` (L56-77) — `redirect_url, cookie_payload: dict[str,str]`.
+Dataclasses: `Session` (L9-25) — `user_id, email, display_name, org_id, provider, expires_at (unix s), access_token, refresh_token`, all mandatory, tokens opaque to Hexbot. `TokenPrincipal` (L28-53) — `principal, provider, scopes: tuple[str,...]`. `LoginStart` (L56-77) — `redirect_url, cookie_payload: dict[str,str]`.
 
 Exceptions: `ProviderError`→503, `InvalidCodeError`→400, `InvalidCredentialsError`→401, `RefreshExpiredError` (try next provider). `classify_jwks_lookup_error` (L113) maps PyJWT failures onto that split.
 

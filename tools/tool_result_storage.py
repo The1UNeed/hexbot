@@ -13,7 +13,7 @@ Defense against context-window overflow operates at three levels:
 
    The canonical home is ALWAYS host-side:
    ``$HERMES_HOME/cache/spillover/{tool_use_id}.txt`` — alongside the other
-   Hermes-owned caches (images, audio, documents, ...) instead of littering
+   Hexbot-owned caches (images, audio, documents, ...) instead of littering
    the OS temp dir. This needs no sandbox environment, so it also works for
    sessions that never ran a terminal command (MCP-only, cron, gateway) —
    previously those hit the inline-truncate fallback because
@@ -348,7 +348,7 @@ def maybe_persist_tool_result(
     preview, has_more = generate_preview(content, max_chars=config.preview_size)
 
     # Always persist host-side first: $HERMES_HOME/cache/spillover is the
-    # single canonical home for spilled results (with the other Hermes-owned
+    # single canonical home for spilled results (with the other Hexbot-owned
     # caches, pruned by gateway housekeeping) regardless of backend.
     host_path = _write_to_spillover(content, filename)
 

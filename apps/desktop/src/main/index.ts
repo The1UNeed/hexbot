@@ -154,6 +154,14 @@ async function createWindow(): Promise<BrowserWindow> {
   }
   return window
 }
+/** Brings the window back after the macOS close handler hid it (dock click, tray, deep link). */
+async function showWindow(): Promise<BrowserWindow> {
+  const window = await createWindow()
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+  return window
+}
 function navigate(url: string): void {
   if (!/^\/settings\/[a-z]+$/.test(url) && !parseDeepLink(url)) return
   if (!app.isReady()) {
@@ -161,7 +169,7 @@ function navigate(url: string): void {
     return
   }
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show()
+    void showWindow()
     mainWindow.webContents.send('hexbot:navigate', url)
   } else {
     pendingLink = url
@@ -311,13 +319,10 @@ else {
     })
     daemon.on('update-requested', (version: string) => void handleDaemonUpdateRequest(version))
     await createWindow()
-    createTray(daemon, () => {
-      void createWindow()
-      return mainWindow!
-    })
+    createTray(daemon, () => void showWindow())
     // Starts the startup check and the poller (updater.ts); dev builds stay off.
     void getUpdateState()
-    app.on('activate', () => void createWindow())
+    app.on('activate', () => void showWindow())
   })
 }
 app.on('before-quit', () => {

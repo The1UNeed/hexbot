@@ -93,12 +93,12 @@ class TestLogicalLineStreaming:
 
     def test_unbreakable_run_stays_single_line(self, cli_stub):
         cli, emitted = cli_stub
-        blob = "x" * 300  # no spaces
+        blob = "q" * 300  # no spaces; "q" is not in the response label
         cli._stream_delta(blob)
         cli._flush_stream()
         plain = _strip_ansi("\n".join(emitted))
-        assert plain.count("x") == 300
+        assert plain.count("q") == 300
         content = [
-            _strip_ansi(e) for e in emitted if "x" in _strip_ansi(e)
+            _strip_ansi(e) for e in emitted if "q" in _strip_ansi(e)
         ]
         assert len(content) == 1, "unbreakable run was hard-wrapped"

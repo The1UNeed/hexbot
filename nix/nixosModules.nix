@@ -360,6 +360,7 @@
           (lib.mkIf cfg.addToSystemPackages {
             environment.systemPackages = [ effectivePackage ];
             environment.variables.HERMES_HOME = hermesHome;
+            environment.variables.HEXBOT_HOME = hermesHome;
           })
 
           # ── Host user group membership ─────────────────────────────────────
@@ -547,7 +548,7 @@
           # ══════════════════════════════════════════════════════════════════
           (lib.mkIf (!cfg.container.enable) {
             systemd.services.hermes-agent = {
-              description = "Hermes Agent Gateway";
+              description = "Hexbot Gateway";
               wantedBy = [ "multi-user.target" ];
               after = [ "network-online.target" ];
               wants = [ "network-online.target" ];
@@ -593,7 +594,7 @@
             virtualisation.docker.enable = lib.mkDefault (cfg.container.backend == "docker");
 
             systemd.services.hermes-agent = {
-              description = "Hermes Agent Gateway (container)";
+              description = "Hexbot Gateway (container)";
               wantedBy = [ "multi-user.target" ];
               after = [
                 "network-online.target"
@@ -638,6 +639,7 @@
                     --env HERMES_UID="$HERMES_UID" \
                     --env HERMES_GID="$HERMES_GID" \
                     --env HERMES_HOME=${containerDataDir}/.hermes \
+                    --env HEXBOT_HOME=${containerDataDir}/.hermes \
                     --env HERMES_MANAGED=true \
                     --env HOME=${containerHomeDir} \
                     ${lib.concatStringsSep " " cfg.container.extraOptions} \

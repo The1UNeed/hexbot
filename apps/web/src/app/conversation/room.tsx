@@ -18,6 +18,7 @@ import { useTranscripts } from '../../stores/transcripts'
 
 import { composerFieldClass, ComposerShell } from './composer'
 import { MemoryMarks } from './memory-marks'
+import { WaitingBanner } from './waiting-banner'
 import { WorkStatus } from './work-status'
 
 import { bubbleClass, DaySeparator, Markdown, transcriptClass, userBubbleClass } from './index'
@@ -78,13 +79,18 @@ export function RoomEventRow({ event }: { event: RoomEvent }) {
     )
   }
 
-  if (event.kind === 'waiting.human' || event.kind === 'limit.tripped') {
+  // Waiting on a human is the banner under the header, not a transcript line.
+  if (event.kind === 'waiting.human') {
+    return null
+  }
+
+  if (event.kind === 'limit.tripped') {
     return (
       <div
-        className={`hex-bubble my-3 rounded-bubble px-4 py-2.5 text-[length:var(--text-secondary)] ${event.kind === 'limit.tripped' ? 'bg-warning/12 text-warning' : 'bg-accent/12 text-accent'}`}
+        className="hex-bubble my-3 rounded-bubble bg-warning/12 px-4 py-2.5 text-[length:var(--text-secondary)] text-warning"
         data-testid="room-event"
       >
-        {event.kind === 'waiting.human' ? 'Waiting on you' : text || 'A room limit was reached.'}
+        {text || 'A room limit was reached.'}
       </div>
     )
   }
@@ -116,6 +122,13 @@ export function RoomEventRow({ event }: { event: RoomEvent }) {
       </div>
     </article>
   )
+}
+
+/** The bot behind the latest "waiting on a human" event, for the banner. */
+function waitingBot(events: RoomEvent[], bots: Record<string, Bot>): string | undefined {
+  const actor = events.findLast(event => event.kind === 'waiting.human')?.actor_id
+
+  return actor ? bots[actor]?.display_name : undefined
 }
 
 export function RoomMentionPopover({
@@ -237,6 +250,7 @@ export function RoomConversation() {
           <Info size={16} />
         </button>
       </header>
+      {status === 'needs_you' ? <WaitingBanner name={waitingBot(events, bots)} /> : null}
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className={transcriptClass}>
           {events.map((event, index) => {
@@ -259,39 +273,30 @@ export function RoomConversation() {
             const name = bot?.display_name ?? turn.bot
 
             return (
-              <div data-testid="room-event" key={turn.bot}>
-                {message ? (
-                  <WorkStatus
-                    face={!message.text}
+              <article className="flex gap-2 py-1" data-testid="room-event" key={turn.bot}>
+                <span className="relative mt-1 shrink-0">
+                  <Avatar
+                    className="hex-think"
                     image={avatarData(bot)}
-                    message={message}
+                    mood="working"
                     name={name}
+                    size="sm"
                   />
-                ) : (
-                  <Thinking image={avatarData(bot)} name={name} />
-                )}
-                {message?.text ? (
-                  <article className="flex gap-2 py-1">
-                    <span className="relative mt-1 shrink-0">
-                      <Avatar
-                        className="hex-think"
-                        image={avatarData(bot)}
-                        mood="working"
-                        name={name}
-                        size="sm"
-                      />
-                      <StatusDot size="sm" status="working" />
-                    </span>
-                    <div className={cn(bubbleClass, 'max-w-[80%]')}>
+                  <StatusDot size="sm" status="working" />
+                </span>
+                <div className="flex min-w-0 max-w-[80%] flex-col">
+                  {message ? <WorkStatus message={message} name={name} /> : <Thinking name={name} />}
+                  {message?.text ? (
+                    <div className={bubbleClass}>
                       <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
                         {name}
                       </div>
                       <p className="whitespace-pre-wrap">{message.text}</p>
                     </div>
-                  </article>
-                ) : null}
-                {message ? <MemoryMarks message={message} /> : null}
-              </div>
+                  ) : null}
+                  {message ? <MemoryMarks message={message} /> : null}
+                </div>
+              </article>
             )
           })}
           <div ref={bottom} />
@@ -310,9 +315,7 @@ export function RoomConversation() {
             )
           }
           canSend={Boolean(text.trim())}
-          notice={
-            status === 'stopped' ? failure : status === 'needs_you' ? 'Waiting on you' : null
-          }
+          notice={status === 'stopped' ? failure : null}
           onSend={() => void send()}
           onStop={() => void roomsStop(roomId)}
           sending={sending}

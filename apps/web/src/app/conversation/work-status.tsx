@@ -1,7 +1,6 @@
 import { Check, ChevronDown, CircleAlert } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
-import { Avatar } from '../../components/ui/avatar'
 import { Thinking } from '../../components/ui/thinking'
 import { cn } from '../../lib/cn'
 import type { Message, ToolCall } from '../../lib/types'
@@ -103,23 +102,14 @@ function useWorkClock(message: Message): number {
 }
 
 /**
- * Sits above the bot's latest bubble, where the work happened. While the turn runs: the face, then
- * after `MIN_WORK_S` a panel with the reasoning trace and each step as it
- * happens, open while the bot thinks or a tool runs. Afterwards: one muted
- * line ("Thought for 12s · 3 steps") that opens into the same panel, or
- * nothing when the work was short or only housekeeping ran.
+ * Sits beside the bot's face, above its bubble, where the work happened. The
+ * face is the message's own; this draws only text. While the turn runs: the
+ * running step, then after `MIN_WORK_S` a panel with the reasoning trace and
+ * each step as it happens, open while the bot thinks or a tool runs.
+ * Afterwards: one muted line ("Thought for 12s · 3 steps") that opens into
+ * the same panel, or nothing when the work was short or only housekeeping ran.
  */
-export function WorkStatus({
-  face,
-  image,
-  message,
-  name
-}: {
-  face?: boolean
-  image?: null | string
-  message: Message
-  name: string
-}) {
+export function WorkStatus({ message, name }: { message: Message; name: string }) {
   const [open, setOpen] = useState<boolean | null>(null)
   const now = useWorkClock(message)
 
@@ -135,7 +125,7 @@ export function WorkStatus({
 
   if (!shown) {
     return message.streaming ? (
-      <Thinking face={face} image={image} label={running ?? message.activity} name={name} />
+      <Thinking label={running ?? message.activity} name={name} />
     ) : null
   }
 
@@ -144,20 +134,14 @@ export function WorkStatus({
   const steps = visibleSteps(message.toolCalls)
 
   return (
-    <div className="hex-fade px-1 pb-1" data-testid="work-status">
-      <div className="flex items-center gap-2">
-        {face && message.streaming ? (
-          <div className="hex-think shrink-0">
-            <Avatar image={image} mood="working" name={name} size="md" />
-          </div>
-        ) : null}
+    <div className="hex-fade mt-1 pb-1" data-testid="work-status">
+      <div className="flex min-h-6 items-center">
         <button
           aria-expanded={isOpen}
           className="group/steps flex min-w-0 max-w-full items-center gap-1.5 text-[length:var(--text-meta)] text-muted transition-colors hover:text-foreground"
           onClick={() => setOpen(!isOpen)}
           type="button"
         >
-          {message.streaming ? <Dot /> : null}
           <span className="truncate">
             {message.streaming ? liveLabel(message) : workSummary(message)}
           </span>

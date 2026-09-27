@@ -149,12 +149,12 @@ def classify_tool_result(tool_name: str, result, *, status=None, error_message=N
     us, else ``None``.
 
     A connector's own tool (``image_generate``, ``x_search``, ...) counts only
-    when Hermes flagged the call as an error: its successful output is web
+    when Hexbot flagged the call as an error: its successful output is web
     pages and search hits, which mention "rate limit" and "expired" all the
     time. For every other tool the text decides, and only when the call failed
     or the tool is one skills run their API calls through (``terminal``,
     ``execute_code``), since a Notion skill hitting a 401 through curl is a
-    successful terminal call as far as Hermes knows.
+    successful terminal call as far as Hexbot knows.
     """
     from hexbot.connectors import connector_for_tool, connector_mentioned
 

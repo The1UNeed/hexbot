@@ -6,7 +6,7 @@ description: Choose a Hexbot update track and control crash reports.
 
 The packaged desktop app checks `updates.hexbot.app` for signed updates 15 seconds after it starts and every 4 minutes while it runs. Development builds do not check. You can also choose "Check for Updates" from the application menu on macOS, or open Settings, Updates.
 
-Hexbot does not download an update during the check. When one is available, a pill at the bottom of the roster says "Download update"; once the download is done it says "Restart to update". Settings, Updates shows the same state, the time of the last check, and any error. The app does not install an update on its own when you quit. On Linux only the AppImage updates itself.
+Hexbot does not download an update during the check. When one is available, a pill at the bottom of the roster says "Update". Clicking it asks "Are you sure you want to update to version X?"; Yes downloads the update, then Hexbot quits, installs it, and reopens. No leaves everything as it was. Settings, Updates shows the same state, the time of the last check, and any error. The app does not install an update on its own when you quit. On Linux only the AppImage updates itself.
 
 ## Updating a daemon from another computer
 
@@ -24,6 +24,8 @@ Hexbot ships on two tracks:
 
 - **Stable** is the tagged releases. While Hexbot is in alpha the app is named `Hexbot [alpha]` and every release is an early build, but each one was checked before it was tagged.
 - **Nightly** is built from the main branch every day. It is named `Hexbot Nightly`, installs next to the stable app, and updates itself to the next nightly. It may break; back up `~/.hexbot` before opening one, because the two share it.
+
+Hexbot is in nightly early access, so for now only the nightly track has builds.
 
 A stable install follows the stable track and a nightly install follows the nightly track. You can switch in Settings, Updates. Switching affects the next update check: a stable app on the nightly track is replaced by the next nightly, and a nightly app on the stable track by the next stable release, even when that release has a lower version number. The installed app is not changed until an update is installed.
 

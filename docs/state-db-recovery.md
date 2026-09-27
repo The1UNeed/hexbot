@@ -21,7 +21,7 @@ The failing live operation never runs `FTS5('rebuild')`. Existing recovery
 ownership remains unchanged: a later `SessionDB` open may rebuild under the
 cross-process admission lock and foreign-holder guard. If that guarded rebuild
 cannot run, FTS remains detached, canonical writes stay available, and
-`hermes doctor` reports the explicit repair command.
+`hexbot core doctor` reports the explicit repair command.
 
 ## Explicit repair
 
@@ -29,9 +29,9 @@ Stop every process that can open the profile database before repairing it.
 Keep them stopped for the complete repair and verification window.
 
 ```bash
-hermes gateway stop
-HERMES_HOME="$HOME/.hermes" hermes sessions repair --check-only
-HERMES_HOME="$HOME/.hermes" hermes sessions repair
+hexbot core gateway stop
+HERMES_HOME="$HOME/.hexbot" hexbot core sessions repair --check-only
+HERMES_HOME="$HOME/.hexbot" hexbot core sessions repair
 ```
 
 `sessions repair` creates a SQLite backup by default and performs structural
@@ -43,14 +43,14 @@ After repair, verify the health probe, stale marker, trigger set, and canonical
 row counts before restarting the gateway:
 
 ```bash
-HERMES_HOME="$HOME/.hermes" hermes sessions repair --check-only
-sqlite3 "$HOME/.hermes/state.db" \
+HERMES_HOME="$HOME/.hexbot" hexbot core sessions repair --check-only
+sqlite3 "$HOME/.hexbot/state.db" \
   "SELECT key, value FROM state_meta WHERE key = 'fts_stale';"
-sqlite3 "$HOME/.hermes/state.db" \
+sqlite3 "$HOME/.hexbot/state.db" \
   "SELECT type, name FROM sqlite_master WHERE name IN
    ('messages_fts_insert','messages_fts_update','messages_fts_delete')
    ORDER BY name;"
-sqlite3 "$HOME/.hermes/state.db" \
+sqlite3 "$HOME/.hexbot/state.db" \
   "SELECT 'sessions', COUNT(*) FROM sessions
    UNION ALL SELECT 'messages', COUNT(*) FROM messages;"
 ```

@@ -94,7 +94,9 @@ name}` (other files) or `pdf.attach`. Stop: `session.interrupt`.
 - `/` redirects to the last opened section or to onboarding.
 - `/b/$bot/s/$section` the three-column app.
 - `/connect` pairing and address entry.
-- `/onboarding/*` first-launch steps.
+- `/onboarding/*` first-launch steps. The root layout also sends a connected
+  user here once when their About you was never written, so the init page
+  (name, what you do, preferences) runs at startup for existing installs too.
 - `/settings/$tab` rendered as a dialog over the current route.
 
 ## Electron bridge (`window.hexbot`)

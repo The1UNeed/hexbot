@@ -26,7 +26,7 @@ paths send ``X-Client-Name: hermes-agent``.
 
 Tavily is **not** a member of the zero-config keyless ring
 (``plugins.web.keyless_mcp._KEYLESS_RING``). Keyless access is opt-in:
-select Tavily in ``hermes tools`` (or set ``web.backend: tavily``).
+select Tavily in ``hexbot core tools`` (or set ``web.backend: tavily``).
 Fresh installs with no web credentials rotate across Exa / Parallel /
 Firecrawl / Keenable instead.
 """
@@ -164,7 +164,7 @@ def _normalize_tavily_documents(
 def _missing_key_error(action: str) -> str:
     return (
         f"TAVILY_API_KEY is not set. Get a key at https://app.tavily.com/home "
-        f"or select Tavily in `hermes tools` for opt-in keyless {action}."
+        f"or select Tavily in `hexbot core tools` for opt-in keyless {action}."
     )
 
 
@@ -190,7 +190,7 @@ class TavilyWebSearchProvider(WebSearchProvider):
 
         Opt-in only — Tavily is not a member of the zero-config keyless
         ring. ``is_keyless_available`` is True so an explicit
-        ``web.backend: tavily`` (or ``hermes tools`` pick) works without a
+        ``web.backend: tavily`` (or ``hexbot core tools`` pick) works without a
         key. False when the user pinned ``web.provider_tier.tavily: paid``.
         """
         from plugins.web.keyless_mcp import keyless_enabled, provider_tier

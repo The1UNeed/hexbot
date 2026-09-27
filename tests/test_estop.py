@@ -1,8 +1,8 @@
-"""Global emergency stop (`hermes pause` / `hermes resume`) — agent/estop.py.
+"""Global emergency stop (`hexbot core pause` / `hexbot core resume`) — agent/estop.py.
 
 The ESTOP sentinel is a resumable pause for NEW work only: cron dispatch,
 kanban dispatch, and new gateway turns are halted while it is engaged; work
-already in flight is never touched. Removing the sentinel (`hermes resume`)
+already in flight is never touched. Removing the sentinel (`hexbot core resume`)
 restores normal operation with no restart.
 
 Ported from: gastownhall/gastown estop.go (MIT); related prior art: #26778
@@ -85,7 +85,7 @@ def test_paused_reply_surfaces_reason_and_resume_hint(hermes_home):
     assert notice is not None
     assert "paused" in notice.lower()
     assert "deploy window" in notice
-    assert "hermes resume" in notice
+    assert "hexbot core resume" in notice
 
 
 def test_paused_reply_without_reason(hermes_home):
@@ -93,7 +93,7 @@ def test_paused_reply_without_reason(hermes_home):
     notice = estop.paused_reply()
     assert notice is not None
     assert "paused" in notice.lower()
-    assert "hermes resume" in notice
+    assert "hexbot core resume" in notice
 
 
 # ── check_paused: cheap gate + log-once ─────────────────────────────────────
@@ -225,7 +225,7 @@ async def test_gateway_internal_events_bypass_estop(hermes_home):
     assert reply is None or "paused" not in (reply or "").lower()
 
 
-# ── CLI: hermes pause / hermes resume ───────────────────────────────────────
+# ── CLI: hexbot core pause / hexbot core resume ───────────────────────────────────────
 
 
 def test_cli_pause_engages_with_reason(hermes_home, capsys):
@@ -271,7 +271,7 @@ def test_builtin_subcommands_include_pause_resume():
     assert "resume" in _BUILTIN_SUBCOMMANDS
 
 
-# ── hermes status surfacing ─────────────────────────────────────────────────
+# ── hexbot core status surfacing ─────────────────────────────────────────────────
 
 
 def test_status_line_when_paused(hermes_home):
@@ -381,8 +381,8 @@ def test_pause_command_registered_for_gateway():
 def test_profile_gateway_honors_canonical_root_estop(tmp_path, monkeypatch):
     """fleet-analyst-class: HERMES_HOME is a profile dir; pause lives at root.
 
-    A process launched with HERMES_HOME=~/.hermes/profiles/fleet-analyst must
-    still treat ~/.hermes/ESTOP as engaged. Otherwise `hermes pause` is not
+    A process launched with HERMES_HOME=~/.hexbot/profiles/fleet-analyst must
+    still treat ~/.hexbot/ESTOP as engaged. Otherwise `hexbot core pause` is not
     a global emergency stop (t_7b65ff88).
     """
     root = tmp_path / "hermes-root"

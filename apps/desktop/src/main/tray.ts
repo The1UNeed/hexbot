@@ -1,11 +1,11 @@
 import { join } from 'node:path'
-import { BrowserWindow, Menu, Tray, app, nativeImage } from 'electron'
+import { Menu, Tray, app, nativeImage } from 'electron'
 
 import type { DaemonManager, DaemonStatus } from './backend/manager'
 import { hasRuntime } from './edition'
 
 let tray: Tray | undefined
-export function createTray(manager: DaemonManager, openWindow: () => BrowserWindow): Tray {
+export function createTray(manager: DaemonManager, openWindow: () => void): Tray {
   const icon = nativeImage.createFromPath(
     join(
       app.getAppPath(),
@@ -20,11 +20,7 @@ export function createTray(manager: DaemonManager, openWindow: () => BrowserWind
       Menu.buildFromTemplate([
         {
           label: `Open ${app.name}`,
-          click: () => {
-            const window = openWindow()
-            window.show()
-            window.focus()
-          }
+          click: openWindow
         },
         ...(hasRuntime
           ? [
@@ -40,6 +36,6 @@ export function createTray(manager: DaemonManager, openWindow: () => BrowserWind
     )
   rebuild(manager.status())
   manager.on('status', rebuild)
-  tray.on('double-click', () => openWindow().show())
+  tray.on('double-click', openWindow)
   return tray
 }

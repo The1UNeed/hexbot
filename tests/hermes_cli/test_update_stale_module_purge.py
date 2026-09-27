@@ -1,7 +1,7 @@
 """Tests for _purge_stale_hermes_modules — the class fix for stale
-sys.modules breaking the gateway auto-restart after `hermes update`.
+sys.modules breaking the gateway auto-restart after `hexbot core update`.
 
-Field failure (2026-08-20, Teknium's Linux box): `hermes update` pulled a
+Field failure (2026-08-20, Teknium's Linux box): `hexbot core update` pulled a
 checkout where hermes_cli/gateway.py newly imports `line_input` from
 hermes_cli.cli_output, but the updater process had cli_output cached from
 before that symbol existed. The function-level `from hermes_cli.gateway
@@ -10,7 +10,7 @@ aborted, and the running gateway kept serving pre-update code.
 
 The old mitigation (_UPDATE_RUNTIME_RELOAD_MODULES) reloaded 3 hardcoded
 modules — re-fixed per symptom. The purge evicts EVERY cached module under
-the Hermes package prefixes so later imports rebuild a self-consistent
+the Hexbot package prefixes so later imports rebuild a self-consistent
 module graph from the updated checkout.
 """
 
@@ -29,7 +29,7 @@ from hermes_cli import update_cmd
 def _restore_sys_modules():
     """Snapshot & restore sys.modules around each test.
 
-    The purge under test evicts real Hermes modules from the cache; later
+    The purge under test evicts real Hexbot modules from the cache; later
     tests in the same process may hold references to the evicted module
     objects (e.g. `patch.object` targets), so put the originals back.
     """

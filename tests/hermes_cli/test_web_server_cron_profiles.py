@@ -1144,7 +1144,7 @@ async def test_create_cron_job_without_profile_uses_backend_own_profile(
     isolated_profiles, monkeypatch
 ):
     """A pool backend scoped to a named profile must not default creates to
-    ``~/.hermes`` when the request carries no explicit ``profile`` (the
+    ``~/.hexbot`` when the request carries no explicit ``profile`` (the
     Desktop app's pre-profileScoped clients sent none)."""
     from hermes_cli import web_server
 

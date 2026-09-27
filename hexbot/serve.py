@@ -85,7 +85,7 @@ def request_restart():
 def _start_cron_ticker(interval: int = 60) -> None:
     """Tick every profile's cron store in-process.
 
-    Hermes only starts its ticker when spawned by Hermes Desktop
+    Hexbot only starts its ticker when spawned by Hexbot Desktop
     (``HERMES_DESKTOP=1``); ``hexbot serve`` must do it itself so scheduled
     dreams and routines fire without a separate gateway process.
     """

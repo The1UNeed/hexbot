@@ -252,7 +252,7 @@ def test_list_bots_orders_by_activity(gw, profiles):
 def test_bot_tools_default_to_everything_and_keep_unmanaged_toolsets(gw, profiles):
     from hexbot.bots import TOOL_TOOLSETS, create_bot, get_bot, update_bot
     create_bot("scout")
-    # Hermes resolves the pin (or "everything" when unpinned); the Tools tab shows that.
+    # Hexbot resolves the pin (or "everything" when unpinned); the Tools tab shows that.
     gw.responses["profiles.describe"] = {"toolsets": [
         {"name": n, "enabled": True} for n in ("memory", *TOOL_TOOLSETS.values())]}
     assert get_bot("scout")["tools"] == list(TOOL_TOOLSETS)

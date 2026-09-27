@@ -1,13 +1,13 @@
-"""Guard: Hermes-owned subprocesses must not resolve managed runtimes by bare PATH.
+"""Guard: Hexbot-owned subprocesses must not resolve managed runtimes by bare PATH.
 
-Hermes installs runtimes for itself — ``uv`` at ``$HERMES_HOME/bin/uv``, Node at
+Hexbot installs runtimes for itself — ``uv`` at ``$HERMES_HOME/bin/uv``, Node at
 ``$HERMES_HOME/node``. Neither directory is on the ambient PATH of an arbitrary
-process, so ``shutil.which("uv")`` / ``shutil.which("node")`` in Hermes's own
+process, so ``shutil.which("uv")`` / ``shutil.which("node")`` in Hexbot's own
 code has two failure modes:
 
 * the managed runtime is invisible, so the caller reports "not installed" or
   degrades to a slower tier on a machine that has exactly what it needed; and
-* when a system copy also exists, the one Hermes does not own wins — which is
+* when a system copy also exists, the one Hexbot does not own wins — which is
   how a generated systemd unit or launchd plist can bake a system Node in and
   keep resolving it across reboots.
 
@@ -35,11 +35,11 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Runtimes Hermes provisions into HERMES_HOME and must therefore resolve
+# Runtimes Hexbot provisions into HERMES_HOME and must therefore resolve
 # through a managed-aware helper rather than PATH.
 _MANAGED_COMMANDS = frozenset({"uv", "node", "npm", "npx", "pnpm"})
 
-# Directories that are not Hermes-owned subprocess code: plugins ship their own
+# Directories that are not Hexbot-owned subprocess code: plugins ship their own
 # resolution policy, tests assert against PATH deliberately, and skills/scripts
 # run as standalone user-invoked programs.
 _EXEMPT_DIRS = (

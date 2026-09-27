@@ -48,7 +48,7 @@ The app follows the track it was installed from; switch in Settings, Updates.
 - **Your hardware.** The daemon runs where you install it. Pair devices over
   LAN or Tailscale, revoke them from settings, and delete conversations
   together with the memory they produced.
-- **Hex Connect.** Sign in once, reach your daemon from outside the LAN.
+- **Hex Connect.** Sign in once, reach your daemon from outside the LAN in the app or a browser.
   Connect brokers identity and a hostname; chat traffic never passes through
   it.
 
@@ -58,11 +58,13 @@ Docs live at [hexbot.app/docs](https://hexbot.app/docs/) and are built from
 ## Develop
 
 Hexbot's daemon is Rust in `backend/hexbot-core/`; agents run on pinned Pi
-0.87.1 through the private extension in `backend/pi-runtime/`. The existing
-web, Electron, site, and Connect applications live in `apps/`. The former
-Python/Hermes backend remains as a compatibility reference and can be selected
-explicitly with `--backend python`. See `backend/hexbot-core/README.md` for
-storage compatibility and validation limits.
+0.87.1 through the private extension in `backend/pi-runtime/`. The web bundle,
+Electron app, site, and Connect service live in `apps/`. The former Python
+daemon in `hexbot/`, built on a fork of
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research,
+stays for one release so existing background services can move to the native
+daemon. `AGENTS.md` is the guide for anyone, human or agent, working on the
+code; `backend/hexbot-core/README.md` covers storage compatibility.
 
 Install Rust 1.97.1 and Node 26, then:
 
@@ -94,8 +96,8 @@ pnpm --filter ./apps/site run check
 pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run
 ```
 
-`docs/testing.md` lists everything, including the upstream Hermes suites and
-the Electron end-to-end test.
+`docs/testing.md` lists everything, including the core suites and the
+Electron end-to-end test.
 
 ## How releases work
 

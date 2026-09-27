@@ -1,8 +1,8 @@
-"""Progressive tool disclosure ("tool search") for Hermes Agent.
+"""Progressive tool disclosure ("tool search") for Hexbot.
 
 When enabled, MCP and non-core plugin tools are replaced in the model-visible
 tools array by three bridge tools — ``tool_search``, ``tool_describe``,
-``tool_call`` — and surfaced on demand. Core Hermes tools never defer.
+``tool_call`` — and surfaced on demand. Core Hexbot tools never defer.
 
 Design constraints this module is built around (see ``openclaw-tool-search-report``
 for the full rationale):
@@ -1275,7 +1275,7 @@ def _schema_for_local_validation(node: Any) -> Any:
     """Return a JSON-Schema-compatible copy that honors ``nullable: true``.
 
     Some MCP/plugin schemas use OpenAPI's ``nullable`` extension instead of a
-    JSON Schema null union.  Hermes' normal coercion path accepts that shape;
+    JSON Schema null union.  Hexbot's normal coercion path accepts that shape;
     mirror it here so local validation never rejects a value dispatch would
     intentionally accept.
     """

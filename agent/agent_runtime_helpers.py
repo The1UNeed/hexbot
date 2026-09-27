@@ -2481,7 +2481,7 @@ def anthropic_prompt_cache_policy(
     )
 
     # A configured route may use an arbitrary provider name and model alias
-    # that are canonicalized only after Hermes sends the request. Honor its
+    # that are canonicalized only after Hexbot sends the request. Honor its
     # existing per-model ``prompt_caching`` capability instead of guessing
     # support from either spelling. Explicit false is authoritative too.
     #
@@ -2840,7 +2840,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         _existing.update(opencode_zen_free_headers())
         client_kwargs["default_headers"] = _existing
 
-    # All primary construction and recovery paths must identify Hermes to the
+    # All primary construction and recovery paths must identify Hexbot to the
     # official Codex endpoint, including snapshots with custom header overrides.
     from agent.codex_headers import apply_required_codex_headers
 
@@ -3991,7 +3991,7 @@ def consume_pending_sanitizer_heal_notice() -> Optional[str]:
 def get_sanitizer_heal_stats() -> Dict[str, Dict[str, Any]]:
     """Read-only snapshot of per-session sanitiser heal counters.
 
-    Surfaced by diagnostics (``hermes doctor`` / debug share callers) so
+    Surfaced by diagnostics (``hexbot core doctor`` / debug share callers) so
     repeated silent repairs are visible outside errors.log. Keys are session
     ids; values carry ``heal_events`` (sanitizer invocations that healed at
     least one message), ``messages_healed`` (total substituted turns) and
@@ -4016,7 +4016,7 @@ def _log_empty_non_final_heal(healed: int) -> None:
     per hour with no user-visible signal — #96870). At the threshold the
     escalation also queues a ONE-TIME out-of-band user notice (drained by
     ``consume_pending_sanitizer_heal_notice``) pointing at ``/debug share``
-    / ``hermes doctor`` — once per session, never re-armed by a new window.
+    / ``hexbot core doctor`` — once per session, never re-armed by a new window.
     """
     key = _session_id_for_heal_log() or "-"
     threshold = _heal_escalation_threshold()
@@ -4049,8 +4049,8 @@ def _log_empty_non_final_heal(healed: int) -> None:
                     "⚠️ Your session transcript required repeated repair "
                     f"({total_events} heal passes so far). Replies keep "
                     "working, but a corrupted turn is stuck in this "
-                    "session's history — run /debug share or `hermes "
-                    "doctor` to capture diagnostics, or /new to start a "
+                    "session's history — run /debug share or `hexbot "
+                    "core doctor` to capture diagnostics, or /new to start a "
                     "clean session."
                 )
         elif state["escalated"]:
@@ -4564,7 +4564,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     # that translation entirely and still send the internal name on the wire.
     #
     # Normalizing here rather than in the OpenAI-compat serializer keeps it
-    # provider-agnostic: Gemini reaches Hermes under many model strings and
+    # provider-agnostic: Gemini reaches Hexbot under many model strings and
     # base URLs, so sniffing for "is this really Google?" is unreliable, and
     # every other provider either ignores the field or agrees with the call
     # name. Runs on the per-call copy, so the stored trajectory keeps the real
@@ -4839,7 +4839,7 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
 def _iter_httpx_pool_objects(http_client: Any):
     """Yield httpcore pool objects reachable from an httpx client.
 
-    Hermes' keepalive client (#10324 / ``_build_keepalive_http_client``) and
+    Hexbot's keepalive client (#10324 / ``_build_keepalive_http_client``) and
     any ``HTTP(S)_PROXY`` configuration put live connections on *mounted*
     transports (``client._mounts``), not only on the default
     ``client._transport``. Walking the default transport alone makes

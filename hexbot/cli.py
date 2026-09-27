@@ -11,9 +11,15 @@ import sys
 from pathlib import Path
 
 
-def _set_home() -> None:
+def _set_home(core: bool = False) -> None:
     home = str(Path(os.environ.get("HEXBOT_HOME", "~/.hexbot")).expanduser())
     os.environ["HEXBOT_HOME"] = home
+    current = os.environ.get("HERMES_HOME")
+    # A bot's terminal runs with HERMES_HOME set to its profile inside the
+    # Hexbot home; `hexbot core` there must act on that profile. Any other
+    # HERMES_HOME (say a separate ~/.hermes install) is ignored.
+    if core and current and Path(current).expanduser().resolve().is_relative_to(Path(home).resolve()):
+        return
     os.environ["HERMES_HOME"] = home
 
 
@@ -28,6 +34,7 @@ def parser() -> argparse.ArgumentParser:
     serve.set_defaults(lan=None)
     sub.add_parser("pair")
     connect = sub.add_parser("connect")
+    connect.add_argument("--name")
     connect_sub = connect.add_subparsers(dest="connect_command")
     connect_sub.add_parser("status")
     connect_sub.add_parser("disconnect")
@@ -41,13 +48,25 @@ def parser() -> argparse.ArgumentParser:
         create.add_argument(f"--{flag}")
     delete = bots.add_parser("delete"); delete.add_argument("name")
     send = sub.add_parser("send"); send.add_argument("bot"); send.add_argument("text")
-    passthrough = sub.add_parser("hermes"); passthrough.add_argument("args", nargs=argparse.REMAINDER)
+    core = sub.add_parser("core"); core.add_argument("args", nargs=argparse.REMAINDER)
     sub.add_parser("version")
     return root
 
 
 def main(argv=None):
-    _set_home()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["hermes"]:  # hidden alias for `core`
+        argv[0] = "core"
+    _set_home(core=argv[:1] == ["core"])
+    if argv[:1] == ["core"]:
+        # Hand everything after `core` to the core CLI untouched. argv is set
+        # before the import because the core applies `-p <profile>` on import.
+        old = sys.argv
+        try:
+            sys.argv = ["hermes", *argv[1:]]
+            from hermes_cli.main import main as hermes_main
+            return hermes_main()
+        finally: sys.argv = old
     from hexbot.native_transition import handoff
     handoff(argv)
     args = parser().parse_args(argv)
@@ -80,8 +99,17 @@ def main(argv=None):
             print(json.dumps(connect.status(), indent=2)); return 0
         if args.connect_command == "disconnect":
             print(json.dumps(connect.disconnect(), indent=2)); return 0
-        config = connect.register(socket.gethostname(), client=connect.ConnectClient())
+        current = connect.status()
+        if current["registered"]:
+            print(f"Already connected: https://{current['tunnel_hostname']}")
+            if args.name:
+                print("Rename it on your daemons page; --name only applies to a new registration.")
+            print("Run `hexbot connect disconnect` first to register again.")
+            return 0
+        config = connect.register(args.name or socket.gethostname(), client=connect.ConnectClient())
         print(f"Connected: https://{config.tunnel_hostname}")
+        print(f"Open it in a browser: https://{config.tunnel_hostname}")
+        print(f"Manage daemons: {config.api_base}/connect")
         return 0
     if args.command == "devices":
         from hexbot import pairing
@@ -96,11 +124,6 @@ def main(argv=None):
         result = subprocess.run([str(executable), "-p", args.bot, "chat", "-q", args.text,
                                  "--oneshot", "-Q"], env=os.environ.copy(), text=True)
         return result.returncode
-    if args.command == "hermes":
-        from hermes_cli.main import main as hermes_main
-        old = sys.argv
-        try: sys.argv = ["hermes", *args.args]; return hermes_main()
-        finally: sys.argv = old
     from hexbot import bots
     if args.bots_command == "list":
         print(json.dumps({"bots": bots.list_bots()}, indent=2)); return 0

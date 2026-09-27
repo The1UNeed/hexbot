@@ -1,6 +1,6 @@
 """Kanban board export / import — move a whole board between machines.
 
-Backs ``hermes kanban export|import``, the matching ``/boards/{slug}/export``
+Backs ``hexbot core kanban export|import``, the matching ``/boards/{slug}/export``
 and ``/boards/import`` REST endpoints, and the desktop board switcher's
 Export/Import items.
 
@@ -263,7 +263,7 @@ def _read_manifest(root: Path) -> dict[str, Any]:
     path = root / "manifest.json"
     if not path.exists():
         raise ValueError(
-            "archive is not a Hermes kanban board export (no manifest.json)"
+            "archive is not a Hexbot kanban board export (no manifest.json)"
         )
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -271,14 +271,14 @@ def _read_manifest(root: Path) -> dict[str, Any]:
         raise ValueError(f"archive manifest is not valid JSON: {exc}") from exc
     if not isinstance(manifest, dict) or manifest.get("format") != ARCHIVE_FORMAT:
         raise ValueError(
-            "archive is not a Hermes kanban board export "
+            "archive is not a Hexbot kanban board export "
             f"(format={manifest.get('format') if isinstance(manifest, dict) else None!r})"
         )
     version = manifest.get("format_version")
     if not isinstance(version, int) or version > ARCHIVE_FORMAT_VERSION:
         raise ValueError(
-            f"archive format version {version!r} is newer than this Hermes "
-            f"understands (max {ARCHIVE_FORMAT_VERSION}) — update Hermes and retry"
+            f"archive format version {version!r} is newer than this Hexbot "
+            f"understands (max {ARCHIVE_FORMAT_VERSION}) — update Hexbot and retry"
         )
     return manifest
 

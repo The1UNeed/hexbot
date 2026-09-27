@@ -357,7 +357,7 @@ def test_cp1252_env_regression_does_not_crash(tmp_path, monkeypatch):
 
 
 def test_known_keys_absent_from_user_env_are_cleared(tmp_path, monkeypatch):
-    """Known Hermes keys inherited from parent process are removed when absent
+    """Known Hexbot keys inherited from parent process are removed when absent
     from the profile's .env.
 
     This is the startup equivalent of ``reload_env()``'s known-key cleanup and
@@ -431,7 +431,7 @@ def test_no_user_env_does_not_clear_anything(tmp_path, monkeypatch):
 
 
 def test_known_key_explicitly_set_in_user_env_is_kept(tmp_path, monkeypatch):
-    """A known Hermes key that IS explicitly set in the profile .env survives
+    """A known Hexbot key that IS explicitly set in the profile .env survives
     the cleanup (overrides the inherited value).
     """
     home = tmp_path / "hermes"
@@ -448,7 +448,7 @@ def test_known_key_explicitly_set_in_user_env_is_kept(tmp_path, monkeypatch):
 
 
 def test_export_prefixed_known_key_in_user_env_is_kept(tmp_path, monkeypatch):
-    """A known Hermes key defined with the bash-compatible ``export KEY=value``
+    """A known Hexbot key defined with the bash-compatible ``export KEY=value``
     form in the profile .env must be recognized as defined and survive the
     cleanup - mirrors the ``export `` stripping in config.py's load_env()
     (#6659).
@@ -533,7 +533,7 @@ def _seed_terminal_home(tmp_path, monkeypatch, *, config_yaml=None, env_text=Non
 
 
 def test_config_yaml_terminal_backend_overrides_stale_env(tmp_path, monkeypatch):
-    """Regression for #29186: a leftover TERMINAL_ENV=docker in ~/.hermes/.env
+    """Regression for #29186: a leftover TERMINAL_ENV=docker in ~/.hexbot/.env
     must not silently override the user's choice in config.yaml. config.yaml
     is the documented source of truth, so its value must win after load."""
     home = _seed_terminal_home(

@@ -77,7 +77,7 @@ def schema_read_probe_statements() -> tuple:
     reconciler diffs against — so a column added there is covered here
     automatically. A hand-maintained probe list went stale within days of
     shipping (it never learned ``sessions.last_activity_at``, so the sidebar
-    served an empty session list after `hermes update` until the user's
+    served an empty session list after `hexbot core update` until the user's
     first message forced a writable open).
 
     Each statement is ``LIMIT 0``: column resolution happens at prepare
@@ -483,8 +483,8 @@ class SessionSchemaMixin:
                     logger.error(
                         "state.db FTS repair remains blocked after %d deferrals "
                         "by holder(s) %s. Stop the listed processes, then run "
-                        "`hermes sessions optimize-storage` with the gateway stopped. "
-                        "`hermes doctor` reports this degraded state.",
+                        "`hexbot core sessions optimize-storage` with the gateway stopped. "
+                        "`hexbot core doctor` reports this degraded state.",
                         attempts,
                         foreign_holders,
                     )
@@ -1298,7 +1298,7 @@ class SessionSchemaMixin:
                 # enough — is the wrong default. So on an EXISTING install we
                 # touch nothing here: the v22 inline FTS keeps working exactly
                 # as before, and we only record a flag advertising that the
-                # optimization is available. `hermes sessions optimize-storage`
+                # optimization is available. `hexbot core sessions optimize-storage`
                 # performs the whole transition as one deliberate, disk-checked,
                 # progress-reported foreground operation.
                 #
