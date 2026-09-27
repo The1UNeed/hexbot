@@ -7,7 +7,7 @@ Outputs:
   apps/desktop/build/icon.icns               the same render as a macOS icon set (used when actool < 26)
   apps/desktop/resources/tray-16.png, tray-16@2x.png, tray-32.png
                                              menu bar template images: the face as a black silhouette
-Run: ./venv/bin/python scripts/desktop/make-icons.py
+Run: uv run --no-project --with pillow python scripts/desktop/make-icons.py
 """
 from __future__ import annotations
 

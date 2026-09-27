@@ -14,11 +14,11 @@
   Uses a local streaming model with actual Pi; no provider credentials needed.
   Add `--desktop --edition=full` or `--desktop --edition=client` for Electron.
   On headless Linux run these Electron checks through `xvfb-run -a`.
-- Python: `./venv/bin/pytest tests/hexbot -q` (the Connect tests also run the Node sidecar; they skip without `node`)
+- Legacy Python: `./venv/bin/pytest tests/hexbot -q` (the Connect tests also run the Node sidecar; they skip without `node`)
 - Connect sidecar: `node --test tests/hexbot/*.test.mts`
 - Legacy service handoff: `python3 -m unittest tests/hexbot/test_native_transition.py -v`
   (also included in the Python suite). Uses temporary homes and local archives to
-  check the old service's upgrade, native restart, explicit Python override,
+  check the old service's upgrade, native restart, service migration,
   checksums, archive limits, failure recovery, and preservation of existing data.
 - Web bundle: `pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint && pnpm --filter ./apps/web run build`
 - Desktop: `pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run && pnpm --filter ./apps/desktop run build`
@@ -28,7 +28,7 @@
 - End to end: `pnpm --filter ./apps/desktop run e2e` (Playwright driving the built Electron app against a daemon in a temp home).
 - Connect: `HEXBOT_CONNECT_E2E=1 ./venv/bin/pytest tests/hexbot/test_connect_e2e.py -q` (a real Connect service with the in-memory store, a real daemon, and the CLI, web, desktop, and browser sign-in HTTP calls; no Cloudflare).
 
-## Core suites
+## Legacy core suites
 
 Install the retained Python environment before running comparison or legacy tests:
 
@@ -75,7 +75,8 @@ These suites pin the universal system prompt text and must stay green:
 `HEXBOT_HOME=<checkout>/.hexbot` (gitignored) and ports derived from the
 checkout path, so worktrees do not collide. `pnpm dev --desktop` starts
 the Electron app instead. The smoke scripts below take the printed daemon
-port. Never point a dev daemon at `~/.hexbot`.
+port. Never point a dev daemon at `~/.hexbot`. The runner no longer accepts
+`--backend`; legacy comparison tests use their own Python fixtures.
 
 ## Legacy Python real-model checks
 
@@ -114,3 +115,24 @@ All of these need a Codex CLI login on the machine (see "Real-model checks").
 - `scripts/dev/dream_smoke.py` (same flags): creates a bot, chats, runs a dream now, prints the memory notes and the Dreams section.
 - `scripts/dev/rpc.py <port> '<calls json>'`: ad-hoc JSON-RPC calls against a loopback daemon.
 - `scripts/dev/ui-review.mjs`, `ui-review-app.mjs`, `ui-shot.mjs`, `ui-error.mjs`, `ui-room-chat.mjs`: Playwright helpers that drive the daemon-served web bundle in Chromium and write screenshots to `/tmp/hexbot-shots`.
+
+## Packaged runtime checks
+
+`rust-toolchain.toml` is the only Rust toolchain pin. Run `rustup show
+active-toolchain` from the checkout to install it before building. Native staging
+uses an explicit Cargo target and installs npm dependencies for that OS and CPU.
+On Apple Silicon, `rustup target add x86_64-apple-darwin` enables the Intel build;
+Rosetta is required to run its packaged Node probe.
+
+```sh
+pnpm --filter ./apps/web run build
+node scripts/desktop/native-runtime.mjs
+HEXBOT_NATIVE_TEST_BUNDLE="$PWD/apps/desktop/resources/hexbot-native" \
+  pnpm --filter ./apps/desktop run test --run src/main/backend/native-bootstrap.test.ts
+```
+
+Staging reports dependency bytes before and after pruning. The installed-runtime
+test uses a temporary home and checks the launcher, agent runtime, daemon HTTP
+listener, managed Python and voice executable. Desktop unit tests cover bad uv
+checksums, consecutive updates, failed activation, running-runtime retention and
+service migration. Rust tests cover update pruning and legacy listener refusal.

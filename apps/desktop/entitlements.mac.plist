@@ -2,7 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
   <dict>
+    <!-- Bundled x64 Node 26.5.0 traps in V8 OS::SetPermissions with allow-jit alone.
+         runtime-signing.test.mjs verifies both architectures under the hardened runtime. -->
     <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
     <key>com.apple.security.network.client</key>
     <true/>

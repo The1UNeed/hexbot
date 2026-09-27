@@ -188,40 +188,15 @@ function TourPage({
 
 /** Install stages in order, with a rough share of the total time each takes. */
 const STAGES: { acts: HexbotActName[]; id: string; label: string; weight: number }[] = [
-  { acts: ['catch', 'download', 'fish'], id: 'uv', label: 'Fetching the installer', weight: 5 },
+  { acts: ['catch', 'download'], id: 'runtime', label: 'Unpacking Hexbot', weight: 20 },
+  { acts: ['catch', 'download', 'fish'], id: 'uv', label: 'Fetching the installer', weight: 10 },
+  { acts: ['type', 'read', 'tinker'], id: 'python', label: 'Installing Python', weight: 30 },
   {
-    acts: ['type', 'read', 'tinker'],
-    id: 'python',
-    label: 'Installing Python',
-    weight: 15
-  },
-  { acts: ['catch', 'download'], id: 'source', label: 'Unpacking Hexbot', weight: 5 },
-  {
-    acts: ['hammer', 'sweep', 'paint', 'grow'],
-    id: 'venv',
-    label: 'Preparing the environment',
-    weight: 5
-  },
-  {
-    acts: [
-      'type',
-      'tinker',
-      'juggle',
-      'hammer',
-      'coffee',
-      'lift',
-      'drum',
-      'read',
-      'dance',
-      'wand',
-      'balloon'
-    ],
+    acts: ['type', 'tinker', 'juggle', 'hammer', 'coffee', 'lift', 'drum', 'read', 'dance', 'wand', 'balloon'],
     id: 'dependencies',
     label: 'Installing dependencies',
-    weight: 55
+    weight: 35
   },
-  { acts: ['inspect', 'read'], id: 'git', label: 'Checking Git', weight: 2 },
-  { acts: ['inspect', 'fish'], id: 'ripgrep', label: 'Adding file search', weight: 8 },
   { acts: ['horn', 'flag', 'rocket'], id: 'done', label: 'Starting the daemon', weight: 5 }
 ]
 

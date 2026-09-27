@@ -24,7 +24,7 @@ Hexbot is in nightly early access, so the [download page](/download/) offers the
 
 The full package asks where Hexbot should run:
 
-1. **Run on this machine.** Hexbot installs its daemon under `~/.hexbot`. You can let it start at login and continue running after the desktop window closes. The first run may download Python 3.11, uv, Git, and ripgrep. Hexbot keeps these managed tools inside `~/.hexbot`; it does not replace system copies.
+1. **Run on this machine.** Hexbot installs its daemon under `~/.hexbot`. You can let it start at login and continue running after the desktop window closes. The app includes the daemon and agent runtime. First launch downloads a checksum-verified installer, Python 3.11 for code tools, and voice tools. Hexbot keeps these managed tools inside `~/.hexbot`; it does not replace system copies.
 2. **Connect to a daemon.** Use a pairing link or enter the daemon address and one-time code.
 
 The client-only package opens straight on the connect screen.

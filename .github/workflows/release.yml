@@ -38,11 +38,6 @@ on:
         type: choice
         options: [nightly, stable]
         default: nightly
-      backend:
-        description: Daemon implementation (Python is the rollback build)
-        type: choice
-        options: [rust, python]
-        default: rust
 
 # Jobs that publish ask for more below.
 permissions:
@@ -141,12 +136,11 @@ jobs:
           - build: linux-x64
             runner: ubuntu-22.04
             target: --linux --x64
-    runs-on: ${{ (inputs.backend || 'rust') == 'rust' && matrix.build == 'mac-x64' && 'macos-26-intel' || matrix.runner }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:
       CHANNEL: ${{ needs.preflight.outputs.channel }}
       VERSION: ${{ needs.preflight.outputs.version }}
-      HEXBOT_BACKEND: ${{ inputs.backend || 'rust' }}
     steps:
       - uses: actions/checkout@v7
       # Installs the pnpm pinned by `packageManager` in the root package.json.
@@ -157,10 +151,15 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Prepare the native compiler
-        if: matrix.edition == 'full' && env.HEXBOT_BACKEND == 'rust'
+        if: matrix.edition == 'full'
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
-          rustup default 1.97.1
+          rustup show active-toolchain
+          if [ "${{ matrix.build }}" = mac-x64 ]; then rustup target add x86_64-apple-darwin; fi
+      - uses: Swatinem/rust-cache@v2
+        if: matrix.edition == 'full'
+        with:
+          workspaces: backend/hexbot-core
+          key: ${{ matrix.build }}
       - name: Set the release version
         run: node scripts/desktop/set-version.mjs "$VERSION"
       - name: Prepare macOS signing
@@ -200,18 +199,18 @@ jobs:
         env:
           HEXBOT_CRASH_URL: ${{ vars.HEXBOT_CRASH_URL }}
         run: node scripts/desktop/dist.mjs ${{ matrix.target }} --channel "$CHANNEL" ${{ matrix.edition == 'client' && '--client' || '' }}
+      - name: Verify hardened native executables
+        if: matrix.edition == 'full' && runner.os == 'macOS'
+        run: HEXBOT_NATIVE_TEST_BUNDLE="$GITHUB_WORKSPACE/apps/desktop/resources/hexbot-native" node --test scripts/desktop/runtime-signing.test.mjs
       - name: List the output
         run: ls -l apps/desktop/release
-      # The daemon source the full package stages (scripts/desktop/stage-python-src.mjs),
-      # as one archive a daemon downloads to update itself when a newer client
-      # asks (hexbot/update.py). Rust releases include a verified native handoff.
+      # One release of compatibility source for existing Python services
+      # updating through hexbot/update.py. It hands off to the native daemon.
       # This compatibility source archive is platform-independent.
       - name: Archive the daemon source
         if: matrix.edition == 'full' && matrix.build == 'linux-x64'
         run: |
-          if [ "$HEXBOT_BACKEND" = rust ]; then
-            node scripts/desktop/stage-python-src.mjs --native-transition
-          fi
+          node scripts/desktop/stage-python-src.mjs --native-transition
           tar -czf "hexbot-src-$VERSION.tar.gz" -C apps/desktop/resources hexbot-src
       - uses: actions/upload-artifact@v7
         if: matrix.edition == 'full' && matrix.build == 'linux-x64'
@@ -220,10 +219,10 @@ jobs:
           path: hexbot-src-*.tar.gz
           if-no-files-found: error
       - name: Archive the native daemon
-        if: matrix.edition == 'full' && env.HEXBOT_BACKEND == 'rust'
+        if: matrix.edition == 'full'
         run: node scripts/desktop/make-native-update.mjs apps/desktop/resources/hexbot-native native-updates
       - uses: actions/upload-artifact@v7
-        if: matrix.edition == 'full' && env.HEXBOT_BACKEND == 'rust'
+        if: matrix.edition == 'full'
         with:
           name: daemon-native-${{ matrix.build }}
           path: native-updates/daemon/native/
@@ -251,7 +250,6 @@ jobs:
       CHANNEL: ${{ needs.preflight.outputs.channel }}
       VERSION: ${{ needs.preflight.outputs.version }}
       TAG: ${{ needs.preflight.outputs.tag }}
-      HEXBOT_BACKEND: ${{ inputs.backend || 'rust' }}
       # Step-level `if` cannot read secrets; the job env can.
       HAS_R2: ${{ secrets.R2_ACCESS_KEY_ID != '' && secrets.R2_SECRET_ACCESS_KEY != '' && secrets.R2_ACCOUNT_ID != '' }}
       R2_BUCKET: ${{ vars.R2_UPDATES_BUCKET || 'hexbot-updates' }}
@@ -270,13 +268,11 @@ jobs:
           mkdir -p release/full release/client release/daemon
           cp artifacts/full-*/* release/full/
           cp artifacts/client-*/* release/client/
-          if [ "$HEXBOT_BACKEND" = rust ]; then
-            mkdir -p dist/updates/daemon/native
-            for native in artifacts/daemon-native-*; do
-              cp -R "$native"/* dist/updates/daemon/native/
-              find "$native" -name '*.tar.gz' -exec cp {} release/daemon/ \;
-            done
-          fi
+          mkdir -p dist/updates/daemon/native
+          for native in artifacts/daemon-native-*; do
+            cp -R "$native"/* dist/updates/daemon/native/
+            find "$native" -name '*.tar.gz' -exec cp {} release/daemon/ \;
+          done
           cp artifacts/daemon-src/*.tar.gz release/daemon/
           ls -l release/full release/client release/daemon
       - name: Build the update feed
@@ -335,14 +331,12 @@ jobs:
               exit 1
             fi
           done
-          if [ "$HEXBOT_BACKEND" = rust ]; then
-            for target in macos-aarch64 macos-x86_64 linux-x86_64; do
-              url="https://updates.hexbot.app/daemon/native/$VERSION/$target/manifest.json"
-              curl -fsS --retry 5 --retry-delay 5 "$url" > native-manifest.json
-              node -e 'const fs=require("fs"); const m=JSON.parse(fs.readFileSync("native-manifest.json")); if(m.version!==process.env.VERSION || m.format!=="tar.gz") process.exit(1)'
-              echo "ok  $url"
-            done
-          fi
+          for target in macos-aarch64 macos-x86_64 linux-x86_64; do
+            url="https://updates.hexbot.app/daemon/native/$VERSION/$target/manifest.json"
+            curl -fsS --retry 5 --retry-delay 5 "$url" > native-manifest.json
+            node -e 'const fs=require("fs"); const m=JSON.parse(fs.readFileSync("native-manifest.json")); if(m.version!==process.env.VERSION || m.format!=="tar.gz") process.exit(1)'
+            echo "ok  $url"
+          done
           url="https://updates.hexbot.app/daemon/hexbot-src-$VERSION.tar.gz"
           if curl -fsSI --retry 5 --retry-delay 5 "$url" > /dev/null; then
             echo "ok  $url"

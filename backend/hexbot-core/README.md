@@ -10,7 +10,7 @@ The existing React app and shared gateway client are unchanged.
 
 ## Run
 
-Use Rust 1.97.1 and Node 26.5.0. From the repository root:
+Use the Rust toolchain in `rust-toolchain.toml` and Node 26.5.0. From the repository root:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -33,18 +33,18 @@ HEXBOT_HOME="$test_home" backend/hexbot-core/target/debug/hexbot serve --port 91
 `HEXBOT_PI_EXECUTABLE` selects an explicit Pi executable; `HEXBOT_WEB_DIST`
 selects the built web bundle. Full desktop packages include Rust, Node, Pi,
 web assets, and skills. Desktop bootstrap provisions an isolated Python interpreter
-for code tools and pinned edge-tts for free voice, without installing Hermes.
+for code tools and pinned edge-tts for free voice, separately from the daemon.
 Client-only packages contain no daemon. Native package
-builds must run on their target OS and architecture.
+builds use their target OS and architecture. Intel macOS also cross-compiles
+on Apple Silicon with Rosetta for the runtime probe.
 
-The former Python backend remains in the repository for comparison and explicit
-`pnpm dev --backend python` use. It is not called by the Rust daemon. Python
-code execution is a language tool and still needs a Python interpreter; browser,
+The former Python backend remains for comparison and one release of service
+handoff. `pnpm dev --backend python` and Python rollback builds are removed.
+It is not called by the Rust daemon. Python code execution is a language tool and still needs a Python interpreter; browser,
 voice, and desktop tools likewise use their configured command-line dependencies.
 PDF attachments use Poppler's `pdftoppm`, as in the former daemon, to render
 selected pages for the model. Install Poppler on standalone daemon hosts.
-The native CLI implements Hexbot commands. The arbitrary `hexbot hermes ...`
-upstream administration CLI belongs to the retained Python installation.
+The native CLI implements Hexbot commands. Legacy core administration commands are not part of the native CLI.
 
 ## Storage and compatibility
 
@@ -55,16 +55,17 @@ upstream administration CLI belongs to the retained Python installation.
   About you in `users/<id>/user.md`. Deleting a section leaves bot memory alone.
 - `hexbot-runtime.db` stores native transcript projections, usage, and frozen
   session options. Pi keeps its conversation JSONL under the native session
-  directory. Existing Hermes `state.db` history is imported once, including
+  directory. Existing Python `state.db` history is imported once, including
   hidden and tool messages. New native turns are not mirrored into legacy
-  Hermes history, so switching back to Python is not a full transcript rollback.
+  Python history. There is no Python rollback package.
   Session recovery reconciles Pi's durable log with native history and usage;
   replaying an already recorded message does not duplicate it or its cost.
 - Settled Pi processes retire after 15 idle minutes. Session IDs remain valid;
   a later RPC resumes the durable session. Staged files and pending questions
   prevent retirement. Replay retention is bounded by session count and bytes.
 - A conversation keeps its system prompt, selected skills, tool definitions,
-  working directory, and approval settings across turns and daemon restarts.
+  across turns and daemon restarts. Runtime settings outside the prompt may
+  resolve live.
   Native live session IDs remain distinct from stored section IDs.
 - HTTP cookies, pairing, device revocation, JSON-RPC names, error objects,
   owner-scoped events, replay sequence numbers, and replay epochs preserve the

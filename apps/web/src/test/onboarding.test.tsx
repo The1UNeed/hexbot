@@ -205,7 +205,8 @@ describe('onboarding', () => {
     const line = (stage: string, percent?: number) => ({ message: stage, percent, stage })
 
     expect(installPercent([])).toBe(0)
-    expect(installPercent([line('uv', 50)])).toBe(3)
+    expect(installPercent([line('runtime', 50)])).toBe(10)
+    expect(installPercent([line('runtime'), line('uv', 50)])).toBe(25)
     expect(installPercent([line('uv', 50), line('python')])).toBeGreaterThanOrEqual(5)
     expect(installPercent([line('dependencies'), line('error')])).toBeGreaterThanOrEqual(30)
     expect(installPercent([line('done', 100)])).toBe(95)
