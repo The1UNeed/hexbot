@@ -344,10 +344,6 @@ fn cloudflared_asset() -> Result<(&'static str, &'static str)> {
             "cloudflared-linux-amd64",
             "14ecae0dd17ba74f8055e22b8f5b5acc3cbb5a9c3be4e7d6507fe1c4eadaea95",
         )),
-        ("windows", "x86_64") => Ok((
-            "cloudflared-windows-amd64.exe",
-            "82781b3ba8cb66c0f8fbc7d34974bc4bd8eb1fcc76f27badb97eb4cc7060f5ad",
-        )),
         _ => Err(Error::new(5242, "unsupported cloudflared platform")),
     }
 }
@@ -423,10 +419,7 @@ async fn ensure_cloudflared_asset(
 ) -> Result<PathBuf> {
     let directory = home.join("bin");
     fs::create_dir_all(&directory)?;
-    let binary = directory.join(format!(
-        "cloudflared-{CLOUDFLARED_VERSION}{}",
-        if cfg!(windows) { ".exe" } else { "" }
-    ));
+    let binary = directory.join(format!("cloudflared-{CLOUDFLARED_VERSION}"));
     let asset = directory.join(format!("{name}-{CLOUDFLARED_VERSION}.asset"));
     let compressed = name.ends_with(".tgz");
     let bytes = match verified_cloudflared(&asset, digest, compressed) {
@@ -456,10 +449,6 @@ async fn terminate(child: &mut Child) {
         unsafe {
             libc::kill(pid as i32, libc::SIGTERM);
         }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = child.start_kill();
     }
     if tokio::time::timeout(Duration::from_secs(2), child.wait())
         .await
@@ -546,11 +535,17 @@ async fn run_tunnel(
         let mut backoff = 1;
         loop {
             tokio::select! {
-                _=stopped.changed()=> { terminate(&mut child).await; break; }
-                result=child.wait()=> {
-                    let mut data=tunnel_service.data.lock().await;
-                    data.running=false;
-                    data.error=Some(match result { Ok(status)=>format!("cloudflared exited: {status}"), Err(_)=>"cloudflared process failed".into() });
+                _ = stopped.changed() => {
+                    terminate(&mut child).await;
+                    break;
+                }
+                result = child.wait() => {
+                    let mut data = tunnel_service.data.lock().await;
+                    data.running = false;
+                    data.error = Some(match result {
+                        Ok(status) => format!("cloudflared exited: {status}"),
+                        Err(_) => "cloudflared process failed".into(),
+                    });
                 }
             }
             loop {
@@ -592,8 +587,17 @@ async fn run_tunnel(
                 Some(json!({"port":port})),
             );
             tokio::select! {
-                _=heartbeat_stop.changed()=>break,
-                result=request=> { let mut data=heartbeat_service.data.lock().await; match result { Ok(_)=>{data.heartbeat=Some(common::now());data.error=None;},Err(error)=>data.error=Some(error.message) } }
+                _ = heartbeat_stop.changed() => break,
+                result = request => {
+                    let mut data = heartbeat_service.data.lock().await;
+                    match result {
+                        Ok(_) => {
+                            data.heartbeat = Some(common::now());
+                            data.error = None;
+                        }
+                        Err(error) => data.error = Some(error.message),
+                    }
+                }
             }
             tokio::select! { _=heartbeat_stop.changed()=>break, _=tokio::time::sleep(Duration::from_secs(300))=>{} }
         }
@@ -621,9 +625,15 @@ async fn connect_status(home: &Path) -> Result<Value> {
     let config = ConnectConfig::load(home)?;
     let service = service(home).await?;
     let data = service.data.lock().await;
-    Ok(
-        json!({"registered":config.as_ref().is_some_and(|c|!c.daemon_id.is_empty()),"daemon_id":config.as_ref().map(|c|&c.daemon_id),"slug":config.as_ref().map(|c|&c.slug),"tunnel_hostname":config.as_ref().map(|c|&c.tunnel_hostname),"tunnel_running":data.running,"last_heartbeat_at":data.heartbeat,"last_error":data.error}),
-    )
+    Ok(json!({
+        "registered": config.as_ref().is_some_and(|c| !c.daemon_id.is_empty()),
+        "daemon_id": config.as_ref().map(|c| &c.daemon_id),
+        "slug": config.as_ref().map(|c| &c.slug),
+        "tunnel_hostname": config.as_ref().map(|c| &c.tunnel_hostname),
+        "tunnel_running": data.running,
+        "last_heartbeat_at": data.heartbeat,
+        "last_error": data.error
+    }))
 }
 
 #[derive(Default)]
@@ -762,13 +772,34 @@ fn valid_version(version: &str) -> bool {
         .split_once('-')
         .map_or((version, None), |(v, s)| (v, Some(s)));
     let pieces = numbers.split('.').collect::<Vec<_>>();
-    pieces.len() == 3
+    semver::Version::parse(version).is_ok()
+        && pieces.len() == 3
         && pieces
             .iter()
             .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
         && suffix.is_none_or(|s| {
             !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.')
         })
+}
+fn require_newer_native_build(requested: &Value, current: &Value) -> Result<()> {
+    // Match desktop bootstrap: source chronology decides across update tracks.
+    // A runtime predating builtAt has chronology zero.
+    let built_at = |manifest: &Value| manifest["builtAt"].as_u64().unwrap_or(0);
+    if built_at(requested) <= built_at(current) {
+        return Err(Error::new(
+            4212,
+            "The daemon already runs this build or a newer one.",
+        ));
+    }
+    Ok(())
+}
+fn native_manifest(executable: &Path, version: &str) -> Value {
+    executable
+        .parent()
+        .and_then(|directory| fs::read(directory.join("manifest.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .filter(|manifest| manifest["version"] == version)
+        .unwrap_or_else(|| json!({}))
 }
 async fn update_status(home: &Path) -> Result<Value> {
     let service = service(home).await?;
@@ -912,10 +943,11 @@ fn activate_native(native: &Path, version: &str, executable: &Path) -> Result<()
         std::os::unix::fs::symlink(&executable, temporary.path().join("launcher"))?;
         temporary
     };
+    let manifest = native_manifest(&executable, version);
     common::atomic_write(
         &runtime.join("native-current.json"),
         &serde_json::to_vec(
-            &json!({"version":version,"executable":executable,"previous":previous}),
+            &json!({"version":version,"executable":executable,"previous":previous,"files":manifest["files"]}),
         )
         .unwrap(),
     )?;
@@ -952,6 +984,13 @@ mod activation_tests {
             let executable = directory.join("hexbot");
             fs::write(&executable, format!("#!/bin/sh\nprintf '{version}\\n'\n")).unwrap();
             fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+            let files = json!({"node": format!("signed-node-{version}"), "hexbot-core": format!("signed-daemon-{version}")});
+            fs::write(
+                directory.join("manifest.json"),
+                serde_json::to_vec(&json!({"version": version, "builtAt": 300, "files": files}))
+                    .unwrap(),
+            )
+            .unwrap();
             activate_native(&native, version, &executable).unwrap();
             let output = std::process::Command::new(&stable)
                 .arg("version")
@@ -963,6 +1002,7 @@ mod activation_tests {
                 serde_json::from_slice(&fs::read(runtime.join("native-current.json")).unwrap())
                     .unwrap();
             assert_eq!(metadata["version"], version);
+            assert_eq!(metadata["files"], files);
             assert_eq!(stable.canonicalize().unwrap(), executable);
         }
         assert_eq!(fs::read_to_string(outside).unwrap(), "keep me");
@@ -1055,6 +1095,10 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
             "native update manifest does not match this daemon",
         ));
     }
+    let current = std::env::current_exe()
+        .map(|executable| native_manifest(&executable, &crate::version()))
+        .unwrap_or_else(|_| json!({}));
+    require_newer_native_build(&manifest, &current)?;
     let url = common::required(&manifest, "url")?;
     same_origin(&base, url)?;
     let digest = common::required(&manifest, "sha256")?;
@@ -1083,11 +1127,7 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
     let entrypoint = manifest
         .get("entrypoint")
         .and_then(Value::as_str)
-        .unwrap_or(if cfg!(windows) {
-            "hexbot.exe"
-        } else {
-            "hexbot"
-        });
+        .unwrap_or("hexbot");
     common::identifier(entrypoint)?;
     if manifest["format"] == "tar.gz" {
         let mut archive =
@@ -1246,53 +1286,132 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
     ) {
         return None;
     }
-    Some(async {
-        if method=="hexbot.update.status" {common::user(home,caller)?;}else{common::admin(home,caller)?;}
-        match method {
-            "hexbot.connect.status"=>connect_status(home).await,
-            "hexbot.connect.register_start"=>{
-                if ConnectConfig::load(home)?.is_some_and(|c| !c.daemon_id.is_empty()) { return Err(Error::new(4240, "Already connected to Hex Connect. Disconnect first to register again.")); }
-                let base=api_base(home)?;
-                object(Method::POST,&format!("{base}/api/register/start"),None,Some(json!({"daemon_name":p["daemon_name"].as_str().unwrap_or("Hexbot"),"platform":if cfg!(target_os="macos"){"darwin"}else{std::env::consts::OS}}))).await
+    Some(
+        async {
+            if method == "hexbot.update.status" {
+                common::user(home, caller)?;
+            } else {
+                common::admin(home, caller)?;
             }
-            "hexbot.connect.register_poll"=>{
-                register_poll(home, common::required(p,"device_code")?, true).await
-            }
-            "hexbot.connect.disconnect"=>{
-                let service=service(home).await?;let _operation=service.lifecycle.lock().await;stop_workers(&service).await;
-                if let Ok(Some(config))=ConnectConfig::load(home)
-                    && common::identifier(&config.daemon_id).is_ok() {
-                    let _=object(Method::DELETE,&format!("{}/api/daemons/{}",config.api_base,config.daemon_id),Some(&config.daemon_token),None).await;
+            match method {
+                "hexbot.connect.status" => connect_status(home).await,
+                "hexbot.connect.register_start" => {
+                    if ConnectConfig::load(home)?.is_some_and(|c| !c.daemon_id.is_empty()) {
+                        return Err(Error::new(
+                            4240,
+                            "Already connected to Hex Connect. Disconnect first to register again.",
+                        ));
+                    }
+                    let base = api_base(home)?;
+                    object(
+                        Method::POST,
+                        &format!("{base}/api/register/start"),
+                        None,
+                        Some(json!({
+                            "daemon_name": p["daemon_name"].as_str().unwrap_or("Hexbot"),
+                            "platform": if cfg!(target_os = "macos") {
+                                "darwin"
+                            } else {
+                                std::env::consts::OS
+                            }
+                        })),
+                    )
+                    .await
                 }
-                match fs::remove_file(home.join("connect.json")) {Ok(())=>{},Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},Err(e)=>return Err(e.into())}
-                apply_public_url(home,None)?;connect_status(home).await
-            }
-            "hexbot.update.status"=>update_status(home).await,
-            "hexbot.update.request"=>{
-                let version=common::required(p,"version")?;
-                if !valid_version(version) {return Err(Error::new(4200,"invalid parameter: version"));}
-                let method=capability().ok_or_else(||Error::new(4210,"This daemon cannot update itself. Update Hexbot on its machine."))?;
-                if version==crate::version() {return Err(Error::new(4212,format!("The daemon already runs {version}")));}
-                let service=service(home).await?;let mut data=service.data.lock().await;
-                if matches!(data.update["status"].as_str(),Some("requested"|"checking"|"downloading"|"installing"|"restarting")) {return Err(Error::new(4211,"A daemon update is already in progress"));}
-                data.update=json!({"status":"requested","requested":version,"version":null,"message":null,"percent":null,"at":chrono::Utc::now().to_rfc3339()});
-                if method=="desktop" {
-                    match fs::remove_file(home.join("runtime/update-status.json")) {Ok(())=>{},Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},Err(e)=>return Err(e.into())}
-                    println!("HEXBOT_UPDATE_REQUESTED version={version}");let _=std::io::stdout().flush();
-                } else {
-                    let home=home.to_owned();let version=version.to_owned();let worker_service=service.clone();
-                    data.update_task=Some(tokio::spawn(async move {
-                        match native_update(&home,&version,&worker_service).await {
-                            Ok(executable)=> {update_state(&worker_service,"restarting",Some(&version),None).await;worker_service.data.lock().await.restart=Some(executable);}
-                            Err(error)=>update_state(&worker_service,"failed",None,Some(&error.message)).await,
+                "hexbot.connect.register_poll" => {
+                    register_poll(home, common::required(p, "device_code")?, true).await
+                }
+                "hexbot.connect.disconnect" => {
+                    let service = service(home).await?;
+                    let _operation = service.lifecycle.lock().await;
+                    stop_workers(&service).await;
+                    if let Ok(Some(config)) = ConnectConfig::load(home)
+                        && common::identifier(&config.daemon_id).is_ok()
+                    {
+                        let _ = object(
+                            Method::DELETE,
+                            &format!("{}/api/daemons/{}", config.api_base, config.daemon_id),
+                            Some(&config.daemon_token),
+                            None,
+                        )
+                        .await;
+                    }
+                    match fs::remove_file(home.join("connect.json")) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(e.into()),
+                    }
+                    apply_public_url(home, None)?;
+                    connect_status(home).await
+                }
+                "hexbot.update.status" => update_status(home).await,
+                "hexbot.update.request" => {
+                    let version = common::required(p, "version")?;
+                    if !valid_version(version) {
+                        return Err(Error::new(4200, "invalid parameter: version"));
+                    }
+                    let method = capability().ok_or_else(|| {
+                        Error::new(
+                            4210,
+                            "This daemon cannot update itself. Update Hexbot on its machine.",
+                        )
+                    })?;
+                    if version == crate::version() {
+                        return Err(Error::new(
+                            4212,
+                            format!("The daemon already runs {version}"),
+                        ));
+                    }
+                    let service = service(home).await?;
+                    let mut data = service.data.lock().await;
+                    if matches!(data.update["status"].as_str(),
+    Some("requested"|"checking"|"downloading"|"installing"|"restarting")) {
+                        return Err(Error::new(4211, "A daemon update is already in progress"));
+                    }
+                    data.update = json!({"status":"requested","requested":version,"version":null,"message":null,"percent":null,"at":chrono::Utc::now().to_rfc3339()});
+                    if method == "desktop" {
+                        match fs::remove_file(home.join("runtime/update-status.json")) {
+                            Ok(()) => {}
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(e) => return Err(e.into()),
                         }
-                    }));
+                        println!("HEXBOT_UPDATE_REQUESTED version={version}");
+                        let _ = std::io::stdout().flush();
+                    } else {
+                        let home = home.to_owned();
+                        let version = version.to_owned();
+                        let worker_service = service.clone();
+                        data.update_task = Some(tokio::spawn(async move {
+                            match native_update(&home, &version, &worker_service).await {
+                                Ok(executable) => {
+                                    update_state(
+                                        &worker_service,
+                                        "restarting",
+                                        Some(&version),
+                                        None,
+                                    )
+                                    .await;
+                                    worker_service.data.lock().await.restart = Some(executable);
+                                }
+                                Err(error) => {
+                                    update_state(
+                                        &worker_service,
+                                        "failed",
+                                        None,
+                                        Some(&error.message),
+                                    )
+                                    .await
+                                }
+                            }
+                        }));
+                    }
+                    Ok(json!({"accepted":true,"method":method,"version":version}))
                 }
-                Ok(json!({"accepted":true,"method":method,"version":version}))
+                _ => unreachable!(),
             }
-            _=>unreachable!(),
         }
-    }.await)
+        .await,
+    )
 }
 
 #[cfg(all(test, unix))]
@@ -1328,5 +1447,56 @@ mod cloudflared_tests {
                 0o700
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod native_version_tests {
+    use super::*;
+    #[test]
+    fn chronology_comes_from_the_running_bundle_not_the_selected_update() {
+        let home = tempfile::tempdir().unwrap();
+        let executable = home.path().join("hexbot-core");
+        fs::write(
+            home.path().join("manifest.json"),
+            br#"{"version":"0.1.6-nightly.20260930.1","builtAt":200}"#,
+        )
+        .unwrap();
+        let current = native_manifest(&executable, "0.1.6-nightly.20260930.1");
+        assert_eq!(current["builtAt"], 200);
+        assert!(
+            require_newer_native_build(&json!({"version":"0.1.6-alpha.2","builtAt":300}), &current)
+                .is_ok()
+        );
+        assert!(
+            require_newer_native_build(&json!({"version":"0.1.7","builtAt":100}), &current)
+                .is_err()
+        );
+        assert_eq!(native_manifest(&executable, "wrong-version"), json!({}));
+        assert!(!valid_version("0.1.6-alpha.01"));
+    }
+
+    #[test]
+    fn native_updates_use_chronology_in_both_directions_across_tracks() {
+        for (requested, current) in [
+            ("0.1.6-alpha.2", "0.1.6-nightly.20260930.1"),
+            ("0.1.6-nightly.20261001.1", "0.1.6-alpha.2"),
+            ("0.1.6-alpha.3", "0.1.6-alpha.2"),
+            ("0.1.6-nightly.20261001.2", "0.1.6-nightly.20261001.1"),
+        ] {
+            let newer = json!({"version": requested, "builtAt": 300});
+            let older = json!({"version": current, "builtAt": 200});
+            assert!(require_newer_native_build(&newer, &older).is_ok());
+            assert_eq!(
+                require_newer_native_build(&older, &newer).unwrap_err().code,
+                4212
+            );
+            assert_eq!(
+                require_newer_native_build(&newer, &newer).unwrap_err().code,
+                4212
+            );
+        }
+        assert!(require_newer_native_build(&json!({"builtAt": 1}), &json!({})).is_ok());
+        assert!(require_newer_native_build(&json!({}), &json!({"builtAt": 1})).is_err());
     }
 }

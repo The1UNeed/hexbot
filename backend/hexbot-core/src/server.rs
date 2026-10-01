@@ -28,6 +28,8 @@ use std::{
     time::Duration,
 };
 
+pub(crate) const WS_MESSAGE_LIMIT: usize = 64 * 1024 * 1024;
+
 pub struct App {
     pub home: PathBuf,
     pub events: EventHub,
@@ -76,7 +78,6 @@ impl App {
         web_dist: Option<PathBuf>,
     ) -> Result<Arc<Self>> {
         db::migrate(&home)?;
-        db::open(&home)?.execute("UPDATE sections SET last_live_session_id=NULL", [])?;
         let events = EventHub::new();
         let runtime = Runtime::new(home.clone(), events.clone(), pi)?;
         let rooms = Arc::new(RoomEngine::new(
@@ -104,24 +105,52 @@ impl App {
             stop,
         }))
     }
+    /// Serve another address with the same bots: running turns and the event
+    /// log carry over; connections to the old address are closed by `disconnect`.
+    pub fn rebind(&self, address: SocketAddr) -> Result<Arc<Self>> {
+        let (stop, _) = tokio::sync::watch::channel(false);
+        Ok(Arc::new(Self {
+            memory: MemoryStore::new(self.home.clone()),
+            auth_connection: Mutex::new(db::open(&self.home)?),
+            home: self.home.clone(),
+            events: self.events.clone(),
+            runtime: self.runtime.clone(),
+            rooms: self.rooms.clone(),
+            dreaming: self.dreaming.clone(),
+            tickets: Mutex::new(std::mem::take(&mut *self.tickets.lock().unwrap())),
+            logins: Mutex::new(std::mem::take(&mut *self.logins.lock().unwrap())),
+            address,
+            _network_guard: common::DaemonListener::register(address),
+            web_dist: self.web_dist.clone(),
+            stop,
+        }))
+    }
     pub async fn call(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {
         if *self.stop.borrow() {
-            return Err(Error::new(5200, "Daemon is restarting"));
+            return Err(Error::new(5200, "Reconnect to continue"));
         }
         common::user(&self.home, owner)?;
         let mut affected_rooms = Vec::new();
-        // Capture the session before removing the last bot cascades room metadata.
-        let removed_sessions = if method == "hexbot.rooms.remove_member" {
-            let room = common::required(p, "id")?;
-            rooms::get(&self.home, owner, room, false)?;
-            common::rows(
-                &db::open(&self.home)?,
-                "SELECT stored_session_id FROM room_sessions WHERE room_id=? AND bot=?",
-                &[&room, &common::required(p, "bot")?],
-            )?
+        // Everyone in a room hears about its changes, including whoever a
+        // delete or removal takes out of it.
+        let room_wide = matches!(
+            method,
+            "hexbot.rooms.create"
+                | "hexbot.rooms.update"
+                | "hexbot.rooms.add_member"
+                | "hexbot.rooms.remove_member"
+                | "hexbot.rooms.send"
+                | "hexbot.rooms.archive"
+                | "hexbot.rooms.unarchive"
+                | "hexbot.rooms.delete"
+        );
+        let mut audience = if matches!(method, "hexbot.rooms.delete" | "hexbot.rooms.remove_member")
+        {
+            self.audience(p["id"].as_str())
         } else {
             Vec::new()
         };
+        // Deletes are orchestrated here alone: one busy check, one close pass.
         if method == "hexbot.sections.delete" {
             let stored = common::required(p, "id")?;
             catalog::section(&self.home, owner, stored)?;
@@ -130,11 +159,6 @@ impl App {
         if method == "hexbot.bots.delete" {
             let bot = common::required(p, "name")?;
             common::bot_owner(&self.home, owner, bot)?;
-            let sessions = common::rows(
-                &db::open(&self.home)?,
-                "SELECT id,owner_id FROM sections WHERE bot=?1 UNION SELECT s.stored_session_id AS id,r.owner_id FROM room_sessions s JOIN rooms r ON r.id=s.room_id WHERE s.bot=?1",
-                &[&bot],
-            )?;
             let running: bool = db::open(&self.home)?.query_row(
                 "SELECT EXISTS(SELECT 1 FROM room_turns WHERE bot=? AND status='running')",
                 [bot],
@@ -161,11 +185,53 @@ impl App {
                     .stop_internal(room["id"].as_str().unwrap_or(""))
                     .await?;
             }
+            // Sections, room conversations and hidden jobs, each under its owner.
+            let sessions = common::rows(
+                &crate::runtime_store::open(&self.home)?,
+                "SELECT stored_id,owner FROM native_sessions WHERE bot=?",
+                &[&bot],
+            )?;
             for session in sessions {
-                let stored = session["id"].as_str().unwrap_or("");
                 self.runtime
-                    .delete_stored(session["owner_id"].as_str().unwrap_or(""), stored)
+                    .delete_stored(
+                        common::required(&session, "owner")?,
+                        common::required(&session, "stored_id")?,
+                    )
                     .await?;
+            }
+        }
+        let mut removed_sessions = Vec::new();
+        // Removing a bot or the room closes sessions first, so ownership is
+        // checked once here and the rooms helpers below do not repeat it.
+        // Removing a person closes nothing and stays in the rooms module.
+        let closes = method == "hexbot.rooms.delete"
+            || (method == "hexbot.rooms.remove_member" && p.get("user").is_none());
+        if closes {
+            let room = common::required(p, "id")?;
+            let row = rooms::owned(&self.home, owner, room)?;
+            let bot = p["bot"].as_str();
+            let active = row["members"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|m| m["member_kind"] == "bot" && m["left_at"].is_null())
+                .map(|m| m["member_id"].as_str())
+                .collect::<Vec<_>>();
+            // Removing the last bot deletes the room.
+            let deleting = method == "hexbot.rooms.delete" || active == [bot];
+            removed_sessions = common::rows(
+                &db::open(&self.home)?,
+                "SELECT stored_session_id FROM room_sessions WHERE room_id=?1 AND (?2 OR bot=?3)",
+                &[&room, &deleting, &bot],
+            )?;
+            if deleting {
+                // Close before metadata cascades remove the only stored-id mapping.
+                self.rooms.stop_internal(room).await?;
+                for session in std::mem::take(&mut removed_sessions) {
+                    self.runtime
+                        .close_stored(owner, common::required(&session, "stored_session_id")?)
+                        .await?;
+                }
             }
         }
         let result = match method {
@@ -207,16 +273,44 @@ impl App {
                 common::required(p, "session_id")?,
                 p["last_seen"].as_u64().unwrap_or(0),
             )),
-            "hexbot.info" => Ok(
-                json!({"version":crate::version(),"hermes_version":serde_json::from_str::<Value>(include_str!("../../pi-runtime/package.json")).ok().and_then(|p|p["dependencies"]["@earendil-works/pi-coding-agent"].as_str().map(str::to_owned)),"daemon_name":hostname(),"install_id":self.install_id()?,"auth_required":!self.address.ip().is_loopback(),"pairing_supported":true,"update_capability":std::env::var("HEXBOT_SUPERVISOR").ok().filter(|s|matches!(s.as_str(),"desktop"|"service")),"lan_enabled":settings::get(&self.home)?["lan_enabled"],"addresses":self.addresses(),"platform":std::env::consts::OS,"home":self.home}),
-            ),
+            "hexbot.info" => Ok(json!({
+                "version": crate::version(),
+                "hermes_version": serde_json::from_str::<Value>(include_str!("../../pi-runtime/package.json"))
+                    .ok()
+                    .and_then(|p| {
+                        p["dependencies"]["@earendil-works/pi-coding-agent"]
+                            .as_str()
+                            .map(str::to_owned)
+                    }),
+                "daemon_name": auth::daemon_name(),
+                "install_id": self.install_id()?,
+                // Always true; kept for older clients that still read it.
+                "auth_required": true,
+                "pairing_supported": true,
+                "update_capability": std::env::var("HEXBOT_SUPERVISOR")
+                    .ok()
+                    .filter(|s| matches!(s.as_str(), "desktop" | "service")),
+                "lan_enabled": settings::get(&self.home)?["lan_enabled"],
+                "addresses": self.addresses(),
+                "platform": std::env::consts::OS,
+                "sandbox": crate::credentials::sandbox(),
+                "home": if common::admin(&self.home, owner).is_ok() {
+                    json!(self.home)
+                } else {
+                    json!("")
+                }
+            })),
             "hexbot.rooms.stop" => {
                 Ok(json!({"stopped":self.rooms.stop(owner,common::required(p,"id")?).await?}))
             }
+            "hexbot.rooms.delete" => rooms::delete(&self.home, common::required(p, "id")?),
+            "hexbot.rooms.remove_member" if closes => rooms::remove_bot(
+                &self.home,
+                owner,
+                common::required(p, "id")?,
+                common::required(p, "bot")?,
+            ),
             _ => {
-                if method == "hexbot.rooms.delete" || method == "hexbot.rooms.archive" {
-                    self.rooms.stop(owner, common::required(p, "id")?).await?;
-                }
                 if let Some(result) = self.dreaming.call(owner, method, p).await {
                     result
                 } else if let Some(result) = self.runtime.call(owner, method, p).await {
@@ -243,18 +337,49 @@ impl App {
             }
         }?;
         let mut result = result;
-        if method == "hexbot.rooms.remove_member" {
-            let room = common::required(p, "id")?;
-            self.rooms.stop_internal(room).await?;
+        // Opening a room restores the owner's cards or a member's status.
+        if method == "hexbot.rooms.get" {
+            let room_owner = common::required(&result["room"], "owner_id")?;
+            for turn in result["room"]["turns"].as_array().into_iter().flatten() {
+                if let Some(live) = turn["live_session_id"].as_str() {
+                    self.runtime.replay_pending(room_owner, live, owner);
+                }
+            }
+        }
+        if method == "hexbot.rooms.archive" && result["room"]["archived_at"].is_number() {
+            self.rooms.stop(owner, common::required(p, "id")?).await?;
+        }
+        if matches!(
+            method,
+            "hexbot.rooms.add_member" | "hexbot.rooms.remove_member"
+        ) && !closes
+        {
+            self.rooms.share(common::required(p, "id")?)?;
+        }
+        if !removed_sessions.is_empty() {
+            // Only the removed bot stops; the rest of the room keeps going.
             for session in removed_sessions {
                 self.runtime
-                    .close_stored(owner, session["stored_session_id"].as_str().unwrap_or(""))
+                    .close_stored(owner, common::required(&session, "stored_session_id")?)
                     .await?;
             }
             db::open(&self.home)?.execute(
                 "UPDATE room_sessions SET live_session_id=NULL WHERE room_id=? AND bot=?",
-                rusqlite::params![room, common::required(p, "bot")?],
+                rusqlite::params![common::required(p, "id")?, common::required(p, "bot")?],
             )?;
+        }
+        if method == "hexbot.bots.delete" {
+            crate::connectors::close_bot(&self.home, common::required(p, "name")?).await;
+        }
+        let after = if room_wide {
+            self.audience(result["room"]["id"].as_str().or(p["id"].as_str()))
+        } else {
+            Vec::new()
+        };
+        for user in std::iter::once(owner.to_owned()).chain(after) {
+            if !audience.contains(&user) {
+                audience.push(user);
+            }
         }
         if method == "hexbot.bots.update" && p["shareable"] == false {
             let bot = common::required(p, "name")?;
@@ -300,6 +425,8 @@ impl App {
         if method == "hexbot.network.get" || method == "hexbot.network.set" {
             result["port"] = json!(self.address.port());
             if method == "hexbot.network.set" {
+                // Kept for older apps: the listener moves and clients reconnect,
+                // but the daemon and its running turns carry on.
                 result["restarting"] = json!(true);
             } else {
                 result["bind_host"] = json!(self.address.ip().to_string());
@@ -307,12 +434,14 @@ impl App {
         }
         if method == "hexbot.rooms.send" {
             let id = common::required(p, "id")?;
-            self.events.emit(
-                owner,
-                None,
-                "hexbot.rooms.event",
-                json!({"room_id":id,"event":result["event"]}),
-            );
+            for user in &audience {
+                self.events.emit(
+                    user,
+                    None,
+                    "hexbot.rooms.event",
+                    json!({"room_id":id,"event":result["event"]}),
+                );
+            }
             self.rooms.notify(owner, id).await?;
         }
         if matches!(
@@ -321,12 +450,14 @@ impl App {
         ) && result["event"].is_object()
         {
             let event = result.as_object_mut().unwrap().remove("event").unwrap();
-            self.events.emit(
-                owner,
-                None,
-                "hexbot.rooms.event",
-                json!({"room_id":p["id"],"event":event}),
-            );
+            for user in &audience {
+                self.events.emit(
+                    user,
+                    None,
+                    "hexbot.rooms.event",
+                    json!({"room_id":p["id"],"event":event}),
+                );
+            }
         }
         if method == "hexbot.bots.list" {
             if let Some(bots) = result["bots"].as_array_mut() {
@@ -337,7 +468,7 @@ impl App {
         } else if method == "hexbot.bots.get" {
             self.bot_status(owner, &mut result["bot"]);
         }
-        self.changed(owner, method, p, &result);
+        self.changed(&audience, method, p, &result);
         for room in affected_rooms {
             self.events.emit(
                 room["owner_id"].as_str().unwrap_or(""),
@@ -348,8 +479,12 @@ impl App {
         }
         Ok(result)
     }
-    pub async fn shutdown(&self) {
+    /// Close this App's connections and refuse new calls; bots keep running.
+    pub fn disconnect(&self) {
         self.stop.send_replace(true);
+    }
+    pub async fn shutdown(&self) {
+        self.disconnect();
         self.rooms.shutdown().await;
         self.dreaming.shutdown().await;
         self.runtime.shutdown().await;
@@ -376,15 +511,34 @@ impl App {
         }
     }
     fn install_id(&self) -> Result<String> {
-        let path = self.home.join("install-id");
-        if let Ok(value) = std::fs::read_to_string(&path) {
-            return Ok(value.trim().to_owned());
+        let _guard = self
+            .auth_connection
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let path = self.home.join("install_id");
+        for candidate in [&path, &self.home.join("install-id")] {
+            match std::fs::read_to_string(candidate) {
+                Ok(value) if !value.trim().is_empty() => {
+                    let id = value.trim().to_owned();
+                    if candidate != &path {
+                        common::atomic_write(&path, id.as_bytes())?;
+                    }
+                    return Ok(id);
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
         }
-        let id = common::id();
+        let id = uuid::Uuid::new_v4().simple().to_string();
         common::atomic_write(&path, id.as_bytes())?;
         Ok(id)
     }
-    fn changed(&self, owner: &str, method: &str, p: &Value, result: &Value) {
+    fn audience(&self, room: Option<&str>) -> Vec<String> {
+        room.and_then(|room| rooms::audience(&self.home, room).ok())
+            .unwrap_or_default()
+    }
+    fn changed(&self, audience: &[String], method: &str, p: &Value, result: &Value) {
         let group = method.split('.').nth(1).unwrap_or("");
         let action = method.rsplit('.').next().unwrap_or("");
         if !matches!(
@@ -444,15 +598,22 @@ impl App {
         } else {
             return;
         };
-        self.events.emit(owner, None, &event, payload.clone());
-        if group == "connectors" {
-            self.events
-                .emit(owner, None, "hexbot.bots.changed", payload);
+        // Whoever a removal takes out of the room drops it from their list.
+        let removed = (method == "hexbot.rooms.remove_member")
+            .then(|| p["user"].as_str())
+            .flatten();
+        for owner in audience {
+            let mut payload = payload.clone();
+            if removed == Some(owner.as_str()) {
+                payload["removed"] = json!(true);
+            }
+            self.events.emit(owner, None, &event, payload.clone());
+            if group == "connectors" {
+                self.events
+                    .emit(owner, None, "hexbot.bots.changed", payload.clone());
+            }
         }
     }
-}
-fn hostname() -> String {
-    auth::daemon_name()
 }
 
 fn safe_next(value: &str) -> String {
@@ -471,6 +632,34 @@ fn registered(app: &App) -> Result<services::ConnectConfig> {
         .filter(|c| !c.daemon_id.is_empty())
         .ok_or_else(|| Error::new(4231, "Hex Connect is not set up on this daemon"))
 }
+/// Only the App on this machine asks: cloudflared and local proxies also
+/// connect from loopback, but they forward another Host.
+async fn daemon_identity(
+    State(app): State<Arc<App>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+) -> Response {
+    let local_host = headers
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| url::Url::parse(&format!("http://{h}")).ok())
+        .is_some_and(|u| match u.host() {
+            Some(url::Host::Domain(name)) => name == "localhost",
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        });
+    if !local_host
+        || !peer.is_some_and(|Extension(ConnectInfo(address))| address.ip().is_loopback())
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match app.install_id() {
+        Ok(id) => Json(json!({"install_id": id, "pid": std::process::id()})).into_response(),
+        Err(error) => http_error(error),
+    }
+}
+
 async fn auth_providers(State(app): State<Arc<App>>) -> Json<Value> {
     let mut providers =
         vec![json!({"name":"hexbot","display_name":"Hexbot pairing","supports_password":true})];
@@ -480,10 +669,16 @@ async fn auth_providers(State(app): State<Arc<App>>) -> Json<Value> {
     }
     Json(json!({"providers":providers}))
 }
-fn pkce_cookie(app: &App, headers: &HeaderMap, value: &str, max_age: u32) -> HeaderValue {
+fn pkce_cookie(
+    app: &App,
+    headers: &HeaderMap,
+    peer: Option<SocketAddr>,
+    value: &str,
+    max_age: u32,
+) -> HeaderValue {
     HeaderValue::from_str(&format!(
         "hermes_session_pkce={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{}",
-        if secure_request(app, headers) {
+        if secure_request(app, headers, peer) {
             "; Secure"
         } else {
             ""
@@ -497,6 +692,7 @@ async fn browser_login(
     headers: HeaderMap,
     Query(p): Query<HashMap<String, String>>,
 ) -> Response {
+    let address = peer.as_ref().map(|Extension(ConnectInfo(p))| *p);
     let result = (|| {
         if p.get("provider").map(String::as_str) != Some("connect") {
             return Err(Error::new(4231, "invalid provider"));
@@ -546,7 +742,7 @@ async fn browser_login(
         let mut response = axum::response::Redirect::to(target.as_str()).into_response();
         response.headers_mut().insert(
             "set-cookie",
-            pkce_cookie(&app, &headers, &format!("{state}.{verifier}"), 600),
+            pkce_cookie(&app, &headers, address, &format!("{state}.{verifier}"), 600),
         );
         response
             .headers_mut()
@@ -571,9 +767,11 @@ fn take_browser_login(app: &App, headers: &HeaderMap, state: &str) -> Result<Bro
 }
 async fn browser_callback(
     State(app): State<Arc<App>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     Query(p): Query<HashMap<String, String>>,
 ) -> Response {
+    let address = peer.map(|Extension(ConnectInfo(p))| p);
     let result = async {
         let login = take_browser_login(
             &app,
@@ -598,7 +796,12 @@ async fn browser_callback(
         let mut response = axum::response::Redirect::to(&login.next).into_response();
         response.headers_mut().insert(
             "set-cookie",
-            session_cookie(&app, &headers, common::required(&device, "device_token")?),
+            session_cookie(
+                &app,
+                &headers,
+                address,
+                common::required(&device, "device_token")?,
+            ),
         );
         Ok(response)
     }
@@ -606,7 +809,7 @@ async fn browser_callback(
     let mut response = result.unwrap_or_else(http_error);
     response
         .headers_mut()
-        .append("set-cookie", pkce_cookie(&app, &headers, "", 0));
+        .append("set-cookie", pkce_cookie(&app, &headers, address, "", 0));
     response
         .headers_mut()
         .insert("cache-control", HeaderValue::from_static("no-store"));
@@ -622,9 +825,70 @@ fn escape_html(value: &str) -> String {
 }
 async fn login_page(
     State(app): State<Arc<App>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     Query(p): Query<HashMap<String, String>>,
 ) -> Response {
     let next = safe_next(p.get("next").map(String::as_str).unwrap_or("/"));
+    // A one-time sign-in link (`hexbot serve` prints one) carries an ordinary pairing
+    // code. Redeeming it here sets the same cookie the form would; the page is the
+    // only place a credential ever goes, and only after the code is spent.
+    let mut notice = "";
+    // A browser that is already signed in keeps its session: a link cannot swap it
+    // for a device someone else minted, and the code stays unused.
+    let signed_in = || {
+        cookie(&app, &headers)
+            .and_then(|token| auth::verify_token(&app.home, &token).ok().flatten())
+            .is_some()
+    };
+    // Only a navigation the user started spends a code. A terminal link sends no
+    // Sec-Fetch-Site or `none`; a page from another site cannot sign this browser
+    // in by linking here.
+    let own_navigation = || {
+        headers
+            .get("sec-fetch-site")
+            .is_none_or(|site| matches!(site.to_str(), Ok("none") | Ok("same-origin")))
+    };
+    if p.contains_key("code") && signed_in() {
+        let mut response = axum::response::Redirect::to(&next).into_response();
+        response
+            .headers_mut()
+            .insert("cache-control", HeaderValue::from_static("no-store"));
+        return response;
+    }
+    if p.contains_key("code") && !own_navigation() {
+        notice = "<p class=\"form-error\" role=\"alert\">Sign-in links work only when opened directly. Enter the pairing code instead.</p>";
+    } else if let Some(code) = p.get("code") {
+        let address = peer.as_ref().map(|Extension(ConnectInfo(p))| *p);
+        let local = address.is_some_and(|a| a.ip().is_loopback())
+            && !headers.contains_key("cf-connecting-ip");
+        let client = client_address(&app, peer, &headers);
+        let name = if local {
+            "Browser on this computer"
+        } else {
+            "Browser"
+        };
+        match auth::redeem_code_from(&app.home, code, name, "browser", &client) {
+            Ok(device) => {
+                let mut response = axum::response::Redirect::to(&next).into_response();
+                if let Some(token) = device["device_token"].as_str() {
+                    response
+                        .headers_mut()
+                        .insert("set-cookie", session_cookie(&app, &headers, address, token));
+                }
+                response
+                    .headers_mut()
+                    .insert("cache-control", HeaderValue::from_static("no-store"));
+                return response;
+            }
+            Err(error) if error.code == 4232 => {
+                notice = "<p class=\"form-error\" role=\"alert\">Too many attempts. Wait a minute and try again.</p>";
+            }
+            Err(_) => {
+                notice = "<p class=\"form-error\" role=\"alert\">That sign-in link has been used or has expired. Enter a new pairing code.</p>";
+            }
+        }
+    }
     let query = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("provider", "connect")
         .append_pair("next", &next)
@@ -639,6 +903,7 @@ async fn login_page(
     };
     let mut response = Html(
         LOGIN_PAGE
+            .replace("<!--NOTICE-->", notice)
             .replace("<!--CONNECT-->", &connect)
             .replace("<!--NEXT-->", &escape_html(&next)),
     )
@@ -660,16 +925,22 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
             (key == name).then(|| value.to_owned())
         })
 }
-fn cookie(headers: &HeaderMap) -> Option<String> {
+/// Browsers scope cookies by host, not port, so the plain cookie carries the daemon's
+/// port: two daemons on one machine (pnpm dev worktrees) must not sign each other out.
+fn cookie_name(app: &App) -> String {
+    format!("hermes_session_at_{}", app.address.port())
+}
+fn cookie(app: &App, headers: &HeaderMap) -> Option<String> {
     [
-        "__Host-hermes_session_at",
-        "__Secure-hermes_session_at",
-        "hermes_session_at",
+        "__Host-hermes_session_at".to_owned(),
+        "__Secure-hermes_session_at".to_owned(),
+        cookie_name(app),
+        "hermes_session_at".to_owned(),
     ]
     .iter()
     .find_map(|name| cookie_value(headers, name))
 }
-fn secure_request(app: &App, headers: &HeaderMap) -> bool {
+fn secure_request(app: &App, headers: &HeaderMap, peer: Option<SocketAddr>) -> bool {
     let public_https = common::read_config(&app.home)
         .ok()
         .and_then(|c| c["dashboard"]["public_url"].as_str().map(str::to_owned))
@@ -680,23 +951,25 @@ fn secure_request(app: &App, headers: &HeaderMap) -> bool {
                     == Some(&u[url::Position::BeforeHost..url::Position::AfterPort])
         });
     public_https
-        || headers
-            .get("x-forwarded-proto")
-            .is_some_and(|v| v == "https")
-        || services::ConnectConfig::load(&app.home)
-            .ok()
-            .flatten()
-            .is_some_and(|c| {
-                headers.get("host").and_then(|v| v.to_str().ok())
-                    == Some(c.tunnel_hostname.as_str())
-            })
+        || (peer.is_some_and(|p| p.ip().is_loopback())
+            && services::ConnectConfig::load(&app.home)
+                .ok()
+                .flatten()
+                .is_some_and(|c| {
+                    !c.tunnel_hostname.is_empty() && tunnel_host(headers, &c.tunnel_hostname)
+                }))
 }
-fn session_cookie(app: &App, headers: &HeaderMap, token: &str) -> HeaderValue {
-    let secure = secure_request(app, headers);
+fn session_cookie(
+    app: &App,
+    headers: &HeaderMap,
+    peer: Option<SocketAddr>,
+    token: &str,
+) -> HeaderValue {
+    let secure = secure_request(app, headers, peer);
     let name = if secure {
-        "__Host-hermes_session_at"
+        "__Host-hermes_session_at".to_owned()
     } else {
-        "hermes_session_at"
+        cookie_name(app)
     };
     HeaderValue::from_str(&format!(
         "{name}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=315360000{}",
@@ -704,13 +977,13 @@ fn session_cookie(app: &App, headers: &HeaderMap, token: &str) -> HeaderValue {
     ))
     .expect("device cookie")
 }
-fn bearer(headers: &HeaderMap) -> Option<String> {
+fn bearer(app: &App, headers: &HeaderMap) -> Option<String> {
     headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::to_owned)
-        .or_else(|| cookie(headers))
+        .or_else(|| cookie(app, headers))
 }
 fn valid_origin(app: &App, headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get("origin") else {
@@ -804,6 +1077,7 @@ async fn login(
     headers: HeaderMap,
     Json(p): Json<Value>,
 ) -> Response {
+    let address = peer.as_ref().map(|Extension(ConnectInfo(p))| *p);
     let client = client_address(&app, peer, &headers);
     let result = async {
         if p["provider"].as_str().unwrap_or("hexbot") != "hexbot" {
@@ -827,12 +1101,11 @@ async fn login(
     .await;
     match result {
         Ok(device) => {
-            let mut response =
-                Json(json!({"ok":true,"daemon_name":device["daemon_name"],"next":safe_next(p["next"].as_str().unwrap_or("/"))})).into_response();
+            let mut response = Json(json!({"ok":true,"daemon_name":device["daemon_name"],"next":safe_next(p["next"].as_str().unwrap_or("/"))})).into_response();
             if let Some(token) = device["device_token"].as_str() {
                 response
                     .headers_mut()
-                    .insert("set-cookie", session_cookie(&app, &headers, token));
+                    .insert("set-cookie", session_cookie(&app, &headers, address, token));
             }
             response
         }
@@ -902,8 +1175,13 @@ async fn pair(
         Err(e) => http_error(e),
     }
 }
-async fn session(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
-    let token = bearer(&headers).unwrap_or_default();
+async fn session(
+    State(app): State<Arc<App>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+) -> Response {
+    let address = peer.map(|Extension(ConnectInfo(p))| p);
+    let token = bearer(&app, &headers).unwrap_or_default();
     if auth::verify_token(&app.home, &token)
         .ok()
         .flatten()
@@ -912,13 +1190,14 @@ async fn session(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let mut response = Json(json!({"ok":true})).into_response();
-    response
-        .headers_mut()
-        .insert("set-cookie", session_cookie(&app, &headers, &token));
+    response.headers_mut().insert(
+        "set-cookie",
+        session_cookie(&app, &headers, address, &token),
+    );
     response
 }
 async fn ticket(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
-    let token = bearer(&headers).unwrap_or_default();
+    let token = bearer(&app, &headers).unwrap_or_default();
     if auth::verify_token(&app.home, &token)
         .ok()
         .flatten()
@@ -936,56 +1215,34 @@ async fn ticket(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     Json(json!({"ticket":ticket})).into_response()
 }
 async fn index(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
-    let host = headers
-        .get("host")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let local_host = url::Url::parse(&format!("http://{host}"))
-        .ok()
-        .is_some_and(|u| matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")));
-    let remote_configured = app.home.join("connect.json").exists()
-        || common::read_config(&app.home)
-            .map(|c| {
-                c["dashboard"]["public_url"]
-                    .as_str()
-                    .is_some_and(|s| !s.is_empty())
-            })
-            .unwrap_or(true)
-        || services::ConnectConfig::load(&app.home)
-            .map(|c| c.is_some_and(|c| !c.tunnel_hostname.is_empty()))
-            .unwrap_or(true);
-    let auth_required = remote_configured
-        || !app.address.ip().is_loopback()
-        || !local_host
-        || headers.contains_key("cf-connecting-ip")
-        || headers.contains_key("forwarded")
-        || headers.contains_key("x-forwarded-for")
-        || headers.contains_key("x-forwarded-host")
-        || headers.contains_key("x-forwarded-proto");
-    if auth_required
-        && headers
-            .get("accept")
-            .and_then(|h| h.to_str().ok())
-            .is_some_and(|h| h.contains("text/html"))
-        && cookie(&headers)
+    // The page never carries a credential, whatever the bind address: any local process
+    // can fetch it. A browser signs in at /login with a pairing code or the one-time
+    // link `hexbot serve` prints; the app reads its private token file.
+    if headers
+        .get("accept")
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|h| h.contains("text/html"))
+        && cookie(&app, &headers)
             .and_then(|token| auth::verify_token(&app.home, &token).ok().flatten())
             .is_none()
     {
         return axum::response::Redirect::to("/login").into_response();
     }
-    let token = if !auth_required {
-        auth::local_token(&app.home).ok()
-    } else {
-        None
-    };
-    let mut body=app.web_dist.as_ref().and_then(|p|std::fs::read_to_string(p.join("index.html")).ok()).unwrap_or_else(||"<!doctype html><html><head></head><body>Hexbot daemon is running. Build apps/web to serve the browser app.</body></html>".into());
-    let script = format!(
-        "<script>window.__HERMES_AUTH_REQUIRED__={auth_required};{}</script>",
-        token
-            .map(|t| format!("window.__HERMES_SESSION_TOKEN__={};", json!(t)))
-            .unwrap_or_default()
+    let mut body = app
+        .web_dist
+        .as_ref()
+        .and_then(|p| std::fs::read_to_string(p.join("index.html")).ok())
+        .unwrap_or_else(|| {
+            "<!doctype html><html><head></head><body>Hexbot daemon is running. Build apps/web to serve the browser app.</body></html>"
+                .into()
+        });
+    // Kept for older clients: the web bundle reads it only as a "served by
+    // a daemon" marker, and the daemon always requires sign-in.
+    body = body.replacen(
+        "</head>",
+        "<script>window.__HERMES_AUTH_REQUIRED__=true;</script></head>",
+        1,
     );
-    body = body.replacen("</head>", &format!("{script}</head>"), 1);
     let mut response = Html(body).into_response();
     response
         .headers_mut()
@@ -1018,7 +1275,7 @@ async fn upgrade(
             .filter(|(_, expiry)| *expiry > common::now())
             .map(|(token, _)| token)
     } else {
-        p.get("token").cloned().or_else(|| bearer(&headers))
+        p.get("token").cloned().or_else(|| bearer(&app, &headers))
     };
     let Some(token) = token else {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -1028,8 +1285,8 @@ async fn upgrade(
     };
     let owner = device["owner_id"].as_str().unwrap_or("").to_owned();
     let id = device["id"].as_str().unwrap_or("").to_owned();
-    ws.max_message_size(64 * 1024 * 1024)
-        .max_frame_size(64 * 1024 * 1024)
+    ws.max_message_size(WS_MESSAGE_LIMIT)
+        .max_frame_size(WS_MESSAGE_LIMIT)
         .on_upgrade(move |socket| connection(app, socket, owner, id, token))
 }
 async fn connection(
@@ -1054,38 +1311,118 @@ async fn connection(
     }
     let mut verify = tokio::time::interval(Duration::from_secs(1));
     let mut tasks = tokio::task::JoinSet::new();
-    let bytes = Arc::new(tokio::sync::Semaphore::new(64 * 1024 * 1024));
+    let bytes = Arc::new(tokio::sync::Semaphore::new(WS_MESSAGE_LIMIT));
     'connection: loop {
         tokio::select! {
-            _=stop.changed()=>{let _=socket.send(Message::Close(Some(CloseFrame{code:1012,reason:"Daemon restarting".into()}))).await;break;}
-            _=verify.tick()=>{
-                if auth::verify_token_with(&app.auth_connection.lock().unwrap_or_else(|e|e.into_inner()),&token).ok().flatten().is_none(){let _=socket.send(Message::Close(Some(CloseFrame{code:4401,reason:"Device revoked".into()}))).await;break;}
+            _ = stop.changed() => {
+                let _ = socket
+                    .send(Message::Close(Some(CloseFrame {
+                        code: 1012,
+                        reason: "Reconnect to continue".into(),
+                    })))
+                    .await;
+                break;
             }
-            result=events.recv()=>match result {
-                Ok(event) if event.owner==owner=>if socket.send(Message::Text(format!("{}\n",event.frame).into())).await.is_err(){break;},
-                Ok(_)=>{},
-                Err(_)=>{let _=socket.send(Message::Close(Some(CloseFrame{code:1013,reason:"Reconnect to recover missed events".into()}))).await;break;}
-            },
-            Some(result)=tasks.join_next(),if !tasks.is_empty()=>{
-                if let Ok(Some(response))=result && socket.send(Message::Text(format!("{response}\n").into())).await.is_err(){break;}
+            _ = verify.tick() => {
+                if auth::verify_token_with(
+                    &app.auth_connection
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()),
+                    &token,
+                )
+                .ok()
+                .flatten()
+                .is_none()
+                {
+                    let _ = socket
+                        .send(Message::Close(Some(CloseFrame {
+                            code: 4401,
+                            reason: "Device revoked".into(),
+                        })))
+                        .await;
+                    break;
+                }
             }
-            incoming=socket.recv()=>match incoming {
-                Some(Ok(Message::Text(text)))=>{
-                    if tasks.len()>=64 {let _=socket.send(Message::Close(Some(CloseFrame{code:1013,reason:"Too many requests".into()}))).await;break;}
-                    for line in text.split('\n').filter(|s|!s.trim().is_empty()) {
-                        let Ok(permit) = bytes.clone().try_acquire_many_owned(line.len() as u32) else {
-                            let _=socket.send(Message::Close(Some(CloseFrame{code:1013,reason:"Too many request bytes".into()}))).await; break 'connection;
-                        };
-                        let request=serde_json::from_str::<Value>(line);
-                        if tasks.len()>=64 {let _=socket.send(Message::Close(Some(CloseFrame{code:1013,reason:"Too many requests".into()}))).await;break 'connection;}
-                        let app=app.clone();let owner=owner.clone();let device_id=device_id.clone();let token=token.clone();
-                        tasks.spawn(async move { let _permit = permit; handle_request(app,owner,device_id,token,request).await });
+            result = events.recv() => match result {
+                Ok(event) => {
+                    if let Some(frame) = event.frame_for(&owner)
+                        && socket
+                            .send(Message::Text(format!("{frame}\n").into()))
+                            .await
+                            .is_err()
+                    {
+                        break;
                     }
                 }
-                Some(Ok(Message::Ping(data)))=>{if socket.send(Message::Pong(data)).await.is_err(){break;}},
-                Some(Ok(Message::Close(_)))|None|Some(Err(_))=>break,
-                _=>{}
+                Err(_) => {
+                    let _ = socket
+                        .send(Message::Close(Some(CloseFrame {
+                            code: 1013,
+                            reason: "Reconnect to recover missed events".into(),
+                        })))
+                        .await;
+                    break;
+                }
+            },
+            Some(result) = tasks.join_next(), if !tasks.is_empty() => {
+                if let Ok(Some(response)) = result
+                    && socket
+                        .send(Message::Text(format!("{response}\n").into()))
+                        .await
+                        .is_err()
+                {
+                    break;
+                }
             }
+            incoming = socket.recv() => match incoming {
+                Some(Ok(Message::Text(text))) => {
+                    if tasks.len() >= 64 {
+                        let _ = socket
+                            .send(Message::Close(Some(CloseFrame {
+                                code: 1013,
+                                reason: "Too many requests".into(),
+                            })))
+                            .await;
+                        break;
+                    }
+                    for line in text.split('\n').filter(|s| !s.trim().is_empty()) {
+                        let Ok(permit) = bytes.clone().try_acquire_many_owned(line.len() as u32) else {
+                            let _ = socket
+                                .send(Message::Close(Some(CloseFrame {
+                                    code: 1013,
+                                    reason: "Too many request bytes".into(),
+                                })))
+                                .await;
+                            break 'connection;
+                        };
+                        let request = serde_json::from_str::<Value>(line);
+                        if tasks.len() >= 64 {
+                            let _ = socket
+                                .send(Message::Close(Some(CloseFrame {
+                                    code: 1013,
+                                    reason: "Too many requests".into(),
+                                })))
+                                .await;
+                            break 'connection;
+                        }
+                        let app = app.clone();
+                        let owner = owner.clone();
+                        let device_id = device_id.clone();
+                        let token = token.clone();
+                        tasks.spawn(async move {
+                            let _permit = permit;
+                            handle_request(app, owner, device_id, token, request).await
+                        });
+                    }
+                }
+                Some(Ok(Message::Ping(data))) => {
+                    if socket.send(Message::Pong(data)).await.is_err() {
+                        break;
+                    }
+                }
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                _ => {}
+            },
         }
     }
     // Runtime RPCs own their command tasks. One-shot requests still cancel
@@ -1145,6 +1482,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/", get(index))
         .route("/login", get(login_page))
         .route("/api/auth/providers", get(auth_providers))
+        .route("/api/daemon/identity", get(daemon_identity))
         .route("/auth/login", get(browser_login))
         .route("/auth/callback", get(browser_callback))
         .route("/api/ws", get(upgrade))
@@ -1167,6 +1505,7 @@ pub fn router(app: Arc<App>) -> Router {
 }
 
 // Same self-contained sign-in page as hexbot/login_page.py.
+#[rustfmt::skip]
 const LOGIN_PAGE: &str = r###"<!doctype html>
 <html lang="en">
 <head>
@@ -1211,7 +1550,7 @@ const LOGIN_PAGE: &str = r###"<!doctype html>
 <main>
   <div class="brand"><svg viewBox="0 0 100 100" aria-hidden="true"><path d="M44 6a12 12 0 0 1 12 0l30 17a12 12 0 0 1 6 10v34a12 12 0 0 1-6 10L56 94a12 12 0 0 1-12 0L14 77a12 12 0 0 1-6-10V33a12 12 0 0 1 6-10Z" fill="currentColor"/><rect x="31" y="35" width="13" height="30" rx="6.5" fill="var(--bg)"/><rect x="56" y="35" width="13" height="30" rx="6.5" fill="var(--bg)"/></svg>Hexbot</div>
   <div class="card">
-<h1>Sign in</h1><p>This daemon asks who you are before it lets a new device in.</p><div class="stack"><!--CONNECT-->
+<h1>Sign in</h1><p>This daemon asks who you are before it lets a new device in.</p><div class="stack"><!--NOTICE--><!--CONNECT-->
 <form class="provider-form" data-provider="hexbot"><input type="hidden" name="next" value="<!--NEXT-->">
 <label>Device name<input name="username" autocomplete="username" placeholder="My laptop" required></label>
 <label>Pairing code<input class="code" name="password" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX" required></label>
@@ -1256,8 +1595,168 @@ mod auth_tests {
             None,
         )
         .unwrap();
-        common::atomic_write(&home.path().join("connect.json"), json!({"api_base":"https://connect.hexbot.app","daemon_id":"daemon","owner_id":"alice","issuer":"https://issuer.test","keys":[{}],"tunnel_hostname":"owl.hexbot.app"}).to_string().as_bytes()).unwrap();
+        common::atomic_write(
+            &home.path().join("connect.json"),
+            json!({
+                "api_base": "https://connect.hexbot.app",
+                "daemon_id": "daemon",
+                "owner_id": "alice",
+                "issuer": "https://issuer.test",
+                "keys": [{}],
+                "tunnel_hostname": "owl.hexbot.app"
+            })
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
         (home, app)
+    }
+    #[tokio::test]
+    async fn daemon_identity_is_tied_to_the_home_and_local_process() {
+        let (_home, app) = connect_fixture();
+        let host = |value: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert("host", value.parse().unwrap());
+            headers
+        };
+        let local = || Some(Extension(ConnectInfo("127.0.0.1:1234".parse().unwrap())));
+        let response = daemon_identity(State(app.clone()), local(), host("127.0.0.1:9119")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let identity: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(identity["install_id"], app.install_id().unwrap());
+        assert_eq!(identity["pid"], std::process::id());
+        for peer in [
+            None,
+            Some(Extension(ConnectInfo("192.168.1.2:1234".parse().unwrap()))),
+        ] {
+            assert_eq!(
+                daemon_identity(State(app.clone()), peer, host("127.0.0.1:9119"))
+                    .await
+                    .status(),
+                StatusCode::FORBIDDEN
+            );
+        }
+        // cloudflared connects from loopback but forwards the tunnel hostname.
+        for value in ["owl.hexbot.app", "owl.hexbot.app:443", "example.com", ""] {
+            let headers = if value.is_empty() {
+                HeaderMap::new()
+            } else {
+                host(value)
+            };
+            assert_eq!(
+                daemon_identity(State(app.clone()), local(), headers)
+                    .await
+                    .status(),
+                StatusCode::FORBIDDEN
+            );
+        }
+        for value in ["localhost:9119", "[::1]:9119"] {
+            assert_eq!(
+                daemon_identity(State(app.clone()), local(), host(value))
+                    .await
+                    .status(),
+                StatusCode::OK
+            );
+        }
+    }
+
+    #[test]
+    fn cookies_use_public_https_from_lan_and_trust_connect_only_on_loopback() {
+        let (home, app) = connect_fixture();
+        let mut headers = HeaderMap::new();
+        let local = Some("127.0.0.1:4000".parse().unwrap());
+        let remote = Some("192.168.1.2:4000".parse().unwrap());
+        headers.insert("host", "localhost:9119".parse().unwrap());
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+        for peer in [None, local, remote] {
+            assert!(!secure_request(&app, &headers, peer));
+            let cookie = session_cookie(&app, &headers, peer, "fixture");
+            assert!(
+                cookie
+                    .to_str()
+                    .unwrap()
+                    .starts_with(&format!("{}=", cookie_name(&app)))
+            );
+            assert!(!cookie.to_str().unwrap().contains("; Secure"));
+        }
+        headers.insert("host", "OWL.HEXBOT.APP:443".parse().unwrap());
+        assert!(secure_request(&app, &headers, local));
+        assert!(!secure_request(&app, &headers, remote));
+        assert!(
+            session_cookie(&app, &headers, local, "fixture")
+                .to_str()
+                .unwrap()
+                .starts_with("__Host-hermes_session_at=")
+        );
+        common::write_config(
+            home.path(),
+            &json!({"dashboard":{"public_url":"https://public.test:8443"}}),
+        )
+        .unwrap();
+        headers.insert("host", "public.test:8443".parse().unwrap());
+        assert!(secure_request(&app, &headers, local));
+        for peer in [None, local, remote] {
+            assert!(secure_request(&app, &headers, peer));
+            let cookie = session_cookie(&app, &headers, peer, "fixture");
+            assert!(
+                cookie
+                    .to_str()
+                    .unwrap()
+                    .starts_with("__Host-hermes_session_at=")
+            );
+            assert!(cookie.to_str().unwrap().contains("; Secure"));
+        }
+        headers.insert("host", "unconfigured.test".parse().unwrap());
+        assert!(!secure_request(&app, &headers, local));
+    }
+    #[test]
+    fn install_identity_preserves_legacy_and_early_native_files() {
+        for legacy in [true, false] {
+            let home = tempfile::tempdir().unwrap();
+            let app = App::new(
+                home.path().into(),
+                "127.0.0.1:9119".parse().unwrap(),
+                "unused".into(),
+                None,
+            )
+            .unwrap();
+            let name = if legacy { "install_id" } else { "install-id" };
+            std::fs::write(home.path().join(name), "0123456789abcdef0123456789abcdef\n").unwrap();
+            if legacy {
+                std::fs::write(home.path().join("install-id"), "different-native-id").unwrap();
+            }
+            assert_eq!(
+                app.install_id().unwrap(),
+                "0123456789abcdef0123456789abcdef"
+            );
+            assert_eq!(
+                std::fs::read_to_string(home.path().join("install_id"))
+                    .unwrap()
+                    .trim(),
+                app.install_id().unwrap()
+            );
+        }
+        let home = tempfile::tempdir().unwrap();
+        let app = App::new(
+            home.path().into(),
+            "127.0.0.1:9119".parse().unwrap(),
+            "unused".into(),
+            None,
+        )
+        .unwrap();
+        let tasks: Vec<_> = (0..8)
+            .map(|_| {
+                let app = app.clone();
+                std::thread::spawn(move || app.install_id().unwrap())
+            })
+            .collect();
+        let ids: std::collections::HashSet<_> =
+            tasks.into_iter().map(|t| t.join().unwrap()).collect();
+        assert_eq!(ids.len(), 1);
+        assert!(home.path().join("install_id").is_file());
     }
     #[tokio::test]
     async fn lan_signin_redirects_before_setting_cookie_and_tunnel_logins_are_bounded() {
@@ -1392,13 +1891,20 @@ mod auth_tests {
         .unwrap();
         let mut headers = HeaderMap::new();
         for name in [
+            "hermes_session_at_9119",
             "hermes_session_at",
             "__Secure-hermes_session_at",
             "__Host-hermes_session_at",
         ] {
             headers.insert("cookie", format!("{name}=credential").parse().unwrap());
-            assert_eq!(cookie(&headers).as_deref(), Some("credential"));
+            assert_eq!(cookie(&app, &headers).as_deref(), Some("credential"));
         }
+        // Another daemon's cookie on the same host is not this daemon's session.
+        headers.insert(
+            "cookie",
+            "hermes_session_at_9120=credential".parse().unwrap(),
+        );
+        assert_eq!(cookie(&app, &headers), None);
         headers.insert("host", "127.0.0.1:9119".parse().unwrap());
         for origin in [
             "http://localhost:1111",

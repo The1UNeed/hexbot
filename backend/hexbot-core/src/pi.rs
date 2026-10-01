@@ -41,8 +41,6 @@ pub enum PiError {
     Cancelled,
     #[error("The bot stopped")]
     Shutdown,
-    #[error("The bot stopped because its event queue was full")]
-    EventOverflow,
     #[error("Too many pending bot requests")]
     Capacity,
     #[error("The bot could not stop cleanly")]
@@ -60,6 +58,8 @@ pub struct PiOptions {
     pub agent_dir: PathBuf,
     /// Maximum bytes in one JSONL record, excluding LF (including optional CR).
     pub max_record_bytes: usize,
+    /// Events buffered ahead of the consumer. When full, the supervisor stops
+    /// reading Pi's stdout until the consumer catches up; nothing is dropped.
     pub event_capacity: usize,
     pub request_capacity: usize,
 }
@@ -200,33 +200,7 @@ impl Drop for CancelRequest {
     }
 }
 
-pub fn inherited_environment(name: &str) -> bool {
-    matches!(
-        name.to_ascii_uppercase().as_str(),
-        "PATH"
-            | "HOME"
-            | "USER"
-            | "LOGNAME"
-            | "SHELL"
-            | "TMPDIR"
-            | "TMP"
-            | "TEMP"
-            | "LANG"
-            | "LANGUAGE"
-            | "TZ"
-            | "SYSTEMROOT"
-            | "WINDIR"
-            | "PATHEXT"
-            | "COMSPEC"
-            | "SSH_AUTH_SOCK"
-            | "HTTP_PROXY"
-            | "HTTPS_PROXY"
-            | "NO_PROXY"
-            | "NODE_EXTRA_CA_CERTS"
-            | "SSL_CERT_FILE"
-            | "SSL_CERT_DIR"
-    ) || name.starts_with("LC_")
-}
+use crate::credentials::inherited_environment;
 pub fn provider_environment(name: &str, provider: &str) -> bool {
     inherited_environment(name)
         || match provider {
@@ -304,16 +278,6 @@ impl PiProcess {
         deadline: Duration,
     ) -> Result<PiResponse, PiError> {
         self.request_with_policy(&mut command, Some(deadline), false)
-            .await
-    }
-
-    /// Retain the payload so rejected prompts can restore staged attachments.
-    pub async fn request_preserving(
-        &self,
-        command: &mut Value,
-        deadline: Duration,
-    ) -> Result<PiResponse, PiError> {
-        self.request_with_policy(command, Some(deadline), false)
             .await
     }
 
@@ -479,13 +443,13 @@ impl PiProcess {
         }
     }
 
-    /// Request SIGTERM cleanup on Unix, then force termination after one second.
-    /// Success means the owned child was reaped. Forced reaping also has a one
-    /// second deadline; OS cleanup failures are reported, never awaited forever.
     #[cfg(test)]
     pub(crate) fn fail_cleanup(&self) {
         self.inner.cleanup_failure.store(true, Ordering::Release);
     }
+    /// Request SIGTERM cleanup on Unix, then force termination after one second.
+    /// Success means the owned child was reaped. Forced reaping also has a one
+    /// second deadline; OS cleanup failures are reported, never awaited forever.
     pub async fn shutdown(&self) -> Result<(), PiError> {
         self.inner.stop.send_replace(Some(PiError::Shutdown));
         let result = terminal(&mut self.inner.done.clone()).await;
@@ -564,8 +528,20 @@ async fn supervise(
                 for byte in &chunk[..count] {
                     if *byte == b'\n' {
                         if buffer.last() == Some(&b'\r') { buffer.pop(); }
-                        if let Err(error) = record(&buffer, &mut pending, &events) { break 'running error; }
+                        let event = match record(&buffer, &mut pending) {
+                            Ok(event) => event,
+                            Err(error) => break 'running error,
+                        };
                         buffer.clear();
+                        // A slow consumer pauses stdout reads, so pipe backpressure
+                        // reaches Pi instead of a dropped event ending the section.
+                        if let Some(event) = event {
+                            tokio::select! {
+                                biased;
+                                _ = stop.changed() => break 'running stop.borrow().clone().unwrap_or(PiError::Shutdown),
+                                sent = events.send(event) => if sent.is_err() { break 'running PiError::Cancelled; },
+                            }
+                        }
                     } else {
                         if buffer.len() >= options.max_record_bytes { break 'running PiError::Protocol("record exceeds byte limit"); }
                         buffer.push(*byte);
@@ -632,8 +608,6 @@ fn signal_termination(child: &mut tokio::process::Child) -> bool {
         // The child is still owned and unreaped, so this PID cannot be reused.
         return unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0;
     }
-    #[cfg(not(unix))]
-    let _ = child;
     false
 }
 
@@ -657,11 +631,8 @@ async fn terminate(child: &mut tokio::process::Child, graceful: bool) -> Result<
     }
 }
 
-fn record(
-    bytes: &[u8],
-    pending: &mut HashMap<String, Pending>,
-    events: &mpsc::Sender<Value>,
-) -> Result<(), PiError> {
+/// Resolve a response to its request, or return the event for the consumer.
+fn record(bytes: &[u8], pending: &mut HashMap<String, Pending>) -> Result<Option<Value>, PiError> {
     let value: Value =
         serde_json::from_slice(bytes).map_err(|_| PiError::Protocol("invalid JSON"))?;
     let kind = value
@@ -684,31 +655,18 @@ fn record(
         if let Some(request) = pending.remove(&response.id) {
             let _ = request.reply.send(Ok(response));
         }
-        Ok(())
+        Ok(None)
     } else {
-        events.try_send(value).map_err(|error| match error {
-            mpsc::error::TrySendError::Full(_) => PiError::EventOverflow,
-            mpsc::error::TrySendError::Closed(_) => PiError::Cancelled,
-        })
+        Ok(Some(value))
     }
 }
 
 #[cfg(test)]
 mod environment_policy_tests {
     use super::*;
+    use crate::credentials::inherited_environment;
     #[test]
-    fn provider_and_network_environment_is_selected() {
-        for name in [
-            "HTTP_PROXY",
-            "https_proxy",
-            "No_Proxy",
-            "NODE_EXTRA_CA_CERTS",
-            "SSL_CERT_FILE",
-            "SSL_CERT_DIR",
-            "SSH_AUTH_SOCK",
-        ] {
-            assert!(inherited_environment(name));
-        }
+    fn cloud_credentials_pass_only_to_their_provider() {
         for name in [
             "AWS_PROFILE",
             "AWS_REGION",
@@ -731,6 +689,5 @@ mod environment_policy_tests {
             assert!(!provider_environment(name, "amazon-bedrock"));
             assert!(!inherited_environment(name));
         }
-        assert!(!inherited_environment("NODE_OPTIONS"));
     }
 }

@@ -136,7 +136,9 @@ fn history_summary(home: &Path, row: &Value) -> Result<(String, i64)> {
     let summary = runtime_store::summary(home, id)?;
     let native: bool = runtime_store::open(home)?.query_row(
         "SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1) OR EXISTS(SELECT 1 FROM native_pi_journal WHERE session_id=?1)",
-        [id], |r|r.get(0))?;
+        [id],
+        |r| r.get(0),
+    )?;
     if native || summary["message_count"].as_i64().unwrap_or(0) > 0 {
         return Ok((
             summary["preview"].as_str().unwrap_or("").to_owned(),
@@ -168,9 +170,19 @@ fn history_summary(home: &Path, row: &Value) -> Result<(String, i64)> {
 }
 fn shape_section(home: &Path, row: Value) -> Result<Value> {
     let (preview, count) = history_summary(home, &row)?;
-    Ok(
-        json!({"id":row["id"],"bot":row["bot"],"title":row["title"],"title_by":row["title_by"],"created_at":row["created_at"],"updated_at":row["updated_at"],"archived_at":row["archived_at"],"done_at":row["done_at"],"live_session_id":row["last_live_session_id"],"preview":preview,"message_count":count}),
-    )
+    Ok(json!({
+        "id": row["id"],
+        "bot": row["bot"],
+        "title": row["title"],
+        "title_by": row["title_by"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "archived_at": row["archived_at"],
+        "done_at": row["done_at"],
+        "live_session_id": row["last_live_session_id"],
+        "preview": preview,
+        "message_count": count
+    }))
 }
 pub fn section(home: &Path, caller: &str, id: &str) -> Result<Value> {
     shape_section(home, section_row(home, caller, id)?)
@@ -183,7 +195,14 @@ fn list_sections(home: &Path, caller: &str, p: &Value) -> Result<Vec<Value>> {
     }
     let bot = p["bot"].as_str();
     let archived = p["include_archived"].as_bool().unwrap_or(false);
-    rows(&db::open(home)?,"SELECT * FROM sections WHERE (? OR owner_id=?) AND (? IS NULL OR bot=?) AND (? OR archived_at IS NULL) ORDER BY updated_at DESC,id ASC",&[&all,&caller,&bot,&bot,&archived])?.into_iter().map(|r|shape_section(home,r)).collect()
+    rows(
+        &db::open(home)?,
+        "SELECT * FROM sections WHERE (? OR owner_id=?) AND (? IS NULL OR bot=?) AND (? OR archived_at IS NULL) ORDER BY updated_at DESC,id ASC",
+        &[&all, &caller, &bot, &bot, &archived],
+    )?
+    .into_iter()
+    .map(|r| shape_section(home, r))
+    .collect()
 }
 pub fn create_section(home: &Path, caller: &str, name: &str, title: &str) -> Result<Value> {
     bot_owner(home, caller, name)?;
@@ -321,9 +340,41 @@ fn shape_bot(home: &Path, caller: &str, row: Value, all: bool) -> Result<Value> 
         };
         detail = json!({"text":i["text"],"section_id":i["section_id"],"room_id":i["room_id"],"session_id":i["session_id"],"since":i["created_at"],"action":action});
     } else {
-        let wait=rows(&db::open(home)?,"SELECT e.room_id,e.created_at,r.name FROM room_events e JOIN rooms r ON r.id=e.room_id WHERE e.kind='waiting.human' AND e.actor_id=? AND e.seq=(SELECT MAX(seq) FROM room_events WHERE room_id=e.room_id) AND r.archived_at IS NULL ORDER BY e.created_at DESC LIMIT 1",&[&name])?.into_iter().next();
-        if let Some(r)=wait {status="needs_you";detail=json!({"text":format!("Waiting on you in “{}”.",r["name"].as_str().unwrap_or("")),"section_id":null,"room_id":r["room_id"],"session_id":null,"since":r["created_at"],"action":null});}
-        else if let Some(r)=rows(&db::open(home)?,"SELECT t.room_id,t.started_at,r.name FROM room_turns t JOIN rooms r ON r.id=t.room_id WHERE t.bot=? AND t.status='running' ORDER BY t.started_at DESC LIMIT 1",&[&name])?.into_iter().next() {status="working";detail=json!({"text":format!("Working in “{}”.",r["name"].as_str().unwrap_or("")),"section_id":null,"room_id":r["room_id"],"session_id":null,"since":r["started_at"],"action":null});}
+        let wait = rows(
+            &db::open(home)?,
+            "SELECT e.room_id,e.created_at,r.name FROM room_events e JOIN rooms r ON r.id=e.room_id WHERE e.kind='waiting.human' AND e.actor_id=? AND e.seq=(SELECT MAX(seq) FROM room_events WHERE room_id=e.room_id) AND r.archived_at IS NULL ORDER BY e.created_at DESC LIMIT 1",
+            &[&name],
+        )?
+        .into_iter()
+        .next();
+        if let Some(r) = wait {
+            status = "needs_you";
+            detail = json!({
+                "text": format!("Waiting on you in “{}”.", r["name"].as_str().unwrap_or("")),
+                "section_id": null,
+                "room_id": r["room_id"],
+                "session_id": null,
+                "since": r["created_at"],
+                "action": null
+            });
+        } else if let Some(r) = rows(
+            &db::open(home)?,
+            "SELECT t.room_id,t.started_at,r.name FROM room_turns t JOIN rooms r ON r.id=t.room_id WHERE t.bot=? AND t.status='running' ORDER BY t.started_at DESC LIMIT 1",
+            &[&name],
+        )?
+        .into_iter()
+        .next()
+        {
+            status = "working";
+            detail = json!({
+                "text": format!("Working in “{}”.", r["name"].as_str().unwrap_or("")),
+                "section_id": null,
+                "room_id": r["room_id"],
+                "session_id": null,
+                "since": r["started_at"],
+                "action": null
+            });
+        }
     }
     let enabled = crate::connectors::toolsets(home, name)?;
     let tools = json!(
@@ -333,14 +384,44 @@ fn shape_bot(home: &Path, caller: &str, row: Value, all: bool) -> Result<Value> 
             .map(|(k, _)| *k)
             .collect::<Vec<_>>()
     );
-    Ok(
-        json!({"name":name,"display_name":row["display_name"].as_str().filter(|s|!s.is_empty()).map(str::to_owned).unwrap_or_else(||display_name(name)),"title":row["title"].as_str().unwrap_or(""),"description":row["description"].as_str().unwrap_or(""),"persona":read_text(home,&profile(home,name)?.join("SOUL.md"))?,"skills":serde_json::from_str::<Value>(row["skills_json"].as_str().unwrap_or("[]")).unwrap_or(json!([])),"tools":tools,"dream_enabled":row["dream_enabled"].as_i64().unwrap_or(1)!=0,"shareable":row["shareable"].as_i64().unwrap_or(0)!=0,"notify":row["notify"].as_i64().unwrap_or(1)!=0,"approval_mode":row["approval_mode"].as_str().unwrap_or("inherit"),"workdir":row["workdir"],"status":status,"status_detail":detail,"provider":cfg["model"]["provider"],"model":cfg["model"].as_str().map(Value::from).unwrap_or_else(||cfg["model"]["default"].clone()),"avatar":avatar(home,name)?,"created_at":row["created_at"],"updated_at":row["updated_at"],"last_activity_at":row["last_activity_at"],"owner_id":row["owner_id"],"sections_total":sections.len(),"sections_recent":recent}),
-    )
+    Ok(json!({
+        "name": name,
+        "display_name": row["display_name"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| display_name(name)),
+        "title": row["title"].as_str().unwrap_or(""),
+        "description": row["description"].as_str().unwrap_or(""),
+        "persona": read_text(home, &profile(home, name)?.join("SOUL.md"))?,
+        "skills": serde_json::from_str::<Value>(row["skills_json"].as_str().unwrap_or("[]"))
+            .unwrap_or(json!([])),
+        "tools": tools,
+        "dream_enabled": row["dream_enabled"].as_i64().unwrap_or(1) != 0,
+        "shareable": row["shareable"].as_i64().unwrap_or(0) != 0,
+        "notify": row["notify"].as_i64().unwrap_or(1) != 0,
+        "approval_mode": row["approval_mode"].as_str().unwrap_or("inherit"),
+        "workdir": row["workdir"],
+        "status": status,
+        "status_detail": detail,
+        "provider": cfg["model"]["provider"],
+        "model": cfg["model"]
+            .as_str()
+            .map(Value::from)
+            .unwrap_or_else(|| cfg["model"]["default"].clone()),
+        "avatar": avatar(home, name)?,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "last_activity_at": row["last_activity_at"],
+        "owner_id": row["owner_id"],
+        "sections_total": sections.len(),
+        "sections_recent": recent
+    }))
 }
 pub fn bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
     shape_bot(home, caller, bot_row(home, caller, name, false)?, false)
 }
-fn validate_patch(p: &Value) -> Result<()> {
+fn validate_patch(home: &Path, p: &Value) -> Result<()> {
     let object = p
         .as_object()
         .ok_or_else(|| Error::new(4202, "bot fields must be an object"))?;
@@ -365,6 +446,11 @@ fn validate_patch(p: &Value) -> Result<()> {
                 if !value.is_null() && !value.as_str().is_some_and(|s| !s.trim().is_empty()) =>
             {
                 return Err(Error::new(4202, "workdir must be a path or null"));
+            }
+            "workdir" => {
+                if let Some(dir) = value.as_str() {
+                    check_workdir(home, dir.trim())?;
+                }
             }
             "skills" | "tools" => {
                 let items = value
@@ -500,15 +586,33 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
                 .as_array()
                 .cloned()
                 .unwrap_or_default();
-            let skills=installed_skills(home,name)?.into_iter().map(|s|json!({"enabled":!disabled.iter().any(|d|d.as_str().is_some_and(|d|d.eq_ignore_ascii_case(&s))),"name":s})).collect::<Vec<_>>();
+            let skills = installed_skills(home, name)?
+                .into_iter()
+                .map(|s| json!({"enabled":!disabled.iter().any(|d|d.as_str().is_some_and(|d|d.eq_ignore_ascii_case(&s))),"name":s}))
+                .collect::<Vec<_>>();
             let enabled = crate::connectors::toolsets(home, name)?;
             let mut names = enabled.clone();
             names.extend(TOOLS.iter().map(|(_, t)| t.to_string()));
             names.sort();
             names.dedup();
-            Ok(
-                json!({"name":name,"description":row["description"].as_str().unwrap_or(""),"soul":read_text(home,&profile(home,name)?.join("SOUL.md"))?,"model":public_model(&cfg["model"]),"skills":skills,"toolsets":names.iter().map(|s|json!({"name":s,"enabled":enabled.contains(s),"description":"","tool_count":0})).collect::<Vec<_>>()}),
-            )
+            Ok(json!({
+                "name": name,
+                "description": row["description"].as_str().unwrap_or(""),
+                "soul": read_text(home, &profile(home, name)?.join("SOUL.md"))?,
+                "model": public_model(&cfg["model"]),
+                "skills": skills,
+                "toolsets": names
+                    .iter()
+                    .map(|s| {
+                        json!({
+                        "name":s,
+                        "enabled":enabled.contains(s),
+                        "description":"",
+                        "tool_count":0}
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            }))
         }
         "profiles.get_asset" => {
             if p["asset"].as_str().is_some_and(|s| s != "avatar") {
@@ -544,7 +648,7 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
             if let Some(value) = p.get("soul") {
                 patch["persona"] = value.clone();
             }
-            validate_patch(&patch)?;
+            validate_patch(home, &patch)?;
             configure(home, name, &patch)?;
             let mut cfg = config(home, name)?;
             for (key, section, leaf) in [
@@ -571,9 +675,15 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
                     params![description, now(), name],
                 )?;
             }
-            Ok(
-                json!({"name":name,"applied":{"model":p.get("model").is_some()||p.get("provider").is_some(),"soul":p.get("soul").is_some(),"skills":p.get("disabled_skills").is_some(),"tools":p.get("enabled_toolsets").is_some()}}),
-            )
+            Ok(json!({
+                "name": name,
+                "applied": {
+                    "model": p.get("model").is_some() || p.get("provider").is_some(),
+                    "soul": p.get("soul").is_some(),
+                    "skills": p.get("disabled_skills").is_some(),
+                    "tools": p.get("enabled_toolsets").is_some()
+                }
+            }))
         }
         _ => Err(Error::new(-32601, "method not found")),
     }
@@ -693,7 +803,7 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
 }
 fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     user(home, caller)?;
-    validate_patch(p)?;
+    validate_patch(home, p)?;
     let name = required(p, "name")?;
     if name.len() > 64
         || !name
@@ -754,7 +864,20 @@ fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
         let now = now();
         let mut conn = db::open(home)?;
         let tx = conn.transaction()?;
-        tx.execute("INSERT INTO bots(name,display_name,title,description,owner_id,created_at,updated_at,last_activity_at,tools_json,skills_json) VALUES (?,?,?,?,?,?,?,?,?,?)",params![name,display,p["title"].as_str().unwrap_or(""),p["description"].as_str().unwrap_or(""),caller,now,now,now,p.get("tools").unwrap_or(&json!([])).to_string(),p.get("skills").unwrap_or(&json!([])).to_string()])?;
+        tx.execute(
+            "INSERT INTO bots(name,display_name,title,description,owner_id,created_at,updated_at,last_activity_at) VALUES (?,?,?,?,?,?,?,?)",
+            params![
+                name,
+                display,
+                p["title"].as_str().unwrap_or(""),
+                p["description"].as_str().unwrap_or(""),
+                caller,
+                now,
+                now,
+                now
+            ],
+        )?;
+        write_bot_columns(&tx, name, &patch)?;
         let sid = id();
         tx.execute("INSERT INTO sections(id,bot,title,owner_id,created_at,updated_at) VALUES (?,?,'General',?,?,?)",params![sid,name,caller,now,now])?;
         tx.commit()?;
@@ -770,13 +893,8 @@ fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     crate::settings::mirror(home, &profile(home, name)?)?;
     Ok(json!({"bot":bot(home,caller,name)?,"section":section(home,caller,&sid)?}))
 }
-fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
-    let name = required(p, "name")?;
-    bot_row(home, caller, name, false)?;
-    validate_patch(p)?;
-    configure(home, name, p)?;
-    let mut conn = db::open(home)?;
-    let tx = conn.transaction()?;
+/// Create and update store every accepted column the same way.
+fn write_bot_columns(tx: &rusqlite::Transaction, name: &str, p: &Value) -> Result<()> {
     for key in [
         "display_name",
         "title",
@@ -820,6 +938,16 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
             )?;
         }
     }
+    Ok(())
+}
+fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
+    let name = required(p, "name")?;
+    bot_row(home, caller, name, false)?;
+    validate_patch(home, p)?;
+    configure(home, name, p)?;
+    let mut conn = db::open(home)?;
+    let tx = conn.transaction()?;
+    write_bot_columns(&tx, name, p)?;
     tx.execute(
         "UPDATE bots SET updated_at=? WHERE name=?",
         params![now(), name],
@@ -890,7 +1018,14 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             if all {
                 admin(home, caller)?;
             }
-            let bots=rows(&db::open(home)?,"SELECT * FROM bots WHERE (? OR owner_id=?) ORDER BY last_activity_at DESC,name ASC",&[&all,&caller])?.into_iter().map(|r|shape_bot(home,caller,r,all)).collect::<Result<Vec<_>>>()?;
+            let bots = rows(
+                &db::open(home)?,
+                "SELECT * FROM bots WHERE (? OR owner_id=?) ORDER BY last_activity_at DESC,name ASC",
+                &[&all, &caller],
+            )?
+            .into_iter()
+            .map(|r| shape_bot(home, caller, r, all))
+            .collect::<Result<Vec<_>>>()?;
             Ok(json!({"bots":bots}))
         }
         "hexbot.bots.clear_status" => {
@@ -906,25 +1041,9 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             let name = required(p, "name")?;
             bot_owner(home, caller, name)?;
             let dir = profile(home, name)?;
-            let conn = db::open(home)?;
-            let busy: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM room_turns WHERE bot=? AND status='running')",
-                [name],
-                |r| r.get(0),
-            )?;
-            if busy {
-                return Err(Error::new(4211, "bot has a running room turn"));
-            }
-            drop(conn);
+            // The daemon checks for running turns and removes conversations first.
             for s in list_sections(home, caller, &json!({"bot":name,"include_archived":true}))? {
                 delete_section(home, caller, s["id"].as_str().unwrap_or(""), true)?;
-            }
-            for session in rows(
-                &runtime_store::open(home)?,
-                "SELECT stored_id FROM native_sessions WHERE bot=?",
-                &[&name],
-            )? {
-                runtime_store::delete(home, required(&session, "stored_id")?)?;
             }
             let mut conn = db::open(home)?;
             let tx = conn.transaction()?;
@@ -948,6 +1067,10 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                 fs::remove_dir_all(&dir)?;
             }
             tx.commit()?;
+            // Jobs are keyed by bot name, so a later bot with this name must not inherit them.
+            let jobs = runtime_store::open(home)?;
+            jobs.execute("DELETE FROM native_jobs WHERE bot=?", [name])?;
+            jobs.execute("DELETE FROM native_job_imports WHERE bot=?", [name])?;
             Ok(json!({"deleted":true}))
         }
         "hexbot.sections.list" => Ok(json!({"sections":list_sections(home,caller,p)?})),
@@ -1056,8 +1179,9 @@ pub(crate) fn adopt_section_title(home: &Path, stored: &str, text: &str) -> Resu
         return Ok(false);
     }
     Ok(db::open(home)?.execute(
-        "UPDATE sections SET title=?,title_by='bot' WHERE id=? AND title_by IS NULL AND title_dirty=0 AND title IN ('New section','General')",
-        params![title, stored])? > 0)
+        "UPDATE sections SET title=?,title_by='bot' WHERE id=? AND title_by IS NULL AND title_dirty=0 AND title='New section'",
+        params![title, stored],
+    )? > 0)
 }
 
 fn clean_title(text: &str) -> String {
@@ -1152,12 +1276,32 @@ mod parity_tests {
     fn home() -> tempfile::TempDir {
         let home = tempfile::tempdir().unwrap();
         db::migrate(home.path()).unwrap();
-        db::open(home.path()).unwrap().execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);INSERT INTO bots(name,owner_id) VALUES('owl','alice');INSERT INTO sections(id,bot,owner_id,title) VALUES('first','owl','alice','New section'),('dreams','owl','alice','Dreams');").unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);INSERT INTO bots(name,owner_id) VALUES('owl','alice');INSERT INTO sections(id,bot,owner_id,title) VALUES('first','owl','alice','New section'),('dreams','owl','alice','Dreams'),('general','owl','alice','General');",
+            )
+            .unwrap();
         home
     }
     #[test]
     fn model_and_new_bot_config_do_not_copy_secrets() {
-        let config = json!({"model":{"provider":"custom","default":"chat","api_key":"SECRET","base_url":"https://secret"},"custom_providers":[{"api_key":"SECRET"}],"mcp_servers":{"local":{"command":"tool","env":{"KEY":"SECRET"},"headers":{"Authorization":"SECRET"}}}});
+        let config = json!({
+            "model": {
+                "provider": "custom",
+                "default": "chat",
+                "api_key": "SECRET",
+                "base_url": "https://secret"
+            },
+            "custom_providers": [{ "api_key": "SECRET" }],
+            "mcp_servers": {
+                "local": {
+                    "command": "tool",
+                    "env": { "KEY": "SECRET" },
+                    "headers": { "Authorization": "SECRET" }
+                }
+            }
+        });
         assert_eq!(
             public_model(&config["model"]),
             json!({"provider":"custom","default":"chat"})
@@ -1179,6 +1323,9 @@ mod parity_tests {
             "bot"
         );
         assert!(!adopt_section_title(home.path(), "first", "Another message").unwrap());
+        // The General section created with each bot keeps its name.
+        assert!(!adopt_section_title(home.path(), "general", "Fix my arm64 build").unwrap());
+        assert!(!adopt_section_title(home.path(), "dreams", "Rename the dreams").unwrap());
         let renamed = rename_by_bot(home.path(), "alice", "first", "\"Garden plans!\"").unwrap();
         assert_eq!(renamed["title"], "Garden plans");
         assert_eq!(renamed["title_by"], "bot");
@@ -1219,7 +1366,12 @@ mod parity_tests {
     fn bots_cannot_rename_rooms_or_dreams() {
         let home = home();
         assert!(rename_by_bot(home.path(), "alice", "dreams", "Other").is_err());
-        db::open(home.path()).unwrap().execute_batch("INSERT INTO rooms(id,name,owner_id) VALUES('room','Room','alice');INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room','owl','first');").unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO rooms(id,name,owner_id) VALUES('room','Room','alice');INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room','owl','first');",
+            )
+            .unwrap();
         assert!(rename_by_bot(home.path(), "alice", "first", "Other").is_err());
     }
     #[test]

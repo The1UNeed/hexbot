@@ -165,20 +165,46 @@ async fn record_and_event_bounds_fail_explicitly() {
             .unwrap_err(),
         PiError::Protocol("record exceeds byte limit")
     );
+}
 
-    let mut fixture =
-        Fixture::new("function receive(request) { send({type:'one'}); send({type:'two'}); }");
+#[tokio::test]
+async fn slow_consumer_pauses_reads_and_loses_no_events() {
+    // Pi writes 500 events and then the reply, all before the consumer reads
+    // anything. A one-slot queue must hold Pi back rather than end the session.
+    let mut fixture = Fixture::new(
+        "function receive(request) { for (let i = 0; i < 500; i++) send({type:'tick', i}); reply(request, {}); }",
+    );
     fixture.options.event_capacity = 1;
     let (process, mut events) = fixture.spawn();
-    assert_eq!(
-        process
-            .request(json!({"type":"get_state"}), DEADLINE)
-            .await
-            .unwrap_err(),
-        PiError::EventOverflow
+    let caller = process.clone();
+    let request =
+        tokio::spawn(async move { caller.request(json!({"type":"get_state"}), DEADLINE).await });
+    assert_eq!(events.recv().await.unwrap()["i"], 0);
+    // The reply follows the events on stdout, so it cannot arrive until the
+    // consumer has drained the queue: the transport is waiting on us.
+    assert!(!request.is_finished());
+    for expected in 1..500 {
+        assert_eq!(events.recv().await.unwrap()["i"], expected);
+    }
+    assert!(request.await.unwrap().unwrap().success);
+    process.shutdown().await.unwrap();
+    assert_eq!(events.recv().await.unwrap_err(), PiError::Shutdown);
+}
+
+#[tokio::test]
+async fn shutdown_interrupts_a_supervisor_waiting_on_the_consumer() {
+    let mut fixture = Fixture::new(
+        "function receive(request) { for (let i = 0; i < 50; i++) send({type:'tick', i}); reply(request, {}); }",
     );
-    assert_eq!(events.recv().await.unwrap()["type"], "one");
-    assert_eq!(events.recv().await.unwrap_err(), PiError::EventOverflow);
+    fixture.options.event_capacity = 1;
+    let (process, mut events) = fixture.spawn();
+    let caller = process.clone();
+    let request =
+        tokio::spawn(async move { caller.request(json!({"type":"get_state"}), DEADLINE).await });
+    assert_eq!(events.recv().await.unwrap()["i"], 0);
+    // Nobody drains the queue; shutdown must still stop and reap the child.
+    process.shutdown().await.unwrap();
+    assert_eq!(request.await.unwrap().unwrap_err(), PiError::Shutdown);
 }
 
 #[tokio::test]
@@ -656,7 +682,6 @@ fn transport_errors_use_product_words() {
         PiError::Timeout,
         PiError::Cancelled,
         PiError::Shutdown,
-        PiError::EventOverflow,
         PiError::Capacity,
         PiError::Cleanup,
         PiError::Io("read"),

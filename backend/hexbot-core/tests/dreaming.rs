@@ -12,15 +12,16 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+mod support;
 
-fn setup() -> tempfile::TempDir {
-    let home = tempfile::tempdir().unwrap();
+fn setup() -> support::TestHome {
+    let home = support::TestHome::new();
     db::migrate(home.path()).unwrap();
     let conn = db::open(home.path()).unwrap();
     conn.execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES ('alice','Alice','admin',0),('bob','Bob','member',0); INSERT INTO bots(name,owner_id) VALUES ('owl','alice'); INSERT INTO sections(id,bot,owner_id,title,created_at,updated_at) VALUES ('chat','owl','alice','Chat',0,0);").unwrap();
     conn.execute(
         "INSERT INTO settings(key,value) VALUES ('workspace_dir',?)",
-        [json!(home.path().join("workspace")).to_string()],
+        [json!(home.workspace()).to_string()],
     )
     .unwrap();
     fs::create_dir_all(home.path().join("profiles/owl/memories")).unwrap();
@@ -352,6 +353,9 @@ async fn scheduler_runs_each_bot_and_room_once_per_local_day() {
 async fn imports_legacy_jobs_once_and_runs_scripts_without_an_agent() {
     let home = setup();
     let conn = db::open(home.path()).unwrap();
+    // Scripts need Off or an OS sandbox; hosts without bubblewrap have neither.
+    conn.execute("UPDATE bots SET approval_mode='off' WHERE name='owl'", [])
+        .unwrap();
     conn.execute(
         "INSERT INTO settings(key,value) VALUES ('dream_enabled','false')",
         [],
@@ -396,6 +400,10 @@ async fn imports_legacy_jobs_once_and_runs_scripts_without_an_agent() {
 #[tokio::test]
 async fn monitors_skip_unchanged_output_and_one_shots_disable_after_firing() {
     let home = setup();
+    db::open(home.path())
+        .unwrap()
+        .execute("UPDATE bots SET approval_mode='off' WHERE name='owl'", [])
+        .unwrap();
     let profile = home.path().join("profiles/owl");
     fs::create_dir_all(profile.join("scripts")).unwrap();
     fs::write(profile.join("scripts/monitor.sh"), "printf stable\n").unwrap();
@@ -448,8 +456,8 @@ async fn monitors_skip_unchanged_output_and_one_shots_disable_after_firing() {
 #[tokio::test]
 async fn cron_freezes_model_workdir_and_tool_overrides_in_the_new_session() {
     let home = setup();
-    let workdir = home.path().join("job-workspace");
-    fs::create_dir(&workdir).unwrap();
+    let workdir = home.workspace().join("job-workspace");
+    fs::create_dir_all(&workdir).unwrap();
     let hub = EventHub::new();
     let mut receiver = hub.subscribe();
     let runtime =
@@ -525,5 +533,152 @@ fn digest_prefers_native_branch_and_legacy_fallback_resolves_session_keys_and_ac
             .as_array()
             .unwrap()
             .is_empty()
+    );
+}
+
+#[test]
+fn digest_keeps_the_newest_conversations_within_one_prompt_budget() {
+    let home = setup();
+    let conn = db::open(home.path()).unwrap();
+    for n in 1..=8 {
+        let id = format!("busy-{n}");
+        conn.execute(
+            "INSERT INTO sections(id,bot,owner_id,title,created_at,updated_at) VALUES (?,'owl','alice','Busy',?,?)",
+            rusqlite::params![id, n, n],
+        )
+        .unwrap();
+        runtime_store::append(
+            home.path(),
+            &id,
+            json!({"role":"user","text":"x".repeat(13000),"timestamp":100 + n}),
+        )
+        .unwrap();
+    }
+    let digest = dreaming::build_digest(home.path(), "owl", 0.0, None).unwrap();
+    let ids: Vec<_> = digest["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["busy-5", "busy-6", "busy-7", "busy-8"]);
+    assert_eq!(digest["omitted_conversations"], 4);
+    assert!(digest.to_string().len() <= 60_000);
+}
+
+#[tokio::test]
+async fn monitor_urls_and_job_workdirs_follow_the_bot_policy() {
+    use std::io::{Read, Write};
+    let home = setup();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let hub = EventHub::new();
+    let mut receiver = hub.subscribe();
+    let runtime =
+        Runtime::new(home.path().into(), hub.clone(), fake_pi(home.path(), false)).unwrap();
+    let dreams = Dreaming::new(home.path().into(), runtime.clone(), hub);
+    let inside = home.path().join("profiles/owl");
+    let refused = dreams
+        .tool_call(
+            "alice",
+            "owl",
+            &json!({"action":"create","schedule":"30m","prompt":"Edit","workdir":inside}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, 4202);
+    let job = dreams
+        .tool_call(
+            "alice",
+            "owl",
+            &json!({"action":"create","schedule":"30m","prompt":"Watch","monitor":url}),
+        )
+        .await
+        .unwrap();
+    let id = &job["job"]["id"];
+    dreams
+        .tool_call("alice", "owl", &json!({"action":"run","job_id":id}))
+        .await
+        .unwrap();
+    let blocked = event(&mut receiver, "hexbot.scheduled.changed").await;
+    assert_eq!(blocked["job"]["last_status"], "error");
+    assert!(
+        blocked["job"]["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("network safety")
+    );
+    // The kernel queues a completed connection even before accept, so none was attempted.
+    listener.set_nonblocking(true).unwrap();
+    assert!(listener.accept().is_err());
+    listener.set_nonblocking(false).unwrap();
+    fs::write(
+        home.path().join("profiles/owl/.env"),
+        "HERMES_ALLOW_PRIVATE_URLS=true\n",
+    )
+    .unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0; 1024];
+        let _ = stream.read(&mut request).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nstatus")
+            .unwrap();
+    });
+    dreams
+        .tool_call("alice", "owl", &json!({"action":"run","job_id":id}))
+        .await
+        .unwrap();
+    let allowed = event(&mut receiver, "hexbot.scheduled.changed").await;
+    assert_eq!(allowed["job"]["last_status"], "success");
+    assert!(allowed["job"]["monitor_state"]["last_output_hash"].is_string());
+    server.join().unwrap();
+    dreams.shutdown().await;
+    runtime.shutdown().await;
+}
+
+#[test]
+fn digest_bounds_metadata_and_counts_json_escaping_and_unicode() {
+    let home = setup();
+    let conn = db::open(home.path()).unwrap();
+    let huge = "界\"\n".repeat(256 * 1024);
+    conn.execute("UPDATE sections SET title=? WHERE id='chat'", [&huge])
+        .unwrap();
+    runtime_store::append(
+        home.path(),
+        "chat",
+        json!({"role":"user","text":"recent","timestamp":1}),
+    )
+    .unwrap();
+    for n in 1..=8 {
+        let id = format!("room-{n}");
+        conn.execute(
+            "INSERT INTO rooms(id,name,owner_id) VALUES(?,?,'alice')",
+            rusqlite::params![id, huge],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO room_members(room_id,member_kind,member_id) VALUES(?,'bot','owl')",
+            [&id],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO room_events(room_id,seq,kind,actor_id,payload_json,created_at) VALUES(?,1,'message','alice',?,?)", rusqlite::params![id, json!({"text":"界\"\n".repeat(5000)}).to_string(), n + 1]).unwrap();
+    }
+    let digest = dreaming::build_digest(home.path(), "owl", 0.0, None).unwrap();
+    assert!(digest.to_string().len() <= 60_000);
+    assert!(digest["omitted_conversations"].as_u64().unwrap() > 0);
+    let empty = dreaming::build_digest(home.path(), &"b".repeat(1024 * 1024), 0.0, None).unwrap();
+    assert_eq!(empty["bot"].as_str().unwrap().len(), 256);
+    assert!(empty.to_string().len() <= 60_000);
+    // Small older conversations still fit after an oversized recent entry is skipped.
+    let section = &digest["sections"][0];
+    assert_eq!(section["id"], "chat");
+    assert_eq!(section["title"].as_str().unwrap().chars().count(), 256);
+    assert!(
+        digest["rooms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|room| { room["name"].as_str().unwrap().chars().count() <= 256 })
     );
 }

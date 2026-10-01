@@ -78,20 +78,6 @@ fn storage_owner_members_archive_and_monotonic_reads() {
             .len(),
         1
     );
-    call(&h, "remove_member", json!({"id":room,"bot":"owl"}));
-    assert!(call(&h, "get", json!({"id":room}))["room"]["main_bot"].is_null());
-    assert_eq!(
-        call(&h, "remove_member", json!({"id":room,"bot":"fox"}))["room"]["deleted"],
-        true
-    );
-    assert_eq!(
-        db::open(h.path())
-            .unwrap()
-            .query_row("SELECT COUNT(*) FROM room_events", [], |r| r
-                .get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
 }
 #[test]
 fn responders_obey_mentions_and_wait_for_humans() {
@@ -107,6 +93,93 @@ fn responders_obey_mentions_and_wait_for_humans() {
     assert!(select("message.bot", "email@fox.com").0.is_empty());
     assert!(select("message.bot", "@user confirm @fox").1);
     assert!(select("message.bot", "Can you clarify?").1);
+    // Once the mentioned bot has answered, the main bot still stays out.
+    let done = HashSet::from(["fox".to_string()]);
+    assert!(
+        rooms::select_responders(
+            &room,
+            &json!({"kind":"message.user","payload":{"text":"@fox only you"}}),
+            &done
+        )
+        .0
+        .is_empty()
+    );
+}
+#[tokio::test]
+async fn main_bot_stays_out_of_messages_for_another_bot() {
+    let h = setup();
+    let room = create(&h);
+    let runner = Arc::new(Fake::default());
+    runner.replies("fox", &["On it"]);
+    let engine = RoomEngine::with_runner(h.path().into(), runner.clone(), EventHub::new());
+    call(&h, "send", json!({"id":room,"text":"@fox only you please"}));
+    engine.drain("alice", &room).await.unwrap();
+    let calls = runner.calls.lock().unwrap().clone();
+    assert_eq!(
+        calls.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(),
+        vec!["fox"]
+    );
+}
+#[tokio::test]
+async fn human_members_read_post_and_hear_events_but_only_the_owner_changes_the_room() {
+    let h = setup();
+    let room = call(
+        &h,
+        "create",
+        json!({"name":"Room","members":["owl","bob"],"main_bot":"owl"}),
+    )["room"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let bob = |method: &str, p: Value| {
+        rooms::call(h.path(), "bob", &format!("hexbot.rooms.{method}"), &p).unwrap()
+    };
+    assert_eq!(bob("list", json!({})).unwrap()["rooms"][0]["id"], room);
+    assert_eq!(bob("get", json!({"id":room})).unwrap()["room"]["id"], room);
+    let sent = bob("send", json!({"id":room,"text":"hello from Bob"})).unwrap();
+    assert_eq!(sent["event"]["actor_id"], "bob");
+    let seq = sent["event"]["seq"].as_i64().unwrap();
+    bob("mark_read", json!({"id":room,"seq":seq})).unwrap();
+    assert!(
+        bob("log", json!({"id":room})).unwrap()["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["payload"]["text"] == "hello from Bob")
+    );
+    for (method, p) in [
+        ("update", json!({"id":room,"name":"Mine"})),
+        ("add_member", json!({"id":room,"bot":"fox"})),
+        ("archive", json!({"id":room})),
+    ] {
+        assert_eq!(bob(method, p).unwrap_err().code, 4302, "{method}");
+    }
+    // Bob wakes the room, the bot runs as its owner, and both humans see the reply.
+    let runner = Arc::new(Fake::default());
+    runner.replies("owl", &["Hi Bob"]);
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let engine = Arc::new(RoomEngine::with_runner(
+        h.path().into(),
+        runner.clone(),
+        hub,
+    ));
+    engine.notify("bob", &room).await.unwrap();
+    let mut heard = HashSet::new();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while heard.len() < 2 {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["payload"]["event"]["kind"] == "message.bot" {
+                heard.insert(event.owner);
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(heard, HashSet::from(["alice".into(), "bob".into()]));
+    assert_eq!(rooms::audience(h.path(), &room).unwrap().len(), 2);
+    assert_eq!(*runner.owners.lock().unwrap(), vec!["alice"]);
+    engine.shutdown().await;
 }
 #[test]
 fn transcript_limits_memory_and_collecting() {
@@ -130,6 +203,7 @@ fn transcript_limits_memory_and_collecting() {
 struct Fake {
     replies: Mutex<HashMap<String, Vec<String>>>,
     calls: Mutex<Vec<(String, String, String)>>,
+    owners: Mutex<Vec<String>>,
 }
 impl Fake {
     fn replies(&self, bot: &str, replies: &[&str]) {
@@ -142,12 +216,13 @@ impl Fake {
 impl RoomRunner for Fake {
     fn run<'a>(
         &'a self,
-        _: &'a str,
+        owner: &'a str,
         bot: &'a str,
         stored: &'a str,
         text: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
         Box::pin(async move {
+            self.owners.lock().unwrap().push(owner.into());
             self.calls
                 .lock()
                 .unwrap()
@@ -214,7 +289,7 @@ async fn limits_failures_and_pass_are_durable() {
     call(
         &h,
         "update",
-        json!({"id":room,"limits":{"room_bot_turns_per_human_turn":0}}),
+        json!({"id":room,"limits":{"bot_turns_per_human_turn":0,"budget_tokens_per_human_turn":null}}),
     );
     call(&h, "send", json!({"id":room,"text":"limited"}));
     engine.drain("alice", &room).await.unwrap();
@@ -224,6 +299,64 @@ async fn limits_failures_and_pass_are_durable() {
     assert!(events.iter().any(|e| e["kind"] == "turn.failed"));
     assert!(events.iter().any(|e| e["kind"] == "limit.tripped"));
     assert!(!events.iter().any(|e| e["kind"] == "message.bot"));
+}
+#[tokio::test]
+async fn room_limits_use_the_saved_keys_and_cannot_lift_deployment_budgets() {
+    let h = setup();
+    let room = create(&h);
+    for limits in [
+        json!({"bot_daily_token_budget":null}),
+        json!({"room_bot_turns_per_human_turn":1}),
+        json!({"bot_turns_per_human_turn":-1}),
+        json!({"budget_tokens_per_human_turn":1.5}),
+        json!([]),
+    ] {
+        assert_eq!(
+            rooms::call(
+                h.path(),
+                "alice",
+                "hexbot.rooms.update",
+                &json!({"id":room,"limits":limits})
+            )
+            .unwrap()
+            .unwrap_err()
+            .code,
+            4202
+        );
+    }
+    assert_eq!(
+        rooms::call(
+            h.path(),
+            "alice",
+            "hexbot.rooms.create",
+            &json!({"name":"R","members":["owl"],"limits":{"bot_daily_token_budget":null}})
+        )
+        .unwrap()
+        .unwrap_err()
+        .code,
+        4202
+    );
+    // The per-message token budget saved by room settings is enforced.
+    call(
+        &h,
+        "update",
+        json!({"id":room,"limits":{"budget_tokens_per_human_turn":0}}),
+    );
+    let runner = Arc::new(Fake::default());
+    call(&h, "send", json!({"id":room,"text":"hello"}));
+    RoomEngine::with_runner(h.path().into(), runner.clone(), EventHub::new())
+        .drain("alice", &room)
+        .await
+        .unwrap();
+    assert!(runner.calls.lock().unwrap().is_empty());
+    assert!(
+        call(&h, "log", json!({"id":room}))["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "limit.tripped"
+                && e["payload"]["limit"] == "room_budget_tokens_per_human_turn")
+    );
 }
 #[tokio::test]
 async fn old_rooms_continue_after_more_than_a_thousand_events() {
@@ -273,7 +406,7 @@ async fn concurrent_fanout_reserves_turn_budget_before_models_run() {
     call(
         &h,
         "update",
-        json!({"id":room,"limits":{"room_bot_turns_per_human_turn":1}}),
+        json!({"id":room,"limits":{"bot_turns_per_human_turn":1}}),
     );
     call(&h, "send", json!({"id":room,"text":"@owl @fox answer"}));
     engine.drain("alice", &room).await.unwrap();
@@ -303,12 +436,14 @@ async fn native_usage_enforces_daily_budget_including_cached_tokens() {
             [r#"{"daily_tokens":10}"#],
         )
         .unwrap();
-    hexbot_core::runtime_store::record_usage(
+    hexbot_core::runtime_store::project_seeded(
         h.path(),
         "other",
         "alice",
         "owl",
-        &json!({"usage":{"input":1,"output":1,"cacheRead":8}}),
+        &json!({"role":"assistant","content":[],"usage":{"input":1,"output":1,"cacheRead":8}}),
+        None,
+        None,
     )
     .unwrap();
     call(&h, "send", json!({"id":room,"text":"hello"}));

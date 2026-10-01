@@ -1,5 +1,5 @@
 //! Native execution of configured tool backends. No Hermes daemon is required.
-use crate::{Error, Result, common, connectors};
+use crate::{Error, Result, common, connectors, credentials::desktop_environment};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::{
@@ -24,24 +24,6 @@ fn text<'a>(v: &'a Value, key: &str, default: &'a str) -> &'a str {
 }
 fn descriptor(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
     json!({"name":name,"description":description,"parameters":{"type":"object","properties":properties,"required":required}})
-}
-fn config(home: &Path, bot: &str) -> Result<Value> {
-    let mut cfg = common::read_config(home)?;
-    let profile = crate::catalog::profile(home, bot)?;
-    let local = common::read_config(&profile)?;
-    fn merge(dst: &mut Value, src: &Value) {
-        if let (Some(dst), Some(src)) = (dst.as_object_mut(), src.as_object()) {
-            for (k, v) in src {
-                if v.is_object() {
-                    merge(dst.entry(k).or_insert(json!({})), v)
-                } else {
-                    dst.insert(k.clone(), v.clone());
-                }
-            }
-        }
-    }
-    merge(&mut cfg, &local);
-    Ok(cfg)
 }
 fn credential(env: &std::collections::BTreeMap<String, String>, name: &str) -> String {
     env.get(name)
@@ -100,38 +82,30 @@ pub(crate) fn workdir(home: &Path, bot: &str) -> Result<PathBuf> {
         crate::db::open(home)?
             .query_row("SELECT workdir FROM bots WHERE name=?", [bot], |r| r.get(0))?;
     let settings = crate::settings::get(home)?;
-    let configured = path
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| settings["workspace_dir"].as_str().unwrap_or("~/Hexbot"));
-    let path = if let Some(suffix) = configured.strip_prefix("~/") {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.to_owned())
-            .join(suffix)
-    } else {
-        PathBuf::from(configured)
-    };
-    fs::create_dir_all(&path)?;
-    Ok(fs::canonicalize(path)?)
+    let configured = common::configured_workdir(&[path.as_deref()], &settings);
+    common::resolve_workdir(home, configured)
 }
-fn section_workdir(home: &Path, bot: &str, stored: &str) -> Result<PathBuf> {
+/// A section's saved cwd, unless it is missing from the store or now inside the
+/// home; then the bot's working directory.
+pub(crate) fn section_workdir(home: &Path, bot: &str, stored: &str) -> Result<PathBuf> {
     use rusqlite::OptionalExtension;
     let saved: Option<String> = crate::runtime_store::open(home)?
         .query_row(
-            "SELECT options FROM native_sessions WHERE stored_id=?",
-            [stored],
+            "SELECT options FROM native_sessions WHERE stored_id=? AND bot=?",
+            [stored, bot],
             |r| r.get(0),
         )
         .optional()?;
     if let Some(saved) = saved {
         let options: Value =
             serde_json::from_str(&saved).map_err(|_| failure("invalid conversation options"))?;
-        return options["cwd"]
+        let cwd = options["cwd"]
             .as_str()
             .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .ok_or_else(|| failure("conversation working directory is missing"));
+            .ok_or_else(|| failure("conversation working directory is missing"))?;
+        if let Some(cwd) = common::saved_workdir(home, cwd) {
+            return Ok(cwd);
+        }
     }
     workdir(home, bot)
 }
@@ -229,7 +203,7 @@ fn family(name: &str) -> Option<&'static str> {
 }
 pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
     let enabled = connectors::toolsets(home, bot)?;
-    let cfg = config(home, bot)?;
+    let cfg = common::merged_config(home, bot)?;
     let env = connectors::credentials(home, bot)?;
     let mut out = vec![];
     let mut add = |family: &str, d: Value| {
@@ -310,7 +284,72 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
             descriptor(
                 "computer_use",
                 "Control desktop applications through the configured cua-driver. Capture first, then use returned element indices or window coordinates. Preserve verdicts and recapture after changes.",
-                json!({"action":{"type":"string","enum":["capture","click","double_click","right_click","middle_click","drag","scroll","type","key","set_value","wait","list_apps","list_windows","focus_app"]},"mode":{"type":"string","enum":["som","vision","ax"]},"app":{"type":"string"},"pid":{"type":"integer"},"window_id":{"type":"integer"},"element":{"type":"integer"},"coordinate":{"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2},"from_coordinate":{"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2},"to_coordinate":{"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2},"from_element":{"type":"integer"},"to_element":{"type":"integer"},"button":{"type":"string"},"modifiers":{"type":"array","items":{"type":"string"}},"text":{"type":"string"},"keys":{"type":"string"},"value":{"type":"string"},"direction":{"type":"string"},"amount":{"type":"integer"},"seconds":{"type":"number"},"delivery_mode":{"type":"string","enum":["background","foreground"]},"bring_to_front":{"type":"boolean"},"capture_after":{"type":"boolean"}}),
+                json!({
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "capture",
+                            "click",
+                            "double_click",
+                            "right_click",
+                            "middle_click",
+                            "drag",
+                            "scroll",
+                            "type",
+                            "key",
+                            "set_value",
+                            "wait",
+                            "list_apps",
+                            "list_windows",
+                            "focus_app"
+                        ]
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["som", "vision", "ax"]
+                    },
+                    "app": { "type": "string" },
+                    "pid": { "type": "integer" },
+                    "window_id": { "type": "integer" },
+                    "element": { "type": "integer" },
+                    "coordinate": {
+                        "type": "array",
+                        "items": { "type": "integer" },
+                        "minItems": 2,
+                        "maxItems": 2
+                    },
+                    "from_coordinate": {
+                        "type": "array",
+                        "items": { "type": "integer" },
+                        "minItems": 2,
+                        "maxItems": 2
+                    },
+                    "to_coordinate": {
+                        "type": "array",
+                        "items": { "type": "integer" },
+                        "minItems": 2,
+                        "maxItems": 2
+                    },
+                    "from_element": { "type": "integer" },
+                    "to_element": { "type": "integer" },
+                    "button": { "type": "string" },
+                    "modifiers": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    },
+                    "text": { "type": "string" },
+                    "keys": { "type": "string" },
+                    "value": { "type": "string" },
+                    "direction": { "type": "string" },
+                    "amount": { "type": "integer" },
+                    "seconds": { "type": "number" },
+                    "delivery_mode": {
+                        "type": "string",
+                        "enum": ["background", "foreground"]
+                    },
+                    "bring_to_front": { "type": "boolean" },
+                    "capture_after": { "type": "boolean" }
+                }),
                 &["action"],
             ),
         );
@@ -435,7 +474,7 @@ pub async fn call(
         if !enabled(home, bot, family)? {
             return Err(Error::new(4302, format!("tool is disabled: {name}")));
         }
-        let cfg = config(home, bot)?;
+        let cfg = common::merged_config(home, bot)?;
         let env = connectors::credentials(home, bot)?;
         match name {
             "web_search" => search(&cfg, &env, args).await,
@@ -445,7 +484,7 @@ pub async fn call(
             "computer_use" => computer_use(home, bot, stored, &cfg, &env, args).await,
             "text_to_speech" => speech(home, bot, &cfg, &env, args).await,
             "image_generate" => image_generate(home, bot, &cfg, &env, args).await,
-            "browser_exec" => browser_exec(home, bot, stored, &cfg, &env, args).await,
+            "browser_exec" => browser_exec().await,
             "browser_cdp" => browser_cdp(&cfg, &env, args).await,
             "browser_navigate" | "browser_snapshot" | "browser_click" | "browser_type"
             | "browser_scroll" | "browser_back" | "browser_press" | "browser_get_images"
@@ -529,15 +568,127 @@ async fn search(
         .unwrap_or(5);
     let backend = web_backend(cfg, env, false);
     let client = http()?;
-    let response=match backend.as_str(){
-        "keenable"=>request(authorize(client.post(format!("{}/v1/search",endpoint(env,"KEENABLE_BASE_URL","https://api.keenable.ai").trim_end_matches('/'))).header("X-Keenable-Title","hexbot").json(&json!({"query":query,"max_results":limit.min(20)})),env,"KEENABLE_API_KEY",None)).await?,
-        "tavily"=>{let req=client.post(format!("{}/search",endpoint(env,"TAVILY_BASE_URL","https://api.tavily.com").trim_end_matches('/'))).header("X-Client-Name", "hexbot").json(&json!({"query":query,"max_results":limit.min(20)}));let req=if credential(env,"TAVILY_API_KEY").is_empty(){req.header("X-Tavily-Access-Mode","keyless")}else{authorize(req,env,"TAVILY_API_KEY",None)};request(req).await?},
-        "exa"=>request(authorize(client.post(format!("{}/search",endpoint(env,"EXA_BASE_URL","https://api.exa.ai").trim_end_matches('/'))).json(&json!({"query":query,"numResults":limit,"contents":{"highlights":true}})),env,"EXA_API_KEY",Some("x-api-key"))).await?,
-        "parallel"=>request(authorize(client.post(format!("{}/v1beta/search",endpoint(env,"PARALLEL_BASE_URL","https://api.parallel.ai").trim_end_matches('/'))).json(&json!({"search_queries":[query],"objective":query,"mode":"agentic","max_results":limit.min(20)})),env,"PARALLEL_API_KEY",Some("x-api-key"))).await?,
-        "firecrawl"=>request(authorize(client.post(format!("{}/v2/search",endpoint(env,"FIRECRAWL_API_URL","https://api.firecrawl.dev").trim_end_matches('/'))).json(&json!({"query":query,"limit":limit})),env,"FIRECRAWL_API_KEY",None)).await?,
-        "searxng"=>{let base=credential(env,"SEARXNG_URL");if base.is_empty(){return Err(failure("SEARXNG_URL is not configured"))}request(client.get(format!("{}/search",base.trim_end_matches('/'))).query(&[("q",query),("format","json")])).await?},
-        "brave"|"brave-free"=>request(authorize(client.get(endpoint(env,"BRAVE_SEARCH_URL","https://api.search.brave.com/res/v1/web/search")).query(&[("q",query),("count",&limit.min(20).to_string())]),env,"BRAVE_SEARCH_API_KEY",Some("X-Subscription-Token"))).await?,
-        other=>return Err(failure(format!("web search backend has not been ported: {other}"))),
+    let response = match backend.as_str() {
+        "keenable" => {
+            request(authorize(
+                client
+                    .post(format!(
+                        "{}/v1/search",
+                        endpoint(env, "KEENABLE_BASE_URL", "https://api.keenable.ai")
+                            .trim_end_matches('/')
+                    ))
+                    .header("X-Keenable-Title", "hexbot")
+                    .json(&json!({
+                        "query": query,
+                        "max_results": limit.min(20)
+                    })),
+                env,
+                "KEENABLE_API_KEY",
+                None,
+            ))
+            .await?
+        }
+        "tavily" => {
+            let req = client
+                .post(format!(
+                    "{}/search",
+                    endpoint(env, "TAVILY_BASE_URL", "https://api.tavily.com")
+                        .trim_end_matches('/')
+                ))
+                .header("X-Client-Name", "hexbot")
+                .json(&json!({ "query": query, "max_results": limit.min(20) }));
+            let req = if credential(env, "TAVILY_API_KEY").is_empty() {
+                req.header("X-Tavily-Access-Mode", "keyless")
+            } else {
+                authorize(req, env, "TAVILY_API_KEY", None)
+            };
+            request(req).await?
+        }
+        "exa" => {
+            request(authorize(
+                client
+                    .post(format!(
+                        "{}/search",
+                        endpoint(env, "EXA_BASE_URL", "https://api.exa.ai").trim_end_matches('/')
+                    ))
+                    .json(&json!({
+                        "query": query,
+                        "numResults": limit,
+                        "contents": { "highlights": true }
+                    })),
+                env,
+                "EXA_API_KEY",
+                Some("x-api-key"),
+            ))
+            .await?
+        }
+        "parallel" => {
+            request(authorize(
+                client
+                    .post(format!(
+                        "{}/v1beta/search",
+                        endpoint(env, "PARALLEL_BASE_URL", "https://api.parallel.ai")
+                            .trim_end_matches('/')
+                    ))
+                    .json(&json!({
+                        "search_queries": [query],
+                        "objective": query,
+                        "mode": "agentic",
+                        "max_results": limit.min(20)
+                    })),
+                env,
+                "PARALLEL_API_KEY",
+                Some("x-api-key"),
+            ))
+            .await?
+        }
+        "firecrawl" => {
+            request(authorize(
+                client
+                    .post(format!(
+                        "{}/v2/search",
+                        endpoint(env, "FIRECRAWL_API_URL", "https://api.firecrawl.dev")
+                            .trim_end_matches('/')
+                    ))
+                    .json(&json!({ "query": query, "limit": limit })),
+                env,
+                "FIRECRAWL_API_KEY",
+                None,
+            ))
+            .await?
+        }
+        "searxng" => {
+            let base = credential(env, "SEARXNG_URL");
+            if base.is_empty() {
+                return Err(failure("SEARXNG_URL is not configured"));
+            }
+            request(
+                client
+                    .get(format!("{}/search", base.trim_end_matches('/')))
+                    .query(&[("q", query), ("format", "json")]),
+            )
+            .await?
+        }
+        "brave" | "brave-free" => {
+            request(authorize(
+                client
+                    .get(endpoint(
+                        env,
+                        "BRAVE_SEARCH_URL",
+                        "https://api.search.brave.com/res/v1/web/search",
+                    ))
+                    .query(&[("q", query), ("count", &limit.min(20).to_string())]),
+                env,
+                "BRAVE_SEARCH_API_KEY",
+                Some("X-Subscription-Token"),
+            ))
+            .await?
+        }
+        other => {
+            return Err(failure(format!(
+                "web search backend has not been ported: {other}"
+            )));
+        }
     };
     let values = response["results"]
         .as_array()
@@ -545,7 +696,34 @@ async fn search(
         .or_else(|| response["data"]["web"].as_array())
         .or_else(|| response["data"].as_array())
         .ok_or_else(|| failure("search service returned no results array"))?;
-    let results=values.iter().take(limit as usize).enumerate().map(|(i,row)|{let description=row["description"].as_str().or_else(||row["snippet"].as_str()).or_else(||row["content"].as_str()).map(str::to_owned).unwrap_or_else(||row["highlights"].as_array().or_else(||row["excerpts"].as_array()).into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join(" "));json!({"title":text(row,"title",""),"url":text(row,"url",""),"description":description,"position":i+1})}).collect::<Vec<_>>();
+    let results = values
+        .iter()
+        .take(limit as usize)
+        .enumerate()
+        .map(|(i, row)| {
+            let description = row["description"]
+                .as_str()
+                .or_else(|| row["snippet"].as_str())
+                .or_else(|| row["content"].as_str())
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    row["highlights"]
+                        .as_array()
+                        .or_else(|| row["excerpts"].as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                });
+            json!({
+                "title": text(row, "title", ""),
+                "url": text(row, "url", ""),
+                "description": description,
+                "position": i + 1
+            })
+        })
+        .collect::<Vec<_>>();
     Ok(json!({"success":true,"data":{"web":results}}))
 }
 async fn extract(
@@ -687,7 +865,10 @@ async fn extract(
                     None,
                 ))
                 .await;
-                values.push(match result{Ok(v)=>json!({"url":url,"title":v["data"]["metadata"]["title"],"content":v["data"]["markdown"]}),Err(e)=>json!({"url":url,"error":e.message})});
+                values.push(match result {
+                    Ok(v) => json!({"url":url,"title":v["data"]["metadata"]["title"],"content":v["data"]["markdown"]}),
+                    Err(e) => json!({"url":url,"error":e.message}),
+                });
             }
             values
         }
@@ -882,8 +1063,8 @@ async fn execute_code(
     }
     if kernel.is_none() {
         let configured = credential(env, "HEXBOT_CODE_PYTHON");
-        let managed = home.join("bin/python3.11");
-        let fallback = if managed.is_file() {
+        let managed = common::managed_python(home);
+        let fallback = if managed != Path::new("python3") {
             managed.to_string_lossy().into_owned()
         } else {
             on_path("python3")
@@ -905,7 +1086,7 @@ async fn execute_code(
             python,
             &[workdir(home, bot)?, artifacts_dir(home, bot)?],
         )?;
-        desktop_env(&mut command);
+        desktop_environment(&mut command);
         let mut child = command
             .args(["-u", "-c", KERNEL])
             .current_dir(workdir(home, bot)?)
@@ -1008,13 +1189,42 @@ async fn run(mut command: Command, input: &[u8], seconds: u64) -> Result<Value> 
     let mut stdin = child.stdin.take().expect("piped stdin");
     let mut stdout = child.stdout.take().expect("piped stdout");
     let mut stderr = child.stderr.take().expect("piped stderr");
-    let result=tokio::time::timeout(Duration::from_secs(seconds),async {
-        let write=async move {stdin.write_all(input).await?;drop(stdin);Ok::<_,std::io::Error>(())};
-        let read_out=async {let mut data=Vec::new();let mut chunk=[0u8;8192];loop{let n=stdout.read(&mut chunk).await?;if n==0{break}let count=n.min(100_000usize.saturating_sub(data.len()));data.extend_from_slice(&chunk[..count]);}Ok::<_,std::io::Error>(data)};
-        let read_err=async {let mut data=Vec::new();let mut chunk=[0u8;8192];loop{let n=stderr.read(&mut chunk).await?;if n==0{break}let count=n.min(100_000usize.saturating_sub(data.len()));data.extend_from_slice(&chunk[..count]);}Ok::<_,std::io::Error>(data)};
-        let (_,out,err,status)=tokio::try_join!(write,read_out,read_err,child.wait())?;
-        Ok::<_,Error>(json!({"output":String::from_utf8_lossy(&out),"stderr":String::from_utf8_lossy(&err),"exit_code":status.code(),"success":status.success()}))
-    }).await;
+    let result = tokio::time::timeout(Duration::from_secs(seconds), async {
+        let write = async move {
+            stdin.write_all(input).await?;
+            drop(stdin);
+            Ok::<_, std::io::Error>(())
+        };
+        let read_out = async {
+            let mut data = Vec::new();
+            let mut chunk = [0u8; 8192];
+            loop {
+                let n = stdout.read(&mut chunk).await?;
+                if n == 0 {
+                    break;
+                }
+                let count = n.min(100_000usize.saturating_sub(data.len()));
+                data.extend_from_slice(&chunk[..count]);
+            }
+            Ok::<_, std::io::Error>(data)
+        };
+        let read_err = async {
+            let mut data = Vec::new();
+            let mut chunk = [0u8; 8192];
+            loop {
+                let n = stderr.read(&mut chunk).await?;
+                if n == 0 {
+                    break;
+                }
+                let count = n.min(100_000usize.saturating_sub(data.len()));
+                data.extend_from_slice(&chunk[..count]);
+            }
+            Ok::<_, std::io::Error>(data)
+        };
+        let (_, out, err, status) = tokio::try_join!(write, read_out, read_err, child.wait())?;
+        Ok::<_, Error>(json!({"output":String::from_utf8_lossy(&out),"stderr":String::from_utf8_lossy(&err),"exit_code":status.code(),"success":status.success()}))
+    })
+    .await;
     match result {
         Ok(v) => v,
         Err(_) => {
@@ -1024,14 +1234,7 @@ async fn run(mut command: Command, input: &[u8], seconds: u64) -> Result<Value> 
         }
     }
 }
-async fn browser_exec(
-    _home: &Path,
-    _bot: &str,
-    _stored: &str,
-    _cfg: &Value,
-    _env: &std::collections::BTreeMap<String, String>,
-    _args: &Value,
-) -> Result<Value> {
+async fn browser_exec() -> Result<Value> {
     Err(Error::new(
         4302,
         "Browser code execution requires network interception. Use the managed browser tools.",
@@ -1159,7 +1362,31 @@ async fn vision(
             json!({"type":"url","url":image})
         };
         let base = endpoint(env, "ANTHROPIC_BASE_URL", "https://api.anthropic.com");
-        let response=request(authorize(http()?.post(format!("{}/v1/messages",text(aux,"base_url",&base).trim_end_matches('/'))).header("anthropic-version","2023-06-01").json(&json!({"model":model,"max_tokens":4096,"messages":[{"role":"user","content":[{"type":"image","source":source},{"type":"text","text":question}]}]})),env,"ANTHROPIC_API_KEY",Some("x-api-key"))).await?;
+        let response = request(authorize(
+            http()?
+                .post(format!(
+                    "{}/v1/messages",
+                    text(aux, "base_url", &base).trim_end_matches('/')
+                ))
+                .header("anthropic-version", "2023-06-01")
+                .json(&json!({
+                    "model": model,
+                    "max_tokens": 4096,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                { "type": "image", "source": source },
+                                { "type": "text", "text": question }
+                            ]
+                        }
+                    ]
+                })),
+            env,
+            "ANTHROPIC_API_KEY",
+            Some("x-api-key"),
+        ))
+        .await?;
         let output = response["content"]
             .as_array()
             .into_iter()
@@ -1197,7 +1424,29 @@ async fn vision(
         } else {
             "GOOGLE_API_KEY"
         };
-        let response=request(authorize(http()?.post(format!("{}/models/{model}:generateContent",text(aux,"base_url",&base).trim_end_matches('/'))).json(&json!({"contents":[{"parts":[{"text":question},{"inline_data":{"mime_type":mime,"data":data}}]}]})),env,key,Some("x-goog-api-key"))).await?;
+        let response = request(authorize(
+            http()?
+                .post(format!(
+                    "{}/models/{model}:generateContent",
+                    text(aux, "base_url", &base).trim_end_matches('/')
+                ))
+                .json(&json!({
+                    "contents": [
+                        {
+                            "parts": [
+                                { "text": question },
+                                {
+                                    "inline_data": { "mime_type": mime, "data": data }
+                                }
+                            ]
+                        }
+                    ]
+                })),
+            env,
+            key,
+            Some("x-goog-api-key"),
+        ))
+        .await?;
         let output = response["candidates"][0]["content"]["parts"]
             .as_array()
             .into_iter()
@@ -1237,7 +1486,30 @@ async fn vision(
     if base.is_empty() {
         return Err(failure("vision API base URL is not configured"));
     }
-    let data=request(authorize(http()?.post(format!("{}/chat/completions",base.trim_end_matches('/'))).json(&json!({"model":model,"messages":[{"role":"user","content":[{"type":"text","text":question},{"type":"image_url","image_url":{"url":image}}]}],"max_tokens":4096})),env,key,None)).await?;
+    let data = request(authorize(
+        http()?
+            .post(format!("{}/chat/completions", base.trim_end_matches('/')))
+            .json(&json!({
+                "model": model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            { "type": "text", "text": question },
+                            {
+                                "type": "image_url",
+                                "image_url": { "url": image }
+                            }
+                        ]
+                    }
+                ],
+                "max_tokens": 4096
+            })),
+        env,
+        key,
+        None,
+    ))
+    .await?;
     let output = data["choices"][0]["message"]["content"]
         .as_str()
         .ok_or_else(|| failure("vision provider returned no analysis"))?;
@@ -1314,7 +1586,20 @@ async fn speech(
             let base = text(options, "base_url", "https://api.mistral.ai");
             let mut audio = Vec::new();
             for chunk in input.chars().collect::<Vec<_>>().chunks(4000) {
-                let data=request(authorize(http()?.post(format!("{}/v1/audio/speech",base.trim_end_matches('/'))).json(&json!({"model":text(options,"model","voxtral-mini-tts-2603"),"input":chunk.iter().collect::<String>(),"voice_id":text(options,"voice_id","c69964a6-ab8b-4f8a-9465-ec0925096ec8"),"response_format":"mp3"})),env,"MISTRAL_API_KEY",None)).await?;
+                let data = request(authorize(
+                    http()?
+                        .post(format!("{}/v1/audio/speech", base.trim_end_matches('/')))
+                        .json(&json!({
+                            "model": text(options, "model", "voxtral-mini-tts-2603"),
+                            "input": chunk.iter().collect::<String>(),
+                            "voice_id": text(options, "voice_id", "c69964a6-ab8b-4f8a-9465-ec0925096ec8"),
+                            "response_format": "mp3"
+                        })),
+                    env,
+                    "MISTRAL_API_KEY",
+                    None,
+                ))
+                .await?;
                 let encoded = data["audio_data"]
                     .as_str()
                     .ok_or_else(|| failure("Mistral returned no audio"))?;
@@ -1462,7 +1747,23 @@ async fn image_generate(
                 ));
             }
             if images.is_empty() {
-                request(authorize(http()?.post(format!("{}/images/generations",text(options,"base_url",&base).trim_end_matches('/'))).json(&json!({"model":text(options,"model","gpt-image-1"),"prompt":prompt,"size":size,"n":1})),env,"OPENAI_API_KEY",None)).await?
+                request(authorize(
+                    http()?
+                        .post(format!(
+                            "{}/images/generations",
+                            text(options, "base_url", &base).trim_end_matches('/')
+                        ))
+                        .json(&json!({
+                            "model": text(options, "model", "gpt-image-1"),
+                            "prompt": prompt,
+                            "size": size,
+                            "n": 1
+                        })),
+                    env,
+                    "OPENAI_API_KEY",
+                    None,
+                ))
+                .await?
             } else {
                 let boundary = format!("hexbot-{}", common::id());
                 let mut body = Vec::new();
@@ -1481,7 +1782,12 @@ async fn image_generate(
                         "image/webp" => "webp",
                         _ => "png",
                     };
-                    body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"image[]\"; filename=\"image-{index}.{ext}\"\r\nContent-Type: {mime}\r\n\r\n").as_bytes());
+                    body.extend_from_slice(
+                        format!(
+                            "--{boundary}\r\nContent-Disposition: form-data; name=\"image[]\"; filename=\"image-{index}.{ext}\"\r\nContent-Type: {mime}\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    );
                     body.extend(bytes);
                     body.extend_from_slice(b"\r\n");
                     if body.len() > BODY_LIMIT {
@@ -1525,7 +1831,17 @@ async fn image_generate(
                 "krea-2-medium-turbo" => "medium-turbo",
                 _ => return Err(Error::new(4202, "unknown Krea image model")),
             };
-            let mut body = json!({"prompt":prompt,"aspect_ratio":match ratio{"square"=>"1:1","portrait"=>"9:16","landscape"=>"16:9",v=>v},"resolution":"1K","creativity":text(&options["krea"],"creativity","medium")});
+            let mut body = json!({
+                "prompt": prompt,
+                "aspect_ratio": match ratio {
+                    "square" => "1:1",
+                    "portrait" => "9:16",
+                    "landscape" => "16:9",
+                    v => v,
+                },
+                "resolution": "1K",
+                "creativity": text(&options["krea"], "creativity", "medium")
+            });
             let mut references = Vec::new();
             if let Some(image) = args["image_url"].as_str() {
                 references.push(image_data(home, bot, image).await?)
@@ -1575,9 +1891,29 @@ async fn image_generate(
             let job = submit["job_id"]
                 .as_str()
                 .ok_or_else(|| failure("Krea returned no job id"))?;
-            tokio::time::timeout(Duration::from_secs(180),async {loop{let result=request(authorize(http()?.get(format!("{}/jobs/{job}",base.trim_end_matches('/'))),env,"KREA_API_KEY",None)).await?;if matches!(text(&result,"status",""),"failed"|"cancelled"){return Err(failure("Krea image job failed"))}
-if result["result"]["urls"].is_array(){return Ok(json!({"images":result["result"]["urls"].as_array().unwrap().iter().map(|url|json!({"url":url})).collect::<Vec<_>>()}))}
-if let Some(url)=result["result"]["url"].as_str(){return Ok(json!({"images":[{"url":url}]}))}tokio::time::sleep(Duration::from_secs(2)).await;}}).await.map_err(|_|failure("Krea image job timed out"))??
+            tokio::time::timeout(Duration::from_secs(180), async {
+                loop {
+                    let result = request(authorize(
+                        http()?.get(format!("{}/jobs/{job}", base.trim_end_matches('/'))),
+                        env,
+                        "KREA_API_KEY",
+                        None,
+                    ))
+                    .await?;
+                    if matches!(text(&result, "status", ""), "failed" | "cancelled") {
+                        return Err(failure("Krea image job failed"));
+                    }
+                    if result["result"]["urls"].is_array() {
+                        return Ok(json!({"images":result["result"]["urls"].as_array().unwrap().iter().map(|url|json!({"url":url})).collect::<Vec<_>>()}));
+                    }
+                    if let Some(url) = result["result"]["url"].as_str() {
+                        return Ok(json!({ "images": [{ "url": url }] }));
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            })
+            .await
+            .map_err(|_| failure("Krea image job timed out"))??
         }
         "fal" => fal_image(home, bot, options, env, args).await?,
         other => {
@@ -1654,29 +1990,104 @@ async fn browser_cdp(
         return Err(failure("browser.cdp_url is not configured"));
     }
     let seconds = args["timeout"].as_f64().unwrap_or(30.).clamp(1., 120.);
-    tokio::time::timeout(Duration::from_secs_f64(seconds),async {
-        let endpoint=if url.starts_with("http://")||url.starts_with("https://") {let info=request(http()?.get(format!("{}/json/version",url.trim_end_matches('/')))).await?;info["webSocketDebuggerUrl"].as_str().ok_or_else(||failure("browser returned no debugger WebSocket URL"))?.to_owned()}else{url.to_owned()};
-        if !endpoint.starts_with("ws://")&&!endpoint.starts_with("wss://"){return Err(Error::new(4202,"browser endpoint must use HTTP or WebSocket"))}
-        let (mut socket,_)=tokio_tungstenite::connect_async(&endpoint).await.map_err(|_|failure("browser WebSocket connection failed"))?;
-        let mut id=1u64;let mut session=None;
-        if let Some(target)=args["target_id"].as_str(){
-            socket.send(Message::Text(json!({"id":id,"method":"Target.attachToTarget","params":{"targetId":target,"flatten":true}}).to_string().into())).await.map_err(|_|failure("browser connection closed"))?;
-            loop {let message=socket.next().await.ok_or_else(||failure("browser connection closed"))?.map_err(|_|failure("invalid browser response"))?;if let Message::Text(raw)=message{let v:Value=serde_json::from_str(&raw).map_err(|_|failure("invalid browser response"))?;if v["id"]==id{if let Some(error)=v.get("error"){return Err(failure(format!("browser attach failed: {}",text(error,"message","unknown error"))))}session=Some(v["result"]["sessionId"].as_str().ok_or_else(||failure("browser returned no target session"))?.to_owned());break;}}}
-            id+=1;
+    tokio::time::timeout(Duration::from_secs_f64(seconds), async {
+        let endpoint = if url.starts_with("http://") || url.starts_with("https://") {
+            let info =
+                request(http()?.get(format!("{}/json/version", url.trim_end_matches('/')))).await?;
+            info["webSocketDebuggerUrl"]
+                .as_str()
+                .ok_or_else(|| failure("browser returned no debugger WebSocket URL"))?
+                .to_owned()
+        } else {
+            url.to_owned()
+        };
+        if !endpoint.starts_with("ws://") && !endpoint.starts_with("wss://") {
+            return Err(Error::new(
+                4202,
+                "browser endpoint must use HTTP or WebSocket",
+            ));
         }
-        let mut command=json!({"id":id,"method":method,"params":args.get("params").cloned().unwrap_or(json!({}))});if let Some(session)=session{command["sessionId"]=json!(session);}
-        socket.send(Message::Text(command.to_string().into())).await.map_err(|_|failure("browser connection closed"))?;
-        while let Some(message)=socket.next().await {
-            match message.map_err(|_|failure("invalid browser response"))? {
-                Message::Text(raw)=>{if raw.len()>BODY_LIMIT{return Err(failure("browser response exceeds 24 MB"))}let v:Value=serde_json::from_str(&raw).map_err(|_|failure("invalid browser response"))?;if v["id"]!=id{continue}
-if let Some(error)=v.get("error"){return Err(failure(format!("browser command failed: {}",text(error,"message","unknown error"))))}return Ok(v["result"].clone());},
-                Message::Ping(data)=>socket.send(Message::Pong(data)).await.map_err(|_|failure("browser connection closed"))?,
-                Message::Close(_)=>break,
-                _=>{},
+        let (mut socket, _) = tokio_tungstenite::connect_async(&endpoint)
+            .await
+            .map_err(|_| failure("browser WebSocket connection failed"))?;
+        let mut id = 1u64;
+        let mut session = None;
+        if let Some(target) = args["target_id"].as_str() {
+            socket
+                .send(Message::Text(json!({
+                    "id": id,
+                    "method": "Target.attachToTarget",
+                    "params": { "targetId": target, "flatten": true }
+                }).to_string().into()))
+                .await
+                .map_err(|_| failure("browser connection closed"))?;
+            loop {
+                let message = socket
+                    .next()
+                    .await
+                    .ok_or_else(|| failure("browser connection closed"))?
+                    .map_err(|_| failure("invalid browser response"))?;
+                if let Message::Text(raw) = message {
+                    let v: Value = serde_json::from_str(&raw)
+                        .map_err(|_| failure("invalid browser response"))?;
+                    if v["id"] == id {
+                        if let Some(error) = v.get("error") {
+                            return Err(failure(format!(
+                                "browser attach failed: {}",
+                                text(error, "message", "unknown error")
+                            )));
+                        }
+                        session = Some(
+                            v["result"]["sessionId"]
+                                .as_str()
+                                .ok_or_else(|| failure("browser returned no target session"))?
+                                .to_owned(),
+                        );
+                        break;
+                    }
+                }
+            }
+            id += 1;
+        }
+        let mut command = json!({"id":id,"method":method,"params":args.get("params").cloned().unwrap_or(json!({}))});
+        if let Some(session) = session {
+            command["sessionId"] = json!(session);
+        }
+        socket
+            .send(Message::Text(command.to_string().into()))
+            .await
+            .map_err(|_| failure("browser connection closed"))?;
+        while let Some(message) = socket.next().await {
+            match message.map_err(|_| failure("invalid browser response"))? {
+                Message::Text(raw) => {
+                    if raw.len() > BODY_LIMIT {
+                        return Err(failure("browser response exceeds 24 MB"));
+                    }
+                    let v: Value = serde_json::from_str(&raw)
+                        .map_err(|_| failure("invalid browser response"))?;
+                    if v["id"] != id {
+                        continue;
+                    }
+                    if let Some(error) = v.get("error") {
+                        return Err(failure(format!(
+                            "browser command failed: {}",
+                            text(error, "message", "unknown error")
+                        )));
+                    }
+                    return Ok(v["result"].clone());
+                }
+                Message::Ping(data) => socket
+                    .send(Message::Pong(data))
+                    .await
+                    .map_err(|_| failure("browser connection closed"))?,
+                Message::Close(_) => break,
+                _ => {}
             }
         }
         Err(failure("browser connection closed before replying"))
-    }).await.map_err(|_|failure("browser command timed out"))?
+    })
+    .await
+    .map_err(|_| failure("browser command timed out"))?
 }
 #[derive(Default)]
 struct Computer {
@@ -1699,7 +2110,29 @@ fn computer_config(cfg: &Value, env: &std::collections::BTreeMap<String, String>
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
     }
-    json!({"command":text(&cfg["computer_use"],"command",if command.is_empty(){"cua-driver"}else{&command}),"args":cfg["computer_use"].get("args").cloned().unwrap_or(json!(["mcp"])),"isolated_env":true,"env":{"CUA_DRIVER_RS_TELEMETRY_ENABLED":if cfg["computer_use"]["telemetry"]==true{"1"}else{"0"}}})
+    json!({
+        "command": text(
+            &cfg["computer_use"],
+            "command",
+            if command.is_empty() {
+                "cua-driver"
+            } else {
+                &command
+            },
+        ),
+        "args": cfg["computer_use"]
+            .get("args")
+            .cloned()
+            .unwrap_or(json!(["mcp"])),
+        "isolated_env": true,
+        "env": {
+            "CUA_DRIVER_RS_TELEMETRY_ENABLED": if cfg["computer_use"]["telemetry"] == true {
+                "1"
+            } else {
+                "0"
+            }
+        }
+    })
 }
 fn mcp_data(result: &Value) -> Value {
     if let Some(value) = result.get("structuredContent") {
@@ -2077,10 +2510,11 @@ fn browsers() -> &'static Mutex<BrowserMap> {
     BROWSERS.get_or_init(Default::default)
 }
 fn on_path(command: &str) -> Option<PathBuf> {
-    let mut directories = std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
-        .collect::<Vec<_>>();
+    let cwd = std::env::current_dir().ok()?;
+    if let Some(path) = common::command_path(command, &cwd) {
+        return Some(path);
+    }
+    let mut directories = vec![];
     if let Some(home) = std::env::var_os("HOME") {
         let home = PathBuf::from(home);
         directories.push(home.join(".local/bin"));
@@ -2094,24 +2528,7 @@ fn on_path(command: &str) -> Option<PathBuf> {
     directories
         .into_iter()
         .map(|path| path.join(command))
-        .find(|p| executable_file(p))
-}
-fn executable_file(path: &Path) -> bool {
-    let Ok(meta) = fs::metadata(path) else {
-        return false;
-    };
-    if !meta.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        meta.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
+        .find(|p| common::executable_file(p))
 }
 fn browser_use_command(home: &Path, cfg: &Value) -> Option<Vec<String>> {
     if let Some(command) = cfg["browser"]["command"].as_str().filter(|s| !s.is_empty()) {
@@ -2121,7 +2538,7 @@ fn browser_use_command(home: &Path, cfg: &Value) -> Option<Vec<String>> {
         for name in ["browser-use", "uvx"] {
             let path = if managed {
                 let path = home.join("bin").join(name);
-                executable_file(&path).then_some(path)
+                common::executable_file(&path).then_some(path)
             } else {
                 on_path(name)
             };
@@ -2151,34 +2568,6 @@ fn browser_command(cfg: &Value) -> Vec<String> {
             "agent-browser@0.26.0".into(),
         ]
     }
-}
-fn desktop_env(command: &mut Command) {
-    let mut env = std::collections::BTreeMap::new();
-    for key in [
-        "PATH",
-        "HOME",
-        "USER",
-        "LOGNAME",
-        "TMPDIR",
-        "TEMP",
-        "TMP",
-        "LANG",
-        "LC_ALL",
-        "DISPLAY",
-        "WAYLAND_DISPLAY",
-        "XDG_RUNTIME_DIR",
-        "XAUTHORITY",
-        "DBUS_SESSION_BUS_ADDRESS",
-        "SystemRoot",
-        "LOCALAPPDATA",
-        "APPDATA",
-        "USERPROFILE",
-    ] {
-        if let Some(v) = std::env::var_os(key) {
-            env.insert(key, v);
-        }
-    }
-    command.env_clear().envs(env);
 }
 async fn launch_browser(
     home: &Path,
@@ -2273,7 +2662,7 @@ async fn launch_browser(
 fn agent_command(browser: &Browser, verb: &str, args: &[String]) -> Command {
     let mut command = Command::new(&browser.command[0]);
     command.args(&browser.command[1..]);
-    desktop_env(&mut command);
+    desktop_environment(&mut command);
     command
         .env("AGENT_BROWSER_SOCKET_DIR", &browser.directory)
         .env("AGENT_BROWSER_IDLE_TIMEOUT_MS", "1800000")
@@ -2361,18 +2750,89 @@ async fn browser_tool(
             format!("@{value}")
         })
     };
-    let (verb,arguments)=match name {
-        "browser_navigate"=>{let url=common::required(args,"url")?;let parsed=url::Url::parse(url).map_err(|_|Error::new(4202,"invalid browser URL"))?;if !matches!(parsed.scheme(),"http"|"https"|"about"){return Err(Error::new(4202,"browser URL must use http, https or about"))}("open",vec![url.to_owned()])},
-        "browser_snapshot"=>("snapshot",if args["full"]==true{vec![]}else{vec!["-c".into()]}),
-        "browser_click"=>("click",vec![reference()?]),
-        "browser_type"=>("fill",vec![reference()?,args["text"].as_str().ok_or_else(||Error::new(4200,"missing parameter: text"))?.to_owned()]),
-        "browser_scroll"=>("scroll",vec![common::required(args,"direction")?.to_owned(),args["pixels"].as_u64().unwrap_or(600).min(10000).to_string()]),
-        "browser_back"=>("back",vec![]),
-        "browser_press"=>("press",vec![common::required(args,"key")?.to_owned()]),
-        "browser_get_images"=>("eval",vec!["JSON.stringify(Array.from(document.images).map(i=>({src:i.currentSrc||i.src,alt:i.alt,width:i.naturalWidth,height:i.naturalHeight})))".into()]),
-        "browser_console"=>if let Some(expression)=args["expression"].as_str(){("eval",vec![expression.into()])}else{("console",if args["clear"]==true{vec!["--clear".into()]}else{vec![]})},
-        "browser_vision"=>{let path=artifact(home,bot,"screenshots","png")?;let mut args=vec![path.to_string_lossy().into_owned()];if args.len()==1&&cfg["browser"]["annotate"]==true{args.push("--annotate".into());}agent_browser(browser,"screenshot",&args).await?;let data=STANDARD.encode(common::read_regular(&path, BODY_LIMIT)?);return Ok(json!({"screenshot_path":path,"content":[{"type":"text","text":format!("Browser screenshot saved to {}",path.display())},{"type":"image","mimeType":"image/png","data":data}]}));},
-        _=>return Err(Error::new(4204,"unknown browser tool")),
+    let (verb, arguments) = match name {
+        "browser_navigate" => {
+            let url = common::required(args, "url")?;
+            let parsed =
+                url::Url::parse(url).map_err(|_| Error::new(4202, "invalid browser URL"))?;
+            if !matches!(parsed.scheme(), "http" | "https" | "about") {
+                return Err(Error::new(
+                    4202,
+                    "browser URL must use http, https or about",
+                ));
+            }
+            ("open", vec![url.to_owned()])
+        }
+        "browser_snapshot" => (
+            "snapshot",
+            if args["full"] == true {
+                vec![]
+            } else {
+                vec!["-c".into()]
+            },
+        ),
+        "browser_click" => ("click", vec![reference()?]),
+        "browser_type" => (
+            "fill",
+            vec![
+                reference()?,
+                args["text"]
+                    .as_str()
+                    .ok_or_else(|| Error::new(4200, "missing parameter: text"))?
+                    .to_owned(),
+            ],
+        ),
+        "browser_scroll" => (
+            "scroll",
+            vec![
+                common::required(args, "direction")?.to_owned(),
+                args["pixels"]
+                    .as_u64()
+                    .unwrap_or(600)
+                    .min(10000)
+                    .to_string(),
+            ],
+        ),
+        "browser_back" => ("back", vec![]),
+        "browser_press" => ("press", vec![common::required(args, "key")?.to_owned()]),
+        "browser_get_images" => (
+            "eval",
+            vec![
+                "JSON.stringify(Array.from(document.images).map(i=>({src:i.currentSrc||i.src,alt:i.alt,width:i.naturalWidth,height:i.naturalHeight})))"
+                    .into(),
+            ],
+        ),
+        "browser_console" => {
+            if let Some(expression) = args["expression"].as_str() {
+                ("eval", vec![expression.into()])
+            } else {
+                (
+                    "console",
+                    if args["clear"] == true {
+                        vec!["--clear".into()]
+                    } else {
+                        vec![]
+                    },
+                )
+            }
+        }
+        "browser_vision" => {
+            let path = artifact(home, bot, "screenshots", "png")?;
+            let mut args = vec![path.to_string_lossy().into_owned()];
+            if args.len() == 1 && cfg["browser"]["annotate"] == true {
+                args.push("--annotate".into());
+            }
+            agent_browser(browser, "screenshot", &args).await?;
+            let data = STANDARD.encode(common::read_regular(&path, BODY_LIMIT)?);
+            return Ok(json!({
+                "screenshot_path": path,
+                "content": [
+                    { "type": "text", "text": format!("Browser screenshot saved to {}", path.display()) },
+                    { "type": "image", "mimeType": "image/png", "data": data }
+                ]
+            }));
+        }
+        _ => return Err(Error::new(4204, "unknown browser tool")),
     };
     let result = agent_browser(browser, verb, &arguments).await;
     let result = match result {
@@ -2387,7 +2847,7 @@ async fn browser_tool(
         {
             let mut command = Command::new(&browser.command[0]);
             command.args(&browser.command[1..]).arg("install");
-            desktop_env(&mut command);
+            desktop_environment(&mut command);
             let install = run(command, b"", 300).await?;
             if install["success"] != true {
                 return Err(failure(format!(
@@ -2615,18 +3075,24 @@ mod safety_tests {
             "Input.dispatchMouseEvent",
             "Target.createTarget",
         ] {
-            assert_eq!(browser_cdp(&json!({}), &env, &json!({"method":method,"params":{"expression":"location='http://169.254.169.254/'"}})).await.unwrap_err().code, 4302);
+            assert_eq!(
+                browser_cdp(&json!({}), &env, &json!({"method":method,"params":{"expression":"location='http://169.254.169.254/'"}}))
+                    .await
+                    .unwrap_err()
+                    .code,
+                4302
+            );
         }
     }
-    fn fixture() -> tempfile::TempDir {
-        let home = tempfile::tempdir().unwrap();
+    fn fixture() -> common::TestHome {
+        let home = common::TestHome::new();
         crate::db::migrate(home.path()).unwrap();
         crate::db::open(home.path()).unwrap().execute("INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0)", []).unwrap();
         crate::db::open(home.path())
             .unwrap()
             .execute("INSERT INTO bots(name,owner_id) VALUES('owl','alice')", [])
             .unwrap();
-        let cwd = home.path().join("workspace");
+        let cwd = home.workspace();
         fs::create_dir_all(&cwd).unwrap();
         crate::db::open(home.path())
             .unwrap()
@@ -2646,17 +3112,34 @@ mod safety_tests {
             "OPENAI_API_KEY=secret\nAWS_SECRET_ACCESS_KEY=secret\nPYTHONPATH=/wrong\n",
         )
         .unwrap();
-        let cwd = home.path().join("scheduled-directory");
+        let cwd = home.workspace().with_file_name("scheduled-directory");
         fs::create_dir(&cwd).unwrap();
         fs::write(cwd.join("from-pi.txt"), "shared cwd").unwrap();
-        crate::runtime_store::open(home.path()).unwrap().execute("INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES('section','alice','owl','frozen',?)",[json!({"cwd":cwd}).to_string()]).unwrap();
-        let result = call(home.path(), "alice", "owl", "section", "execute_code", &json!({"code":"import os\nassert 'OPENAI_API_KEY' not in os.environ\nassert 'AWS_SECRET_ACCESS_KEY' not in os.environ\nassert 'PYTHONPATH' not in os.environ\nprint(open('from-pi.txt').read())"})).await.unwrap();
+        crate::runtime_store::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES('section','alice','owl','frozen',?)",
+                [json!({ "cwd": cwd }).to_string()],
+            )
+            .unwrap();
+        let result = call(
+            home.path(),
+            "alice",
+            "owl",
+            "section",
+            "execute_code",
+            &json!({
+                "code": "import os\nassert 'OPENAI_API_KEY' not in os.environ\nassert 'AWS_SECRET_ACCESS_KEY' not in os.environ\nassert 'PYTHONPATH' not in os.environ\nprint(open('from-pi.txt').read())"
+            }),
+        )
+        .await
+        .unwrap();
         close_session(home.path(), "section").await;
         assert_eq!(result["success"], true, "{result}");
         assert_eq!(result["output"], "shared cwd\n");
         assert_eq!(
             workdir(home.path(), "owl").unwrap(),
-            home.path().join("workspace").canonicalize().unwrap()
+            home.workspace().canonicalize().unwrap()
         );
     }
     #[tokio::test]

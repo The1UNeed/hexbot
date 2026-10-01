@@ -4,18 +4,9 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path, time::Duration};
 
 fn config(home: &Path, bot: &str, section: &str) -> Result<Value> {
-    let mut value = common::read_config(home)?[section].clone();
-    let local = common::read_config(&home.join("profiles").join(bot))?[section].clone();
-    if let Some(local) = local.as_object() {
-        if !value.is_object() {
-            value = json!({});
-        }
-        for (k, v) in local {
-            value[k] = v.clone();
-        }
-    }
-    Ok(value)
+    Ok(common::merged_config(home, bot)?[section].clone())
 }
+
 fn client(seconds: u64) -> Result<reqwest::Client> {
     crate::http::client(seconds, 0).map_err(|e| Error::new(5200, e.to_string()))
 }
@@ -61,24 +52,10 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
         serde_json::from_str(include_str!("external_tool_schemas.json")).expect("tool schemas")
     });
     let mut output = vec![];
-    for mut schema in schemas.iter().cloned() {
+    for schema in schemas.iter().cloned() {
         let name = schema["name"].as_str().unwrap();
         if !connectors::tool_available(home, bot, name)? {
             continue;
-        }
-        if name == "video_generate" {
-            schema["description"] = json!(
-                "Generate a video from a prompt or animate an image using the configured video provider. Returns a video URL. Generation may take several minutes."
-            );
-            for (key, kind) in [
-                ("image_url", "string"),
-                ("negative_prompt", "string"),
-                ("audio", "boolean"),
-                ("seed", "integer"),
-                ("upscale", "boolean"),
-            ] {
-                schema["parameters"]["properties"][key] = json!({"type":kind});
-            }
         }
         output.push(schema);
     }
@@ -111,7 +88,7 @@ pub async fn call(
             }
             let env = connectors::credentials(home, bot)?;
             match name {
-                "x_search" => x_search(home, bot, &env, &args).await,
+                "x_search" => x_search(home, bot, &args).await,
                 "video_generate" => video(home, bot, &env, &args).await,
                 _ => home_assistant(&env, name, &args).await,
             }
@@ -161,7 +138,29 @@ async fn home_assistant(env: &BTreeMap<String, String>, name: &str, p: &Value) -
             let states =
                 response(client.get(format!("{base}/api/states")).bearer_auth(key)).await?;
             let area = string(p, "area", "").to_lowercase();
-            let entities=states.as_array().ok_or_else(||Error::new(5200,"Home Assistant returned invalid states"))?.iter().filter(|s|(domain.is_empty()||string(s,"entity_id","").starts_with(&format!("{domain}.")))&&(area.is_empty()||string(&s["attributes"],"friendly_name","").to_lowercase().contains(&area)||string(&s["attributes"],"area","").to_lowercase().contains(&area))).map(|s|json!({"entity_id":s["entity_id"],"state":s["state"],"friendly_name":string(&s["attributes"],"friendly_name","")})).collect::<Vec<_>>();
+            let entities = states
+                .as_array()
+                .ok_or_else(|| Error::new(5200, "Home Assistant returned invalid states"))?
+                .iter()
+                .filter(|s| {
+                    (domain.is_empty()
+                        || string(s, "entity_id", "").starts_with(&format!("{domain}.")))
+                        && (area.is_empty()
+                            || string(&s["attributes"], "friendly_name", "")
+                                .to_lowercase()
+                                .contains(&area)
+                            || string(&s["attributes"], "area", "")
+                                .to_lowercase()
+                                .contains(&area))
+                })
+                .map(|s| {
+                    json!({
+                        "entity_id": s["entity_id"],
+                        "state": s["state"],
+                        "friendly_name": string(&s["attributes"], "friendly_name", "")
+                    })
+                })
+                .collect::<Vec<_>>();
             json!({"count":entities.len(),"entities":entities})
         }
         "ha_list_services" => {
@@ -254,12 +253,7 @@ async fn home_assistant(env: &BTreeMap<String, String>, name: &str, p: &Value) -
     };
     Ok(json!({"result":result}))
 }
-async fn x_search(
-    home: &Path,
-    bot: &str,
-    _env: &BTreeMap<String, String>,
-    p: &Value,
-) -> Result<Value> {
+async fn x_search(home: &Path, bot: &str, p: &Value) -> Result<Value> {
     let query = common::required(p, "query")?.trim();
     if query.is_empty() {
         return Err(Error::new(4200, "query is required"));
@@ -373,9 +367,29 @@ async fn x_search(
     }
     let citations = data["citations"].as_array().cloned().unwrap_or_default();
     let degraded = !filters.is_empty() && citations.is_empty() && inline.is_empty();
-    Ok(
-        json!({"success":true,"provider":"xai","credential_source":auth["provider"],"tool":"x_search","model":model,"query":query,"answer":data["output_text"].as_str().map(str::to_owned).unwrap_or_else(||parts.join("\n\n")),"citations":citations,"inline_citations":inline,"degraded":degraded,"degraded_reason":if degraded{Some(format!("no citations returned despite filters: {}",filters.join(", ")))}else{None}}),
-    )
+    Ok(json!({
+        "success": true,
+        "provider": "xai",
+        "credential_source": auth["provider"],
+        "tool": "x_search",
+        "model": model,
+        "query": query,
+        "answer": data["output_text"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| parts.join("\n\n")),
+        "citations": citations,
+        "inline_citations": inline,
+        "degraded": degraded,
+        "degraded_reason": if degraded {
+            Some(format!(
+                "no citations returned despite filters: {}",
+                filters.join(", ")
+            ))
+        } else {
+            None
+        }
+    }))
 }
 fn fal_payload(family: &Value, p: &Value) -> Value {
     let mut body = json!({"prompt":p["prompt"]});
@@ -585,14 +599,68 @@ async fn video(home: &Path, bot: &str, env: &BTreeMap<String, String>, p: &Value
         upscaled = true;
         data = result;
     }
-    Ok(
-        json!({"success":true,"video":url,"model":model,"prompt":prompt,"modality":if is_image{"image"}else{"text"},"aspect_ratio":string(p,"aspect_ratio","16:9"),"duration":p["duration"].as_i64().unwrap_or(0),"provider":"fal","upscaled":upscaled,"metadata":data}),
-    )
+    Ok(json!({
+        "success": true,
+        "video": url,
+        "model": model,
+        "prompt": prompt,
+        "modality": if is_image { "image" } else { "text" },
+        "aspect_ratio": string(p, "aspect_ratio", "16:9"),
+        "duration": p["duration"].as_i64().unwrap_or(0),
+        "provider": "fal",
+        "upscaled": upscaled,
+        "metadata": data
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn external_tools_use_the_shared_merge_and_reject_profile_symlinks() {
+        let home = tempfile::tempdir().unwrap();
+        common::write_config(
+            home.path(),
+            &json!({"video_gen":{"fal":{"model":"A","timeout":60}}}),
+        )
+        .unwrap();
+        common::write_config(
+            &home.path().join("profiles/owl"),
+            &json!({"video_gen":{"fal":{"model":"B"}}}),
+        )
+        .unwrap();
+        assert_eq!(
+            config(home.path(), "owl", "video_gen").unwrap()["fal"],
+            json!({"model":"B","timeout":60})
+        );
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), home.path().join("profiles/link")).unwrap();
+        assert!(config(home.path(), "link", "video_gen").is_err());
+    }
+    #[test]
+    fn video_schema_has_a_complete_description_and_parameters() {
+        let schemas: Vec<Value> =
+            serde_json::from_str(include_str!("external_tool_schemas.json")).unwrap();
+        let schema = schemas
+            .iter()
+            .find(|s| s["name"] == "video_generate")
+            .unwrap();
+        assert!(
+            schema["description"]
+                .as_str()
+                .unwrap()
+                .starts_with("Generate a video")
+        );
+        for (key, kind) in [
+            ("image_url", "string"),
+            ("negative_prompt", "string"),
+            ("audio", "boolean"),
+            ("seed", "integer"),
+            ("upscale", "boolean"),
+        ] {
+            assert_eq!(schema["parameters"]["properties"][key]["type"], kind);
+        }
+    }
     #[test]
     fn fal_model_capabilities_preserve_wire_quirks() {
         let models: Value = serde_json::from_str(include_str!("fal_video_models.json")).unwrap();

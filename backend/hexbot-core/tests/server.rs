@@ -1,4 +1,5 @@
 //! Exercise the actual HTTP/WebSocket router with the unchanged browser protocol.
+mod support;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use hexbot_core::{
@@ -76,7 +77,12 @@ emit({type:'agent_end'});emit({type:'agent_settled'});}});
         let token = auth::local_token(&home).unwrap();
         let router = server::router(app.clone());
         let task = tokio::spawn(async move {
-            axum::serve(listener, router).await.unwrap();
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
         });
         Self {
             _directory: directory,
@@ -144,8 +150,55 @@ async fn browser_bootstrap_static_files_and_host_origin_checks() {
     assert_eq!(response.headers()["cache-control"], "no-store");
     let html = response.text().await.unwrap();
     assert!(html.contains("unchanged app"));
-    assert!(html.contains("window.__HERMES_AUTH_REQUIRED__=false"));
-    assert!(html.contains(&fixture.token));
+    // Any local process can fetch this page, so it never carries the admin token,
+    // even on a loopback daemon: the browser signs in with a cookie instead.
+    assert!(html.contains("window.__HERMES_AUTH_REQUIRED__=true"));
+    assert!(!html.contains(&fixture.token));
+    assert!(!html.contains("__HERMES_SESSION_TOKEN__"));
+    for host in [
+        "localhost",
+        "localhost:9119",
+        "127.0.0.1:9119",
+        "[::1]:9119",
+    ] {
+        let body = client
+            .get(&fixture.base)
+            .header("host", host)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(!body.contains(&fixture.token));
+        assert!(!body.contains("__HERMES_SESSION_TOKEN__"));
+        // The same host behind any proxy header gets the gated bundle.
+        let forwarded = client
+            .get(&fixture.base)
+            .header("host", host)
+            .header("x-forwarded-for", "10.0.0.2")
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(forwarded.contains("window.__HERMES_AUTH_REQUIRED__=true"));
+        assert!(!forwarded.contains(&fixture.token));
+        assert!(!forwarded.contains("__HERMES_SESSION_TOKEN__"));
+    }
+    let redirected = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .get(&fixture.base)
+        .header("accept", "text/html")
+        .header("x-forwarded-for", "10.0.0.2")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(redirected.status(), 303);
+    assert_eq!(redirected.headers()["location"], "/login");
     let hostile = client
         .get(&fixture.base)
         .header("host", "attacker.example")
@@ -221,6 +274,66 @@ async fn browser_bootstrap_static_files_and_host_origin_checks() {
 }
 
 #[tokio::test]
+async fn one_time_sign_in_link_signs_a_browser_in_once() {
+    let fixture = Fixture::new(false).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    // A loopback browser without a cookie is sent to sign in like any other.
+    let response = client
+        .get(&fixture.base)
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 303);
+    assert_eq!(response.headers()["location"], "/login");
+    let code = auth::new_code(&fixture.home, "local").unwrap()["code"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let link = format!("{}/login?code={code}&next=/b/owl", fixture.base);
+    let signed = client.get(&link).send().await.unwrap();
+    assert_eq!(signed.status(), 303);
+    assert_eq!(signed.headers()["location"], "/b/owl");
+    let cookie = signed.headers()["set-cookie"].to_str().unwrap().to_owned();
+    assert!(cookie.starts_with("hermes_session_at_"));
+    assert!(cookie.contains("HttpOnly"));
+    let again = client.get(&link).send().await.unwrap();
+    assert_eq!(again.status(), 200);
+    assert!(again.headers().get("set-cookie").is_none());
+    assert!(again.text().await.unwrap().contains("used or has expired"));
+    // The cookie is an ordinary browser session: it loads the app and mints tickets.
+    let cookie = cookie.split(';').next().unwrap().to_owned();
+    let page = client
+        .get(&fixture.base)
+        .header("accept", "text/html")
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.status(), 200);
+    let html = page.text().await.unwrap();
+    assert!(html.contains("__HERMES_AUTH_REQUIRED__=true"));
+    assert!(!html.contains("__HERMES_SESSION_TOKEN__"));
+    let ticket = client
+        .post(format!("{}/api/auth/ws-ticket", fixture.base))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ticket.status(), 200);
+    let devices = auth::call(&fixture.home, "local", "hexbot.devices.list", &json!({}))
+        .unwrap()
+        .unwrap();
+    assert!(devices["devices"].as_array().unwrap().iter().any(|device| {
+        device["name"] == "Browser on this computer" && device["platform"] == "browser"
+    }));
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
 async fn pairing_cookie_login_single_use_tickets_and_bearer_session() {
     let fixture = Fixture::new(true).await;
     let client = reqwest::Client::new();
@@ -260,11 +373,24 @@ async fn pairing_cookie_login_single_use_tickets_and_bearer_session() {
     );
     let login = client
         .post(format!("{}/hexbot/session", fixture.base))
+        .header("x-forwarded-proto", "https")
         .bearer_auth(token)
         .send()
         .await
         .unwrap();
     assert_eq!(login.status(), 200);
+    assert!(
+        login.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .starts_with("hermes_session_at_")
+    );
+    assert!(
+        !login.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .contains("; Secure")
+    );
     let cookie = login.headers()["set-cookie"]
         .to_str()
         .unwrap()
@@ -381,7 +507,7 @@ async fn websocket_mutation_events_owner_isolation_and_flat_replay() {
             [],
         )
         .unwrap();
-    let member = auth::mint_device(&fixture.home, "Member", "test", "member").unwrap();
+    let member = support::mint_device(&fixture.home, "Member", "test", "member").unwrap();
     let mut member_socket = fixture
         .socket(member["device_token"].as_str().unwrap())
         .await;
@@ -451,7 +577,7 @@ async fn websocket_mutation_events_owner_isolation_and_flat_replay() {
 async fn revocation_closes_existing_socket_and_invalidates_unused_ticket() {
     let fixture = Fixture::new(false).await;
     let client = reqwest::Client::new();
-    let device = auth::mint_device(&fixture.home, "Victim", "test", "local").unwrap();
+    let device = support::mint_device(&fixture.home, "Victim", "test", "local").unwrap();
     let token = device["device_token"].as_str().unwrap();
     let mut socket = fixture.socket(token).await;
     let ticket = client
@@ -575,7 +701,7 @@ async fn rpc_chat_and_attachment_bytes_work_without_frontend_changes() {
             [],
         )
         .unwrap();
-    let other = auth::mint_device(&fixture.home, "Other", "test", "other").unwrap();
+    let other = support::mint_device(&fixture.home, "Other", "test", "other").unwrap();
     let mut other_socket = fixture
         .socket(other["device_token"].as_str().unwrap())
         .await;
@@ -698,7 +824,7 @@ async fn websocket_upgrade_rejects_cross_origin_even_with_valid_token() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn attachment_transport_accepts_existing_size_ranges() {
+async fn attachment_transport_accepts_supported_sizes_and_reports_oversize() {
     let fixture = Fixture::new(false).await;
     let mut socket = fixture.socket(&fixture.token).await;
     let created = request(
@@ -719,8 +845,8 @@ async fn attachment_transport_accepts_existing_size_ranges() {
     let live = opened["result"]["section"]["live_session_id"]
         .as_str()
         .unwrap();
-    // This valid generic file becomes a >16 MiB JSON-RPC frame after base64.
-    let bytes = vec![b'a'; 13 * 1024 * 1024];
+    // The largest supported generic file fits as one base64 JSON-RPC frame.
+    let bytes = vec![b'a'; 45 * 1024 * 1024];
     let attached=request(&mut socket,"large","file.attach",json!({"session_id":live,"name":"large.txt","data_url":format!("data:text/plain;base64,{}",base64::engine::general_purpose::STANDARD.encode(&bytes))})).await;
     assert!(attached.get("error").is_none(), "{attached}");
     assert_eq!(
@@ -729,6 +855,22 @@ async fn attachment_transport_accepts_existing_size_ranges() {
             .len(),
         bytes.len() as u64
     );
+    // A rejected upload fits the transport and leaves other RPCs usable.
+    let oversized = "A".repeat(4 * (46usize * 1024 * 1024).div_ceil(3));
+    for method in ["file.attach", "pdf.attach"] {
+        let params = if method == "file.attach" {
+            json!({"session_id":live,"name":"too-big.bin","data_url":format!("data:application/octet-stream;base64,{oversized}")})
+        } else {
+            json!({"session_id":live,"content_base64":oversized})
+        };
+        let rejected = request(&mut socket, "oversized", method, params).await;
+        assert_eq!(rejected["error"]["code"], 4202);
+        assert_eq!(rejected["error"]["message"], "attachment exceeds 45 MiB");
+        assert_eq!(
+            request(&mut socket, "ping", "gateway.ping", json!({})).await["result"]["pong"],
+            true
+        );
+    }
     // Image commands must also fit the Pi subprocess record boundary.
     let mut image = vec![0; 2 * 1024 * 1024];
     image[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
@@ -815,4 +957,556 @@ if(c.type==='steer' && pending){reply(pending);pending=null;emit({type:'message_
     .await;
     assert!(history.to_string().contains("Completed after disconnect"));
     fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn daemon_home_is_only_returned_to_admins() {
+    let fixture = Fixture::new(false).await;
+    db::open(&fixture.home).unwrap().execute("INSERT INTO users(id,display_name,role,created_at) VALUES('info-member','Member','member',0)", []).unwrap();
+    let member = support::mint_device(&fixture.home, "Member", "test", "info-member").unwrap();
+    let mut socket = fixture
+        .socket(member["device_token"].as_str().unwrap())
+        .await;
+    let info = request(&mut socket, "member-info", "hexbot.info", json!({})).await;
+    assert_eq!(info["result"]["home"], "");
+    assert!(info["result"]["install_id"].is_string());
+    // The sandbox state is reported to every user, so Settings can show it.
+    let sandbox = &info["result"]["sandbox"];
+    if cfg!(target_os = "macos") {
+        assert_eq!(sandbox, "sandbox-exec");
+    } else {
+        assert!(sandbox.is_null() || sandbox == "bubblewrap", "{sandbox}");
+    }
+    assert_eq!(info["result"]["auth_required"], true);
+    socket.close(None).await.unwrap();
+    let mut socket = fixture.socket(&fixture.token).await;
+    assert_eq!(
+        request(&mut socket, "admin-info", "hexbot.info", json!({})).await["result"]["home"],
+        json!(fixture.home)
+    );
+    socket.close(None).await.unwrap();
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn connect_browser_login_starts_pkce_redirect() {
+    let fixture = Fixture::new(true).await;
+    fs::write(fixture.home.join("connect.json"), json!({"api_base":"https://connect.hexbot.app","daemon_id":"daemon-1","daemon_token":"fixture-only","tunnel_token":"fixture-only","tunnel_hostname":"fixture.hexbot.test","owner_id":"owner-1","issuer":"https://connect.hexbot.app","keys":[{"kid":"fixture"}]}).to_string()).unwrap();
+    let response = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .get(format!(
+            "{}/auth/login?provider=connect&next=/",
+            fixture.base
+        ))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let location = response.headers().get("location").cloned();
+    fixture.shutdown().await;
+    assert!(
+        status.is_redirection() && location.is_some(),
+        "Connect browser login returned {status} without a redirect"
+    );
+}
+
+#[tokio::test]
+async fn remote_index_and_secure_cookies_do_not_expose_local_token() {
+    let fixture = Fixture::new(false).await;
+    let client = reqwest::Client::new();
+    let local = client
+        .get(&fixture.base)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!local.contains("__HERMES_SESSION_TOKEN__"));
+    assert!(!local.contains(&fixture.token));
+    for header in [
+        "cf-connecting-ip",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "forwarded",
+    ] {
+        let body = client
+            .get(&fixture.base)
+            .header(header, "fixture")
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            !body.contains("__HERMES_SESSION_TOKEN__"),
+            "token leaked through {header}"
+        );
+    }
+    hexbot_core::common::write_config(
+        &fixture.home,
+        &json!({"dashboard":{"public_url":"https://daemon.example"}}),
+    )
+    .unwrap();
+    let body = client
+        .get(&fixture.base)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!body.contains("__HERMES_SESSION_TOKEN__"));
+    let response = client
+        .post(format!("{}/hexbot/session", fixture.base))
+        .bearer_auth(&fixture.token)
+        .header("host", "daemon.example")
+        .header("x-forwarded-proto", "https")
+        .send()
+        .await
+        .unwrap();
+    let cookie = response.headers()["set-cookie"].to_str().unwrap();
+    assert!(cookie.starts_with("__Host-hermes_session_at="));
+    for attribute in ["Secure", "HttpOnly", "SameSite=Strict", "Path=/"] {
+        assert!(cookie.contains(attribute));
+    }
+    let response = client
+        .post(format!("{}/api/auth/ws-ticket", fixture.base))
+        .header("cookie", cookie.split(';').next().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let response = client
+        .get(&fixture.base)
+        .header("origin", "http://localhost:4321")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    let mut socket = fixture.socket(&fixture.token).await;
+    assert_eq!(
+        request(&mut socket, "info-version", "hexbot.info", json!({})).await["result"]["hermes_version"],
+        "0.87.1"
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn browser_pkce_exchange_checks_state_and_redirects_to_same_origin() {
+    use axum::{
+        Json, Router,
+        routing::{get, post},
+    };
+    use hexbot_core::common;
+    use sha2::{Digest, Sha256};
+    let fixture = Fixture::new(true).await;
+    let (tx, mut exchanges) =
+        tokio::sync::mpsc::unbounded_channel::<(axum::http::HeaderMap, Value)>();
+    let claims = json!({"aud":"daemon-1","sub":"owner-1","iss":"https://connect.hexbot.app","daemon_id":"daemon-1","device_name":"Browser","jti":"browser-code","iat":common::now() as u64,"exp":common::now() as u64+300});
+    let key = b"-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg/h5RZbRebJ4W8wDj\n0zi0DKNjL3NKu4LSLTr3GDLW1AuhRANCAATxLUB7ibYZJBU9qYp7mPjCc/fQfWet\nd1HBTxun6HHLoMilyIfHMI8E9KdpMIfgyZ8cQ6tCl8+s34X5gbiue9D9\n-----END PRIVATE KEY-----\n";
+    let keys = json!({"keys":[{"kty":"EC","crv":"P-256","kid":"fixture","x":"8S1Ae4m2GSQVPamKe5j4wnP30H1nrXdRwU8bp-hxy6A","y":"yKXIh8cwjwT0p2kwh-DJnxxDq0KXz6zfhfmBuK570P0"}]});
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+    header.typ = Some("hexbot-grant+jwt".into());
+    header.kid = Some("fixture".into());
+    let grant = jsonwebtoken::encode(
+        &header,
+        &claims,
+        &jsonwebtoken::EncodingKey::from_ec_pem(key).unwrap(),
+    )
+    .unwrap();
+    let published = keys.clone();
+    let broker = Router::new()
+        .route(
+            "/.well-known/jwks.json",
+            get(move || async move { Json(published) }),
+        )
+        .route(
+            "/api/grants/exchange",
+            post(
+                move |headers: axum::http::HeaderMap, Json(p): Json<Value>| {
+                    let tx = tx.clone();
+                    let grant = grant.clone();
+                    async move {
+                        tx.send((headers, p)).unwrap();
+                        Json(json!({"grant":grant}))
+                    }
+                },
+            ),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move { axum::serve(listener, broker).await.unwrap() });
+    fs::write(fixture.home.join("connect.json"),json!({"api_base":base,"daemon_id":"daemon-1","daemon_token":"secret","tunnel_hostname":"fixture.test","owner_id":"owner-1","issuer":"https://connect.hexbot.app","keys":keys["keys"]}).to_string()).unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let providers: Value = client
+        .get(format!("{}/api/auth/providers", fixture.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        providers["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == "connect")
+    );
+    let start = client
+        .get(format!(
+            "{}/auth/login?provider=connect&next=//evil.test",
+            fixture.base
+        ))
+        .header("host", "fixture.test")
+        .header("x-forwarded-proto", "https")
+        .send()
+        .await
+        .unwrap();
+    assert!(start.status().is_redirection());
+    let cookie = start.headers()["set-cookie"].to_str().unwrap().to_owned();
+    for attribute in ["Secure", "HttpOnly", "SameSite=Lax", "Max-Age=600"] {
+        assert!(cookie.contains(attribute));
+    }
+    let location = url::Url::parse(start.headers()["location"].to_str().unwrap()).unwrap();
+    assert_eq!(location.path(), "/connect/browser");
+    let query: std::collections::HashMap<_, _> = location.query_pairs().into_owned().collect();
+    assert_eq!(query["daemon"], "daemon-1");
+    assert_eq!(query["redirect_uri"], "https://fixture.test/auth/callback");
+    let cookie = cookie.split(';').next().unwrap();
+    let invalid = client
+        .get(format!(
+            "{}/auth/callback?code=code&state=wrong",
+            fixture.base
+        ))
+        .header("host", "fixture.test")
+        .header("cookie", cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), 401);
+    assert!(exchanges.try_recv().is_err());
+    let callback = client
+        .get(format!(
+            "{}/auth/callback?code=code&state={}",
+            fixture.base, query["state"]
+        ))
+        .header("host", "fixture.test")
+        .header("cookie", cookie)
+        .header("x-forwarded-proto", "https")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(callback.status(), 303);
+    assert_eq!(callback.headers()["location"], "/");
+    assert!(
+        callback
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .any(|c| c.to_str().unwrap().starts_with("__Host-hermes_session_at="))
+    );
+    let (headers, body) = exchanges.recv().await.unwrap();
+    assert_eq!(headers["authorization"], "Bearer secret");
+    assert_eq!(body["code"], "code");
+    assert_eq!(body["redirect_uri"], query["redirect_uri"]);
+    assert_eq!(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(
+            body["code_verifier"].as_str().unwrap().as_bytes()
+        )),
+        query["code_challenge"]
+    );
+    let replay = client
+        .get(format!(
+            "{}/auth/callback?code=code&state={}",
+            fixture.base, query["state"]
+        ))
+        .header("host", "fixture.test")
+        .header("cookie", cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), 401);
+    assert!(exchanges.try_recv().is_err());
+    task.abort();
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn websocket_bounds_aggregate_request_bytes_while_requests_are_pending() {
+    let fixture = Fixture::new(false).await;
+    let (entered, mut observed) = tokio::sync::mpsc::unbounded_channel();
+    let broker = axum::Router::new().route(
+        "/api/register/poll",
+        axum::routing::post(move || {
+            let entered = entered.clone();
+            async move {
+                entered.send(()).unwrap();
+                std::future::pending::<axum::Json<Value>>().await
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    hexbot_core::common::write_config(
+        &fixture.home,
+        &json!({"connect":{"api_base":format!("http://{}",listener.local_addr().unwrap())}}),
+    )
+    .unwrap();
+    let broker = tokio::spawn(async move { axum::serve(listener, broker).await.unwrap() });
+    let mut socket = fixture.socket(&fixture.token).await;
+    let request = json!({"jsonrpc":"2.0","id":"large","method":"hexbot.connect.register_poll","params":{"device_code":"code","padding":"x".repeat(33*1024*1024)}}).to_string();
+    socket
+        .send(Message::Text(request.clone().into()))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), observed.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    socket.send(Message::Text(request.into())).await.unwrap();
+    let close = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(Ok(Message::Close(frame))) = socket.next().await {
+                break frame;
+            }
+        }
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(u16::from(close.code), 1013);
+    assert_eq!(close.reason, "Too many request bytes");
+    broker.abort();
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn websocket_rejects_a_message_over_64_mib() {
+    let fixture = Fixture::new(false).await;
+    let mut socket = fixture.socket(&fixture.token).await;
+    let result = socket
+        .send(Message::Text(" ".repeat(64 * 1024 * 1024 + 1).into()))
+        .await;
+    if result.is_ok() {
+        let closed = tokio::time::timeout(Duration::from_secs(10), socket.next())
+            .await
+            .unwrap();
+        assert!(matches!(
+            closed,
+            None | Some(Err(_)) | Some(Ok(Message::Close(_)))
+        ));
+    }
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "run by configured_dev_origin_is_allowed"]
+async fn configured_dev_origin_child() {
+    let fixture = Fixture::new(false).await;
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&fixture.base)
+        .header("origin", "http://localhost:45678")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.headers()["access-control-allow-origin"],
+        "http://localhost:45678"
+    );
+    assert!(
+        !response
+            .text()
+            .await
+            .unwrap()
+            .contains("__HERMES_SESSION_TOKEN__")
+    );
+    let rejected = client
+        .get(&fixture.base)
+        .header("origin", "http://localhost:45679")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), 403);
+    fixture.shutdown().await;
+}
+
+#[test]
+fn configured_dev_origin_is_allowed() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "configured_dev_origin_child",
+            "--nocapture",
+        ])
+        .env("HEXBOT_WEB_DEV_URL", "http://localhost:45678")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// A cross-site page must not redeem a link and replace an existing session
+/// with a device it minted (login CSRF).
+#[tokio::test]
+async fn sign_in_link_ignores_cross_site_navigation_and_keeps_an_existing_session() {
+    let fixture = Fixture::new(false).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let code = || {
+        auth::new_code(&fixture.home, "local").unwrap()["code"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let first = code();
+    let link = |code: &str| format!("{}/login?code={code}&next=/b/owl", fixture.base);
+    // A navigation from another site shows the form and leaves the code unspent.
+    let foreign = client
+        .get(link(&first))
+        .header("sec-fetch-site", "cross-site")
+        .header("referer", "https://evil.test/")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(foreign.status(), 200);
+    assert!(foreign.headers().get("set-cookie").is_none());
+    let html = foreign.text().await.unwrap();
+    assert!(html.contains("Sign-in links work only when opened directly."));
+    assert!(!html.contains("used or has expired"));
+    for site in ["same-site", "cross-site"] {
+        let page = client
+            .get(link(&first))
+            .header("sec-fetch-site", site)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(page.status(), 200, "{site}");
+    }
+    // The same link opened from the terminal (none) or the app itself still signs in.
+    let signed = client
+        .get(link(&first))
+        .header("sec-fetch-site", "none")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(signed.status(), 303);
+    let cookie = signed.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    // A signed-in browser is sent on without redeeming or replacing its session.
+    let second = code();
+    for site in [None, Some("cross-site")] {
+        let mut request = client.get(link(&second)).header("cookie", &cookie);
+        if let Some(site) = site {
+            request = request.header("sec-fetch-site", site);
+        }
+        let kept = request.send().await.unwrap();
+        assert_eq!(kept.status(), 303);
+        assert_eq!(kept.headers()["location"], "/b/owl");
+        assert!(kept.headers().get("set-cookie").is_none());
+    }
+    let fresh = client
+        .get(link(&second))
+        .header("sec-fetch-site", "same-origin")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fresh.status(), 303);
+    assert!(fresh.headers().contains_key("set-cookie"));
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn login_link_rate_limit_has_a_distinct_notice() {
+    let fixture = Fixture::new(false).await;
+    let client = reqwest::Client::new();
+    for _ in 0..10 {
+        let page = client
+            .get(format!("{}/login?code=invalid", fixture.base))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(page.contains("used or has expired"));
+    }
+    let page = client
+        .get(format!("{}/login?code=invalid", fixture.base))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("Too many attempts. Wait a minute and try again."));
+    assert!(!page.contains("used or has expired"));
+    fixture.shutdown().await;
+}
+#[tokio::test]
+async fn plain_cookies_are_scoped_by_daemon_port_and_accept_upgrade_cookies() {
+    let first = Fixture::new(false).await;
+    let second = Fixture::new(false).await;
+    let client = reqwest::Client::new();
+    let cookie = |fixture: &Fixture| {
+        format!(
+            "hermes_session_at_{}={}",
+            fixture.base.rsplit(':').next().unwrap(),
+            fixture.token
+        )
+    };
+    let path = format!("{}/api/auth/ws-ticket", first.base);
+    assert_eq!(
+        client
+            .post(&path)
+            .header("cookie", cookie(&second))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    let both = format!("{}; {}", cookie(&second), cookie(&first));
+    assert_eq!(
+        client
+            .post(&path)
+            .header("cookie", both)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        client
+            .post(&path)
+            .header("cookie", format!("hermes_session_at={}", first.token))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    first.shutdown().await;
+    second.shutdown().await;
 }

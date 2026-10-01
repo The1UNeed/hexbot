@@ -1,5 +1,5 @@
 use hexbot_core::{db, memory::MemoryStore, rpc};
-use serde_json::{Value, json};
+use serde_json::json;
 
 fn setup() -> (tempfile::TempDir, MemoryStore) {
     let dir = tempfile::tempdir().unwrap();
@@ -9,90 +9,36 @@ fn setup() -> (tempfile::TempDir, MemoryStore) {
 }
 
 #[test]
-fn rpc_matches_memory_response_and_errors() {
+fn memory_methods_return_results_and_error_codes() {
     let (_dir, store) = setup();
-    let get = rpc::dispatch(
-        &store,
-        "local",
-        json!({
-            "jsonrpc":"2.0","id":"r1","method":"hexbot.memory.user.get"
-        }),
-    )
-    .unwrap();
     assert_eq!(
-        get,
-        json!({"jsonrpc":"2.0","id":"r1","result":{
-            "text":"","cap":2000,"updated_at":null
-        }})
+        rpc::call(&store, "local", "hexbot.memory.user.get", &json!(null)).unwrap(),
+        json!({"text":"", "cap":2000, "updated_at":null})
     );
-    let missing = rpc::dispatch(
-        &store,
-        "local",
-        json!({
-            "jsonrpc":"2.0","id":2,"method":"hexbot.memory.bot.get","params":{}
-        }),
-    )
-    .unwrap();
-    assert_eq!(missing["error"]["code"], 4200);
-    let unknown = rpc::dispatch(
-        &store,
-        "local",
-        json!({
-            "jsonrpc":"2.0","id":null,"method":"prompt.submit"
-        }),
-    )
-    .unwrap();
-    assert_eq!(unknown["error"]["code"], -32601);
-    assert_eq!(unknown["id"], Value::Null);
+    let missing = rpc::call(&store, "local", "hexbot.memory.bot.get", &json!({})).unwrap_err();
+    assert_eq!(missing.code, 4200);
+    let unknown = rpc::call(&store, "local", "prompt.submit", &json!({})).unwrap_err();
+    assert_eq!(unknown.code, -32601);
+    assert_eq!(rpc::parse_error()["error"]["code"], -32700);
 }
 
 #[test]
-fn invalid_requests_do_not_write_memory() {
+fn invalid_text_does_not_write_memory() {
     let (_dir, store) = setup();
-    for request in [
-        json!({"id":1,"method":"hexbot.memory.user.set","params":{"text":"bad"}}),
-        json!({"jsonrpc":"2.0","id":{},"method":"hexbot.memory.user.set","params":{"text":"bad"}}),
-        json!([{"jsonrpc":"2.0","id":1,"method":"hexbot.memory.user.set"}]),
-    ] {
-        assert_eq!(
-            rpc::dispatch(&store, "local", request).unwrap()["error"]["code"],
-            -32600
-        );
-    }
-    assert_eq!(store.get_user("local").unwrap()["text"], "");
-    let invalid_params = rpc::dispatch(
+    rpc::call(
         &store,
         "local",
-        json!({
-            "jsonrpc":"2.0","id":2,"method":"hexbot.memory.user.set","params":[]
-        }),
+        "hexbot.memory.user.set",
+        &json!({"text":"Alex"}),
     )
     .unwrap();
-    assert_eq!(invalid_params["error"]["code"], -32602);
-}
-
-#[test]
-fn notifications_execute_without_a_reply_and_validate_text() {
-    let (_dir, store) = setup();
-    assert!(
-        rpc::dispatch(
-            &store,
-            "local",
-            json!({
-                "jsonrpc":"2.0","method":"hexbot.memory.user.set","params":{"text":"Alex"}
-            })
-        )
-        .is_none()
-    );
-    assert_eq!(store.get_user("local").unwrap()["text"], "Alex");
-    let invalid = rpc::dispatch(
+    let invalid = rpc::call(
         &store,
         "local",
-        json!({
-            "jsonrpc":"2.0","id":3,"method":"hexbot.memory.user.set","params":{"text":42}
-        }),
+        "hexbot.memory.user.set",
+        &json!({"text":42}),
     )
-    .unwrap();
-    assert_eq!(invalid["error"]["code"], 4201);
+    .unwrap_err();
+    assert_eq!(invalid.code, 4201);
     assert_eq!(store.get_user("local").unwrap()["text"], "Alex");
 }

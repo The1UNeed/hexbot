@@ -126,7 +126,7 @@
   },
   {
     "name": "video_generate",
-    "description": "(rebuilt at get_definitions() time \u2014 see _build_dynamic_video_schema)",
+    "description": "Generate a video from a prompt or animate an image using the configured video provider. Returns a video URL. Generation may take several minutes.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -165,7 +165,22 @@
         },
         "model": {
           "type": "string",
-          "description": "Optional model override; defaults to the configured ``video_gen.model``. Unknown models are rejected."
+          "description": "Optional model override; defaults to the configured `video_gen.model`. Unknown models are rejected."
+        },
+        "image_url": {
+          "type": "string"
+        },
+        "negative_prompt": {
+          "type": "string"
+        },
+        "audio": {
+          "type": "boolean"
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "upscale": {
+          "type": "boolean"
         }
       },
       "required": [

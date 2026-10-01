@@ -8,20 +8,21 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+mod support;
 fn args(values: &[&str]) -> Vec<String> {
     values.iter().map(|v| (*v).into()).collect()
 }
 async fn run(home: &Path, values: &[&str]) -> Value {
     cli::execute(home, &args(values)).await.unwrap()
 }
-fn home() -> tempfile::TempDir {
-    let h = tempfile::tempdir().unwrap();
+fn home() -> support::TestHome {
+    let h = support::TestHome::new();
     db::migrate(h.path()).unwrap();
     db::open(h.path())
         .unwrap()
         .execute(
             "INSERT INTO settings VALUES ('workspace_dir',?)",
-            [json!(h.path().join("workspace")).to_string()],
+            [json!(h.workspace()).to_string()],
         )
         .unwrap();
     h
@@ -100,7 +101,7 @@ async fn offline_bot_lifecycle_and_device_output_match_python_cli() {
     assert_eq!(bot["bot"]["display_name"], "Owl");
     assert_eq!(bot["bot"]["persona"], "Remember carefully");
     assert_eq!(bot["bot"]["model"], "fixture");
-    let device = auth::mint_device(h, "Phone", "ios", "local").unwrap();
+    let device = support::mint_device(h, "Phone", "ios", "local").unwrap();
     db::open(h)
         .unwrap()
         .execute(
@@ -108,7 +109,7 @@ async fn offline_bot_lifecycle_and_device_output_match_python_cli() {
             [],
         )
         .unwrap();
-    auth::mint_device(h, "Other", "android", "alice").unwrap();
+    support::mint_device(h, "Other", "android", "alice").unwrap();
     let devices = run(h, &["devices", "list"]).await;
     assert_eq!(devices["devices"].as_array().unwrap().len(), 1);
     assert_eq!(devices["devices"][0].as_object().unwrap().len(), 5);
@@ -543,4 +544,36 @@ async fn terminal_approval_and_ctrl_c_do_not_leave_blocking_stdin_readers() {
             "owned Pi survived CLI termination"
         );
     }
+}
+
+#[tokio::test]
+async fn help_and_invalid_command_describe_all_native_commands() {
+    let home = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_hexbot"))
+        .arg("--help")
+        .env("HEXBOT_HOME", home.path().join("uncreated"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let help = String::from_utf8(output.stdout).unwrap();
+    let error = cli::execute(&home.path().join("uncreated"), &args(&["bots", "create"]))
+        .await
+        .unwrap_err();
+    for command in [
+        "hexbot serve [--host IP] [--port N] [--lan | --no-lan]",
+        "hexbot pair",
+        "hexbot bots list | create NAME",
+        "[--title TEXT] [--description TEXT] [--persona TEXT] [--provider NAME] [--model NAME]",
+        "hexbot rooms list",
+        "hexbot devices list | revoke ID",
+        "hexbot connect [--name TEXT | status | disconnect]",
+        "hexbot send BOT TEXT",
+    ] {
+        assert!(help.contains(command), "missing help for {command}");
+        assert!(
+            error.message.contains(command),
+            "missing usage for {command}"
+        );
+    }
+    assert!(!home.path().join("uncreated").exists());
 }

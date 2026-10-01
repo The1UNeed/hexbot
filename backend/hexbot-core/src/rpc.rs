@@ -37,37 +37,6 @@ pub fn call(store: &MemoryStore, caller: &str, method: &str, params: &Value) -> 
     }
 }
 
-fn failure(id: Value, code: i64, message: impl Into<String>) -> Value {
-    json!({"jsonrpc":"2.0", "id":id, "error":{"code":code,"message":message.into()}})
-}
-
-/// One response for a request, no response for a valid JSON-RPC notification.
-/// Mutation broadcasts belong to the future gateway, not this local test transport.
-pub fn dispatch(store: &MemoryStore, caller: &str, request: Value) -> Option<Value> {
-    let id = request.get("id").cloned().unwrap_or(Value::Null);
-    let valid_id = id.is_null() || id.is_string() || id.is_number();
-    if request.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
-        || request.get("method").and_then(Value::as_str).is_none()
-        || !valid_id
-    {
-        return Some(failure(Value::Null, -32600, "invalid request"));
-    }
-    let notification = request.get("id").is_none();
-    let params = request.get("params").unwrap_or(&Value::Null);
-    let result = if !params.is_null() && !params.is_object() {
-        Err(Error::new(-32602, "params must be an object"))
-    } else {
-        call(store, caller, request["method"].as_str().unwrap(), params)
-    };
-    if notification {
-        return None;
-    }
-    Some(match result {
-        Ok(value) => json!({"jsonrpc":"2.0", "id":id, "result":value}),
-        Err(error) => failure(id, error.code, error.message),
-    })
-}
-
 pub fn parse_error() -> Value {
-    failure(Value::Null, -32700, "parse error")
+    json!({"jsonrpc":"2.0", "id":null, "error":{"code":-32700,"message":"parse error"}})
 }

@@ -22,11 +22,12 @@ fn invitations_permissions_disable_and_reenable() {
     .unwrap();
     let uid = invite["user"]["id"].as_str().unwrap();
     assert_eq!(invite["user"]["display_name"], "Guest");
-    let device = auth::redeem_code(
+    let device = auth::redeem_code_from(
         h,
         invite["code"].as_str().unwrap(),
         "Guest phone",
         "browser",
+        "local",
     )
     .unwrap();
     let token = device["device_token"].as_str().unwrap();
@@ -87,9 +88,15 @@ fn invitations_permissions_disable_and_reenable() {
     .unwrap();
     assert!(auth::verify_token(h, token).unwrap().is_none());
     assert_eq!(
-        auth::redeem_code(h, pending["code"].as_str().unwrap(), "Disabled", "browser")
-            .unwrap_err()
-            .code,
+        auth::redeem_code_from(
+            h,
+            pending["code"].as_str().unwrap(),
+            "Disabled",
+            "browser",
+            "local"
+        )
+        .unwrap_err()
+        .code,
         4231
     );
     assert_eq!(
@@ -140,7 +147,7 @@ fn concurrent_pairing_has_exactly_one_winner() {
             let b = barrier.clone();
             std::thread::spawn(move || {
                 b.wait();
-                auth::redeem_code(&h, &c, "Phone", "browser")
+                auth::redeem_code_from(&h, &c, "Phone", "browser", "local")
             })
         })
         .collect();
@@ -167,13 +174,25 @@ fn replacement_expiry_hashes_and_rate_limits() {
     let first = auth::new_code(h, "local").unwrap();
     let second = auth::new_code(h, "local").unwrap();
     assert_eq!(
-        auth::redeem_code(h, first["code"].as_str().unwrap(), "Phone", "browser")
-            .unwrap_err()
-            .code,
+        auth::redeem_code_from(
+            h,
+            first["code"].as_str().unwrap(),
+            "Phone",
+            "browser",
+            "local"
+        )
+        .unwrap_err()
+        .code,
         4231
     );
-    let device =
-        auth::redeem_code(h, second["code"].as_str().unwrap(), "Phone", "browser").unwrap();
+    let device = auth::redeem_code_from(
+        h,
+        second["code"].as_str().unwrap(),
+        "Phone",
+        "browser",
+        "local",
+    )
+    .unwrap();
     let token = device["device_token"].as_str().unwrap();
     let conn = db::open(h).unwrap();
     let hash: String = conn
@@ -189,21 +208,27 @@ fn replacement_expiry_hashes_and_rate_limits() {
     conn.execute("UPDATE pairing_codes SET expires_at=0", [])
         .unwrap();
     assert_eq!(
-        auth::redeem_code(h, expired["code"].as_str().unwrap(), "Phone", "browser")
-            .unwrap_err()
-            .code,
+        auth::redeem_code_from(
+            h,
+            expired["code"].as_str().unwrap(),
+            "Phone",
+            "browser",
+            "local"
+        )
+        .unwrap_err()
+        .code,
         4231
     );
     for _ in 0..7 {
         assert_eq!(
-            auth::redeem_code(h, "invalid", "Phone", "browser")
+            auth::redeem_code_from(h, "invalid", "Phone", "browser", "local")
                 .unwrap_err()
                 .code,
             4231
         );
     }
     assert_eq!(
-        auth::redeem_code(h, "invalid", "Phone", "browser")
+        auth::redeem_code_from(h, "invalid", "Phone", "browser", "local")
             .unwrap_err()
             .code,
         4232
@@ -410,4 +435,162 @@ fn concurrent_grants_spend_once_and_disabled_owner_rolls_back() {
         .unwrap(),
         0
     );
+}
+
+#[test]
+fn last_active_admin_cannot_be_disabled_or_demoted() {
+    let home = tempfile::tempdir().unwrap();
+    db::migrate(home.path()).unwrap();
+    for patch in [json!({"role":"member"}), json!({"disabled":true})] {
+        let mut p = patch;
+        p["id"] = json!("local");
+        assert_eq!(
+            rpc(home.path(), "local", "hexbot.users.update", p)
+                .unwrap_err()
+                .code,
+            4202
+        );
+        let user = rpc(home.path(), "local", "hexbot.users.me", json!({})).unwrap();
+        assert_eq!(user["role"], "admin");
+    }
+    let invited = rpc(
+        home.path(),
+        "local",
+        "hexbot.users.invite",
+        json!({"display_name":"Second admin","role":"admin"}),
+    )
+    .unwrap();
+    let other = invited["user"]["id"].as_str().unwrap();
+    rpc(
+        home.path(),
+        "local",
+        "hexbot.users.update",
+        json!({"id":other,"disabled":true}),
+    )
+    .unwrap();
+    assert!(
+        rpc(
+            home.path(),
+            "local",
+            "hexbot.users.update",
+            json!({"id":"local","role":"member"})
+        )
+        .is_err()
+    );
+    rpc(
+        home.path(),
+        "local",
+        "hexbot.users.update",
+        json!({"id":other,"disabled":false}),
+    )
+    .unwrap();
+    rpc(
+        home.path(),
+        "local",
+        "hexbot.users.update",
+        json!({"id":"local","role":"member"}),
+    )
+    .unwrap();
+    assert!(
+        rpc(
+            home.path(),
+            other,
+            "hexbot.users.update",
+            json!({"id":other,"disabled":true})
+        )
+        .is_err()
+    );
+    rpc(
+        home.path(),
+        other,
+        "hexbot.users.update",
+        json!({"id":"local","role":"admin"}),
+    )
+    .unwrap();
+    rpc(
+        home.path(),
+        other,
+        "hexbot.users.update",
+        json!({"id":other,"disabled":true}),
+    )
+    .unwrap();
+}
+
+#[test]
+fn concurrent_admin_demotions_leave_one_active_admin() {
+    let home = tempfile::tempdir().unwrap();
+    db::migrate(home.path()).unwrap();
+    let invited = rpc(
+        home.path(),
+        "local",
+        "hexbot.users.invite",
+        json!({"display_name":"Second admin","role":"admin"}),
+    )
+    .unwrap();
+    let other = invited["user"]["id"].as_str().unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let tasks: Vec<_> = ["local", other]
+        .into_iter()
+        .map(|id| {
+            let id = id.to_owned();
+            let home = home.path().to_owned();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                rpc(
+                    &home,
+                    &id,
+                    "hexbot.users.update",
+                    json!({"id":id,"role":"member"}),
+                )
+            })
+        })
+        .collect();
+    assert_eq!(
+        tasks
+            .into_iter()
+            .filter_map(|task| task.join().unwrap().ok())
+            .count(),
+        1
+    );
+    let count: i64 = db::open(home.path())
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM users WHERE role='admin' AND disabled_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn startup_sign_in_code_preserves_outstanding_pairing_codes() {
+    let home = tempfile::tempdir().unwrap();
+    let pair = auth::new_code(home.path(), "local").unwrap();
+    let link = auth::new_sign_in_code(home.path()).unwrap();
+    for code in [pair, link] {
+        assert!(
+            auth::redeem_code_from(
+                home.path(),
+                code["code"].as_str().unwrap(),
+                "Browser",
+                "browser",
+                "local"
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            auth::redeem_code_from(
+                home.path(),
+                code["code"].as_str().unwrap(),
+                "Browser",
+                "browser",
+                "local"
+            )
+            .unwrap_err()
+            .code,
+            4231
+        );
+    }
 }

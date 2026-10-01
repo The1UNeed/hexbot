@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use hexbot_core::{db, memory::MemoryStore};
+use crate::{db, memory::MemoryStore};
 use serde_json::json;
 
 fn setup() -> (tempfile::TempDir, MemoryStore) {
@@ -216,12 +216,18 @@ fn first_read_applies_managed_cap_even_when_profile_config_cannot_load() {
     );
 }
 
+// MemoryStore reads the environment, so the assertions run in a child copy of
+// this test binary that has its own environment.
 #[test]
-fn rpc_process_expands_profile_and_managed_environment_caps() {
-    use std::{
-        io::Write,
-        process::{Command, Stdio},
-    };
+fn profile_and_managed_caps_expand_environment_variables() {
+    const TEST: &str = "memory::file_tests::profile_and_managed_caps_expand_environment_variables";
+    if let Some(expected) = std::env::var_os("HEXBOT_TEST_EXPECTED_CAP") {
+        let home = std::path::PathBuf::from(std::env::var_os("HEXBOT_TEST_HOME").unwrap());
+        let store = MemoryStore::new(home);
+        let expected: i64 = expected.to_str().unwrap().parse().unwrap();
+        assert_eq!(store.get_bot("alice", "owl").unwrap()["cap"], expected);
+        return;
+    }
     let (home, _) = setup();
     let managed = tempfile::tempdir().unwrap();
     write_config(
@@ -229,32 +235,29 @@ fn rpc_process_expands_profile_and_managed_environment_caps() {
         "memory:\n  memory_char_limit: '${HEXBOT_TEST_USER_CAP}'\n",
     );
     for (managed_config, expected) in [
-        ("{}", 100),
+        ("{}", "100"),
         (
             "memory:\n  memory_char_limit: '${env: HEXBOT_TEST_MANAGED_CAP }'\n",
-            3,
+            "3",
         ),
     ] {
         fs::write(managed.path().join("config.yaml"), managed_config).unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_hexbot-core"))
-            .args(["memory-rpc", "--home"])
-            .arg(home.path())
-            .args(["--user", "alice"])
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--test-threads=1"])
             .env_clear()
-            .env("HOME", std::env::var_os("HOME").unwrap())
+            .env("HEXBOT_TEST_HOME", home.path())
+            .env("HEXBOT_TEST_EXPECTED_CAP", expected)
             .env("HERMES_MANAGED_DIR", home.path().join("wrong-managed"))
             .env("HEXBOT_MANAGED_DIR", managed.path())
             .env("HEXBOT_TEST_USER_CAP", "100")
             .env("HEXBOT_TEST_MANAGED_CAP", "3")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
+            .output()
             .unwrap();
-        child.stdin.take().unwrap().write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"hexbot.memory.bot.get\",\"params\":{\"bot\":\"owl\"}}\n").unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert!(output.status.success());
-        let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(response["result"]["cap"], expected);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}"
+        );
     }
 }
 
@@ -381,7 +384,7 @@ fn atomic_memory_edits_keep_unicode_caps_and_leave_failed_edits_unwritten() {
     );
     assert_eq!(
         store
-            .update_bot("alice", "owl", |_| Err(hexbot_core::Error::new(
+            .update_bot("alice", "owl", |_| Err(crate::Error::new(
                 4202,
                 "missing text"
             )))

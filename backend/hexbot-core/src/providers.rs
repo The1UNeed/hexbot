@@ -372,6 +372,7 @@ pub fn set_key(home: &Path, provider: &str, value: &str) -> Result<Value> {
     }
     disabled[&slug] = json!(false);
     write_json(&home.join("providers-disabled.json"), &disabled)?;
+    refresh_pi_mirrors(home)?;
     Ok(json!({"provider":slug,"configured":true}))
 }
 pub fn clear_key(home: &Path, provider: &str) -> Result<Value> {
@@ -406,6 +407,7 @@ pub fn clear_key(home: &Path, provider: &str) -> Result<Value> {
     let epoch_key = format!("__epoch_{slug}");
     disabled[&epoch_key] = json!(disabled[&epoch_key].as_u64().unwrap_or(0).saturating_add(1));
     write_json(&home.join("providers-disabled.json"), &disabled)?;
+    refresh_pi_mirrors(home)?;
     Ok(json!({"provider":slug,"configured":false}))
 }
 fn custom_profiles(cfg: &Value) -> Vec<Value> {
@@ -437,7 +439,20 @@ fn custom_profiles(cfg: &Value) -> Vec<Value> {
         {
             models.push(model.to_owned());
         }
-        rows.push(json!({"name":slug,"display_name":name,"base_url":base,"api_key":entry["api_key"],"env_vars":entry["key_env"].as_str().map(|k|vec![k]).unwrap_or_default(),"api_mode":entry["api_mode"].as_str().unwrap_or("chat_completions"),"auth_type":"api_key","models":models,"aliases":[format!("custom:{slug}")]}));
+        rows.push(json!({
+            "name": slug,
+            "display_name": name,
+            "base_url": base,
+            "api_key": entry["api_key"],
+            "env_vars": entry["key_env"]
+                .as_str()
+                .map(|k| vec![k])
+                .unwrap_or_default(),
+            "api_mode": entry["api_mode"].as_str().unwrap_or("chat_completions"),
+            "auth_type": "api_key",
+            "models": models,
+            "aliases": [format!("custom:{slug}")]
+        }));
     };
     if let Some(providers) = cfg["providers"].as_object() {
         for (name, entry) in providers {
@@ -465,7 +480,23 @@ fn custom_key(home: &Path, p: &Value) -> Result<Option<String>> {
     key(home, p)
 }
 pub fn list_providers(home: &Path) -> Result<Value> {
-    let mut rows=profiles().iter().map(|p|Ok(json!({"id":p["name"],"label":p["display_name"].as_str().unwrap_or(string(p,"name")),"configured":configured(home,p)?,"auth_type":p["auth_type"].as_str().unwrap_or("api_key"),"key_supported":p["env_vars"].as_array().is_some_and(|v|!v.is_empty()),"models_source":if string(p,"models_url").is_empty(){"registry"}else{"live"}}))).collect::<Result<Vec<Value>>>()?;
+    let mut rows = profiles()
+        .iter()
+        .map(|p| {
+            Ok(json!({
+                "id": p["name"],
+                "label": p["display_name"].as_str().unwrap_or(string(p, "name")),
+                "configured": configured(home, p)?,
+                "auth_type": p["auth_type"].as_str().unwrap_or("api_key"),
+                "key_supported": p["env_vars"].as_array().is_some_and(|v| !v.is_empty()),
+                "models_source": if string(p, "models_url").is_empty() {
+                    "registry"
+                } else {
+                    "live"
+                }
+            }))
+        })
+        .collect::<Result<Vec<Value>>>()?;
     for p in custom_profiles(&common::read_config(home)?) {
         rows.push(json!({"id":p["name"],"label":p["display_name"],"configured":true,"auth_type":"api_key","key_supported":!p["env_vars"].as_array().unwrap().is_empty(),"models_source":"live"}));
     }
@@ -640,7 +671,7 @@ pub async fn model_options(home: &Path, p: &Value) -> Result<Value> {
         };
         let mut source = "catalog";
         let mut error = None;
-        if p["refresh"] == true
+        if (p["refresh"] == true || (models.is_empty() && !string(p, "provider").is_empty()))
             && configured
             && (string(p, "provider").is_empty()
                 || canonical_provider(string(p, "provider")) == slug)
@@ -654,7 +685,25 @@ pub async fn model_options(home: &Path, p: &Value) -> Result<Value> {
                 Err(e) => error = Some(e.message),
             }
         }
-        let mut row = json!({"slug":slug,"name":provider["display_name"].as_str().unwrap_or(slug),"is_current":current==slug,"total_models":models.len(),"models":models,"authenticated":configured,"auth_type":provider["auth_type"].as_str().unwrap_or("api_key"),"key_env":provider["env_vars"][0].as_str().unwrap_or(""),"source":source,"pricing":{}});
+        if configured
+            && current == slug
+            && let Some(model) = cfg["model"]["default"].as_str().filter(|id| !id.is_empty())
+            && !models.iter().any(|id| id == model)
+        {
+            models.push(model.to_owned());
+        }
+        let mut row = json!({
+            "slug": slug,
+            "name": provider["display_name"].as_str().unwrap_or(slug),
+            "is_current": current == slug,
+            "total_models": models.len(),
+            "models": models,
+            "authenticated": configured,
+            "auth_type": provider["auth_type"].as_str().unwrap_or("api_key"),
+            "key_env": provider["env_vars"][0].as_str().unwrap_or(""),
+            "source": source,
+            "pricing": {}
+        });
         if let Some(error) = error {
             row["error"] = json!(error)
         }
@@ -682,7 +731,19 @@ pub async fn model_options(home: &Path, p: &Value) -> Result<Value> {
                 _ => {}
             }
         }
-        let mut row = json!({"slug":slug,"name":provider["display_name"],"aliases":provider["aliases"],"is_user_defined":true,"is_current":active,"total_models":models.len(),"models":models,"authenticated":true,"auth_type":"api_key","source":"custom","pricing":{}});
+        let mut row = json!({
+            "slug": slug,
+            "name": provider["display_name"],
+            "aliases": provider["aliases"],
+            "is_user_defined": true,
+            "is_current": active,
+            "total_models": models.len(),
+            "models": models,
+            "authenticated": true,
+            "auth_type": "api_key",
+            "source": "custom",
+            "pricing": {}
+        });
         if let Some(error) = error {
             row["error"] = json!(error);
         }
@@ -751,9 +812,6 @@ pub async fn list_models(home: &Path, p: &Value) -> Result<Value> {
 }
 
 /// Prepare transport credentials. The daemon alone owns and rotates OAuth refresh tokens.
-pub fn prepare_pi(home: &Path, agent_dir: &Path) -> Result<()> {
-    prepare_pi_config(home, None, agent_dir)
-}
 pub fn prepare_pi_for_bot(home: &Path, bot: &str, agent_dir: &Path) -> Result<()> {
     common::identifier(bot)?;
     prepare_pi_config(home, Some(&home.join("profiles").join(bot)), agent_dir)
@@ -784,6 +842,26 @@ fn prepare_pi_config(home: &Path, profile_home: Option<&Path>, agent_dir: &Path)
     let _lock = credentials_lock()
         .lock()
         .map_err(|_| Error::new(5200, "credentials lock unavailable"))?;
+    prepare_pi_config_locked(home, profile_home, agent_dir)
+}
+// The caller holds the credentials lock across the store update and every Pi mirror.
+fn refresh_pi_mirrors(home: &Path) -> Result<()> {
+    for dir in env_paths(home)? {
+        let agent_dir = dir.join("pi");
+        if agent_dir.is_dir() {
+            if fs::symlink_metadata(&agent_dir)?.file_type().is_symlink() {
+                return Err(Error::new(4202, "Pi directory must not be a symlink"));
+            }
+            prepare_pi_config_locked(home, (dir != home).then_some(dir.as_path()), &agent_dir)?;
+        }
+    }
+    Ok(())
+}
+fn prepare_pi_config_locked(
+    home: &Path,
+    profile_home: Option<&Path>,
+    agent_dir: &Path,
+) -> Result<()> {
     let mut cfg = common::read_config(home)?;
     if let Some(profile_home) = profile_home {
         let profile_cfg = common::read_config(profile_home)?;
@@ -996,10 +1074,29 @@ fn prepare_pi_config(home: &Path, profile_home: Option<&Path>, agent_dir: &Path)
                 continue;
             }
         }
-        let models=ids.into_iter().map(|id|{
-            let meta=metadata(&cache,&cfg,slug,&id);
-            json!({"id":id,"name":id,"reasoning":meta["reasoning"].as_bool().unwrap_or(false),"input":meta["modalities"]["input"].as_array().cloned().unwrap_or_else(||vec![json!("text")]),"cost":{"input":meta["cost"]["input"].as_f64().unwrap_or(0.0),"output":meta["cost"]["output"].as_f64().unwrap_or(0.0),"cacheRead":meta["cost"]["cache_read"].as_f64().unwrap_or(0.0),"cacheWrite":meta["cost"]["cache_write"].as_f64().unwrap_or(0.0)},"contextWindow":meta["limit"]["context"].as_u64().unwrap_or(32768),"maxTokens":meta["limit"]["output"].as_u64().unwrap_or(8192)})
-        }).collect::<Vec<_>>();
+        let models = ids
+            .into_iter()
+            .map(|id| {
+                let meta = metadata(&cache, &cfg, slug, &id);
+                json!({
+                    "id": id,
+                    "name": id,
+                    "reasoning": meta["reasoning"].as_bool().unwrap_or(false),
+                    "input": meta["modalities"]["input"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_else(|| vec![json!("text")]),
+                    "cost": {
+                        "input": meta["cost"]["input"].as_f64().unwrap_or(0.0),
+                        "output": meta["cost"]["output"].as_f64().unwrap_or(0.0),
+                        "cacheRead": meta["cost"]["cache_read"].as_f64().unwrap_or(0.0),
+                        "cacheWrite": meta["cost"]["cache_write"].as_f64().unwrap_or(0.0)
+                    },
+                    "contextWindow": meta["limit"]["context"].as_u64().unwrap_or(32768),
+                    "maxTokens": meta["limit"]["output"].as_u64().unwrap_or(8192)
+                })
+            })
+            .collect::<Vec<_>>();
         let api = if native {
             string(&pi_catalog["providers"][&pi], "api")
         } else {
@@ -1042,10 +1139,24 @@ fn prepare_pi_config(home: &Path, profile_home: Option<&Path>, agent_dir: &Path)
         {
             ids.push(json!(id));
         }
-        let models=ids.into_iter().filter_map(|v|v.as_str().map(str::to_owned)).map(|id|{
-            let meta=metadata(&cache,&cfg,slug,&id);
-            json!({"id":id,"name":id,"contextWindow":meta["limit"]["context"].as_u64().unwrap_or(32768),"maxTokens":meta["limit"]["output"].as_u64().unwrap_or(8192),"reasoning":meta["reasoning"].as_bool().unwrap_or(false),"input":meta["modalities"]["input"].as_array().cloned().unwrap_or_else(||vec![json!("text")])})
-        }).collect::<Vec<_>>();
+        let models = ids
+            .into_iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .map(|id| {
+                let meta = metadata(&cache, &cfg, slug, &id);
+                json!({
+                    "id": id,
+                    "name": id,
+                    "contextWindow": meta["limit"]["context"].as_u64().unwrap_or(32768),
+                    "maxTokens": meta["limit"]["output"].as_u64().unwrap_or(8192),
+                    "reasoning": meta["reasoning"].as_bool().unwrap_or(false),
+                    "input": meta["modalities"]["input"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_else(|| vec![json!("text")])
+                })
+            })
+            .collect::<Vec<_>>();
         let api = match string(&custom, "api_mode") {
             "anthropic_messages" => "anthropic-messages",
             "responses" | "codex_responses" => "openai-responses",
@@ -1421,7 +1532,8 @@ fn save_tokens(home: &Path, login: &Login, tokens: &Value) -> Result<()> {
     store["providers"][&login.provider] = state;
     write_json(&home.join("auth.json"), &store)?;
     disabled[&login.provider] = json!(false);
-    write_json(&home.join("providers-disabled.json"), &disabled)
+    write_json(&home.join("providers-disabled.json"), &disabled)?;
+    refresh_pi_mirrors(home)
 }
 pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result<Value>> {
     if !matches!(
@@ -1439,22 +1551,56 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
     ) {
         return None;
     }
-    Some(async {
-  common::user(home,caller)?;
-  if !matches!(method,"hexbot.providers.list"|"hexbot.models.list"|"model.options"){common::admin(home,caller)?;}
-  match method {
-   "hexbot.providers.list"=>list_providers(home),
-   "hexbot.providers.set_key"=>set_key(home,common::required(p,"provider")?,common::required(p,"key")?),
-   "hexbot.providers.clear_key"=>clear_key(home,common::required(p,"provider")?),
-   "hexbot.providers.login_start"=>login_start(home,caller,common::required(p,"provider")?).await,
-   "hexbot.providers.login_poll"|"hexbot.providers.login_cancel"=>login_poll(home,caller,common::required(p,"login_id")?,method.ends_with("cancel")).await,
-   "hexbot.models.list"=>list_models(home,p).await,
-   "model.options"=>model_options(home,p).await,
-   "model.save_key"=>{let slug=canonical_provider(common::required(p,"slug")?);set_key(home,&slug,common::required(p,"api_key")?)?;let options=model_options(home,&json!({})).await?;Ok(json!({"provider":options["providers"].as_array().unwrap().iter().find(|row|row["slug"]==slug)}))},
-   "model.disconnect"=>{let slug=canonical_provider(common::required(p,"slug")?);clear_key(home,&slug)?;Ok(json!({"slug":slug,"name":profile(&slug)?["display_name"],"disconnected":true}))},
-   _=>unreachable!()
-  }
- }.await)
+    Some(
+        async {
+            common::user(home, caller)?;
+            if !matches!(method,"hexbot.providers.list"|"hexbot.models.list"|"model.options") {
+                common::admin(home, caller)?;
+            }
+            match method {
+                "hexbot.providers.list" => list_providers(home),
+                "hexbot.providers.set_key" => set_key(
+                    home,
+                    common::required(p, "provider")?,
+                    common::required(p, "key")?,
+                ),
+                "hexbot.providers.clear_key" => clear_key(home, common::required(p, "provider")?),
+                "hexbot.providers.login_start" => {
+                    login_start(home, caller, common::required(p, "provider")?).await
+                }
+                "hexbot.providers.login_poll" | "hexbot.providers.login_cancel" => {
+                    login_poll(
+                        home,
+                        caller,
+                        common::required(p, "login_id")?,
+                        method.ends_with("cancel"),
+                    )
+                    .await
+                }
+                "hexbot.models.list" => list_models(home, p).await,
+                "model.options" => model_options(home, p).await,
+                "model.save_key" => {
+                    let slug = canonical_provider(common::required(p, "slug")?);
+                    set_key(home, &slug, common::required(p, "api_key")?)?;
+                    let options = model_options(home, &json!({})).await?;
+                    Ok(json!({
+                        "provider": options["providers"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|row| row["slug"] == slug)
+                    }))
+                }
+                "model.disconnect" => {
+                    let slug = canonical_provider(common::required(p, "slug")?);
+                    clear_key(home, &slug)?;
+                    Ok(json!({"slug":slug,"name":profile(&slug)?["display_name"],"disconnected":true}))
+                }
+                _ => unreachable!(),
+            }
+        }
+        .await,
+    )
 }
 
 fn expires_at(tokens: &Value) -> f64 {
@@ -1820,7 +1966,9 @@ pub fn selection_warning(model: &Value) -> Option<String> {
         warnings.push(message);
     }
     if lower.ends_with("-contributor") || lower.split('-').any(|part| part == "contributor") {
-        warnings.push(format!("{id} is a contributor tier that permits training on your prompts and completions. Confirm only if this data use is acceptable. Select the standard model to avoid this tier. Source: https://dev.meta.ai/docs/pricing-rate-limits/"));
+        warnings.push(format!(
+            "{id} is a contributor tier that permits training on your prompts and completions. Confirm only if this data use is acceptable. Select the standard model to avoid this tier. Source: https://dev.meta.ai/docs/pricing-rate-limits/"
+        ));
     }
     if warnings.is_empty() {
         None
@@ -2074,7 +2222,26 @@ mod migration_tests {
     #[test]
     fn reads_credential_pool_and_hexbot_anthropic_login_without_changing_imports() {
         let home = tempfile::tempdir().unwrap();
-        let original = json!({"credential_pool":{"test":[{"auth_type":"api_key","access_token":"pooled-key","priority":0}],"anthropic":[{"auth_type":"oauth","access_token":"sk-ant-oat-pool","refresh_token":"refresh","expires_at_ms":999000}]}}).to_string();
+        let original = json!({
+            "credential_pool": {
+                "test": [
+                    {
+                        "auth_type": "api_key",
+                        "access_token": "pooled-key",
+                        "priority": 0
+                    }
+                ],
+                "anthropic": [
+                    {
+                        "auth_type": "oauth",
+                        "access_token": "sk-ant-oat-pool",
+                        "refresh_token": "refresh",
+                        "expires_at_ms": 999000
+                    }
+                ]
+            }
+        })
+        .to_string();
         fs::write(home.path().join("auth.json"), &original).unwrap();
         assert_eq!(
             key(
@@ -2146,14 +2313,24 @@ mod migration_tests {
         let issuer = format!("http://{}", listener.local_addr().unwrap());
         let count = Arc::new(AtomicUsize::new(0));
         let calls = count.clone();
-        let app = axum::Router::new().route("/oauth/token", axum::routing::post(move |body: String| {
-            let calls = calls.clone();
-            async move {
-                let n = calls.fetch_add(1, Ordering::SeqCst);
-                assert!(body.contains(if n == 0 { "refresh_token=original" } else { "refresh_token=rotated-1" }), "{body}");
-                axum::Json(json!({"access_token":format!("access-{}", n+1),"refresh_token":format!("rotated-{}",n+1),"expires_in":3600}))
-            }
-        }));
+        let app = axum::Router::new().route(
+            "/oauth/token",
+            axum::routing::post(move |body: String| {
+                let calls = calls.clone();
+                async move {
+                    let n = calls.fetch_add(1, Ordering::SeqCst);
+                    assert!(
+                        body.contains(if n == 0 {
+                            "refresh_token=original"
+                        } else {
+                            "refresh_token=rotated-1"
+                        }),
+                        "{body}"
+                    );
+                    axum::Json(json!({"access_token":format!("access-{}", n+1),"refresh_token":format!("rotated-{}",n+1),"expires_in":3600}))
+                }
+            }),
+        );
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         common::write_config(
             home.path(),

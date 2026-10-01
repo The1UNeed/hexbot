@@ -5,18 +5,27 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    net::{ToSocketAddrs, UdpSocket},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 pub const PLATFORM_HINT: &str = "You are chatting in Hexbot, a desktop app. Markdown renders with GitHub flavor: headings, lists, tables and fenced code. To hand over a file, give its absolute path or URL; the user opens it themselves. Scheduled jobs run on their own and their output is not delivered back into this conversation.";
 
 pub fn defaults() -> Value {
-    json!({"approval_mode":"manual","auto_approver_model":null,"lan_enabled":false,
-        "service_installed":false,"workspace_dir":"~/Hexbot","billing_notice_ack":false,
-        "room_bot_turns_per_human_turn":8,"room_budget_tokens_per_human_turn":null,
-        "bot_daily_token_budget":null,"dream_time":"03:00","dream_enabled":true,
-        "default_model":null,"fallback_model":null})
+    json!({
+        "approval_mode": "manual",
+        "auto_approver_model": null,
+        "lan_enabled": false,
+        "service_installed": false,
+        "workspace_dir": "~/Hexbot",
+        "billing_notice_ack": false,
+        "room_bot_turns_per_human_turn": 8,
+        "room_budget_tokens_per_human_turn": null,
+        "bot_daily_token_budget": null,
+        "dream_time": "03:00",
+        "dream_enabled": true,
+        "default_model": null,
+        "fallback_model": null
+    })
 }
 
 pub fn get(home: &Path) -> Result<Value> {
@@ -70,17 +79,6 @@ fn validate(patch: &Value) -> Result<()> {
     Ok(())
 }
 
-fn expand_home(path: &str) -> PathBuf {
-    if path == "~" || path.starts_with("~/") {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default()
-            .join(path.strip_prefix("~/").unwrap_or(""))
-    } else {
-        PathBuf::from(path)
-    }
-}
-
 fn object(value: &mut Value) -> &mut serde_json::Map<String, Value> {
     if !value.is_object() {
         *value = json!({});
@@ -105,12 +103,7 @@ fn managed_config(home: &Path, profile: &Path, settings: &Value) -> Result<Value
         "mode".into(),
         mode.map_or_else(|| settings["approval_mode"].clone(), Value::String),
     );
-    let workdir = expand_home(
-        workdir
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .unwrap_or(settings["workspace_dir"].as_str().unwrap_or("~/Hexbot")),
-    );
+    let workdir = common::expand_home(common::configured_workdir(&[workdir.as_deref()], settings))?;
     // Inaccessible workspaces remain configured so terminal execution reports the actual failure.
     let _ = fs::create_dir_all(&workdir);
     object(&mut data["terminal"]).insert("cwd".into(), json!(workdir));
@@ -148,6 +141,9 @@ pub fn mirror(home: &Path, profile: &Path) -> Result<()> {
 pub fn update(home: &Path, caller: &str, patch: &Value) -> Result<Value> {
     common::admin(home, caller)?;
     validate(patch)?;
+    if let Some(dir) = patch["workspace_dir"].as_str() {
+        common::check_workdir(home, dir)?;
+    }
     let mut settings = get(home)?;
     for (key, value) in patch.as_object().unwrap() {
         settings[key] = value.clone();
@@ -287,6 +283,19 @@ pub fn check_budget(home: &Path, caller: &str) -> Result<()> {
     Ok(())
 }
 
+fn ipv4_interfaces(interfaces: Vec<if_addrs::Interface>) -> BTreeSet<String> {
+    interfaces
+        .into_iter()
+        .filter(|interface| interface.is_oper_up())
+        .filter_map(|interface| match interface.ip() {
+            std::net::IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => {
+                Some(ip.to_string())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 pub fn network(home: &Path) -> Result<Value> {
     let enabled = get(home)?["lan_enabled"].as_bool().unwrap_or(false);
     let state: Value = fs::read(home.join("serve-state.json"))
@@ -299,23 +308,7 @@ pub fn network(home: &Path) -> Result<Value> {
         .map(u64::from)
         .or_else(|| state["port"].as_u64())
         .unwrap_or(9119);
-    let mut addresses = BTreeSet::new();
-    if let Ok(host) = std::env::var("HOSTNAME")
-        && let Ok(found) = (host.as_str(), 0).to_socket_addrs()
-    {
-        for item in found {
-            if item.is_ipv4() && !item.ip().is_loopback() {
-                addresses.insert(item.ip().to_string());
-            }
-        }
-    }
-    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0")
-        && socket.connect("8.8.8.8:80").is_ok()
-        && let Ok(address) = socket.local_addr()
-        && !address.ip().is_loopback()
-    {
-        addresses.insert(address.ip().to_string());
-    }
+    let addresses = ipv4_interfaces(if_addrs::get_if_addrs().unwrap_or_default());
     Ok(
         json!({"lan_enabled":enabled,"bind_host":if enabled {"0.0.0.0"} else {"127.0.0.1"},"port":port,"addresses":addresses}),
     )
@@ -337,7 +330,13 @@ pub fn record_incident(
     let tx = conn.transaction()?;
     let connector = context["connector"].as_str();
     let section = context["section_id"].as_str();
-    let existing = common::rows(&tx,"SELECT * FROM bot_incidents WHERE bot=? AND kind=? AND resolved_at IS NULL AND COALESCE(connector,'')=COALESCE(?,'') AND COALESCE(section_id,'')=COALESCE(?,'')", &[&bot,&kind,&connector,&section])?.into_iter().next();
+    let existing = common::rows(
+        &tx,
+        "SELECT * FROM bot_incidents WHERE bot=? AND kind=? AND resolved_at IS NULL AND COALESCE(connector,'')=COALESCE(?,'') AND COALESCE(section_id,'')=COALESCE(?,'')",
+        &[&bot, &kind, &connector, &section],
+    )?
+    .into_iter()
+    .next();
     let text = text.trim().chars().take(500).collect::<String>();
     let now = common::now();
     let id = if let Some(existing) = existing {
@@ -358,7 +357,20 @@ pub fn record_incident(
         id
     } else {
         let id = common::id();
-        tx.execute("INSERT INTO bot_incidents(id,bot,section_id,room_id,session_id,kind,connector,text,created_at) VALUES (?,?,?,?,?,?,?,?,?)",params![id,bot,section,context["room_id"].as_str(),context["session_id"].as_str(),kind,connector,text,now])?;
+        tx.execute(
+            "INSERT INTO bot_incidents(id,bot,section_id,room_id,session_id,kind,connector,text,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            params![
+                id,
+                bot,
+                section,
+                context["room_id"].as_str(),
+                context["session_id"].as_str(),
+                kind,
+                connector,
+                text,
+                now
+            ],
+        )?;
         id
     };
     let row = common::rows(&tx, "SELECT * FROM bot_incidents WHERE id=?", &[&id])?.remove(0);
@@ -428,4 +440,55 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             .and_then(|_| network(home)),
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::*;
+    fn interface(ip: &str, up: bool) -> if_addrs::Interface {
+        if_addrs::Interface {
+            name: "fixture".into(),
+            addr: if_addrs::IfAddr::V4(if_addrs::Ifv4Addr {
+                ip: ip.parse().unwrap(),
+                netmask: "255.255.255.0".parse().unwrap(),
+                prefixlen: 24,
+                broadcast: None,
+            }),
+            index: None,
+            oper_status: if up {
+                if_addrs::IfOperStatus::Up
+            } else {
+                if_addrs::IfOperStatus::Down
+            },
+            is_p2p: false,
+            #[cfg(windows)]
+            adapter_name: "fixture".into(),
+        }
+    }
+    #[test]
+    fn includes_lan_and_vpn_interfaces_without_hostname_or_default_route() {
+        let addresses = ipv4_interfaces(vec![
+            interface("192.168.1.5", true),
+            interface("100.64.0.2", true),
+            interface("127.0.0.1", true),
+            interface("0.0.0.0", true),
+            interface("10.1.1.5", false),
+            interface("192.168.1.5", true),
+        ]);
+        assert_eq!(
+            addresses,
+            BTreeSet::from(["192.168.1.5".into(), "100.64.0.2".into()])
+        );
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        let reported = network(home.path()).unwrap();
+        for address in ipv4_interfaces(if_addrs::get_if_addrs().unwrap()) {
+            assert!(
+                reported["addresses"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(address))
+            );
+        }
+    }
 }

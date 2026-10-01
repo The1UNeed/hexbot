@@ -13,16 +13,51 @@ fn text<'a>(p: &'a Value, key: &str) -> &'a str {
     p[key].as_str().unwrap_or("")
 }
 fn descriptor(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
-    json!({"name":name,"description":description,"readOnly":name!="skill_manage","parameters":{"type":"object","properties":properties,"required":required}})
+    json!({"name":name,"description":description,"parameters":{"type":"object","properties":properties,"required":required}})
 }
 pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
     let enabled = connectors::toolsets(home, bot)?;
     let mut tools = vec![];
     if enabled.iter().any(|s| s == "todo") {
-        tools.push(descriptor("todo_list","Track multi-step work. Omit todos to read. Writes replace the list unless merge is true. Complete tasks only after verifying them.",json!({"todos":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed","cancelled"]},"parent":{"type":"string"}},"required":["id","content","status"]}},"merge":{"type":"boolean"}}),&[]));
+        tools.push(descriptor(
+            "todo_list",
+            "Track multi-step work. Omit todos to read. Writes replace the list unless merge is true. Complete tasks only after verifying them.",
+            json!({
+                "todos": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string" },
+                            "content": { "type": "string" },
+                            "status": { "type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"] },
+                            "parent": { "type": "string" }
+                        },
+                        "required": ["id", "content", "status"]
+                    }
+                },
+                "merge": { "type": "boolean" }
+            }),
+            &[],
+        ));
     }
     if enabled.iter().any(|s| s == "session_search") {
-        tools.push(descriptor("session_search","Recall earlier conversations. Query searches history; session_id reads it; add around_message_id to scroll. No arguments browses recent conversations. This does not search external sources.",json!({"query":{"type":"string"},"limit":{"type":"integer","default":3,"maximum":10},"sort":{"type":"string","enum":["newest","oldest"]},"detail":{"type":"string","enum":["adaptive","full"]},"session_id":{"type":"string"},"around_message_id":{"type":"integer"},"window":{"type":"integer","default":5,"maximum":20},"role_filter":{"type":"string"},"profile":{"type":"string"}}),&[]));
+        tools.push(descriptor(
+            "session_search",
+            "Recall earlier conversations. Query searches history; session_id reads it; add around_message_id to scroll. No arguments browses recent conversations. This does not search external sources.",
+            json!({
+                "query": { "type": "string" },
+                "limit": { "type": "integer", "default": 3, "maximum": 10 },
+                "sort": { "type": "string", "enum": ["newest", "oldest"] },
+                "detail": { "type": "string", "enum": ["adaptive", "full"] },
+                "session_id": { "type": "string" },
+                "around_message_id": { "type": "integer" },
+                "window": { "type": "integer", "default": 5, "maximum": 20 },
+                "role_filter": { "type": "string" },
+                "profile": { "type": "string" }
+            }),
+            &[],
+        ));
     }
     if enabled.iter().any(|s| s == "skills") {
         tools.push(descriptor(
@@ -31,8 +66,40 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
             json!({"category":{"type":"string"}}),
             &[],
         ));
-        tools.push(descriptor("skill_view","Read a skill or a file inside it. Omit file_path to read SKILL.md and list supporting files.",json!({"name":{"type":"string"},"file_path":{"type":"string"}}),&["name"]));
-        tools.push(descriptor("skill_manage","Create, patch, or delete bot skills. Operations apply as one batch. Inherited skills are copied into this bot before editing.",json!({"operations":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"action":{"type":"string","enum":["create","patch","delete","write_file","remove_file"]},"content":{"type":"string"},"category":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"},"file_path":{"type":"string"},"file_content":{"type":"string"}},"required":["name","action"]}}}),&["operations"]));
+        tools.push(descriptor(
+            "skill_view",
+            "Read a skill or a file inside it. Omit file_path to read SKILL.md and list supporting files.",
+            json!({ "name": { "type": "string" }, "file_path": { "type": "string" } }),
+            &["name"],
+        ));
+        tools.push(descriptor(
+            "skill_manage",
+            "Create, patch, or delete bot skills. Operations apply as one batch. Inherited skills are copied into this bot before editing.",
+            json!({
+                "operations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string" },
+                            "action": {
+                                "type": "string",
+                                "enum": ["create", "patch", "delete", "write_file", "remove_file"]
+                            },
+                            "content": { "type": "string" },
+                            "category": { "type": "string" },
+                            "old_string": { "type": "string" },
+                            "new_string": { "type": "string" },
+                            "replace_all": { "type": "boolean" },
+                            "file_path": { "type": "string" },
+                            "file_content": { "type": "string" }
+                        },
+                        "required": ["name", "action"]
+                    }
+                }
+            }),
+            &["operations"],
+        ));
     }
     Ok(tools)
 }
@@ -93,7 +160,22 @@ fn normalize_item(p: &Value) -> Value {
     if description.chars().count() > 4000 {
         content = description.chars().take(3987).collect::<String>() + "… [truncated]";
     }
-    let mut out = json!({"id":if id.is_empty(){"?"}else{id},"content":if content.is_empty(){"(no description)"}else{&content},"status":if matches!(status.as_str(),"pending"|"in_progress"|"completed"|"cancelled"){&status}else{"pending"}});
+    let mut out = json!({
+        "id": if id.is_empty() { "?" } else { id },
+        "content": if content.is_empty() {
+            "(no description)"
+        } else {
+            &content
+        },
+        "status": if matches!(
+            status.as_str(),
+            "pending" | "in_progress" | "completed" | "cancelled"
+        ) {
+            &status
+        } else {
+            "pending"
+        }
+    });
     let parent = text(p, "parent").trim();
     if !parent.is_empty() && parent != id {
         out["parent"] = json!(parent)
@@ -416,9 +498,28 @@ fn view_skill(home: &Path, bot: &str, p: &Value) -> Result<Value> {
         })
         .cloned()
         .collect::<Vec<_>>();
-    Ok(
-        json!({"success":true,"name":row["name"],"description":row["description"],"content":content,"path":main,"skill_dir":dir,"tags":meta["tags"],"related_skills":meta["related_skills"],"linked_files":linked,"required_environment_variables":required,"missing_required_environment_variables":missing,"required_commands":[],"missing_required_commands":[],"setup_needed":!missing.is_empty(),"setup_skipped":false,"readiness_status":if missing.is_empty(){"available"}else{"setup_needed"}}),
-    )
+    Ok(json!({
+        "success": true,
+        "name": row["name"],
+        "description": row["description"],
+        "content": content,
+        "path": main,
+        "skill_dir": dir,
+        "tags": meta["tags"],
+        "related_skills": meta["related_skills"],
+        "linked_files": linked,
+        "required_environment_variables": required,
+        "missing_required_environment_variables": missing,
+        "required_commands": [],
+        "missing_required_commands": [],
+        "setup_needed": !missing.is_empty(),
+        "setup_skipped": false,
+        "readiness_status": if missing.is_empty() {
+            "available"
+        } else {
+            "setup_needed"
+        }
+    }))
 }
 fn copy_tree(home: &Path, source: &Path, dest: &Path) -> Result<()> {
     let mut files = vec![];
@@ -755,7 +856,13 @@ fn recall_sessions(
             && !has_native
             && let Some(legacy) = &legacy
         {
-            let legacy_id:Option<String>=legacy.query_row("SELECT id FROM sessions WHERE session_key=?1 OR id=?1 ORDER BY CASE WHEN session_key=?1 THEN 0 ELSE 1 END LIMIT 1",[id],|r|r.get(0)).optional()?;
+            let legacy_id: Option<String> = legacy
+                .query_row(
+                    "SELECT id FROM sessions WHERE session_key=?1 OR id=?1 ORDER BY CASE WHEN session_key=?1 THEN 0 ELSE 1 END LIMIT 1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .optional()?;
             if let Some(legacy_id) = legacy_id {
                 for row in common::rows(
                     legacy,
@@ -768,7 +875,15 @@ fn recall_sessions(
                         .filter(Value::is_array)
                         .map(|v| runtime_store::text(&v))
                         .unwrap_or_else(|| content.to_owned());
-                    messages.push(json!({"id":row["id"],"role":row["role"],"content":content,"timestamp":row["timestamp"],"tool_name":row["tool_name"],"tool_calls":row["tool_calls"],"tool_call_id":row["tool_call_id"]}));
+                    messages.push(json!({
+                        "id": row["id"],
+                        "role": row["role"],
+                        "content": content,
+                        "timestamp": row["timestamp"],
+                        "tool_name": row["tool_name"],
+                        "tool_calls": row["tool_calls"],
+                        "tool_call_id": row["tool_call_id"]
+                    }));
                 }
             }
         }
@@ -830,9 +945,20 @@ fn search_sessions(home: &Path, owner: &str, bot: &str, current: &str, p: &Value
                 .ok_or_else(|| Error::new(4205, "anchor message was not found in this session"))?;
             let start = index.saturating_sub(window);
             let end = (index + window + 1).min(session.messages.len());
-            return Ok(
-                json!({"success":true,"mode":"scroll","session_id":session.id,"around_message_id":anchor,"session_meta":meta,"window":window,"messages":session.messages[start..end].iter().map(|m|shaped(m,Some(anchor))).collect::<Vec<_>>(),"messages_before":start,"messages_after":session.messages.len()-end}),
-            );
+            return Ok(json!({
+                "success": true,
+                "mode": "scroll",
+                "session_id": session.id,
+                "around_message_id": anchor,
+                "session_meta": meta,
+                "window": window,
+                "messages": session.messages[start..end]
+                    .iter()
+                    .map(|m| shaped(m, Some(anchor)))
+                    .collect::<Vec<_>>(),
+                "messages_before": start,
+                "messages_after": session.messages.len() - end
+            }));
         }
         let truncated = session.messages.len() > 60;
         let messages = if truncated {
@@ -843,17 +969,50 @@ fn search_sessions(home: &Path, owner: &str, bot: &str, current: &str, p: &Value
         } else {
             session.messages.iter().collect()
         };
-        return Ok(
-            json!({"success":true,"mode":"read","session_id":session.id,"link":format!("@session:{target}/{}",session.id),"session_meta":meta,"message_count":session.messages.len(),"truncated":truncated,"messages":messages.into_iter().map(|m|shaped(m,None)).collect::<Vec<_>>()}),
-        );
+        return Ok(json!({
+            "success": true,
+            "mode": "read",
+            "session_id": session.id,
+            "link": format!("@session:{target}/{}", session.id),
+            "session_meta": meta,
+            "message_count": session.messages.len(),
+            "truncated": truncated,
+            "messages": messages
+                .into_iter()
+                .map(|m| shaped(m, None))
+                .collect::<Vec<_>>()
+        }));
     }
     let query = text(p, "query").trim();
     if query.is_empty() {
-        let results=sessions.iter().take(limit).map(|s|json!({"session_id":s.id,"link":format!("@session:{target}/{}",s.id),"title":s.title,"source":"hexbot","started_at":s.started,"last_active":s.updated,"message_count":s.messages.len(),"preview":s.messages.iter().rev().find(|m|m["role"]=="user").map(|m|text(m,"content").chars().take(180).collect::<String>()).unwrap_or_default()})).collect::<Vec<_>>();
+        let results = sessions
+            .iter()
+            .take(limit)
+            .map(|s| {
+                json!({
+                    "session_id": s.id,
+                    "link": format!("@session:{target}/{}", s.id),
+                    "title": s.title,
+                    "source": "hexbot",
+                    "started_at": s.started,
+                    "last_active": s.updated,
+                    "message_count": s.messages.len(),
+                    "preview": s
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|m| m["role"] == "user")
+                        .map(|m| text(m, "content").chars().take(180).collect::<String>())
+                        .unwrap_or_default()
+                })
+            })
+            .collect::<Vec<_>>();
         return Ok(json!({"success":true,"mode":"browse","count":results.len(),"results":results}));
     }
     let mut index = Connection::open_in_memory()?;
-    index.execute_batch("CREATE VIRTUAL TABLE recall USING fts5(content,session_index UNINDEXED,message_index UNINDEXED,time UNINDEXED)")?;
+    index.execute_batch(
+        "CREATE VIRTUAL TABLE recall USING fts5(content,session_index UNINDEXED,message_index UNINDEXED,time UNINDEXED)",
+    )?;
     let roles = p["role_filter"]
         .as_str()
         .unwrap_or("user,assistant")
@@ -922,7 +1081,59 @@ fn search_sessions(home: &Path, owner: &str, bot: &str, current: &str, p: &Value
             (anchor + 1).min(session.messages.len())
         };
         let anchor_id = session.messages.get(anchor).map(|m| &m["id"]);
-        results.push(json!({"session_id":session.id,"link":format!("@session:{target}/{}",session.id),"title":session.title,"source":"hexbot","when":session.started,"match_message_id":anchor_id,"matched_role":if midx<0{"session_title"}else{session.messages.get(anchor).map(|m|text(m,"role")).unwrap_or("")},"snippet":if midx<0{session.title.clone()}else{session.messages.get(anchor).map(|m|text(m,"content").chars().take(300).collect::<String>()).unwrap_or_default()},"messages":session.messages[start.min(end)..end].iter().map(|m|shaped(m,anchor_id)).collect::<Vec<_>>(),"bookend_start":if full{session.messages.iter().take(3).map(|m|shaped(m,None)).collect::<Vec<_>>()}else{vec![]},"bookend_end":if full{session.messages.iter().skip(session.messages.len().saturating_sub(3)).map(|m|shaped(m,None)).collect::<Vec<_>>()}else{vec![]},"messages_before":start,"messages_after":session.messages.len()-end,"detail":if full{"full"}else{"anchor"}}));
+        results.push(json!({
+            "session_id": session.id,
+            "link": format!("@session:{target}/{}", session.id),
+            "title": session.title,
+            "source": "hexbot",
+            "when": session.started,
+            "match_message_id": anchor_id,
+            "matched_role": if midx < 0 {
+                "session_title"
+            } else {
+                session
+                    .messages
+                    .get(anchor)
+                    .map(|m| text(m, "role"))
+                    .unwrap_or("")
+            },
+            "snippet": if midx < 0 {
+                session.title.clone()
+            } else {
+                session
+                    .messages
+                    .get(anchor)
+                    .map(|m| text(m, "content").chars().take(300).collect::<String>())
+                    .unwrap_or_default()
+            },
+            "messages": session.messages[start.min(end)..end]
+                .iter()
+                .map(|m| shaped(m, anchor_id))
+                .collect::<Vec<_>>(),
+            "bookend_start": if full {
+                session
+                    .messages
+                    .iter()
+                    .take(3)
+                    .map(|m| shaped(m, None))
+                    .collect::<Vec<_>>()
+            } else {
+                vec![]
+            },
+            "bookend_end": if full {
+                session
+                    .messages
+                    .iter()
+                    .skip(session.messages.len().saturating_sub(3))
+                    .map(|m| shaped(m, None))
+                    .collect::<Vec<_>>()
+            } else {
+                vec![]
+            },
+            "messages_before": start,
+            "messages_after": session.messages.len() - end,
+            "detail": if full { "full" } else { "anchor" }
+        }));
         if results.len() >= limit {
             break;
         }

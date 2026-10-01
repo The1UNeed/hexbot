@@ -502,7 +502,27 @@ fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
                 bots.push(n.clone())
             }
         }
-        out.push(json!({"id":id,"name":s["name"],"description":s["description"],"group":s["group"],"icon":s["icon"],"scope":"daemon","state":state,"state_text":state_text,"providers":providers,"provider":provider.map(|p|p["id"].clone()),"fields":fields,"enabled_for_bot":bot.map(|b|bots.iter().any(|n|n==b)),"enabled_bots":bots,"last_error":err.map(|e|json!({"text":e["text"],"at":e["created_at"]}))}));
+        out.push(json!({
+            "id": id,
+            "name": s["name"],
+            "description": s["description"],
+            "group": s["group"],
+            "icon": s["icon"],
+            "scope": "daemon",
+            "state": state,
+            "state_text": state_text,
+            "providers": providers,
+            "provider": provider.map(|p| p["id"].clone()),
+            "fields": fields,
+            "enabled_for_bot": bot.map(|b| bots.iter().any(|n| n == b)),
+            "enabled_bots": bots,
+            "last_error": err.map(|e| {
+                json!({
+                "text":e["text"],
+                "at":e["created_at"]}
+                )
+            })
+        }));
     }
     let config = read_config(home)?;
     if let Some(servers) = config["mcp_servers"].as_object() {
@@ -525,7 +545,52 @@ fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
                     .collect::<Vec<_>>()
                     .join(" ")
             });
-            out.push(json!({"id":id,"name":name,"description":description,"group":"mcp","icon":"glyph:server","scope":"daemon","state":if err.is_some(){"error"}else if disabled{"not_set_up"}else{"ready"},"state_text":err.map(|e|e["text"].as_str().unwrap_or("").chars().take(80).collect::<String>()).unwrap_or_else(||if disabled{"Disabled"}else{"Running"}.to_string()),"providers":null,"provider":null,"fields":[],"enabled_for_bot":bot.map(|b|bots.iter().any(|n|n==b)),"enabled_bots":bots,"last_error":err.map(|e|json!({"text":e["text"],"at":e["created_at"]})),"mcp":{"name":name,"transport":if entry["url"].is_string(){entry["transport"].as_str().unwrap_or("http")}else{"stdio"},"tool_count":0,"running":!disabled}}));
+            out.push(json!({
+                "id": id,
+                "name": name,
+                "description": description,
+                "group": "mcp",
+                "icon": "glyph:server",
+                "scope": "daemon",
+                "state": if err.is_some() {
+                    "error"
+                } else if disabled {
+                    "not_set_up"
+                } else {
+                    "ready"
+                },
+                "state_text": err
+                    .map(|e| {
+                        e["text"]
+                            .as_str()
+                            .unwrap_or("")
+                            .chars()
+                            .take(80)
+                            .collect::<String>()
+                    })
+                    .unwrap_or_else(|| if disabled { "Disabled" } else { "Running" }.to_string()),
+                "providers": null,
+                "provider": null,
+                "fields": [],
+                "enabled_for_bot": bot.map(|b| bots.iter().any(|n| n == b)),
+                "enabled_bots": bots,
+                "last_error": err.map(|e| {
+                    json!({
+                    "text":e["text"],
+                    "at":e["created_at"]}
+                    )
+                }),
+                "mcp": {
+                    "name": name,
+                    "transport": if entry["url"].is_string() {
+                        entry["transport"].as_str().unwrap_or("http")
+                    } else {
+                        "stdio"
+                    },
+                    "tool_count": 0,
+                    "running": !disabled
+                }
+            }));
         }
     }
     Ok(json!({"connectors":out}))
@@ -1161,27 +1226,7 @@ impl McpSession {
                 .ok_or_else(|| transport_error("server has no command or URL"))?;
             let mut cmd = tokio::process::Command::new(command);
             if entry["isolated_env"] == true {
-                cmd.env_clear();
-                for key in [
-                    "PATH",
-                    "HOME",
-                    "USER",
-                    "LOGNAME",
-                    "TMPDIR",
-                    "TEMP",
-                    "TMP",
-                    "LANG",
-                    "LC_ALL",
-                    "DISPLAY",
-                    "WAYLAND_DISPLAY",
-                    "XDG_RUNTIME_DIR",
-                    "XAUTHORITY",
-                    "DBUS_SESSION_BUS_ADDRESS",
-                ] {
-                    if let Ok(value) = std::env::var(key) {
-                        cmd.env(key, value);
-                    }
-                }
+                crate::credentials::desktop_environment(&mut cmd);
             } else {
                 cmd.envs(env);
             }
@@ -1210,7 +1255,7 @@ impl McpSession {
             transport,
             next_id: 1,
         };
-        let initialized=session.request("initialize",json!({"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"hexbot","version":env!("CARGO_PKG_VERSION")}})).await?;
+        let initialized = session.request("initialize", json!({"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"hexbot","version":env!("CARGO_PKG_VERSION")}})).await?;
         if let McpTransport::Http { version, .. } = &mut session.transport
             && let Some(v) = initialized["protocolVersion"].as_str()
         {
@@ -1367,6 +1412,9 @@ async fn session(home: &Path, bot: &str, server: &str) -> Result<Arc<Mutex<McpSe
         .ok_or_else(|| Error::new(4213, format!("MCP server is not enabled: {server}")))?;
     configured_session(home, bot, server, entry).await
 }
+fn session_key(home: &Path, bot: &str, server: &str) -> String {
+    format!("{}\0{bot}\0{server}", home.display())
+}
 async fn configured_session(
     home: &Path,
     bot: &str,
@@ -1374,7 +1422,7 @@ async fn configured_session(
     entry: &Value,
 ) -> Result<Arc<Mutex<McpSession>>> {
     let env = credentials(home, bot)?;
-    let key = format!("{}\0{bot}\0{server}", home.display());
+    let key = session_key(home, bot, server);
     let fingerprint = format!(
         "{entry}{}",
         serde_json::to_string(&env).map_err(transport_error)?
@@ -1394,7 +1442,8 @@ async fn configured_session(
     cache.insert(key, (fingerprint, session.clone()));
     Ok(session)
 }
-pub async fn mcp_tools(home: &Path, bot: &str) -> Result<Vec<Value>> {
+#[cfg(test)]
+async fn mcp_tools(home: &Path, bot: &str) -> Result<Vec<Value>> {
     Ok(mcp_tools_with_failures(home, bot).await?.0)
 }
 pub async fn mcp_tools_with_failures(home: &Path, bot: &str) -> Result<(Vec<Value>, bool)> {
@@ -1406,7 +1455,7 @@ pub async fn mcp_tools_with_failures(home: &Path, bot: &str) -> Result<(Vec<Valu
     let mut pending = FuturesUnordered::new();
     for (server, config) in servers.as_object().unwrap() {
         pending.push(async move {
-            let key = format!("{}\0{bot}\0{server}\0{config}", home.display());
+            let key = format!("{}\0{config}", session_key(home, bot, server));
             {
                 let mut cache = failures.lock().await;
                 cache.retain(|_, at| at.elapsed() < std::time::Duration::from_secs(30));
@@ -1442,7 +1491,8 @@ pub async fn mcp_tools_with_failures(home: &Path, bot: &str) -> Result<(Vec<Valu
     Ok((tools, failed))
 }
 
-pub async fn mcp_tools_config(
+#[cfg(test)]
+async fn mcp_tools_config(
     home: &Path,
     bot: &str,
     server: &str,
@@ -1470,10 +1520,7 @@ async fn discover_tools(
         let response = match session.request("tools/list", params).await {
             Ok(response) => response,
             Err(error) => {
-                sessions()
-                    .lock()
-                    .await
-                    .remove(&format!("{}\0{bot}\0{server}", home.display()));
+                close_config(home, bot, server).await;
                 return Err(error);
             }
         };
@@ -1481,7 +1528,20 @@ async fn discover_tools(
             let Some(name) = tool["name"].as_str() else {
                 continue;
             };
-            tools.push(json!({"name":format!("mcp_{server}_{name}"),"server":server,"tool":name,"description":tool["description"].as_str().unwrap_or(""),"inputSchema":tool.get("inputSchema").cloned().unwrap_or_else(||json!({"type":"object","properties":{}}))}));
+            tools.push(json!({
+                "name": format!("mcp_{server}_{name}"),
+                "server": server,
+                "tool": name,
+                "description": tool["description"].as_str().unwrap_or(""),
+                "inputSchema": tool.get("inputSchema").cloned().unwrap_or_else(|| {
+                    json!({
+                    "type":"object",
+                    "properties":{
+                    }
+                    }
+                    )
+                })
+            }));
         }
         cursor = response["nextCursor"].clone();
         if cursor.is_null() {
@@ -1501,19 +1561,9 @@ pub async fn mcp_call(
     args: Value,
 ) -> Result<Value> {
     let session = session(home, bot, server).await?;
-    let result = session
-        .lock()
-        .await
-        .request("tools/call", json!({"name":tool,"arguments":args}))
-        .await;
-    if result.is_err() {
-        sessions()
-            .lock()
-            .await
-            .remove(&format!("{}\0{bot}\0{server}", home.display()));
-    }
-    result
+    call_on(home, bot, server, session, tool, args).await
 }
+
 pub async fn mcp_call_config(
     home: &Path,
     bot: &str,
@@ -1523,16 +1573,23 @@ pub async fn mcp_call_config(
     args: Value,
 ) -> Result<Value> {
     let session = configured_session(home, bot, server, config).await?;
+    call_on(home, bot, server, session, tool, args).await
+}
+async fn call_on(
+    home: &Path,
+    bot: &str,
+    server: &str,
+    session: Arc<Mutex<McpSession>>,
+    tool: &str,
+    args: Value,
+) -> Result<Value> {
     let result = session
         .lock()
         .await
         .request("tools/call", json!({"name":tool,"arguments":args}))
         .await;
     if result.is_err() {
-        sessions()
-            .lock()
-            .await
-            .remove(&format!("{}\0{bot}\0{server}", home.display()));
+        close_config(home, bot, server).await;
     }
     result
 }
@@ -1541,7 +1598,7 @@ pub async fn close_config(home: &Path, bot: &str, server: &str) {
     sessions()
         .lock()
         .await
-        .remove(&format!("{}\0{bot}\0{server}", home.display()));
+        .remove(&session_key(home, bot, server));
 }
 /// Drop MCP children when a bot is stopped or deleted. In-flight calls finish
 /// using their own session reference; no completed tool action is replayed.
@@ -1657,3 +1714,7 @@ fn validate_mcp_security(entry: &Value) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "connectors_tests.rs"]
+mod tests;

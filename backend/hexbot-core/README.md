@@ -32,7 +32,8 @@ HEXBOT_HOME="$test_home" backend/hexbot-core/target/debug/hexbot serve --port 91
 
 `HEXBOT_PI_EXECUTABLE` selects an explicit Pi executable; `HEXBOT_WEB_DIST`
 selects the built web bundle. Full desktop packages include Rust, Node, Pi,
-web assets, and skills. Desktop bootstrap provisions an isolated Python interpreter
+web assets, and skills from `skills/`. The `optional-skills/` directory is not
+packaged or loaded automatically. Desktop bootstrap provisions an isolated Python interpreter
 for code tools and pinned edge-tts for free voice, separately from the daemon.
 Client-only packages contain no daemon. Native package
 builds use their target OS and architecture. Intel macOS also cross-compiles
@@ -48,9 +49,11 @@ The native CLI implements Hexbot commands. Legacy core administration commands a
 
 ## Storage and compatibility
 
-- `hexbot.db` keeps schema v9, IDs, ownership, rooms, sections, and settings.
-  Migrations compare against the original Python implementation, including
-  versions 1–9, repeat runs, and opening the upgraded result with Python.
+- `hexbot.db` keeps schema v11, IDs, ownership, rooms, sections, and settings.
+  Migrations compare against the original Python implementation for fresh
+  homes and starting versions 1–9. Checks include repeat runs and opening the
+  upgraded result with Python. Native tests also cover opening schema v11.
+  Starting versions 10 and 11 are not in the Python comparison matrix.
 - Memory stays in `profiles/<bot>/memories/MEMORY.md`, soul in `SOUL.md`, and
   About you in `users/<id>/user.md`. Deleting a section leaves bot memory alone.
 - `hexbot-runtime.db` stores native transcript projections, usage, and frozen
@@ -96,7 +99,7 @@ WebSocket, and subprocess fixtures; they do not spend provider credits.
 cargo fmt --manifest-path backend/hexbot-core/Cargo.toml --check
 cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml
 cargo clippy --locked --manifest-path backend/hexbot-core/Cargo.toml --all-targets -- -D warnings
-node --test backend/pi-runtime/acp.test.mjs
+node --test backend/pi-runtime/*.test.mjs
 ```
 
 Run real Pi against the local model fixture, including native memory tools and
@@ -141,14 +144,25 @@ asks before each script; Auto consults the approver and asks when it declines;
 Off skips consent. A small destructive-operation guard applies in every mode.
 Memory and soul edits, including removals, scan the complete result before bot writes. Existing flagged text may remain; newly assembled matches are rejected.
 
-`../pi-runtime/credential-policy.json` supplies the credential paths for both
-file guards and child isolation. macOS shell and Python children use
+`../pi-runtime/credential-policy.json` is the one source for the credential
+paths, the host write tiers (`write.deny` is never written by a tool, `write.ask`
+prompts in Manual and Auto, `write.fileDeny` is refused to the file tools and
+asks in shell commands), the child environment allowlist, and the sandbox
+walk. `credentials.rs` and the private extension both read it, and a parity test
+in `credentials.rs` checks that both sides build the same sandbox profile and
+bubblewrap arguments. macOS shell and Python children use
 `sandbox-exec` and fail closed if the profile cannot be applied. Linux uses
 bubblewrap after a successful startup probe, with credential paths masked and a private process
 namespace. Shell, Python, and scheduled scripts cannot write the Hexbot home except
-the current workspace and output folders. SSH private keys are protected; SSH
+the output folders the daemon chose (artifacts and attachments); a working
+directory saved inside the home before the daemon refused one is ignored, logged
+once, and replaced by the default workspace. SSH private keys are protected; SSH
 config, known hosts, public keys, and the SSH agent remain available. If bubblewrap
-is missing or cannot start, a warning records the lack of OS isolation.
+is missing or cannot start, a startup warning records the lack of OS isolation,
+`hexbot.info` reports `sandbox: null` so Settings can show a notice,
+Manual asks before every shell command and code run, Auto sends them to the
+section owner instead of its approver, and scheduled scripts refuse to run
+unless approval mode is Off.
 Provider keys reach the agent through its auth file. The selected Bedrock or Vertex provider also receives its cloud environment settings; shell and scheduled script children do not.
 The Python environment does not include `HEXBOT_HOME`.
 
@@ -159,10 +173,18 @@ forwards the proxy bypass setting to Chromium;
 as disabling implicit bypass. Unmanaged browsers allow inspection only, and
 browser code execution is refused without interception. URL tools always deny
 the daemon listener and metadata addresses, even with private URLs enabled.
+The Copilot ACP child starts from the same environment allowlist as every
+other child process plus its GitHub login variables, and its own tools are
+never granted: permission requests are cancelled and no file bridge is
+offered, so Hexbot actions come back as `<tool_call>` text and run through
+the section's guarded tools.
 
 MCP discovery runs servers concurrently under a shared 25-second deadline, preserves successful results, and caches failures for 30 seconds. Hidden turns include prompt submission in their 30-minute deadline.
 Recovery quarantines damaged data; transient I/O or SQLite failures leave the
-files in place for a later attempt.
+files in place for a later attempt. A quarantined section moves its
+`conversation.jsonl` aside as `conversation.quarantine-<id>.jsonl` and refuses
+to open until a `conversation.jsonl` is put back; the next daemon start then
+recovers that file and lifts the quarantine if it is sound.
 
 Prefer `HEXBOT_MANAGED_DIR`, `HEXBOT_MAX_TURNS`,
 `HEXBOT_COPILOT_ACP_COMMAND`, `HEXBOT_COPILOT_ACP_ARGS`,

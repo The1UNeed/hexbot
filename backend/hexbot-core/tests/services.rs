@@ -1,121 +1,11 @@
-use axum::{
-    Json, Router,
-    extract::{Request, State},
-    http::StatusCode,
-    response::IntoResponse,
-    routing::any,
-};
 use hexbot_core::{auth, common, db, services};
 use serde_json::{Value, json};
-use std::{fs, sync::Arc, time::Duration};
-use tokio::sync::{Mutex, mpsc};
+use std::{fs, time::Duration};
+#[path = "fixtures/connect_mock.rs"]
+mod connect_mock;
+use connect_mock::{Mock, jwks};
 
 const TEST_KEY:&[u8]=b"-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg/h5RZbRebJ4W8wDj\n0zi0DKNjL3NKu4LSLTr3GDLW1AuhRANCAATxLUB7ibYZJBU9qYp7mPjCc/fQfWet\nd1HBTxun6HHLoMilyIfHMI8E9KdpMIfgyZ8cQ6tCl8+s34X5gbiue9D9\n-----END PRIVATE KEY-----\n";
-fn jwks() -> Value {
-    json!({"keys":[{"kty":"EC","crv":"P-256","alg":"ES256","use":"sig","kid":"fixture","x":"8S1Ae4m2GSQVPamKe5j4wnP30H1nrXdRwU8bp-hxy6A","y":"yKXIh8cwjwT0p2kwh-DJnxxDq0KXz6zfhfmBuK570P0"}]})
-}
-struct StateData {
-    response: Mutex<Value>,
-    keys: Mutex<Value>,
-    observed: mpsc::UnboundedSender<(String, Value, String)>,
-    bad: Mutex<bool>,
-    binary: Mutex<Vec<u8>>,
-    manifest: Mutex<Value>,
-}
-struct Mock {
-    base: String,
-    data: Arc<StateData>,
-    events: mpsc::UnboundedReceiver<(String, Value, String)>,
-    pending: Vec<(String, Value, String)>,
-    task: tokio::task::JoinHandle<()>,
-}
-impl Drop for Mock {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-async fn handler(
-    State(state): State<Arc<StateData>>,
-    request: Request,
-) -> axum::response::Response {
-    let path = request.uri().path().to_owned();
-    let auth = request
-        .headers()
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_owned();
-    let body = axum::body::to_bytes(request.into_body(), 1024 * 1024)
-        .await
-        .unwrap();
-    let body = serde_json::from_slice(&body).unwrap_or(Value::Null);
-    let _ = state.observed.send((path.clone(), body, auth));
-    if *state.bad.lock().await {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
-    let value = match path.as_str() {
-        "/api/register/start" => {
-            json!({"device_code":"device-code","user_code":"ABCD1234","verify_url":"https://connect.example/approve","interval":1})
-        }
-        "/api/register/poll" => state.response.lock().await.clone(),
-        "/.well-known/jwks.json" => state.keys.lock().await.clone(),
-        "/binary" => return state.binary.lock().await.clone().into_response(),
-        path if path.ends_with("/manifest.json") => state.manifest.lock().await.clone(),
-        _ => json!({"ok":true}),
-    };
-    Json(value).into_response()
-}
-impl Mock {
-    async fn new() -> Self {
-        let (sender, events) = mpsc::unbounded_channel();
-        let data = Arc::new(StateData {
-            keys: Mutex::new(jwks()),
-            response: Mutex::new(json!({"status":"pending"})),
-            observed: sender,
-            bad: Mutex::new(false),
-            binary: Mutex::new(vec![]),
-            manifest: Mutex::new(Value::Null),
-        });
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let app = Router::new()
-            .fallback(any(handler))
-            .with_state(data.clone());
-        let task = tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        Self {
-            base,
-            data,
-            events,
-            pending: vec![],
-            task,
-        }
-    }
-    async fn event(&mut self, path: &str) -> (Value, String) {
-        if let Some(index) = self.pending.iter().position(|item| item.0 == path) {
-            let (_, body, auth) = self.pending.remove(index);
-            return (body, auth);
-        }
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                let (seen, body, auth) = self.events.recv().await.unwrap();
-                if seen == path {
-                    return (body, auth);
-                }
-                self.pending.push((seen, body, auth));
-            }
-        })
-        .await
-        .unwrap()
-    }
-    fn configure(&self, home: &std::path::Path) {
-        common::write_config(home,&json!({"connect":{"api_base":self.base},"updates":{"base_url":self.base},"model":"keep"})).unwrap();
-    }
-    fn persist_registration(&self, home: &std::path::Path) {
-        fs::write(home.join("connect.json"),serde_json::to_vec(&json!({"api_base":self.base,"daemon_id":"daemon-1","daemon_token":"daemon-secret","slug":"kitchen","tunnel_hostname":"kitchen.connect.example","tunnel_token":"tunnel-secret","owner_id":"cloud-user","issuer":"https://connect.hexbot.app","keys":jwks()["keys"]})).unwrap()).unwrap();
-    }
-}
 fn home() -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     db::migrate(home.path()).unwrap();
@@ -366,6 +256,24 @@ async fn native_archive_child() {
         archive
             .append_data(&mut header, "./hexbot", binary.as_slice())
             .unwrap();
+        let files = json!({
+            "hexbot": format!("{:x}", Sha256::digest(binary)),
+            "node": format!("{:x}", Sha256::digest(b"signed node")),
+            "hexbot-core": format!("{:x}", Sha256::digest(b"signed daemon"))
+        });
+        let metadata =
+            serde_json::to_vec(&json!({"version":"9.8.7","builtAt":1,"files":files})).unwrap();
+        for (name, bytes) in [
+            ("manifest.json", metadata.as_slice()),
+            ("node", b"signed node".as_slice()),
+            ("hexbot-core", b"signed daemon".as_slice()),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(0o700);
+            header.set_size(bytes.len() as u64);
+            header.set_cksum();
+            archive.append_data(&mut header, name, bytes).unwrap();
+        }
         if unsafe_link {
             let mut header = tar::Header::new_gnu();
             header.set_entry_type(tar::EntryType::Symlink);
@@ -377,7 +285,7 @@ async fn native_archive_child() {
                 .unwrap();
         }
         let archive = archive.into_inner().unwrap().finish().unwrap();
-        *mock.data.manifest.lock().await = json!({"version":"9.8.7","target":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH),"url":format!("{}/binary",mock.base),"format":"tar.gz","entrypoint":"hexbot","sha256":format!("{:x}",Sha256::digest(&archive))});
+        *mock.data.manifest.lock().await = json!({"version":"9.8.7","builtAt":1,"target":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH),"url":format!("{}/binary",mock.base),"format":"tar.gz","entrypoint":"hexbot","sha256":format!("{:x}",Sha256::digest(&archive))});
         *mock.data.binary.lock().await = archive;
         services::call(
             home.path(),
@@ -411,6 +319,11 @@ async fn native_archive_child() {
             assert_eq!(result["status"], "restarting");
             let path = services::take_restart(home.path()).await.unwrap().unwrap();
             assert_eq!(fs::read(path).unwrap(), binary);
+            let selected: Value = serde_json::from_slice(
+                &fs::read(home.path().join("runtime/native-current.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(selected["files"], files);
         }
         services::shutdown(home.path()).await.unwrap();
     }
@@ -497,9 +410,49 @@ async fn native_update_child() {
     let mock = Mock::new().await;
     let home = home();
     mock.configure(home.path());
+    let error = services::call(
+        home.path(),
+        "local",
+        "hexbot.update.request",
+        &json!({"version":hexbot_core::version()}),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(error.code, 4212);
+    // An older source build is refused after reading its chronology, before download.
+    *mock.data.manifest.lock().await = json!({"version":"0.0.1","builtAt":0,"target":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH)});
+    services::call(
+        home.path(),
+        "local",
+        "hexbot.update.request",
+        &json!({"version":"0.0.1"}),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let status = services::call(home.path(), "local", "hexbot.update.status", &json!({}))
+                .await
+                .unwrap()
+                .unwrap();
+            if status["status"] == "failed" {
+                break status;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        status["message"],
+        "The daemon already runs this build or a newer one."
+    );
+    assert!(!home.path().join("runtime/native-current.json").exists());
     let binary = b"#!/bin/sh\nprintf '9.8.7\\n'\n";
     *mock.data.binary.lock().await = binary.to_vec();
-    *mock.data.manifest.lock().await = json!({"version":"9.8.7","target":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH),"url":format!("{}/binary",mock.base),"sha256":format!("{:x}",Sha256::digest(binary))});
+    *mock.data.manifest.lock().await = json!({"version":"9.8.7","builtAt":1,"target":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH),"url":format!("{}/binary",mock.base),"sha256":format!("{:x}",Sha256::digest(binary))});
     let result = services::call(
         home.path(),
         "local",
@@ -581,4 +534,231 @@ async fn registration_persists_pins_and_returns_only_status() {
     assert_eq!(config.keys, jwks()["keys"].as_array().unwrap().to_vec());
     assert_eq!(config.daemon_token, "daemon-secret");
     assert_eq!(config.tunnel_token, "tunnel-secret");
+}
+
+fn pinned_registration(mock: &Mock, home: &std::path::Path) {
+    mock.persist_registration(home);
+    let path = home.join("connect.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["owner_id"] = json!("actual-owner");
+    config["issuer"] = json!("https://connect.hexbot.app");
+    config["keys"] = jwks()["keys"].clone();
+    fs::write(path, config.to_string()).unwrap();
+}
+fn signed_grant(claims: &Value) -> String {
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+    header.kid = Some("fixture".into());
+    header.typ = Some("hexbot-grant+jwt".into());
+    jsonwebtoken::encode(
+        &header,
+        claims,
+        &jsonwebtoken::EncodingKey::from_ec_pem(TEST_KEY).unwrap(),
+    )
+    .unwrap()
+}
+fn grant_claims() -> Value {
+    json!({"aud":"daemon-1","sub":"actual-owner","iss":"https://connect.hexbot.app","daemon_id":"daemon-1","device_name":"Grant fixture","jti":"grant-1","iat":common::now() as u64,"exp":common::now() as u64+300})
+}
+
+#[tokio::test]
+async fn current_connect_grant_is_accepted() {
+    let mock = Mock::new().await;
+    let home = home();
+    pinned_registration(&mock, home.path());
+    let mut claims = grant_claims();
+    claims["aud"] = json!("daemon-1");
+    let result = services::redeem_grant(home.path(), &signed_grant(&claims), "", "connect").await;
+    assert!(
+        result.is_ok(),
+        "Current Connect grants must work: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn wrong_pinned_owner_is_rejected() {
+    let mock = Mock::new().await;
+    let home = home();
+    pinned_registration(&mock, home.path());
+    let mut claims = grant_claims();
+    claims["sub"] = json!("different-owner");
+    let result = services::redeem_grant(home.path(), &signed_grant(&claims), "", "connect").await;
+    assert!(
+        result.is_err(),
+        "Grant for another owner minted a local credential"
+    );
+}
+
+#[tokio::test]
+async fn unpinned_signing_key_is_rejected() {
+    let mock = Mock::new().await;
+    let home = home();
+    pinned_registration(&mock, home.path());
+    let path = home.path().join("connect.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["keys"][0]["kid"] = json!("different-pinned-key");
+    fs::write(path, config.to_string()).unwrap();
+    let result =
+        services::redeem_grant(home.path(), &signed_grant(&grant_claims()), "", "connect").await;
+    assert!(
+        result.is_err(),
+        "Unpinned signing key minted a local credential"
+    );
+}
+
+#[tokio::test]
+async fn redeemed_grant_cannot_restore_revoked_access() {
+    let mock = Mock::new().await;
+    let home = home();
+    pinned_registration(&mock, home.path());
+    let grant = signed_grant(&grant_claims());
+    let first = services::redeem_grant(home.path(), &grant, "", "connect")
+        .await
+        .unwrap();
+    db::open(home.path())
+        .unwrap()
+        .execute(
+            "UPDATE devices SET revoked_at=1 WHERE id=?",
+            [first["device_id"].as_str().unwrap()],
+        )
+        .unwrap();
+    let second = services::redeem_grant(home.path(), &grant, "", "connect").await;
+    assert!(second.is_err(), "A spent grant restored revoked access");
+}
+
+#[test]
+fn current_main_database_can_be_opened() {
+    let home = home();
+    db::open(home.path()).unwrap().execute_batch("UPDATE sections SET title_by='user'; INSERT INTO spent_grants VALUES ('existing',9999999999); UPDATE schema_version SET version=11;").unwrap();
+    assert!(
+        db::migrate(home.path()).is_ok(),
+        "Current main's schema 11 is rejected"
+    );
+}
+
+#[tokio::test]
+async fn deleted_room_removes_native_transcripts() {
+    let home = home();
+    let app = hexbot_core::server::App::new(
+        home.path().to_path_buf(),
+        "127.0.0.1:0".parse().unwrap(),
+        "/unused/pi".into(),
+        None,
+    )
+    .unwrap();
+    db::open(home.path()).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('owl','local'); INSERT INTO rooms(id,name,owner_id) VALUES('room-a','Shared room','local'); INSERT INTO room_members(room_id,member_kind,member_id) VALUES('room-a','bot','owl'); INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room-a','owl','room-session-a');").unwrap();
+    let dir = hexbot_core::runtime_store::session_dir(home.path(), "room-session-a").unwrap();
+    fs::write(dir.join("conversation.jsonl"), "private room history").unwrap();
+    hexbot_core::runtime_store::open(home.path()).unwrap().execute("INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES('room-session-a','local','owl','private prompt')", []).unwrap();
+    app.call("local", "hexbot.rooms.delete", &json!({"id":"room-a"}))
+        .await
+        .unwrap();
+    app.shutdown().await;
+    assert!(
+        !dir.exists(),
+        "Deleted room left its private native transcript on disk"
+    );
+}
+
+#[tokio::test]
+async fn grants_require_pinned_claims_header_and_published_key_material() {
+    let mock = Mock::new().await;
+    let home = home();
+    pinned_registration(&mock, home.path());
+    for (field, value) in [
+        ("iss", json!("https://evil.example")),
+        ("aud", json!("another-daemon")),
+        ("aud", json!(["daemon-1"])),
+        ("sub", json!("another-owner")),
+        ("jti", json!(null)),
+        ("iat", json!(common::now() + 61.)),
+        ("exp", json!(common::now() - 61.)),
+    ] {
+        let mut claims = grant_claims();
+        claims[field] = value;
+        assert!(
+            services::redeem_grant(home.path(), &signed_grant(&claims), "", "connect")
+                .await
+                .is_err(),
+            "accepted {claims}"
+        );
+    }
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+    header.kid = Some("fixture".into());
+    header.typ = Some("JWT".into());
+    let grant = jsonwebtoken::encode(
+        &header,
+        &grant_claims(),
+        &jsonwebtoken::EncodingKey::from_ec_pem(TEST_KEY).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        services::redeem_grant(home.path(), &grant, "", "connect")
+            .await
+            .is_err()
+    );
+    let path = home.path().join("connect.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["keys"][0]["x"] = json!("different-material");
+    fs::write(&path, config.to_string()).unwrap();
+    assert!(
+        services::redeem_grant(home.path(), &signed_grant(&grant_claims()), "", "connect")
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn revoked_published_key_and_missing_registration_pins_fail_closed() {
+    let mock = Mock::new().await;
+    let home = home();
+    pinned_registration(&mock, home.path());
+    *mock.data.keys.lock().await = json!({"keys":[]});
+    assert!(
+        services::redeem_grant(home.path(), &signed_grant(&grant_claims()), "", "connect")
+            .await
+            .is_err()
+    );
+    let path = home.path().join("connect.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config.as_object_mut().unwrap().remove("owner_id");
+    fs::write(&path, config.to_string()).unwrap();
+    assert!(
+        services::ConnectConfig::load(home.path())
+            .unwrap()
+            .is_none()
+    );
+    assert!(!services::start_daemon(home.path(), 12345).await.unwrap());
+}
+
+#[tokio::test]
+async fn parallel_grant_redemption_and_jwks_cache() {
+    let mut mock = Mock::new().await;
+    let home = home();
+    pinned_registration(&mock, home.path());
+    let grant = signed_grant(&grant_claims());
+    let (a, b) = tokio::join!(
+        services::redeem_grant(home.path(), &grant, "", "connect"),
+        services::redeem_grant(home.path(), &grant, "", "connect")
+    );
+    assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+    mock.event("/.well-known/jwks.json").await;
+    assert!(
+        mock.events.try_recv().is_err(),
+        "parallel requests fetched keys twice"
+    );
+    *mock.data.bad.lock().await = true;
+    let mut claims = grant_claims();
+    claims["jti"] = json!("cached-key");
+    assert!(
+        services::redeem_grant(home.path(), &signed_grant(&claims), "", "connect")
+            .await
+            .is_ok()
+    );
+    assert!(mock.events.try_recv().is_err());
+    // A fresh verification call still consults the durable spent-grant table.
+    assert!(
+        services::redeem_grant(home.path(), &grant, "", "connect")
+            .await
+            .is_err()
+    );
 }

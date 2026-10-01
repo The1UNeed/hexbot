@@ -1,3 +1,4 @@
+use crate::{common, connectors, db};
 use axum::{
     Router,
     extract::State,
@@ -5,7 +6,6 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
-use hexbot_core::{common, connectors, db};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -22,7 +22,7 @@ fn setup() -> tempfile::TempDir {
     }
     home
 }
-async fn call(home: &Path, who: &str, method: &str, p: Value) -> hexbot_core::Result<Value> {
+async fn call(home: &Path, who: &str, method: &str, p: Value) -> crate::Result<Value> {
     connectors::call(home, who, method, &p)
         .await
         .expect("recognized method")
@@ -735,6 +735,40 @@ async fn internal_mcp_config_isolates_credentials_and_resolves_explicit_env_refs
 }
 
 #[tokio::test]
+async fn deleting_a_bot_stops_its_mcp_children() {
+    let home = setup();
+    let starts = home.path().join("starts");
+    let script = home.path().join("counted.cjs");
+    fs::write(&script, format!(r#"require('node:fs').appendFileSync({starts:?},'start\n');const rl=require('node:readline').createInterface({{input:process.stdin}});rl.on('line',line=>{{const m=JSON.parse(line);if(!m.id)return;const result=m.method==='initialize'?{{protocolVersion:'2025-03-26',capabilities:{{tools:{{}}}},serverInfo:{{name:'counted',version:'1'}}}}:{{tools:[{{name:'count',inputSchema:{{type:'object'}}}}]}};process.stdout.write(JSON.stringify({{jsonrpc:'2.0',id:m.id,result}})+'\n');}});"#)).unwrap();
+    let config = json!({"command":"node","args":[script]});
+    let discover = || connectors::mcp_tools_config(home.path(), "owl", "counted", &config);
+    let started = || fs::read_to_string(&starts).unwrap().lines().count();
+    discover().await.unwrap();
+    discover().await.unwrap();
+    assert_eq!(started(), 1);
+    let app = crate::server::App::new(
+        home.path().into(),
+        "127.0.0.1:0".parse().unwrap(),
+        home.path().join("no-pi"),
+        None,
+    )
+    .unwrap();
+    app.call("alice", "hexbot.bots.delete", &json!({"name":"owl"}))
+        .await
+        .unwrap();
+    // The cached child went with the bot: a new bot of that name starts its own.
+    db::open(home.path())
+        .unwrap()
+        .execute("INSERT INTO bots(name,owner_id) VALUES ('owl','alice')", [])
+        .unwrap();
+    fs::create_dir_all(home.path().join("profiles/owl")).unwrap();
+    discover().await.unwrap();
+    assert_eq!(started(), 2);
+    connectors::close_bot(home.path(), "owl").await;
+    app.shutdown().await;
+}
+
+#[tokio::test]
 async fn discovery_runs_concurrently_and_caches_failed_servers() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let home = setup();
@@ -784,5 +818,77 @@ async fn discovery_runs_concurrently_and_caches_failed_servers() {
     assert_eq!(tools.len(), 1);
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
     connectors::close_bot(home.path(), "owl").await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn failed_mcp_calls_and_discovery_evict_both_session_paths() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let home = setup();
+    let initialized = Arc::new(AtomicUsize::new(0));
+    let fail = Arc::new(AtomicBool::new(false));
+    let count = initialized.clone();
+    let fail_next = fail.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let app = Router::new().route("/mcp", post(move |axum::Json(message): axum::Json<Value>| {
+        let count = count.clone();
+        let fail_next = fail_next.clone();
+        async move {
+            if message["id"].is_null() {
+                return StatusCode::ACCEPTED.into_response();
+            }
+            let result = match message["method"].as_str().unwrap() {
+                "initialize" => {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    json!({"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}})
+                }
+                _ if fail_next.swap(false, Ordering::SeqCst) => {
+                    return axum::Json(json!({"jsonrpc":"2.0","id":message["id"],"error":{"code":-32603,"message":"fixture failure"}})).into_response();
+                }
+                "tools/list" => json!({"tools":[]}),
+                _ => json!({"content":[{"type":"text","text":"ok"}]}),
+            };
+            axum::Json(json!({"jsonrpc":"2.0","id":message["id"],"result":result})).into_response()
+        }
+    }));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    rpc(
+        home.path(),
+        "hexbot.connectors.add_mcp",
+        json!({"name":"fixture","url":url}),
+    )
+    .await;
+    let config = connectors::mcp_servers(home.path(), "owl").unwrap()["fixture"].clone();
+    for internal in [false, true] {
+        let name = if internal { "internal" } else { "fixture" };
+        connectors::mcp_tools_config(home.path(), "owl", name, &config)
+            .await
+            .unwrap();
+        let before = initialized.load(Ordering::SeqCst);
+        fail.store(true, Ordering::SeqCst);
+        let call = async || {
+            if internal {
+                connectors::mcp_call_config(home.path(), "owl", name, &config, "echo", json!({}))
+                    .await
+            } else {
+                connectors::mcp_call(home.path(), "owl", name, "echo", json!({})).await
+            }
+        };
+        assert!(call().await.is_err());
+        assert_eq!(call().await.unwrap()["content"][0]["text"], "ok");
+        assert_eq!(initialized.load(Ordering::SeqCst), before + 1);
+        fail.store(true, Ordering::SeqCst);
+        assert!(
+            connectors::mcp_tools_config(home.path(), "owl", name, &config)
+                .await
+                .is_err()
+        );
+        connectors::mcp_tools_config(home.path(), "owl", name, &config)
+            .await
+            .unwrap();
+        assert_eq!(initialized.load(Ordering::SeqCst), before + 2);
+        connectors::close_config(home.path(), "owl", name).await;
+    }
     server.abort();
 }

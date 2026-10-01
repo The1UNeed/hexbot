@@ -64,6 +64,7 @@ Invoke through the `terminal` tool from the target repo's root, then use `read_f
 For a GitHub URL:
 
 ```bash
+WORKSPACE=$PWD  # the section working directory
 WIKI_TMP=$(mktemp -d)
 git clone --depth 50 <url> "$WIKI_TMP/repo"
 cd "$WIKI_TMP/repo"
@@ -74,6 +75,7 @@ REPO_NAME=$(basename <url> .git)
 For a local path (or cwd if none given):
 
 ```bash
+WORKSPACE=$PWD  # the section working directory
 cd <path>
 REPO_SHA=$(git rev-parse HEAD 2>/dev/null || echo "uncommitted")
 REPO_NAME=$(basename "$PWD")
@@ -82,7 +84,7 @@ REPO_NAME=$(basename "$PWD")
 Then set the output dir:
 
 ```bash
-OUTPUT_DIR="$HOME/.hexbot/wikis/$REPO_NAME"
+OUTPUT_DIR="$WORKSPACE/wikis/$REPO_NAME"
 mkdir -p "$OUTPUT_DIR/modules" "$OUTPUT_DIR/diagrams"
 ```
 

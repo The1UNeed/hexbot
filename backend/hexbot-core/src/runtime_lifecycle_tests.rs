@@ -1,9 +1,14 @@
 use super::*;
 
-fn setup() -> (tempfile::TempDir, Arc<Runtime>, EventHub) {
-    let home = tempfile::tempdir().unwrap();
+fn setup() -> (common::TestHome, Arc<Runtime>, EventHub) {
+    let home = common::TestHome::new();
     db::migrate(home.path()).unwrap();
-    db::open(home.path()).unwrap().execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0),('bob','Bob','member',0);INSERT INTO bots(name,owner_id) VALUES('owl','alice');INSERT INTO sections(id,bot,owner_id,title) VALUES('first','owl','alice','First');").unwrap();
+    db::open(home.path())
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0),('bob','Bob','member',0);INSERT INTO bots(name,owner_id) VALUES('owl','alice');INSERT INTO sections(id,bot,owner_id,title) VALUES('first','owl','alice','First');",
+        )
+        .unwrap();
     let profile = home.path().join("profiles/owl");
     fs::create_dir_all(&profile).unwrap();
     fs::write(
@@ -15,18 +20,24 @@ fn setup() -> (tempfile::TempDir, Arc<Runtime>, EventHub) {
         .unwrap()
         .execute(
             "INSERT OR REPLACE INTO settings(key,value) VALUES('workspace_dir',?)",
-            [json!(home.path().join("workspace")).to_string()],
+            [json!(home.workspace()).to_string()],
         )
         .unwrap();
     let script = home.path().join("pi.cjs");
     let logfile = json!(home.path().join("processes.jsonl")).to_string();
     let dialogs = json!(home.path().join("dialogs.jsonl")).to_string();
-    fs::write(&script, format!(r#"#!/usr/bin/env node
+    fs::write(
+        &script,
+        format!(
+            r#"#!/usr/bin/env node
 const fs=require('node:fs'),rl=require('node:readline').createInterface({{input:process.stdin}});
 const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
 fs.appendFileSync({logfile},JSON.stringify({{pid:process.pid,args:process.argv.slice(2),environment:process.env,config:JSON.parse(fs.readFileSync(process.env.HEXBOT_SESSION_CONFIG))}})+'\n');
 rl.on('line',line=>{{const c=JSON.parse(line);if(c.type==='extension_ui_response'){{fs.appendFileSync({dialogs},JSON.stringify(c)+'\n');return;}}emit({{type:'response',id:c.id,command:c.type,success:true,data:{{}}}});if(c.type==='prompt'){{emit({{type:'agent_start'}});emit({{type:'message_end',message:{{role:'user',content:c.message}}}});if(c.message!=='wait')emit({{type:'agent_settled'}});}}if(c.type==='abort')emit({{type:'agent_settled'}});}});
-"#)).unwrap();
+"#
+        ),
+    )
+    .unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -106,7 +117,11 @@ async fn idle_restart_preserves_live_id_prompt_tools_and_client_watermarks() {
     .unwrap();
     // The unchanged app stages attachments before submitting, and has no retry
     // for this RPC. It must work directly with the original ID after retirement.
-    let response=runtime.call("alice","file.attach",&json!({"session_id":id,"name":"note.txt","data_url":"data:text/plain;base64,aGVsbG8="})).await.unwrap().unwrap();
+    let response = runtime
+        .call("alice", "file.attach", &json!({"session_id":id,"name":"note.txt","data_url":"data:text/plain;base64,aGVsbG8="}))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(response.is_object());
     let after = processes(home.path());
     assert_eq!(after.len(), 2);
@@ -418,7 +433,7 @@ async fn long_code_tool_does_not_block_event_pump_or_interrupt() {
     let id = open(&runtime).await;
     let s = runtime.sessions.lock().unwrap()["first"].clone();
     let mut events = hub.subscribe();
-    runtime.event(&s,json!({"type":"extension_ui_request","id":"code","method":"input","title":format!("__HEXBOT_TOOL__{}",json!({"name":"execute_code","args":{"code":code}}))})).unwrap();
+    runtime.event(&s, json!({"type":"extension_ui_request","id":"code","method":"input","title":format!("__HEXBOT_TOOL__{}",json!({"name":"execute_code","args":{"code":code}}))})).unwrap();
     let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
         .await
         .unwrap()
@@ -481,9 +496,12 @@ async fn recoverable_store_failure_keeps_output_and_retries_at_settle() {
     open(&runtime).await;
     let s = runtime.sessions.lock().unwrap()["first"].clone();
     let conn = store::open(home.path()).unwrap();
-    conn.execute_batch("CREATE TRIGGER reject_message BEFORE INSERT ON native_messages BEGIN SELECT RAISE(ABORT,'write temporarily unavailable'); END;").unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER reject_message BEFORE INSERT ON native_messages BEGIN SELECT RAISE(ABORT,'write temporarily unavailable'); END;",
+    )
+    .unwrap();
     s.state.lock().unwrap().busy = true;
-    runtime.event(&s,json!({"type":"message_end","message":{"role":"assistant","content":"Saved after retry","stopReason":"stop"}})).unwrap();
+    runtime.event(&s, json!({"type":"message_end","message":{"role":"assistant","content":"Saved after retry","stopReason":"stop"}})).unwrap();
     assert_eq!(s.state.lock().unwrap().output, "Saved after retry");
     assert_eq!(s.state.lock().unwrap().unsaved.len(), 1);
     conn.execute_batch("DROP TRIGGER reject_message").unwrap();
@@ -543,7 +561,11 @@ async fn unavailable_mcp_warns_and_opens_with_no_discovered_tools() {
 async fn close_removes_unsubmitted_attachments_and_keeps_the_conversation() {
     let (home, runtime, _) = setup();
     let id = open(&runtime).await;
-    let attached = runtime.call("alice","file.attach",&json!({"session_id":id,"name":"pending.txt","data_url":"data:text/plain;base64,aGVsbG8="})).await.unwrap().unwrap();
+    let attached = runtime
+        .call("alice", "file.attach", &json!({"session_id":id,"name":"pending.txt","data_url":"data:text/plain;base64,aGVsbG8="}))
+        .await
+        .unwrap()
+        .unwrap();
     let path = PathBuf::from(attached["path"].as_str().unwrap());
     assert!(path.exists());
     runtime.close_stored("alice", "first").await.unwrap();
@@ -566,21 +588,287 @@ async fn hidden_submit_deadline_includes_prompt_acceptance() {
         "const c=JSON.parse(line);if(c.type==='prompt')return;",
     );
     fs::write(script, source).unwrap();
-    let error = tokio::time::timeout(
-        Duration::from_secs(5),
-        runtime.run_hidden_deadline(
+    // Start the bot first so its startup is not inside the measured turn. The
+    // deadline path ends when the fake bot answers the abort, not on a timer.
+    open(&runtime).await;
+    let error = runtime
+        .run_hidden_deadline(
             "alice",
             "owl",
             "first",
             "wedged",
             Duration::from_millis(100),
-        ),
-    )
-    .await
-    .unwrap()
-    .unwrap_err();
+            None,
+        )
+        .await
+        .unwrap_err();
     assert!(error.message.contains("deadline"));
     runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn reopening_a_section_replays_the_approval_it_is_waiting_on() {
+    let (_home, runtime, hub) = setup();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let approval = async |events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>| {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "approval.request" {
+                break event.frame["params"].clone();
+            }
+        }
+    };
+    // A bot-side approval: Pi asked, then the client reloaded.
+    let mut events = hub.subscribe();
+    runtime
+        .event(
+            &s,
+            json!({
+                "type": "extension_ui_request",
+                "id": "pi-1",
+                "method": "select",
+                "title": format!(
+                    "__HEXBOT_APPROVAL__{}",
+                    json!({
+                    "tool":"bash",
+                    "command":"pwd",
+                    "reason":"Run command"}
+                    )
+                ),
+                "options": ["once", "session", "always", "deny"]
+            }),
+        )
+        .unwrap();
+    let first = approval(&mut events).await;
+    assert_eq!(first["payload"]["request_id"], "pi-1");
+    let mut events = hub.subscribe();
+    assert_eq!(open(&runtime).await, id);
+    let again = approval(&mut events).await;
+    assert_eq!(again["session_id"], id);
+    assert_eq!(again["payload"], first["payload"]);
+    assert_eq!(again["payload"]["command"], "pwd");
+    assert_eq!(
+        again["payload"]["choices"],
+        json!(["once", "session", "always", "deny"])
+    );
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":id,"request_id":"pi-1","choice":"deny"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    // A daemon-side approval waits the same way and can still be answered.
+    let mut events = hub.subscribe();
+    let asking = {
+        let (runtime, s) = (runtime.clone(), s.clone());
+        tokio::spawn(async move {
+            runtime
+                .native_approval(
+                    &s,
+                    json!({"tool":"cronjob_manage","toolCall":{"title":"create"}}),
+                )
+                .await
+        })
+    };
+    let native = approval(&mut events).await;
+    let mut events = hub.subscribe();
+    open(&runtime).await;
+    let again = approval(&mut events).await;
+    assert_eq!(again["payload"], native["payload"]);
+    let request_id = native["payload"]["request_id"].as_str().unwrap();
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":id,"request_id":request_id,"choice":"once"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(asking.await.unwrap().unwrap());
+    let mut events = hub.subscribe();
+    open(&runtime).await;
+    while let Ok(event) = events.try_recv() {
+        assert_ne!(event.frame["params"]["type"], "approval.request");
+    }
+    // Room members see the bot wait for the owner, then work again.
+    hub.share("alice", &id, vec!["bob".into()], "Alice");
+    let mut events = hub.subscribe();
+    let mut seen_by_bob = async || {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(frame) = events.recv().await.unwrap().frame_for("bob") {
+                    break frame["params"].clone();
+                }
+            }
+        })
+        .await
+        .unwrap()
+    };
+    runtime
+        .event(
+            &s,
+            json!({
+                "type": "extension_ui_request",
+                "id": "pi-2",
+                "method": "select",
+                "title": format!("__HEXBOT_APPROVAL__{}", json!({"tool":"bash","command":"pwd"})),
+                "options": ["once", "deny"]
+            }),
+        )
+        .unwrap();
+    let waiting = seen_by_bob().await;
+    assert_eq!(waiting["type"], "status.update");
+    assert_eq!(
+        waiting["payload"],
+        json!({"kind":"waiting","text":"Waiting for Alice"})
+    );
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":id,"request_id":"pi-2","choice":"deny"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let resumed = seen_by_bob().await;
+    assert_eq!(resumed["type"], "status.update");
+    assert_eq!(
+        resumed["payload"],
+        json!({"kind":"working","text":"Working"})
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn delete_finishes_bookkeeping_when_the_bot_cannot_be_reaped() {
+    let (home, runtime, hub) = setup();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    s.process.fail_cleanup();
+    runtime.delete_stored("alice", "first").await.unwrap();
+    assert!(runtime.sessions.lock().unwrap().is_empty());
+    assert_eq!(runtime.capacity.available_permits(), 16);
+    assert!(
+        hub.since("alice", &id, 0)["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!home.path().join("runtime/sessions/first").exists());
+    let live: Option<String> = db::open(home.path())
+        .unwrap()
+        .query_row(
+            "SELECT last_live_session_id FROM sections WHERE id='first'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(live, None);
+    let deleted: bool = store::open(home.path())
+        .unwrap()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM native_deleted WHERE session_id='first')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(deleted);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn bot_message_hops_count_per_turn_and_follow_the_chain() {
+    let (home, runtime, _) = setup();
+    db::open(home.path())
+        .unwrap()
+        .execute("INSERT INTO bots(name,owner_id) VALUES('cat','alice')", [])
+        .unwrap();
+    open(&runtime).await;
+    let owl = runtime.sessions.lock().unwrap()["first"].clone();
+    for _ in 0..MAX_HOPS {
+        runtime.deliver_message(&owl, "cat", "hello").await.unwrap();
+    }
+    assert_eq!(
+        runtime
+            .deliver_message(&owl, "cat", "one too many")
+            .await
+            .unwrap_err()
+            .code,
+        4240
+    );
+    // The receiving section continued the chain, so its own messages count.
+    let cat = runtime
+        .sessions
+        .lock()
+        .unwrap()
+        .values()
+        .find(|s| s.bot == "cat")
+        .cloned()
+        .unwrap();
+    {
+        let owl_state = owl.state.lock().unwrap();
+        let cat_state = cat.state.lock().unwrap();
+        assert!(Arc::ptr_eq(&owl_state.hops, &cat_state.hops));
+    }
+    assert_eq!(
+        runtime
+            .deliver_message(&cat, "owl", "back")
+            .await
+            .unwrap_err()
+            .code,
+        4240
+    );
+    // A new turn, hidden or not, starts a new count for that section.
+    runtime
+        .run_hidden("alice", "owl", "first", "next room turn")
+        .await
+        .unwrap();
+    assert!(!Arc::ptr_eq(
+        &owl.state.lock().unwrap().hops,
+        &cat.state.lock().unwrap().hops
+    ));
+    runtime.deliver_message(&owl, "cat", "hello").await.unwrap();
+    assert_eq!(owl.state.lock().unwrap().hops.load(Ordering::Acquire), 1);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn shutdown_stops_every_bot_at_once() {
+    let (home, runtime, _) = setup();
+    let script = home.path().join("pi.cjs");
+    let source = fs::read_to_string(&script)
+        .unwrap()
+        .replace("const emit=", "process.on('SIGTERM',()=>{});const emit=");
+    fs::write(&script, source).unwrap();
+    for index in 0..6 {
+        let stored = format!("section-{index}");
+        db::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO sections(id,bot,owner_id) VALUES(?,'owl','alice')",
+                [&stored],
+            )
+            .unwrap();
+        runtime.open_session("alice", "owl", &stored).await.unwrap();
+    }
+    // Each bot ignores SIGTERM and is killed a second later. Stopping them one
+    // after another would take six seconds; together they take about one.
+    let started = std::time::Instant::now();
+    runtime.shutdown().await;
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
+    );
+    for process in processes(home.path()) {
+        assert_exited(&process);
+    }
 }
 
 #[tokio::test]
@@ -855,7 +1143,11 @@ async fn selected_cloud_provider_environment_reaches_agent() {
     ] {
         let (home, runtime, _) = setup();
         fs::write(home.path().join("profiles/owl/config.yaml"), format!("model:\n  provider: {provider}\n  default: fixture\ntools:\n  enabled_toolsets: []\n")).unwrap();
-        fs::write(home.path().join(".env"), "AWS_PROFILE=bedrock-fixture\nAWS_ACCESS_KEY_ID=bedrock-key\nAWS_SECRET_ACCESS_KEY=bedrock-secret\nGOOGLE_CLOUD_PROJECT=vertex-fixture\nGOOGLE_APPLICATION_CREDENTIALS=/tmp/vertex-fixture.json\nCLOUDSDK_CONFIG=/tmp/cloudsdk-fixture\nhttps_proxy=http://proxy.invalid\nNODE_EXTRA_CA_CERTS=/tmp/ca-fixture.pem\n").unwrap();
+        fs::write(
+            home.path().join(".env"),
+            "AWS_PROFILE=bedrock-fixture\nAWS_ACCESS_KEY_ID=bedrock-key\nAWS_SECRET_ACCESS_KEY=bedrock-secret\nGOOGLE_CLOUD_PROJECT=vertex-fixture\nGOOGLE_APPLICATION_CREDENTIALS=/tmp/vertex-fixture.json\nCLOUDSDK_CONFIG=/tmp/cloudsdk-fixture\nhttps_proxy=http://proxy.invalid\nNODE_EXTRA_CA_CERTS=/tmp/ca-fixture.pem\n",
+        )
+        .unwrap();
         open(&runtime).await;
         let launched = processes(home.path());
         let env = launched[0]["environment"].as_object().unwrap();
@@ -876,7 +1168,10 @@ async fn failed_deletion_rolls_back_root_and_descendant_tombstones() {
         conn.execute_batch(r#"INSERT INTO native_sessions VALUES('child','alice','owl','','{"parent_session":"first"}');
             INSERT INTO native_sessions VALUES('grandchild','alice','owl','','{"parent_session":"child"}');"#).unwrap();
         if !close_failure {
-            conn.execute_batch("CREATE TRIGGER fail_delete BEFORE DELETE ON native_sessions WHEN OLD.stored_id='first' BEGIN SELECT RAISE(FAIL,'fixture'); END;").unwrap();
+            conn.execute_batch(
+                "CREATE TRIGGER fail_delete BEFORE DELETE ON native_sessions WHEN OLD.stored_id='first' BEGIN SELECT RAISE(FAIL,'fixture'); END;",
+            )
+            .unwrap();
         }
         assert!(
             runtime
@@ -908,8 +1203,8 @@ async fn scheduled_jobs_keep_the_creating_sections_workdir() {
     .unwrap();
     let _scheduler = crate::dreaming::Dreaming::new(home.path().into(), runtime.clone(), events);
     let section = runtime.open_session("alice", "owl", "first").await.unwrap();
-    let workdir = home.path().join("section-workspace");
-    fs::create_dir(&workdir).unwrap();
+    let workdir = home.workspace().join("section-workspace");
+    fs::create_dir_all(&workdir).unwrap();
     store::open(home.path()).unwrap().execute("UPDATE native_sessions SET options=json_set(options,'$.workdirOverride',?) WHERE stored_id='first'", [workdir.to_str().unwrap()]).unwrap();
     let result = runtime
         .tool(
@@ -922,6 +1217,168 @@ async fn scheduled_jobs_keep_the_creating_sections_workdir() {
     assert_eq!(
         result["job"]["workdir"],
         json!(fs::canonicalize(workdir).unwrap())
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn delivered_turn_keeps_its_hops_when_a_user_turn_submits_first() {
+    let (_home, runtime, _) = setup();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let inherited = Arc::new(AtomicUsize::new(MAX_HOPS));
+    let guard = runtime.open_lock("first").lock_owned().await;
+    let delivered = runtime.run_hidden_deadline(
+        "alice",
+        "owl",
+        "first",
+        "delivered",
+        Duration::from_secs(30),
+        Some(inherited.clone()),
+    );
+    tokio::pin!(delivered);
+    assert!(futures_util::poll!(&mut delivered).is_pending());
+    // The user bypasses the opening lock with the already live section.
+    let mut settled = s.settled.subscribe();
+    let before = *settled.borrow();
+    runtime
+        .submit(&s, "user first", false, false, None)
+        .await
+        .unwrap();
+    while *settled.borrow() == before {
+        settled.changed().await.unwrap();
+    }
+    assert!(!Arc::ptr_eq(&s.state.lock().unwrap().hops, &inherited));
+    drop(guard);
+    delivered.await.unwrap();
+    assert!(Arc::ptr_eq(&s.state.lock().unwrap().hops, &inherited));
+    assert_eq!(inherited.load(Ordering::Acquire), MAX_HOPS);
+    runtime.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn attachment_staging_releases_state_and_registration_rechecks_closed() {
+    let (home, runtime, _) = setup();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let params = json!({"data_url":"data:text/plain;base64,bm90ZXM=","name":"notes.txt"});
+    let attaching = runtime.attach(&s, "file.attach", &params);
+    tokio::pin!(attaching);
+    assert!(futures_util::poll!(&mut attaching).is_pending());
+    // Disk staging runs on a blocking thread with the session mutex released.
+    {
+        let mut state = s
+            .state
+            .try_lock()
+            .expect("staging must release session state");
+        state.closed = true;
+    }
+    assert_eq!(attaching.await.unwrap_err().code, 4001);
+    assert!(s.state.lock().unwrap().staged_files.is_empty());
+    assert_eq!(
+        fs::read_dir(home.path().join("runtime/sessions/first/attachments"))
+            .unwrap()
+            .count(),
+        0
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn attachment_to_a_closing_section_writes_nothing() {
+    let (home, runtime, _) = setup();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let dir = home.path().join("runtime/sessions/first/attachments");
+    let _ = fs::remove_dir_all(&dir);
+    s.state.lock().unwrap().closed = true;
+    let params = json!({"data_url":"data:text/plain;base64,bm90ZXM=","name":"notes.txt"});
+    let error = runtime
+        .attach(&s, "file.attach", &params)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, 4001);
+    assert!(!dir.exists());
+    s.state.lock().unwrap().closed = false;
+    runtime.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn event_persistence_waits_off_workers_and_preserves_message_order() {
+    let (home, runtime, hub) = setup();
+    let script = home.path().join("pi.cjs");
+    let source = fs::read_to_string(&script).unwrap().replace(
+        "if(c.type==='prompt')",
+        "if(c.type==='burst'){emit({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'ready'}});for(let n=0;n<20;n++)emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'row-'+n}]}});emit({type:'agent_settled'});}if(c.type==='prompt')",
+    );
+    fs::write(script, source).unwrap();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    let mut conn = store::open(home.path()).unwrap();
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    Runtime::command(&s, json!({"type":"burst"})).await.unwrap();
+    loop {
+        if events.recv().await.unwrap().frame["params"]["type"] == "message.delta" {
+            break;
+        }
+    }
+    // A separate RPC still completes while the projection waits for our write lock.
+    Runtime::command(&s, json!({"type":"probe"})).await.unwrap();
+    tx.commit().unwrap();
+    loop {
+        if events.recv().await.unwrap().frame["params"]["type"] == "message.complete" {
+            break;
+        }
+    }
+    let rows = store::history(home.path(), "first").unwrap();
+    assert_eq!(rows.len(), 20);
+    for (n, row) in rows.iter().enumerate() {
+        assert_eq!(row["text"], format!("row-{n}"));
+    }
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn concurrent_deliveries_reserve_writes_before_reading_the_target_section() {
+    let (home, runtime, _) = setup();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let barrier = std::sync::Barrier::new(8);
+    let ids = std::thread::scope(|scope| {
+        let tasks: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    runtime.record_delivery(&s, "cat", "hello").unwrap()
+                })
+            })
+            .collect();
+        tasks
+            .into_iter()
+            .map(|task| task.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert!(ids.iter().all(|id| id == &ids[0]));
+    let conn = db::open(home.path()).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM bot_messages WHERE section_id=?",
+            [&ids[0]],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        8
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM sections WHERE bot='cat'", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        1
     );
     runtime.shutdown().await;
 }

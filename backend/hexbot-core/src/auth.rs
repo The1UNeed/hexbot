@@ -33,7 +33,9 @@ pub fn check_attempt(home: &Path, client: &str) -> Result<()> {
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let time = now();
+    check_attempt_with(&mut failures, home, client, now())
+}
+fn check_attempt_with(failures: &mut Attempts, home: &Path, client: &str, time: f64) -> Result<()> {
     failures.retain(|_, attempts| {
         while attempts.front().is_some_and(|t| *t <= time - 60.) {
             attempts.pop_front();
@@ -41,8 +43,14 @@ pub fn check_attempt(home: &Path, client: &str) -> Result<()> {
         !attempts.is_empty()
     });
     let key = (home.to_owned(), client.to_owned());
-    if failures.len() >= 4096 && !failures.contains_key(&key) {
-        return Err(Error::new(4232, "too many attempts"));
+    if failures.len() >= 4096
+        && !failures.contains_key(&key)
+        && let Some(oldest) = failures
+            .iter()
+            .min_by(|a, b| a.1.back().unwrap().total_cmp(b.1.back().unwrap()))
+            .map(|(key, _)| key.clone())
+    {
+        failures.remove(&oldest);
     }
     let attempts = failures.entry(key).or_default();
     if attempts.len() >= 10 {
@@ -54,25 +62,34 @@ pub fn check_attempt(home: &Path, client: &str) -> Result<()> {
 fn invalid_code() -> Error {
     Error::new(4231, "invalid or expired pairing code")
 }
-fn create_code(conn: &Connection, owner: &str) -> Result<Value> {
+fn create_code(conn: &Connection, owner: &str, replace: bool) -> Result<Value> {
     let mut rng = rand::thread_rng();
     let raw: String = (0..8)
         .map(|_| CODE_ALPHABET[rng.gen_range(0..CODE_ALPHABET.len())] as char)
         .collect();
     let time = now();
-    conn.execute(
-        "UPDATE pairing_codes SET used_at=? WHERE used_at IS NULL AND user_id=?",
-        params![time, owner],
-    )?;
+    if replace {
+        conn.execute(
+            "UPDATE pairing_codes SET used_at=? WHERE used_at IS NULL AND user_id=?",
+            params![time, owner],
+        )?;
+    }
     conn.execute("INSERT INTO pairing_codes(code_hash,created_at,expires_at,used_at,user_id) VALUES (?,?,?,NULL,?)", params![digest(&raw), time, time+600., owner])?;
     Ok(json!({"code":format!("{}-{}", &raw[..4], &raw[4..]), "expires_at":time+600.}))
 }
 pub fn new_code(home: &Path, owner: &str) -> Result<Value> {
+    code(home, owner, true)
+}
+/// A startup link must not cancel a code already handed to another device.
+pub fn new_sign_in_code(home: &Path) -> Result<Value> {
+    code(home, "local", false)
+}
+fn code(home: &Path, owner: &str, replace: bool) -> Result<Value> {
     db::migrate(home)?;
     user(home, owner)?;
     let mut conn = db::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let code = create_code(&tx, owner)?;
+    let code = create_code(&tx, owner, replace)?;
     tx.commit()?;
     Ok(code)
 }
@@ -82,42 +99,30 @@ fn mint(conn: &Connection, name: &str, platform: &str, owner: &str) -> Result<Va
     let token = format!("hxb_{}", URL_SAFE_NO_PAD.encode(bytes));
     let id = uuid::Uuid::new_v4().to_string();
     let time = now();
-    conn.execute("INSERT INTO devices(id,name,platform,token_hash,owner_id,created_at,last_seen_at) VALUES (?,?,?,?,?,?,?)", params![id,name,platform,digest(&token),owner,time,time])?;
+    conn.execute(
+        "INSERT INTO devices(id,name,platform,token_hash,owner_id,created_at,last_seen_at) VALUES (?,?,?,?,?,?,?)",
+        params![id, name, platform, digest(&token), owner, time, time],
+    )?;
     Ok(
         json!({"device_token": token, "device_id": id, "owner_id":owner, "daemon_name":daemon_name()}),
     )
 }
-pub fn daemon_name() -> String {
-    #[cfg(unix)]
-    {
-        let mut bytes = [0u8; 256];
-        // The buffer is valid for its entire length and is read only after gethostname returns.
-        if unsafe { libc::gethostname(bytes.as_mut_ptr().cast(), bytes.len()) } == 0 {
-            let length = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
-            return String::from_utf8_lossy(&bytes[..length]).into_owned();
-        }
-    }
-    std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Hexbot".into())
+fn hostname(bytes: &[u8]) -> Option<String> {
+    let length = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
+    (length > 0).then(|| String::from_utf8_lossy(&bytes[..length]).into_owned())
 }
-/// Mint a credential after an independently verified Connect grant.
-pub fn mint_device(home: &Path, name: &str, platform: &str, owner: &str) -> Result<Value> {
-    db::migrate(home)?;
-    let mut conn = db::open(home)?;
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let active = tx
-        .query_row(
-            "SELECT 1 FROM users WHERE id=? AND disabled_at IS NULL",
-            [owner],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some();
-    if !active {
-        return Err(Error::new(4302, "not the owner"));
+pub fn daemon_name() -> String {
+    let mut bytes = [0u8; 256];
+    // The buffer is valid for its entire length and is read only after gethostname returns.
+    if unsafe { libc::gethostname(bytes.as_mut_ptr().cast(), bytes.len()) } == 0
+        && let Some(name) = hostname(&bytes)
+    {
+        return name;
     }
-    let device = mint(&tx, name, platform, owner)?;
-    tx.commit()?;
-    Ok(device)
+    std::env::var("HOSTNAME")
+        .ok()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "Hexbot".into())
 }
 /// Main maps the pinned cloud owner to the local admin. Spend and mint atomically.
 pub fn redeem_verified_grant(
@@ -150,9 +155,6 @@ pub fn redeem_verified_grant(
     tx.commit()?;
     Ok(device)
 }
-pub fn redeem_code(home: &Path, code: &str, device_name: &str, platform: &str) -> Result<Value> {
-    redeem_code_from(home, code, device_name, platform, "local")
-}
 pub fn redeem_code_from(
     home: &Path,
     code: &str,
@@ -165,7 +167,13 @@ pub fn redeem_code_from(
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let hash = digest(&normalize_code(code));
     let time = now();
-    let owner: Option<String> = tx.query_row("SELECT c.user_id FROM pairing_codes c JOIN users u ON u.id=c.user_id WHERE c.code_hash=? AND c.used_at IS NULL AND c.expires_at>? AND u.disabled_at IS NULL", params![hash,time], |row| row.get(0)).optional()?;
+    let owner: Option<String> = tx
+        .query_row(
+            "SELECT c.user_id FROM pairing_codes c JOIN users u ON u.id=c.user_id WHERE c.code_hash=? AND c.used_at IS NULL AND c.expires_at>? AND u.disabled_at IS NULL",
+            params![hash, time],
+            |row| row.get(0),
+        )
+        .optional()?;
     let owner = owner.ok_or_else(invalid_code)?;
     if tx.execute(
         "UPDATE pairing_codes SET used_at=? WHERE code_hash=? AND used_at IS NULL",
@@ -221,7 +229,14 @@ pub fn local_token(home: &Path) -> Result<String> {
     let path = home.join("local-device.token");
     if let Ok(token) = fs::read_to_string(&path) {
         let token = token.trim();
-        let valid = tx.query_row("SELECT 1 FROM devices WHERE token_hash=? AND owner_id='local' AND name='This computer' AND platform='local' AND revoked_at IS NULL", [digest(token)], |_| Ok(())).optional()?.is_some();
+        let valid = tx
+            .query_row(
+                "SELECT 1 FROM devices WHERE token_hash=? AND owner_id='local' AND name='This computer' AND platform='local' AND revoked_at IS NULL",
+                [digest(token)],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
         if valid {
             #[cfg(unix)]
             {
@@ -232,7 +247,10 @@ pub fn local_token(home: &Path) -> Result<String> {
             return Ok(token.to_owned());
         }
     }
-    tx.execute("UPDATE devices SET revoked_at=? WHERE owner_id='local' AND name='This computer' AND platform='local' AND revoked_at IS NULL",[now()])?;
+    tx.execute(
+        "UPDATE devices SET revoked_at=? WHERE owner_id='local' AND name='This computer' AND platform='local' AND revoked_at IS NULL",
+        [now()],
+    )?;
     let device = mint(&tx, "This computer", "local", "local")?;
     let token = device["device_token"].as_str().expect("mint token");
     common::atomic_write(&path, format!("{token}\n").as_bytes())?;
@@ -301,7 +319,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                 let mut conn = db::open(home)?;
                 let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
                 tx.execute("INSERT INTO users(id,display_name,role,limits_json,created_at) VALUES (?,?,?,'{}',?)",params![id,name,role,now()])?;
-                let mut result = create_code(&tx, &id)?;
+                let mut result = create_code(&tx, &id, true)?;
                 result["user"] = get_user(&tx, &id)?;
                 tx.commit()?;
                 Ok(result)
@@ -343,6 +361,13 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                 }
                 let mut conn = db::open(home)?;
                 let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let caller_active: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM users WHERE id=? AND role='admin' AND disabled_at IS NULL)",
+                    [caller], |r| r.get(0),
+                )?;
+                if !caller_active {
+                    return Err(Error::new(4301, "admin required"));
+                }
                 for key in ["display_name", "role"] {
                     if let Some(value) = p.get(key) {
                         tx.execute(
@@ -365,6 +390,14 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                     )?;
                 }
                 let updated = get_user(&tx, id)?;
+                let active_admin: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM users WHERE role='admin' AND disabled_at IS NULL)",
+                    [],
+                    |r| r.get(0),
+                )?;
+                if !active_admin {
+                    return Err(Error::new(4202, "At least one active admin is required"));
+                }
                 tx.commit()?;
                 Ok(json!({"user":updated}))
             }
@@ -433,5 +466,44 @@ fn truthy(value: &Value) -> bool {
         Value::String(v) => !v.is_empty(),
         Value::Array(v) => !v.is_empty(),
         Value::Object(v) => !v.is_empty(),
+    }
+}
+
+#[cfg(test)]
+mod hostname_tests {
+    use super::*;
+    #[test]
+    fn hostname_ignores_empty_results_and_stops_at_nul() {
+        assert_eq!(hostname(&[0; 256]), None);
+        assert_eq!(hostname(b"owl\0ignored"), Some("owl".into()));
+        assert_eq!(hostname(b"fox"), Some("fox".into()));
+        assert!(!daemon_name().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod attempt_tests {
+    use super::*;
+    #[test]
+    fn capacity_evicts_oldest_bucket_without_resetting_active_clients() {
+        let mut attempts = Attempts::new();
+        let home = Path::new("fixture");
+        for i in 0..4096 {
+            check_attempt_with(&mut attempts, home, &i.to_string(), i as f64 / 4096.).unwrap();
+        }
+        for _ in 1..10 {
+            check_attempt_with(&mut attempts, home, "4095", 1.).unwrap();
+        }
+        check_attempt_with(&mut attempts, home, "new", 2.).unwrap();
+        assert_eq!(attempts.len(), 4096);
+        assert!(!attempts.contains_key(&(home.to_owned(), "0".into())));
+        assert_eq!(
+            check_attempt_with(&mut attempts, home, "4095", 2.)
+                .unwrap_err()
+                .code,
+            4232
+        );
+        check_attempt_with(&mut attempts, home, "4095", 62.).unwrap();
+        assert_eq!(attempts.len(), 1);
     }
 }

@@ -5,6 +5,7 @@ use hexbot_core::{
 };
 use serde_json::{Value, json};
 use std::{fs, time::Duration};
+mod support;
 
 async fn next(events: &mut tokio::sync::broadcast::Receiver<Event>, kind: &str) -> Value {
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -19,11 +20,11 @@ async fn next(events: &mut tokio::sync::broadcast::Receiver<Event>, kind: &str) 
     .unwrap()
 }
 fn setup() -> (
-    tempfile::TempDir,
+    support::TestHome,
     std::sync::Arc<Runtime>,
     tokio::sync::broadcast::Receiver<Event>,
 ) {
-    let home = tempfile::tempdir().unwrap();
+    let home = support::TestHome::new();
     db::migrate(home.path()).unwrap();
     db::open(home.path()).unwrap().execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);INSERT INTO bots(name,owner_id) VALUES('owl','alice');INSERT INTO sections(id,bot,owner_id,title) VALUES('first','owl','alice','First'),('second','owl','alice','Second');").unwrap();
     let profile = home.path().join("profiles/owl");
@@ -37,7 +38,7 @@ fn setup() -> (
         .unwrap()
         .execute(
             "INSERT OR REPLACE INTO settings(key,value) VALUES('workspace_dir',?)",
-            [json!(home.path().join("workspace")).to_string()],
+            [json!(home.workspace()).to_string()],
         )
         .unwrap();
     let script = home.path().join("pi.cjs");
@@ -119,6 +120,7 @@ async fn failed_tool_events_include_error_property_expected_by_unchanged_ui() {
     assert_eq!(event["payload"]["result"]["error"], "Token refused");
     assert_eq!(event["payload"]["result_text"], "Token refused");
     assert_eq!(event["payload"]["tool_id"], "t");
-    assert_eq!(event["payload"]["summary"], "Tool failed");
+    // Failure is read from `result.error`; no summary overwrites the argument preview.
+    assert!(event["payload"].get("summary").is_none());
     runtime.shutdown().await;
 }

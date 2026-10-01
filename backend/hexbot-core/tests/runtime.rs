@@ -5,13 +5,14 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+mod support;
 
-fn setup() -> tempfile::TempDir {
-    let home = tempfile::tempdir().unwrap();
+fn setup() -> support::TestHome {
+    let home = support::TestHome::new();
     db::migrate(home.path()).unwrap();
     let conn = db::open(home.path()).unwrap();
     conn.execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0),('bob','Bob','member',0); INSERT INTO bots(name,owner_id) VALUES('owl','alice'); INSERT INTO sections(id,bot,owner_id,title,created_at,updated_at) VALUES('section-a','owl','alice','Conversation',0,0);").unwrap();
-    let workspace = home.path().join("workspace");
+    let workspace = home.workspace();
     conn.execute(
         "INSERT INTO settings(key,value) VALUES('workspace_dir',?)",
         [json!(workspace).to_string()],
@@ -622,7 +623,7 @@ const fs=require('node:fs');const a=process.argv.slice(2);fs.writeFileSync(__dir
 
 #[tokio::test]
 #[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
-async fn actual_pi_acp_stream_and_native_permission_bridge() {
+async fn actual_pi_acp_stream_cancels_native_permissions() {
     let home = setup();
     fs::write(
         home.path().join("profiles/owl/config.yaml"),
@@ -630,7 +631,7 @@ async fn actual_pi_acp_stream_and_native_permission_bridge() {
     )
     .unwrap();
     let server = home.path().join("acp.cjs");
-    fs::write(&server,r#"const rl=require('node:readline').createInterface({input:process.stdin});const send=v=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...v})+'\n');let prompt;rl.on('line',line=>{const r=JSON.parse(line);if(r.method==='initialize')send({id:r.id,result:{protocolVersion:1,agentCapabilities:{}}});else if(r.method==='session/new')send({id:r.id,result:{sessionId:'acp'}});else if(r.method==='session/prompt'){prompt=r.id;send({id:77,method:'session/request_permission',params:{sessionId:'acp',toolCall:{title:'Inspect workspace'},options:[{optionId:'yes',kind:'allow_once'},{optionId:'no',kind:'reject_once'}]}});}else if(r.id===77){send({method:'session/update',params:{sessionId:'acp',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'ACP replied after approval'}}}});send({id:prompt,result:{stopReason:'end_turn'}});}});"#).unwrap();
+    fs::write(&server,r#"const rl=require('node:readline').createInterface({input:process.stdin});const send=v=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...v})+'\n');let prompt;rl.on('line',line=>{const r=JSON.parse(line);if(r.method==='initialize')send({id:r.id,result:{protocolVersion:1,agentCapabilities:{}}});else if(r.method==='session/new')send({id:r.id,result:{sessionId:'acp'}});else if(r.method==='session/prompt'){prompt=r.id;send({id:77,method:'session/request_permission',params:{sessionId:'acp',toolCall:{title:'Inspect workspace'},options:[{optionId:'yes',kind:'allow_once'},{optionId:'no',kind:'reject_once'}]}});}else if(r.id===77){require('node:fs').writeFileSync(process.cwd()+'/permission.json',JSON.stringify(r.result));send({method:'session/update',params:{sessionId:'acp',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'ACP replied after cancellation'}}}});send({id:prompt,result:{stopReason:'end_turn'}});}});"#).unwrap();
     fs::write(
         home.path().join(".env"),
         format!(
@@ -658,18 +659,27 @@ async fn actual_pi_acp_stream_and_native_permission_bridge() {
         .await
         .unwrap()
         .unwrap();
-    let request = next_kind(&mut events, "approval.request").await;
-    runtime
-        .call(
-            "alice",
-            "approval.respond",
-            &json!({"session_id":live,"request_id":request["payload"]["request_id"],"choice":"once"}),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-    let response = next_kind(&mut events, "message.complete").await;
-    assert_eq!(response["payload"]["text"], "ACP replied after approval");
+    let response = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            let params = &event.frame["params"];
+            assert_ne!(params["type"], "approval.request");
+            if params["type"] == "message.complete" {
+                break params.clone();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let permission: Value =
+        serde_json::from_slice(&fs::read(home.workspace().join("permission.json")).unwrap())
+            .unwrap();
+    assert!(!home.path().join("permission.json").exists());
+    assert_eq!(permission, json!({"outcome":{"outcome":"cancelled"}}));
+    assert_eq!(
+        response["payload"]["text"],
+        "ACP replied after cancellation"
+    );
     assert_eq!(response["payload"]["status"], "complete");
     runtime.shutdown().await;
 }
@@ -901,4 +911,173 @@ async fn deleting_bot_closes_idle_hidden_processes_too() {
     assert!(active["sessions"].as_array().unwrap().is_empty());
     assert!(!home.path().join("runtime/sessions/hidden-job").exists());
     app.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_clean_turn_clears_the_sections_failed_turn() {
+    let home = setup();
+    hexbot_core::settings::record_incident(
+        home.path(),
+        "owl",
+        "turn_failed",
+        "Provider timed out",
+        &json!({"section_id":"section-a"}),
+    )
+    .unwrap();
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let runtime = Runtime::new(home.path().into(), hub, fake_pi(home.path())).unwrap();
+    let live = open(&runtime, "alice").await["section"]["live_session_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":live,"text":"Hello"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    // The incident is resolved before the turn reports completion.
+    next_kind(&mut events, "message.complete").await;
+    let bot = hexbot_core::catalog::call(
+        home.path(),
+        "alice",
+        "hexbot.bots.get",
+        &json!({"name":"owl"}),
+    )
+    .unwrap()
+    .unwrap();
+    assert_ne!(bot["bot"]["status"], "stopped");
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn disabled_messaging_and_scheduling_are_not_advertised() {
+    let home = setup();
+    let runtime = Runtime::new(home.path().into(), EventHub::new(), fake_pi(home.path())).unwrap();
+    open(&runtime, "alice").await;
+    let options: Value = serde_json::from_slice(
+        &fs::read(home.path().join("runtime/sessions/section-a/config.json")).unwrap(),
+    )
+    .unwrap();
+    runtime.shutdown().await;
+    let names: Vec<_> = options["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        !names.contains(&"message_bot") && !names.contains(&"cronjob_manage"),
+        "Disabled tools remain available: {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn python_uses_the_section_working_directory() {
+    let home = setup();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "tools:\n  enabled_toolsets: [code_execution]\n",
+    )
+    .unwrap();
+    let workspace = home.workspace();
+    fs::create_dir_all(&workspace).unwrap();
+    let executable = fake_pi(home.path());
+    let source = fs::read_to_string(&executable).unwrap().replace(
+        "const rl=",
+        "require('node:fs').writeFileSync('shared.txt', 'same directory');\nconst rl=",
+    );
+    fs::write(&executable, source).unwrap();
+    let runtime = Runtime::new(home.path().into(), EventHub::new(), executable).unwrap();
+    open(&runtime, "alice").await;
+    let options: Value = serde_json::from_slice(
+        &fs::read(home.path().join("runtime/sessions/section-a/config.json")).unwrap(),
+    )
+    .unwrap();
+    let pi_cwd = std::path::Path::new(options["cwd"].as_str().unwrap());
+    assert_eq!(
+        fs::read_to_string(pi_cwd.join("shared.txt")).unwrap(),
+        "same directory"
+    );
+    let result = hexbot_core::native_tools::call(home.path(), "alice", "owl", "section-a", "execute_code", &json!({"code":"import os\nassert open('shared.txt').read() == 'same directory'\nprint(os.getcwd())"})).await.unwrap();
+    runtime.shutdown().await;
+    hexbot_core::native_tools::close_session(home.path(), "section-a").await;
+    assert_eq!(
+        result["output"].as_str().unwrap().trim(),
+        workspace.canonicalize().unwrap().to_str().unwrap(),
+        "Python tools ignored the configured section workspace"
+    );
+}
+
+#[test]
+fn legacy_compression_chain_keeps_all_display_history() {
+    let home = setup();
+    let legacy = rusqlite::Connection::open(home.path().join("profiles/owl/state.db")).unwrap();
+    legacy.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY,session_key TEXT,parent_session_id TEXT); CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,timestamp REAL,active INTEGER,display_kind TEXT); INSERT INTO sessions VALUES('old-root','section-a',NULL),('new-tip','section-a','old-root'); INSERT INTO messages VALUES(1,'old-root','user','Before compaction',100,1,'normal'),(2,'new-tip','user','After compaction',200,1,'normal');").unwrap();
+    runtime_store::import_hermes(home.path(), "owl", "section-a", home.path()).unwrap();
+    let history = runtime_store::history(home.path(), "section-a").unwrap();
+    assert_eq!(
+        history.len(),
+        2,
+        "Migration lost one compression segment: {history:?}"
+    );
+}
+
+#[tokio::test]
+async fn section_close_releases_the_live_session() {
+    let home = setup();
+    let app = hexbot_core::server::App::new(
+        home.path().into(),
+        "127.0.0.1:0".parse().unwrap(),
+        fake_pi(home.path()),
+        None,
+    )
+    .unwrap();
+    app.call("alice", "hexbot.sections.open", &json!({"id":"section-a"}))
+        .await
+        .unwrap();
+    app.call("alice", "hexbot.sections.close", &json!({"id":"section-a"}))
+        .await
+        .unwrap();
+    let remaining = app
+        .call("alice", "session.active_list", &json!({}))
+        .await
+        .unwrap();
+    app.shutdown().await;
+    assert_eq!(
+        remaining["sessions"].as_array().unwrap().len(),
+        0,
+        "Closed section kept a live Pi session"
+    );
+}
+
+#[tokio::test]
+async fn deleting_section_removes_delegated_transcripts() {
+    let home = setup();
+    let app = hexbot_core::server::App::new(
+        home.path().into(),
+        "127.0.0.1:0".parse().unwrap(),
+        fake_pi(home.path()),
+        None,
+    )
+    .unwrap();
+    let dir = runtime_store::session_dir(home.path(), "child-a").unwrap();
+    fs::write(dir.join("conversation.jsonl"), "private delegated work").unwrap();
+    runtime_store::open(home.path()).unwrap().execute("INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES('child-a','alice','owl','private prompt',?)", [json!({"parent_session":"section-a"}).to_string()]).unwrap();
+    app.call(
+        "alice",
+        "hexbot.sections.delete",
+        &json!({"id":"section-a"}),
+    )
+    .await
+    .unwrap();
+    app.shutdown().await;
+    assert!(
+        !dir.exists(),
+        "Deleting a section retained its delegated transcript"
+    );
 }

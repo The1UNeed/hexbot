@@ -5,8 +5,9 @@ use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
-fn home(mut config: Value) -> tempfile::TempDir {
-    let home = tempfile::tempdir().unwrap();
+mod support;
+fn home(mut config: Value) -> support::TestHome {
+    let home = support::TestHome::new();
     db::migrate(home.path()).unwrap();
     db::open(home.path())
         .unwrap()
@@ -20,7 +21,7 @@ fn home(mut config: Value) -> tempfile::TempDir {
         .unwrap()
         .execute(
             "INSERT INTO settings(key,value) VALUES('workspace_dir',?)",
-            [json!(home.path()).to_string()],
+            [json!(home.workspace()).to_string()],
         )
         .unwrap();
     config["security"] = json!({"allow_private_urls":true});
@@ -350,7 +351,8 @@ async fn vision_crop_and_openai_image_edit_send_actual_image_bytes() {
     let h = home(
         json!({"tools":{"enabled_toolsets":["vision","image_gen"]},"auxiliary":{"vision":{"provider":"openai","base_url":format!("http://{address}")}},"image_gen":{"provider":"openai","base_url":format!("http://{address}")}}),
     );
-    let input = h.path().join("input.png");
+    std::fs::create_dir_all(h.workspace()).unwrap();
+    let input = h.workspace().join("input.png");
     std::fs::write(&input, &png).unwrap();
     call(
         h.path(),
@@ -693,7 +695,8 @@ async fn fal_edits_route_to_model_edit_endpoint_and_translate_references() {
         format!("FAL_KEY=fal-secret\nFAL_BASE_URL=http://{address}\n"),
     )
     .unwrap();
-    let source = h.path().join("source.png");
+    std::fs::create_dir_all(h.workspace()).unwrap();
+    let source = h.workspace().join("source.png");
     std::fs::write(&source, b"\x89PNG\r\n\x1a\nsource").unwrap();
     call(
         h.path(),

@@ -3,6 +3,24 @@ use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
 use std::{fs, io::Write, path::Path};
 
+pub fn pi_executable() -> Result<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os("HEXBOT_PI_EXECUTABLE").filter(|path| !path.is_empty()) {
+        return Ok(path.into());
+    }
+    #[cfg(debug_assertions)]
+    {
+        let candidate = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../pi-runtime/node_modules/.bin/pi");
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err(Error::new(
+        5200,
+        "Pi runtime missing. Set HEXBOT_PI_EXECUTABLE to the Pi launcher",
+    ))
+}
+
 pub fn now() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -121,7 +139,8 @@ pub fn bot_session_access(home: &Path, caller: &str, bot: &str, stored: &str) ->
         }
         let authorized: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM room_sessions s JOIN rooms r ON r.id=s.room_id JOIN room_members m ON m.room_id=r.id AND m.member_kind='bot' AND m.member_id=s.bot WHERE s.stored_session_id=?1 AND s.bot=?2 AND r.owner_id=?3 AND r.archived_at IS NULL AND m.left_at IS NULL)",
-            rusqlite::params![session, bot, caller], |r| r.get(0),
+            rusqlite::params![session, bot, caller],
+            |r| r.get(0),
         )?;
         if authorized {
             return Ok(());
@@ -438,9 +457,126 @@ pub fn managed_python(home: &Path) -> std::path::PathBuf {
     }
 }
 
+/// Expand a leading `~` or `~/` to the user's home directory.
+pub fn expand_home(path: &str) -> Result<std::path::PathBuf> {
+    expand_home_in(path, std::env::var_os("HOME"))
+}
+fn expand_home_in(path: &str, home: Option<std::ffi::OsString>) -> Result<std::path::PathBuf> {
+    if path == "~" || path.starts_with("~/") {
+        // Without HOME the path would silently become relative to the daemon's cwd.
+        let home = home
+            .filter(|home| !home.is_empty())
+            .ok_or_else(|| Error::new(4202, "HOME is not set, so ~ cannot be expanded"))?;
+        Ok(std::path::PathBuf::from(home).join(path.strip_prefix("~/").unwrap_or("")))
+    } else {
+        Ok(std::path::PathBuf::from(path))
+    }
+}
+
+/// Refuse a working directory inside the daemon home, symlinks included, without creating it.
+/// The tool guards treat the working directory as writable, so it would open the home.
+pub fn check_workdir(home: &Path, configured: &str) -> Result<std::path::PathBuf> {
+    let path = std::path::absolute(expand_home(configured)?)?;
+    if path
+        .components()
+        .any(|part| part == std::path::Component::ParentDir)
+    {
+        return Err(Error::new(
+            4202,
+            "the working directory must not contain ..",
+        ));
+    }
+    // Canonicalise the deepest existing ancestor; the missing rest cannot be a symlink yet.
+    let mut existing = path.as_path();
+    while !existing.exists()
+        && let Some(parent) = existing.parent()
+    {
+        existing = parent;
+    }
+    let rest = path.strip_prefix(existing).unwrap_or(Path::new(""));
+    outside_home(home, &fs::canonicalize(existing)?.join(rest))?;
+    Ok(path)
+}
+
+/// The first non-empty candidate (a section override, then the bot's own
+/// workdir), else the workspace setting, else `~/Hexbot`.
+pub fn configured_workdir<'a>(candidates: &[Option<&'a str>], settings: &'a Value) -> &'a str {
+    candidates
+        .iter()
+        .flatten()
+        .copied()
+        .find(|s| !s.is_empty())
+        .unwrap_or_else(|| settings["workspace_dir"].as_str().unwrap_or("~/Hexbot"))
+}
+
+/// Check, create and canonicalise a working directory.
+pub fn resolve_workdir(home: &Path, configured: &str) -> Result<std::path::PathBuf> {
+    let path = check_workdir(home, configured)?;
+    fs::create_dir_all(&path)?;
+    let path = fs::canonicalize(path)?;
+    outside_home(home, &path)?;
+    Ok(path)
+}
+
+/// A saved working directory, reused only while it passes the workdir checks
+/// (it may sit inside the home); otherwise warn once and let the caller fall
+/// back to the default workspace.
+pub fn saved_workdir(home: &Path, saved: &str) -> Option<std::path::PathBuf> {
+    match resolve_workdir(home, saved) {
+        Ok(path) => Some(path),
+        Err(error) => {
+            static WARN: std::sync::Once = std::sync::Once::new();
+            WARN.call_once(|| {
+                eprintln!(
+                    "Ignoring the saved working directory {saved}: {}. The section uses the default workspace.",
+                    error.message
+                )
+            });
+            None
+        }
+    }
+}
+
+fn outside_home(home: &Path, canonical: &Path) -> Result<()> {
+    if canonical.starts_with(fs::canonicalize(home)?) {
+        return Err(Error::new(
+            4202,
+            "the working directory cannot be inside the Hexbot home",
+        ));
+    }
+    Ok(())
+}
+
+pub fn merged_config(home: &Path, bot: &str) -> Result<Value> {
+    fn merge(dst: &mut Value, src: &Value) {
+        if let Some(src) = src.as_object() {
+            if !dst.is_object() {
+                *dst = json!({});
+            }
+            for (key, value) in src {
+                merge(
+                    dst.as_object_mut()
+                        .unwrap()
+                        .entry(key)
+                        .or_insert(Value::Null),
+                    value,
+                );
+            }
+        } else {
+            *dst = src.clone();
+        }
+    }
+    let mut cfg = read_config(home)?;
+    merge(
+        &mut cfg,
+        &read_config(&crate::catalog::profile(home, bot)?)?,
+    );
+    Ok(cfg)
+}
+
 pub fn allow_private_urls(home: &Path, bot: &str) -> Result<bool> {
     let mut env = env_values(home)?;
-    env.extend(env_values(&home.join("profiles").join(bot))?);
+    env.extend(env_values(&crate::catalog::profile(home, bot)?)?);
     let setting = env
         .get("HERMES_ALLOW_PRIVATE_URLS")
         .cloned()
@@ -455,12 +591,10 @@ pub fn allow_private_urls(home: &Path, bot: &str) -> Result<bool> {
         Some("false" | "0" | "no") => return Ok(false),
         _ => (),
     }
-    let global = read_config(home)?;
-    let local = read_config(&home.join("profiles").join(bot))?;
+    let cfg = merged_config(home, bot)?;
     Ok(["security", "browser"].iter().any(|section| {
-        local[section]["allow_private_urls"]
+        cfg[section]["allow_private_urls"]
             .as_bool()
-            .or(global[section]["allow_private_urls"].as_bool())
             .unwrap_or(false)
     }))
 }
@@ -748,9 +882,128 @@ async fn proxy_request(client: &mut tokio::net::TcpStream, allow_private: bool) 
     Ok(())
 }
 
+/// Locate a child command in its workspace or PATH, without extra search roots.
+pub fn command_path(program: &str, cwd: &Path) -> Option<std::path::PathBuf> {
+    if program.contains(std::path::MAIN_SEPARATOR) {
+        let path = cwd.join(program);
+        return executable_file(&path).then_some(path);
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| cwd.join(dir).join(program))
+        .find(|path| executable_file(path))
+}
+pub(crate) fn executable_file(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+/// A temporary Hexbot home with its workspace beside it; a workdir may never sit inside the home.
+#[cfg(test)]
+pub(crate) struct TestHome {
+    root: tempfile::TempDir,
+    home: std::path::PathBuf,
+}
+#[cfg(test)]
+impl TestHome {
+    pub(crate) fn new() -> Self {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        fs::create_dir(&home).unwrap();
+        Self { root, home }
+    }
+    pub(crate) fn path(&self) -> &Path {
+        &self.home
+    }
+    pub(crate) fn workspace(&self) -> std::path::PathBuf {
+        self.root.path().join("workspace")
+    }
+}
+
+#[cfg(test)]
+mod workdir_tests {
+    use super::*;
+    /// One resolver for every runtime path: a bare `~` is the home directory,
+    /// nothing named `~` is created, and the Hexbot home itself is refused.
+    #[test]
+    fn workdir_expands_a_bare_tilde_and_refuses_the_home() {
+        let home = TestHome::new();
+        let user_home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap();
+        assert_eq!(
+            resolve_workdir(home.path(), "~").unwrap(),
+            fs::canonicalize(&user_home).unwrap()
+        );
+        assert!(!Path::new("~").exists());
+        let space = home.workspace().join("space");
+        assert_eq!(
+            resolve_workdir(home.path(), space.to_str().unwrap()).unwrap(),
+            fs::canonicalize(&space).unwrap()
+        );
+        assert!(space.is_dir());
+        assert!(resolve_workdir(home.path(), home.path().to_str().unwrap()).is_err());
+        assert_eq!(
+            saved_workdir(home.path(), space.to_str().unwrap()).unwrap(),
+            fs::canonicalize(&space).unwrap()
+        );
+        assert!(
+            saved_workdir(
+                home.path(),
+                home.path().join("profiles/owl").to_str().unwrap()
+            )
+            .is_none()
+        );
+        assert!(
+            check_workdir(
+                home.path(),
+                home.path().join("profiles/owl").to_str().unwrap()
+            )
+            .is_err()
+        );
+        for home in [None, Some(std::ffi::OsString::new())] {
+            assert_eq!(expand_home_in("~/Hexbot", home).unwrap_err().code, 4202);
+        }
+        assert_eq!(
+            expand_home_in("~/Hexbot", Some("/srv/alex".into())).unwrap(),
+            Path::new("/srv/alex/Hexbot")
+        );
+        assert_eq!(expand_home_in("/tmp/x", None).unwrap(), Path::new("/tmp/x"));
+    }
+}
+
 #[cfg(test)]
 mod tool_safety_tests {
     use super::*;
+    #[test]
+    fn profile_config_deep_merges_objects_and_replaces_other_values() {
+        let home = tempfile::tempdir().unwrap();
+        write_config(home.path(), &json!({"video_gen":{"fal":{"model":"A","timeout":60}},"browser":{"allow_private_urls":true},"scalar":false,"list":[1,2]})).unwrap();
+        write_config(&home.path().join("profiles/owl"), &json!({"video_gen":{"fal":{"model":"B"}},"browser":{"allow_private_urls":false},"scalar":{"nested":true},"list":[3]})).unwrap();
+        let cfg = merged_config(home.path(), "owl").unwrap();
+        assert_eq!(cfg["video_gen"]["fal"], json!({"model":"B","timeout":60}));
+        assert_eq!(cfg["scalar"], json!({"nested":true}));
+        assert_eq!(cfg["list"], json!([3]));
+        assert!(!allow_private_urls(home.path(), "owl").unwrap());
+        assert!(merged_config(home.path(), "../escape").is_err());
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), home.path().join("profiles/link")).unwrap();
+        assert!(merged_config(home.path(), "link").is_err());
+        assert!(allow_private_urls(home.path(), "link").is_err());
+    }
+
     #[test]
     fn reads_reject_devices_directories_and_oversize_files() {
         let dir = tempfile::tempdir().unwrap();

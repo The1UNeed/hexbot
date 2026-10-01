@@ -2,7 +2,17 @@ use super::*;
 use std::process::Stdio;
 
 const SESSION_LIMIT: u64 = 512 * 1024 * 1024;
-const ENVELOPE_LIMIT: usize = 768 * 1024 * 1024;
+/// Staged images travel inside one prompt record, which Pi reads into a JavaScript
+/// string; keep well under V8's 512 MiB string cap so an oversized batch is refused
+/// here instead of killing the bot on every retry.
+pub(super) const ENVELOPE_LIMIT: usize = 128 * 1024 * 1024;
+fn attachment_limit_mib(method: &str) -> usize {
+    if method == "image.attach_bytes" {
+        25
+    } else {
+        45
+    }
+}
 impl Runtime {
     pub(super) async fn attach(&self, s: &Live, method: &str, p: &Value) -> Result<Value> {
         let encoded = if method == "file.attach" {
@@ -17,11 +27,7 @@ impl Runtime {
         } else {
             required(p, "content_base64")?
         };
-        let limit_mib: usize = match method {
-            "image.attach_bytes" => 25,
-            "pdf.attach" => 50,
-            _ => 256,
-        };
+        let limit_mib = attachment_limit_mib(method);
         let limit = limit_mib * 1024 * 1024;
         if encoded.len() > 4 * limit.div_ceil(3) {
             return Err(Error::new(
@@ -74,19 +80,20 @@ impl Runtime {
         } else {
             None
         };
+        let _attachment = s.attachment_gate.lock().await;
+        ensure_open(s)?;
+        let path = store::session_dir(&self.home, &s.stored)?
+            .join("attachments")
+            .join(format!("{}-{name}", common::id()));
+        let mut staged = stage_files(vec![(path.clone(), bytes)]).await?;
         let mut state = s.state.lock().unwrap();
         if state.closed {
             return Err(Error::new(4001, "session not found"));
         }
-        let path = store::session_dir(&self.home, &s.stored)?
-            .join("attachments")
-            .join(format!("{}-{name}", common::id()));
         if let Some(image) = &image {
             ensure_envelope(&state.attachments, std::slice::from_ref(image))?;
         }
-        ensure_total(path.parent().unwrap(), bytes.len() as u64)?;
-        common::atomic_write(&path, &bytes)?;
-        state.staged_files.push(path.clone());
+        state.staged_files.append(&mut staged.0);
         if let Some(image) = image {
             state.attachments.push(image);
         } else {
@@ -189,35 +196,70 @@ impl Runtime {
                 "pdftoppm produced no pages (corrupt PDF?)",
             ));
         }
-        let mut images = vec![];
-        for (_, path) in &rendered {
-            let data = fs::read(path)?;
-            images.push(json!({"type":"image","data":base64::engine::general_purpose::STANDARD.encode(data),"mimeType":"image/png"}));
-        }
+        let _attachment = s.attachment_gate.lock().await;
+        ensure_open(s)?;
+        let dir = store::session_dir(&self.home, &s.stored)?.join("attachments");
+        let (images, pages, mut staged) = tokio::task::spawn_blocking(move || {
+            let mut images = vec![];
+            let mut pages = vec![];
+            let mut files = vec![];
+            for (page, path) in rendered {
+                let data = fs::read(path)?;
+                images.push(json!({"type":"image","data":base64::engine::general_purpose::STANDARD.encode(&data),"mimeType":"image/png"}));
+                let destination = dir.join(format!("{}-pdf_p{page}.png", common::id()));
+                pages.push(json!({"path":destination,"page":page}));
+                files.push((destination, data));
+            }
+            Ok::<_, Error>((images, pages, write_files(files)?))
+        }).await.map_err(|e| Error::new(5200, e.to_string()))??;
         let mut state = s.state.lock().unwrap();
         if state.closed {
             return Err(Error::new(4001, "session not found"));
         }
         ensure_envelope(&state.attachments, &images)?;
-        let dir = store::session_dir(&self.home, &s.stored)?.join("attachments");
-        fs::create_dir_all(&dir)?;
-        let total = rendered.iter().try_fold(0u64, |sum, (_, path)| {
-            fs::metadata(path).map(|m| sum.saturating_add(m.len()))
-        })?;
-        ensure_total(&dir, total)?;
-        let mut pages = vec![];
-        for (page, path) in &rendered {
-            let destination = dir.join(format!("{}-pdf_p{page}.png", common::id()));
-            fs::copy(path, &destination)?;
-            state.staged_files.push(destination.clone());
-            pages.push(json!({"path":destination,"page":page}));
-        }
+        state.staged_files.append(&mut staged.0);
         state.attachments.extend(images);
         state.last_activity = common::now();
-        Ok(
-            json!({"attached":true,"filename":name,"pages_attached":pages.len(),"pages":pages,"count":state.attachments.len(),"text":format!("[User attached PDF: {name} ({} page(s))]",rendered.len())}),
-        )
+        Ok(json!({
+            "attached": true,
+            "filename": name,
+            "pages_attached": pages.len(),
+            "pages": pages,
+            "count": state.attachments.len(),
+            "text": format!("[User attached PDF: {name} ({} page(s))]", pages.len())
+        }))
     }
+}
+// Unregistered files are removed on errors, cancellation, or a concurrent close.
+/// Staging must not recreate the folder of a section that is closing.
+fn ensure_open(s: &Live) -> Result<()> {
+    if s.state.lock().unwrap().closed {
+        return Err(Error::new(4001, "session not found"));
+    }
+    Ok(())
+}
+struct StagedFiles(Vec<PathBuf>);
+impl Drop for StagedFiles {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+async fn stage_files(files: Vec<(PathBuf, Vec<u8>)>) -> Result<StagedFiles> {
+    tokio::task::spawn_blocking(move || write_files(files))
+        .await
+        .map_err(|e| Error::new(5200, e.to_string()))?
+}
+fn write_files(files: Vec<(PathBuf, Vec<u8>)>) -> Result<StagedFiles> {
+    let mut staged = StagedFiles(vec![]);
+    let total = files.iter().map(|(_, bytes)| bytes.len() as u64).sum();
+    ensure_total(files[0].0.parent().unwrap(), total)?;
+    for (path, bytes) in files {
+        common::atomic_write(&path, &bytes)?;
+        staged.0.push(path);
+    }
+    Ok(staged)
 }
 fn ensure_envelope(existing: &[Value], additional: &[Value]) -> Result<()> {
     // Leave space for the prompt, metadata, JSON escaping, and a bounded file list.
@@ -253,6 +295,13 @@ fn ensure_total(dir: &Path, additional: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn attachment_limits_fit_transport_with_room_for_json() {
+        for method in ["file.attach", "pdf.attach", "image.attach_bytes"] {
+            let bytes = attachment_limit_mib(method) * 1024 * 1024;
+            assert!(4 * bytes.div_ceil(3) + 1024 * 1024 < crate::server::WS_MESSAGE_LIMIT);
+        }
+    }
     #[test]
     fn total_includes_files_from_prior_turns_and_rendered_pages() {
         let dir = tempfile::tempdir().unwrap();

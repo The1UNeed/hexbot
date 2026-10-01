@@ -4,6 +4,7 @@ use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use std::{collections::HashSet, path::Path};
 
+/// Human members read and post in a room; `owned` guards changes to it.
 pub fn get(home: &Path, caller: &str, room: &str, all: bool) -> Result<Value> {
     if all {
         admin(home, caller)?;
@@ -15,17 +16,48 @@ pub fn get(home: &Path, caller: &str, room: &str, all: bool) -> Result<Value> {
         .into_iter()
         .next()
         .ok_or_else(|| Error::new(4230, format!("room not found: {room}")))?;
-    if !all && row["owner_id"] != caller {
-        return Err(Error::new(4302, "not the owner"));
-    }
     row["limits"] = json_field(&row["limits_json"]);
     row.as_object_mut().unwrap().remove("limits_json");
+    // Members name each other without access to the owner's bot catalog.
     row["members"] = json!(rows(
         &conn,
-        "SELECT * FROM room_members WHERE room_id=? ORDER BY added_at,member_id",
-        &[&room]
+        "SELECT m.*,COALESCE(NULLIF(u.display_name,''),NULLIF(b.display_name,'')) AS display_name FROM room_members m LEFT JOIN users u ON m.member_kind='human' AND u.id=m.member_id LEFT JOIN bots b ON m.member_kind='bot' AND b.name=m.member_id WHERE m.room_id=? ORDER BY m.added_at,m.member_id",
+        &[&room],
     )?);
+    // Running turns let a reconnected client rebuild who is working.
+    row["turns"] = json!(rows(
+        &conn,
+        "SELECT t.bot,s.live_session_id FROM room_turns t LEFT JOIN room_sessions s ON s.room_id=t.room_id AND s.bot=t.bot WHERE t.room_id=? AND t.status='running' ORDER BY t.started_at,t.bot",
+        &[&room],
+    )?);
+    let member =
+        row["members"].as_array().into_iter().flatten().any(|m| {
+            m["member_kind"] == "human" && m["member_id"] == caller && m["left_at"].is_null()
+        });
+    if !all && row["owner_id"] != caller && !member {
+        return Err(Error::new(4302, "not a room member"));
+    }
     Ok(row)
+}
+
+pub fn owned(home: &Path, caller: &str, room: &str) -> Result<Value> {
+    let row = get(home, caller, room, false)?;
+    if row["owner_id"] != caller {
+        return Err(Error::new(4302, "not the owner"));
+    }
+    Ok(row)
+}
+
+/// Everyone who sees the room: its owner and its active human members.
+pub fn audience(home: &Path, room: &str) -> Result<Vec<String>> {
+    Ok(rows(
+        &db::open(home)?,
+        "SELECT owner_id AS id FROM rooms WHERE id=?1 UNION SELECT member_id FROM room_members WHERE room_id=?1 AND member_kind='human' AND left_at IS NULL",
+        &[&room],
+    )?
+    .iter()
+    .filter_map(|r| r["id"].as_str().map(str::to_owned))
+    .collect())
 }
 
 pub fn log(home: &Path, caller: &str, room: &str, after: i64, limit: i64) -> Result<Vec<Value>> {
@@ -55,7 +87,18 @@ pub fn append(
     let mut conn = db::open(home)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let time = now();
-    tx.execute("INSERT INTO room_events(room_id,seq,kind,actor_kind,actor_id,payload_json,created_at) SELECT ?,COALESCE(MAX(seq),0)+1,?,?,?,?,? FROM room_events WHERE room_id=?",params![room,kind,actor_kind,actor,payload.to_string(),time,room])?;
+    tx.execute(
+        "INSERT INTO room_events(room_id,seq,kind,actor_kind,actor_id,payload_json,created_at) SELECT ?,COALESCE(MAX(seq),0)+1,?,?,?,?,? FROM room_events WHERE room_id=?",
+        params![
+            room,
+            kind,
+            actor_kind,
+            actor,
+            payload.to_string(),
+            time,
+            room
+        ],
+    )?;
     let seq: i64 = tx.query_row(
         "SELECT MAX(seq) FROM room_events WHERE room_id=?",
         [room],
@@ -103,6 +146,21 @@ fn strings(p: &Value, key: &str) -> Result<Vec<String>> {
         _ => Err(Error::new(4202, format!("{key} must be an array"))),
     }
 }
+/// Only people on this daemon with an enabled account join a room.
+fn person(conn: &rusqlite::Connection, id: &str) -> Result<()> {
+    let disabled: Option<bool> = conn
+        .query_row(
+            "SELECT disabled_at IS NOT NULL FROM users WHERE id=?",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match disabled {
+        None => Err(Error::new(4232, "That person is not on this daemon.")),
+        Some(true) => Err(Error::new(4202, "That person's account is disabled.")),
+        Some(false) => Ok(()),
+    }
+}
 fn active_bots(room: &Value) -> Vec<String> {
     room["members"]
         .as_array()
@@ -140,7 +198,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                 let archived = p["include_archived"].as_bool().unwrap_or(false);
                 let ids = rows(
                     &conn,
-                    "SELECT id,owner_id FROM rooms WHERE (? OR archived_at IS NULL) AND (? OR owner_id=?) ORDER BY last_activity_at DESC,name",
+                    "SELECT id,owner_id FROM rooms WHERE (?1 OR archived_at IS NULL) AND (?2 OR owner_id=?3 OR id IN (SELECT room_id FROM room_members WHERE member_kind='human' AND member_id=?3 AND left_at IS NULL)) ORDER BY last_activity_at DESC,name",
                     &[&archived, &all, &caller],
                 )?;
                 let rooms = ids
@@ -150,17 +208,34 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                 Ok(json!({"rooms":rooms}))
             }
             "hexbot.rooms.get" => Ok(json!({"room":get(home,caller,required(p,"id")?,all)?})),
+            "hexbot.rooms.people" => {
+                owned(home, caller, required(p, "id")?)?;
+                Ok(json!({"users":rows(&conn,
+                    "SELECT id,display_name FROM users WHERE disabled_at IS NULL ORDER BY created_at,id",
+                    &[])?}))
+            }
             "hexbot.rooms.create" => {
                 validate_approval_mode(p)?;
+                validate_limits(p)?;
                 let name = required(p, "name")?.trim();
                 if name.is_empty() {
                     return Err(Error::new(4200, "missing parameter: name"));
                 }
                 let mut humans = strings(p, "humans")?;
+                for human in &humans {
+                    person(&conn, human)?;
+                }
                 humans.push(caller.to_string());
                 let mut bots = vec![];
                 for m in strings(p, "members")? {
-                    let is_user=conn.query_row("SELECT 1 FROM users WHERE id=? AND disabled_at IS NULL AND NOT EXISTS(SELECT 1 FROM bots WHERE name=?)",params![m,m],|_|Ok(())).optional()?.is_some();
+                    let is_user = conn
+                        .query_row(
+                            "SELECT 1 FROM users WHERE id=? AND disabled_at IS NULL AND NOT EXISTS(SELECT 1 FROM bots WHERE name=?)",
+                            params![m, m],
+                            |_| Ok(()),
+                        )
+                        .optional()?
+                        .is_some();
                     if is_user {
                         humans.push(m);
                     } else {
@@ -234,8 +309,9 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             }
             "hexbot.rooms.update" => {
                 validate_approval_mode(p)?;
+                validate_limits(p)?;
                 let room = required(p, "id")?;
-                let current = get(home, caller, room, false)?;
+                let current = owned(home, caller, room)?;
                 if let Some(o) = p.as_object() {
                     for k in o.keys() {
                         if !["id", "name", "main_bot", "approval_mode", "limits"]
@@ -272,51 +348,83 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                 tx.commit()?;
                 Ok(json!({"room":get(home,caller,room,false)?}))
             }
-            "hexbot.rooms.add_member" | "hexbot.rooms.remove_member" => {
+            "hexbot.rooms.remove_member" if p.get("user").is_some() => {
                 let room = required(p, "id")?;
-                let bot = required(p, "bot")?;
-                get(home, caller, room, false)?;
-                let event;
-                if method.ends_with("add_member") {
-                    accessible_bot(home, caller, bot)?;
-                    conn.execute("INSERT INTO room_members VALUES (?,'bot',?,?,?,NULL,0) ON CONFLICT(room_id,member_kind,member_id) DO UPDATE SET left_at=NULL,added_by=excluded.added_by,added_at=excluded.added_at,last_read_seq=0",params![room,bot,caller,now()])?;
-                    event = append(
-                        home,
-                        caller,
-                        room,
-                        "member.added",
-                        "human",
-                        Some(caller),
-                        json!({"bot":bot}),
-                    )?;
-                } else {
-                    if conn.execute("UPDATE room_members SET left_at=? WHERE room_id=? AND member_kind='bot' AND member_id=? AND left_at IS NULL",params![now(),room,bot])?==0{return Err(Error::new(4232,format!("active room member not found: {bot}")));}
-                    event = append(
-                        home,
-                        caller,
-                        room,
-                        "member.left",
-                        "human",
-                        Some(caller),
-                        json!({"bot":bot}),
-                    )?;
-                    let mut result = get(home, caller, room, false)?;
-                    if active_bots(&result).is_empty() {
-                        purge_transcripts(home, room)?;
-                        conn.execute("DELETE FROM rooms WHERE id=?", [room])?;
-                        result["deleted"] = json!(true);
-                        return Ok(json!({"room":result,"event":event}));
-                    }
-                    conn.execute(
-                        "UPDATE rooms SET main_bot=NULL WHERE id=? AND main_bot=?",
-                        params![room, bot],
-                    )?;
+                let user = required(p, "user")?;
+                let row = get(home, caller, room, false)?;
+                let owner = row["owner_id"].as_str().unwrap_or_default();
+                // The owner removes anyone else; every other member may leave.
+                if user == owner {
+                    return Err(Error::new(
+                        4202,
+                        "the owner cannot leave the room; delete it instead",
+                    ));
                 }
+                if caller != owner && caller != user {
+                    return Err(Error::new(4302, "not the owner"));
+                }
+                if conn.execute(
+                    "UPDATE room_members SET left_at=? WHERE room_id=? AND member_kind='human' AND member_id=? AND left_at IS NULL",
+                    params![now(), room, user],
+                )? == 0
+                {
+                    return Err(Error::new(
+                        4232,
+                        format!("active room member not found: {user}"),
+                    ));
+                }
+                let event = append(
+                    home,
+                    owner,
+                    room,
+                    "member.left",
+                    "human",
+                    Some(caller),
+                    json!({"user":user}),
+                )?;
+                Ok(json!({"room":get(home,owner,room,false)?,"event":event}))
+            }
+            "hexbot.rooms.add_member" => {
+                let room = required(p, "id")?;
+                owned(home, caller, room)?;
+                let (kind, member, payload) = if p.get("user").is_some() {
+                    let human = required(p, "user")?;
+                    person(&conn, human)?;
+                    ("human", human, json!({"user":human}))
+                } else {
+                    let bot = required(p, "bot")?;
+                    accessible_bot(home, caller, bot)?;
+                    ("bot", bot, json!({"bot":bot}))
+                };
+                conn.execute(
+                    "INSERT INTO room_members VALUES (?,?,?,?,?,NULL,0) ON CONFLICT(room_id,member_kind,member_id) DO UPDATE SET left_at=NULL,added_by=excluded.added_by,added_at=excluded.added_at,last_read_seq=0",
+                    params![room, kind, member, caller, now()],
+                )?;
+                let event = append(
+                    home,
+                    caller,
+                    room,
+                    "member.added",
+                    "human",
+                    Some(caller),
+                    payload,
+                )?;
                 Ok(json!({"room":get(home,caller,room,false)?,"event":event}))
             }
-            "hexbot.rooms.send" => Ok(
-                json!({"event":append(home,caller,required(p,"id")?,"message.user","human",Some(caller),json!({"text":required(p,"text")?,"attachments":p.get("attachments").cloned().unwrap_or(json!([]))}))?}),
-            ),
+            "hexbot.rooms.send" => Ok(json!({
+                "event": append(
+                    home,
+                    caller,
+                    required(p, "id")?,
+                    "message.user",
+                    "human",
+                    Some(caller),
+                    json!({
+                        "text": required(p, "text")?,
+                        "attachments": p.get("attachments").cloned().unwrap_or(json!([]))
+                    }),
+                )?
+            })),
             "hexbot.rooms.log" => Ok(
                 json!({"events":log(home,caller,required(p,"id")?,p["after_seq"].as_i64().unwrap_or(0),p["limit"].as_i64().filter(|n|*n!=0).unwrap_or(200))?}),
             ),
@@ -326,12 +434,15 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                 let seq = p["seq"]
                     .as_i64()
                     .ok_or_else(|| Error::new(4200, "missing parameter: seq"))?;
-                conn.execute("UPDATE room_members SET last_read_seq=MAX(last_read_seq,?) WHERE room_id=? AND member_kind='human' AND member_id=?",params![seq,room,caller])?;
+                conn.execute(
+                    "UPDATE room_members SET last_read_seq=MAX(last_read_seq,?) WHERE room_id=? AND member_kind='human' AND member_id=?",
+                    params![seq, room, caller],
+                )?;
                 Ok(json!({"room":get(home,caller,room,false)?}))
             }
             "hexbot.rooms.archive" | "hexbot.rooms.unarchive" => {
                 let room = required(p, "id")?;
-                get(home, caller, room, false)?;
+                owned(home, caller, room)?;
                 let archived = if method.ends_with("unarchive") || p["archived"] == false {
                     None
                 } else {
@@ -342,13 +453,6 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                     params![archived, now(), room],
                 )?;
                 Ok(json!({"room":get(home,caller,room,false)?}))
-            }
-            "hexbot.rooms.delete" => {
-                let room = required(p, "id")?;
-                get(home, caller, room, false)?;
-                purge_transcripts(home, room)?;
-                conn.execute("DELETE FROM rooms WHERE id=?", [room])?;
-                Ok(json!({"deleted":true}))
             }
             "hexbot.activity.pairs" | "hexbot.activity.messages" | "hexbot.activity.list" => {
                 let pairs = method.ends_with("pairs");
@@ -414,13 +518,18 @@ pub fn select_responders(
         return (vec![], true);
     }
     let active = active_bots(room);
-    let mut selected: Vec<String> = active
+    let mentioned: Vec<&String> = active
         .iter()
-        .filter(|b| mentions.contains(&b.to_lowercase()) && !already.contains(*b))
-        .cloned()
+        .filter(|b| mentions.contains(&b.to_lowercase()))
         .collect();
+    let mut selected: Vec<String> = mentioned
+        .iter()
+        .filter(|b| !already.contains(**b))
+        .map(|b| b.to_string())
+        .collect();
+    // The main bot answers only messages that mention no active bot.
     if event["kind"] == "message.user"
-        && selected.is_empty()
+        && mentioned.is_empty()
         && let Some(main) = room["main_bot"].as_str()
         && active.iter().any(|b| b == main)
         && !already.contains(main)
@@ -613,10 +722,13 @@ impl RoomEngine {
         }
         Ok(())
     }
-    pub async fn notify(self: &Arc<Self>, owner: &str, room: &str) -> Result<()> {
-        get(&self.home, owner, room, false)?;
+    /// Any member may wake the room; its bots always run as the room owner.
+    pub async fn notify(self: &Arc<Self>, caller: &str, room: &str) -> Result<()> {
+        let owner = get(&self.home, caller, room, false)?["owner_id"]
+            .as_str()
+            .unwrap_or(caller)
+            .to_string();
         let engine = self.clone();
-        let owner = owner.to_string();
         let room = room.to_string();
         let mut work = self.work.lock().unwrap();
         if self.closed.load(std::sync::atomic::Ordering::Acquire) {
@@ -696,9 +808,10 @@ impl RoomEngine {
         use futures_util::StreamExt;
         while interrupts.next().await.is_some() {}
     }
-    pub async fn stop(&self, owner: &str, room: &str) -> Result<bool> {
-        get(&self.home, owner, room, false)?;
-        self.stop_work(owner, room, false).await
+    pub async fn stop(&self, caller: &str, room: &str) -> Result<bool> {
+        let row = get(&self.home, caller, room, false)?;
+        self.stop_work(row["owner_id"].as_str().unwrap_or(caller), room, false)
+            .await
     }
     /// Internal lifecycle operations may stop rooms whose owner has been disabled.
     pub async fn stop_internal(&self, room: &str) -> Result<bool> {
@@ -767,13 +880,38 @@ impl RoomEngine {
         payload: Value,
     ) -> Result<Value> {
         let event = append(&self.home, owner, room, kind, actor_kind, actor, payload)?;
-        self.events.emit(
+        self.broadcast(
             owner,
-            None,
+            room,
             "hexbot.rooms.event",
             json!({"room_id":room,"event":event}),
         );
         Ok(event)
+    }
+    /// Human members watch the room's bots work live. Bots run as the owner,
+    /// so the owner alone sees and answers their approvals and questions.
+    pub fn share(&self, room: &str) -> Result<()> {
+        let audience = audience(&self.home, room)?;
+        for session in rows(
+            &db::open(&self.home)?,
+            "SELECT r.owner_id,COALESCE(NULLIF(u.display_name,''),r.owner_id) AS owner_name,s.live_session_id FROM room_sessions s JOIN rooms r ON r.id=s.room_id LEFT JOIN users u ON u.id=r.owner_id WHERE s.room_id=? AND s.live_session_id IS NOT NULL",
+            &[&room],
+        )? {
+            let owner = required(&session, "owner_id")?;
+            let viewers = audience.iter().filter(|u| *u != owner).cloned().collect();
+            self.events.share(
+                owner,
+                required(&session, "live_session_id")?,
+                viewers,
+                required(&session, "owner_name")?,
+            );
+        }
+        Ok(())
+    }
+    fn broadcast(&self, owner: &str, room: &str, kind: &str, payload: Value) {
+        for user in audience(&self.home, room).unwrap_or_else(|_| vec![owner.into()]) {
+            self.events.emit(&user, None, kind, payload.clone());
+        }
     }
     /// Processes durable triggers in sequence; only one worker owns a room.
     pub async fn drain(&self, owner: &str, room_id: &str) -> Result<()> {
@@ -880,7 +1018,11 @@ impl RoomEngine {
         let rid = room["id"].as_str().unwrap();
         let conn = db::open(&self.home)?;
         let last_human:i64=conn.query_row("SELECT COALESCE(MAX(seq),0) FROM room_events WHERE room_id=? AND kind='message.user' AND seq<=?",params![rid,seq],|r|r.get(0))?;
-        let (turns,tokens):(i64,i64)=conn.query_row("SELECT COUNT(*),COALESCE(SUM(input_tokens+output_tokens),0) FROM room_turns WHERE room_id=? AND trigger_seq>=? AND status IN ('running','complete')",params![rid,last_human],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        let (turns, tokens): (i64, i64) = conn.query_row(
+            "SELECT COUNT(*),COALESCE(SUM(input_tokens+output_tokens),0) FROM room_turns WHERE room_id=? AND trigger_seq>=? AND status IN ('running','complete')",
+            params![rid, last_human],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
         let mut limits = json!({"room_bot_turns_per_human_turn":8});
         for row in rows(&conn, "SELECT key,value FROM settings", &[])? {
             if let (Some(k), Some(v)) = (row["key"].as_str(), row["value"].as_str())
@@ -889,14 +1031,16 @@ impl RoomEngine {
                 limits[k] = v;
             }
         }
-        if let Some(overrides) = room["limits"].as_object() {
-            for (k, v) in overrides {
-                limits[k] = v.clone();
-            }
-        }
+        // A room overrides only its own per-message caps; null keeps the deployment setting.
+        let room_cap =
+            |key: &str, setting: &str| room["limits"][key].as_i64().or(limits[setting].as_i64());
         let bot_usage = usage(&self.home, bot, None, Some(now() - now() % 86400.0));
         let day = now() - now() % 86400.0;
-        let native_daily:i64=crate::runtime_store::open(&self.home)?.query_row("SELECT COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_write_tokens),0) FROM native_usage WHERE owner_id=? AND timestamp>=?",params![owner,day],|r|r.get(0))?;
+        let native_daily: i64 = crate::runtime_store::open(&self.home)?.query_row(
+            "SELECT COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_write_tokens),0) FROM native_usage WHERE owner_id=? AND timestamp>=?",
+            params![owner, day],
+            |r| r.get(0),
+        )?;
         let routes = rows(
             &conn,
             "SELECT bot,id AS session FROM sections WHERE owner_id=?1 UNION SELECT rs.bot,rs.stored_session_id AS session FROM room_sessions rs JOIN room_members rm ON rm.room_id=rs.room_id AND rm.member_kind='bot' AND rm.member_id=rs.bot WHERE rm.added_by=?1",
@@ -925,12 +1069,15 @@ impl RoomEngine {
             (
                 "room_bot_turns_per_human_turn",
                 turns,
-                limits["room_bot_turns_per_human_turn"].as_i64(),
+                room_cap("bot_turns_per_human_turn", "room_bot_turns_per_human_turn"),
             ),
             (
                 "room_budget_tokens_per_human_turn",
                 tokens,
-                limits["room_budget_tokens_per_human_turn"].as_i64(),
+                room_cap(
+                    "budget_tokens_per_human_turn",
+                    "room_budget_tokens_per_human_turn",
+                ),
             ),
             (
                 "bot_daily_token_budget",
@@ -1003,7 +1150,11 @@ impl RoomEngine {
                 .optional()?
                 .unwrap_or_default();
             let text = render_prompt(room, bot, &delta, &memory, collecting);
-            let turn:String=conn.query_row("SELECT id FROM room_turns WHERE room_id=? AND bot=? AND trigger_seq=? AND status='running' ORDER BY started_at DESC LIMIT 1",params![rid,bot,event["seq"].as_i64()],|r|r.get(0))?;
+            let turn: String = conn.query_row(
+                "SELECT id FROM room_turns WHERE room_id=? AND bot=? AND trigger_seq=? AND status='running' ORDER BY started_at DESC LIMIT 1",
+                params![rid, bot, event["seq"].as_i64()],
+                |r| r.get(0),
+            )?;
             let before = usage(&self.home, bot, Some(&stored), None);
             (stored, delta, text, turn, before)
         };
@@ -1014,6 +1165,7 @@ impl RoomEngine {
                 "UPDATE room_sessions SET live_session_id=? WHERE room_id=? AND bot=?",
                 params![live, rid, bot],
             )?;
+            self.share(rid)?;
         }
         self.emit(
             owner,
@@ -1023,9 +1175,9 @@ impl RoomEngine {
             Some(bot),
             json!({"turn_id":turn,"trigger_seq":event["seq"],"live_session_id":live}),
         )?;
-        self.events.emit(
+        self.broadcast(
             owner,
-            None,
+            rid,
             "hexbot.rooms.turn",
             json!({"room_id":rid,"bot":bot,"live_session_id":live,"status":"running"}),
         );
@@ -1042,10 +1194,20 @@ impl RoomEngine {
             "failed"
         };
         let after = usage(&self.home, bot, Some(&stored), None);
-        db::open(&self.home)?.execute("UPDATE room_turns SET finished_at=?,status=?,input_tokens=?,output_tokens=?,cost_usd=? WHERE id=?",params![now(),status,(after.0-before.0).max(0),(after.1-before.1).max(0),(after.2-before.2).max(0.0),turn])?;
-        self.events.emit(
+        db::open(&self.home)?.execute(
+            "UPDATE room_turns SET finished_at=?,status=?,input_tokens=?,output_tokens=?,cost_usd=? WHERE id=?",
+            params![
+                now(),
+                status,
+                (after.0 - before.0).max(0),
+                (after.1 - before.1).max(0),
+                (after.2 - before.2).max(0.0),
+                turn
+            ],
+        )?;
+        self.broadcast(
             owner,
-            None,
+            rid,
             "hexbot.rooms.turn",
             json!({"room_id":rid,"bot":bot,"live_session_id":live,"status":status}),
         );
@@ -1056,7 +1218,10 @@ impl RoomEngine {
                     .and_then(|e| e["seq"].as_i64())
                     .or(event["seq"].as_i64())
                     .unwrap_or(0);
-                db::open(&self.home)?.execute("UPDATE room_members SET last_read_seq=MAX(last_read_seq,?) WHERE room_id=? AND member_kind='bot' AND member_id=?",params![cursor,rid,bot])?;
+                db::open(&self.home)?.execute(
+                    "UPDATE room_members SET last_read_seq=MAX(last_read_seq,?) WHERE room_id=? AND member_kind='bot' AND member_id=?",
+                    params![cursor, rid, bot],
+                )?;
                 let answer = answer.trim();
                 if answer.is_empty() || answer.eq_ignore_ascii_case("(pass)") {
                     return Ok(None);
@@ -1092,7 +1257,21 @@ impl RoomEngine {
 
 fn usage(home: &Path, bot: &str, stored: Option<&str>, since: Option<f64>) -> (i64, i64, f64) {
     let legacy = legacy_usage(home, bot, stored, since);
-    let native=crate::runtime_store::open(home).and_then(|conn| Ok(conn.query_row("SELECT COALESCE(SUM(input_tokens+cache_read_tokens+cache_write_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(cost),0) FROM native_usage WHERE bot=?1 AND (?2 IS NULL OR session_id=?2) AND (?3 IS NULL OR timestamp>=?3)",params![bot,stored,since],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,f64>(2)?)))?)).unwrap_or((0,0,0.0));
+    let native = crate::runtime_store::open(home)
+        .and_then(|conn| {
+            Ok(conn.query_row(
+                "SELECT COALESCE(SUM(input_tokens+cache_read_tokens+cache_write_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(cost),0) FROM native_usage WHERE bot=?1 AND (?2 IS NULL OR session_id=?2) AND (?3 IS NULL OR timestamp>=?3)",
+                params![bot, stored, since],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, f64>(2)?,
+                    ))
+                },
+            )?)
+        })
+        .unwrap_or((0, 0, 0.0));
     (
         legacy.0 + native.0,
         legacy.1 + native.1,
@@ -1113,11 +1292,56 @@ fn legacy_usage(
             home.join("profiles").join(bot).join("state.db"),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?;
-        conn.query_row("SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(CASE WHEN actual_cost_usd>0 THEN actual_cost_usd ELSE estimated_cost_usd END),0) FROM session_model_usage WHERE (?1 IS NULL OR session_id=?1) AND (?2 IS NULL OR last_seen>=?2)",params![stored,since],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))
+        conn.query_row(
+            "SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(CASE WHEN actual_cost_usd>0 THEN actual_cost_usd ELSE estimated_cost_usd END),0) FROM session_model_usage WHERE (?1 IS NULL OR session_id=?1) AND (?2 IS NULL OR last_seen>=?2)",
+            params![stored, since],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
     };
     read().unwrap_or((0, 0, 0.0))
 }
 
+/// Remove a bot the owner chose; removing the last bot deletes the room.
+/// Callers check ownership first.
+pub fn remove_bot(home: &Path, owner: &str, room: &str, bot: &str) -> Result<Value> {
+    let conn = db::open(home)?;
+    if conn.execute(
+        "UPDATE room_members SET left_at=? WHERE room_id=? AND member_kind='bot' AND member_id=? AND left_at IS NULL",
+        params![now(), room, bot],
+    )? == 0
+    {
+        return Err(Error::new(
+            4232,
+            format!("active room member not found: {bot}"),
+        ));
+    }
+    let event = append(
+        home,
+        owner,
+        room,
+        "member.left",
+        "human",
+        Some(owner),
+        json!({"bot":bot}),
+    )?;
+    let mut result = get(home, owner, room, false)?;
+    if active_bots(&result).is_empty() {
+        delete(home, room)?;
+        result["deleted"] = json!(true);
+        return Ok(json!({"room":result,"event":event}));
+    }
+    conn.execute(
+        "UPDATE rooms SET main_bot=NULL WHERE id=? AND main_bot=?",
+        params![room, bot],
+    )?;
+    Ok(json!({"room":get(home,owner,room,false)?,"event":event}))
+}
+/// Delete a room and its bots' room transcripts. Callers check ownership first.
+pub fn delete(home: &Path, room: &str) -> Result<Value> {
+    purge_transcripts(home, room)?;
+    db::open(home)?.execute("DELETE FROM rooms WHERE id=?", [room])?;
+    Ok(json!({"deleted":true}))
+}
 fn purge_transcripts(home: &Path, room: &str) -> Result<()> {
     for row in rows(
         &db::open(home)?,
@@ -1125,6 +1349,27 @@ fn purge_transcripts(home: &Path, room: &str) -> Result<()> {
         &[&room],
     )? {
         crate::runtime_store::delete(home, required(&row, "stored_session_id")?)?;
+    }
+    Ok(())
+}
+/// Room limits carry the keys the room settings save, each a count or null.
+fn validate_limits(p: &Value) -> Result<()> {
+    let Some(limits) = p.get("limits") else {
+        return Ok(());
+    };
+    let valid = limits.as_object().is_some_and(|limits| {
+        limits.iter().all(|(key, value)| {
+            matches!(
+                key.as_str(),
+                "bot_turns_per_human_turn" | "budget_tokens_per_human_turn"
+            ) && (value.is_null() || value.as_u64().is_some())
+        })
+    });
+    if !valid {
+        return Err(Error::new(
+            4202,
+            "limits takes bot_turns_per_human_turn and budget_tokens_per_human_turn, each a whole number or null",
+        ));
     }
     Ok(())
 }

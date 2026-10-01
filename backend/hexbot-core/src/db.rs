@@ -111,8 +111,6 @@ pub fn open(home: &Path) -> Result<Connection> {
             .create(home)?;
         fs::set_permissions(home, fs::Permissions::from_mode(0o700))?;
     }
-    #[cfg(not(unix))]
-    fs::create_dir_all(home)?;
     let database = home.join("hexbot.db");
     if fs::symlink_metadata(&database).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(Error::new(5200, "database must not be a symlink"));

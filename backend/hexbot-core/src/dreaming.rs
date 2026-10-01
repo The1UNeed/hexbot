@@ -16,6 +16,8 @@ use std::{
 use tokio::{sync::watch, task::JoinHandle};
 
 const SECTION_CAP: usize = 12_000;
+const DIGEST_CAP: usize = 60_000;
+const METADATA_CAP: usize = 256;
 const ROOM_MEMORY_CAP: usize = 3_000;
 pub struct Dreaming {
     home: PathBuf,
@@ -79,6 +81,9 @@ fn cap(text: &str, limit: usize) -> String {
             .collect::<String>()
     )
 }
+fn metadata(text: &str) -> String {
+    text.chars().take(METADATA_CAP).collect()
+}
 fn read_memory(home: &Path, bot: &str) -> Result<String> {
     common::identifier(bot)?;
     match fs::read_to_string(home.join("profiles").join(bot).join("memories/MEMORY.md")) {
@@ -91,7 +96,8 @@ fn last_finished(home: &Path, bot: &str, room: Option<&str>) -> Result<f64> {
     Ok(db::open(home)?.query_row("SELECT COALESCE(MAX(finished_at),0) FROM dreams WHERE bot=? AND room_id IS ? AND status='complete'",params![bot,room],|r|r.get(0))?)
 }
 
-/// Return bounded transcripts. Archived sections remain part of durable learning.
+/// Return bounded transcripts, newest conversations first when a busy day exceeds one prompt.
+/// Archived sections remain part of durable learning.
 pub fn build_digest(home: &Path, bot: &str, since: f64, room: Option<&str>) -> Result<Value> {
     common::identifier(bot)?;
     let conn = db::open(home)?;
@@ -113,16 +119,23 @@ pub fn build_digest(home: &Path, bot: &str, since: f64, room: Option<&str>) -> R
         )? {
             let id = section["id"].as_str().unwrap_or("");
             let mut transcript = vec![];
+            let mut latest = 0f64;
             let native_exists = if home.join("hexbot-runtime.db").exists() {
-                runtime_store::open(home)?.query_row("SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1) OR EXISTS(SELECT 1 FROM native_messages WHERE session_id=?1)",[id],|row|row.get::<_,bool>(0))?
+                runtime_store::open(home)?.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1) OR EXISTS(SELECT 1 FROM native_messages WHERE session_id=?1)",
+                    [id],
+                    |row| row.get::<_, bool>(0),
+                )?
             } else {
                 false
             };
             if native_exists {
                 for message in runtime_store::history(home, id)? {
-                    if message["timestamp"].as_f64().unwrap_or(0.0) < since {
+                    let at = message["timestamp"].as_f64().unwrap_or(0.0);
+                    if at < since {
                         continue;
                     }
+                    latest = latest.max(at);
                     transcript.push(format!(
                         "{}: {}",
                         message["role"].as_str().unwrap_or("unknown"),
@@ -130,7 +143,13 @@ pub fn build_digest(home: &Path, bot: &str, since: f64, room: Option<&str>) -> R
                     ));
                 }
             } else if let Some(store) = &legacy {
-                let session:Option<String>=store.query_row("SELECT id FROM sessions WHERE session_key=?1 OR id=?1 ORDER BY CASE WHEN session_key=?1 THEN 0 ELSE 1 END LIMIT 1",[id],|row|row.get(0)).optional()?;
+                let session: Option<String> = store
+                    .query_row(
+                        "SELECT id FROM sessions WHERE session_key=?1 OR id=?1 ORDER BY CASE WHEN session_key=?1 THEN 0 ELSE 1 END LIMIT 1",
+                        [id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
                 if let Some(session) = session {
                     for message in common::rows(
                         store,
@@ -141,6 +160,7 @@ pub fn build_digest(home: &Path, bot: &str, since: f64, room: Option<&str>) -> R
                             .as_str()
                             .map(str::to_owned)
                             .unwrap_or_else(|| message["content"].to_string());
+                        latest = latest.max(message["timestamp"].as_f64().unwrap_or(0.0));
                         transcript.push(format!(
                             "{}: {}",
                             message["role"].as_str().unwrap_or("unknown"),
@@ -150,7 +170,7 @@ pub fn build_digest(home: &Path, bot: &str, since: f64, room: Option<&str>) -> R
                 }
             }
             if !transcript.is_empty() {
-                sections.push(json!({"id":id,"title":section["title"],"transcript":cap(&transcript.join("\n"),SECTION_CAP)}));
+                sections.push((latest, json!({"id":metadata(id),"title":metadata(section["title"].as_str().unwrap_or("")),"transcript":cap(&transcript.join("\n"),SECTION_CAP)})));
             }
         }
     }
@@ -166,10 +186,14 @@ pub fn build_digest(home: &Path, bot: &str, since: f64, room: Option<&str>) -> R
         }
         let rows = common::rows(
             &conn,
-            "SELECT kind,actor_id,payload_json FROM room_events WHERE room_id=? AND created_at>=? ORDER BY seq",
+            "SELECT kind,actor_id,payload_json,created_at FROM room_events WHERE room_id=? AND created_at>=? ORDER BY seq",
             &[&id, &since],
         )?;
         if !rows.is_empty() {
+            let latest = rows
+                .iter()
+                .filter_map(|e| e["created_at"].as_f64())
+                .fold(0f64, f64::max);
             let transcript = rows
                 .iter()
                 .map(|e| {
@@ -184,10 +208,41 @@ pub fn build_digest(home: &Path, bot: &str, since: f64, room: Option<&str>) -> R
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            rooms.push(json!({"id":id,"name":r["name"],"transcript":cap(&transcript,SECTION_CAP)}));
+            rooms.push((
+                latest,
+                json!({"id":metadata(id),"name":metadata(r["name"].as_str().unwrap_or("")),"transcript":cap(&transcript,SECTION_CAP)}),
+            ));
         }
     }
-    Ok(json!({"bot":bot,"since":since,"sections":sections,"rooms":rooms}))
+    // A failed dream never advances `since`, so an unbounded digest would fail every night.
+    let mut entries: Vec<(f64, bool, Value)> = sections
+        .into_iter()
+        .map(|(at, v)| (at, false, v))
+        .chain(rooms.into_iter().map(|(at, v)| (at, true, v)))
+        .collect();
+    let total = entries.len();
+    let digest_bot = metadata(bot);
+    entries.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut used =
+        json!({"bot":digest_bot,"since":since,"sections":[],"rooms":[],"omitted_conversations":total})
+            .to_string()
+            .len();
+    entries.retain(|(_, _, v)| {
+        let size = v.to_string().len() + 1;
+        if used + size > DIGEST_CAP {
+            return false;
+        }
+        used += size;
+        true
+    });
+    let omitted = total - entries.len();
+    entries.reverse();
+    let (rooms, sections): (Vec<_>, Vec<_>) = entries.into_iter().partition(|e| e.1);
+    let values =
+        |entries: Vec<(f64, bool, Value)>| entries.into_iter().map(|e| e.2).collect::<Vec<_>>();
+    Ok(
+        json!({"bot":digest_bot,"since":since,"sections":values(sections),"rooms":values(rooms),"omitted_conversations":omitted}),
+    )
 }
 
 pub fn record_dream(
@@ -468,8 +523,14 @@ impl Dreaming {
         if ticker.is_some() {
             return Ok(());
         }
-        runtime_store::open(&self.home)?.execute("UPDATE native_jobs SET job_json=json_set(job_json,'$.state',CASE WHEN json_extract(job_json,'$.enabled')=0 THEN 'paused' ELSE 'scheduled' END,'$.last_status','error','$.last_error','Daemon stopped before the job finished') WHERE json_extract(job_json,'$.state')='running'",[])?;
-        db::open(&self.home)?.execute("UPDATE dreams SET status='failed',finished_at=?,summary='Daemon stopped before the dream finished' WHERE status='running'",[common::now()])?;
+        runtime_store::open(&self.home)?.execute(
+            "UPDATE native_jobs SET job_json=json_set(job_json,'$.state',CASE WHEN json_extract(job_json,'$.enabled')=0 THEN 'paused' ELSE 'scheduled' END,'$.last_status','error','$.last_error','Daemon stopped before the job finished') WHERE json_extract(job_json,'$.state')='running'",
+            [],
+        )?;
+        db::open(&self.home)?.execute(
+            "UPDATE dreams SET status='failed',finished_at=?,summary='Daemon stopped before the dream finished' WHERE status='running'",
+            [common::now()],
+        )?;
         self.import_jobs()?;
         let this = self.clone();
         let mut stop = self.stop.subscribe();
@@ -507,12 +568,21 @@ impl Dreaming {
         .remove(0))
     }
     fn job(&self, owner: &str, bot: &str, id: &str) -> Result<Value> {
-        let row:Option<String>=runtime_store::open(&self.home)?.query_row("SELECT job_json FROM native_jobs WHERE owner=? AND bot=? AND (id=? OR json_extract(job_json,'$.name')=?)",params![owner,bot,id,id],|r|r.get(0)).optional()?;
+        let row: Option<String> = runtime_store::open(&self.home)?
+            .query_row(
+                "SELECT job_json FROM native_jobs WHERE owner=? AND bot=? AND (id=? OR json_extract(job_json,'$.name')=?)",
+                params![owner, bot, id, id],
+                |r| r.get(0),
+            )
+            .optional()?;
         row.map(|s| serde_json::from_str(&s).map_err(|e| Error::new(5200, e.to_string())))
             .unwrap_or_else(|| Err(Error::new(4240, "scheduled job not found")))
     }
     fn save_job(&self, owner: &str, bot: &str, job: &Value) -> Result<()> {
-        runtime_store::open(&self.home)?.execute("INSERT INTO native_jobs(id,owner,bot,job_json) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET job_json=excluded.job_json",params![common::required(job,"id")?,owner,bot,job.to_string()])?;
+        runtime_store::open(&self.home)?.execute(
+            "INSERT INTO native_jobs(id,owner,bot,job_json) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET job_json=excluded.job_json",
+            params![common::required(job, "id")?, owner, bot, job.to_string()],
+        )?;
         Ok(())
     }
     fn jobs(&self, owner: &str, bot: &str) -> Result<Vec<Value>> {
@@ -565,11 +635,12 @@ impl Dreaming {
                     if let Some(ids) = job["context_from"].as_array() {
                         job["context_from"] = json!(
                             ids.iter()
-                                .map(|id| id
-                                    .as_str()
-                                    .map(|id| format!("{name}-{id}"))
-                                    .map(Value::String)
-                                    .unwrap_or_else(|| id.clone()))
+                                .map(|id| {
+                                    id.as_str()
+                                        .map(|id| format!("{name}-{id}"))
+                                        .map(Value::String)
+                                        .unwrap_or_else(|| id.clone())
+                                })
                                 .collect::<Vec<_>>()
                         );
                     }
@@ -592,7 +663,10 @@ impl Dreaming {
             let id = common::id();
             let now = common::now();
             let before = read_memory(&self.home, bot)?;
-            db::open(&self.home)?.execute("INSERT INTO dreams(id,bot,room_id,started_at,status,summary,owner_id,memory_before) VALUES (?,?,?,?,'running','',?,?)",params![id,bot,room,now,owner,before])?;
+            db::open(&self.home)?.execute(
+                "INSERT INTO dreams(id,bot,room_id,started_at,status,summary,owner_id,memory_before) VALUES (?,?,?,?,'running','',?,?)",
+                params![id, bot, room, now, owner, before],
+            )?;
             Ok(
                 json!({"id":id,"bot":bot,"owner":owner,"room_id":room,"started_at":now,"stored":format!("dream-{id}")}),
             )
@@ -633,7 +707,13 @@ impl Dreaming {
                 .run_hidden_restricted(owner, bot, stored, &prompt, &["memory"])
                 .await
         };
-        let result = tokio::select! {result=result=>result,_ = wait_stop(&mut stop)=>{let _=self.runtime.interrupt_stored(owner,stored).await;Err(Error::new(5240,"dream interrupted during shutdown"))}};
+        let result = tokio::select! {
+            result = result => result,
+            _ = wait_stop(&mut stop) => {
+                let _ = self.runtime.interrupt_stored(owner, stored).await;
+                Err(Error::new(5240, "dream interrupted during shutdown"))
+            }
+        };
         let (status, output) = match result {
             Ok(text) => ("complete", text),
             Err(error) => ("failed", error.message),
@@ -819,7 +899,14 @@ impl Dreaming {
                 let settings = settings::get(&self.home)?;
                 let botrow = self.bot(owner, bot)?;
                 let enabled = settings["dream_enabled"] == true && botrow["dream_enabled"] == 1;
-                let last=common::rows(&db::open(&self.home)?,"SELECT * FROM dreams WHERE bot=? AND room_id IS NULL ORDER BY started_at DESC LIMIT 1",&[&bot])?.into_iter().next().unwrap_or(Value::Null);
+                let last = common::rows(
+                    &db::open(&self.home)?,
+                    "SELECT * FROM dreams WHERE bot=? AND room_id IS NULL ORDER BY started_at DESC LIMIT 1",
+                    &[&bot],
+                )?
+                .into_iter()
+                .next()
+                .unwrap_or(Value::Null);
                 let at = settings["dream_time"].as_str().unwrap_or("03:00");
                 let (h, m) =
                     clock_time(at).ok_or_else(|| Error::new(4202, "invalid dream time"))?;
@@ -832,9 +919,17 @@ impl Dreaming {
                 } else {
                     None
                 };
-                Ok(
-                    json!({"enabled":enabled,"last_run_at":last["started_at"].as_f64().map(now_iso),"next_run_at":next,"last_status":last["status"],"last_error":if last["status"]=="failed"{last["summary"].clone()}else{Value::Null}}),
-                )
+                Ok(json!({
+                    "enabled": enabled,
+                    "last_run_at": last["started_at"].as_f64().map(now_iso),
+                    "next_run_at": next,
+                    "last_status": last["status"],
+                    "last_error": if last["status"] == "failed" {
+                        last["summary"].clone()
+                    } else {
+                        Value::Null
+                    }
+                }))
             }
             "hexbot.dreaming.run_now" => {
                 let context = self.start_dream(owner, bot, None)?;
@@ -876,7 +971,19 @@ impl Dreaming {
             .single()
             .map(|d| d.format("%-d %B %Y, %H:%M").to_string())
             .unwrap_or_default();
-        let write=db::open(&self.home)?.execute("INSERT INTO dreams(id,bot,started_at,finished_at,status,summary,owner_id,memory_before,memory_after) VALUES (?,?,?,?,'complete',?,?,?,?)",params![restored,bot,now,now,format!("Restored the memory from before the dream of {when}."),owner,replaced,before]);
+        let write = db::open(&self.home)?.execute(
+            "INSERT INTO dreams(id,bot,started_at,finished_at,status,summary,owner_id,memory_before,memory_after) VALUES (?,?,?,?,'complete',?,?,?,?)",
+            params![
+                restored,
+                bot,
+                now,
+                now,
+                format!("Restored the memory from before the dream of {when}."),
+                owner,
+                replaced,
+                before
+            ],
+        );
         if let Err(error) = write {
             let _ = MemoryStore::new(self.home.clone()).set_bot(owner, bot, &replaced);
             return Err(error.into());
@@ -945,7 +1052,7 @@ impl Dreaming {
         };
         let path = fs::canonicalize(path)?;
         let workspace = match workdir {
-            Some(dir) => fs::canonicalize(dir)?,
+            Some(dir) => common::resolve_workdir(&self.home, dir)?,
             None => crate::native_tools::workdir(&self.home, bot)?,
         };
         let scripts = self.home.join("profiles").join(bot).join("scripts");
@@ -969,6 +1076,20 @@ impl Dreaming {
         };
         let artifacts = self.home.join("profiles").join(bot).join("artifacts");
         fs::create_dir_all(&artifacts)?;
+        let mode: Option<String> = db::open(&self.home)?
+            .query_row("SELECT approval_mode FROM bots WHERE name=?", [bot], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .optional()?
+            .flatten()
+            .filter(|m: &String| matches!(m.as_str(), "manual" | "smart" | "off"));
+        let mode = mode.unwrap_or_else(|| {
+            settings::get(&self.home)
+                .ok()
+                .and_then(|s| s["approval_mode"].as_str().map(str::to_owned))
+                .unwrap_or_else(|| "manual".to_owned())
+        });
+        crate::credentials::require_isolation(&mode)?;
         let mut command =
             crate::credentials::isolated_command(&self.home, &program, &[workspace, artifacts])?;
         if matches!(
@@ -1039,25 +1160,15 @@ impl Dreaming {
         job: &mut Value,
         extra: Option<String>,
     ) -> Result<Option<String>> {
-        validate_job(job)?;
-        let deliver = job["deliver"].as_str().unwrap_or("local");
-        if !matches!(deliver, "local" | "") {
-            return Err(Error::new(
-                5240,
-                format!("delivery target {deliver} is unavailable in this daemon"),
-            ));
-        }
+        validate_job(&self.home, job)?;
         let cwd = job["workdir"]
             .as_str()
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
         let monitor = if let Some(url) = job["monitor_url"].as_str().filter(|s| !s.is_empty()) {
-            let response = crate::http::client(30, 10)
-                .map_err(|e| Error::new(5240, e.to_string()))?
-                .get(url)
-                .send()
-                .await
-                .map_err(|e| Error::new(5240, e.to_string()))?
+            // Same network policy as the web tools: every redirect hop is checked and pinned.
+            let response = common::safe_get(url, common::allow_private_urls(&self.home, bot)?)
+                .await?
                 .error_for_status()
                 .map_err(|e| Error::new(5240, e.to_string()))?;
             let body = crate::http::bytes(
@@ -1140,7 +1251,9 @@ impl Dreaming {
         if let Some(extra) = extra {
             prompt.push_str(&format!("\n\nFor this run only:\n{extra}"));
         }
-        prompt.push_str("\n\nThis is an autonomous scheduled job. Finish with the result; do not ask the user questions. Output is saved locally.");
+        prompt.push_str(
+            "\n\nThis is an autonomous scheduled job. Finish with the result; do not ask the user questions. Output is saved locally.",
+        );
         let mut options = json!({});
         for key in ["model", "provider", "workdir", "reasoning_effort"] {
             if let Some(value) = job.get(key) {
@@ -1177,7 +1290,16 @@ impl Dreaming {
         let id = job["id"].as_str().unwrap_or("").to_owned();
         let stored = format!("cron-{id}-{}", common::id());
         let mut stop = self.stop.subscribe();
-        let result = tokio::select! {result=self.job_output(owner,bot,&stored,&mut job,extra)=>result,_=wait_stop(&mut stop)=>{let _=self.runtime.interrupt_stored(owner,&stored).await;Err(Error::new(5240,"scheduled job interrupted during shutdown"))}};
+        let result = tokio::select! {
+            result = self.job_output(owner, bot, &stored, &mut job, extra) => result,
+            _ = wait_stop(&mut stop) => {
+                let _ = self.runtime.interrupt_stored(owner, &stored).await;
+                Err(Error::new(
+                    5240,
+                    "scheduled job interrupted during shutdown",
+                ))
+            }
+        };
         let _ = self.runtime.close_stored(owner, &stored).await;
         // Merge completion fields into the newest job so pause/update during a run survives.
         if let Ok(mut latest) = self.job(owner, bot, &id) {
@@ -1268,9 +1390,23 @@ impl Dreaming {
                 let schedule = parse_schedule(common::required(p, "schedule")?, common::now())?;
                 let next = next_run(&schedule, common::now())?
                     .ok_or_else(|| Error::new(4202, "one-shot schedule is in the past"))?;
-                let mut job = json!({"id":common::id(),"name":p["name"].as_str().unwrap_or("Scheduled job"),"prompt":p["prompt"].as_str().unwrap_or(""),"schedule":schedule,"enabled":true,"state":"scheduled","created_at":now_iso(common::now()),"next_run_at":now_iso(next),"last_run_at":null,"last_status":null,"last_error":null,"repeat":{"times":p["repeat"],"completed":0},"deliver":"local"});
+                let mut job = json!({
+                    "id": common::id(),
+                    "name": p["name"].as_str().unwrap_or("Scheduled job"),
+                    "prompt": p["prompt"].as_str().unwrap_or(""),
+                    "schedule": schedule,
+                    "enabled": true,
+                    "state": "scheduled",
+                    "created_at": now_iso(common::now()),
+                    "next_run_at": now_iso(next),
+                    "last_run_at": null,
+                    "last_status": null,
+                    "last_error": null,
+                    "repeat": { "times": p["repeat"], "completed": 0 },
+                    "deliver": "local"
+                });
                 copy_job_options(&mut job, p)?;
-                validate_job(&job)?;
+                validate_job(&self.home, &job)?;
                 self.save_job(owner, bot, &job)?;
                 Ok(
                     json!({"success":true,"job":job,"note":"Output is saved locally; it is not delivered into this conversation."}),
@@ -1320,7 +1456,7 @@ impl Dreaming {
                         .ok_or_else(|| Error::new(4202, "one-shot schedule is in the past"))?;
                     job["next_run_at"] = json!(now_iso(next));
                 }
-                validate_job(&job)?;
+                validate_job(&self.home, &job)?;
                 self.save_job(owner, bot, &job)?;
                 Ok(json!({"success":true,"job":job}))
             }
@@ -1341,10 +1477,8 @@ fn copy_job_options(job: &mut Value, p: &Value) -> Result<()> {
         "continuity",
         "enabled_toolsets",
         "workdir",
-        "attach_to_session",
         "model",
         "provider",
-        "base_url",
         "reasoning_effort",
     ] {
         if let Some(value) = p.get(key) {
@@ -1369,7 +1503,7 @@ fn copy_job_options(job: &mut Value, p: &Value) -> Result<()> {
     }
     Ok(())
 }
-fn validate_job(job: &Value) -> Result<()> {
+fn validate_job(home: &Path, job: &Value) -> Result<()> {
     if !matches!(job["deliver"].as_str(), None | Some("local" | "")) {
         return Err(Error::new(
             4202,
@@ -1412,21 +1546,21 @@ fn validate_job(job: &Value) -> Result<()> {
     {
         return Err(Error::new(4202, "monitor and no_agent cannot be combined"));
     }
-    for key in ["base_url"] {
-        if job[key].as_str().is_some_and(|s| !s.is_empty()) {
-            return Err(Error::new(
-                4202,
-                format!("scheduled {key} overrides are not available; configure a dedicated bot"),
-            ));
-        }
-    }
-    if let Some(cwd) = job["workdir"].as_str().filter(|s| !s.is_empty())
-        && (!Path::new(cwd).is_absolute() || !Path::new(cwd).is_dir())
-    {
+    // Legacy jobs.json entries can carry base_url or attach_to_session; the tool cannot set them.
+    if job["base_url"].as_str().is_some_and(|s| !s.is_empty()) {
         return Err(Error::new(
             4202,
-            "scheduled workdir must be an existing absolute directory",
+            "scheduled base_url overrides are not available; configure a dedicated bot",
         ));
+    }
+    if let Some(cwd) = job["workdir"].as_str().filter(|s| !s.is_empty()) {
+        if !Path::new(cwd).is_absolute() || !Path::new(cwd).is_dir() {
+            return Err(Error::new(
+                4202,
+                "scheduled workdir must be an existing absolute directory",
+            ));
+        }
+        common::check_workdir(home, cwd)?;
     }
     if let Some(level) = job["reasoning_effort"].as_str().filter(|s| !s.is_empty())
         && !["off", "minimal", "low", "medium", "high", "xhigh"].contains(&level)
@@ -1443,7 +1577,34 @@ fn validate_job(job: &Value) -> Result<()> {
 }
 
 pub fn tool_descriptor() -> Value {
-    json!({"name":"cronjob_manage","label":"Scheduled jobs","description":"Create and manage local scheduled jobs. Actions: create, list, update, pause, resume, remove, run. Jobs run in a fresh session. Output is saved locally.","parameters":{"type":"object","properties":{"action":{"type":"string"},"job_id":{"type":"string"},"prompt":{"type":"string"},"schedule":{"type":"string"},"name":{"type":"string"},"repeat":{"type":"integer"},"deliver":{"type":"string"},"include_disabled":{"type":"boolean"},"skills":{"type":"array","items":{"type":"string"}},"script":{"type":"string"},"monitor":{"type":"string"},"no_agent":{"type":"boolean"},"context_from":{"type":"array","items":{"type":"string"}},"continuity":{"type":"boolean"},"enabled_toolsets":{"type":"array","items":{"type":"string"}},"workdir":{"type":"string"},"reasoning_effort":{"type":"string"}},"required":["action"]}})
+    json!({
+        "name": "cronjob_manage",
+        "label": "Scheduled jobs",
+        "description": "Create and manage local scheduled jobs. Actions: create, list, update, pause, resume, remove, run. Jobs run in a fresh session. Output is saved locally.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": { "type": "string" },
+                "job_id": { "type": "string" },
+                "prompt": { "type": "string" },
+                "schedule": { "type": "string" },
+                "name": { "type": "string" },
+                "repeat": { "type": "integer" },
+                "deliver": { "type": "string" },
+                "include_disabled": { "type": "boolean" },
+                "skills": { "type": "array", "items": { "type": "string" } },
+                "script": { "type": "string" },
+                "monitor": { "type": "string" },
+                "no_agent": { "type": "boolean" },
+                "context_from": { "type": "array", "items": { "type": "string" } },
+                "continuity": { "type": "boolean" },
+                "enabled_toolsets": { "type": "array", "items": { "type": "string" } },
+                "workdir": { "type": "string" },
+                "reasoning_effort": { "type": "string" }
+            },
+            "required": ["action"]
+        }
+    })
 }
 
 async fn wait_stop(stop: &mut watch::Receiver<bool>) {
@@ -1476,18 +1637,22 @@ impl Drop for ScriptProcess {
     }
 }
 
+// These tests run in Off so they pass without bubblewrap.
 #[cfg(all(test, unix))]
 mod interpreter_tests {
     use super::*;
     #[tokio::test]
     async fn scheduled_script_uses_section_workspace_for_validation_and_execution() {
-        let home = tempfile::tempdir().unwrap();
+        let home = common::TestHome::new();
         db::migrate(home.path()).unwrap();
         db::open(home.path())
             .unwrap()
-            .execute("INSERT INTO bots(name,owner_id) VALUES('owl','local')", [])
+            .execute(
+                "INSERT INTO bots(name,owner_id,approval_mode) VALUES('owl','local','off')",
+                [],
+            )
             .unwrap();
-        let workdir = home.path().join("section-workspace");
+        let workdir = home.workspace();
         fs::create_dir(&workdir).unwrap();
         let script = workdir.join("job.sh");
         fs::write(&script, "printf ok > result; cat result").unwrap();
@@ -1508,15 +1673,28 @@ mod interpreter_tests {
                 .await
                 .is_err()
         );
+        // A workdir inside the home would open it for writes, so the script never runs.
+        let inside = home.path().join("profiles/owl/scripts");
+        fs::create_dir_all(&inside).unwrap();
+        fs::write(inside.join("job.sh"), "printf ok > result").unwrap();
+        let refused = scheduler
+            .script("owl", "job.sh", inside.to_str())
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, 4202);
+        assert!(!inside.join("result").exists());
     }
     #[tokio::test]
     async fn scheduled_python_script_runs_with_the_managed_interpreter() {
         use std::os::unix::fs::PermissionsExt;
-        let home = tempfile::tempdir().unwrap();
+        let home = common::TestHome::new();
         db::migrate(home.path()).unwrap();
         db::open(home.path())
             .unwrap()
-            .execute("INSERT INTO bots(name,owner_id) VALUES('owl','local')", [])
+            .execute(
+                "INSERT INTO bots(name,owner_id,approval_mode) VALUES('owl','local','off')",
+                [],
+            )
             .unwrap();
         fs::create_dir_all(home.path().join("profiles/owl/scripts")).unwrap();
         fs::create_dir(home.path().join("bin")).unwrap();
@@ -1536,7 +1714,7 @@ mod interpreter_tests {
             .unwrap()
             .execute(
                 "UPDATE bots SET workdir=?",
-                [home.path().join("workspace").to_str().unwrap()],
+                [home.workspace().to_str().unwrap()],
             )
             .unwrap();
         let events = EventHub::new();
@@ -1549,13 +1727,13 @@ mod interpreter_tests {
     }
     #[tokio::test]
     async fn scheduled_scripts_reject_paths_outside_scripts_and_workspace() {
-        let home = tempfile::tempdir().unwrap();
+        let home = common::TestHome::new();
         db::migrate(home.path()).unwrap();
         db::open(home.path())
             .unwrap()
             .execute(
-                "INSERT INTO bots(name,owner_id,workdir) VALUES('owl','local',?)",
-                [home.path().join("workspace").to_str().unwrap()],
+                "INSERT INTO bots(name,owner_id,workdir,approval_mode) VALUES('owl','local',?,'off')",
+                [home.workspace().to_str().unwrap()],
             )
             .unwrap();
         fs::create_dir_all(home.path().join("profiles/owl/scripts")).unwrap();
@@ -1583,13 +1761,13 @@ mod interpreter_tests {
     }
     #[tokio::test]
     async fn scheduled_scripts_do_not_receive_provider_credentials() {
-        let home = tempfile::tempdir().unwrap();
+        let home = common::TestHome::new();
         db::migrate(home.path()).unwrap();
         db::open(home.path())
             .unwrap()
             .execute(
-                "INSERT INTO bots(name,owner_id,workdir) VALUES('owl','local',?)",
-                [home.path().join("workspace").to_str().unwrap()],
+                "INSERT INTO bots(name,owner_id,workdir,approval_mode) VALUES('owl','local',?,'off')",
+                [home.workspace().to_str().unwrap()],
             )
             .unwrap();
         fs::create_dir_all(home.path().join("profiles/owl/scripts")).unwrap();
@@ -1599,18 +1777,21 @@ mod interpreter_tests {
         )
         .unwrap();
         let code = if cfg!(target_os = "macos") {
-            "env\nif echo bad > ../config.yaml; then exit 12; fi\n"
+            format!(
+                "env\nif echo bad > '{}'; then exit 12; fi\n",
+                home.path().join("config.yaml").display()
+            )
         } else {
-            "env"
+            "env".into()
         };
         fs::write(home.path().join("profiles/owl/scripts/env.sh"), code).unwrap();
-        let bin = home.path().join("bin");
-        fs::create_dir_all(&bin).unwrap();
+        let workspace = home.workspace();
+        fs::create_dir_all(&workspace).unwrap();
         let events = EventHub::new();
         let runtime = Runtime::new(home.path().into(), events.clone(), "unused".into()).unwrap();
         let scheduler = Dreaming::new(home.path().into(), runtime, events);
         let output = scheduler
-            .script("owl", "env.sh", bin.to_str())
+            .script("owl", "env.sh", workspace.to_str())
             .await
             .unwrap();
         assert!(!output.contains("AWS_SECRET_ACCESS_KEY"));

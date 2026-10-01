@@ -22,6 +22,7 @@ for (const [file, directory] of [
   const text = readFileSync(new URL(file,root),'utf8');
   assert.ok(text.includes(`./${directory}`));
   assert.ok(!text.includes(`~/.hexbot/${directory}`));
+  assert.ok(!text.includes(`$HOME/.hexbot/${directory}`));
 });
 
 test('flashcard storage uses the current workspace', t => {

@@ -5,12 +5,38 @@ pub(super) struct Child {
     pub stop: watch::Sender<bool>,
 }
 pub(super) fn descriptor() -> Value {
-    json!({"name":"delegate_task","description":"Start isolated subagents in the background. Their results return to this conversation automatically. Use list, steer, or stop to control children.","parameters":{"type":"object","properties":{"tasks":{"type":"array","items":{"type":"object","properties":{"goal":{"type":"string"},"context":{"type":"string"},"output_schema":{"type":"object"}},"required":["goal"]}},"goal":{"type":"string"},"context":{"type":"string"},"action":{"type":"string","enum":["spawn","list","steer","stop"]},"subagent_id":{"type":"string"},"message":{"type":"string"}}}})
+    json!({
+        "name": "delegate_task",
+        "description": "Start isolated subagents in the background. Their results return to this conversation automatically. Use list, steer, or stop to control children.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "goal": { "type": "string" },
+                            "context": { "type": "string" },
+                            "output_schema": { "type": "object" }
+                        },
+                        "required": ["goal"]
+                    }
+                },
+                "goal": { "type": "string" },
+                "context": { "type": "string" },
+                "action": { "type": "string", "enum": ["spawn", "list", "steer", "stop"] },
+                "subagent_id": { "type": "string" },
+                "message": { "type": "string" }
+            }
+        }
+    })
 }
 impl Runtime {
     pub(super) async fn delegate(&self, s: &Arc<Live>, args: &Value) -> Result<Value> {
         let action = args["action"].as_str().unwrap_or("spawn");
         if action == "list" {
+            // Only live children are listed; finished ones already delivered their results.
             let rows = self
                 .children
                 .lock()
@@ -19,17 +45,13 @@ impl Runtime {
                 .filter(|c| c.row["parent"] == s.stored)
                 .map(|c| c.row.clone())
                 .collect::<Vec<_>>();
-            let rows = rows
-                .into_iter()
-                .map(|mut row| {
-                    row["messages"] = json!(
-                        store::history(&self.home, row["subagent_id"].as_str().unwrap_or(""))
-                            .unwrap_or_default()
-                    );
-                    row
-                })
-                .collect::<Vec<_>>();
-            return Ok(json!({"subagents":rows}));
+            let mut result = json!({"count":rows.len(),"subagents":rows});
+            if result["count"] == 0 {
+                result["note"] = json!(
+                    "No subagents are running. Finished children deliver their results as messages; there is nothing to steer or stop."
+                );
+            }
+            return Ok(result);
         }
         if matches!(action, "stop" | "steer") {
             let id = required(args, "subagent_id")?;
@@ -150,29 +172,107 @@ impl Runtime {
                 let id = format!("child-{}", common::id());
                 let (stop, receiver) = watch::channel(false);
                 let row = json!({"subagent_id":id,"parent":s.stored,"goal":task["goal"],"status":"running","depth":current_depth+1,"delegation_id":delegation,"started_at":common::now()});
-                all.insert(id.clone(), Child { row, stop });
-                children.push((id, task, receiver));
+                all.insert(
+                    id.clone(),
+                    Child {
+                        row: row.clone(),
+                        stop,
+                    },
+                );
+                children.push((id, task, receiver, row));
             }
         }
         let ids = children
             .iter()
-            .map(|(id, _, _)| id.clone())
+            .map(|(id, _, _, _)| id.clone())
             .collect::<Vec<_>>();
         let source = s.clone();
-        let workers=children.into_iter().map(|(id,task,mut stop)|{
-            let runtime=runtime.clone();let source=source.clone();let options=options.clone();
-            tokio::spawn(async move {
-                let prompt=format!("Complete this delegated task independently. Return your result to the parent bot.\n\nTask: {}\n\nContext: {}{}",task["goal"].as_str().unwrap_or(""),task["context"].as_str().unwrap_or(""),if task["output_schema"].is_object(){format!("\n\nRespond as JSON matching this schema: {}",task["output_schema"])}else{String::new()});
-                let mut result=tokio::select!{result=runtime.run_hidden_job(&source.owner,&source.bot,&id,&prompt,&options)=>result,_=async{loop{if *stop.borrow(){break;}
-                if stop.changed().await.is_err(){break;}}}=>Err(Error::new(5201,"subagent stopped"))};
-                if task["output_schema"].is_object() && !*stop.borrow() && let Ok(text)=&result {let errors=serde_json::from_str::<Value>(text).map(|v|validate(&v,&task["output_schema"],"$")).unwrap_or_else(|_|vec!["response is not JSON".into()]);
-                    if !errors.is_empty(){let correction=format!("Correct only the JSON form of your final answer. Do not repeat the task or any completed actions. Return JSON matching {}. Validation errors: {}",task["output_schema"],errors.join("; "));result=tokio::select!{result=runtime.run_hidden_job(&source.owner,&source.bot,&id,&correction,&options)=>result,_=stop.changed()=>Err(Error::new(5201,"subagent stopped"))};}
-                }
-                if let Err(error)=runtime.close_stored(&source.owner,&id).await { eprintln!("Could not close delegated bot {id}: {}",error.message); }
-                {let mut all=runtime.children.lock().unwrap();let child=all.get_mut(&id).unwrap();child.row["status"]=json!(if result.is_ok(){"complete"}else{"failed"});child.row["finished_at"]=json!(common::now());match result{Ok(text)=>{child.row["result"]=json!(text);if task["output_schema"].is_object(){let parsed=serde_json::from_str::<Value>(&text);let errors=parsed.as_ref().map(|v|validate(v,&task["output_schema"],"$")).unwrap_or_else(|_|vec!["response is not JSON".into()]);child.row["schema_valid"]=json!(errors.is_empty());child.row["schema_errors"]=json!(errors);}},Err(error)=>child.row["error"]=json!(error.message)};child.row.clone()}
+        let workers = children
+            .into_iter()
+            .map(|(id, task, mut stop, mut row)| {
+                let runtime = runtime.clone();
+                let source = source.clone();
+                let options = options.clone();
+                tokio::spawn(async move {
+                    let schema = if task["output_schema"].is_object() {
+                        format!(
+                            "\n\nRespond as JSON matching this schema: {}",
+                            task["output_schema"]
+                        )
+                    } else {
+                        String::new()
+                    };
+                    let prompt = format!(
+                        "Complete this delegated task independently. Return your result to the parent bot.\n\nTask: {}\n\nContext: {}{}",
+                        task["goal"].as_str().unwrap_or(""),
+                        task["context"].as_str().unwrap_or(""),
+                        schema
+                    );
+                    let mut result = tokio::select! {
+                        result = runtime.run_hidden_job(
+                            &source.owner, &source.bot, &id, &prompt, &options
+                        ) => result,
+                        _ = async {
+                            loop {
+                                if *stop.borrow() {
+                                    break;
+                                }
+                                if stop.changed().await.is_err() {
+                                    break;
+                                }
+                            }
+                        } => Err(Error::new(5201, "subagent stopped")),
+                    };
+                    if task["output_schema"].is_object()
+                        && !*stop.borrow()
+                        && let Ok(text) = &result
+                    {
+                        let errors = serde_json::from_str::<Value>(text)
+                            .map(|v| validate(&v, &task["output_schema"]))
+                            .unwrap_or_else(|_| vec!["response is not JSON".into()]);
+                        if !errors.is_empty() {
+                            let correction = format!(
+                                "Correct only the JSON form of your final answer. Do not repeat the task or any completed actions. Return JSON matching {}. Validation errors: {}",
+                                task["output_schema"],
+                                errors.join("; ")
+                            );
+                            result = tokio::select! {
+                                result = runtime.run_hidden_job(
+                                    &source.owner, &source.bot, &id, &correction, &options
+                                ) => result,
+                                _ = stop.changed() => Err(Error::new(5201, "subagent stopped")),
+                            };
+                        }
+                    }
+                    if let Err(error) = runtime.close_stored(&source.owner, &id).await {
+                        eprintln!("Could not close delegated bot {id}: {}", error.message);
+                    }
+                    row["status"] = json!(if result.is_ok() { "complete" } else { "failed" });
+                    row["finished_at"] = json!(common::now());
+                    match result {
+                        Ok(text) => {
+                            row["result"] = json!(text);
+                            if task["output_schema"].is_object() {
+                                let parsed = serde_json::from_str::<Value>(&text);
+                                let errors = parsed
+                                    .as_ref()
+                                    .map(|v| validate(v, &task["output_schema"]))
+                                    .unwrap_or_else(|_| vec!["response is not JSON".into()]);
+                                row["schema_valid"] = json!(errors.is_empty());
+                                row["schema_errors"] = json!(errors);
+                            }
+                        }
+                        Err(error) => row["error"] = json!(error.message),
+                    };
+                    if let Some(child) = runtime.children.lock().unwrap().get_mut(&id) {
+                        child.row = row.clone();
+                    }
+                    row
+                })
             })
-        }).collect::<Vec<_>>();
+            .collect::<Vec<_>>();
         let source = s.clone();
+        let prune = ids.clone();
         tokio::spawn(async move {
             let results = futures_util::future::join_all(workers)
                 .await
@@ -183,6 +283,14 @@ impl Runtime {
                     )
                 })
                 .collect::<Vec<_>>();
+            // The rows only existed to be steered, stopped, and reported. The report
+            // below carries everything, so nothing keeps them in memory afterwards.
+            {
+                let mut all = runtime.children.lock().unwrap();
+                for id in &prune {
+                    all.remove(id);
+                }
+            }
             let text = format!(
                 "[Delegated tasks completed]\n{}",
                 json!({"results":results})
@@ -191,9 +299,14 @@ impl Runtime {
                 .return_result(&source.owner, &source.bot, &source.stored, &text)
                 .await;
         });
-        Ok(
-            json!({"status":"dispatched","mode":"background","count":ids.len(),"delegation_id":delegation,"subagent_ids":ids,"note":"Subagents are running. Continue working; their results return automatically."}),
-        )
+        Ok(json!({
+            "status": "dispatched",
+            "mode": "background",
+            "count": ids.len(),
+            "delegation_id": delegation,
+            "subagent_ids": ids,
+            "note": "Subagents are running. Continue working; their results return automatically."
+        }))
     }
 }
 struct NoExternalSchemas;
@@ -205,7 +318,7 @@ impl jsonschema::Retrieve for NoExternalSchemas {
         Err("external schema references are disabled".into())
     }
 }
-fn validate(value: &Value, schema: &Value, _path: &str) -> Vec<String> {
+fn validate(value: &Value, schema: &Value) -> Vec<String> {
     match jsonschema::options()
         .with_retriever(NoExternalSchemas)
         .build(schema)
@@ -224,8 +337,23 @@ mod schema_tests {
     use super::*;
     #[test]
     fn structured_output_supports_local_refs_and_full_constraints() {
-        let schema = json!({"$defs":{"item":{"type":"string","pattern":"^[a-z]+$","minLength":2}},"type":"object","required":["items"],"additionalProperties":false,"properties":{"items":{"type":"array","minItems":1,"uniqueItems":true,"items":{"$ref":"#/$defs/item"}}}});
-        assert!(validate(&json!({"items":["good"]}), &schema, "$").is_empty());
+        let schema = json!({
+            "$defs": {
+                "item": { "type": "string", "pattern": "^[a-z]+$", "minLength": 2 }
+            },
+            "type": "object",
+            "required": ["items"],
+            "additionalProperties": false,
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": { "$ref": "#/$defs/item" }
+                }
+            }
+        });
+        assert!(validate(&json!({"items":["good"]}), &schema).is_empty());
         for value in [
             json!({"items":[]}),
             json!({"items":["a"]}),
@@ -233,15 +361,8 @@ mod schema_tests {
             json!({"items":["yes","yes"]}),
             json!({"items":["yes"],"extra":true}),
         ] {
-            assert!(!validate(&value, &schema, "$").is_empty());
+            assert!(!validate(&value, &schema).is_empty());
         }
-        assert!(
-            !validate(
-                &json!(null),
-                &json!({"$ref":"https://example.com/schema"}),
-                "$"
-            )
-            .is_empty()
-        );
+        assert!(!validate(&json!(null), &json!({"$ref":"https://example.com/schema"})).is_empty());
     }
 }

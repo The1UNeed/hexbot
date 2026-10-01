@@ -1,115 +1,10 @@
 use crate::{common, db, services};
-use axum::{
-    Json, Router,
-    extract::{Request, State},
-    http::StatusCode,
-    response::IntoResponse,
-    routing::any,
-};
 use serde_json::{Value, json};
-use std::{fs, sync::Arc, time::Duration};
-use tokio::sync::{Mutex, mpsc};
+use std::fs;
+#[path = "connect_mock.rs"]
+mod connect_mock;
+use connect_mock::{Mock, jwks};
 
-fn jwks() -> Value {
-    json!({"keys":[{"kty":"EC","crv":"P-256","alg":"ES256","use":"sig","kid":"fixture","x":"8S1Ae4m2GSQVPamKe5j4wnP30H1nrXdRwU8bp-hxy6A","y":"yKXIh8cwjwT0p2kwh-DJnxxDq0KXz6zfhfmBuK570P0"}]})
-}
-struct StateData {
-    response: Mutex<Value>,
-    observed: mpsc::UnboundedSender<(String, Value, String)>,
-    bad: Mutex<bool>,
-    binary: Mutex<Vec<u8>>,
-    manifest: Mutex<Value>,
-}
-struct Mock {
-    base: String,
-    data: Arc<StateData>,
-    events: mpsc::UnboundedReceiver<(String, Value, String)>,
-    pending: Vec<(String, Value, String)>,
-    task: tokio::task::JoinHandle<()>,
-}
-impl Drop for Mock {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-async fn handler(
-    State(state): State<Arc<StateData>>,
-    request: Request,
-) -> axum::response::Response {
-    let path = request.uri().path().to_owned();
-    let auth = request
-        .headers()
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_owned();
-    let body = axum::body::to_bytes(request.into_body(), 1024 * 1024)
-        .await
-        .unwrap();
-    let body = serde_json::from_slice(&body).unwrap_or(Value::Null);
-    let _ = state.observed.send((path.clone(), body, auth));
-    if *state.bad.lock().await {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
-    let value = match path.as_str() {
-        "/api/register/start" => {
-            json!({"device_code":"device-code","user_code":"ABCD1234","verify_url":"https://connect.example/approve","interval":1})
-        }
-        "/api/register/poll" => state.response.lock().await.clone(),
-        "/.well-known/jwks.json" => jwks(),
-        "/binary" => return state.binary.lock().await.clone().into_response(),
-        path if path.ends_with("/manifest.json") => state.manifest.lock().await.clone(),
-        _ => json!({"ok":true}),
-    };
-    Json(value).into_response()
-}
-impl Mock {
-    async fn new() -> Self {
-        let (sender, events) = mpsc::unbounded_channel();
-        let data = Arc::new(StateData {
-            response: Mutex::new(json!({"status":"pending"})),
-            observed: sender,
-            bad: Mutex::new(false),
-            binary: Mutex::new(vec![]),
-            manifest: Mutex::new(Value::Null),
-        });
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let app = Router::new()
-            .fallback(any(handler))
-            .with_state(data.clone());
-        let task = tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        Self {
-            base,
-            data,
-            events,
-            pending: vec![],
-            task,
-        }
-    }
-    async fn event(&mut self, path: &str) -> (Value, String) {
-        if let Some(index) = self.pending.iter().position(|item| item.0 == path) {
-            let (_, body, auth) = self.pending.remove(index);
-            return (body, auth);
-        }
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                let (seen, body, auth) = self.events.recv().await.unwrap();
-                if seen == path {
-                    return (body, auth);
-                }
-                self.pending.push((seen, body, auth));
-            }
-        })
-        .await
-        .unwrap()
-    }
-    fn configure(&self, home: &std::path::Path) {
-        common::write_config(home,&json!({"connect":{"api_base":self.base},"updates":{"base_url":self.base},"model":"keep"})).unwrap();
-    }
-}
 fn home() -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     db::migrate(home.path()).unwrap();
@@ -279,7 +174,7 @@ async fn pinned_download_replaces_unversioned_and_tampered_cache() {
 async fn jwks_refreshes_after_ten_minutes_and_throttles_unknown_keys_and_outages() {
     let mut mock = Mock::new().await;
     let home = home();
-    fs::write(home.path().join("connect.json"),json!({"api_base":mock.base,"daemon_id":"daemon","owner_id":"owner","issuer":"https://connect.hexbot.app","keys":jwks()["keys"]}).to_string()).unwrap();
+    mock.persist_registration(home.path());
     let config = services::ConnectConfig::load(home.path()).unwrap().unwrap();
     assert_eq!(
         super::published_keys(home.path(), &config, "fixture")

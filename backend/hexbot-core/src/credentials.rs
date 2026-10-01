@@ -1,8 +1,12 @@
-//! Credential paths shared with the private extension and child-process isolation.
+//! Credential paths, host write tiers, the child environment, and child-process
+//! isolation. All four come from `../../pi-runtime/credential-policy.json`, which the
+//! private extension reads for Pi's bash and file tools; the parity test below keeps
+//! the two sandbox builders identical.
 use crate::{Error, Result};
 use serde::Deserialize;
 use std::{
     collections::HashMap,
+    ffi::OsString,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
@@ -12,6 +16,21 @@ struct Policy {
     basename: String,
     home: String,
     user: Vec<String>,
+    #[serde(rename = "sshPublic")]
+    ssh_public: String,
+    skip: Vec<String>,
+    write: WritePolicy,
+    environment: Vec<String>,
+    #[serde(rename = "displayEnvironment")]
+    display_environment: Vec<String>,
+}
+#[derive(Deserialize)]
+struct WritePolicy {
+    deny: Vec<String>,
+    ask: Vec<String>,
+    /// System configuration: the file tools never write it; shell commands ask.
+    #[serde(rename = "fileDeny")]
+    file_deny: Vec<String>,
 }
 fn policy() -> &'static Policy {
     static POLICY: OnceLock<Policy> = OnceLock::new();
@@ -20,29 +39,53 @@ fn policy() -> &'static Policy {
             .expect("credential policy")
     })
 }
-pub fn credential_name(home: &Path, path: &Path) -> bool {
-    static PATTERNS: OnceLock<(regex::Regex, regex::Regex)> = OnceLock::new();
-    let (name, local) = PATTERNS.get_or_init(|| {
+fn patterns() -> &'static (regex::Regex, regex::Regex, regex::Regex) {
+    static PATTERNS: OnceLock<(regex::Regex, regex::Regex, regex::Regex)> = OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        let compile = |source: &str| {
+            regex::Regex::new(&format!("{}{source}", if FOLD_CASE { "(?i)" } else { "" })).unwrap()
+        };
         (
-            regex::Regex::new(&policy().basename).unwrap(),
-            regex::Regex::new(&policy().home).unwrap(),
+            compile(&policy().basename),
+            compile(&policy().home),
+            compile(&policy().ssh_public),
         )
-    });
+    })
+}
+/// macOS and Windows file systems ignore case, so path comparisons and the policy
+/// matchers do too.
+pub(crate) const FOLD_CASE: bool = cfg!(any(target_os = "macos", windows));
+fn folded(path: &Path) -> PathBuf {
+    if FOLD_CASE {
+        PathBuf::from(path.to_string_lossy().to_lowercase())
+    } else {
+        path.to_owned()
+    }
+}
+pub(crate) fn under(path: &Path, root: &Path) -> bool {
+    folded(path).starts_with(folded(root))
+}
+/// The Hexbot home rules alone: credential names anywhere and protected home paths.
+fn home_credential_name(home: &Path, path: &Path) -> bool {
+    let (name, local, _) = patterns();
+    let (path_folded, home_folded) = (folded(path), folded(home));
+    path_folded.strip_prefix(&home_folded).is_ok_and(|p| {
+        name.is_match(path.file_name().and_then(|s| s.to_str()).unwrap_or(""))
+            || local.is_match(&p.to_string_lossy().replace('\\', "/"))
+    })
+}
+pub fn credential_name(home: &Path, path: &Path) -> bool {
     if std::env::var_os("HOME").is_some_and(|user| {
         user_credential_name(Path::new(&user), path) || ssh_credential_name(Path::new(&user), path)
     }) {
         return true;
     }
-    path.strip_prefix(home).is_ok_and(|p| {
-        name.is_match(path.file_name().and_then(|s| s.to_str()).unwrap_or(""))
-            || local.is_match(&p.to_string_lossy().replace('\\', "/"))
-    })
+    home_credential_name(home, path)
 }
 fn user_credential_name(user: &Path, path: &Path) -> bool {
     policy().user.iter().any(|local| {
         let secret = user.join(local);
-        path.starts_with(&secret)
-            || std::fs::canonicalize(secret).is_ok_and(|p| path.starts_with(p))
+        under(path, &secret) || std::fs::canonicalize(secret).is_ok_and(|p| under(path, &p))
     })
 }
 fn ssh_credential_name(user: &Path, path: &Path) -> bool {
@@ -50,8 +93,10 @@ fn ssh_credential_name(user: &Path, path: &Path) -> bool {
     [ssh.clone(), std::fs::canonicalize(&ssh).unwrap_or(ssh)]
         .iter()
         .any(|root| {
-            path.starts_with(root)
-                && (path.parent() != Some(root.as_path())
+            under(path, root)
+                && (path
+                    .parent()
+                    .is_none_or(|parent| folded(parent) != folded(root))
                     || path
                         .file_name()
                         .and_then(|n| n.to_str())
@@ -62,10 +107,44 @@ fn entries(dir: &Path) -> impl Iterator<Item = std::fs::DirEntry> {
     std::fs::read_dir(dir).into_iter().flatten().flatten()
 }
 pub(crate) fn private_key(name: &str) -> bool {
-    !(name == "config"
-        || name.starts_with("known_hosts")
-        || name.ends_with(".pub")
-        || name == "authorized_keys")
+    !patterns().2.is_match(name)
+}
+/// Host paths the file tools treat specially: `Deny` is never written by a tool in
+/// any approval mode; `Ask` needs approval in Manual and Auto.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteTier {
+    Deny,
+    Ask,
+}
+pub const NEVER_WRITTEN: &str =
+    "Credential and system configuration files are never written by tools.";
+/// A write policy entry is absolute or relative to the user's home; `None`
+/// when it is relative and HOME is unset.
+fn policy_root(entry: &str) -> Option<PathBuf> {
+    if entry.starts_with('/') {
+        Some(PathBuf::from(entry))
+    } else {
+        std::env::var_os("HOME").map(|user| PathBuf::from(user).join(entry))
+    }
+}
+/// The file tools' tier for a host path.
+pub fn host_write_tier(path: &Path) -> Option<WriteTier> {
+    let write = &policy().write;
+    let tiers = [
+        (WriteTier::Deny, &write.deny),
+        (WriteTier::Deny, &write.file_deny),
+        (WriteTier::Ask, &write.ask),
+    ];
+    for (tier, entries) in tiers {
+        for root in entries.iter().filter_map(|entry| policy_root(entry)) {
+            if under(path, &root)
+                || std::fs::canonicalize(&root).is_ok_and(|root| under(path, &root))
+            {
+                return Some(tier);
+            }
+        }
+    }
+    None
 }
 fn secret_paths(home: &Path) -> Vec<PathBuf> {
     type Cache = HashMap<PathBuf, (Instant, Vec<PathBuf>)>;
@@ -85,21 +164,14 @@ fn secret_paths(home: &Path) -> Vec<PathBuf> {
     fn walk(home: &Path, dir: &Path, paths: &mut Vec<PathBuf>) {
         for entry in entries(dir) {
             let path = entry.path();
-            if credential_name(home, &path) {
+            if home_credential_name(home, &path) {
                 add(path, paths);
             } else if entry.file_type().is_ok_and(|t| t.is_dir())
-                && ![
-                    "node_modules",
-                    ".git",
-                    "bin",
-                    "venv",
-                    "native",
-                    "artifacts",
-                    "python",
-                    "cache",
-                ]
-                .contains(&entry.file_name().to_string_lossy().as_ref())
-                && path != home.join("runtime/sessions")
+                && !policy()
+                    .skip
+                    .iter()
+                    .any(|skip| folded(Path::new(&entry.file_name())) == folded(Path::new(skip)))
+                && folded(&path) != folded(&home.join("runtime/sessions"))
             {
                 walk(home, &path, paths);
             }
@@ -115,6 +187,7 @@ fn secret_paths(home: &Path) -> Vec<PathBuf> {
             }
         }
     }
+    walk(home, home, &mut paths);
     if let Some(user) = std::env::var_os("HOME") {
         let user = PathBuf::from(user);
         walk_ssh(&user.join(".ssh"), &mut paths);
@@ -122,8 +195,8 @@ fn secret_paths(home: &Path) -> Vec<PathBuf> {
             add(user.join(local), &mut paths);
         }
     }
-    walk(home, home, &mut paths);
-    paths.sort();
+    // Byte order, as the extension sorts, so both profiles list filters alike.
+    paths.sort_by(|a, b| a.as_os_str().cmp(b.as_os_str()));
     paths.dedup();
     cache.insert(home.to_owned(), (Instant::now(), paths.clone()));
     paths
@@ -140,7 +213,7 @@ fn bwrap() -> Option<&'static Path> {
                     .map(|d| d.join("bwrap"))
                     .find(|p| p.is_file())
             })?;
-            let status = std::process::Command::new(&path)
+            let mut child = std::process::Command::new(&path)
                 .args([
                     "--die-with-parent",
                     "--unshare-pid",
@@ -153,164 +226,328 @@ fn bwrap() -> Option<&'static Path> {
                     "/usr/bin/env",
                     "true",
                 ])
+                .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
-                .status();
-            status.is_ok_and(|s| s.success()).then_some(path)
+                .spawn()
+                .ok()?;
+            // A hung probe must not hold the daemon; the extension gives it 5 s too.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => return status.success().then_some(path),
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(20))
+                    }
+                    _ => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return None;
+                    }
+                }
+            }
         })
         .as_deref()
 }
+/// The OS sandbox shell and code children run in, for `hexbot.info`.
+pub fn sandbox() -> Option<&'static str> {
+    if cfg!(target_os = "macos") {
+        Some("sandbox-exec")
+    } else {
+        bwrap().map(|_| "bubblewrap")
+    }
+}
+/// macOS always sandboxes (sandbox-exec fails closed). Elsewhere only bubblewrap does.
+pub fn isolation_available() -> bool {
+    sandbox().is_some()
+}
+/// Approval card text for code that would run without a sandbox.
+pub const UNSANDBOXED_REASON: &str = "Hexbot has no OS sandbox on this system, so this code can read any file you can, including credentials. Install bubblewrap and restart the daemon to restore isolation.";
 pub fn warn_unavailable_isolation() {
-    if cfg!(target_os = "macos") || bwrap().is_some() {
+    if isolation_available() {
         return;
     }
     static WARN: std::sync::Once = std::sync::Once::new();
     WARN.call_once(|| {
         eprintln!(
-            "Hexbot credential isolation is unavailable; command approval guards remain active."
+            "Hexbot has no OS sandbox on this system (bubblewrap is missing or cannot start). Shell commands and scripts can read any file you can. Manual asks before every shell command, Auto never decides alone, and scheduled scripts run only in Off. Install bubblewrap and restart the daemon to restore isolation."
         )
     });
+}
+/// Unattended scripts assume the sandbox; without one only Off runs them.
+pub fn require_isolation(mode: &str) -> Result<()> {
+    if mode == "off" || isolation_available() {
+        return Ok(());
+    }
+    Err(Error::new(
+        4302,
+        "No OS sandbox is available, so scheduled scripts do not run in Manual or Auto approval mode. Install bubblewrap and restart the daemon, or set approval mode to Off.",
+    ))
 }
 fn quoted(path: impl AsRef<str>) -> String {
     serde_json::to_string(path.as_ref()).unwrap()
 }
-fn sandbox_profile(roots: &[PathBuf], paths: &[PathBuf], writable: &[PathBuf]) -> String {
+/// The extension's escape set, so the profiles compare equal.
+fn regex_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if ".*+?^${}()|[]\\".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+// Seatbelt regexes use character pairs for the platform's case policy.
+fn sandbox_regex(source: &str) -> String {
+    source
+        .chars()
+        .map(|c| {
+            if FOLD_CASE && c.is_ascii_alphabetic() {
+                format!("[{}{}]", c.to_ascii_lowercase(), c.to_ascii_uppercase())
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+struct Layout {
+    roots: Vec<PathBuf>,
+    paths: Vec<PathBuf>,
+    writable: Vec<PathBuf>,
+    denied: Vec<PathBuf>,
+}
+fn real_root(path: &Path) -> std::io::Result<PathBuf> {
+    match std::fs::canonicalize(path) {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match (path.parent(), path.file_name()) {
+                (Some(parent), Some(name)) => Ok(real_root(parent)?.join(name)),
+                _ => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+/// Credential stores are read-only for every program a command starts.
+fn denied_writes() -> Result<Vec<PathBuf>> {
+    let mut denied: Vec<PathBuf> = vec![];
+    for root in policy()
+        .write
+        .deny
+        .iter()
+        .filter_map(|entry| policy_root(entry))
+    {
+        let real = real_root(&root)?;
+        for path in [root, real] {
+            if !denied.contains(&path) {
+                denied.push(path);
+            }
+        }
+    }
+    Ok(denied)
+}
+/// Renaming an ancestor would carry a nested store (~/.config/gh) out from under
+/// its rule, so the directories between the home and a store cannot be renamed
+/// or removed either; creating siblings inside them stays allowed.
+fn store_ancestors(denied: &[PathBuf]) -> Vec<PathBuf> {
+    let Some(user) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return vec![];
+    };
+    let mut homes = vec![user.clone(), real_root(&user).unwrap_or(user)];
+    homes.dedup();
+    let mut ancestors: Vec<PathBuf> = vec![];
+    for path in denied {
+        for home in &homes {
+            let mut dir = path.parent();
+            while let Some(current) = dir.filter(|d| d.starts_with(home) && *d != home) {
+                if !ancestors.iter().any(|a| a == current) {
+                    ancestors.push(current.to_owned());
+                }
+                dir = current.parent();
+            }
+        }
+    }
+    ancestors
+}
+fn layout(home: &Path, writable: &[PathBuf]) -> Result<Layout> {
+    let mut roots = vec![home.to_owned(), std::fs::canonicalize(home)?];
+    roots.dedup();
+    let writable = writable
+        .iter()
+        .filter_map(|p| std::fs::canonicalize(p).ok())
+        .filter(|p| roots.iter().any(|root| p != root && p.starts_with(root)))
+        .collect();
+    Ok(Layout {
+        roots,
+        paths: secret_paths(home),
+        writable,
+        denied: denied_writes()?,
+    })
+}
+fn sandbox_profile(layout: &Layout) -> String {
     let mut filters = vec![];
-    for root in roots {
-        let root = regex::escape(&root.to_string_lossy());
+    if let Some(user) = std::env::var_os("HOME") {
+        let ssh = PathBuf::from(user).join(".ssh");
+        let mut roots = vec![ssh.clone(), std::fs::canonicalize(&ssh).unwrap_or(ssh)];
+        roots.dedup();
+        for root in roots {
+            filters.push(format!(
+                "(require-all (subpath {}) (require-not (regex {})))",
+                quoted(root.to_string_lossy()),
+                quoted(sandbox_regex(&format!(
+                    "^{}/{}",
+                    regex_escape(&root.to_string_lossy()),
+                    &policy().ssh_public[1..]
+                )))
+            ));
+        }
+    }
+    for root in &layout.roots {
+        let root = regex_escape(&root.to_string_lossy());
         for pattern in [
             format!("^{root}/(.*/)?{}", &policy().basename[1..]),
             format!("^{root}/{}", &policy().home[1..]),
         ] {
-            filters.push(format!("(regex {})", quoted(pattern)));
+            filters.push(format!("(regex {})", quoted(sandbox_regex(&pattern))));
         }
     }
-    if let Some(user) = std::env::var_os("HOME") {
-        let ssh = PathBuf::from(user).join(".ssh");
-        for root in [ssh.clone(), std::fs::canonicalize(&ssh).unwrap_or(ssh)] {
-            filters.push(format!(
-                "(require-all (subpath {}) (require-not (regex {})))",
-                quoted(root.to_string_lossy()),
-                quoted(format!(
-                    r"^{}/(config|known_hosts[^/]*|[^/]*\.pub|authorized_keys)$",
-                    regex::escape(&root.to_string_lossy())
-                ))
-            ));
-        }
-    }
-    for path in paths {
+    for path in &layout.paths {
         filters.push(format!("(subpath {})", quoted(path.to_string_lossy())));
     }
-    let inside_home = roots
+    let inside_home = layout
+        .roots
         .iter()
         .map(|p| format!("(subpath {})", quoted(p.to_string_lossy())))
         .collect::<Vec<_>>()
         .join(" ");
-    let except_writable = if writable.is_empty() {
+    let except_writable = if layout.writable.is_empty() {
         String::new()
     } else {
         format!(
             "(require-not (require-any {}))",
-            writable
+            layout
+                .writable
                 .iter()
                 .map(|p| format!("(subpath {})", quoted(p.to_string_lossy())))
                 .collect::<Vec<_>>()
                 .join(" ")
         )
     };
+    let stores = layout
+        .denied
+        .iter()
+        .map(|p| {
+            let path = quoted(p.to_string_lossy());
+            format!(
+                "(literal {path}) (subpath {path}) (regex {})",
+                quoted(sandbox_regex(&format!(
+                    "^{}(/|$)",
+                    regex_escape(&p.to_string_lossy())
+                )))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let ancestors = store_ancestors(&layout.denied)
+        .iter()
+        .map(|p| format!("(literal {})", quoted(p.to_string_lossy())))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let ancestors = if ancestors.is_empty() {
+        String::new()
+    } else {
+        format!("(deny file-write-unlink {ancestors})")
+    };
     format!(
-        "(version 1)(allow default)(deny process-exec (literal \"/usr/bin/open\") (literal \"/bin/launchctl\") (literal \"/usr/bin/osascript\"))(deny file-write* (require-all (require-any {inside_home}) {except_writable}))(deny file-read* file-write* {})",
+        "(version 1)(allow default)(deny process-exec (literal \"/usr/bin/open\") (literal \"/bin/launchctl\") (literal \"/usr/bin/osascript\"))(deny file-write* (require-all (require-any {inside_home}) {except_writable}))(deny file-write* {stores}){ancestors}(deny file-read* file-write* {})",
         filters.join(" ")
     )
+}
+fn bwrap_arguments(layout: &Layout) -> Vec<OsString> {
+    let mut args: Vec<OsString> = [
+        "--die-with-parent",
+        "--unshare-pid",
+        "--bind",
+        "/",
+        "/",
+        "--proc",
+        "/proc",
+    ]
+    .into_iter()
+    .map(Into::into)
+    .collect();
+    for root in &layout.roots {
+        args.extend(["--ro-bind".into(), root.into(), root.into()]);
+    }
+    for path in &layout.writable {
+        args.extend(["--bind".into(), path.into(), path.into()]);
+    }
+    // A store that does not exist yet cannot be bound (bubblewrap would create the
+    // mount point on the host); the shell guard asks when a command names one.
+    for path in layout.denied.iter().filter(|p| p.exists()) {
+        args.extend(["--ro-bind".into(), path.into(), path.into()]);
+    }
+    for path in layout.paths.iter().filter(|p| p.exists()) {
+        if path.is_dir() {
+            args.extend([
+                "--tmpfs".into(),
+                path.into(),
+                "--remount-ro".into(),
+                path.into(),
+            ]);
+        } else {
+            args.extend(["--ro-bind".into(), "/dev/null".into(), path.into()]);
+        }
+    }
+    args
 }
 pub fn isolated_command(
     home: &Path,
     program: &str,
     writable: &[PathBuf],
 ) -> Result<tokio::process::Command> {
-    let paths = secret_paths(home);
-    let roots = vec![home.to_owned(), std::fs::canonicalize(home)?];
-    let writable: Vec<_> = writable
-        .iter()
-        .filter_map(|p| std::fs::canonicalize(p).ok())
-        .filter(|p| roots.iter().any(|root| p != root && p.starts_with(root)))
-        .collect();
+    let layout = layout(home, writable)?;
     if cfg!(target_os = "macos") {
         let mut command = tokio::process::Command::new("/usr/bin/sandbox-exec");
-        command.args(["-p", &sandbox_profile(&roots, &paths, &writable), program]);
+        command.args(["-p", &sandbox_profile(&layout), program]);
         return Ok(command);
     }
     if let Some(bwrap) = bwrap() {
         let mut command = tokio::process::Command::new(bwrap);
-        command.args([
-            "--die-with-parent",
-            "--unshare-pid",
-            "--bind",
-            "/",
-            "/",
-            "--proc",
-            "/proc",
-        ]);
-        for root in roots {
-            command.arg("--ro-bind").arg(&root).arg(&root);
-        }
-        for path in writable {
-            command.arg("--bind").arg(&path).arg(&path);
-        }
-        for path in paths.into_iter().filter(|p| p.exists()) {
-            if path.is_dir() {
-                command
-                    .arg("--tmpfs")
-                    .arg(&path)
-                    .arg("--remount-ro")
-                    .arg(&path);
-            } else {
-                command.args(["--ro-bind", "/dev/null"]).arg(path);
-            }
-        }
-        command.arg("--").arg(program);
+        command
+            .args(bwrap_arguments(&layout))
+            .arg("--")
+            .arg(program);
         return Ok(command);
     }
     warn_unavailable_isolation();
     Ok(tokio::process::Command::new(program))
 }
-/// Explicit inheritance prevents provider keys and runtime injection variables reaching scripts.
+/// Variables every child may inherit. Provider keys, connector secrets, and runtime
+/// injection variables (NODE_OPTIONS, BASH_ENV) are never on the list.
+pub fn inherited_environment(name: &str) -> bool {
+    name.to_ascii_uppercase().starts_with("LC_")
+        || policy()
+            .environment
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(name))
+}
+/// Display variables for children that open windows: the browser, the code runtime,
+/// and MCP servers with an isolated environment.
+pub fn display_environment(name: &str) -> bool {
+    policy().display_environment.iter().any(|v| v == name)
+}
 pub fn shell_environment(command: &mut tokio::process::Command) {
     command
         .env_clear()
-        .envs(std::env::vars().filter(|(name, _)| {
-            matches!(
-                name.as_str(),
-                "PATH"
-                    | "HOME"
-                    | "USER"
-                    | "LOGNAME"
-                    | "SHELL"
-                    | "TMPDIR"
-                    | "TMP"
-                    | "TEMP"
-                    | "LANG"
-                    | "LANGUAGE"
-                    | "TZ"
-                    | "SSH_AUTH_SOCK"
-                    | "SystemRoot"
-                    | "WINDIR"
-                    | "PATHEXT"
-                    | "COMSPEC"
-            ) || name.starts_with("LC_")
-                || network_environment(name)
-        }));
+        .envs(std::env::vars().filter(|(name, _)| inherited_environment(name)));
 }
-fn network_environment(name: &str) -> bool {
-    matches!(
-        name.to_ascii_uppercase().as_str(),
-        "HTTP_PROXY"
-            | "HTTPS_PROXY"
-            | "NO_PROXY"
-            | "SSL_CERT_FILE"
-            | "SSL_CERT_DIR"
-            | "NODE_EXTRA_CA_CERTS"
-    )
+pub fn desktop_environment(command: &mut tokio::process::Command) {
+    command.env_clear().envs(
+        std::env::vars()
+            .filter(|(name, _)| inherited_environment(name) || display_environment(name)),
+    );
 }
 /// Cheap floor for literal catastrophic Python actions. Approval remains required
 /// for arbitrary code, including indirection that a textual guard cannot prove safe.
@@ -354,7 +591,7 @@ pub fn check_code(code: &str) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
-    fn user_auth_paths_and_network_environment_are_explicit() {
+    fn user_auth_paths_and_child_environment_are_explicit() {
         let user = tempfile::tempdir().unwrap();
         for path in [".codex/auth.json", ".hermes/auth.json", ".hermes/.env"] {
             assert!(user_credential_name(user.path(), &user.path().join(path)));
@@ -370,10 +607,26 @@ mod tests {
             "SSL_CERT_FILE",
             "SSL_CERT_DIR",
             "NODE_EXTRA_CA_CERTS",
+            "SSH_AUTH_SOCK",
+            "TERM",
+            "lc_all",
         ] {
-            assert!(network_environment(name));
+            assert!(inherited_environment(name), "{name}");
         }
-        assert!(!network_environment("NODE_OPTIONS"));
+        for name in [
+            "NODE_OPTIONS",
+            "BASH_ENV",
+            "OPENAI_API_KEY",
+            "SystemRoot",
+            "WINDIR",
+            "PATHEXT",
+            "COMSPEC",
+            "DISPLAY",
+        ] {
+            assert!(!inherited_environment(name), "{name}");
+        }
+        assert!(display_environment("DISPLAY") && display_environment("WAYLAND_DISPLAY"));
+        assert!(!display_environment("LOCALAPPDATA"));
         for name in ["github", "deploy_key", "nested/config"] {
             assert!(ssh_credential_name(
                 user.path(),
@@ -391,7 +644,12 @@ mod tests {
                 &user.path().join(".ssh").join(name)
             ));
         }
-        let profile = sandbox_profile(&[user.path().to_owned()], &[], &[]);
+        let profile = sandbox_profile(&Layout {
+            roots: vec![user.path().to_owned()],
+            paths: vec![],
+            writable: vec![],
+            denied: denied_writes().unwrap(),
+        });
         for binary in ["/usr/bin/open", "/bin/launchctl", "/usr/bin/osascript"] {
             assert!(profile.contains(&format!("(literal {})", quoted(binary))));
         }
@@ -441,14 +699,182 @@ mod tests {
         ] {
             assert!(private_key(name));
         }
-        let profile = sandbox_profile(&[home.path().to_owned()], &paths, &[]);
+        let profile = sandbox_profile(&Layout {
+            roots: vec![home.path().to_owned()],
+            paths,
+            writable: vec![],
+            denied: denied_writes().unwrap(),
+        });
+        if let Some(user) = std::env::var_os("HOME") {
+            let user = PathBuf::from(user);
+            let aws = quoted(user.join(".aws").to_string_lossy());
+            assert!(profile.contains(&format!("(literal {aws}) (subpath {aws})")));
+            // The parent of ~/.config/gh cannot be renamed out from under the rule;
+            // the home itself and the stores' own literals are not listed again.
+            let config = quoted(user.join(".config").to_string_lossy());
+            assert!(profile.contains(&format!("(deny file-write-unlink (literal {config})")));
+            let ancestors = store_ancestors(&denied_writes().unwrap());
+            assert!(
+                !ancestors
+                    .iter()
+                    .any(|a| *a == user || a.ends_with(".config/gh"))
+            );
+        }
         assert!(!profile.contains("regex #"));
         assert!(profile.contains("(deny file-write*"));
-        assert!(profile.contains(&quoted(format!(
+        assert!(profile.contains(&quoted(sandbox_regex(&format!(
             "^{}/{}",
-            regex::escape(&home.path().to_string_lossy()),
+            regex_escape(&home.path().to_string_lossy()),
             &policy().home[1..]
-        ))));
+        )))));
+    }
+    /// The extension builds the same sandbox for Pi's bash tool from the same policy.
+    #[test]
+    fn sandbox_policy_matches_the_extension() {
+        let base = tempfile::tempdir().unwrap();
+        let home = base.path().join("hexbot-home");
+        let attachments = home.join("runtime/sessions/one/attachments");
+        let outputs = home.join("profiles/owl/artifacts");
+        for dir in [
+            &attachments,
+            &outputs,
+            &home.join("python/deep"),
+            &home.join("desktop-data"),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(home.join(".env"), "secret").unwrap();
+        std::fs::write(home.join("profiles/owl/AUTH.JSON"), "secret").unwrap();
+        std::fs::write(home.join("python/deep/auth.json"), "skipped").unwrap();
+        std::fs::write(home.join("desktop-data/token"), "secret").unwrap();
+        let layout = layout(&home, &[attachments.clone(), outputs.clone()]).unwrap();
+        let script = "const {sandboxProfile, bwrapArguments} = await import(process.argv[1]); const [home, ...outputs] = process.argv.slice(2); console.log(JSON.stringify({profile: sandboxProfile(home, outputs), bwrap: bwrapArguments(home, outputs)}));";
+        let output = std::process::Command::new("node")
+            .args(["--input-type=module", "-e", script, "--"])
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../pi-runtime/isolation.ts"
+            ))
+            .args([&home, &attachments, &outputs])
+            .output()
+            .expect("node runs the extension's isolation module");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let extension: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            extension["profile"].as_str().unwrap(),
+            sandbox_profile(&layout)
+        );
+        let bwrap: Vec<OsString> = extension["bwrap"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().into())
+            .collect();
+        assert_eq!(bwrap, bwrap_arguments(&layout));
+        assert!(
+            bwrap
+                .iter()
+                .any(|arg| arg == attachments.canonicalize().unwrap().as_os_str())
+        );
+        assert!(
+            !bwrap
+                .iter()
+                .any(|arg| arg.to_string_lossy().contains("deep/auth.json"))
+        );
+    }
+    #[test]
+    fn host_write_tiers_follow_the_policy() {
+        let Some(user) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return;
+        };
+        for path in [
+            ".netrc",
+            ".git-credentials",
+            ".aws/credentials",
+            ".config/gh/hosts.yml",
+            ".kube/config",
+        ] {
+            assert_eq!(
+                host_write_tier(&user.join(path)),
+                Some(WriteTier::Deny),
+                "{path}"
+            );
+        }
+        assert_eq!(
+            host_write_tier(Path::new("/etc/hosts")),
+            Some(WriteTier::Deny)
+        );
+        for path in [
+            ".zshrc",
+            ".bashrc",
+            ".gitconfig",
+            "Library/LaunchAgents/com.example.plist",
+            ".config/autostart/x.desktop",
+            ".config/systemd/user/x.service",
+            ".zlogin",
+            ".bash_login",
+            ".config/fish/config.fish",
+            ".xprofile",
+            ".local/share/systemd/user/x.service",
+            ".config/git/config",
+            ".cargo/config.toml",
+        ] {
+            assert_eq!(
+                host_write_tier(&user.join(path)),
+                Some(WriteTier::Ask),
+                "{path}"
+            );
+        }
+        if FOLD_CASE {
+            assert_eq!(
+                host_write_tier(&user.join(".AWS/credentials")),
+                Some(WriteTier::Deny)
+            );
+            assert_eq!(host_write_tier(&user.join(".ZSHRC")), Some(WriteTier::Ask));
+            assert_eq!(
+                host_write_tier(&user.join("library/launchagents/x.plist")),
+                Some(WriteTier::Ask)
+            );
+            assert_eq!(
+                host_write_tier(Path::new("/ETC/hosts")),
+                Some(WriteTier::Deny)
+            );
+            let home = tempfile::tempdir().unwrap();
+            for path in [
+                "AUTH.JSON",
+                "profiles/owl/.ENV",
+                "Connect.json",
+                ".SSH/id_ed25519",
+            ] {
+                let path = if path.starts_with(".SSH") {
+                    user.join(path)
+                } else {
+                    home.path().join(path)
+                };
+                assert!(credential_name(home.path(), &path), "{}", path.display());
+            }
+            assert!(!credential_name(
+                home.path(),
+                &user.join(".ssh/ID_ED25519.PUB")
+            ));
+        }
+        assert_eq!(
+            host_write_tier(Path::new("/Library/LaunchDaemons/x.plist")),
+            Some(WriteTier::Ask)
+        );
+        for path in ["Hexbot/notes.md", ".config/other/settings.json", ".zshrc.d"] {
+            assert_eq!(host_write_tier(&user.join(path)), None, "{path}");
+        }
+    }
+    #[test]
+    fn scheduled_scripts_need_a_sandbox_unless_off() {
+        assert!(require_isolation("off").is_ok());
+        assert_eq!(require_isolation("manual").is_ok(), isolation_available());
+        assert_eq!(require_isolation("smart").is_ok(), isolation_available());
     }
     #[cfg(target_os = "macos")]
     #[tokio::test]
@@ -530,6 +956,94 @@ mod tests {
             assert!(check_code(code).is_err(), "{code}");
         }
         assert!(check_code("print('hello')").is_ok());
+    }
+    /// The deny tier holds for any program, by any spelling; run in a child with a
+    /// scratch HOME because the stores are enumerated from the user's home.
+    #[tokio::test]
+    #[ignore = "run by credential_stores_are_unwritable_in_the_sandbox"]
+    async fn credential_stores_unwritable_child() {
+        let user = PathBuf::from(std::env::var_os("HOME").unwrap());
+        if !isolation_available() {
+            let home = tempfile::tempdir().unwrap();
+            let args = bwrap_arguments(&layout(home.path(), &[]).unwrap());
+            for local in &policy().write.deny {
+                let path = user.join(local);
+                assert!(
+                    args.windows(3).any(|args| args
+                        == ["--ro-bind", path.to_str().unwrap(), path.to_str().unwrap()])
+                );
+            }
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let script = "curl -s -o \"$HOME/.aws/credentials\" \"file://$HOME/source\" 2>/dev/null && exit 17; truncate -s0 \"$HOME/.netrc\" 2>/dev/null && exit 18; echo x > \"$HOME/.aws/credentials\" 2>/dev/null && exit 10; echo x > \"$HOME/.netrc\" 2>/dev/null && exit 12; echo x > \"$HOME/.npmrc\" 2>/dev/null && exit 13; python3 -c 'open(\"'\"$HOME\"'/.aws/other\",\"w\")' 2>/dev/null && exit 15; echo ok > \"$HOME/notes.txt\" || exit 16; echo done";
+        let result = isolated_command(home.path(), "/bin/bash", &[])
+            .unwrap()
+            .args(["-c", script])
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&result.stdout),
+            "done\n",
+            "{:?} {}",
+            result.status,
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(user.join(".aws/credentials")).unwrap(),
+            "keep"
+        );
+        assert_eq!(
+            std::fs::read_to_string(user.join(".netrc")).unwrap(),
+            "keep"
+        );
+        assert_eq!(
+            std::fs::read_to_string(user.join("notes.txt")).unwrap(),
+            "ok\n"
+        );
+    }
+    #[test]
+    fn credential_stores_are_unwritable_in_the_sandbox() {
+        let user = tempfile::tempdir().unwrap();
+        for local in &policy().write.deny {
+            let path = user.path().join(local);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            if [
+                ".aws",
+                ".gnupg",
+                ".kube",
+                ".docker",
+                ".azure",
+                ".config/gh",
+                ".config/gcloud",
+            ]
+            .contains(&local.as_str())
+            {
+                std::fs::create_dir_all(path).unwrap();
+            } else if local != ".npmrc" || !cfg!(target_os = "macos") {
+                std::fs::write(path, "keep").unwrap();
+            }
+        }
+        std::fs::write(user.path().join(".aws/credentials"), "keep").unwrap();
+        std::fs::write(user.path().join(".netrc"), "keep").unwrap();
+        std::fs::write(user.path().join("source"), "replacement").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "credentials::tests::credential_stores_unwritable_child",
+                "--nocapture",
+            ])
+            .env("HOME", user.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     #[cfg(target_os = "macos")]
     #[tokio::test]

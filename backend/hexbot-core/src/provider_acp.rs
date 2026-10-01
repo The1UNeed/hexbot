@@ -3,7 +3,6 @@ use crate::{Error, Result, common};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
-    future::Future,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Mutex, OnceLock},
@@ -11,7 +10,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{ChildStdin, ChildStdout, Command},
+    process::{ChildStdin, ChildStdout},
     sync::watch,
 };
 
@@ -49,33 +48,14 @@ pub async fn cancel(home: &Path, stored: &str) {
     }
 }
 
-/// The callback uses the same frozen approval policy as ordinary Pi tool calls.
+/// Copilot only produces text here. Hexbot actions come back as `<tool_call>` text and run
+/// through the section's own guarded tools, so Copilot's native tools are never granted and
+/// the child never receives daemon or provider secrets.
 /// Dropping this future also kills the child; cancellation explicitly sends ACP session/cancel.
-pub async fn complete<F, Fut>(
-    home: &Path,
-    bot: &str,
-    stored: &str,
-    args: &Value,
-    mut on_permission: F,
-) -> Result<Value>
-where
-    F: FnMut(Value) -> Fut,
-    Fut: Future<Output = Result<bool>>,
-{
+pub async fn complete(home: &Path, bot: &str, stored: &str, args: &Value) -> Result<Value> {
     common::identifier(bot)?;
     common::identifier(stored)?;
-    let options: String = crate::runtime_store::open(home)?.query_row(
-        "SELECT options FROM native_sessions WHERE stored_id=? AND bot=?",
-        rusqlite::params![stored, bot],
-        |r| r.get(0),
-    )?;
-    let options: Value =
-        serde_json::from_str(&options).map_err(|_| failure("Invalid saved ACP session options"))?;
-    let cwd = std::fs::canonicalize(
-        options["cwd"]
-            .as_str()
-            .ok_or_else(|| failure("ACP session has no workspace"))?,
-    )?;
+    let cwd = crate::native_tools::section_workdir(home, bot, stored)?;
     let mut env = common::env_values(home)?;
     env.extend(common::env_values(&home.join("profiles").join(bot))?);
     let value = |name: &str| {
@@ -93,7 +73,23 @@ where
         .map(|v| split_args(&v))
         .transpose()?
         .unwrap_or_else(|| vec!["--acp".into(), "--stdio".into()]);
-    let mut command = Command::new(&executable);
+    // sandbox-exec and bubblewrap start even when the CLI is missing, so look first.
+    // A relative command lives in the workspace, where the child starts.
+    let not_started = || {
+        failure(format!(
+            "Could not start Copilot ACP command '{executable}'. Install GitHub Copilot CLI or configure HEXBOT_COPILOT_ACP_COMMAND."
+        ))
+    };
+    let Some(program) = common::command_path(&executable, &cwd) else {
+        return Err(not_started());
+    };
+    // Copilot's own reads must not reach the daemon's .env, connect.json or auth files,
+    // so the child runs in the same sandbox as scripts, with its workspace writable.
+    let mut command = crate::credentials::isolated_command(
+        home,
+        &program.to_string_lossy(),
+        std::slice::from_ref(&cwd),
+    )?;
     command
         .args(command_args)
         .current_dir(&cwd)
@@ -101,13 +97,13 @@ where
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    // The CLI authenticates through its own login or GitHub credentials, never daemon tokens.
-    for (key, _) in std::env::vars() {
-        if secret_env(&key) {
-            command.env_remove(key);
-        }
-    }
-    command.envs(env.into_iter().filter(|(key, _)| !secret_env(key)));
+    // The CLI authenticates through its own login or GitHub credentials, never daemon,
+    // provider, or connector secrets. Same allowlist as every other child process.
+    command.env_clear().envs(
+        std::env::vars()
+            .filter(|(key, _)| crate::credentials::inherited_environment(key) || copilot_auth(key))
+            .chain(env.into_iter().filter(|(key, _)| copilot_auth(key))),
+    );
     let key = session_key(home, stored);
     let id = common::id();
     let (sender, mut cancellation) = watch::channel(false);
@@ -123,7 +119,7 @@ where
         entries.insert(key.clone(), (id.clone(), sender));
     }
     let _lease = Lease { key, id };
-    let mut child = command.spawn().map_err(|_|failure(format!("Could not start Copilot ACP command '{executable}'. Install GitHub Copilot CLI or configure HEXBOT_COPILOT_ACP_COMMAND.")))?;
+    let mut child = command.spawn().map_err(|_| not_started())?;
     let input = child
         .stdin
         .take()
@@ -132,9 +128,6 @@ where
         .stdout
         .take()
         .ok_or_else(|| failure("ACP stdout unavailable"))?;
-    let file_enabled = options["enabledToolsets"]
-        .as_array()
-        .is_some_and(|v| v.iter().any(|v| v == "file"));
     let mut wire = Wire {
         input,
         output: BufReader::new(output),
@@ -142,8 +135,6 @@ where
         session: String::new(),
         text: String::new(),
         thinking: String::new(),
-        cwd,
-        file_enabled,
     };
     let timeout = args["timeout_seconds"]
         .as_f64()
@@ -151,13 +142,23 @@ where
         .unwrap_or(900.0)
         .min(3600.0);
     let run = async {
-        wire.request("initialize",json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":file_enabled,"writeTextFile":file_enabled}},"clientInfo":{"name":"hexbot","title":"Hexbot","version":crate::version()}}),&mut on_permission).await?;
+        wire.request(
+            "initialize",
+            json!({
+                "protocolVersion": 1,
+                "clientCapabilities": {
+                    "fs": { "readTextFile": false, "writeTextFile": false }
+                },
+                "clientInfo": {
+                    "name": "hexbot",
+                    "title": "Hexbot",
+                    "version": crate::version()
+                }
+            }),
+        )
+        .await?;
         let session = wire
-            .request(
-                "session/new",
-                json!({"cwd":wire.cwd,"mcpServers":[]}),
-                &mut on_permission,
-            )
+            .request("session/new", json!({"cwd":cwd,"mcpServers":[]}))
             .await?;
         wire.session = session["sessionId"]
             .as_str()
@@ -168,7 +169,6 @@ where
             .request(
                 "session/prompt",
                 json!({"sessionId":wire.session,"prompt":[{"type":"text","text":prompt(args)}]}),
-                &mut on_permission,
             )
             .await?;
         let (text, tool_calls) = extract_calls(&wire.text)?;
@@ -188,28 +188,19 @@ where
         _=cancellation.changed()=>Err(failure("The turn was interrupted")),
     };
     if result.is_err() && !wire.session.is_empty() {
-        let _=tokio::time::timeout(Duration::from_millis(100),wire.send(json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":wire.session}}))).await;
+        let _ = tokio::time::timeout(Duration::from_millis(100), wire.send(json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":wire.session}}))).await;
     }
     let _ = child.kill().await;
     let _ = child.wait().await;
     result
 }
 
-fn secret_env(key: &str) -> bool {
-    let key = key.to_ascii_uppercase();
-    key.starts_with("HEXBOT_")
-        || key.starts_with("CLERK_")
-        || key.starts_with("CLOUDFLARE_")
-        || key.starts_with("CF_")
-        || [
-            "TELEGRAM_BOT_TOKEN",
-            "DISCORD_BOT_TOKEN",
-            "SLACK_BOT_TOKEN",
-            "SLACK_APP_TOKEN",
-            "PYTHONHOME",
-            "PYTHONPATH",
-        ]
-        .contains(&key.as_str())
+/// What Copilot CLI reads to find its GitHub login.
+fn copilot_auth(key: &str) -> bool {
+    matches!(
+        key.to_ascii_uppercase().as_str(),
+        "GH_TOKEN" | "GITHUB_TOKEN" | "COPILOT_GITHUB_TOKEN" | "GH_HOST" | "XDG_CONFIG_HOME"
+    )
 }
 fn split_args(raw: &str) -> Result<Vec<String>> {
     let mut args = vec![];
@@ -266,8 +257,6 @@ struct Wire {
     session: String,
     text: String,
     thinking: String,
-    cwd: PathBuf,
-    file_enabled: bool,
 }
 impl Wire {
     async fn send(&mut self, value: Value) -> Result<()> {
@@ -303,16 +292,7 @@ impl Wire {
         }
         serde_json::from_slice(&data).map_err(|_| failure("Copilot ACP returned malformed JSON"))
     }
-    async fn request<F, Fut>(
-        &mut self,
-        method: &str,
-        params: Value,
-        permission: &mut F,
-    ) -> Result<Value>
-    where
-        F: FnMut(Value) -> Fut,
-        Fut: Future<Output = Result<bool>>,
-    {
+    async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         self.next_id += 1;
         let id = self.next_id;
         self.send(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
@@ -320,7 +300,7 @@ impl Wire {
         loop {
             let message = self.frame().await?;
             if message["method"].is_string() {
-                self.server_message(&message, permission).await?;
+                self.server_message(&message).await?;
                 continue;
             }
             if message["id"] != id {
@@ -337,11 +317,7 @@ impl Wire {
             return Ok(message["result"].clone());
         }
     }
-    async fn server_message<F, Fut>(&mut self, message: &Value, permission: &mut F) -> Result<()>
-    where
-        F: FnMut(Value) -> Fut,
-        Fut: Future<Output = Result<bool>>,
-    {
+    async fn server_message(&mut self, message: &Value) -> Result<()> {
         let method = message["method"].as_str().unwrap_or("");
         let params = &message["params"];
         if method == "session/update" {
@@ -367,83 +343,16 @@ impl Wire {
             return Ok(());
         }
         let id = message["id"].clone();
-        let result:Result<Value>=async {
-            if !self.session.is_empty() && params["sessionId"]!=self.session {return Err(failure("ACP request belongs to another session"));}
-            match method {
-                "session/request_permission"=>{
-                    let option=allow_once(params);
-                    if let Some(option)=option && option["optionId"].is_string() && permission(params.clone()).await? {
-                        Ok(json!({"outcome":{"outcome":"selected","optionId":option["optionId"]}}))
-                    }else{Ok(json!({"outcome":{"outcome":"cancelled"}}))}
-                },
-                "fs/read_text_file"|"fs/write_text_file"=>{
-                    if !self.file_enabled{return Err(failure("File tools are disabled for this conversation"));}
-                    let path=confined(&self.cwd,params["path"].as_str().unwrap_or(""))?;
-                    let request=json!({"sessionId":self.session,"toolCall":{"title":method,"kind":if method=="fs/read_text_file"{"read"}else{"edit"},"rawInput":params,"locations":[{"path":path}]},"options":[{"optionId":"once","kind":"allow_once","name":"Allow once"},{"optionId":"deny","kind":"reject_once","name":"Deny"}]});
-                    if !permission(request).await?{return Err(failure("The user denied this action"));}
-                    if method=="fs/read_text_file" {
-                        let content=if path.try_exists()? { common::read_regular_text(&path, MAX_FRAME)? } else { String::new() };
-                        let start=params["line"].as_u64().unwrap_or(1).max(1)-1;let limit=params["limit"].as_u64().unwrap_or(u64::MAX);
-                        Ok(json!({"content":content.split_inclusive('\n').skip(start as usize).take(limit.min(usize::MAX as u64) as usize).collect::<String>()}))
-                    }else{
-                        let content=params["content"].as_str().ok_or_else(||failure("ACP write content is missing"))?;
-                        if content.len()>MAX_FRAME{return Err(failure("File exceeds the ACP write limit"));}
-                        common::atomic_write(&path,content.as_bytes())?;Ok(json!({}))
-                    }
-                },
-                _=>Err(failure("Unsupported ACP client method")),
-            }
-        }.await;
-        let response = match result {
-            Ok(result) => json!({"jsonrpc":"2.0","id":id,"result":result}),
-            Err(error) => {
-                json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":error.message}})
-            }
+        // Copilot's own tools run outside the section's toolsets, approval mode, sandbox,
+        // and command guards, so no request is ever granted. Hexbot actions arrive as
+        // `<tool_call>` text instead and run through the guarded tools.
+        let response = if method == "session/request_permission" {
+            json!({"jsonrpc":"2.0","id":id,"result":{"outcome":{"outcome":"cancelled"}}})
+        } else {
+            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Unsupported ACP client method"}})
         };
         self.send(response).await
     }
-}
-
-fn confined(cwd: &Path, raw: &str) -> Result<PathBuf> {
-    if raw.is_empty() {
-        return Err(failure("ACP file path is missing"));
-    }
-    let path = Path::new(raw);
-    let path = if path.is_absolute() {
-        path.to_owned()
-    } else {
-        cwd.join(path)
-    };
-    let relative = path
-        .strip_prefix(cwd)
-        .map_err(|_| failure("ACP file path is outside the workspace"))?;
-    let mut resolved = cwd.to_owned();
-    for part in relative.components() {
-        let std::path::Component::Normal(part) = part else {
-            return Err(failure("Invalid ACP file path"));
-        };
-        let name = part.to_string_lossy().to_ascii_lowercase();
-        if name == ".env"
-            || name.starts_with(".env.")
-            || [
-                ".ssh",
-                ".aws",
-                ".gnupg",
-                ".hexbot",
-                ".hermes",
-                "auth.json",
-                "credentials.json",
-            ]
-            .contains(&name.as_str())
-        {
-            return Err(failure("ACP cannot access credential files"));
-        }
-        resolved.push(part);
-        if std::fs::symlink_metadata(&resolved).is_ok_and(|v| v.file_type().is_symlink()) {
-            return Err(failure("ACP file paths cannot contain symlinks"));
-        }
-    }
-    Ok(resolved)
 }
 
 fn content(value: &Value) -> String {
@@ -451,13 +360,38 @@ fn content(value: &Value) -> String {
         return text.into();
     }
     if let Some(items) = value.as_array() {
-        return items.iter().map(|v|match v["type"].as_str(){Some("text"|"thinking")=>v["text"].as_str().or(v["thinking"].as_str()).unwrap_or("").to_owned(),Some("toolCall")=>format!("<tool_call>{}</tool_call>",json!({"id":v["id"],"type":"function","function":{"name":v["name"],"arguments":v["arguments"].to_string()}})),_=>v.to_string()}).collect::<Vec<_>>().join("\n");
+        return items
+            .iter()
+            .map(|v| match v["type"].as_str() {
+                Some("text" | "thinking") => v["text"]
+                    .as_str()
+                    .or(v["thinking"].as_str())
+                    .unwrap_or("")
+                    .to_owned(),
+                Some("toolCall") => format!(
+                    "<tool_call>{}</tool_call>",
+                    json!({
+                        "id": v["id"],
+                        "type": "function",
+                        "function": {
+                            "name": v["name"],
+                            "arguments": v["arguments"].to_string()
+                        }
+                    })
+                ),
+                _ => v.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
     }
     value.to_string()
 }
 fn prompt(args: &Value) -> String {
     let context = &args["context"];
-    let mut sections=vec!["You are the active ACP agent backend for Hexbot. Use the provided tools to take actions. When using a tool, emit ONLY <tool_call>{...}</tool_call> with one JSON object containing id/type/function{name,arguments}. arguments must be a JSON string. Otherwise answer normally.".to_owned()];
+    let mut sections = vec![
+        "You are the active ACP agent backend for Hexbot. Use the provided tools to take actions. When using a tool, emit ONLY <tool_call>{...}</tool_call> with one JSON object containing id/type/function{name,arguments}. arguments must be a JSON string. Otherwise answer normally."
+            .to_owned(),
+    ];
     if let Some(model) = args["model"].as_str() {
         sections.push(format!("Requested model hint: {model}"));
     }
@@ -522,24 +456,4 @@ fn extract_calls(response: &str) -> Result<(String, Vec<Value>)> {
         return extract_calls(&format!("<tool_call>{raw}</tool_call>"));
     }
     Ok((text.trim().into(), calls))
-}
-
-fn allow_once(params: &Value) -> Option<&Value> {
-    params["options"]
-        .as_array()?
-        .iter()
-        .find(|v| v["kind"] == "allow_once" && v["optionId"].is_string())
-}
-#[cfg(test)]
-mod permission_tests {
-    use super::*;
-    #[test]
-    fn approval_never_selects_a_persistent_grant() {
-        assert!(
-            allow_once(&json!({"options":[{"kind":"allow_always","optionId":"forever"}]}))
-                .is_none()
-        );
-        assert!(allow_once(&json!({"options":[{"kind":"allow_once"}]})).is_none());
-        assert_eq!(allow_once(&json!({"options":[{"kind":"allow_always","optionId":"forever"},{"kind":"allow_once","optionId":"once"}]})).unwrap()["optionId"], "once");
-    }
 }

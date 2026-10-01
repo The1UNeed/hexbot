@@ -4,6 +4,7 @@ use hexbot_core::{
     services,
 };
 use std::{
+    io::IsTerminal,
     io::Write,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
@@ -28,20 +29,6 @@ fn home() -> Result<PathBuf> {
         std::env::var_os("HOME").ok_or_else(|| Error::new(4200, "HEXBOT_HOME is required"))?,
     )
     .join(".hexbot"))
-}
-fn pi_executable() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("HEXBOT_PI_EXECUTABLE") {
-        return Ok(PathBuf::from(path));
-    }
-    let candidate =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../pi-runtime/node_modules/.bin/pi");
-    if candidate.is_file() {
-        return Ok(candidate);
-    }
-    Err(Error::new(
-        5200,
-        "Pi runtime missing. Set HEXBOT_PI_EXECUTABLE or run npm ci --prefix backend/pi-runtime --ignore-scripts",
-    ))
 }
 fn refuse_legacy_listener(home: &Path) -> Result<()> {
     if !home.join("runtime/native-transition-pending").exists() {
@@ -161,6 +148,14 @@ fn lock_home(home: &Path) -> Result<std::fs::File> {
     file.sync_all()?;
     Ok(file)
 }
+/// Only print a startup link to an unsupervised terminal. macOS shells inherit
+/// XPC_SERVICE_NAME=0, which does not name a launchd service.
+fn prints_sign_in_link(terminal: bool, env: impl Fn(&str) -> Option<String>) -> bool {
+    terminal
+        && env("HEXBOT_SUPERVISOR").is_none()
+        && env("INVOCATION_ID").is_none()
+        && env("XPC_SERVICE_NAME").is_none_or(|name| name == "0")
+}
 async fn run() -> Result<()> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     let mut args = arguments.clone().into_iter();
@@ -174,8 +169,9 @@ async fn run() -> Result<()> {
     }
     if matches!(command.as_str(), "help" | "--help" | "-h") {
         println!(
-            "Hexbot {}\nhexbot serve [--host IP] [--port N] [--lan | --no-lan]\nhexbot pair\nhexbot bots list | create NAME | delete NAME\nhexbot rooms list\nhexbot devices list | revoke ID\nhexbot connect [status | disconnect]\nhexbot send BOT TEXT",
-            hexbot_core::version()
+            "Hexbot {}\n{}",
+            hexbot_core::version(),
+            hexbot_core::cli::USAGE
         );
         return Ok(());
     }
@@ -186,11 +182,17 @@ async fn run() -> Result<()> {
     }
 
     if command == "pair" {
-        if args.next().is_some() {
-            return Err(Error::new(4200, "pair takes no arguments"));
-        }
+        let sign_in = match (args.next().as_deref(), args.next()) {
+            (None, None) => false,
+            (Some("--sign-in"), None) => true,
+            _ => return Err(Error::new(4200, "pair accepts only --sign-in")),
+        };
         db::migrate(&home)?;
-        let code = auth::new_code(&home, "local")?;
+        let code = if sign_in {
+            auth::new_sign_in_code(&home)?
+        } else {
+            auth::new_code(&home, "local")?
+        };
         let network = hexbot_core::settings::network(&home)?;
         let port = network["port"].as_u64().unwrap_or(9119);
         let addresses = network["addresses"].as_array().cloned().unwrap_or_default();
@@ -278,13 +280,14 @@ async fn run() -> Result<()> {
     if let Some(lan) = lan {
         hexbot_core::settings::update(&home, "local", &serde_json::json!({"lan_enabled":lan}))?;
     }
-    let pi = pi_executable()?;
+    let pi = common::pi_executable()?;
     let dist = std::env::var_os("HEXBOT_WEB_DIST")
         .map(PathBuf::from)
         .or_else(|| Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/web/dist")))
         .filter(|p| p.join("index.html").is_file());
     let signal = shutdown_signal();
     tokio::pin!(signal);
+    let mut previous: Option<std::sync::Arc<App>> = None;
     loop {
         let enabled = hexbot_core::settings::get(&home)?["lan_enabled"]
             .as_bool()
@@ -299,18 +302,33 @@ async fn run() -> Result<()> {
             }),
             port,
         );
-        let listener = tokio::net::TcpListener::bind(address).await?;
+        let listener = match tokio::net::TcpListener::bind(address).await {
+            Ok(listener) => listener,
+            Err(error) => {
+                if let Some(app) = previous.take() {
+                    app.shutdown().await;
+                }
+                return Err(error.into());
+            }
+        };
         let address = listener.local_addr()?;
         port = address.port();
-        let app = App::new(home.clone(), address, pi.clone(), dist.clone())?;
+        // Changing LAN access rebinds the listener; running bots keep going.
+        let first = previous.is_none();
+        let app = match previous.take() {
+            Some(previous) => previous.rebind(address)?,
+            None => App::new(home.clone(), address, pi.clone(), dist.clone())?,
+        };
         common::atomic_write(
             &home.join("serve-state.json"),
             serde_json::json!({"host":address.ip().to_string(),"port":port})
                 .to_string()
                 .as_bytes(),
         )?;
-        app.rooms.reconcile().await?;
-        app.dreaming.start().await?;
+        if first {
+            app.rooms.reconcile().await?;
+            app.dreaming.start().await?;
+        }
         if let Err(error) = services::start_daemon(&home, port).await {
             eprintln!("Connect: {error}");
         }
@@ -332,23 +350,68 @@ async fn run() -> Result<()> {
         if let Err(error) = finish_native_transition(&home) {
             eprintln!("Runtime cleanup: {error}");
         }
+        if first
+            && prints_sign_in_link(std::io::stdout().is_terminal(), |name| {
+                std::env::var_os(name).map(|value| value.to_string_lossy().into_owned())
+            })
+        {
+            let ip = if address.ip().is_unspecified() {
+                IpAddr::from([127, 0, 0, 1])
+            } else {
+                address.ip()
+            };
+            match auth::new_sign_in_code(&home) {
+                Ok(code) => println!(
+                    "Sign in: http://{}/login?code={}\nThe link works once and expires in 10 minutes. Run `hexbot pair` for a new code.",
+                    SocketAddr::new(ip, port),
+                    code["code"].as_str().unwrap_or("")
+                ),
+                Err(error) => eprintln!("Sign-in link: {error}"),
+            }
+        }
         println!("HERMES_BACKEND_READY port={port}");
         std::io::stdout().flush()?;
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
         let mut update = None;
         let mut terminated = false;
+        let mut rebind = false;
         loop {
             tokio::select! {
-                _=&mut signal=>{terminated=true;break;}
-                result=&mut serving=>{app.shutdown().await;let _=services::shutdown(&home).await;let _=std::fs::remove_file(home.join("serve-state.json"));return result.map_err(|e|Error::new(5200,e.to_string()))?.map_err(Into::into);}
-                _=tick.tick()=>{
-                    if let Some(path)=services::take_restart(&home).await? {update=Some(path);break;}
-                    if hexbot_core::settings::get(&home)?["lan_enabled"].as_bool().unwrap_or(false)!=enabled {break;}
+                _ = &mut signal => {
+                    terminated = true;
+                    break;
+                }
+                result = &mut serving => {
+                    app.shutdown().await;
+                    let _ = services::shutdown(&home).await;
+                    let _ = std::fs::remove_file(home.join("serve-state.json"));
+                    return result
+                        .map_err(|e| Error::new(5200, e.to_string()))?
+                        .map_err(Into::into);
+                }
+                _ = tick.tick() => {
+                    if let Some(path) = services::take_restart(&home).await? {
+                        update = Some(path);
+                        break;
+                    }
+                    if hexbot_core::settings::get(&home)?["lan_enabled"]
+                        .as_bool()
+                        .unwrap_or(false)
+                        != enabled
+                    {
+                        rebind = true;
+                        break;
+                    }
                 }
             }
         }
         // Close established WebSockets as well as listeners before waiting for Axum.
-        app.shutdown().await;
+        if rebind {
+            app.disconnect();
+            previous = Some(app);
+        } else {
+            app.shutdown().await;
+        }
         let _ = services::shutdown(&home).await;
         let _ = std::fs::remove_file(home.join("serve-state.json"));
         let _ = stop.send(());
@@ -375,13 +438,6 @@ async fn run() -> Result<()> {
                 use std::os::unix::process::CommandExt;
                 return Err(next.exec().into());
             }
-            #[cfg(not(unix))]
-            {
-                return Err(Error::new(
-                    5200,
-                    "native restart is unsupported on this platform",
-                ));
-            }
         }
     }
     Ok(())
@@ -397,10 +453,6 @@ async fn shutdown_signal() {
                 let _ = tokio::signal::ctrl_c().await;
             }
         }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
     }
 }
 #[tokio::main]
@@ -478,5 +530,43 @@ mod tests {
         .unwrap();
         finish_native_transition(home.path()).unwrap();
         assert!(!home.path().join("runtime/venv").exists());
+    }
+}
+
+#[cfg(test)]
+mod sign_in_tests {
+    use super::prints_sign_in_link;
+    #[test]
+    fn only_a_terminal_without_a_supervisor_prints_the_link() {
+        let env = |vars: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                vars.iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| value.to_string())
+            }
+        };
+        assert!(prints_sign_in_link(true, env(&[])));
+        assert!(prints_sign_in_link(true, env(&[("XPC_SERVICE_NAME", "0")])));
+        assert!(!prints_sign_in_link(
+            true,
+            env(&[("XPC_SERVICE_NAME", "application.com.apple.Terminal.1")])
+        ));
+        assert!(!prints_sign_in_link(false, env(&[])));
+        for name in ["HEXBOT_SUPERVISOR", "INVOCATION_ID", "XPC_SERVICE_NAME"] {
+            assert!(!prints_sign_in_link(true, |key| (key == name).then(String::new)));
+        }
+        assert!(!prints_sign_in_link(
+            true,
+            env(&[("HEXBOT_SUPERVISOR", "desktop")])
+        ));
+        assert!(!prints_sign_in_link(
+            true,
+            env(&[("HEXBOT_SUPERVISOR", "dev")])
+        ));
+        assert!(!prints_sign_in_link(true, env(&[("INVOCATION_ID", "abc")])));
+        assert!(!prints_sign_in_link(
+            true,
+            env(&[("XPC_SERVICE_NAME", "app.hexbot.daemon")])
+        ));
     }
 }

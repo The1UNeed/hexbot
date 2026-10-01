@@ -16,7 +16,8 @@ pub fn open(home: &Path) -> Result<Connection> {
     fs::create_dir_all(home)?;
     let conn = Connection::open(home.join("hexbot-runtime.db"))?;
     conn.busy_timeout(Duration::from_secs(5))?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
       CREATE TABLE IF NOT EXISTS native_sessions(stored_id TEXT PRIMARY KEY,owner TEXT NOT NULL,bot TEXT NOT NULL,prompt TEXT NOT NULL,options TEXT NOT NULL DEFAULT '{}');
       CREATE TABLE IF NOT EXISTS native_live_sessions(stored_id TEXT PRIMARY KEY REFERENCES native_sessions(stored_id) ON DELETE CASCADE,live_id TEXT NOT NULL UNIQUE);
       CREATE TABLE IF NOT EXISTS native_messages(session_id TEXT NOT NULL,seq INTEGER NOT NULL,message_json TEXT NOT NULL,PRIMARY KEY(session_id,seq));
@@ -33,14 +34,16 @@ pub fn open(home: &Path) -> Result<Connection> {
       CREATE TRIGGER IF NOT EXISTS summary_message_insert AFTER INSERT ON native_messages BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;
       CREATE TRIGGER IF NOT EXISTS summary_message_update AFTER UPDATE ON native_messages BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;
       CREATE TRIGGER IF NOT EXISTS summary_message_delete AFTER DELETE ON native_messages BEGIN DELETE FROM native_summaries WHERE session_id=OLD.session_id; END;
-      CREATE TRIGGER IF NOT EXISTS summary_journal_update AFTER UPDATE ON native_pi_journal BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;")?;
+      CREATE TRIGGER IF NOT EXISTS summary_journal_update AFTER UPDATE ON native_pi_journal BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;",
+    )?;
     crate::db::migrate_runtime(&conn)?;
     Ok(conn)
 }
 pub fn history(home: &Path, stored: &str) -> Result<Vec<Value>> {
     let conn = open(home)?;
-    let mut stmt =
-        conn.prepare("SELECT m.message_json FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? AND (p.active IS NULL OR p.active=1) ORDER BY m.seq")?;
+    let mut stmt = conn.prepare(
+        "SELECT m.message_json FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? AND (p.active IS NULL OR p.active=1) ORDER BY m.seq",
+    )?;
     let rows = stmt.query_map([stored], |r| r.get::<_, String>(0))?;
     rows.map(|r| {
         let s = r?;
@@ -57,7 +60,10 @@ pub fn append(home: &Path, stored: &str, mut message: Value) -> Result<()> {
     if message.get("row_id").is_none() {
         message["row_id"] = json!(id());
     }
-    conn.execute("INSERT INTO native_messages(session_id,seq,message_json) SELECT ?1,COALESCE(MAX(seq),0)+1,?2 FROM native_messages WHERE session_id=?1",params![stored,message.to_string()])?;
+    conn.execute(
+        "INSERT INTO native_messages(session_id,seq,message_json) SELECT ?1,COALESCE(MAX(seq),0)+1,?2 FROM native_messages WHERE session_id=?1",
+        params![stored, message.to_string()],
+    )?;
     Ok(())
 }
 pub fn preview(text: &str) -> String {
@@ -70,19 +76,36 @@ pub fn preview(text: &str) -> String {
 }
 pub fn summary(home: &Path, stored: &str) -> Result<Value> {
     let mut conn = open(home)?;
+    let cached = |conn: &Connection| -> Result<Option<(i64, String)>> {
+        Ok(conn
+            .query_row(
+                "SELECT message_count,preview FROM native_summaries WHERE session_id=?",
+                [stored],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    };
+    // The section list reads every summary; only a miss needs the write lock.
+    if let Some((count, preview)) = cached(&conn)? {
+        return Ok(json!({"preview":preview,"message_count":count}));
+    }
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let cached: Option<(i64, String)> = tx
-        .query_row(
-            "SELECT message_count,preview FROM native_summaries WHERE session_id=?",
-            [stored],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    let (count, preview) = if let Some(cached) = cached {
+    let (count, preview) = if let Some(cached) = cached(&tx)? {
         cached
     } else {
-        let count: i64 = tx.query_row("SELECT COUNT(*) FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? AND (p.active IS NULL OR p.active=1)", [stored], |r| r.get(0))?;
-        let text: String = tx.query_row("SELECT COALESCE(json_extract(m.message_json,'$.text'),'') FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? AND (p.active IS NULL OR p.active=1) AND json_extract(m.message_json,'$.role')='user' AND COALESCE(json_extract(m.message_json,'$.display_kind'),'normal')<>'hidden' ORDER BY m.seq LIMIT 1", [stored], |r| r.get(0)).optional()?.unwrap_or_default();
+        let count: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? AND (p.active IS NULL OR p.active=1)",
+            [stored],
+            |r| r.get(0),
+        )?;
+        let text: String = tx
+            .query_row(
+                "SELECT COALESCE(json_extract(m.message_json,'$.text'),'') FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? AND (p.active IS NULL OR p.active=1) AND json_extract(m.message_json,'$.role')='user' AND COALESCE(json_extract(m.message_json,'$.display_kind'),'normal')<>'hidden' ORDER BY m.seq LIMIT 1",
+                [stored],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or_default();
         let preview = preview(&text);
         tx.execute(
             "INSERT INTO native_summaries VALUES(?,?,?)",
@@ -94,8 +117,14 @@ pub fn summary(home: &Path, stored: &str) -> Result<Value> {
     Ok(json!({"preview":preview,"message_count":count}))
 }
 pub fn descendants(home: &Path, stored: &str) -> Result<Vec<String>> {
-    common::rows(&open(home)?, "WITH RECURSIVE tree(id) AS (SELECT ?1 UNION SELECT s.stored_id FROM native_sessions s JOIN tree t ON json_extract(s.options,'$.parent_session')=t.id) SELECT id FROM tree", &[&stored])?
-        .into_iter().map(|row| common::required(&row,"id").map(str::to_owned)).collect()
+    common::rows(
+        &open(home)?,
+        "WITH RECURSIVE tree(id) AS (SELECT ?1 UNION SELECT s.stored_id FROM native_sessions s JOIN tree t ON json_extract(s.options,'$.parent_session')=t.id) SELECT id FROM tree",
+        &[&stored],
+    )?
+    .into_iter()
+    .map(|row| common::required(&row, "id").map(str::to_owned))
+    .collect()
 }
 pub fn mark_deleted(home: &Path, stored: &str) -> Result<Vec<String>> {
     let mut conn = open(home)?;
@@ -149,27 +178,38 @@ pub fn session_dir(home: &Path, stored: &str) -> Result<PathBuf> {
 }
 pub fn usage(home: &Path, stored: &str) -> Result<Value> {
     let conn = open(home)?;
-    conn.query_row("SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(cache_read_tokens),0),COALESCE(SUM(cache_write_tokens),0),COALESCE(SUM(cost),0) FROM native_usage WHERE session_id=?",[stored],|r|{
-        let input:i64=r.get(0)?;let output:i64=r.get(1)?;let read:i64=r.get(2)?;let write:i64=r.get(3)?;
-        Ok(json!({"input_tokens":input,"output_tokens":output,"cache_read_tokens":read,"cache_write_tokens":write,"total_tokens":input+output+read+write,"cost":r.get::<_,f64>(4)?}))
-    }).map_err(Into::into)
+    conn.query_row(
+        "SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(cache_read_tokens),0),COALESCE(SUM(cache_write_tokens),0),COALESCE(SUM(cost),0) FROM native_usage WHERE session_id=?",
+        [stored],
+        |r| {
+            let input: i64 = r.get(0)?;
+            let output: i64 = r.get(1)?;
+            let read: i64 = r.get(2)?;
+            let write: i64 = r.get(3)?;
+            Ok(json!({"input_tokens":input,"output_tokens":output,"cache_read_tokens":read,"cache_write_tokens":write,"total_tokens":input+output+read+write,"cost":r.get::<_,f64>(4)?}))
+        },
+    )
+    .map_err(Into::into)
 }
-pub fn usage_rows(home: &Path) -> Result<Vec<Value>> {
-    common::rows(&open(home)?, "SELECT * FROM native_usage", &[])
-}
-pub fn record_usage(
-    home: &Path,
-    stored: &str,
-    owner: &str,
-    bot: &str,
-    message: &Value,
-) -> Result<()> {
+fn insert_usage(conn: &Connection, route: PiRoute<'_>, message: &Value) -> Result<i64> {
     let u = &message["usage"];
-    if !u.is_object() {
-        return Ok(());
-    }
-    open(home)?.execute("INSERT INTO native_usage(session_id,owner_id,bot,model,provider,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost,timestamp) VALUES(?,?,?,?,?,?,?,?,?,?,?)",params![stored,owner,bot,message["model"].as_str().unwrap_or(""),message["provider"].as_str().unwrap_or(""),u["input"].as_i64().unwrap_or(0),u["output"].as_i64().unwrap_or(0),u["cacheRead"].as_i64().unwrap_or(0),u["cacheWrite"].as_i64().unwrap_or(0),u["cost"]["total"].as_f64().unwrap_or(0.),common::now()])?;
-    Ok(())
+    conn.execute(
+        "INSERT INTO native_usage(session_id,owner_id,bot,model,provider,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost,timestamp) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        params![
+            route.stored,
+            route.owner,
+            route.bot,
+            message["model"].as_str().unwrap_or(""),
+            message["provider"].as_str().unwrap_or(""),
+            u["input"].as_i64().unwrap_or(0),
+            u["output"].as_i64().unwrap_or(0),
+            u["cacheRead"].as_i64().unwrap_or(0),
+            u["cacheWrite"].as_i64().unwrap_or(0),
+            u["cost"]["total"].as_f64().unwrap_or(0.),
+            message_timestamp(message)
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
 }
 pub fn text(content: &Value) -> String {
     if let Some(s) = content.as_str() {
@@ -358,11 +398,37 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
                 let message = match role {
                     "user" => {
                         let content = if let Some(blocks) = parsed.as_array() {
-                            json!(blocks.iter().filter_map(|block|{
-                            if block["type"]=="text"{return Some(block.clone());}
-                            if block["type"]=="image_url"{let url=block["image_url"]["url"].as_str()?;if let Some((header,data))=url.strip_prefix("data:").and_then(|u|u.split_once(";base64,")){return Some(json!({"type":"image","mimeType":header,"data":data}));}return Some(json!({"type":"text","text":format!("Image: {url}")}));}
-                            if block["type"]=="image"{return Some(block.clone());}None
-                        }).collect::<Vec<_>>())
+                            json!(
+                                blocks
+                                    .iter()
+                                    .filter_map(|block| {
+                                        if block["type"] == "text" {
+                                            return Some(block.clone());
+                                        }
+                                        if block["type"] == "image_url" {
+                                            let url = block["image_url"]["url"].as_str()?;
+                                            if let Some((header, data)) = url
+                                                .strip_prefix("data:")
+                                                .and_then(|u| u.split_once(";base64,"))
+                                            {
+                                                return Some(json!({
+                                                "type":"image",
+                                                "mimeType":header,
+                                                "data":data}
+                                                ));
+                                            }
+                                            return Some(json!({
+                                            "type":"text",
+                                            "text":format!("Image: {url}")}
+                                            ));
+                                        }
+                                        if block["type"] == "image" {
+                                            return Some(block.clone());
+                                        }
+                                        None
+                                    })
+                                    .collect::<Vec<_>>()
+                            )
                         } else {
                             parsed
                         };
@@ -386,7 +452,29 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
                                 blocks.push(json!({"type":"toolCall","id":call["id"],"name":call["function"]["name"],"arguments":args}));
                             }
                         }
-                        json!({"role":"assistant","content":blocks,"api":"openai-completions","provider":"imported","model":"legacy","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":ts})
+                        json!({
+                            "role": "assistant",
+                            "content": blocks,
+                            "api": "openai-completions",
+                            "provider": "imported",
+                            "model": "legacy",
+                            "usage": {
+                                "input": 0,
+                                "output": 0,
+                                "cacheRead": 0,
+                                "cacheWrite": 0,
+                                "totalTokens": 0,
+                                "cost": {
+                                    "input": 0,
+                                    "output": 0,
+                                    "cacheRead": 0,
+                                    "cacheWrite": 0,
+                                    "total": 0
+                                }
+                            },
+                            "stopReason": "stop",
+                            "timestamp": ts
+                        })
                     }
                     "tool" => {
                         projection["name"] = row["tool_name"].clone();
@@ -456,14 +544,16 @@ pub fn reject_prompt(home: &Path, stored: &str, intent: &str) -> Result<()> {
 
 /// Persist a live Pi event, its UI projection, and its billing record together.
 /// The log entry id is bound during reconciliation because Pi emits message_end
-/// before its SessionManager appends that entry to disk.
-pub fn project_message(
+/// before its SessionManager appends that entry to disk. `seed` adds
+/// client-facing fields to the projected row, such as a tool preview.
+pub fn project_seeded(
     home: &Path,
     stored: &str,
     owner: &str,
     bot: &str,
     message: &Value,
     display: Option<&str>,
+    seed: Option<&Value>,
 ) -> Result<()> {
     common::identifier(stored)?;
     common::identifier(bot)?;
@@ -476,7 +566,7 @@ pub fn project_message(
         message,
         display,
         None,
-        None,
+        seed,
         false,
     )?;
     tx.commit()?;
@@ -491,6 +581,17 @@ fn message_timestamp(message: &Value) -> f64 {
         .map(|t| t / 1000.0)
         .unwrap_or_else(common::now)
 }
+/// Clients label Pi's built-in tools by the names the legacy daemon sent.
+pub(crate) fn client_tool_name(name: &str) -> &str {
+    match name {
+        "bash" => "terminal",
+        "read" => "read_file",
+        "write" => "write_file",
+        "edit" => "patch",
+        "grep" | "find" => "search_files",
+        other => other,
+    }
+}
 fn projection(message: &Value, display: Option<&str>) -> Option<Value> {
     let role = message["role"].as_str()?;
     if role == "assistant" && message["stopReason"] == "error" {
@@ -503,7 +604,22 @@ fn projection(message: &Value, display: Option<&str>) -> Option<Value> {
             result["content"] = message["content"].clone();
         }
         "assistant" => {
-            let calls=message["content"].as_array().into_iter().flatten().filter(|block|block["type"]=="toolCall").map(|block|json!({"id":block["id"],"type":"function","function":{"name":block["name"],"arguments":block["arguments"].to_string()}})).collect::<Vec<_>>();
+            let calls = message["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|block| block["type"] == "toolCall")
+                .map(|block| {
+                    json!({
+                        "id": block["id"],
+                        "type": "function",
+                        "function": {
+                            "name": client_tool_name(block["name"].as_str().unwrap_or("")),
+                            "arguments": block["arguments"].to_string()
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
             if !calls.is_empty() {
                 result["tool_calls"] = json!(calls);
             }
@@ -521,8 +637,9 @@ fn projection(message: &Value, display: Option<&str>) -> Option<Value> {
             result["stop_reason"] = message["stopReason"].clone();
         }
         "toolResult" => {
-            result["name"] = message["toolName"].clone();
-            result["tool_name"] = message["toolName"].clone();
+            let name = client_tool_name(message["toolName"].as_str().unwrap_or(""));
+            result["name"] = json!(name);
+            result["tool_name"] = json!(name);
             result["tool_id"] = message["toolCallId"].clone();
             result["tool_call_id"] = message["toolCallId"].clone();
             result["is_error"] = message["isError"].clone();
@@ -563,7 +680,13 @@ fn persist_pi_message(
     let mut display = display.map(str::to_owned);
     if message["role"] == "user" {
         let body = text(&message["content"]);
-        let intent:Option<(String,String)>=conn.query_row("SELECT id,display_kind FROM native_prompt_intents WHERE session_id=? AND text=? AND consumed_by IS NULL ORDER BY created_at,rowid LIMIT 1",params![stored,body],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        let intent: Option<(String, String)> = conn
+            .query_row(
+                "SELECT id,display_kind FROM native_prompt_intents WHERE session_id=? AND text=? AND consumed_by IS NULL ORDER BY created_at,rowid LIMIT 1",
+                params![stored, body],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
         if let Some((intent, kind)) = intent {
             display = Some(kind);
             conn.execute(
@@ -629,20 +752,29 @@ fn persist_pi_message(
         let provider = message["provider"].as_str().unwrap_or("");
         let model = message["model"].as_str().unwrap_or("");
         let existing: Option<i64> = if recover {
-            conn.query_row("SELECT u.id FROM native_usage u WHERE session_id=? AND owner_id=? AND bot=? AND model=? AND provider=? AND input_tokens=? AND output_tokens=? AND cache_read_tokens=? AND cache_write_tokens=? AND cost=? AND NOT EXISTS(SELECT 1 FROM native_pi_journal p WHERE p.usage_id=u.id) ORDER BY u.id LIMIT 1",params![stored,owner,bot,model,provider,values.0,values.1,values.2,values.3,values.4],|r|r.get(0)).optional()?
+            conn.query_row(
+                "SELECT u.id FROM native_usage u WHERE session_id=? AND owner_id=? AND bot=? AND model=? AND provider=? AND input_tokens=? AND output_tokens=? AND cache_read_tokens=? AND cache_write_tokens=? AND cost=? AND NOT EXISTS(SELECT 1 FROM native_pi_journal p WHERE p.usage_id=u.id) ORDER BY u.id LIMIT 1",
+                params![
+                    stored, owner, bot, model, provider, values.0, values.1, values.2, values.3,
+                    values.4
+                ],
+                |r| r.get(0),
+            )
+            .optional()?
         } else {
             None
         };
-        Some(if let Some(id) = existing {
-            id
-        } else {
-            conn.execute("INSERT INTO native_usage(session_id,owner_id,bot,model,provider,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost,timestamp) VALUES(?,?,?,?,?,?,?,?,?,?,?)",params![stored,owner,bot,model,provider,values.0,values.1,values.2,values.3,values.4,message_timestamp(message)])?;
-            conn.last_insert_rowid()
+        Some(match existing {
+            Some(id) => id,
+            None => insert_usage(conn, PiRoute { stored, owner, bot }, message)?,
         })
     } else {
         None
     };
-    conn.execute("INSERT INTO native_pi_journal(journal_id,session_id,raw_json,entry_id,projection_seq,usage_id) VALUES (?,?,?,?,?,?)",params![journal,stored,raw,entry,projection_seq,usage_id])?;
+    conn.execute(
+        "INSERT INTO native_pi_journal(journal_id,session_id,raw_json,entry_id,projection_seq,usage_id) VALUES (?,?,?,?,?,?)",
+        params![journal, stored, raw, entry, projection_seq, usage_id],
+    )?;
     Ok(journal)
 }
 fn legacy_projection(
@@ -767,9 +899,15 @@ pub fn reconcile(home: &Path, bot: &str, stored: &str, owner: &str) -> Result<()
             "custom_message" => Some(
                 json!({"role":"custom","content":entry["content"],"customType":entry["customType"],"display":entry["display"],"details":entry["details"],"timestamp":entry_timestamp(entry)*1000.0}),
             ),
-            "usage" | "compaction" | "branch_summary" if entry["usage"].is_object() => Some(
-                json!({"role":"usage","usage":entry["usage"],"provider":entry["provider"].as_str().unwrap_or(&model.0),"model":entry["model"].as_str().unwrap_or(&model.1),"timestamp":entry_timestamp(entry)*1000.0}),
-            ),
+            "usage" | "compaction" | "branch_summary" if entry["usage"].is_object() => {
+                Some(json!({
+                    "role": "usage",
+                    "usage": entry["usage"],
+                    "provider": entry["provider"].as_str().unwrap_or(&model.0),
+                    "model": entry["model"].as_str().unwrap_or(&model.1),
+                    "timestamp": entry_timestamp(entry) * 1000.0
+                }))
+            }
             _ => None,
         };
         let Some(message) = message else {
@@ -785,7 +923,13 @@ pub fn reconcile(home: &Path, bot: &str, stored: &str, owner: &str) -> Result<()
         let journal = if let Some(existing) = existing {
             existing
         } else {
-            let waiting:Option<String>=tx.query_row("SELECT journal_id FROM native_pi_journal WHERE session_id=? AND entry_id IS NULL AND raw_json=? ORDER BY rowid LIMIT 1",params![stored,message.to_string()],|r|r.get(0)).optional()?;
+            let waiting: Option<String> = tx
+                .query_row(
+                    "SELECT journal_id FROM native_pi_journal WHERE session_id=? AND entry_id IS NULL AND raw_json=? ORDER BY rowid LIMIT 1",
+                    params![stored, message.to_string()],
+                    |r| r.get(0),
+                )
+                .optional()?;
             if let Some(waiting) = waiting {
                 tx.execute(
                     "UPDATE native_pi_journal SET entry_id=? WHERE journal_id=?",
@@ -983,6 +1127,23 @@ pub fn reconcile_all(home: &Path) -> Result<()> {
     )?;
     for session in sessions {
         let stored = common::required(&session, "stored_id")?;
+        let path = home
+            .join("runtime/sessions")
+            .join(stored)
+            .join("conversation.jsonl");
+        // A quarantined section stays closed until someone puts a conversation
+        // file back in place; that file then gets a fresh recovery attempt.
+        let quarantined: bool = open(home)?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM native_quarantine WHERE session_id=?)",
+            [stored],
+            |r| r.get(0),
+        )?;
+        if quarantined {
+            if !path.exists() {
+                continue;
+            }
+            open(home)?.execute("DELETE FROM native_quarantine WHERE session_id=?", [stored])?;
+        }
         if let Err(error) = reconcile(
             home,
             common::required(&session, "bot")?,
@@ -990,16 +1151,15 @@ pub fn reconcile_all(home: &Path) -> Result<()> {
             common::required(&session, "owner")?,
         ) {
             if !matches!(error.code, 5200 | 4302)
-                || error.data.as_ref().is_some_and(|d| d["transient"] == true)
+                || error
+                    .data
+                    .as_ref()
+                    .is_some_and(|d| d["transient"] == true || d["quarantined"] == true)
             {
                 eprintln!("Could not recover conversation {stored}: {error}");
                 continue;
             }
             eprintln!("Quarantining conversation {stored}: {}", error.message);
-            let path = home
-                .join("runtime/sessions")
-                .join(stored)
-                .join("conversation.jsonl");
             // Record the failure first, so a failed rename cannot permit reopening.
             open(home)?.execute(
                 "INSERT OR REPLACE INTO native_quarantine VALUES(?,?)",
@@ -1031,7 +1191,7 @@ fn check_quarantine(home: &Path, stored: &str) -> Result<()> {
         )
         .optional()?;
     if let Some(error) = error {
-        return Err(crate::Error::new(5200, error));
+        return Err(crate::Error::new(5200, error).with_data(json!({"quarantined":true})));
     }
     Ok(())
 }

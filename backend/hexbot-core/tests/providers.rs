@@ -60,7 +60,7 @@ async fn credentials_reach_profiles_without_leaking_to_clients() {
         true
     );
     let dir = home.path().join("pi");
-    providers::prepare_pi(home.path(), &dir).unwrap();
+    providers::prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
     let auth: Value = serde_json::from_slice(&fs::read(dir.join("auth.json")).unwrap()).unwrap();
     assert_eq!(auth["openai"]["key"], "new's\\secret");
     call(
@@ -71,7 +71,7 @@ async fn credentials_reach_profiles_without_leaking_to_clients() {
     )
     .await
     .unwrap();
-    providers::prepare_pi(home.path(), &dir).unwrap();
+    providers::prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
     let auth: Value = serde_json::from_slice(&fs::read(dir.join("auth.json")).unwrap()).unwrap();
     assert!(auth.get("openai").is_none());
     #[cfg(unix)]
@@ -229,6 +229,8 @@ async fn wait_for_status(home: &Path, id: &str) -> Value {
 #[tokio::test]
 async fn device_login_saves_real_grant_and_scopes_polling() {
     let home = setup();
+    let mirror = home.path().join("profiles/owl/pi");
+    providers::prepare_pi_for_bot(home.path(), "owl", &mirror).unwrap();
     let (base, count, server) = auth_server("ok").await;
     common::write_config(
         home.path(),
@@ -280,6 +282,13 @@ async fn device_login_saves_real_grant_and_scopes_polling() {
         auth["providers"]["openai-codex"]["tokens"]["access_token"],
         "access"
     );
+    let mirrored: Value =
+        serde_json::from_slice(&fs::read(mirror.join("auth.json")).unwrap()).unwrap();
+    assert_eq!(mirrored["openai-codex"]["access"], "access");
+    providers::clear_key(home.path(), "codex").unwrap();
+    let mirrored: Value =
+        serde_json::from_slice(&fs::read(mirror.join("auth.json")).unwrap()).unwrap();
+    assert!(mirrored.get("openai-codex").is_none());
     server.abort();
 }
 #[tokio::test]
@@ -471,7 +480,7 @@ async fn disconnect_invalidates_pending_login_and_corrupt_credentials_fail_close
     server.abort();
     fs::write(home.path().join("auth.json"), "[]").unwrap();
     assert_eq!(
-        providers::prepare_pi(home.path(), &home.path().join("pi"))
+        providers::prepare_pi_for_bot(home.path(), "owl", &home.path().join("pi"))
             .unwrap_err()
             .code,
         5200
@@ -638,7 +647,7 @@ async fn named_custom_provider_identity_survives_model_listing_and_pi_import() {
     assert_eq!(provider["aliases"], json!(["custom:work"]));
     assert!(!list.to_string().contains("custom-secret"));
     let dir = home.path().join("pi");
-    providers::prepare_pi(home.path(), &dir).unwrap();
+    providers::prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
     let models: Value =
         serde_json::from_slice(&fs::read(dir.join("models.json")).unwrap()).unwrap();
     let auth: Value = serde_json::from_slice(&fs::read(dir.join("auth.json")).unwrap()).unwrap();
@@ -658,7 +667,7 @@ fn response_providers_and_acp_keep_their_transport() {
         &json!({"model":{"provider":"copilot-acp","default":"copilot-acp"}}),
     )
     .unwrap();
-    providers::prepare_pi(home.path(), &dir).unwrap();
+    providers::prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
     let models: Value =
         serde_json::from_slice(&fs::read(dir.join("models.json")).unwrap()).unwrap();
     let auth: Value = serde_json::from_slice(&fs::read(dir.join("auth.json")).unwrap()).unwrap();
@@ -682,7 +691,7 @@ fn response_providers_and_acp_keep_their_transport() {
             &json!({"model":{"provider":provider,"default":"operator-new-model"}}),
         )
         .unwrap();
-        providers::prepare_pi(home.path(), &dir).unwrap();
+        providers::prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
         let models: Value =
             serde_json::from_slice(&fs::read(dir.join("models.json")).unwrap()).unwrap();
         let added = models["providers"][pi]["models"].as_array().unwrap();
@@ -765,4 +774,77 @@ async fn xai_hexbot_base_url_precedes_legacy_name() {
             .unwrap()["base_url"],
         "https://old.test/v1"
     );
+}
+
+#[tokio::test]
+async fn key_changes_refresh_every_existing_pi_mirror() {
+    let home = setup();
+    providers::set_key(home.path(), "openai", "old").unwrap();
+    for bot in ["owl", "fox"] {
+        let dir = home.path().join("profiles").join(bot).join("pi");
+        providers::prepare_pi_for_bot(home.path(), bot, &dir).unwrap();
+    }
+    fs::create_dir_all(home.path().join("profiles/unused")).unwrap();
+    for key in [Some("rotated"), None, Some("reconnected")] {
+        match key {
+            Some(key) => providers::set_key(home.path(), "openai", key).unwrap(),
+            None => providers::clear_key(home.path(), "openai").unwrap(),
+        };
+        for bot in ["owl", "fox"] {
+            let auth: Value = serde_json::from_slice(
+                &fs::read(home.path().join("profiles").join(bot).join("pi/auth.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(auth["openai"]["key"].as_str(), key);
+        }
+        assert!(!home.path().join("profiles/unused/pi").exists());
+    }
+}
+
+#[tokio::test]
+async fn lmstudio_picker_discovers_models_without_refresh_and_keeps_offline_default() {
+    let home = setup();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let count = Arc::new(AtomicUsize::new(0));
+    let calls = count.clone();
+    let app = axum::Router::new().route(
+        "/v1/models",
+        axum::routing::get(move || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { axum::Json(json!({"data":[{"id":"qwen-local"}]})) }
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    common::write_config(
+        home.path(),
+        &json!({"model":{"provider":"lmstudio","base_url":url}}),
+    )
+    .unwrap();
+    providers::set_key(home.path(), "lmstudio", "local").unwrap();
+    providers::model_options(home.path(), &json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        0,
+        "unfiltered reads must not query local servers"
+    );
+    let models = providers::list_models(home.path(), &json!({"provider":"lmstudio"}))
+        .await
+        .unwrap();
+    assert_eq!(models["all"][0]["id"], "qwen-local");
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    server.abort();
+    server.await.unwrap_err();
+    common::write_config(
+        home.path(),
+        &json!({"model":{"provider":"lmstudio","base_url":url,"default":"offline-model"}}),
+    )
+    .unwrap();
+    let models = providers::list_models(home.path(), &json!({"provider":"lmstudio"}))
+        .await
+        .unwrap();
+    assert_eq!(models["all"][0]["id"], "offline-model");
+    assert!(models["error"].is_string());
 }

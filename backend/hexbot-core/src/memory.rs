@@ -50,8 +50,8 @@ impl MemoryStore {
         }
     }
 
-    /// Override the trusted administrator config directory, or disable it in tests.
-    pub fn with_managed_dir(mut self, directory: Option<PathBuf>) -> Self {
+    #[cfg(test)]
+    fn with_managed_dir(mut self, directory: Option<PathBuf>) -> Self {
         self.managed_dir = directory;
         self
     }
@@ -340,3 +340,7 @@ mod tests {
         assert_eq!(expand_env("${CAP", lookup), "${CAP");
     }
 }
+
+#[cfg(test)]
+#[path = "memory_tests.rs"]
+mod file_tests;

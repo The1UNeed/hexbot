@@ -5,8 +5,9 @@ use hexbot_core::{
 };
 use serde_json::json;
 use std::{fs, path::Path, time::Duration};
-fn setup() -> tempfile::TempDir {
-    let h = tempfile::tempdir().unwrap();
+mod support;
+fn setup() -> support::TestHome {
+    let h = support::TestHome::new();
     db::migrate(h.path()).unwrap();
     let c = db::open(h.path()).unwrap();
     c.execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES ('alice','Alice','member',0),('bob','Bob','member',0),('carol','Carol','member',0); INSERT INTO bots(name,owner_id,shareable) VALUES ('shared','alice',1),('private','alice',0),('own','bob',0); INSERT INTO rooms VALUES ('room-bob','Bob room','bob','shared',NULL,'{}',0,0,0,NULL),('room-carol','Carol room','carol','shared',NULL,'{}',0,0,0,NULL); INSERT INTO room_members VALUES ('room-bob','bot','shared','bob',0,NULL,0),('room-carol','bot','shared','carol',0,NULL,0),('room-bob','bot','private','bob',0,NULL,0); INSERT INTO room_sessions VALUES ('room-bob','shared','root-bob',NULL),('room-carol','shared','root-carol',NULL),('room-bob','private','root-private',NULL);").unwrap();
@@ -17,7 +18,7 @@ fn setup() -> tempfile::TempDir {
     .unwrap();
     c.execute(
         "INSERT INTO settings(key,value) VALUES ('workspace_dir',?)",
-        [json!(h.path().join("workspace")).to_string()],
+        [json!(h.workspace()).to_string()],
     )
     .unwrap();
     for bot in ["shared", "private", "own"] {

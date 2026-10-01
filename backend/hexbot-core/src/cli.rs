@@ -7,18 +7,25 @@ use serde_json::{Value, json};
 use std::{
     io::{IsTerminal, Write},
     net::{IpAddr, SocketAddr},
-    path::{Path, PathBuf},
+    path::Path,
     time::Duration,
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+pub const USAGE: &str = concat!(
+    "hexbot serve [--host IP] [--port N] [--lan | --no-lan]\n",
+    "hexbot pair\n",
+    "hexbot bots list | create NAME [--title TEXT] [--description TEXT] [--persona TEXT] [--provider NAME] [--model NAME] | delete NAME\n",
+    "hexbot rooms list\n",
+    "hexbot devices list | revoke ID\n",
+    "hexbot connect [--name TEXT | status | disconnect]\n",
+    "hexbot send BOT TEXT"
+);
+
 fn invalid() -> Error {
-    Error::new(
-        4200,
-        "usage: hexbot connect [status|disconnect] | devices list|revoke ID | bots create NAME [--title TEXT] [--description TEXT] [--persona TEXT] [--provider NAME] [--model NAME] | bots delete NAME | send BOT TEXT",
-    )
+    Error::new(4200, format!("usage:\n{USAGE}"))
 }
 fn command(args: &[String]) -> Result<(&'static str, Value)> {
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -53,7 +60,7 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
         }
         ["hermes", ..] => Err(Error::new(
             4200,
-            "The native daemon does not include the legacy Hermes CLI. Use hexbot send BOT TEXT for one-shot chat.",
+            "This command was removed. Use hexbot send BOT TEXT for one-shot chat.",
         )),
         _ => Err(invalid()),
     }
@@ -79,14 +86,6 @@ fn offline_lock(home: &Path) -> Result<std::fs::File> {
             ));
         }
         Ok(file)
-    }
-    #[cfg(not(unix))]
-    {
-        drop(file);
-        Err(Error::new(
-            5200,
-            "Offline commands require an operating system with daemon file locking",
-        ))
     }
 }
 async fn socket(home: &Path) -> Result<Option<Socket>> {
@@ -233,13 +232,6 @@ async fn input(prompt: String) -> Result<String> {
         };
         tokio::select! {result=read=>result,_=interrupt.recv()=>Err(Error::new(5200,"Command interrupted"))}
     }
-    #[cfg(not(unix))]
-    {
-        Err(Error::new(
-            5200,
-            "Interactive terminal answers are not available on this platform; use the app for this request",
-        ))
-    }
 }
 async fn remote(socket: &mut Socket, method: &str, p: Value) -> Result<Value> {
     let id = common::id();
@@ -281,7 +273,19 @@ async fn remote(socket: &mut Socket, method: &str, p: Value) -> Result<Value> {
                         }
                         if live.as_deref().is_some_and(|v| event["session_id"] == v) {
                             for (method, params) in answers(event).await? {
-                                socket.send(Message::Text(json!({"jsonrpc":"2.0","id":common::id(),"method":method,"params":params}).to_string().into())).await.map_err(|e|Error::new(5200,e.to_string()))?;
+                                socket
+                                    .send(Message::Text(
+                                        json!({
+                                            "jsonrpc": "2.0",
+                                            "id": common::id(),
+                                            "method": method,
+                                            "params": params
+                                        })
+                                        .to_string()
+                                        .into(),
+                                    ))
+                                    .await
+                                    .map_err(|e| Error::new(5200, e.to_string()))?;
                             }
                         }
                     }
@@ -296,13 +300,26 @@ async fn remote(socket: &mut Socket, method: &str, p: Value) -> Result<Value> {
         }
         Err(Error::new(5200, "Daemon disconnected before replying"))
     };
-    let result = tokio::select! {result=tokio::time::timeout(Duration::from_secs(if method=="hexbot.cli.send"{1800}else{60}),operation)=>result.unwrap_or_else(|_|Err(Error::new(5200,"Daemon command timed out"))), _=tokio::signal::ctrl_c()=>Err(Error::new(5200,"Command interrupted"))};
+    let timeout = Duration::from_secs(if method == "hexbot.cli.send" {
+        1800
+    } else {
+        60
+    });
+    let result = tokio::select! {
+        result = tokio::time::timeout(timeout, operation) => {
+            result.unwrap_or_else(|_| Err(Error::new(5200, "Daemon command timed out")))
+        }
+        _ = tokio::signal::ctrl_c() => Err(Error::new(5200, "Command interrupted")),
+    };
     if result.is_err()
         && let Some(live) = live
     {
         let close_id = common::id();
         let close = async {
-            socket.send(Message::Text(json!({"jsonrpc":"2.0","id":close_id,"method":"session.close","params":{"session_id":live}}).to_string().into())).await.ok()?;
+            socket
+                .send(Message::Text(json!({"jsonrpc":"2.0","id":close_id,"method":"session.close","params":{"session_id":live}}).to_string().into()))
+                .await
+                .ok()?;
             while let Some(Ok(frame)) = socket.next().await {
                 if let Message::Text(text) = frame {
                     for line in text.lines() {
@@ -321,51 +338,36 @@ async fn remote(socket: &mut Socket, method: &str, p: Value) -> Result<Value> {
     }
     result
 }
-fn hostname() -> String {
-    #[cfg(unix)]
-    {
-        let mut name = [0u8; 256];
-        if unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) } == 0 {
-            let end = name.iter().position(|b| *b == 0).unwrap_or(name.len());
-            if end > 0 {
-                return String::from_utf8_lossy(&name[..end]).into_owned();
-            }
-        }
-    }
-    std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .unwrap_or_else(|_| "Hexbot".into())
-}
-fn pi_executable() -> Result<PathBuf> {
-    if let Some(p) = std::env::var_os("HEXBOT_PI_EXECUTABLE") {
-        return Ok(p.into());
-    }
-    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../pi-runtime/node_modules/.bin/pi");
-    if p.is_file() {
-        Ok(p)
-    } else {
-        Err(Error::new(
-            5200,
-            "Pi runtime missing; set HEXBOT_PI_EXECUTABLE",
-        ))
-    }
-}
 async fn offline_send(home: &Path, p: &Value) -> Result<Value> {
     let events = EventHub::new();
     let mut receiver = events.subscribe();
-    let runtime = Runtime::new(home.to_owned(), events, pi_executable()?)?;
+    let runtime = Runtime::new(home.to_owned(), events, common::pi_executable()?)?;
     let bot = common::required(p, "bot")?;
     let text = common::required(p, "text")?;
     let stored = format!("cli-{}", common::id());
-    let result=async {
-        let live=runtime.ensure_hidden("local",bot,&stored).await?;
-        let operation=runtime.run_hidden_job("local",bot,&stored,text,&Value::Null);tokio::pin!(operation);
-        loop {tokio::select! {
-            result=&mut operation=>break result.map(|text|json!({"text":text})),
-            event=receiver.recv()=> {let event=event.map_err(|e|Error::new(5200,e.to_string()))?;if event.frame["params"]["session_id"]==live {for (method,p) in answers(&event.frame["params"]).await? {runtime.call("local",method,&p).await.ok_or_else(||Error::new(5200,"Missing response handler"))??;}}},
-            _=tokio::signal::ctrl_c()=>break Err(Error::new(5200,"Command interrupted")),
-        }}
-    }.await;
+    let result = async {
+        let live = runtime.ensure_hidden("local", bot, &stored).await?;
+        let operation = runtime.run_hidden_job("local", bot, &stored, text, &Value::Null);
+        tokio::pin!(operation);
+        loop {
+            tokio::select! {
+                result = &mut operation => break result.map(|text| json!({"text":text})),
+                event = receiver.recv() => {
+                    let event = event.map_err(|e| Error::new(5200, e.to_string()))?;
+                    if event.frame["params"]["session_id"] == live {
+                        for (method, p) in answers(&event.frame["params"]).await? {
+                            runtime
+                                .call("local", method, &p)
+                                .await
+                                .ok_or_else(|| Error::new(5200, "Missing response handler"))??;
+                        }
+                    }
+                }
+                _ = tokio::signal::ctrl_c() => break Err(Error::new(5200, "Command interrupted")),
+            }
+        }
+    }
+    .await;
     runtime.shutdown().await;
     result
 }
@@ -410,7 +412,7 @@ pub async fn execute(home: &Path, args: &[String]) -> Result<Value> {
         let name = p["name"]
             .as_str()
             .map(str::to_owned)
-            .unwrap_or_else(hostname);
+            .unwrap_or_else(auth::daemon_name);
         let started = invoke(
             home,
             &mut socket,
@@ -458,7 +460,10 @@ pub async fn execute(home: &Path, args: &[String]) -> Result<Value> {
                 }
             }
         };
-        return tokio::select! {result=tokio::time::timeout(Duration::from_secs(600),poll)=>result.map_err(|_|Error::new(4241,"Hex Connect registration expired"))?,_=tokio::signal::ctrl_c()=>Err(Error::new(5200,"Registration interrupted"))};
+        return tokio::select! {
+            result = tokio::time::timeout(Duration::from_secs(600), poll) => result.map_err(|_| Error::new(4241, "Hex Connect registration expired"))?,
+            _ = tokio::signal::ctrl_c() => Err(Error::new(5200, "Registration interrupted")),
+        };
     }
     let mut result = invoke(home, &mut socket, method, p).await?;
     if method == "hexbot.devices.list"

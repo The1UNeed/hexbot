@@ -33,6 +33,20 @@ fn file(home: &Path, entries: &[Value]) -> PathBuf {
 fn reconcile(home: &Path) {
     store::reconcile(home, "owl", "chat", "alice").unwrap();
 }
+fn usage_count(home: &Path) -> usize {
+    store::open(home)
+        .unwrap()
+        .query_row("SELECT count(*) FROM native_usage", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap() as usize
+}
+fn quarantined(home: &Path) -> i64 {
+    store::open(home)
+        .unwrap()
+        .query_row("SELECT count(*) FROM native_quarantine", [], |r| r.get(0))
+        .unwrap()
+}
 fn texts(home: &Path) -> Vec<String> {
     store::history(home, "chat")
         .unwrap()
@@ -62,8 +76,10 @@ fn recovers_missing_projection_and_usage_once_with_tool_and_hidden_metadata() {
     assert_eq!(first.len(), 4);
     assert_eq!(first[0]["display_kind"], "hidden");
     assert_eq!(first[1]["tool_calls"][0]["id"], "call-id");
+    // Recovered rows carry the client tool names, the same as live rows.
+    assert_eq!(first[1]["tool_calls"][0]["function"]["name"], "read_file");
     assert_eq!(first[2]["tool_call_id"], "call-id");
-    assert_eq!(first[2]["name"], "read");
+    assert_eq!(first[2]["name"], "read_file");
     assert_eq!(first[3]["timestamp"], 4.0);
     assert_eq!(
         store::usage(home.path(), "chat").unwrap()["total_tokens"],
@@ -83,7 +99,7 @@ fn live_journal_is_bound_to_pi_entry_ids_without_duplicate_billing() {
     let messages = [user("Question", 1000), assistant("Answer", 2000)];
     store::stage_prompt(home.path(), "chat", "Question", "normal").unwrap();
     for message in &messages {
-        store::project_message(home.path(), "chat", "alice", "owl", message, None).unwrap();
+        store::project_seeded(home.path(), "chat", "alice", "owl", message, None, None).unwrap();
     }
     let old = store::history(home.path(), "chat").unwrap();
     file(
@@ -95,7 +111,7 @@ fn live_journal_is_bound_to_pi_entry_ids_without_duplicate_billing() {
     );
     reconcile(home.path());
     assert_eq!(store::history(home.path(), "chat").unwrap(), old);
-    assert_eq!(store::usage_rows(home.path()).unwrap().len(), 1);
+    assert_eq!(usage_count(home.path()), 1);
     let bound: i64 = store::open(home.path())
         .unwrap()
         .query_row(
@@ -113,14 +129,14 @@ fn restores_source_order_and_preserves_unlogged_synthetic_messages() {
     let first = user("first", 1000);
     let middle = assistant("middle", 2000);
     let last = user("last", 3000);
-    store::project_message(home.path(), "chat", "alice", "owl", &first, None).unwrap();
+    store::project_seeded(home.path(), "chat", "alice", "owl", &first, None, None).unwrap();
     store::append(
         home.path(),
         "chat",
         json!({"role":"assistant","text":"Local status"}),
     )
     .unwrap();
-    store::project_message(home.path(), "chat", "alice", "owl", &last, None).unwrap();
+    store::project_seeded(home.path(), "chat", "alice", "owl", &last, None, None).unwrap();
     file(
         home.path(),
         &[
@@ -145,7 +161,7 @@ fn restores_source_order_and_preserves_unlogged_synthetic_messages() {
 fn identical_messages_are_distinct_when_pi_entry_ids_differ() {
     let home = setup();
     let answer = assistant("same", 2000);
-    store::project_message(home.path(), "chat", "alice", "owl", &answer, None).unwrap();
+    store::project_seeded(home.path(), "chat", "alice", "owl", &answer, None, None).unwrap();
     file(
         home.path(),
         &[
@@ -160,7 +176,7 @@ fn identical_messages_are_distinct_when_pi_entry_ids_differ() {
         4
     );
     reconcile(home.path());
-    assert_eq!(store::usage_rows(home.path()).unwrap().len(), 2);
+    assert_eq!(usage_count(home.path()), 2);
 }
 
 #[test]
@@ -185,7 +201,7 @@ fn latest_leaf_selects_branch_without_erasing_compacted_history_or_billed_calls(
         texts(home.path()),
         ["root", "shared", "new question", "new answer"]
     );
-    assert_eq!(store::usage_rows(home.path()).unwrap().len(), 3);
+    assert_eq!(usage_count(home.path()), 3);
     let all: i64 = store::open(home.path())
         .unwrap()
         .query_row(
@@ -227,7 +243,7 @@ fn recovers_compaction_and_noncontext_usage_once_without_displaying_synthetic_me
     reconcile(home.path());
     reconcile(home.path());
     assert_eq!(texts(home.path()), ["answer"]);
-    assert_eq!(store::usage_rows(home.path()).unwrap().len(), 3);
+    assert_eq!(usage_count(home.path()), 3);
 }
 
 #[test]
@@ -240,14 +256,18 @@ fn adopts_old_projection_and_usage_without_rebilling_and_preserves_row_identity(
         json!({"role":"assistant","text":"existing","row_id":"existing-row","timestamp":2}),
     )
     .unwrap();
-    store::record_usage(home.path(), "chat", "alice", "owl", &message).unwrap();
+    // Seed the old projection format, which had no Pi journal link.
+    store::open(home.path()).unwrap().execute(
+        "INSERT INTO native_usage(session_id,owner_id,bot,model,provider,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost,timestamp) VALUES ('chat','alice','owl','model','test',10,2,3,4,0.37,2)",
+        [],
+    ).unwrap();
     file(home.path(), &[entry("a", None, message)]);
     reconcile(home.path());
     assert_eq!(
         store::history(home.path(), "chat").unwrap()[0]["row_id"],
         "existing-row"
     );
-    assert_eq!(store::usage_rows(home.path()).unwrap().len(), 1);
+    assert_eq!(usage_count(home.path()), 1);
 }
 
 #[test]
@@ -269,7 +289,7 @@ fn rejected_prompts_do_not_hide_later_visible_messages_and_failed_assistants_sti
     let history = store::history(home.path(), "chat").unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0]["display_kind"], "normal");
-    assert_eq!(store::usage_rows(home.path()).unwrap().len(), 1);
+    assert_eq!(usage_count(home.path()), 1);
 }
 
 #[test]
@@ -360,7 +380,7 @@ fn actual_pi_tree_and_compaction_fixture_reconciles_without_a_provider_call() {
         texts(home.path()),
         ["root", "shared", "new branch", "new answer"]
     );
-    assert_eq!(store::usage_rows(home.path()).unwrap().len(), 3);
+    assert_eq!(usage_count(home.path()), 3);
     let context = generated["context"].to_string();
     assert!(context.contains("model-only rewrite"));
     assert!(!context.contains("old branch"));
@@ -400,7 +420,7 @@ fn startup_recovery_counts_unread_history_and_usage_before_any_session_open() {
         "user: unread request\nassistant: unread response"
     );
     store::reconcile_all(home.path()).unwrap();
-    assert_eq!(store::usage_rows(home.path()).unwrap().len(), 1);
+    assert_eq!(usage_count(home.path()), 1);
 }
 
 #[test]
@@ -411,16 +431,17 @@ fn stale_unsent_intents_do_not_hide_future_equal_text_and_timestampless_events_s
     reconcile(home.path());
     for _ in 0..2 {
         store::stage_prompt(home.path(), "chat", "same", "normal").unwrap();
-        store::project_message(
+        store::project_seeded(
             home.path(),
             "chat",
             "alice",
             "owl",
             &json!({"role":"user","content":"same"}),
             None,
+            None,
         )
         .unwrap();
-        store::project_message(home.path(),"chat","alice","owl",&json!({"role":"assistant","content":[{"type":"text","text":"repeat"}],"usage":{"input":1,"output":1},"stopReason":"stop"}),None).unwrap();
+        store::project_seeded(home.path(),"chat","alice","owl",&json!({"role":"assistant","content":[{"type":"text","text":"repeat"}],"usage":{"input":1,"output":1},"stopReason":"stop"}),None,None).unwrap();
     }
     let history = store::history(home.path(), "chat").unwrap();
     assert_eq!(history.len(), 4);
@@ -441,18 +462,54 @@ fn startup_leaves_io_failures_in_place_but_quarantines_bad_data() {
     fs::create_dir(&path).unwrap();
     store::reconcile_all(home.path()).unwrap();
     assert!(path.is_dir());
-    let quarantined: i64 = store::open(home.path())
-        .unwrap()
-        .query_row("SELECT count(*) FROM native_quarantine", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(quarantined, 0);
+    assert_eq!(quarantined(home.path()), 0);
     fs::remove_dir(&path).unwrap();
     fs::write(&path, "{bad json}\n").unwrap();
     store::reconcile_all(home.path()).unwrap();
     assert!(!path.exists());
-    let quarantined: i64 = store::open(home.path())
-        .unwrap()
-        .query_row("SELECT count(*) FROM native_quarantine", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(quarantined, 1);
+    assert_eq!(quarantined(home.path()), 1);
+    assert_eq!(
+        store::reconcile(home.path(), "owl", "chat", "alice")
+            .unwrap_err()
+            .data
+            .unwrap()["quarantined"],
+        true
+    );
+}
+
+#[test]
+fn quarantine_survives_restarts_and_lifts_once_the_conversation_is_restored() {
+    let home = setup();
+    let dir = store::session_dir(home.path(), "chat").unwrap();
+    let path = dir.join("conversation.jsonl");
+    let files = || {
+        let mut names = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    fs::write(&path, "{bad json}\n").unwrap();
+    store::reconcile_all(home.path()).unwrap();
+    assert_eq!(quarantined(home.path()), 1);
+    let kept = files();
+    assert_eq!(kept.len(), 1);
+    assert!(kept[0].starts_with("conversation.quarantine-"));
+    // Restarting with nothing to recover keeps the flag and moves no more files.
+    store::reconcile_all(home.path()).unwrap();
+    assert_eq!(quarantined(home.path()), 1);
+    assert_eq!(files(), kept);
+    // Restoring a good file, as the error message asks, reopens the section.
+    file(home.path(), &[entry("u", None, user("Restored", 1000))]);
+    store::reconcile_all(home.path()).unwrap();
+    assert_eq!(quarantined(home.path()), 0);
+    assert!(path.exists());
+    reconcile(home.path());
+    assert_eq!(texts(home.path()), vec!["Restored"]);
+    // A file that is still damaged goes straight back into quarantine.
+    fs::write(&path, "{bad json}\n").unwrap();
+    store::reconcile_all(home.path()).unwrap();
+    assert_eq!(quarantined(home.path()), 1);
+    assert!(!path.exists());
 }

@@ -462,3 +462,98 @@ fn failed_section_delete_removes_tombstone() {
     )
     .unwrap();
 }
+
+#[test]
+fn bot_and_workspace_dirs_never_open_the_hexbot_home() {
+    let home = setup();
+    let h = home.path();
+    create(h);
+    db::open(h)
+        .unwrap()
+        .execute("UPDATE users SET role='admin' WHERE id='alice'", [])
+        .unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let mut refused = vec![
+        h.to_path_buf(),
+        h.join("profiles/research-owl"),
+        h.join("bin"),
+        h.join("profiles/future-bot"),
+        outside.path().join("../escape"),
+    ];
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(h, outside.path().join("home-link")).unwrap();
+        refused.push(outside.path().join("home-link/profiles/research-owl"));
+    }
+    for workdir in refused {
+        for (method, p) in [
+            (
+                "hexbot.bots.update",
+                json!({"name":"research-owl","workdir":workdir}),
+            ),
+            (
+                "hexbot.bots.create",
+                json!({"name":"second-owl","workdir":workdir}),
+            ),
+        ] {
+            let error = catalog::call(h, "alice", method, &p).unwrap().unwrap_err();
+            assert_eq!(error.code, 4202, "{method} {}", workdir.display());
+        }
+        assert!(
+            hexbot_core::settings::update(h, "alice", &json!({"workspace_dir":workdir})).is_err()
+        );
+    }
+    assert!(catalog::bot(h, "alice", "research-owl").unwrap()["workdir"].is_null());
+    assert!(!h.join("profiles/second-owl").exists());
+    assert!(!h.join("bin").exists());
+    assert!(!h.join("profiles/future-bot").exists());
+    let allowed = outside.path().join("work");
+    let updated = call(
+        h,
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"research-owl","workdir":allowed}),
+    );
+    assert_eq!(updated["bot"]["workdir"], json!(allowed));
+}
+
+#[test]
+fn create_persists_every_accepted_field() {
+    let home = setup();
+    let workdir = tempfile::tempdir().unwrap();
+    let created = call(
+        home.path(),
+        "alice",
+        "hexbot.bots.create",
+        json!({"name":"quiet-owl","dream_enabled":false,"shareable":true,"notify":false,"approval_mode":"manual","workdir":workdir.path(),"tools":["files","files"]}),
+    );
+    let bot = &created["bot"];
+    assert_eq!(bot["dream_enabled"], false);
+    assert_eq!(bot["shareable"], true);
+    assert_eq!(bot["notify"], false);
+    assert_eq!(bot["approval_mode"], "manual");
+    assert_eq!(bot["workdir"], json!(workdir.path()));
+    assert_eq!(bot["tools"], json!(["files"]));
+}
+
+#[test]
+fn deleting_a_bot_removes_its_scheduled_jobs() {
+    let home = setup();
+    let h = home.path();
+    create(h);
+    let jobs = runtime_store::open(h).unwrap();
+    jobs.execute_batch("INSERT INTO native_jobs(id,owner,bot,job_json) VALUES ('daily','alice','research-owl','{}'),('other','alice','other-owl','{}'); INSERT INTO native_job_imports(bot) VALUES ('research-owl');").unwrap();
+    call(
+        h,
+        "alice",
+        "hexbot.bots.delete",
+        json!({"name":"research-owl"}),
+    );
+    let count = |sql: &str| jobs.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!(
+        count("SELECT COUNT(*) FROM native_jobs WHERE bot='research-owl'"),
+        0
+    );
+    assert_eq!(count("SELECT COUNT(*) FROM native_job_imports"), 0);
+    assert_eq!(count("SELECT COUNT(*) FROM native_jobs"), 1);
+}
