@@ -1,6 +1,6 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { Info } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar } from '../../components/ui/avatar'
 import { RoomCluster } from '../../components/ui/room-cluster'
@@ -10,18 +10,29 @@ import { Thinking } from '../../components/ui/thinking'
 import { roomsSend, roomsStop } from '../../lib/api'
 import { avatarSrc } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
+import { useRoomOrLeave } from '../../lib/room-or-leave'
 import { toMillis } from '../../lib/time'
 import type { Bot, RoomEvent, RoomMember, RoomTurn } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { roomFailure, roomStatus, useRooms } from '../../stores/rooms'
 import { useTranscripts } from '../../stores/transcripts'
+import { useUsers } from '../../stores/users'
 
+import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
 import { MemoryMarks } from './memory-marks'
 import { WaitingBanner } from './waiting-banner'
 import { WorkStatus } from './work-status'
 
-import { bubbleClass, DaySeparator, Markdown, transcriptClass, userBubbleClass } from './index'
+import {
+  ApprovalCard,
+  bubbleClass,
+  CardRow,
+  DaySeparator,
+  Markdown,
+  transcriptClass,
+  userBubbleClass
+} from './index'
 
 // Stable empty values: a fresh [] or {} per render re-renders forever.
 const NO_EVENTS: RoomEvent[] = []
@@ -32,10 +43,37 @@ const avatarData = (bot?: Bot) => avatarSrc(bot?.avatar)
 export function RoomEventRow({ event }: { event: RoomEvent }) {
   const bot = useBots(state => (event.actor_id ? state.byName[event.actor_id] : undefined))
   const text = typeof event.payload.text === 'string' ? event.payload.text : ''
-  const memberId = typeof event.payload.bot === 'string' ? event.payload.bot : event.actor_id
+
+  // Member events name the bot or person who came or went; other events their actor.
+  const memberId = [event.payload.bot, event.payload.user, event.actor_id].find(
+    (id): id is string => typeof id === 'string'
+  )
+
+  const memberKind = event.payload.bot ? 'bot' : event.payload.user ? 'human' : event.actor_kind
+
+  const person = useUsers(state =>
+    memberId
+      ? (state.users.find(user => user.id === memberId) ??
+        (state.current?.id === memberId ? state.current : undefined))
+      : undefined
+  )
+
+  // Members read names off the room without the owner's bot or user catalog.
+  const memberName = useRooms(state =>
+    memberId
+      ? state.byId[event.room_id]?.members.find(
+          item => item.member_kind === memberKind && item.member_id === memberId
+        )?.display_name
+      : undefined
+  )
+
+  const currentId = useUsers(state => state.current?.id)
 
   const member =
-    useBots(state => (memberId ? state.byName[memberId]?.display_name : undefined)) ?? memberId
+    useBots(state => (memberId ? state.byName[memberId]?.display_name : undefined)) ??
+    memberName ??
+    person?.display_name ??
+    memberId
 
   const system = ['member.added', 'member.left', 'note'].includes(event.kind)
 
@@ -95,25 +133,23 @@ export function RoomEventRow({ event }: { event: RoomEvent }) {
     )
   }
 
-  const human = event.kind === 'message.user'
+  // Your messages are the right-hand bubble; other people speak like the bots.
+  // Without user accounts (or before you are known) every message is yours.
+  const mine = event.kind === 'message.user' && (!currentId || event.actor_id === currentId)
+  const name = member
 
   return (
     <article
-      className={`flex gap-2 py-1 ${human ? 'flex-row-reverse' : ''}`}
+      className={`flex gap-2 py-1 ${mine ? 'flex-row-reverse' : ''}`}
       data-testid="room-event"
     >
-      {human ? null : (
-        <Avatar
-          className="mt-1"
-          image={avatarData(bot)}
-          name={bot?.display_name ?? event.actor_id ?? 'Bot'}
-          size="sm"
-        />
+      {mine ? null : (
+        <Avatar className="mt-1" image={avatarData(bot)} name={name ?? 'Bot'} size="sm" />
       )}
-      <div className={cn(human ? userBubbleClass : bubbleClass, 'max-w-[80%]')}>
-        {!human ? (
+      <div className={cn(mine ? userBubbleClass : bubbleClass, 'max-w-[80%]')}>
+        {!mine ? (
           <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
-            {bot?.display_name ?? event.actor_id}
+            {name}
           </div>
         ) : null}
         <div className="hex-prose">
@@ -125,10 +161,19 @@ export function RoomEventRow({ event }: { event: RoomEvent }) {
 }
 
 /** The bot behind the latest "waiting on a human" event, for the banner. */
-function waitingBot(events: RoomEvent[], bots: Record<string, Bot>): string | undefined {
+function waitingBot(
+  events: RoomEvent[],
+  bots: Record<string, Bot>,
+  members: RoomMember[]
+): string | undefined {
   const actor = events.findLast(event => event.kind === 'waiting.human')?.actor_id
 
-  return actor ? bots[actor]?.display_name : undefined
+  return actor
+    ? (bots[actor]?.display_name ??
+        members.find(member => member.member_kind === 'bot' && member.member_id === actor)
+          ?.display_name ??
+        actor)
+    : undefined
 }
 
 export function RoomMentionPopover({
@@ -163,7 +208,9 @@ export function RoomMentionPopover({
           type="button"
         >
           @{member.member_id}{' '}
-          <span className="text-muted">{bots[member.member_id]?.display_name}</span>
+          <span className="text-muted">
+            {bots[member.member_id]?.display_name ?? member.display_name}
+          </span>
         </button>
       ))}
     </div>
@@ -173,7 +220,7 @@ export function RoomMentionPopover({
 export function RoomConversation() {
   const { room: roomId } = useParams({ strict: false }) as { room: string }
   const navigate = useNavigate()
-  const room = useRooms(state => state.byId[roomId])
+  const room = useRoomOrLeave(roomId, 'open')
   const events = useRooms(state => state.eventsByRoom[roomId] ?? NO_EVENTS)
   const turns = useRooms(state => state.liveTurnsByRoom[roomId] ?? NO_TURNS)
   const transcripts = useTranscripts(state => state.bySession)
@@ -182,16 +229,15 @@ export function RoomConversation() {
   const [sending, setSending] = useState(false)
   const bottom = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    void useRooms.getState().open(roomId)
-  }, [roomId])
+  // Presence, not the room object: every read mark stores a fresh room.
+  const present = Boolean(room)
   useEffect(() => {
     const seq = events.at(-1)?.seq
 
-    if (seq) {
+    if (seq && present) {
       void useRooms.getState().markRead(roomId, seq)
     }
-  }, [events, roomId])
+  }, [events, present, roomId])
   useEffect(() => {
     void bottom.current?.scrollIntoView({ block: 'end' })
   }, [events, transcripts])
@@ -250,7 +296,9 @@ export function RoomConversation() {
           <Info size={16} />
         </button>
       </header>
-      {status === 'needs_you' ? <WaitingBanner name={waitingBot(events, bots)} /> : null}
+      {status === 'needs_you' ? (
+        <WaitingBanner name={waitingBot(events, bots, room.members)} />
+      ) : null}
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className={transcriptClass}>
           {events.map((event, index) => {
@@ -270,33 +318,75 @@ export function RoomConversation() {
             const transcript = turn.live_session_id ? transcripts[turn.live_session_id] : undefined
             const message = transcript?.messages.at(-1)
             const bot = bots[turn.bot]
-            const name = bot?.display_name ?? turn.bot
+
+            const name =
+              bot?.display_name ??
+              room.members.find(
+                member => member.member_kind === 'bot' && member.member_id === turn.bot
+              )?.display_name ??
+              turn.bot
+
+            // Members see the bot wait while the owner answers an approval or
+            // question; the daemon writes the text ("Waiting for Alice").
+            const waiting = transcript?.status?.kind === 'waiting' ? transcript.status.text : ''
+            // Only the owner receives the cards; answered or expired ones leave.
+            const approvals = transcript?.approvals.filter(approval => !approval.decision) ?? []
+
+            const clarifies =
+              transcript?.clarifies.filter(
+                clarify =>
+                  !clarify.expired && Object.keys(clarify.answers).length < clarify.questions.length
+              ) ?? []
 
             return (
-              <article className="flex gap-2 py-1" data-testid="room-event" key={turn.bot}>
-                <span className="relative mt-1 shrink-0">
-                  <Avatar
-                    className="hex-think"
-                    image={avatarData(bot)}
-                    mood="working"
-                    name={name}
-                    size="sm"
-                  />
-                  <StatusDot size="sm" status="working" />
-                </span>
-                <div className="flex min-w-0 max-w-[80%] flex-col">
-                  {message ? <WorkStatus message={message} name={name} /> : <Thinking name={name} />}
-                  {message?.text ? (
-                    <div className={bubbleClass}>
-                      <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
-                        {name}
+              <Fragment key={turn.bot}>
+                <article className="flex gap-2 py-1" data-testid="room-event">
+                  <span className="relative mt-1 shrink-0">
+                    <Avatar
+                      className="hex-think"
+                      image={avatarData(bot)}
+                      mood="working"
+                      name={name}
+                      size="sm"
+                    />
+                    <StatusDot size="sm" status="working" />
+                  </span>
+                  <div className="flex min-w-0 max-w-[80%] flex-col">
+                    {message ? (
+                      <WorkStatus message={message} name={name} />
+                    ) : (
+                      <Thinking name={name} />
+                    )}
+                    {waiting ? (
+                      <p
+                        className="py-1 text-[length:var(--text-secondary)] text-muted"
+                        role="status"
+                      >
+                        {waiting}
+                      </p>
+                    ) : null}
+                    {message?.text ? (
+                      <div className={bubbleClass}>
+                        <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
+                          {name}
+                        </div>
+                        <p className="whitespace-pre-wrap">{message.text}</p>
                       </div>
-                      <p className="whitespace-pre-wrap">{message.text}</p>
-                    </div>
-                  ) : null}
-                  {message ? <MemoryMarks message={message} /> : null}
-                </div>
-              </article>
+                    ) : null}
+                    {message ? <MemoryMarks message={message} /> : null}
+                  </div>
+                </article>
+                {clarifies.map(clarify => (
+                  <CardRow bot={bot} key={clarify.requestId}>
+                    <ClarifyCard clarify={clarify} />
+                  </CardRow>
+                ))}
+                {approvals.map(approval => (
+                  <CardRow bot={bot} key={approval.requestId}>
+                    <ApprovalCard approval={approval} />
+                  </CardRow>
+                ))}
+              </Fragment>
             )
           })}
           <div ref={bottom} />

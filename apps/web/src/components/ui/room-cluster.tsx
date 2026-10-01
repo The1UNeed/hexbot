@@ -31,7 +31,9 @@ export function RoomCluster({
   const members = activeBots(room)
   const box = size === 'sm' ? 'size-6' : size === 'xl' ? 'size-[72px]' : 'size-10'
   const cell = size === 'sm' ? 'size-[11px]' : size === 'xl' ? 'size-[34px]' : 'size-[19px]'
-  const name = (id: string) => bots[id]?.display_name ?? id
+
+  const name = (id: string) =>
+    bots[id]?.display_name ?? members.find(member => member.member_id === id)?.display_name ?? id
 
   return (
     <span

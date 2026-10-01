@@ -174,11 +174,8 @@ function ConnectPage() {
     setError(null)
 
     try {
-      const result = await probeDaemon(
-        targetOrigin({ kind: 'remote', ...parts, deviceToken: '', tls: false })
-      )
-
-      setDaemonName(result.daemonName ?? formatAddress(parts))
+      await probeDaemon(targetOrigin({ kind: 'remote', ...parts, deviceToken: '', tls: false }))
+      setDaemonName(formatAddress(parts))
     } catch {
       setError('The daemon could not be reached.')
     } finally {

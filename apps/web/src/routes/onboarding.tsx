@@ -189,12 +189,12 @@ function TourPage({
 /** Install stages in order, with a rough share of the total time each takes. */
 const STAGES: { acts: HexbotActName[]; id: string; label: string; weight: number }[] = [
   { acts: ['catch', 'download'], id: 'runtime', label: 'Unpacking Hexbot', weight: 20 },
-  { acts: ['catch', 'download', 'fish'], id: 'uv', label: 'Fetching the installer', weight: 10 },
-  { acts: ['type', 'read', 'tinker'], id: 'python', label: 'Installing Python', weight: 30 },
+  { acts: ['catch', 'download', 'fish'], id: 'uv', label: 'Fetching the installer', weight: 5 },
+  { acts: ['type', 'read', 'tinker'], id: 'python', label: 'Installing Python', weight: 35 },
   {
     acts: ['type', 'tinker', 'juggle', 'hammer', 'coffee', 'lift', 'drum', 'read', 'dance', 'wand', 'balloon'],
     id: 'dependencies',
-    label: 'Installing dependencies',
+    label: 'Installing voice tools',
     weight: 35
   },
   { acts: ['horn', 'flag', 'rocket'], id: 'done', label: 'Starting the daemon', weight: 5 }

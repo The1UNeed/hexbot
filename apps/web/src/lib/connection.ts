@@ -1,12 +1,12 @@
 /**
  * Connect sequence and reconnect supervisor (docs/client-architecture.md).
  *
- *   1. `GET <origin>/` and read `__HERMES_AUTH_REQUIRED__`.
- *   2. Gate off: open `/api/ws?token=<session token>`.
- *   3. Gate on: `POST /api/auth/ws-ticket` with the device token as bearer,
- *      then open `/api/ws?ticket=<ticket>` within 30 seconds.
- *   4. Wait for `gateway.ready`; keep its `replay_epoch`.
- *   5. Call `hexbot.info`, `hexbot.settings.get`, `hexbot.bots.list`.
+ *   1. `GET <origin>/` to reach the daemon. The page never carries a credential.
+ *   2. `POST /api/auth/ws-ticket` with the device token as bearer (the browser
+ *      cookie when the page came from the daemon), then open
+ *      `/api/ws?ticket=<ticket>` within 30 seconds.
+ *   3. Wait for `gateway.ready`; keep its `replay_epoch`.
+ *   4. Call `hexbot.info`, `hexbot.settings.get`, `hexbot.bots.list`.
  *
  * Reconnect backs off 1 s → 16 s forever and resets after 30 s of stable
  * connection. A 401 on the ws-ticket means the device was revoked: the target
@@ -53,13 +53,6 @@ export class InvalidCodeError extends Error {
     super(message)
     this.name = 'InvalidCodeError'
   }
-}
-
-export interface ProbeResult {
-  authRequired: boolean
-  daemonName?: string
-  reachable: boolean
-  sessionToken?: string
 }
 
 export interface ConnectionDeps {
@@ -127,14 +120,9 @@ export function targetOrigin(target: ConnectionTarget): string {
     return target.origin.replace(/\/+$/, '')
   }
 
-  const override = import.meta.env?.VITE_HEXBOT_ORIGIN
-
-  if (typeof override === 'string' && override) {
-    return override.replace(/\/+$/, '')
-  }
-
-  // A browser page came from the daemon itself. Inside Electron the page
-  // origin is hexbot-app:// or, in dev, the Vite server: never the daemon.
+  // A browser page came from the daemon itself, or from the Vite dev server
+  // proxying it (VITE_HEXBOT_ORIGIN). Inside Electron the page origin is
+  // hexbot-app:// or, in dev, the Vite server: never the daemon.
   if (
     typeof window !== 'undefined' &&
     !getBridge() &&
@@ -147,32 +135,18 @@ export function targetOrigin(target: ConnectionTarget): string {
 }
 
 /**
- * Read the daemon's `/` page. The globals are injected as inline script text,
- * so they are matched out of the HTML rather than evaluated.
+ * Reach the daemon's `/` page. It never carries a credential (any local
+ * process could fetch it); the credential is the device token, or the
+ * same-origin cookie, when a ticket is minted.
  */
-export async function probeDaemon(origin: string, deps: ConnectionDeps = {}): Promise<ProbeResult> {
+export async function probeDaemon(origin: string, deps: ConnectionDeps = {}): Promise<void> {
   const doFetch = deps.fetch ?? defaultFetch(deps)
-  let body = ''
 
   try {
-    // Cookies only exist for the daemon-served bundle, which is same-origin.
-    // Cross-origin (the Vite dev server) the daemon's CORS policy rejects
-    // credentialed requests outright, so never ask for them there.
-    const response = await doFetch(`${origin}/`, { cache: 'no-store', credentials: 'same-origin' })
-    body = await response.text()
+    await doFetch(`${origin}/`, { cache: 'no-store', credentials: 'same-origin' })
   } catch (error) {
     throw new UnreachableError(error instanceof Error ? error.message : String(error))
   }
-
-  const flag = /__HERMES_AUTH_REQUIRED__\s*=\s*(true|false)/.exec(body)
-  const token = /__HERMES_SESSION_TOKEN__\s*=\s*"([^"]+)"/.exec(body)
-  // Only the freshly fetched page knows the current auth gate and token.
-  // A login page after enabling LAN has neither; the loaded page's old
-  // global must not make that authenticated daemon look ungated.
-  const sessionToken = token?.[1]
-  const authRequired = flag ? flag[1] === 'true' : !sessionToken
-
-  return { authRequired, reachable: true, sessionToken }
 }
 
 /** Bearer token used for HTTP calls against a gated daemon. */
@@ -228,20 +202,14 @@ async function mintTicket(origin: string, bearer: string, deps: ConnectionDeps):
   return body.ticket
 }
 
-/** The `/api/ws` URL with whichever credential the gate demands. */
+/** The `/api/ws` URL with a single-use ticket from the device credential. */
 export async function resolveWsUrl(
   target: ConnectionTarget,
-  probe: ProbeResult,
   deps: ConnectionDeps = {}
 ): Promise<string> {
   const origin = targetOrigin(target)
   const url = new URL(origin)
   const base = { host: url.host, path: '/api/ws', protocol: url.protocol }
-
-  if (!probe.authRequired && probe.sessionToken) {
-    return buildHermesWebSocketUrl({ ...base, authParam: ['token', probe.sessionToken] })
-  }
-
   const ticket = await mintTicket(origin, await bearerToken(target, deps), deps)
 
   return buildHermesWebSocketUrl({ ...base, authParam: ['ticket', ticket] })
@@ -429,8 +397,8 @@ export class ConnectionSupervisor {
   }
 
   private async open(target: ConnectionTarget, generation: number): Promise<void> {
-    const probe = await probeDaemon(targetOrigin(target), this.deps)
-    const wsUrl = await resolveWsUrl(target, probe, this.deps)
+    await probeDaemon(targetOrigin(target), this.deps)
+    const wsUrl = await resolveWsUrl(target, this.deps)
 
     if (generation !== this.generation) {
       return

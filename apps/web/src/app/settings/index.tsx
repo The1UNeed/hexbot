@@ -32,7 +32,7 @@ import {
 import { cn } from '../../lib/cn'
 import { connectBaseUrl } from '../../lib/connect-url'
 import { pairWithDaemon, targetOrigin } from '../../lib/connection'
-import type { ApprovalMode, ModelOption, PairingCode, Provider } from '../../lib/types'
+import type { ApprovalMode, DaemonInfo, ModelOption, PairingCode, Provider } from '../../lib/types'
 import { daemonBehind } from '../../lib/version-skew'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
@@ -723,27 +723,27 @@ export function NetworkSettings(): React.JSX.Element {
   const [revoking, setRevoking] = useState(false)
   const [copied, setCopied] = useState(false)
   const [now, setNow] = useState(() => Date.now())
-  const [restarting, setRestarting] = useState(false)
+  const [reconnecting, setReconnecting] = useState(false)
   const connectionStatus = useConnection(state => state.status)
   const target = useConnection(state => state.target)
   const sawDisconnect = useRef(false)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
-    if (!restarting) {
+    if (!reconnecting) {
       return
     }
 
     if (connectionStatus !== 'connected') {
       sawDisconnect.current = true
     } else if (sawDisconnect.current) {
-      setRestarting(false)
+      setReconnecting(false)
       sawDisconnect.current = false
       setCode(null)
       void Promise.all([refreshNetwork(), refreshDevices()]).catch(cause =>
         setError(errorText(cause))
       )
     }
-  }, [connectionStatus, refreshDevices, refreshNetwork, restarting])
+  }, [connectionStatus, refreshDevices, refreshNetwork, reconnecting])
   useEffect(() => {
     void Promise.all([refreshNetwork(), refreshDevices()]).catch(cause =>
       setError(errorText(cause))
@@ -808,7 +808,7 @@ export function NetworkSettings(): React.JSX.Element {
 
   const toggle = async (enabled: boolean) => {
     setError(null)
-    setRestarting(true)
+    setReconnecting(true)
 
     try {
       // Preserve this browser's access before the listener begins requiring
@@ -826,7 +826,7 @@ export function NetworkSettings(): React.JSX.Element {
 
       await setLan(enabled)
     } catch (cause) {
-      setRestarting(false)
+      setReconnecting(false)
       setError(errorText(cause))
     }
   }
@@ -847,14 +847,14 @@ export function NetworkSettings(): React.JSX.Element {
           aria-label="Allow other devices on this network"
           checked={network?.lan_enabled ?? false}
           className="size-5 accent-accent"
-          disabled={restarting}
+          disabled={reconnecting}
           onChange={event => void toggle(event.target.checked)}
           type="checkbox"
         />
       </label>
-      {restarting && (
+      {reconnecting && (
         <p className="mt-4 rounded-control bg-warning/12 p-3 text-warning" role="status">
-          Hexbot is restarting and will reconnect automatically.
+          Reconnecting to the daemon at its new address. Running bot turns continue.
         </p>
       )}
       {error && (
@@ -896,7 +896,7 @@ export function NetworkSettings(): React.JSX.Element {
             <Button
               busy={creating}
               className="bg-blue-600 text-white hover:bg-blue-500"
-              disabled={!network?.lan_enabled || restarting || connectionStatus !== 'connected'}
+              disabled={!network?.lan_enabled || reconnecting || connectionStatus !== 'connected'}
               icon={<Plus size={14} />}
               onClick={() => void createLink()}
               size="sm"
@@ -940,7 +940,7 @@ export function NetworkSettings(): React.JSX.Element {
           ))}
           {devices.length === 0 && <li className="px-4 py-4 text-muted">No paired clients yet.</li>}
         </ul>
-        {code && network?.lan_enabled && !restarting && (
+        {code && network?.lan_enabled && !reconnecting && (
           <div className="mt-4 rounded-xl border border-border p-4">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
@@ -1013,8 +1013,13 @@ export function ApprovalsSettings(): React.JSX.Element {
   const refresh = useSettings(state => state.refresh)
   const refreshModels = useSettings(state => state.refreshModels)
   const patch = useSettings(state => state.patch)
+  const [sandbox, setSandbox] = useState<DaemonInfo['sandbox']>(undefined)
   useEffect(() => {
     void Promise.all([refresh(), refreshModels()])
+    // Without daemon info, as from an older daemon, there is nothing to warn about.
+    void daemonInfo()
+      .then(info => setSandbox(info.sandbox))
+      .catch(() => {})
   }, [refresh, refreshModels])
   const curated = models.curated.length ? models.curated : models.all
 
@@ -1023,6 +1028,13 @@ export function ApprovalsSettings(): React.JSX.Element {
       <Heading description="Choose when Hexbot asks before a bot uses a protected tool.">
         Approvals
       </Heading>
+      {sandbox === null && (
+        <p className="mb-5 rounded-control bg-warning/12 p-3 text-warning" role="status">
+          No OS sandbox is available, so Manual and Auto ask before every shell command and Python
+          code run. Install bubblewrap on the computer running the daemon, then restart the
+          daemon to restore isolation.
+        </p>
+      )}
       <fieldset className="space-y-1">
         <legend className="sr-only">Approval mode</legend>
         {MODES.map(mode => (

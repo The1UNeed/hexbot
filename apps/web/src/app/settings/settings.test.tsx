@@ -5,12 +5,14 @@ import {
   connectRegisterPoll,
   connectRegisterStart,
   connectStatus,
+  daemonInfo,
   modelsList,
   pairingCode,
   updateRequest
 } from '../../lib/api'
 import type { UpdateState } from '../../lib/bridge'
 import { pairWithDaemon } from '../../lib/connection'
+import type { DaemonInfo } from '../../lib/types'
 import { useConnection } from '../../stores/connection'
 import { useSettings } from '../../stores/settings'
 import { useUpdates } from '../../stores/updates'
@@ -104,7 +106,7 @@ describe('settings', () => {
     expect(await screen.findByText('1 models available.')).toBeVisible()
   })
 
-  it('shows LAN off and explains the automatic restart when enabled', async () => {
+  it('shows LAN off and explains the reconnect when enabled', async () => {
     const setLanEnabled = vi.fn().mockResolvedValue(undefined)
     useSettings.setState({
       network: { addresses: [], bind_host: '127.0.0.1', lan_enabled: false, port: 8000 },
@@ -117,7 +119,9 @@ describe('settings', () => {
     fireEvent.click(screen.getByLabelText('Allow other devices on this network'))
     expect(setLanEnabled).toHaveBeenCalledWith(true)
     expect(
-      await screen.findByText('Hexbot is restarting and will reconnect automatically.')
+      await screen.findByText(
+        'Reconnecting to the daemon at its new address. Running bot turns continue.'
+      )
     ).toBeVisible()
     useSettings.setState({
       network: { addresses: ['192.168.1.2'], bind_host: '0.0.0.0', lan_enabled: true, port: 8000 }
@@ -237,6 +241,36 @@ describe('settings', () => {
     render(<ApprovalsSettings />)
     fireEvent.click(screen.getByRole('radio', { name: /^Auto/ }))
     expect(patch).toHaveBeenCalledWith({ approval_mode: 'smart' })
+  })
+
+  it('warns when the daemon has no OS sandbox, and only then', async () => {
+    useSettings.setState({
+      refresh: vi.fn().mockResolvedValue(undefined),
+      refreshModels: vi.fn().mockResolvedValue(undefined)
+    })
+    vi.mocked(daemonInfo).mockResolvedValueOnce({ sandbox: null, version: '0.1.5' } as DaemonInfo)
+    const { unmount } = render(<ApprovalsSettings />)
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'No OS sandbox is available, so Manual and Auto ask before every shell command and Python code run. Install bubblewrap on the computer running the daemon, then restart the daemon to restore isolation.'
+    )
+    unmount()
+    vi.mocked(daemonInfo).mockResolvedValueOnce({
+      sandbox: 'bubblewrap',
+      version: '0.1.5'
+    } as DaemonInfo)
+    const second = render(<ApprovalsSettings />)
+    await act(async () => {
+      await vi.mocked(daemonInfo).mock.results.at(-1)?.value
+    })
+    expect(screen.queryByRole('status')).toBeNull()
+    second.unmount()
+    // An older daemon reports nothing, which is not the same as no sandbox.
+    vi.mocked(daemonInfo).mockResolvedValueOnce({ version: '0.1.4' } as DaemonInfo)
+    render(<ApprovalsSettings />)
+    await act(async () => {
+      await vi.mocked(daemonInfo).mock.results.at(-1)?.value
+    })
+    expect(screen.queryByRole('status')).toBeNull()
   })
 
   it('applies a selected theme to the document', () => {

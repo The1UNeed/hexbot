@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow'
 
 import {
   roomsAddMember,
+  roomsAddPerson,
   roomsCreate,
   roomsDelete,
   roomsGet,
@@ -10,6 +11,7 @@ import {
   roomsLog,
   roomsMarkRead,
   roomsRemoveMember,
+  roomsRemovePerson,
   roomsUpdate
 } from '../lib/api'
 import type { RoomCreateInput } from '../lib/api'
@@ -19,6 +21,7 @@ import { useTranscripts } from './transcripts'
 
 export interface RoomsState {
   addMember: (id: string, bot: string) => Promise<void>
+  addPerson: (id: string, user: string) => Promise<void>
   byId: Record<string, Room>
   create: (input: RoomCreateInput) => Promise<Room>
   /** Forget a room the daemon deleted. */
@@ -29,15 +32,49 @@ export interface RoomsState {
   handleTurn: (turn: RoomTurn) => void
   liveTurnsByRoom: Record<string, Record<string, RoomTurn>>
   loading: boolean
+  /** Best effort: failures are swallowed, and a room you left is dropped. */
   markRead: (id: string, seq: number) => Promise<void>
+  /** Resolves once loaded, or once the room turned out to be gone and was dropped. */
   open: (id: string) => Promise<void>
   order: string[]
   refresh: () => Promise<void>
-  refreshOne: (id: string) => Promise<void>
+  /** Resolves true once the daemon answered: the room loaded, or it is gone and was dropped. */
+  refreshOne: (id: string) => Promise<boolean>
   remove: (id: string) => Promise<void>
   /** Resolves true when the room was deleted because its last bot left. */
   removeMember: (id: string, bot: string) => Promise<boolean>
+  /** Remove a person; removing yourself leaves the room and forgets it. */
+  removePerson: (id: string, user: string, self: boolean) => Promise<void>
   update: (id: string, patch: Parameters<typeof roomsUpdate>[1]) => Promise<void>
+}
+
+/** The daemon no longer shows this room to you: deleted, or you were removed. */
+function roomGone(error: unknown): boolean {
+  const code = (error as { code?: number } | null)?.code
+
+  return code === 4230 || code === 4302
+}
+
+/** Counts turn changes per room, so a refresh keeps turns that moved while it loaded. */
+const turnChanges = new Map<string, number>()
+
+function bumpTurns(roomId: string): void {
+  turnChanges.set(roomId, (turnChanges.get(roomId) ?? 0) + 1)
+}
+
+/** Live turns rebuilt from the daemon's running turns, for a reconnect. */
+function runningTurns(rooms: Room[]): RoomsState['liveTurnsByRoom'] {
+  return Object.fromEntries(
+    rooms.map(room => [
+      room.id,
+      Object.fromEntries(
+        (room.turns ?? []).map(turn => [
+          turn.bot,
+          { ...turn, room_id: room.id, status: 'running' } satisfies RoomTurn
+        ])
+      )
+    ])
+  )
 }
 
 function messageSeq(events: RoomEvent[]): number {
@@ -79,17 +116,54 @@ export const useRooms = create<RoomsState>((set, get) => ({
 
   async refresh() {
     set({ error: null, loading: true })
+    const changes = new Map(turnChanges)
 
     try {
       const { rooms } = await roomsList(true)
       const listed = rooms ?? []
       const active = listed.filter(room => !room.archived_at)
       const logs = await Promise.all(active.map(room => roomsLog(room.id, { limit: 1000 })))
+      // Turn events are not replayed, so whatever ended while this client was
+      // away would stay "working"; the daemon's running turns replace them,
+      // except in rooms whose turns changed after the list was read.
+      const current = get().liveTurnsByRoom
+
+      // A daemon without `turns` cannot say, so those rooms keep what they had.
+      const liveTurnsByRoom = Object.fromEntries(
+        Object.entries(runningTurns(active)).map(([id, turns]) => [
+          id,
+          turnChanges.get(id) === changes.get(id) && rooms?.find(room => room.id === id)?.turns
+            ? turns
+            : (current[id] ?? {})
+        ])
+      )
+
+      const transcripts = useTranscripts.getState()
+
+      for (const turns of Object.values(current)) {
+        for (const turn of Object.values(turns)) {
+          const running = liveTurnsByRoom[turn.room_id]?.[turn.bot]
+
+          if (turn.live_session_id && running?.live_session_id !== turn.live_session_id) {
+            transcripts.drop(turn.live_session_id)
+          }
+        }
+      }
+
+      for (const turns of Object.values(liveTurnsByRoom)) {
+        for (const turn of Object.values(turns)) {
+          if (turn.live_session_id) {
+            transcripts.open(turn.live_session_id, `room:${turn.room_id}`, [])
+          }
+        }
+      }
+
       set({
         ...indexRooms(listed),
         eventsByRoom: Object.fromEntries(
           active.map((room, index) => [room.id, logs[index]?.events ?? []])
         ),
+        liveTurnsByRoom,
         loading: false
       })
     } catch (error) {
@@ -101,13 +175,37 @@ export const useRooms = create<RoomsState>((set, get) => ({
     try {
       const { room } = await roomsGet(id)
       set(state => mergeRoom(state, room))
-    } catch {
+
+      return true
+    } catch (error) {
+      if (roomGone(error)) {
+        set(state => dropRoom(state, id))
+
+        return true
+      }
+
       await get().refresh()
+
+      return false
     }
   },
 
   async open(id) {
-    const [{ room }, { events }] = await Promise.all([roomsGet(id), roomsLog(id, { limit: 1000 })])
+    let loaded: [{ room: Room }, { events: RoomEvent[] }]
+
+    try {
+      loaded = await Promise.all([roomsGet(id), roomsLog(id, { limit: 1000 })])
+    } catch (error) {
+      if (!roomGone(error)) {
+        throw error
+      }
+
+      set(state => dropRoom(state, id))
+
+      return
+    }
+
+    const [{ room }, { events }] = loaded
     const ordered = [...events].sort((a, b) => a.seq - b.seq)
     set(state => ({
       ...mergeRoom(state, room),
@@ -116,14 +214,20 @@ export const useRooms = create<RoomsState>((set, get) => ({
     const seq = messageSeq(ordered)
 
     if (seq) {
-      const result = await roomsMarkRead(id, seq)
-      set(state => mergeRoom(state, result.room))
+      await get().markRead(id, seq)
     }
   },
 
   async markRead(id, seq) {
-    const { room } = await roomsMarkRead(id, seq)
-    set(state => mergeRoom(state, room))
+    try {
+      const { room } = await roomsMarkRead(id, seq)
+      set(state => mergeRoom(state, room))
+    } catch (error) {
+      // Read marks are best effort; a room you were taken out of goes away.
+      if (roomGone(error)) {
+        set(state => dropRoom(state, id))
+      }
+    }
   },
 
   async create(input) {
@@ -135,6 +239,11 @@ export const useRooms = create<RoomsState>((set, get) => ({
 
   async addMember(id, bot) {
     const { room } = await roomsAddMember(id, bot)
+    set(state => mergeRoom(state, room))
+  },
+
+  async addPerson(id, user) {
+    const { room } = await roomsAddPerson(id, user)
     set(state => mergeRoom(state, room))
   },
 
@@ -150,6 +259,11 @@ export const useRooms = create<RoomsState>((set, get) => ({
     set(state => mergeRoom(state, room))
 
     return false
+  },
+
+  async removePerson(id, user, self) {
+    const { room } = await roomsRemovePerson(id, user)
+    set(state => (self ? dropRoom(state, id) : mergeRoom(state, room)))
   },
 
   drop(id) {
@@ -178,6 +292,7 @@ export const useRooms = create<RoomsState>((set, get) => ({
       const turns = { ...(state.liveTurnsByRoom[roomId] ?? {}) }
 
       if (event.kind === 'message.bot' && event.actor_id) {
+        bumpTurns(roomId)
         const turn = turns[event.actor_id]
 
         if (turn?.live_session_id) {
@@ -205,6 +320,7 @@ export const useRooms = create<RoomsState>((set, get) => ({
   },
 
   handleTurn(turn) {
+    bumpTurns(turn.room_id)
     set(state => {
       const current = { ...(state.liveTurnsByRoom[turn.room_id] ?? {}) }
 
@@ -214,8 +330,10 @@ export const useRooms = create<RoomsState>((set, get) => ({
       } else {
         const previous = current[turn.bot]
 
+        // The turn is over; its live session may serve the next one, which
+        // must not inherit cards nobody can answer any more.
         if (previous?.live_session_id) {
-          useTranscripts.getState().messageComplete(previous.live_session_id)
+          useTranscripts.getState().drop(previous.live_session_id)
         }
 
         delete current[turn.bot]
@@ -261,8 +379,14 @@ export function roomFailure(events: RoomEvent[]): null | string {
     : 'The turn did not finish.'
 }
 
-export function roomUnread(room: Room, events: RoomEvent[]): boolean {
-  const human = room.members.find(member => member.member_kind === 'human' && !member.left_at)
+/** Unread for `currentId`; without user accounts, for the one human member. */
+export function roomUnread(room: Room, events: RoomEvent[], currentId?: string): boolean {
+  const human = room.members.find(
+    member =>
+      member.member_kind === 'human' &&
+      !member.left_at &&
+      (!currentId || member.member_id === currentId)
+  )
 
   return messageSeq(events) > (human?.last_read_seq ?? 0)
 }

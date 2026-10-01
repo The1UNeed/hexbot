@@ -234,6 +234,19 @@ export function roomsRemoveMember(id: string, bot: string): Promise<{ room: Room
   return rpcCall<{ room: Room }>('hexbot.rooms.remove_member', { bot, id })
 }
 
+export function roomsAddPerson(id: string, user: string) {
+  return rpcCall<{ room: Room }>('hexbot.rooms.add_member', { id, user })
+}
+
+export function roomsPeople(id: string) {
+  return rpcCall<{ users: Pick<User, 'id' | 'display_name'>[] }>('hexbot.rooms.people', { id })
+}
+
+/** The owner removes a person; any other member removes themselves to leave. */
+export function roomsRemovePerson(id: string, user: string): Promise<{ room: Room }> {
+  return rpcCall<{ room: Room }>('hexbot.rooms.remove_member', { id, user })
+}
+
 export function roomsSend(
   id: string,
   text: string,
@@ -633,6 +646,12 @@ export function attachmentKind(mime: string, name: string): 'file' | 'image' | '
  */
 export async function attachFile(sessionId: string, file: File): Promise<AttachResult> {
   const kind = attachmentKind(file.type, file.name)
+  const limitMiB = kind === 'image' ? 25 : 45
+
+  if (file.size > limitMiB * 1024 * 1024) {
+    throw new Error(`attachment exceeds ${limitMiB} MiB`)
+  }
+
   const dataUrl = await readFileAsDataUrl(file)
 
   if (kind === 'image') {

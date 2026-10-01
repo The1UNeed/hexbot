@@ -11,6 +11,7 @@ const VERBS: Record<string, [live: string, done: string]> = {
   execute_code: ['Running code', 'Ran code'],
   hexbot_soul: ['Updating soul', 'Updated soul'],
   image_generate: ['Generating an image', 'Generated an image'],
+  ls: ['Listing files', 'Listed files'],
   memory: ['Updating memory', 'Updated memory'],
   patch: ['Editing', 'Edited'],
   read_file: ['Reading', 'Read'],
@@ -31,6 +32,7 @@ const VERBS: Record<string, [live: string, done: string]> = {
 
 /** Tools whose argument preview reads well after the verb, with its connector. */
 const PREVIEW: Record<string, string> = {
+  ls: ' in ',
   patch: ' ',
   read_file: ' ',
   search_files: ' for ',
@@ -38,6 +40,18 @@ const PREVIEW: Record<string, string> = {
   web_extract: ' ',
   web_search: ' for ',
   write_file: ' '
+}
+
+/**
+ * Phrasing for those tools when no preview came with the call, as room members
+ * see another person's bot: "Ran a command", never a bare "Ran".
+ */
+const NO_PREVIEW: Record<string, [live: string, done: string]> = {
+  patch: ['Editing a file', 'Edited a file'],
+  read_file: ['Reading a file', 'Read a file'],
+  terminal: ['Running a command', 'Ran a command'],
+  web_extract: ['Reading a page', 'Read a page'],
+  write_file: ['Writing a file', 'Wrote a file']
 }
 
 /**
@@ -143,14 +157,13 @@ export function toolLabel(
   call: ToolCall,
   tense: 'done' | 'live' = call.status === 'running' ? 'live' : 'done'
 ): string {
-  const verbs = VERBS[call.name]
+  const connector = PREVIEW[call.name]
+  const detail = connector === undefined ? '' : preview(call)
+  const verbs = (detail ? undefined : NO_PREVIEW[call.name]) ?? VERBS[call.name]
 
   const verb = verbs
     ? verbs[tense === 'live' ? 0 : 1]
     : `${tense === 'live' ? 'Using' : 'Used'} ${humanize(call.name)}`
-
-  const connector = PREVIEW[call.name]
-  const detail = connector === undefined ? '' : preview(call)
 
   return detail ? `${verb}${connector}${detail}` : verb
 }
@@ -224,7 +237,7 @@ export function stepsSummary(calls: ToolCall[]): string {
   const seconds = calls.reduce((total, call) => total + (call.durationS ?? 0), 0)
 
   const head =
-    steps.length === 1 && steps[0] ? toolLabel(steps[0], 'done') : `${steps.length} steps`
+    steps.length === 1 && steps[0] ? toolLabel(steps[0]) : `${steps.length} steps`
 
   return seconds > 0 ? `${head} · ${formatSeconds(seconds)}` : head
 }
@@ -245,7 +258,7 @@ export function workSummary(message: Message): string {
     return head
   }
 
-  return `${head} · ${steps.length === 1 && steps[0] ? toolLabel(steps[0], 'done') : `${steps.length} steps`}`
+  return `${head} · ${steps.length === 1 && steps[0] ? toolLabel(steps[0]) : `${steps.length} steps`}`
 }
 
 /** The panel headline while the turn runs: the running step, a wait notice, else "Thinking". */
