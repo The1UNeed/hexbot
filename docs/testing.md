@@ -9,6 +9,7 @@
   temporary homes. Local HTTP/SSE/MCP fixtures test provider/tool behavior.
   Actual Pi and unchanged-browser checks are documented in
   [`backend/hexbot-core/README.md`](../backend/hexbot-core/README.md).
+- Pi runtime: `node --test backend/pi-runtime/*.test.mjs` after `npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund`. CI runs every test file and the Rust suite on Linux and macOS.
 - Native browser end to end: `node scripts/dev/native-ui-smoke.mjs` after building
   Rust and the web bundle and installing the locked Pi dependency and Chromium.
   Uses a local streaming model with actual Pi; no provider credentials needed.
@@ -25,8 +26,8 @@
 - Packaging and release scripts: `node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs`
 - Site: `pnpm --filter ./apps/site run check`
 - Connect (unit): `pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run && pnpm --filter ./apps/connect run lint`
-- End to end: `pnpm --filter ./apps/desktop run e2e` (Playwright driving the built Electron app against a daemon in a temp home).
-- Connect: `HEXBOT_CONNECT_E2E=1 ./venv/bin/pytest tests/hexbot/test_connect_e2e.py -q` (a real Connect service with the in-memory store, a real daemon, and the CLI, web, desktop, and browser sign-in HTTP calls; no Cloudflare).
+- Legacy desktop end to end: `pnpm --filter ./apps/desktop run e2e` (Playwright driving the built Electron app against the retained Python daemon in a temp home). Native Electron coverage uses `native-ui-smoke.mjs` above.
+- Legacy Connect end to end: `HEXBOT_CONNECT_E2E=1 ./venv/bin/pytest tests/hexbot/test_connect_e2e.py -q` (a real Connect service with the in-memory store, the retained Python daemon, and the CLI, web, desktop, and browser sign-in HTTP calls; no Cloudflare).
 
 ## Legacy core suites
 
@@ -75,7 +76,10 @@ These suites pin the universal system prompt text and must stay green:
 `HEXBOT_HOME=<checkout>/.hexbot` (gitignored) and ports derived from the
 checkout path, so worktrees do not collide. `pnpm dev --desktop` starts
 the Electron app instead. The smoke scripts below take the printed daemon
-port. Never point a dev daemon at `~/.hexbot`. The runner no longer accepts
+port. Never point a dev daemon at `~/.hexbot`. The runner reinstalls locked Pi
+dependencies when the lockfile changes and installs the desktop's pinned,
+checksum-verified ripgrep and fd into the dev home's `bin` directory before
+starting either the daemon or the app. It no longer accepts
 `--backend`; legacy comparison tests use their own Python fixtures.
 
 ## Legacy Python real-model checks
@@ -90,9 +94,11 @@ HERMES_HOME=$HEXBOT_HOME ./venv/bin/python -c \
 ./venv/bin/hexbot serve --port 9131
 ```
 
-## Desktop end-to-end smoke test
+## Legacy desktop end-to-end smoke test
 
-Build the Electron app, then run its Playwright test against a temporary daemon:
+Build the Electron app, then run its retained Playwright test against a temporary
+Python daemon. This requires the legacy Python environment above. Use
+`native-ui-smoke.mjs` for the shipped Rust daemon:
 
 ```bash
 pnpm desktop:build
@@ -113,8 +119,8 @@ All of these need a Codex CLI login on the machine (see "Real-model checks").
 - `scripts/dev/multiuser_smoke.sh`: admin pairing, invite, member pairing, ownership filtering, admin-only refusal.
 - `scripts/dev/rooms_smoke.py --url ws://127.0.0.1:<port>/api/ws?token=<t> --token <t>`: two bots in a room with a main bot, one human message, prints the room log.
 - `scripts/dev/dream_smoke.py` (same flags): creates a bot, chats, runs a dream now, prints the memory notes and the Dreams section.
-- `scripts/dev/rpc.py <port> '<calls json>'`: ad-hoc JSON-RPC calls against a loopback daemon.
-- `scripts/dev/ui-review.mjs`, `ui-review-app.mjs`, `ui-shot.mjs`, `ui-error.mjs`, `ui-room-chat.mjs`: Playwright helpers that drive the daemon-served web bundle in Chromium and write screenshots to `/tmp/hexbot-shots`.
+- `HEXBOT_HOME=<home> python3 scripts/dev/rpc.py <port> '<calls json>'`: ad-hoc JSON-RPC calls against a loopback daemon.
+- `scripts/dev/ui-review.mjs`, `ui-review-app.mjs`, `ui-shot.mjs`, `ui-error.mjs`, `ui-room-chat.mjs`: Playwright helpers that drive the daemon-served web bundle in Chromium and write screenshots to `/tmp/hexbot-shots`. Set `HEXBOT_HOME=<home>` to sign in using the local device token.
 
 ## Packaged runtime checks
 
@@ -126,9 +132,28 @@ Rosetta is required to run its packaged Node probe.
 
 ```sh
 pnpm --filter ./apps/web run build
-node scripts/desktop/native-runtime.mjs
+node scripts/desktop/stage-runtime.mjs
 HEXBOT_NATIVE_TEST_BUNDLE="$PWD/apps/desktop/resources/hexbot-native" \
   pnpm --filter ./apps/desktop run test --run src/main/backend/native-bootstrap.test.ts
+```
+
+CI also runs live extension and permission tests through the staged launcher, including
+its pruned dependencies:
+
+```sh
+HEXBOT_TEST_PI="$PWD/apps/desktop/resources/hexbot-native/pi/hexbot-pi" \
+  cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test runtime -- --ignored
+```
+
+After packaging on macOS, verify the app and native executables with their shipped
+signatures. The check launches both editions, exercises Node's JIT and checks that
+a self-update archive preserves the full package's runtime bytes and signatures.
+It also compares bundled executable minimum macOS versions with the packaged
+app's minimum, on both release architectures:
+
+```sh
+HEXBOT_PACKAGED_TEST_DIR="$PWD/apps/desktop/release" \
+  node --test scripts/desktop/runtime-signing.test.mjs
 ```
 
 Staging reports dependency bytes before and after pruning. The installed-runtime

@@ -11,11 +11,15 @@ the provider keys. Owner ids exist on every row from milestone 1.
   a file per user (`users/<owner_id>/user.md`), and each user's bots see
   only their owner's.
 - `bots.shareable` lets other members add that bot to their rooms. A shared
-  bot in someone else's room keeps its owner's memory and skills; the room
-  section and its usage are attributed to the inviter.
+  bot in someone else's room keeps its owner's memory and skills but reads
+  no About you at all, neither its owner's nor the room owner's; the room
+  section and its usage are attributed to the inviter. The room cannot
+  loosen the bot's approval mode below what its owner configured.
 - Rooms may have several human members; `room_members.member_kind = human`
   rows point at users. Humans-only rooms are allowed; bots can be added
-  later and see the transcript from the start.
+  later and see the transcript from the start. Members see the room in
+  their list, read and post; only the owner changes or deletes it, and the
+  room's bots run on the owner's budget.
 
 ## Auth
 
@@ -27,6 +31,11 @@ the provider keys. Owner ids exist on every row from milestone 1.
   connection identity and filters by it.
 - Admin-only methods: providers, network, limits, users, usage of all
   users. Members manage only their own bots, sections, rooms and devices.
+- Ownership is enforced by the daemon's RPC handlers and tools, not by the
+  operating system. Every bot runs as the daemon's OS user, so a member's bot
+  with the terminal or file toolset can read any user's About you, memory,
+  soul, and section history under the Hexbot home; the sandbox hides credential
+  files only. Invite people you trust with the data on that daemon.
 
 ## Budgets and usage
 

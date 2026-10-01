@@ -21,6 +21,10 @@ its desktop app (see "Borrowed from T3 Code" at the end).
 Stable and Nightly can be installed side by side because their app ids
 differ. They share `~/.hexbot`, so a nightly can migrate state a stable build
 cannot read back. Back up the directory before opening a nightly.
+They also share one daemon runtime under `~/.hexbot/runtime`. Each app keeps
+the installed runtime when it was built from newer source than its own bundle
+(`builtAt` in the runtime manifest), so opening an older Stable or Nightly
+never moves the daemon back.
 
 ## Which files belong to which channel
 

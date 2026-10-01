@@ -95,7 +95,7 @@ starts the native daemon.
 Run Hexbot from the checkout (the Dev channel):
 
 ```sh
-pnpm dev                # daemon + web bundle; open the printed URL
+pnpm dev                # daemon + web bundle; open the printed sign-in link
 pnpm dev --desktop      # web bundle + Electron app (the app runs the daemon)
 pnpm dev --home DIR     # daemon state elsewhere; --port N fixes the daemon port
 pnpm site:dev           # hexbot.app on 4321
@@ -109,11 +109,15 @@ side by side and nothing touches `~/.hexbot`. It ignores an ambient
 read them from its output rather than assuming. It stops what it started by
 PID. This mirrors T3 Code's `vp run dev` and its per-worktree `.t3` state.
 
-Starting pieces by hand is fine too, with the same rule:
+Starting pieces by hand is fine too, with the same rule. In a terminal the
+daemon prints a one-time sign-in link for its own port; the dev server
+proxies the daemon, so open the same code on the dev server's origin
+(`http://localhost:5173/login?code=...`) or run `hexbot pair` for another.
+`HEXBOT_WEB_DEV_URL` lets the dev server's origin through:
 
 ```sh
-HEXBOT_HOME=$(mktemp -d) backend/hexbot-core/target/debug/hexbot serve --port 9119
-VITE_HEXBOT_ORIGIN=http://127.0.0.1:9119 pnpm --filter ./apps/web run dev
+HEXBOT_HOME=$(mktemp -d) HEXBOT_WEB_DEV_URL=http://localhost:5173 backend/hexbot-core/target/debug/hexbot serve --port 9119
+VITE_HEXBOT_ORIGIN=http://127.0.0.1:9119 pnpm --filter ./apps/web run dev --port 5173 --strictPort
 ```
 
 Three ways to hurt yourself:
@@ -135,6 +139,7 @@ Run the suite that covers what you touched, not everything:
 ```sh
 cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml
 cargo clippy --locked --manifest-path backend/hexbot-core/Cargo.toml --all-targets -- -D warnings
+node --test backend/pi-runtime/*.test.mjs
 ./venv/bin/pytest tests/hexbot -q && node --test tests/hexbot/*.test.mts
 pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint
 pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run

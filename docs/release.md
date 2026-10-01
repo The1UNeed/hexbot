@@ -37,13 +37,15 @@ page is the procedure and the one-time setup. Modelled on T3 Code's
 resolution, feed, manifest, and cask scripts against synthetic packages, so
 a broken release script fails before tag day.
 
-Full packages bundle the native daemon, pinned Node and Pi, web assets and
-skills. Targets are macOS arm64, macOS x64 and Linux x64. Both macOS jobs use
+Full packages bundle the native daemon, pinned Node and Pi, checksum-verified
+ripgrep and fd, web assets and skills. Targets are macOS arm64, macOS x64 and Linux x64. Both macOS jobs use
 the arm64 `macos-26` runner; the Intel job builds with Cargo's
 `x86_64-apple-darwin` target, downloads darwin-x64 Node and installs npm
 packages with `--cpu=x64 --os=darwin`. Rosetta runs the Intel runtime probe.
 `rust-toolchain.toml` is the single toolchain pin. CI and releases cache Cargo
-artifacts with `Swatinem/rust-cache`.
+artifacts with `Swatinem/rust-cache`. Third-party actions are pinned to commit SHAs.
+Node archive SHA-256 values are pinned beside `NODE_VERSION` in
+`scripts/desktop/native-runtime.mjs` and must change with each Node bump.
 
 The pinned agent still loads extensions through jiti. Precompiling our extension
 alone would not remove that runtime dependency, so the loaders remain bundled.
@@ -53,7 +55,10 @@ Native archives and SHA-256 manifests live under
 `daemon/hexbot-src-<version>.tar.gz` using `stage-python-src --native-transition`.
 Existing Python background services follow that source feed, validate the native
 bundle and version, then replace their process with the native daemon. Their
-home, conversations and bot memory stay in place. Native startup refuses a home
+home, conversations and bot memory stay in place. If the native download or
+validation fails, the update reports failure and commands keep using the Python
+daemon. Each service restart retries the native install; a persistent failure
+keeps the Python service available. Native startup refuses a home
 whose previous listener is still reachable. Python rollback packages,
 `HEXBOT_BACKEND` selection and `pnpm dev --backend python` are removed.
 
@@ -67,22 +72,50 @@ Known gap: update manifests are not signed yet. HTTPS and archive SHA-256 checks
 protect transport and detect corruption, but do not authenticate a manifest
 independently of the update server. Manifest signing is a follow-up.
 
-First launch downloads uv 0.12.18 directly from its release archive and checks a
-SHA-256 pinned in the app before executing it. It installs managed Python 3.11
-for code tools and edge-tts 7.2.7 for voice. These are not daemon dependencies.
+Native staging and the dev runner share the pins in
+`apps/desktop/src/main/backend/tools.ts`. They verify ripgrep 15.2.0 and fd
+10.5.0 against the pinned archive SHA-256. Native bundles include both tools,
+including archives used by headless installs and Python service handoff. Before
+each bot starts, its launcher copies these verified tools into Pi's managed
+bin directory unless the same size and SHA-256 are already there; a failed
+copy is logged and skipped when PATH already has the verified tool. The
+desktop app no longer downloads search tools on first launch. First launch installs uv 0.12.18 from its pinned archive,
+managed Python 3.11 for code tools and edge-tts 7.2.7 for voice, with every Python package pinned by hash in
+`apps/desktop/src/main/backend/edge-tts.requirements.txt`, copied from `uv.lock`.
+These are not daemon dependencies.
 
-macOS uses the hardened runtime with inherited `allow-jit` and
-`allow-unsigned-executable-memory` entitlements. The latter is required by
-bundled x64 Node 26.5.0: the Intel probe under Rosetta traps in V8's
-`OS::SetPermissions` with `allow-jit` alone. Arm64 Node passes without that
-exception; the shared entitlements support both architectures. A local test
-signs copies of both binaries, runs a Node JIT loop, loads the packaged agent
-CLI, and probes the daemon version:
+The bundled Node is the Node 22 LTS line, because Node 23 and later need macOS
+13.5 and the app runs on macOS 12. The release packaged-app test below checks that
+bundled executables need no newer macOS than the packaged Electron app.
+Linux daemons are built on Ubuntu 22.04 and need glibc 2.35 or later; bootstrap runs both bundled
+executables before it selects a runtime and reports a system it cannot run on.
+
+Developer ID builds use the hardened runtime. Electron and its helpers inherit
+`allow-jit`; only bundled Node receives `allow-unsigned-executable-memory`, through
+`scripts/desktop/mac-sign.cjs` and `apps/desktop/entitlements.node.plist`. Intel
+Node 22 LTS needs that exception: the pinned x64 probe under Rosetta traps in V8's
+`OS::SetPermissions` with `allow-jit` alone. Client-only builds have no Node
+exception. Ad-hoc Dev builds omit the hardened runtime so Electron's
+frameworks can load without a Team ID.
+
+Release jobs inspect the signatures and entitlements inside the packaged app,
+check the packaged macOS minimum, launch Electron, run a Node JIT loop and probe
+the packaged Pi and daemon versions.
+They do not re-sign the binaries being checked:
 
 ```sh
-HEXBOT_NATIVE_TEST_BUNDLE="$PWD/apps/desktop/resources/hexbot-native" \
+HEXBOT_PACKAGED_TEST_DIR="$PWD/apps/desktop/release" \
   node --test scripts/desktop/runtime-signing.test.mjs
 ```
+
+Use `stage-runtime.mjs` to stage a runtime and `make-native-update.mjs` to create
+its update archive and manifest. macOS archives exclude AppleDouble files and
+extended attributes. Release jobs archive the runtime inside the signed `.app`,
+so daemon self-updates carry the same signatures as the full package. Archiving
+recomputes the runtime manifest's file hashes after signing without changing the
+signed app. Activation preserves those hashes for desktop verification. Both the
+app and service updater keep the runtime with the newer manifest `builtAt`,
+including when switching between Stable and Nightly.
 
 The September 27 darwin-arm64 staging check reduced dependency files from
 463,982,503 to 86,636,413 bytes, about 81%. The complete bundle contains

@@ -26,9 +26,9 @@ Three parts:
    `hexbot connect` CLI: registers the daemon, heartbeats, and accepts
    Connect grants for login through two core auth providers (`hexbot` for
    apps, `connect` for browsers). A TypeScript sidecar,
-   `hexbot/connect_agent.mts`, supervises `cloudflared` and verifies grants.
-   It runs on Node 24 or newer; the desktop app passes its own Electron
-   binary as `HEXBOT_NODE`, so the full package needs no separate Node.
+   `hexbot/connect_agent.mts`, supervises `cloudflared` and verifies grants
+   for the legacy Python daemon. The native daemon does both in
+   `backend/hexbot-core/src/services.rs` and needs no separate Node.
 3. **Client side**: the app's connect screen signs in through the system
    browser, lists daemons, and turns a pick into a normal remote target;
    Settings, Connect registers the daemon and links to its address.
@@ -140,7 +140,7 @@ forward to, so the whole flow runs on one machine.
    the `jti` has not been seen, then mints a device token exactly as pairing
    does. The sidecar caches Connect's published keys for ten minutes and
    refetches for an unknown key id at most once a minute. The desktop reads the token from the
-   `hermes_session_at` cookie, prefixed `__Host-` over HTTPS.
+   `hermes_session_at_<port>` cookie, or `__Host-hermes_session_at` over HTTPS.
 5. From here it is a normal remote target: `{host, port: 443, tls: true,
    deviceToken}`.
 
@@ -169,7 +169,10 @@ Connect as the identity provider:
    verifies the hash, expiry, daemon, verifier, and redirect URI, consumes
    the code, and returns a grant JWT. The daemon verifies it like an app
    grant, mints a device token with platform `connect`, and the core sets the
-   session cookies and lands on `next`.
+   session cookies and lands on `next`. When `dashboard.public_url` is an HTTPS
+   origin and the request Host matches it, cookies use Secure even if the
+   reverse proxy connects from another LAN host. Forwarded headers do not
+   establish HTTPS trust.
 
 Spent grant ids live in the daemon's SQLite database (`spent_grants`), so a
 restart inside a grant's five minutes cannot replay it; grants are verified

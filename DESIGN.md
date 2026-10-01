@@ -83,7 +83,14 @@ more freedom and more capability than a hosted product can offer.
   tokens in `desktop-data/`. On macOS, shell, Python, and scheduled scripts
   cannot write the Hexbot home except their workspace and artifact or attachment
   folders. Linux applies these restrictions when bubblewrap passes its startup
-  probe; otherwise Hexbot warns and keeps approval guards. SSH private keys
+  probe; otherwise Hexbot warns, Manual asks before every shell command and
+  code run, Auto sends them to the section owner, and scheduled scripts wait
+  for Off. Credential stores (`~/.aws`, `~/.netrc`, `~/.npmrc` and the rest of
+  the deny list in `credential-policy.json`) are never written by tools; the
+  sandbox denies writes there for every program a command starts, and a shell
+  command that names one asks in Manual and Auto. bubblewrap can only bind a
+  store that exists, so on Linux in Off mode a command can still create a
+  missing one. SSH private keys
   (`id_*` except `.pub`, `*.pem`, `*.key`) are protected. SSH config, known hosts,
   public keys, and the SSH agent remain available. A bot scheduling an absolute
   script path asks the section owner in Manual and Auto. Scripts must stay in

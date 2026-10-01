@@ -27,6 +27,10 @@ data model. Reference for the core subset: `/tmp/hexbot-notes/ws-api.md`
 - History: `session.history {session_id}`, `session.events.since` on reconnect.
 - Attachments: `image.attach_bytes {session_id, content_base64, filename}`,
   `file.attach {session_id, data_url, name}`, `pdf.attach {session_id, content_base64}`, `image.detach`.
+  Images allow 25 MiB decoded; PDFs and generic files allow 45 MiB.
+  Larger attachments return 4202 with the size limit. Browser clients check
+  before reading or uploading. WebSocket frames and in-flight request bytes
+  are capped at 64 MiB per connection.
 - Approvals: `approval.pending`, `approval.respond {session_id, request_id, choice}`
   with `choice` in `once | session | always | deny`.
 - Per-section model override: `config.set {key: "model", value, session_id}`.
@@ -51,11 +55,19 @@ user. Get and mutation methods always check ownership.
 ### Daemon
 
 - `hexbot.info {}` → `{version, hermes_version, daemon_name, install_id,
-  auth_required, lan_enabled, addresses: [string], platform, home,
+  auth_required, lan_enabled, addresses: [string], platform, sandbox, home,
   update_capability}`. `update_capability` is `desktop` when the Hexbot app
   on that machine runs the daemon, `service` when launchd or systemd does,
-  and `null` for a checkout or a hand-started daemon. The compatibility field
-  `hermes_version` carries the pinned agent core version.
+  and `null` for a checkout or a hand-started daemon. `sandbox` is the OS
+  sandbox shell and code tools run in: `sandbox-exec` on macOS, `bubblewrap`
+  on Linux after a successful probe, and `null` when there is none; Settings,
+  Approvals shows a notice then. The compatibility field
+  `hermes_version` carries the pinned agent core version. `home` is an empty
+  string for members and contains the daemon state path only for admins. `auth_required`
+  is always true and kept for older clients: every client presents a device
+  credential, whatever the bind address. `install_id` preserves the existing
+  `<HEXBOT_HOME>/install_id` file and migrates an early native `install-id` file
+  only if the original file has no ID.
 - `hexbot.settings.get {}` → `{approval_mode, auto_approver_model, lan_enabled,
   service_installed, workspace_dir, billing_notice_ack, dream_time, dream_enabled}`
 - `hexbot.settings.set {patch}` → same shape; only whitelisted keys.
@@ -77,6 +89,8 @@ room `waiting.human` events, and open incidents. `status_detail` is
 null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
 `approval_mode` is `inherit` (the deployment setting), `manual`, `smart`, or
 `off`; `workdir` overrides the deployment workspace for that bot's terminal.
+`workdir` and the `workspace_dir` setting are refused (4202) when they resolve
+inside the Hexbot home, symlinks included.
 
 - `hexbot.bots.list {all?}` → `{bots: [Bot]}` ordered by `last_activity_at` desc.
 - `hexbot.bots.get {name}` → `{bot: Bot}`
@@ -85,6 +99,8 @@ null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
   profile with `mirror_credentials: true`, applies persona and model, stores
   the avatar, mirrors the deployment settings into the new profile's
   `config.yaml`, creates the first section titled "General").
+  Any field `hexbot.bots.update` accepts may also be given here and is stored
+  the same way.
   `display_name` defaults to the bot name in title case — never to `title`,
   which is free-form caller text stored verbatim.
 - `hexbot.bots.introduce {name, section}` → `{submitted: true, section}`.
@@ -104,7 +120,7 @@ null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
 - `hexbot.bots.clear_status {name}` → `{bot: Bot}`. Closes every open incident
   for the bot.
 - `hexbot.bots.delete {name}` → `{deleted: true}` (deletes the profile
-  directory and all rows; refuses with 4211 if any of its sections is live
+  directory, all rows, and the bot's scheduled jobs; refuses with 4211 if any of its sections is live
   and mid-turn — `session.active_list` status `working` or `waiting` —
   with `data.sections: [{id, status}]`).
 
@@ -120,15 +136,19 @@ generates from the first prompt; a user rename clears it. `preview` is the
 first user message, also returned by `open`.
 
 - `hexbot.sections.list {bot?, include_archived?}` → `{sections: [Section]}`.
-  A section still called `New section` (or last named by the bot) takes the
-  core session title here, so the auto-title lands without a client hop.
+  A section still called `New section` takes its title from the first prompt.
+  The `General` section created with a bot, and any name the user or bot set,
+  are kept.
 - `hexbot.sections.create {bot, title?}` → `{section: Section}` (calls
   `session.create {profile: bot, close_on_disconnect: false}`, records the
   stored id). `title` is passed to the core only when given; an untitled
   core session is what its auto-titler names from the first prompt, and the
   row shows `New section` until then.
-- `hexbot.sections.open {id}` → `{section: Section, messages: [Message]}`
-  (resumes the stored session on the bot's profile; idempotent if live).
+- `hexbot.sections.open {id}` → `{section: Section, messages: [Message],
+  pending_clarify?}` (resumes the stored session on the bot's profile;
+  idempotent if live). If the bot is waiting on an approval, the daemon
+  sends its `approval.request` event again so a reloaded client gets the
+  card back; clients dedupe on `request_id`.
 - `hexbot.sections.rename {id, title}` → `{section: Section}`
 - `hexbot.sections.archive {id}` / `hexbot.sections.unarchive {id}` → `{section}`
 - `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true}`
@@ -145,7 +165,9 @@ first user message, also returned by `open`.
 
 - `hexbot.memory.user.get {}` → `{text, cap: 2000, updated_at}`. The caller's
   About you text, injected as the plugin prompt section
-  `hexbot.about-you` into every session of a bot they own.
+  `hexbot.about-you` into every session of a bot they own. Shared bot sessions
+  saved with the room owner's About you before this restriction rebuild their
+  prompt once on reopen, preserving their saved tools and options.
 - `hexbot.memory.user.set {text}` → same as get. Broadcasts
   `hexbot.memory.user.changed`.
 - `hexbot.memory.bot.get {bot}` → `{memory_md, cap: 2200}`
@@ -172,7 +194,17 @@ first user message, also returned by `open`.
 
 Room shape: `{id, name, owner_id, main_bot, approval_mode, limits,
 created_at, updated_at, last_activity_at, archived_at, members}`. Member rows
-keep `left_at` after departure so old transcripts retain their identities.
+include `display_name` for both bots and people, and keep `left_at` after
+departure so old transcripts retain their identities.
+`limits` is `{bot_turns_per_human_turn?, budget_tokens_per_human_turn?}`,
+each a whole number or null (use the system setting); other keys are
+rejected with 4202. Rooms saved by earlier builds may still hold
+`room_bot_turns_per_human_turn` or `room_budget_tokens_per_human_turn` in
+`limits`; those keys are ignored, so such a room uses the system settings
+until its limits are saved again. The owner and the room's human members can
+list, get, read, send, mark read and stop; only the owner can update, change
+members, archive or delete (4302 otherwise). A member may remove only
+themselves. Bots always run as the owner.
 
 - `hexbot.rooms.list {include_archived?}` → `{rooms: [Room]}`
 - `hexbot.rooms.get {id}` → `{room: Room}`
@@ -181,6 +213,16 @@ keep `left_at` after departure so old transcripts retain their identities.
 - `hexbot.rooms.update {id, name?, main_bot?, limits?, approval_mode?}` → `{room}`
 - `hexbot.rooms.add_member {id, bot}` / `hexbot.rooms.remove_member {id, bot}`
   → `{room}`
+- `hexbot.rooms.people {id}` → `{users: [{id, display_name}]}`. Owner only;
+  lists active daemon users for Add person without exposing account settings.
+- `hexbot.rooms.add_member {id, user}` → `{room}`. Owner only; adding a
+  person back clears `left_at`, resets their read position, and restores room
+  and live session events.
+- `hexbot.rooms.remove_member {id, user}` → `{room}`. The owner removes a
+  person; any other member passes their own id to leave. The owner cannot
+  remove themselves (4202); they delete the room instead. The person gets the
+  `member.left` event and `hexbot.rooms.changed`, then 4302 from every room
+  call and no further room or live session events.
 - `hexbot.rooms.send {id, text, attachments?}` → `{event}`. This queues the
   room engine after writing the user event.
 - `hexbot.rooms.log {id, after_seq?, limit?}` → `{events}` in ascending room
@@ -193,6 +235,15 @@ keep `left_at` after departure so old transcripts retain their identities.
 Room turns use hidden sessions on each bot profile. The daemon waits
 for the corresponding assistant row through `session.history` after
 `prompt.submit`; it does not depend on the WebSocket that initiated the room.
+The live session's events (`message.delta`, `tool.*` and the rest) reach the
+owner and every human member, so everyone watches the bot work. Approval and
+question events (`approval.*`, `clarify.*`) go to the owner alone, who
+answers them; `session.events.since` replays a room session to the owner
+only. Opening a room with `hexbot.rooms.get` re-sends pending cards to the
+owner and the current waiting or working `status.update` to other members
+for each running turn. Members receive "Waiting for <owner name>" while
+an approval or question is open, including after a reload. Tool labels in
+rooms and sections stay in the present tense until the tool completes.
 
 ### Bot activity
 
@@ -224,6 +275,10 @@ in the Dreams section. The roster marks a bot-named section with a sparkle.
 A connector is an outside service a bot can reach (web search, image
 generation, Notion, X search, Home Assistant, an MCP server, ...). Credentials
 are stored once for the daemon; each bot has its own on/off switch.
+Native tool configuration for a bot overrides matching fields in the daemon configuration.
+Nested objects merge recursively, preserving unspecified fields; lists and
+other values replace the daemon value. Native tool configuration rejects profile paths
+that contain symlinks. Browser private-URL settings use the same merge.
 
 A tool that belongs to a connector (`web_search`, `web_extract`,
 `image_generate`, `video_generate`, `x_search`, the Home Assistant tools) is
@@ -274,6 +329,9 @@ or a clear.
   via their stored provider state). `label` is the provider's display
   name, never the raw slug.
 - `hexbot.providers.set_key {provider, key}` / `hexbot.providers.clear_key {provider}`.
+  Key changes and completed sign-ins refresh existing Pi credential copies.
+  Open sections use the updated credentials on their next provider request.
+  Disconnect removes the provider from those copies, including bots that are idle.
 - `hexbot.models.list {provider?, include_unconfigured?, refresh?}` →
   `{curated: [Model], all: [Model], all_source, error?}` with
   `Model = {provider, id, label, context?, input_cost?, output_cost?}`,
@@ -283,18 +341,32 @@ or a clear.
   provider has no credentials; `model.options` returns empty skeleton rows
   for those, so `all` then falls back to the core's offline curated catalog
   and `all_source` reports `model.options | catalog | mixed | none`.
+  A named, configured provider with no offline catalog is queried automatically.
+  LM Studio uses its OpenAI-compatible `/v1/models` endpoint. Unfiltered reads
+  query providers only with `refresh: true`. The current configured model remains
+  selectable if discovery fails, and `error` reports the failure.
   `context` is in tokens; `input_cost` / `output_cost` are the $/Mtok
   strings the core formats for its own picker (e.g. `"$3.00"`, `"free"`).
 
 ### Network and pairing
 
 - `hexbot.network.get {}` → `{lan_enabled, bind_host, port, addresses}`
-- `hexbot.network.set {lan_enabled}` → same; restarts the listener.
+- `hexbot.network.set {lan_enabled}` → same; moves the listener to the new
+  address and closes open connections with code 1012 so clients reconnect.
+  The daemon does not restart and running bot turns continue. The reply's
+  `restarting: true` is kept for older apps.
 - `hexbot.pairing.code {}` → `{code, expires_at, link}` (loopback or paired
   admin only). `link` is `hexbot://pair?host=...&port=...#code=...`.
 - `hexbot.devices.list {}` → `{devices: [{id, name, platform, created_at,
   last_seen_at, current: bool}]}`
 - `hexbot.devices.revoke {id}` → `{revoked: true}`
+
+### Local daemon identity
+
+`GET /api/daemon/identity` returns `{install_id, pid}` only to a loopback peer that sends a loopback `Host` (`127.0.0.1`, `localhost` or `[::1]`), so it stays closed through Hex Connect and local proxies.
+The app compares these with this home's `install_id` and `native-daemon.lock`
+before reusing a daemon, including after an app-owned daemon exits. Stopping an
+external service daemon through the app leaves its status as running.
 
 ### Updates
 
@@ -308,7 +380,12 @@ A client newer than the daemon asks the daemon to update itself
   `daemon/native/<version>/<target>/manifest.json`, verifies the target archive
   and its SHA-256, activates the runtime, and restarts itself. Errors: 4210
   no capability, 4211 an update is already running, 4212 already on that
-  version.
+  version. Service updates require a newer source build, using manifest
+  `builtAt` across Stable and Nightly. An older or equally old build reports
+  failure before downloading its archive.
+  Native manifests are not signed yet. SHA-256 checks detect corruption;
+  authenticity depends on HTTPS and update-origin write access. Release-key
+  provisioning and manifest signing remain a known gap.
 - `hexbot.update.status {}` → `{capability, status, requested, version,
   percent, message, at}`. `status` is `idle`, `requested`, `checking`,
   `downloading`, `installing`, `restarting`, `up-to-date`, or `failed`.
@@ -324,6 +401,7 @@ A client newer than the daemon asks the daemon to update itself
   that ownership.
 - `hexbot.users.update {id, display_name?, role?, disabled?, limits?}` →
   `{user}`. Admin only. `limits.daily_tokens` is a non-negative integer or null.
+  Updates that remove the last enabled admin return 4202.
 - `hexbot.usage.summary {user?, since?}` → `{input_tokens, output_tokens,
   estimated_cost_usd, by_bot}`. Members may request only their own usage.
 
@@ -352,7 +430,8 @@ broadcast to every connection.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
 Room mutations emit `hexbot.rooms.changed {id}`. Every persisted room event
 emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit
-`hexbot.rooms.turn {room_id, bot, live_session_id, status}`.
+`hexbot.rooms.turn {room_id, bot, live_session_id, status}`. Room events go
+to the owner and every human member.
 Dream triggers emit `hexbot.dreaming.changed {bot}`.
 Connector mutations emit `hexbot.connectors.changed {connector, bot?}` and
 `hexbot.bots.changed`. Opening or resolving an incident emits
@@ -365,6 +444,12 @@ kind, connector, text, created_at, resolved_at}}` followed by
 - `GET /auth/login` starts browser sign-in through Hex Connect with a
   one-time state cookie. `GET /auth/callback` validates the state and grant,
   then sets the browser cookie and returns to the web bundle.
+- `GET /login?code=<pairing code>` is the one-time sign-in link `hexbot
+  serve` prints: it redeems the code once, sets the browser cookie, and
+  redirects to `next`. `GET /` never carries a credential, on any bind
+  address; an HTML request without a valid cookie is redirected to `/login`.
+  The served page sets `window.__HERMES_AUTH_REQUIRED__=true`, kept for older
+  clients; the web bundle reads it only to know a daemon served it.
 
 - `POST /hexbot/pair {code, device_name, platform}` → `{device_token,
   device_id, daemon_name}`; the code is single-use and expires in 10 minutes.
@@ -378,7 +463,10 @@ kind, connector, text, created_at, resolved_at}}` followed by
 
 - `hexbot serve [--host IP] [--port N] [--lan | --no-lan]`: starts the Rust
   daemon with Pi agents. `HEXBOT_HOME` selects the daemon state directory.
-- `hexbot pair`: prints the pairing code, expiry, address, pairing link, and QR code.
+  Started in a terminal without a supervisor, it prints a one-time sign-in
+  link for a browser on the same machine (`docs/auth.md`).
+- `hexbot pair [--sign-in]`: prints the pairing code, expiry, address, pairing link, and QR code.
+  `--sign-in` preserves outstanding codes for startup links; ordinary pairing replaces the previous code.
 - `hexbot connect [status|disconnect]`: registers, inspects, or disconnects
   this daemon from Hex Connect.
 - `hexbot devices list|revoke`, `hexbot bots list|create|delete`,

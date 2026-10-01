@@ -20,11 +20,13 @@ Hexbot is in nightly early access, so the [download page](/download/) offers the
 - AppImage for a portable Linux app
 - deb for Debian, Ubuntu, and related distributions
 
+The full package runs on macOS 12 or later, and on x86-64 Linux with glibc 2.35 or later, such as Ubuntu 22.04 or Debian 12. If the daemon cannot run on your system, first launch says so.
+
 ## First launch
 
 The full package asks where Hexbot should run:
 
-1. **Run on this machine.** Hexbot installs its daemon under `~/.hexbot`. You can let it start at login and continue running after the desktop window closes. The app includes the daemon and agent runtime. First launch downloads a checksum-verified installer, Python 3.11 for code tools, and voice tools. Hexbot keeps these managed tools inside `~/.hexbot`; it does not replace system copies.
+1. **Run on this machine.** Hexbot installs its daemon under `~/.hexbot`. You can let it start at login and continue running after the desktop window closes. The app includes the daemon, the agent runtime, and the search tools bots use. First launch downloads Python 3.11 for code tools and the voice tools, each checked against a pinned checksum. Hexbot keeps all of these inside `~/.hexbot`; it does not replace system copies.
 2. **Connect to a daemon.** Use a pairing link or enter the daemon address and one-time code.
 
 The client-only package opens straight on the connect screen.
@@ -49,6 +51,8 @@ Install a deb package with your usual package manager:
 ```sh
 sudo apt install ./Hexbot-0.1.5-alpha.1-linux-amd64.deb
 ```
+
+The deb package depends on `bubblewrap`; with the AppImage, install it yourself (`sudo apt install bubblewrap`). Hexbot uses it to keep shell commands, Python code, and scheduled scripts away from your credentials. Without it, Manual asks before every shell command and code run, Auto sends them to you instead of its approver, scheduled scripts wait, and Settings, Approvals shows a notice. Restart the daemon after installing it. See [Approvals](/docs/approvals/).
 
 ## Data and updates
 

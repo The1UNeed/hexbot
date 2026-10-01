@@ -4,7 +4,7 @@ title: CLI
 description: Start, pair, and manage Hexbot from the command line.
 ---
 
-The native `hexbot` command starts the daemon and manages bots, rooms, devices and Hex Connect.
+The native `hexbot` command starts the daemon and manages bots, devices and Hex Connect. It can also list rooms.
 
 ## Start a daemon
 
@@ -12,7 +12,7 @@ The native `hexbot` command starts the daemon and manages bots, rooms, devices a
 hexbot serve
 ```
 
-The daemon listens on localhost by default. Use its LAN option or network settings only when another device needs access. Run `hexbot serve --help` for the current host and port flags.
+The daemon listens on localhost by default. Use its LAN option or network settings only when another device needs access. Run `hexbot --help` for the current host and port flags.
 
 ## Create a pairing code
 
@@ -26,11 +26,11 @@ This prints reachable addresses and a one-time code. A code expires after ten mi
 
 ```sh
 hexbot bots list
-hexbot bots create
-hexbot bots delete
+hexbot bots create <name>
+hexbot bots delete <name>
 ```
 
-Use command help before destructive actions. Deleting a bot removes its settings and associated sections when the daemon accepts the request.
+Run `hexbot --help` for bot creation flags. Deleting a bot removes its settings and associated sections when the daemon accepts the request.
 
 ## Send a message
 
