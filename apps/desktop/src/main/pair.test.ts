@@ -4,9 +4,19 @@ import { cookieValue, pairWithGrant } from './pair'
 afterEach(() => vi.unstubAllGlobals())
 
 describe('pair cookie parsing', () => {
+  it('accepts port, HTTPS and legacy cookie names', () => {
+    for (const name of ['hermes_session_at', 'hermes_session_at_9119', '__Host-hermes_session_at', '__Secure-hermes_session_at_9119']) {
+      const headers = new Headers()
+      headers.append('set-cookie', `${name}=fixture; Path=/`)
+      expect(cookieValue(headers, 'hermes_session_at')).toBe('fixture')
+    }
+    const headers = new Headers()
+    headers.append('set-cookie', 'hermes_session_at_other=fixture; Path=/')
+    expect(cookieValue(headers, 'hermes_session_at')).toBeUndefined()
+  })
   it('reads the device token from separate set-cookie headers', () => {
     const headers = new Headers()
-    headers.append('set-cookie', 'hermes_session_at=device-token; HttpOnly; Path=/')
+    headers.append('set-cookie', 'hermes_session_at_9119=device-token; HttpOnly; Path=/')
     headers.append('set-cookie', 'other=value; Path=/')
     expect(cookieValue(headers, 'hermes_session_at')).toBe('device-token')
   })

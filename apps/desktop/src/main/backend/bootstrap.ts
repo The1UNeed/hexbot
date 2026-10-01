@@ -1,22 +1,20 @@
 import { createHash } from 'node:crypto'
-import { createWriteStream, existsSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { arch, platform } from 'node:os'
 import { basename, dirname, join } from 'node:path'
-import { Readable } from 'node:stream'
-import { pipeline } from 'node:stream/promises'
 import { spawn } from 'node:child_process'
 
 import { app } from 'electron'
-import { gte, valid } from 'semver'
 
 import { migrateLegacyService } from '../service'
-import { uvAsset, UV_VERSION } from './uv'
+import voiceRequirements from './edge-tts.requirements.txt?raw'
+import { lockedDaemonPid } from './manager'
+import { downloadTool, installTool } from './tools'
 
 import { binDir, hexbotHome, nativeDir, nativeServiceExecutable, runtimeDir } from './paths'
 
-export type BootstrapStage =
-  'uv' | 'python' | 'runtime' | 'dependencies' | 'done'
+export type BootstrapStage = 'uv' | 'python' | 'runtime' | 'dependencies' | 'done'
 export interface BootstrapProgress {
   stage: BootstrapStage
   message: string
@@ -81,26 +79,7 @@ export async function download(
   dest: string,
   onProgress?: (percent: number) => void
 ): Promise<string> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(300_000) })
-  if (!response.ok || !response.body)
-    throw new Error(`Download failed (${response.status}): ${url}`)
-  await mkdir(dirname(dest), { recursive: true })
-  const total = Number(response.headers.get('content-length')) || 0
-  let received = 0
-  const hash = createHash('sha256')
-  const stream = new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      received += chunk.byteLength
-      hash.update(chunk)
-      if (total) onProgress?.(Math.round((received / total) * 100))
-      controller.enqueue(chunk)
-    }
-  })
-  await pipeline(
-    Readable.fromWeb(response.body.pipeThrough(stream) as never),
-    createWriteStream(dest)
-  )
-  const digest = hash.digest('hex')
+  const digest = await downloadTool(url, dest, onProgress)
   await appendLog(`sha256 ${digest}  ${basename(dest)}\n`)
   return digest
 }
@@ -109,12 +88,17 @@ interface NativeManifest {
   version: string
   target: string
   files: Record<string, string>
+  // Commit time of the source in seconds. Bundles built before it was recorded have none.
+  builtAt?: number
 }
+
+const readManifest = async (directory: string): Promise<NativeManifest> =>
+  JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8')) as NativeManifest
 
 async function verifyNativeRuntime(
   directory: string, deps: BootstrapDeps, signedHashes?: Record<string, string>
 ): Promise<Record<string, string>> {
-  const manifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8')) as NativeManifest
+  const manifest = await readManifest(directory)
   if (manifest.version !== deps.appVersion || manifest.target !== `${deps.platform}-${deps.arch}`)
     throw new Error('Native runtime version or architecture does not match this app')
   const required = ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi', 'pi/package-lock.json',
@@ -128,7 +112,7 @@ async function verifyNativeRuntime(
     const hash = createHash('sha256').update(await readFile(join(directory, file))).digest('hex')
     // macOS signs Mach-O files after staging. The signed app's resource is
     // authoritative; installed copies must still match its exact bytes.
-    const expected = deps.platform === 'darwin' && ['node', 'hexbot-core'].includes(file)
+    const expected = deps.platform === 'darwin' && ['node', 'hexbot-core', 'bin/rg', 'bin/fd'].includes(file)
       ? signedHashes?.[file] ?? hash : digest
     if (hash !== expected) throw new Error(`Native runtime checksum failed: ${file}`)
     actualHashes[file] = hash
@@ -137,50 +121,46 @@ async function verifyNativeRuntime(
 }
 
 export async function installCodeRuntime(deps: BootstrapDeps): Promise<void> {
+  await mkdir(binDir(), { recursive: true })
+  await mkdir(runtimeDir(), { recursive: true })
+  const toolDeps = { ...deps, binDirectory: binDir(), stagingDirectory: runtimeDir() }
   const python = join(binDir(), 'python3.11')
   const voice = join(binDir(), 'edge-tts')
-  if (deps.exists(python) && deps.exists(voice)) return
-  await mkdir(binDir(), { recursive: true })
-  const uv = join(binDir(), 'uv')
-  const receipt = join(binDir(), 'uv-version')
-  if (!deps.exists(uv) || await readFile(receipt, 'utf8').catch(() => '') !== UV_VERSION) {
-    deps.emit({ stage: 'uv', message: 'Preparing the code runtime installer' })
-    const asset = uvAsset(deps.platform, deps.arch)
-    const staging = await mkdtemp(join(runtimeDir(), '.uv-'))
-    try {
-      const archive = join(staging, 'uv.tar.gz')
-      const digest = await deps.download(asset.url, archive)
-      if (digest !== asset.sha256) throw new Error('Code runtime installer checksum mismatch')
-      await deps.run('tar', ['-xzf', archive, '-C', staging, `${asset.directory}/uv`])
-      const executable = join(staging, asset.directory, 'uv')
-      await chmod(executable, 0o755)
-      await rename(executable, uv)
-      await writeFile(receipt, UV_VERSION)
-    } finally {
-      await rm(staging, { recursive: true, force: true })
-    }
-  }
-  const env = { ...process.env,
+  const voiceReceipt = join(runtimeDir(), 'tools', 'edge-tts.requirements.txt')
+  const voiceCurrent = deps.exists(voice) && await readFile(voiceReceipt, 'utf8').catch(() => '') === voiceRequirements
+  if (deps.exists(python) && voiceCurrent) return
+  const uv = await installTool('uv', toolDeps,
+    () => deps.emit({ stage: 'uv', message: 'Preparing the code runtime installer' }))
+  const options = { cwd: runtimeDir(), env: { ...process.env,
     UV_PYTHON_INSTALL_DIR: join(hexbotHome(), 'python'),
     UV_PYTHON_BIN_DIR: binDir(),
-    UV_TOOL_DIR: join(hexbotHome(), 'runtime', 'tools'),
-    UV_TOOL_BIN_DIR: binDir(),
     UV_CACHE_DIR: join(hexbotHome(), 'runtime', 'uv-cache')
-  }
+  } }
   if (!deps.exists(python)) {
     deps.emit({ stage: 'python', message: 'Installing Python for code tools' })
-    await deps.run(uv, ['python', 'install', '--no-bin', '3.11'], { env })
+    await deps.run(uv, ['python', 'install', '--no-bin', '3.11'], options)
     let executable = ''
-    await deps.run(uv, ['python', 'find', '--no-project', '--managed-python', '3.11'], { env }, line => {
+    await deps.run(uv, ['python', 'find', '--no-project', '--managed-python', '3.11'], options, line => {
       if (line.startsWith('/')) executable = line.trim()
     })
     if (!executable) throw new Error('Managed code interpreter was not found')
     await rm(python, { force: true })
     await symlink(executable, python)
   }
-  if (!deps.exists(voice)) {
+  if (!voiceCurrent) {
+    // Every package is pinned with its hash, so a new upstream release never reaches this machine.
     deps.emit({ stage: 'dependencies', message: 'Installing voice tools' })
-    await deps.run(uv, ['tool', 'install', '--python', python, 'edge-tts==7.2.7'], { env })
+    const environment = join(runtimeDir(), 'tools', 'edge-tts')
+    await rm(voiceReceipt, { force: true })
+    await rm(environment, { recursive: true, force: true })
+    await deps.run(uv, ['venv', '--no-project', '--python', python, environment], options)
+    const requirements = join(environment, 'requirements.txt')
+    await writeFile(requirements, voiceRequirements)
+    await deps.run(uv, ['pip', 'install', '--python', join(environment, 'bin', 'python'),
+      '--require-hashes', '--no-deps', '--no-build', '-r', requirements], options)
+    await rm(voice, { force: true })
+    await symlink(join(environment, 'bin', 'edge-tts'), voice)
+    await writeFile(voiceReceipt, voiceRequirements)
   }
 }
 
@@ -195,17 +175,13 @@ export async function runningNativeDirectory(): Promise<string | null | undefine
   try {
     const running = JSON.parse(await readFile(join(runtimeDir(), 'native-running.json'), 'utf8')) as { pid: number; executable: string }
     if (!Number.isSafeInteger(running.pid) || running.pid <= 0) return null
-    if (!alive(running.pid)) {
-      const pid = Number(await readFile(join(hexbotHome(), 'native-daemon.lock'), 'utf8').catch(() => ''))
-      return Number.isSafeInteger(pid) && pid > 0 && alive(pid) ? null : undefined
-    }
+    if (!alive(running.pid)) return await lockedDaemonPid() ? null : undefined
     return await realpath(running.executable).then(dirname).catch(() => null)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return null
     // Older native versions only recorded a PID. Defer cleanup until restart
     // rather than guess which installed runtime that process has open.
-    const pid = Number(await readFile(join(hexbotHome(), 'native-daemon.lock'), 'utf8').catch(() => ''))
-    return Number.isSafeInteger(pid) && pid > 0 && alive(pid) ? null : undefined
+    return await lockedDaemonPid() ? null : undefined
   }
 }
 
@@ -224,28 +200,66 @@ export async function pruneNativeRuntimes(active: string, previous?: string): Pr
   }
 }
 
-async function activateNativeRuntime(destination: string, deps: BootstrapDeps, files: Record<string, string>): Promise<void> {
-  const stable = nativeServiceExecutable()
-  let previous: string | undefined
-  // Reopening an older app must not replace a newer verified service runtime.
+const logCleanup = (error: unknown): Promise<void> =>
+  appendLog(`Runtime cleanup: ${String(error)}\n`).catch(() => undefined)
+
+interface SelectedRuntime { executable: string; previous?: string; builtAt: number }
+
+// The runtime native-executable points at, if it is intact. The daemon's own
+// updater also selects runtimes and records their hashes in native-current.json.
+async function selectedRuntime(deps: BootstrapDeps): Promise<SelectedRuntime | undefined> {
   try {
     const selected = JSON.parse(await readFile(join(runtimeDir(), 'native-current.json'), 'utf8')) as {
-      version: string; executable: string; files?: Record<string, string>
+      version: string; executable: string; previous?: string; files?: Record<string, string>
     }
-    const executable = await realpath(stable)
-    previous = executable
+    const executable = await realpath(nativeServiceExecutable())
     const nativeRoot = await realpath(join(runtimeDir(), 'native'))
-    if (valid(selected.version) && gte(selected.version, deps.appVersion) &&
-      executable === selected.executable && executable.startsWith(`${nativeRoot}/`)) {
-      const directory = dirname(executable)
-      const manifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8')) as NativeManifest
-      await verifyNativeRuntime(directory, { ...deps, appVersion: selected.version }, selected.files ?? manifest.files)
-      await pruneNativeRuntimes(executable, (selected as { previous?: string }).previous).catch(error => appendLog(`Runtime cleanup: ${String(error)}\n`).catch(() => undefined))
-      return
-    }
+    if (executable !== selected.executable || !executable.startsWith(`${nativeRoot}/`)) return undefined
+    const directory = dirname(executable)
+    const manifest = await readManifest(directory)
+    await verifyNativeRuntime(directory, { ...deps, appVersion: selected.version }, selected.files ?? manifest.files)
+    return { executable, previous: selected.previous, builtAt: manifest.builtAt ?? 0 }
   } catch {
-    // A missing, interrupted or damaged selection is replaced by this verified bundle.
+    return undefined
   }
+}
+
+// A probe that cannot start usually means this system is older than the runtime supports.
+async function probe(deps: BootstrapDeps, command: string, args: string[]): Promise<void> {
+  let last = ''
+  await deps.run(command, args, {}, line => { last = line }).catch((error: Error) => {
+    throw new Error(`This system cannot run the Hexbot runtime: ${last || error.message}`)
+  })
+}
+
+async function copyNativeRuntime(source: string, deps: BootstrapDeps, signedHashes: Record<string, string>): Promise<string> {
+  let destination = nativeDir(deps.appVersion)
+  // Always verify an installed copy before reusing it after an interrupted install.
+  try {
+    await verifyNativeRuntime(destination, deps, signedHashes)
+    return destination
+  } catch { /* Copy the bundle below. */ }
+  await mkdir(dirname(destination), { recursive: true })
+  const staging = await mkdtemp(`${destination}.staging-`)
+  try {
+    await cp(source, staging, { recursive: true })
+    await verifyNativeRuntime(staging, deps, signedHashes)
+    for (const file of ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi'])
+      await chmod(join(staging, file), 0o755)
+    await probe(deps, join(staging, 'pi/hexbot-pi'), ['--version'])
+    await probe(deps, join(staging, 'hexbot'), ['version'])
+    // Never replace files in a runtime that an existing daemon may be using.
+    if (existsSync(destination)) destination = `${destination}-${basename(staging).split('.staging-')[1]}`
+    await rename(staging, destination)
+    return destination
+  } finally {
+    await rm(staging, { recursive: true, force: true })
+  }
+}
+
+async function activateNativeRuntime(destination: string, deps: BootstrapDeps, files: Record<string, string>): Promise<void> {
+  const stable = nativeServiceExecutable()
+  const previous = await realpath(stable).catch(() => undefined)
   const staging = await mkdtemp(join(runtimeDir(), '.native-link-'))
   try {
     const link = join(staging, 'launcher')
@@ -255,7 +269,7 @@ async function activateNativeRuntime(destination: string, deps: BootstrapDeps, f
     await writeFile(metadata, JSON.stringify({ version: deps.appVersion, executable, previous, files }))
     await rename(link, stable)
     await rename(metadata, join(runtimeDir(), 'native-current.json'))
-    await pruneNativeRuntimes(executable, previous).catch(error => appendLog(`Runtime cleanup: ${String(error)}\n`).catch(() => undefined))
+    await pruneNativeRuntimes(executable, previous).catch(logCleanup)
   } finally {
     await rm(staging, { recursive: true, force: true })
   }
@@ -263,36 +277,16 @@ async function activateNativeRuntime(destination: string, deps: BootstrapDeps, f
 
 async function installNativeRuntime(deps: BootstrapDeps): Promise<void> {
   const source = join(deps.resourcesPath, 'hexbot-native')
-  let destination = nativeDir(deps.appVersion)
   deps.emit({ stage: 'runtime', message: 'Preparing Hexbot runtime' })
   const signedHashes = await verifyNativeRuntime(source, deps)
-  try {
-    const selected = JSON.parse(await readFile(join(runtimeDir(), 'native-current.json'), 'utf8')) as { version: string }
-    const selectedPath = await realpath(nativeServiceExecutable())
-    const nativeRoot = await realpath(join(runtimeDir(), 'native'))
-    if (selected.version === deps.appVersion && selectedPath.startsWith(`${nativeRoot}/`)) destination = dirname(selectedPath)
-  } catch { /* First install has no selected runtime. */ }
-  // Always verify the installed binary before reusing it after an interrupted install.
-  try {
-    await verifyNativeRuntime(destination, deps, signedHashes)
-  } catch {
-    await mkdir(dirname(destination), { recursive: true })
-    const staging = await mkdtemp(`${destination}.staging-`)
-    try {
-      await cp(source, staging, { recursive: true })
-      await verifyNativeRuntime(staging, deps, signedHashes)
-      for (const file of ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi'])
-        await chmod(join(staging, file), 0o755)
-      await deps.run(join(staging, 'pi/hexbot-pi'), ['--version'])
-      // Never replace files in a runtime that an existing daemon may be using.
-      if (existsSync(destination)) destination = `${destination}-${basename(staging).split('.staging-')[1]}`
-      await rename(staging, destination)
-    } finally {
-      await rm(staging, { recursive: true, force: true })
-    }
-  }
+  const { builtAt = 0 } = await readManifest(source)
+  // The newest build wins whichever app or updater installed it, so Stable and
+  // Nightly apps sharing this home never go back to an older daemon.
+  const selected = await selectedRuntime(deps)
+  const destination = selected && selected.builtAt >= builtAt ? undefined : await copyNativeRuntime(source, deps, signedHashes)
   await installCodeRuntime(deps)
-  await activateNativeRuntime(destination, deps, signedHashes)
+  if (destination) await activateNativeRuntime(destination, deps, signedHashes)
+  else if (selected) await pruneNativeRuntimes(selected.executable, selected.previous).catch(logCleanup)
   await migrateLegacyService().catch(error => appendLog(`Service migration: ${String(error)}\n`).catch(() => undefined))
   deps.emit({ stage: 'done', message: 'Hexbot runtime is ready', percent: 100 })
 }

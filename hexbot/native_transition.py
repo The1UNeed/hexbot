@@ -207,6 +207,14 @@ def _migrate_service(home: Path, user_home: Path | None = None) -> None:
         updated = re.sub(pattern, lambda match: match[1] + ":".join(
             part for part in match[2].split(":") if part and part != obsolete) + match[3],
             updated, flags=re.MULTILINE)
+        # A supervised daemon prints no sign-in link: the app signs in on its own.
+        if "HEXBOT_SUPERVISOR" not in updated:
+            if file.suffix == ".plist":
+                updated = re.sub(r"(<key>EnvironmentVariables</key>\s*<dict>)",
+                                 r"\1<key>HEXBOT_SUPERVISOR</key><string>service</string>", updated, count=1)
+            else:
+                updated = re.sub(r"(^Environment=HEXBOT_HOME=.*$)", r"\1\nEnvironment=HEXBOT_SUPERVISOR=service",
+                                 updated, count=1, flags=re.MULTILINE)
         _atomic(file, updated)
         if file.suffix == ".service":
             subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, timeout=30)
@@ -229,9 +237,15 @@ def handoff(argv=None) -> None:
             executable = candidate
     except (OSError, KeyError, ValueError):
         pass
-    if executable is None:
-        executable = install(home, version)
     arguments = sys.argv[1:] if argv is None else argv
+    if executable is None:
+        try:
+            executable = install(home, version)
+        except Exception as error:
+            if arguments[:1] == ["version"]:
+                raise  # The legacy updater's validation probe must still fail.
+            print(f"Native runtime unavailable ({error}); staying on the Python daemon", file=sys.stderr)
+            return
     if arguments and arguments[0] == "serve":
         _refuse_running_daemon(home)
         _migrate_service(home)

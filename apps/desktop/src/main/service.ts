@@ -1,10 +1,10 @@
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, delimiter } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
-import { binDir, serviceExecutable, hexbotHome } from './backend/paths'
+import { binDir, hexbotExecutable, hexbotHome } from './backend/paths'
 import { launchdPlist, systemdUnit, type ServiceFileOptions } from './service-files'
 
 const exec = promisify(execFile)
@@ -13,10 +13,9 @@ const servicePath = (): string =>
     ? join(homedir(), 'Library', 'LaunchAgents', 'app.hexbot.daemon.plist')
     : join(homedir(), '.config', 'systemd', 'user', 'hexbot.service')
 const options = (): ServiceFileOptions => ({
-  executable: serviceExecutable(),
+  executable: hexbotExecutable(),
   home: hexbotHome(),
-  path: [binDir(), ...(process.env.PATH ?? '').split(delimiter).filter(path => path !== join(hexbotHome(), 'runtime', 'venv', 'bin'))].join(delimiter),
-  node: process.env.APPIMAGE ?? process.execPath, // an AppImage's execPath vanishes when it quits
+  path: [binDir(), process.env.PATH ?? ''].join(delimiter),
   logDir: join(hexbotHome(), 'logs')
 })
 
@@ -71,6 +70,20 @@ export async function serviceStatus(): Promise<{ installed: boolean; running: bo
   }
 }
 
+// The Python runtime from earlier versions is unused once no service points at
+// it. A pending transition marker means the daemon still owns that cleanup. The
+// daemon keeps a forwarding script in venv/bin/hexbot because launchd may run
+// the old path until its next reload; that one stays.
+async function removeLegacyRuntime(home: string): Promise<void> {
+  const runtime = join(home, 'runtime')
+  if (!(await lstat(runtime).catch(() => undefined))?.isDirectory()) return
+  if (await lstat(join(runtime, 'native-transition-pending')).catch(() => undefined)) return
+  const shim = (await readFile(join(runtime, 'venv/bin/hexbot'), 'utf8').catch(() => '')).startsWith('#!/bin/sh\n')
+  for (const name of await readdir(runtime))
+    if ((name === 'venv' && !shim) || ['src', 'ripgrep-extract', 'uv-install.sh'].includes(name) || /^ripgrep-.+\.tar\.gz$/.test(name))
+      await rm(join(runtime, name), { recursive: true, force: true })
+}
+
 // Rewrite only the service for this home, once the native bundle is verified.
 export async function migrateLegacyService(
   file = servicePath(), targetPlatform = process.platform,
@@ -84,7 +97,7 @@ export async function migrateLegacyService(
   const escaped = legacy.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
   const legacyEntry = targetPlatform === 'darwin' ? `<string>${escaped}</string>`
     : `ExecStart="${legacy.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}" serve`
-  if (!old.includes(legacyEntry)) return
+  if (!old.includes(legacyEntry)) return removeLegacyRuntime(config.home)
   const content = targetPlatform === 'darwin' ? launchdPlist(config) : systemdUnit(config)
   const temporary = `${file}.native-${process.pid}`
   const running = await run(targetPlatform === 'darwin' ? 'launchctl' : 'systemctl',

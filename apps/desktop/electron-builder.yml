@@ -3,9 +3,22 @@ extends: ./electron-builder.base.yml
 extraResources:
   - from: resources/hexbot-native
     to: hexbot-native
+deb:
+  # The base list again (extends replaces arrays) plus bubblewrap, the daemon's
+  # sandbox for shell commands, Python code, and scheduled scripts on Linux.
+  # The client-only package has no daemon and keeps the base list.
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libasound2
+    - bubblewrap
 mac:
-  # Paths are relative to Contents. Sign both bundled executables with the
-  # inherited hardened-runtime entitlements, including Node's MAP_JIT support.
+  # Paths are relative to Contents. mac-sign.cjs gives only Node the Intel V8
+  # memory exception; the daemon and search tools use the app entitlements.
   binaries:
     - Resources/hexbot-native/node
     - Resources/hexbot-native/hexbot-core
+    - Resources/hexbot-native/bin/rg
+    - Resources/hexbot-native/bin/fd

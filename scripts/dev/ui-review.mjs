@@ -1,9 +1,11 @@
-// Fresh-browser walkthrough of onboarding and first chat. Usage: node scripts/dev/ui-review.mjs http://127.0.0.1:9134
+// Fresh-browser walkthrough of onboarding and first chat. Usage: HEXBOT_HOME=<home> node scripts/dev/ui-review.mjs http://127.0.0.1:9134
 import { chromium } from 'playwright'
+import { signIn } from './browser-session.mjs'
 const base = process.argv[2] || 'http://127.0.0.1:9134'
 const shots = '/tmp/hexbot-shots'
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1360, height: 860 }, colorScheme: 'light' })
+await signIn(page, base)
 page.on('pageerror', e => console.log('PAGEERROR', e.message.slice(0, 200)))
 page.on('console', m => { if (m.type() === 'error') console.log('CONSOLE', m.text().slice(0, 200)) })
 const snap = async name => { await page.screenshot({ path: `${shots}/${name}.png` }); console.log('shot', name, page.url()) }

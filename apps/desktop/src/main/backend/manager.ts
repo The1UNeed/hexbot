@@ -1,15 +1,17 @@
 import { EventEmitter } from 'node:events'
 import { createWriteStream, existsSync, renameSync, statSync } from 'node:fs'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import net from 'node:net'
 import { join, delimiter } from 'node:path'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 
 import { app } from 'electron'
 
-import { activeSourceDir, binDir, hexbotExecutable, hexbotHome } from './paths'
+import { binDir, daemonDirectory, hexbotExecutable, hexbotHome } from './paths'
 
-export type DaemonState = 'stopped' | 'starting' | 'running' | 'crashed'
+// 'external': a service or another copy of the app runs the daemon for this
+// home. The app uses it and cannot stop it.
+export type DaemonState = 'stopped' | 'starting' | 'running' | 'external' | 'crashed'
 export interface DaemonStatus {
   state: DaemonState
   port?: number
@@ -23,7 +25,7 @@ export function parseReadyLine(line: string): number | undefined {
   const port = Number(match[1])
   return port > 0 && port <= 65_535 ? port : undefined
 }
-// A newer client asked the daemon to update, and the daemon (hexbot/update.py)
+// A newer client asked the daemon to update, and the daemon (services.rs)
 // hands that to the app that runs it by printing this line.
 export function parseUpdateRequestLine(line: string): string | undefined {
   const match = /(?:^|\s)HEXBOT_UPDATE_REQUESTED version=([0-9A-Za-z.-]{1,64})(?:\s|$)/.exec(line)
@@ -43,6 +45,43 @@ export async function findFreePort(
     if (free) return port
   }
   throw new Error(`No free port at or above ${start}`)
+}
+
+// The PID in native-daemon.lock while that process is alive. A permission
+// error counts as alive: uncertain ownership must never look like a stopped daemon.
+export async function lockedDaemonPid(home = hexbotHome()): Promise<number | undefined> {
+  const pid = Number(await readFile(join(home, 'native-daemon.lock'), 'utf8').catch(() => ''))
+  if (!Number.isSafeInteger(pid) || pid <= 0) return undefined
+  try {
+    process.kill(pid, 0)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return undefined
+  }
+  return pid
+}
+
+// A service, or another copy of the app, may already run the daemon for this
+// home; a second one would exit on the home lock. The running daemon holds that
+// lock and records its port in serve-state.json.
+export async function runningDaemonPort(home = hexbotHome()): Promise<number | undefined> {
+  const pid = await lockedDaemonPid(home)
+  if (!pid) return undefined
+  try {
+    const state = JSON.parse(await readFile(join(home, 'serve-state.json'), 'utf8')) as { port: number }
+    const port = Number(state.port)
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) return undefined
+    const response = await fetch(`http://127.0.0.1:${port}/api/daemon/identity`, {
+      signal: AbortSignal.timeout(1_000), redirect: 'error'
+    })
+    if (!response.ok) return undefined
+    const identity = await response.json() as { install_id?: string; pid?: number }
+    // The daemon creates this ID on its first identity request.
+    const installId = (await readFile(join(home, 'install_id'), 'utf8')).trim()
+    if (!installId) return undefined
+    return identity.install_id === installId && identity.pid === pid ? port : undefined
+  } catch {
+    return undefined
+  }
 }
 
 function rotateLog(path: string): void {
@@ -85,26 +124,35 @@ export class DaemonManager extends EventEmitter {
   async start(): Promise<DaemonStatus> {
     if (this.current.state === 'starting' || this.current.state === 'running') return this.status()
     this.intentionalStop = false
-    const port = this.configuredPort ?? (await findFreePort())
-    await this.spawnDaemon(port)
+    const running = await runningDaemonPort()
+    if (running) {
+      this.setStatus({ state: 'external', port: running })
+      return this.status()
+    }
+    await this.spawnDaemon(this.configuredPort ?? (await findFreePort()))
     return this.status()
   }
 
   private async spawnDaemon(port: number): Promise<void> {
+    const running = await runningDaemonPort()
+    if (this.intentionalStop) return
+    if (running) {
+      this.failures = []
+      this.setStatus({ state: 'external', port: running })
+      return
+    }
     await mkdir(join(hexbotHome(), 'logs'), { recursive: true })
     const logPath = join(hexbotHome(), 'logs', 'daemon.log')
     rotateLog(logPath)
     const log = createWriteStream(logPath, { flags: 'a' })
     this.setStatus({ state: 'starting', port })
     const child = spawn(hexbotExecutable(), ['serve', '--port', String(port)], {
-      cwd: activeSourceDir(),
+      cwd: daemonDirectory(),
       env: {
         ...process.env,
         HEXBOT_HOME: hexbotHome(),
-        // Tells the daemon it may ask this app to update it (hexbot/update.py).
+        // Tells the daemon it may ask this app to update it (services.rs).
         HEXBOT_SUPERVISOR: 'desktop',
-        // Runs the Hex Connect sidecar with this app's Electron as Node (hexbot/connect.py).
-        HEXBOT_NODE: process.env.APPIMAGE ?? process.execPath,
         PATH: [binDir(), process.env.PATH ?? ''].join(delimiter)
       }
     })
@@ -157,6 +205,13 @@ export class DaemonManager extends EventEmitter {
   }
 
   async stop(): Promise<DaemonStatus> {
+    if (this.current.state === 'external') {
+      const running = await runningDaemonPort()
+      if (running) {
+        this.setStatus({ state: 'external', port: running })
+        return this.status()
+      }
+    }
     this.intentionalStop = true
     if (this.restartTimer) clearTimeout(this.restartTimer)
     const child = this.child

@@ -144,7 +144,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # Installs the pnpm pinned by `packageManager` in the root package.json.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - uses: actions/setup-node@v7
         with:
           node-version: 26
@@ -155,7 +155,7 @@ jobs:
         run: |
           rustup show active-toolchain
           if [ "${{ matrix.build }}" = mac-x64 ]; then rustup target add x86_64-apple-darwin; fi
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: matrix.edition == 'full'
         with:
           workspaces: backend/hexbot-core
@@ -199,9 +199,11 @@ jobs:
         env:
           HEXBOT_CRASH_URL: ${{ vars.HEXBOT_CRASH_URL }}
         run: node scripts/desktop/dist.mjs ${{ matrix.target }} --channel "$CHANNEL" ${{ matrix.edition == 'client' && '--client' || '' }}
-      - name: Verify hardened native executables
-        if: matrix.edition == 'full' && runner.os == 'macOS'
-        run: HEXBOT_NATIVE_TEST_BUNDLE="$GITHUB_WORKSPACE/apps/desktop/resources/hexbot-native" node --test scripts/desktop/runtime-signing.test.mjs
+      - name: Verify packaged macOS signatures and launch
+        if: runner.os == 'macOS'
+        env:
+          HEXBOT_PACKAGED_TEST_EDITION: ${{ matrix.edition }}
+        run: HEXBOT_PACKAGED_TEST_DIR="$GITHUB_WORKSPACE/apps/desktop/release" node --test scripts/desktop/runtime-signing.test.mjs
       - name: List the output
         run: ls -l apps/desktop/release
       # One release of compatibility source for existing Python services
@@ -220,7 +222,17 @@ jobs:
           if-no-files-found: error
       - name: Archive the native daemon
         if: matrix.edition == 'full'
-        run: node scripts/desktop/make-native-update.mjs apps/desktop/resources/hexbot-native native-updates
+        run: |
+          set -euo pipefail
+          bundle=apps/desktop/resources/hexbot-native
+          if [ "$RUNNER_OS" = macOS ]; then
+            # Packaging signs the runtime inside the app, not the staged copy.
+            bundles=(apps/desktop/release/mac*/*.app/Contents/Resources/hexbot-native)
+            [ "${#bundles[@]}" -eq 1 ]
+            [ -d "${bundles[0]}" ]
+            bundle="${bundles[0]}"
+          fi
+          node scripts/desktop/make-native-update.mjs "$bundle" native-updates
       - uses: actions/upload-artifact@v7
         if: matrix.edition == 'full'
         with:

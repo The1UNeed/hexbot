@@ -12,6 +12,7 @@
 | `stage-runtime.mjs`, `native-runtime.mjs`, `native-build.mjs` | Build Rust for the target, bundle Node and locked agent dependencies, prune unused files and verify the result. |
 | `make-native-update.mjs` | Write a relocatable archive and SHA-256 manifest under `daemon/native/<version>/<target>/`. |
 | `stage-python-src.mjs`, `python-src-manifest.mjs` | Stage the one-release legacy service handoff archive with `--native-transition`. |
+| `mac-sign.cjs` | Keeps the bundled Node entitlement separate from Electron during Developer ID signing. |
 | `after-pack.cjs` | Ad-hoc signs macOS builds when no Developer ID is configured, so they launch on Apple Silicon. |
 | `make-update-feed.mjs --channel stable\|nightly [--version v] [--client] <builder-output> [feed-root]` | Builds the `updates.hexbot.app` tree: artifacts plus `latest-*.yml` or `nightly-*.yml`. |
 | `finalize-release.mjs <version> <full-dir> <client-dir>` | Rewrites the website downloads manifest and both Homebrew casks after a stable release. |

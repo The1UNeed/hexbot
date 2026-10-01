@@ -1,8 +1,10 @@
-// Screenshot one route of the served web UI. Usage: node scripts/dev/ui-shot.mjs <base> <path> <out.png>
+// Screenshot one route of the served web UI. Usage: HEXBOT_HOME=<home> node scripts/dev/ui-shot.mjs <base> <path> <out.png>
 import { chromium } from 'playwright'
+import { signIn } from './browser-session.mjs'
 const [base, path, out] = process.argv.slice(2)
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1360, height: 860 } })
+await signIn(page, base)
 await page.addInitScript(() => localStorage.setItem('hexbot.target', JSON.stringify({ kind: 'local' })))
 await page.goto(base + path, { waitUntil: 'networkidle' }); await page.waitForTimeout(3500)
 await page.screenshot({ path: out })

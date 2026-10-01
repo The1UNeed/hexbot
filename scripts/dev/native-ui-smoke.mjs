@@ -28,6 +28,8 @@ const webDist = path.join(root, 'apps/web/dist')
 await Promise.all([access(daemonPath), access(piPath), access(path.join(webDist, 'index.html'))])
 assert.equal((await promisify(execFile)(piPath, ['--version'])).stdout.trim(), '0.87.1')
 const home = await mkdtemp(path.join(tmpdir(), 'hexbot-native-ui-'))
+// The daemon refuses a workspace inside its home.
+const workspace = await mkdtemp(path.join(tmpdir(), 'hexbot-native-ui-workspace-'))
 const artifacts = process.env.HEXBOT_SMOKE_ARTIFACTS || await mkdtemp(path.join(tmpdir(), 'hexbot-native-ui-artifacts-'))
 await mkdir(artifacts, { recursive: true })
 const requests = []
@@ -79,11 +81,8 @@ try {
   // An existing About you (even empty, as Skip leaves it) keeps the first-run page out of the chat flow.
   await mkdir(path.join(home, 'users', 'local'), { recursive: true })
   await writeFile(path.join(home, 'users', 'local', 'user.md'), '')
-  daemon = spawn(daemonPath, ['serve', '--host', '127.0.0.1', '--port', '0'], {
-    cwd: root,
-    env: { ...process.env, HEXBOT_HOME: home, HEXBOT_PI_EXECUTABLE: piPath, HEXBOT_WEB_DIST: webDist },
-    stdio: ['ignore', 'pipe', 'pipe']
-  })
+  const daemonEnv = { ...process.env, HEXBOT_HOME: home, HEXBOT_PI_EXECUTABLE: piPath, HEXBOT_WEB_DIST: webDist }
+  daemon = spawn(daemonPath, ['serve', '--host', '127.0.0.1', '--port', '0'], { cwd: root, env: daemonEnv, stdio: ['ignore', 'pipe', 'pipe'] })
   daemon.stderr.on('data', data => { daemonLog += data })
   const port = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Daemon readiness timed out: ${daemonLog}`)), 30_000)
@@ -96,6 +95,14 @@ try {
     })
   })
   const base = `http://127.0.0.1:${port}`
+  // A piped daemon prints no startup sign-in code; the
+  // link is minted the way pnpm dev does it, with `hexbot pair`.
+  assert(!daemonLog.includes('Sign in:'), 'A daemon writing to a pipe must not print a sign-in link')
+  const code = /^Pairing code: (\S+)/m.exec((await promisify(execFile)(daemonPath, ['pair'], { env: daemonEnv })).stdout)?.[1]
+  assert(code, 'hexbot pair must print a code')
+  const signIn = `${base}/login?code=${code}`
+  // Any local process can fetch the page, so it must not carry a credential.
+  assert(!(await (await fetch(base)).text()).includes('__HERMES_SESSION_TOKEN__'), 'The loopback page must not embed a token')
   const token = (await readFile(path.join(home, 'local-device.token'), 'utf8')).trim()
   socket = new WebSocket(`${base.replace('http:', 'ws:')}/api/ws?token=${encodeURIComponent(token)}`)
   const pending = new Map()
@@ -114,7 +121,7 @@ try {
     pending.set(id, response => { clearTimeout(timer); response.error ? reject(new Error(`${method}: ${JSON.stringify(response.error)}`)) : resolve(response.result) })
     socket.send(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
   })
-  await rpc('hexbot.settings.set', { patch: { workspace_dir: path.join(home, 'workspace'), dream_enabled: false, approval_mode: 'off', default_model: 'lmstudio/test-model', billing_notice_ack: true } })
+  await rpc('hexbot.settings.set', { patch: { workspace_dir: workspace, dream_enabled: false, approval_mode: 'off', default_model: 'lmstudio/test-model', billing_notice_ack: true } })
   const bots = {}
   for (const name of ['owl', 'fox']) {
     bots[name] = await rpc('hexbot.bots.create', { name, display_name: name === 'owl' ? 'Owl' : 'Fox', model: 'test-model', provider: 'lmstudio', persona: `You are ${name}.`, tools: [] })
@@ -126,6 +133,8 @@ try {
   if (desktop) {
     desktopHome = await mkdtemp(path.join(tmpdir(), `hexbot-smoke-${edition}-home-`))
     desktopBuild = await mkdtemp(path.join(tmpdir(), `hexbot-smoke-${edition}-build-`))
+    // The app signs in with its daemon's private token file, never from the page.
+    await copyFile(path.join(home, 'local-device.token'), path.join(desktopHome, 'local-device.token'))
     const desktopRoot = path.join(root, 'apps/desktop')
     // Build into a private directory so testing one edition cannot overwrite another.
     await promisify(execFile)(path.join(desktopRoot, 'node_modules/.bin/electron-vite'), ['build', '--outDir', path.join(desktopBuild, 'out')], {
@@ -163,6 +172,27 @@ try {
   page.setDefaultTimeout(20_000)
   page.on('pageerror', error => errors.push(error.message))
   await page.addInitScript(origin => localStorage.setItem('hexbot.target', JSON.stringify({ kind: 'local', origin })), base)
+  if (!desktop) {
+    // The browser signs in through the one-time link, which then stops working.
+    const signedIn = await page.goto(signIn, { waitUntil: 'domcontentloaded' })
+    assert.equal(signedIn.status(), 200)
+    assert.equal(new URL(page.url()).pathname, '/', 'The sign-in link must land on the app')
+    const cookies = await page.context().cookies(base)
+    assert(cookies.some(cookie => cookie.name === `hermes_session_at_${port}` && cookie.sameSite === 'Strict' && cookie.httpOnly), 'The browser must keep its Strict, port-scoped session after the 303')
+    assert.equal((await page.request.post(`${base}/api/auth/ws-ticket`)).status(), 200, 'The redirect must leave the browser signed in')
+    // A signed-in browser is sent on without a new cookie; the spent code shows a
+    // notice to a browser without a session, and a cross-site navigation never redeems.
+    const reused = await page.request.get(signIn, { maxRedirects: 0 })
+    assert.equal(reused.status(), 303)
+    assert.equal(reused.headers()['location'], '/')
+    assert(!reused.headers()['set-cookie'], 'A signed-in browser keeps its session')
+    const spent = await fetch(signIn, { redirect: 'manual' })
+    assert.equal(spent.status, 200)
+    assert.match(await spent.text(), /used or has expired/)
+    const foreign = await fetch(signIn, { redirect: 'manual', headers: { 'sec-fetch-site': 'cross-site' } })
+    assert.equal(foreign.status, 200)
+    assert.match(await foreign.text(), /work only when opened directly/)
+  }
   const visit = async route => {
     const response = await page.goto((desktop ? 'hexbot-app://app' : base) + route, { waitUntil: 'domcontentloaded' })
     assert.equal(response.status(), 200, `SPA route ${route}`)
@@ -207,6 +237,16 @@ try {
   await visit(`/b/owl/s/${section}`)
   await expect(page.getByTestId('bot-message').filter({ hasText: 'Native browser reply.' })).toBeVisible()
   await page.screenshot({ path: path.join(artifacts, 'restored.png') })
+  if (!desktop) {
+    // Invalid codes eventually show the distinct rate-limit notice on the real page.
+    // A signed-in browser never redeems, so this runs in a context without a session.
+    const anonymous = await (await browser.newContext()).newPage()
+    for (let attempt = 0; attempt < 11; attempt++) await anonymous.request.get(`${base}/login?code=invalid`)
+    await anonymous.goto(`${base}/login?code=invalid`, {waitUntil:'domcontentloaded'})
+    await expect(anonymous.getByRole('alert')).toHaveText('Too many attempts. Wait a minute and try again.')
+    await anonymous.screenshot({path: path.join(artifacts, 'sign-in-rate-limit.png')})
+    await anonymous.context().close()
+  }
   assert.deepEqual(errors, [], 'No uncaught browser or local model errors')
   assert(requests.length >= 4, 'The real Pi process must call the local streaming model')
   console.log(JSON.stringify({ passed: true, client: desktop ? 'electron' : 'browser', edition: desktop ? edition : undefined, scenarios: ['chat', 'multi-agent room and @user', 'per-bot memory', 'soul editing', 'About you', 'archive/unarchive and history'], modelRequests: requests.length, artifacts }, null, 2))
@@ -229,6 +269,7 @@ try {
   model.closeAllConnections()
   await new Promise(resolve => model.close(resolve))
   await rm(home, { recursive: true, force: true })
+  await rm(workspace, { recursive: true, force: true })
   if (desktopHome) await rm(desktopHome, { recursive: true, force: true })
   if (desktopBuild) await rm(desktopBuild, { recursive: true, force: true })
 }

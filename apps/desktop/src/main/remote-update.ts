@@ -8,9 +8,9 @@ import { runRemoteUpdate, type UpdateState } from './updater'
 // update. When the app runs the daemon, the daemon prints
 // HEXBOT_UPDATE_REQUESTED (backend/manager.ts) and the app does the work
 // here. Progress goes to <home>/runtime/update-status.json, which the daemon
-// reads back for `hexbot.update.status` (hexbot/update.py), because the app
-// has no channel to the daemon of its own. On success the app relaunches
-// and the client sees the daemon come back on the new version.
+// reads back for `hexbot.update.status` (backend/hexbot-core/src/services.rs),
+// because the app has no channel to the daemon of its own. On success the app
+// relaunches and the client sees the daemon come back on the new version.
 export const updateStatusFile = (): string => join(runtimeDir(), 'update-status.json')
 
 export type RemoteStatus =

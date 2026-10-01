@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
-import { createNativeArchive, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes } from './native-runtime.mjs'
+import { toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
+import { createNativeArchive, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
 const exec = promisify(execFile)
 test('target supports both desktop architectures and Linux arm64', () => {
   for (const os of ['darwin', 'linux']) for (const arch of ['x64', 'arm64']) assert.equal(nativeTarget(os, arch), `${os}-${arch}`)
@@ -39,8 +40,12 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     await writeFile(join(root, `backend/hexbot-core/target/${rustTarget(process.platform, process.arch)}/release/hexbot`), 'daemon')
     const node = join(root, 'node'); await writeFile(node, 'node')
     const calls = []
-    const result = await stageNativeRuntime({ repository: root, nodeExecutable: node, run: async (command, args, options) => {
+    const result = await stageNativeRuntime({ repository: root, nodeExecutable: node, download: async url => ['rg', 'fd'].map(tool => toolAsset(tool, process.platform, process.arch)).find(asset => asset.url === url).sha256, run: async (command, args, options) => {
       calls.push({ command, args })
+      if (command === 'tar') {
+        const file = join(args[args.indexOf('-C') + 1], args.at(-1))
+        await mkdir(join(file, '..'), { recursive: true }); await writeFile(file, 'verified tool')
+      }
       if (command === 'npm') {
         const cli = join(options.cwd, 'node_modules/@earendil-works/pi-coding-agent/dist')
         await mkdir(cli, { recursive: true }); await writeFile(join(cli, 'cli.js'), '// pi')
@@ -50,6 +55,8 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     const manifest = JSON.parse(await readFile(join(result.destination, 'manifest.json'), 'utf8'))
     assert.equal(manifest.piVersion, '0.87.1'); assert.equal(manifest.version, '1.2.3')
     assert.match(manifest.files['hexbot-core'], /^[a-f0-9]{64}$/)
+    for (const file of ['bin/rg', 'bin/fd', 'pi/search-tools.mjs']) assert.match(manifest.files[file], /^[a-f0-9]{64}$/)
+    assert(Number.isSafeInteger(manifest.builtAt) && manifest.builtAt > 0)
     const cargo = calls.find(c => c.command === 'cargo').args
     assert(cargo.includes('--locked'))
     assert.equal(cargo[cargo.indexOf('--target') + 1], rustTarget(process.platform, process.arch))
@@ -80,6 +87,40 @@ test('archive dereferences npm links and records the update format', async () =>
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('standalone Node rejects unpinned versions and tampered archives without fetching checksums', async t => {
+  const urls = []
+  t.mock.method(globalThis, 'fetch', async url => {
+    urls.push(url)
+    return new Response('tampered archive')
+  })
+  for (const os of ['darwin', 'linux']) for (const arch of ['arm64', 'x64']) {
+    assert.match(NODE_SHA256[`${os}-${arch}`], /^[a-f0-9]{64}$/)
+    await assert.rejects(standaloneNode('/unused', os, arch), /checksum mismatch/)
+  }
+  assert.equal(urls.length, 4)
+  assert.ok(urls.every(url => url.endsWith('.tar.gz') && url.includes(`/v${NODE_VERSION}/`)))
+  await assert.rejects(standaloneNode('/unused', 'darwin', 'arm64', '99.0.0'), /not pinned/)
+  assert.equal(urls.length, 4)
+})
+
+test('macOS update archives omit AppleDouble files and extended attributes', { skip: process.platform !== 'darwin' }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-archive-xattr-'))
+  try {
+    const bundle = join(root, 'bundle'); await mkdir(bundle)
+    await writeFile(join(bundle, 'manifest.json'), JSON.stringify({ version: '1.2.3', target: nativeTarget() }))
+    await writeFile(join(bundle, 'hexbot'), 'executable')
+    await exec('xattr', ['-w', 'com.apple.provenance', 'hexbot-regression', join(bundle, 'hexbot')])
+    const archive = join(root, 'native.tar.gz')
+    await createNativeArchive(bundle, archive)
+    const { stdout } = await exec('python3', ['-c',
+      'import tarfile,sys,json; t=tarfile.open(sys.argv[1]); print(json.dumps([(e.name,e.pax_headers) for e in t]))', archive])
+    const entries = JSON.parse(stdout)
+    assert.equal(entries.length, 3)
+    assert.ok(entries.every(([name, headers]) => !name.split('/').some(part => part.startsWith('._')) &&
+      !Object.keys(headers).some(key => /xattr/i.test(key))))
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('pruning removes foreign nested optional binaries and development files, preserving runtime assets', async () => {
   const root = await mkdtemp(join(tmpdir(), 'hexbot-prune-'))
   try {
@@ -98,7 +139,14 @@ test('pruning removes foreign nested optional binaries and development files, pr
       const path = join(modules, 'agent', file)
       await mkdir(join(path, '..'), { recursive: true }); await writeFile(path, file)
     }
+    for (const os of ['darwin', 'linux', 'win32']) for (const cpu of ['arm64', 'x64']) {
+      const path = join(modules, 'agent/native', os, 'prebuilds', `${os}-${cpu}`)
+      await mkdir(path, { recursive: true }); await writeFile(join(path, 'tui.node'), 'native')
+    }
     await pruneRuntimeDependencies(modules, 'darwin', 'arm64')
+    assert((await stat(join(modules, 'agent/native/darwin/prebuilds/darwin-arm64/tui.node'))).isFile())
+    for (const path of ['darwin/prebuilds/darwin-x64', 'linux', 'win32'])
+      await assert.rejects(stat(join(modules, 'agent/native', path)), { code: 'ENOENT' })
     for (const file of ['agent/runtime.js', 'agent/dist/main.js', 'agent/dist/theme/dark.json', 'agent/node_modules/@esbuild/darwin-arm64/runtime.js'])
       assert((await stat(join(modules, file))).isFile())
     for (const file of ['agent/dist/main.js.map', 'agent/dist/main.d.ts', 'agent/docs', 'agent/examples', '@types', '@img/linux', 'agent/node_modules/@esbuild/darwin-x64'])

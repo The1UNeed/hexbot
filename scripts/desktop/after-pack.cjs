@@ -6,13 +6,12 @@
 // builds (identity present) are left to electron-builder's own signing and
 // notarization.
 const { execFileSync } = require('node:child_process')
-const { join, resolve } = require('node:path')
+const { join } = require('node:path')
 
 exports.default = async function afterPack(context) {
   if (context.electronPlatformName !== 'darwin') return
   if (process.env.CSC_LINK || process.env.CSC_NAME) return
   const appPath = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`)
-  const entitlements = resolve(__dirname, '../../apps/desktop/entitlements.mac.plist')
-  execFileSync('codesign', ['--force', '--deep', '--sign', '-', '--options', 'runtime', '--entitlements', entitlements, appPath], { stdio: 'inherit' })
+  execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath], { stdio: 'inherit' })
   console.log(`  • ad-hoc signed ${appPath}`)
 }

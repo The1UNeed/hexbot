@@ -1,12 +1,13 @@
 """Call JSON-RPC methods on a loopback daemon. Usage:
-  ./venv/bin/python scripts/dev/rpc.py <port> '<json list of [method, params]>'
+  HEXBOT_HOME=<home> ./venv/bin/python scripts/dev/rpc.py <port> '<json list of [method, params]>'
+The daemon never puts its token in a page; read it from the home's private token file.
 Placeholders "$name" in params are replaced from earlier results carrying that key."""
-import asyncio, json, re, sys, urllib.request
+import asyncio, json, os, sys
 import websockets
 
 PORT = int(sys.argv[1]); calls = json.loads(sys.argv[2])
-html = urllib.request.urlopen(f"http://127.0.0.1:{PORT}/").read().decode()
-tok = re.search(r'__HERMES_SESSION_TOKEN__="([^"]+)"', html).group(1)
+HOME = os.environ.get("HEXBOT_HOME") or sys.exit("Set HEXBOT_HOME to the daemon's home (never ~/.hexbot for a dev daemon)")
+tok = open(os.path.join(HOME, "local-device.token")).read().strip()
 
 async def main():
     async with websockets.connect(f"ws://127.0.0.1:{PORT}/api/ws?token={tok}", max_size=None) as ws:

@@ -1,22 +1,22 @@
 import { expect, it } from 'vitest'
 import { performBootstrap, installCodeRuntime, type BootstrapDeps } from './bootstrap'
-import { uvAsset, UV_VERSION } from './uv'
+import { toolAsset } from './tools'
 
 it('rejects a full package missing its native bundle instead of installing a legacy daemon', async () => {
   await expect(performBootstrap({ appIsPackaged: true, resourcesPath: '/missing', exists: () => false }))
     .rejects.toThrow('missing its Hexbot runtime')
 })
-it('pins code runtime installers for each supported target', () => {
-  for (const platform of ['darwin', 'linux']) for (const arch of ['arm64', 'x64']) {
-    const asset = uvAsset(platform, arch)
-    expect(asset.url).toContain(`/download/${UV_VERSION}/`)
-    expect(asset.url).toMatch(/\.tar\.gz$/)
+it('pins every downloaded tool for each supported target', () => {
+  for (const tool of ['uv', 'rg', 'fd'] as const) for (const platform of ['darwin', 'linux']) for (const arch of ['arm64', 'x64']) {
+    const asset = toolAsset(tool, platform, arch)
+    expect(asset.url).toMatch(/^https:\/\/github\.com\/[\w-]+\/[\w-]+\/releases\/download\/v?\d+\.\d+\.\d+\/[\w.-]+\.tar\.gz$/)
+    expect(asset.url).toContain(asset.version)
     expect(asset.sha256).toMatch(/^[a-f0-9]{64}$/)
   }
-  expect(() => uvAsset('win32', 'x64')).toThrow('Unsupported')
+  expect(() => toolAsset('rg', 'win32', 'x64')).toThrow('Unsupported')
 })
 
-it('rejects a bad installer checksum before extraction or execution', async () => {
+it('rejects a bad download checksum before extraction or execution', async () => {
   const { mkdtemp, mkdir, rm } = await import('node:fs/promises')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
@@ -34,5 +34,21 @@ it('rejects a bad installer checksum before extraction or execution', async () =
     if (oldHome === undefined) delete process.env.HEXBOT_HOME
     else process.env.HEXBOT_HOME = oldHome
     await rm(home, { recursive: true, force: true })
+  }
+})
+
+it('installs voice tools only at the versions and hashes locked in uv.lock', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const requirements = await readFile(new URL('./edge-tts.requirements.txt', import.meta.url), 'utf8')
+  const lock = await readFile(new URL('../../../../../uv.lock', import.meta.url), 'utf8')
+  const packages = new Map(lock.split('\n[[package]]\n').slice(1).map(block =>
+    [`${/^name = "(.+)"$/m.exec(block)![1]}==${/^version = "(.+)"$/m.exec(block)![1]}`, block]))
+  const pins = [...requirements.matchAll(/^(\S+==\S+) \\\n((?: {4}--hash=sha256:[a-f0-9]{64}(?: \\\n|\n|$))+)/gm)]
+  expect(pins.map(pin => pin[1])).toContain('edge-tts==7.2.7')
+  expect(pins).toHaveLength(requirements.split('\n').filter(line => /^\S+==/.test(line)).length)
+  for (const [, pin, hashes] of pins) {
+    expect(packages.has(pin!), pin).toBe(true)
+    for (const hash of hashes!.match(/sha256:[a-f0-9]{64}/g)!)
+      expect(packages.get(pin!), `${pin} ${hash}`).toContain(`hash = "${hash}"`)
   }
 })

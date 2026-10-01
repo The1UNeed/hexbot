@@ -21,8 +21,12 @@ concurrency:
 
 jobs:
   rust-components:
-    name: Rust daemon and Pi integration
-    runs-on: ubuntu-24.04
+    name: Rust daemon and Pi integration (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     defaults:
       run:
@@ -33,7 +37,7 @@ jobs:
         with:
           node-version: 26
       - run: rustup show active-toolchain
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: backend/hexbot-core
       - run: cargo fmt --check
@@ -42,26 +46,37 @@ jobs:
       - name: Verify real Pi sessions and native tools
         run: |
           npm ci --prefix ../pi-runtime --ignore-scripts --no-audit --no-fund
-          node --test ../pi-runtime/acp.test.mjs
+          node --test ../pi-runtime/*.test.mjs
           HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test pi_live -- --ignored
           HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test runtime -- --ignored
           HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test runtime_recovery -- --ignored
-      - uses: pnpm/action-setup@v4
+
+  native-ui:
+    name: Browser and Electron against Rust and Pi
+    # xvfb and Playwright's system packages are Linux only.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: backend/hexbot-core
+      - run: cargo build --locked --manifest-path backend/hexbot-core/Cargo.toml --bin hexbot
+      - run: npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - run: pnpm install --frozen-lockfile
-        working-directory: .
       - run: pnpm --filter ./apps/web run build
-        working-directory: .
       - run: pnpm --filter ./apps/desktop exec playwright install --with-deps chromium
-        working-directory: .
       - name: Unchanged browser app against Rust and Pi
         run: node scripts/dev/native-ui-smoke.mjs
-        working-directory: .
       - name: Electron full edition against Rust and Pi
         run: xvfb-run -a node scripts/dev/native-ui-smoke.mjs --desktop --edition=full
-        working-directory: .
       - name: Electron client-only edition against Rust and Pi
         run: xvfb-run -a node scripts/dev/native-ui-smoke.mjs --desktop --edition=client
-        working-directory: .
 
   python:
     name: Python
@@ -72,7 +87,7 @@ jobs:
       UV_PROJECT_ENVIRONMENT: venv
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
       - run: uv venv venv --python 3.11
@@ -92,7 +107,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # Installs the pnpm pinned by `packageManager` in the root package.json.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - uses: actions/setup-node@v7
         with:
           node-version: 26
@@ -107,10 +122,12 @@ jobs:
       - name: Prepare the native desktop compiler
         run: |
           rustup show active-toolchain
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: backend/hexbot-core
       - run: pnpm --filter ./apps/desktop run build
+      - name: Verify sessions through the staged Pi runtime
+        run: HEXBOT_TEST_PI="$GITHUB_WORKSPACE/apps/desktop/resources/hexbot-native/pi/hexbot-pi" cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test runtime -- --ignored
       - name: Install the native desktop runtime in isolated state
         run: HEXBOT_NATIVE_TEST_BUNDLE="$GITHUB_WORKSPACE/apps/desktop/resources/hexbot-native" pnpm --filter ./apps/desktop run test --run src/main/backend/native-bootstrap.test.ts
       - name: Release script tests
@@ -128,7 +145,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # Installs the pnpm pinned by `packageManager` in the root package.json.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - uses: actions/setup-node@v7
         with:
           node-version: 26

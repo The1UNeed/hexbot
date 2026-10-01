@@ -105,13 +105,29 @@ class NativeTransitionTests(unittest.TestCase):
         file = user / "Library/LaunchAgents/app.hexbot.daemon.plist"
         file.parent.mkdir(parents=True)
         legacy = str(self.home / "runtime/venv/bin/hexbot")
-        file.write_text(f"<string>{legacy}</string><key>PATH</key><string>/usr/bin:{self.home}/runtime/venv/bin</string>")
+        file.write_text(f"<string>{legacy}</string><key>EnvironmentVariables</key><dict><key>HEXBOT_HOME</key><string>{self.home}</string></dict><key>PATH</key><string>/usr/bin:{self.home}/runtime/venv/bin</string>")
         transition._migrate_service(self.home, user)
         self.assertIn(str(self.home / "runtime/native-executable"), file.read_text())
         self.assertNotIn("venv", file.read_text())
+        self.assertEqual(file.read_text().count("<key>HEXBOT_SUPERVISOR</key><string>service</string>"), 1)
         first = file.stat().st_mtime_ns
         transition._migrate_service(self.home, user)
         self.assertEqual(file.stat().st_mtime_ns, first)
+
+    def test_migration_marks_systemd_services_as_supervised(self):
+        user = self.root / "user"
+        file = user / ".config/systemd/user/hexbot.service"
+        file.parent.mkdir(parents=True)
+        legacy = self.home / "runtime/venv/bin/hexbot"
+        file.write_text(f'[Service]\nExecStart="{legacy}" serve\nEnvironment=HEXBOT_HOME="{self.home}"\nEnvironment=PATH="/usr/bin:{legacy.parent}"\n')
+        with patch("subprocess.run") as run:
+            transition._migrate_service(self.home, user)
+            run.assert_called_once_with(["systemctl", "--user", "daemon-reload"], check=True, timeout=30)
+        self.assertEqual(file.read_text().count("Environment=HEXBOT_SUPERVISOR=service"), 1)
+        self.assertNotIn("venv", file.read_text())
+        with patch("subprocess.run") as run:
+            transition._migrate_service(self.home, user)
+            run.assert_not_called()
 
     def test_failed_download_checksum_and_runtime_probe_keep_old_launcher(self):
         launcher = self.launcher()
@@ -266,6 +282,36 @@ class NativeTransitionTests(unittest.TestCase):
                  patch.dict(os.environ, {"HEXBOT_BACKEND": "rust"}):
                 transition.handoff(["version"])
             install.assert_called_once_with(self.home, self.version)
+
+    def test_failed_native_install_keeps_python_serve_available_but_fails_version_probe(self):
+        source = self.root / "source"
+        package = source / "hexbot"
+        package.mkdir(parents=True)
+        for name in ("__init__.py", "cli.py", "native_transition.py"):
+            shutil.copyfile(Path(transition.__file__).parent / name, package / name)
+        (source / transition.MARKER).write_text(json.dumps({"version": self.version}))
+        (package / "serve.py").write_text(
+            "def run(host, port, lan):\n    print(f'Python serve reached: {port}')\n"
+        )
+        launcher = self.launcher()
+        old_launcher = launcher.read_bytes()
+        script = (
+            "from hexbot import native_transition as transition\n"
+            "def unavailable(*args, **kwargs):\n    raise OSError('native download unavailable')\n"
+            "transition.urllib.request.urlopen = unavailable\n"
+            "from hexbot.cli import main\nmain()\n"
+        )
+        env = {**os.environ, "PYTHONPATH": str(source)}
+        for _ in range(2):
+            result = subprocess.run([sys.executable, "-c", script, "serve", "--port", "9119"],
+                                    cwd=source, env=env, check=True, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.stdout, "Python serve reached: 9119\n")
+            self.assertIn("staying on the Python daemon", result.stderr)
+            self.assertEqual(launcher.read_bytes(), old_launcher)
+        result = subprocess.run([sys.executable, "-c", script, "version"],
+                                cwd=source, env=env, capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("native download unavailable", result.stderr)
 
 
 if __name__ == "__main__":
