@@ -28,9 +28,13 @@ Each daemon gets `<slug>.<CONNECT_DOMAIN>`, where the slug is 16 hex characters 
 
 `CONNECT_INGRESS_PORT` is only the initial tunnel target. Every daemon heartbeat carries the port `hexbot serve` listens on, and the tunnel configuration is updated when it changes.
 
-## End-to-end test
+## Daemon integration tests
 
-`HEXBOT_CONNECT_E2E=1 ./venv/bin/pytest tests/hexbot/test_connect_e2e.py` (from the repository root) starts this app with the in-memory store, runs a real daemon, and drives registration, sign-in, grant exchange, revocation, and disconnect.
+Native registration, grants, PKCE, revocation, and tunnel fixtures live in
+`backend/hexbot-core/tests/services.rs` and `server.rs`. Run
+`cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml` from the
+repository root. Connect service unit tests run with
+`pnpm --filter ./apps/connect run test --run`.
 
 ## Database migration
 

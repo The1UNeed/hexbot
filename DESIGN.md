@@ -15,7 +15,7 @@ more freedom and more capability than a hosted product can offer.
 - Layout: one monorepo. The daemon lives in `backend/hexbot-core/`, with a
   pinned agent runtime and private extension in `backend/pi-runtime/`.
   `apps/desktop/` hosts the shared React bundle from `apps/web/`.
-  Legacy Python remains for one release of background-service handoff.
+  `backend/python-handoff/` provides the service handoff.
 - Scope: macOS (Apple Silicon and Intel), Linux x86_64 (AppImage, .deb).
   No phone app. No import from unrelated agent installs. English UI.
   No telemetry until opt-in crash reports before public release.

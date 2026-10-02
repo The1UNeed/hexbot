@@ -7,7 +7,7 @@ use hexbot_core::db;
 use rusqlite::Connection;
 use tempfile::TempDir;
 
-// Captured directly from hexbot/db.py's schema constants. This fixture builds
+// Captured from the historical Python schema constants. This fixture builds
 // each Python-era schema independently of the Rust migration implementation.
 fn legacy_home(version: i64) -> TempDir {
     let home = TempDir::new().unwrap();

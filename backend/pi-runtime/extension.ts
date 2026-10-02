@@ -243,7 +243,7 @@ export default function hexbot(pi: any) {
   }
 }
 
-// Ported from tools/approval.py DANGEROUS_PATTERNS, plus the stock permission gate.
+// Historical destructive-command patterns, plus the stock permission gate.
 // The optional third field routes a pattern by a stable id rather than its
 // description: ssh and heredoc patterns apply only when the scanner agrees,
 // host-config and login-item share the host configuration key when a command

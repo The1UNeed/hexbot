@@ -69,20 +69,14 @@ try {
   // build: write the version into the app and the daemon (on a copy)
   const versioned = join(work, 'versioned')
   await mkdir(join(versioned, 'apps/desktop'), { recursive: true })
-  await mkdir(join(versioned, 'hexbot'), { recursive: true })
   await cp(
     join(repositoryRoot, 'apps/desktop/package.json'),
     join(versioned, 'apps/desktop/package.json')
   )
-  await cp(join(repositoryRoot, 'hexbot/__init__.py'), join(versioned, 'hexbot/__init__.py'))
   await setVersion(nightly.version, versioned)
   assert.equal(
     JSON.parse(await readFile(join(versioned, 'apps/desktop/package.json'), 'utf8')).version,
     nightly.version
-  )
-  assert.match(
-    await readFile(join(versioned, 'hexbot/__init__.py'), 'utf8'),
-    new RegExp(`__version__ = "${nightly.version.replaceAll('.', '\\.')}"`)
   )
   console.log('set-version: app and daemon updated')
 

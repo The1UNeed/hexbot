@@ -1,11 +1,10 @@
 {
-  "name": "hermes-agent",
+  "name": "hexbot",
   "version": "1.0.0",
-  "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
+  "description": "Self-hosted bots with faces, names, and a memory of their own.",
   "private": true,
   "packageManager": "pnpm@10.29.3",
   "scripts": {
-    "postinstall": "echo '✅ Node dependencies installed. Run: python run_agent.py --help'",
     "dev": "node scripts/dev/run.mjs",
     "web:dev": "pnpm --filter @hexbot/web run dev",
     "web:build": "pnpm --filter @hexbot/web run build",

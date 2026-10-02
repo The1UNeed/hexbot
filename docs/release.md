@@ -12,7 +12,7 @@ page is the procedure and the one-time setup. Modelled on T3 Code's
   `apps/desktop/package.json` (a manual stable run takes the version from
   that file and refuses one that is already tagged), computes the nightly
   version, and stops a scheduled nightly when `main` has not moved.
-- `check` runs `ci.yml`: Rust/Pi, legacy Python, web, desktop, site, Connect, and the
+- `check` runs `ci.yml`: Rust/Pi, service handoff, web, desktop, site, Connect, and the
   desktop script tests. Nothing is built until it passes.
 - `build` makes six packages in parallel: full and client for macOS arm64,
   macOS x64, and Linux x64, signed and notarized when the Apple secrets are
@@ -51,14 +51,25 @@ The pinned agent still loads extensions through jiti. Precompiling our extension
 alone would not remove that runtime dependency, so the loaders remain bundled.
 
 Native archives and SHA-256 manifests live under
-`daemon/native/<version>/<os>-<arch>/`. For one release we also publish
+`daemon/native/<version>/<os>-<arch>/`. Every release also publishes
 `daemon/hexbot-src-<version>.tar.gz` using `stage-python-src --native-transition`.
-Existing Python background services follow that source feed, validate the native
+A client asks an old Python service to update to the client's own version, so
+each version needs its own archive for as long as such services may exist.
+The archive contains only `backend/python-handoff/` plus transition and build
+metadata, with no runtime dependencies. Its empty `all` extra accepts the old
+updater's `uv sync --extra all --locked`. Existing Python background services
+follow that source feed, validate the native
 bundle and version, then replace their process with the native daemon. Their
 home, conversations and bot memory stay in place. If the native download or
-validation fails, the update reports failure and commands keep using the Python
-daemon. Each service restart retries the native install; a persistent failure
-keeps the Python service available. Native startup refuses a home
+validation fails, the version probe exits non-zero and the installed old
+daemon reports failure without restarting. The old updater has already synced
+its venv to the handoff package by then, so before failing the probe re-syncs
+the legacy sources in `runtime/src/`, newest first, until one syncs, and the
+Python daemon keeps its packages and survives a restart. A `serve` that finds the
+handoff package installed tries the native install, then the same restore,
+and execs the restored Python daemon. If both fail, `serve` stays up and
+retries with backoff (30 seconds, doubling to an hour) rather than exiting
+into a launchd or systemd restart loop. Native startup refuses a home
 whose previous listener is still reachable. Python rollback packages,
 `HEXBOT_BACKEND` selection and `pnpm dev --backend python` are removed.
 
@@ -81,7 +92,7 @@ bin directory unless the same size and SHA-256 are already there; a failed
 copy is logged and skipped when PATH already has the verified tool. The
 desktop app no longer downloads search tools on first launch. First launch installs uv 0.12.18 from its pinned archive,
 managed Python 3.11 for code tools and edge-tts 7.2.7 for voice, with every Python package pinned by hash in
-`apps/desktop/src/main/backend/edge-tts.requirements.txt`, copied from `uv.lock`.
+`apps/desktop/src/main/backend/edge-tts.requirements.txt`, the independent voice dependency lock.
 These are not daemon dependencies.
 
 The bundled Node is the Node 22 LTS line, because Node 23 and later need macOS
@@ -135,7 +146,7 @@ node scripts/desktop/dist.mjs --mac --dir
 1. `main` is green.
 2. Pick the version. While Hexbot is `0.x` it is `0.x.y-alpha.N`. Run
    `node scripts/desktop/set-version.mjs 0.x.y-alpha.N`; it writes
-   `apps/desktop/package.json` and `hexbot/__init__.py`.
+   `apps/desktop/package.json`, which Rust reads at build time.
 3. Write `docs/releases/0.x.y-alpha.N.md`: user-visible changes, upgrade
    concerns, known issues. Without it GitHub generates notes from commits.
    hexbot.app renders every file in that directory at `/changelog/`.

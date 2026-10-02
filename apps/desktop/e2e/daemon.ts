@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import net from 'node:net'
+import { readFile, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 
 export const READY_PATTERN = /(?:^|\s)HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)(?:\s|$)/
@@ -27,27 +29,15 @@ export async function pickFreePort(
   })
 }
 
-function waitForExit(child: ChildProcess, label: string): Promise<void> {
-  return new Promise((resolveExit, reject) => {
-    child.once('error', reject)
-    child.once('exit', code =>
-      code === 0 ? resolveExit() : reject(new Error(`${label} exited with code ${String(code)}`))
-    )
-  })
-}
-
-export async function seedCodexTokens(repoRoot: string, home: string): Promise<void> {
-  const python = resolve(repoRoot, 'venv/bin/python')
-  const child = spawn(
-    python,
-    ['-c', 'from hermes_cli import auth; auth._save_codex_tokens(auth._import_codex_cli_tokens())'],
-    {
-      cwd: repoRoot,
-      env: { ...process.env, HERMES_HOME: home },
-      stdio: 'inherit'
-    }
-  )
-  await waitForExit(child, 'Codex token seeding')
+export async function seedCodexTokens(home: string): Promise<void> {
+  const codexHome = process.env.CODEX_HOME?.trim() || resolve(homedir(), '.codex')
+  const login = JSON.parse(await readFile(resolve(codexHome, 'auth.json'), 'utf8'))
+  if (!login.tokens?.access_token || !login.tokens?.refresh_token) {
+    throw new Error('The desktop smoke test requires a Codex CLI login')
+  }
+  await writeFile(resolve(home, 'auth.json'), JSON.stringify({
+    providers: { 'openai-codex': { tokens: login.tokens, last_refresh: login.last_refresh } }
+  }), { mode: 0o600 })
 }
 
 export interface RunningDaemon {
@@ -64,12 +54,15 @@ export async function startDaemon(
 ): Promise<RunningDaemon> {
   const port = requestedPort ?? (await pickFreePort())
   const child = spawn(
-    resolve(repoRoot, 'venv/bin/hexbot'),
+    resolve(repoRoot, 'backend/hexbot-core/target/debug/hexbot'),
     ['serve', '--port', String(port), ...(lan ? ['--lan'] : [])],
     {
       cwd: repoRoot,
       detached: process.platform !== 'win32',
-      env: { ...process.env, HEXBOT_HOME: home, HERMES_HOME: undefined },
+      env: {
+        ...process.env, HEXBOT_HOME: home, HERMES_HOME: undefined,
+        HEXBOT_PI_EXECUTABLE: resolve(repoRoot, 'backend/pi-runtime/node_modules/.bin/pi')
+      },
       stdio: ['ignore', 'pipe', 'pipe']
     }
   )

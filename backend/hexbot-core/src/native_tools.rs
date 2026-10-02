@@ -2913,7 +2913,7 @@ async fn close_browsers(home: &Path, stored: &str) {
     }
 }
 
-// Behavior metadata from tools/image_generation_tool.py in this checkout.
+// Behavior metadata preserved from the historical image-generation tool.
 const FAL_MODELS: &str = include_str!("fal_image_models.json");
 async fn fal_image(
     home: &Path,

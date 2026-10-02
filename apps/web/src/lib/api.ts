@@ -1,7 +1,7 @@
 /**
  * Typed wrappers for every daemon method the client calls: the `hexbot.*`
- * surface from docs/api.md plus the Hexbot chat subset from
- * docs/core/ws-api.md. Everything goes through the active RPC client, so
+ * surface and chat contract from docs/api.md.
+ * Everything goes through the active RPC client, so
  * a call before the connection is up rejects with `NotConnectedError`.
  */
 

@@ -96,27 +96,21 @@ jobs:
       - name: Electron client-only edition against Rust and Pi
         run: xvfb-run -a node scripts/dev/native-ui-smoke.mjs --desktop --edition=client
 
-  python:
-    name: Python
+  python-handoff:
+    name: Python service handoff
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    env:
-      # The venv lives at ./venv, like a developer checkout (AGENTS.md).
-      UV_PROJECT_ENVIRONMENT: venv
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend/python-handoff
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
-      - run: uv venv venv --python 3.11
-      # `all` is every runtime extra; `dev` adds pytest and pytest-asyncio.
-      - run: uv sync --extra all --extra dev --locked
-      # The Hex Connect sidecar (hexbot/connect_agent.mts) runs on Node; the Python tests drive it too.
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 26
-      - run: node --test tests/hexbot/*.test.mts
-      - run: ./venv/bin/pytest tests/hexbot -q
+      - run: uv venv --python 3.11
+      - run: uv sync --extra dev --locked
+      - run: .venv/bin/pytest tests -q
 
   web:
     name: Web and desktop

@@ -253,7 +253,7 @@ notice. Working and idle draw the plain pill.
   model come from the defaults; "Change" reveals them). The bot then asks
   the rest itself: the client calls `hexbot.bots.introduce` once it has
   opened the section, and the daemon's hidden first prompt
-  (`hexbot/kickoff.py`) makes the bot greet the user, ask up to three
+  (`backend/hexbot-core/src/catalog.rs`) makes the bot greet the user, ask up to three
   clarify questions shaped by its name, and write the answers into its
   soul and memory. The room's "Room settings" (the info button in the
   header, route `/r/$room/settings`) holds the name, the members with

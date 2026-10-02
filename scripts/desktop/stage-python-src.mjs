@@ -20,10 +20,10 @@ try {
 }
 
 await stagePythonSource(repositoryRoot, destination, {
-  nativeTransitionVersion: process.argv.includes('--native-transition') ? packageJson.version : undefined
+  nativeTransitionVersion: packageJson.version
 })
 await writeFile(
   join(destination, 'HEXBOT_BUILD.json'),
   `${JSON.stringify({ version: packageJson.version, commit, date: new Date().toISOString() }, null, 2)}\n`
 )
-console.log(`Staged Hexbot ${packageJson.version} Python source at ${destination}`)
+console.log(`Staged Hexbot ${packageJson.version} service handoff at ${destination}`)

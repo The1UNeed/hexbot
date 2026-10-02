@@ -7,11 +7,11 @@
 | Script | Role |
 | --- | --- |
 | `release-version.mjs` | Resolves channel and version (tag must match `package.json`; nightly is `<next>-nightly.<date>.<run>`) and the product name per channel. Prints GitHub Actions outputs. |
-| `set-version.mjs <version>` | Writes the version into `apps/desktop/package.json` and `hexbot/__init__.py`. |
+| `set-version.mjs <version>` | Writes `apps/desktop/package.json`, also read by Rust at build time. |
 | `dist.mjs --mac\|--linux [--client] [--channel stable\|nightly\|dev]` | Builds one package. The channel sets the product name (`Hexbot [alpha]`, `Hexbot Nightly`, `Hexbot (dev)`) and app id. |
 | `stage-runtime.mjs`, `native-runtime.mjs`, `native-build.mjs` | Build Rust for the target, bundle Node and locked agent dependencies, prune unused files and verify the result. |
 | `make-native-update.mjs` | Write a relocatable archive and SHA-256 manifest under `daemon/native/<version>/<target>/`. |
-| `stage-python-src.mjs`, `python-src-manifest.mjs` | Stage the one-release legacy service handoff archive with `--native-transition`. |
+| `stage-python-src.mjs`, `python-src-manifest.mjs` | Stage only `backend/python-handoff/` and transition metadata for the service handoff. `--native-transition` remains accepted. |
 | `mac-sign.cjs` | Keeps the bundled Node entitlement separate from Electron during Developer ID signing. |
 | `after-pack.cjs` | Ad-hoc signs macOS builds when no Developer ID is configured, so they launch on Apple Silicon. |
 | `make-update-feed.mjs --channel stable\|nightly [--version v] [--client] <builder-output> [feed-root]` | Builds the `updates.hexbot.app` tree: artifacts plus `latest-*.yml` or `nightly-*.yml`. |
@@ -41,7 +41,7 @@ Each is built for macOS arm64, macOS x64, and Linux x64.
 The icon source is the Icon Composer bundle `apps/desktop/build/Hexbot.icon`. `dist.mjs` passes it to electron-builder as `mac.icon` when Xcode 26's `actool` is installed, which produces the layered macOS 26 icon. Everything else (older macOS, Linux, the CI runners, and the menu bar) uses files rendered from the same bundle:
 
 ```sh
-./venv/bin/python scripts/desktop/make-icons.py
+uv run --no-project --with pillow python scripts/desktop/make-icons.py
 ```
 
 Run it and commit the outputs whenever the bundle changes.
@@ -78,5 +78,9 @@ locked npm dependencies. It removes foreign optional binaries, source maps,
 type declarations and development docs/examples, then probes the packaged
 runtime. The Intel macOS target can be built on Apple Silicon with Rosetta.
 `make-native-update.mjs` writes archives and manifests below `daemon/native/`.
-There is no Python package or `--backend` option. Source staging remains only
-for the legacy service handoff described in `docs/release.md`.
+Source staging copies only `pyproject.toml`, `uv.lock`, and the three Python
+files in `backend/python-handoff/hexbot/`, then writes
+`HEXBOT_NATIVE_TRANSITION.json` and `HEXBOT_BUILD.json`. Tests, caches and web
+assets never enter `resources/hexbot-src`. Both staging CLI forms always write
+the transition marker. This is only the service handoff described
+in `docs/release.md`.

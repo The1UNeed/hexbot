@@ -1504,7 +1504,7 @@ pub fn router(app: Arc<App>) -> Router {
         .with_state(app)
 }
 
-// Same self-contained sign-in page as hexbot/login_page.py.
+// Self-contained sign-in page preserving the existing browser login flow.
 #[rustfmt::skip]
 const LOGIN_PAGE: &str = r###"<!doctype html>
 <html lang="en">

@@ -1,6 +1,6 @@
 # Voice tools for managed Python 3.11, installed with --require-hashes --no-deps.
-# edge-tts 7.2.7 and its dependencies at the versions and hashes in the root
-# uv.lock, limited to CPython 3.11 wheels for macOS and Linux.
+# edge-tts 7.2.7 and its dependencies, limited to CPython 3.11 wheels
+# for macOS and Linux. This file is the voice dependency lock.
 aiohappyeyeballs==2.6.1 \
     --hash=sha256:f349ba8f4b75cb25c99c5c2d84e997e485204d2902a9597802b0371f09331fb8
 aiohttp==3.14.3 \

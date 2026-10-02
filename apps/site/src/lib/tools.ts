@@ -1,5 +1,5 @@
 // What a bot can do, as the Tools and Connectors pages in the app list it
-// (hexbot/bots.py TOOL_TOOLSETS, hexbot/connectors.py CATALOG). The Tools
+// (the daemon's catalogs in backend/hexbot-core/src/). The Tools
 // page and the landing page both read this, so keep it in step with the app.
 export type Tool = { name: string; does: string; note?: string }
 export type ToolGroup = { id: string; title: string; summary: string; tools: Tool[] }

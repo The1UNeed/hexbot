@@ -206,8 +206,9 @@ jobs:
         run: HEXBOT_PACKAGED_TEST_DIR="$GITHUB_WORKSPACE/apps/desktop/release" node --test scripts/desktop/runtime-signing.test.mjs
       - name: List the output
         run: ls -l apps/desktop/release
-      # One release of compatibility source for existing Python services
-      # updating through hexbot/update.py. It hands off to the native daemon.
+      # The minimal backend/python-handoff package for existing Python services
+      # following the source feed. It installs the native daemon. Clients request
+      # their own version, so every release publishes one.
       # This compatibility source archive is platform-independent.
       - name: Archive the daemon source
         if: matrix.edition == 'full' && matrix.build == 'linux-x64'

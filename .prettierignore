@@ -5,5 +5,4 @@ release
 venv
 **/routeTree.gen.ts
 apps/desktop/resources
-/web
 apps/shared
