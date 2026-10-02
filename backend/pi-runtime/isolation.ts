@@ -154,8 +154,11 @@ export function processLimit(): number | undefined {
   return listed.status === 0 ? listed.stdout.split('\n').filter(Boolean).length + PROCESS_HEADROOM : undefined;
 }
 export function isolatedCommand(command: string, home: string, outputs: string[] = [], workspace?: string[]): string {
-  const limit = workspace && processLimit();
-  if (limit) command = `ulimit -u ${limit}\n${command}`;
+  // A command that cannot be capped does not run.
+  if (workspace) {
+    const limit = processLimit();
+    command = limit ? `ulimit -u ${limit} || exit 126\n${command}` : "echo 'Hexbot could not cap processes for the sandbox.' >&2; exit 126";
+  }
   if (process.platform === 'darwin') return `/usr/bin/sandbox-exec -p ${quote(sandboxProfile(home, outputs, workspace))} /bin/bash --noprofile --norc -c ${quote(command)}`;
   const executable = probeIsolation();
   if (executable) return [executable, ...bwrapArguments(home, outputs, workspace), '--', '/bin/bash', '--noprofile', '--norc', '-c', command].map(quote).join(' ');

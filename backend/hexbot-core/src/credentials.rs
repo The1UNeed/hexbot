@@ -329,7 +329,7 @@ struct Layout {
     paths: Vec<PathBuf>,
     writable: Vec<PathBuf>,
     denied: Vec<PathBuf>,
-    confine: Option<Confine>,
+    confine: Option<Confinement>,
 }
 /// Codex's workspace sandbox for a section's code in Manual and Auto: no
 /// network, no host Unix sockets, no signals outside it, writes only inside the
@@ -343,11 +343,11 @@ const DEVICES: [&str; 5] = [
     "/dev/stderr",
     "/dev/dtracehelper",
 ];
-struct Confine {
+struct Confinement {
     writable: Vec<PathBuf>,
     config: Vec<PathBuf>,
 }
-fn confine(workspace: &[PathBuf]) -> Result<Confine> {
+fn confine(workspace: &[PathBuf]) -> Result<Confinement> {
     let mut writable: Vec<PathBuf> = vec![];
     for path in workspace
         .iter()
@@ -371,7 +371,7 @@ fn confine(workspace: &[PathBuf]) -> Result<Confine> {
             }
         }
     }
-    Ok(Confine { writable, config })
+    Ok(Confinement { writable, config })
 }
 fn real_root(path: &Path) -> std::io::Result<PathBuf> {
     match std::fs::canonicalize(path) {
@@ -651,49 +651,74 @@ fn process_limit() -> Option<usize> {
             + PROCESS_HEADROOM,
     )
 }
-/// A sandboxed command. `confine` adds the workspace sandbox, with `writable`
-/// and the temporary folders as the workspace.
+/// Which sandbox a program gets on top of the base layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Confine {
+    /// The base layer only: credential files hidden, the Hexbot home read-only.
+    No,
+    /// Codex's workspace sandbox, with `writable` and the temp folders writable (Auto).
+    Workspace,
+    /// The workspace sandbox with nothing writable (Manual).
+    ReadOnly,
+}
+/// A sandboxed command.
 pub fn isolated_command(
     home: &Path,
     program: &str,
     writable: &[PathBuf],
-    confine: bool,
+    confine: Confine,
 ) -> Result<tokio::process::Command> {
-    let workspace: Vec<PathBuf> = writable
-        .iter()
-        .cloned()
-        .chain([std::env::temp_dir(), PathBuf::from("/tmp")])
-        .collect();
-    let layout = layout(home, writable, confine.then_some(workspace.as_slice()))?;
-    // A confined program starts behind a shell that caps its processes, as in
-    // isolation.ts; the caller's arguments follow the program unchanged.
-    let limit = confine.then(process_limit).flatten();
-    let launch: Vec<String> = match limit {
-        Some(limit) => vec![
-            "/bin/sh".into(),
-            "-c".into(),
-            format!("ulimit -u {limit}; exec \"$0\" \"$@\""),
-            program.into(),
-        ],
-        None => vec![program.into()],
+    let workspace: Vec<PathBuf> = match confine {
+        Confine::No => vec![],
+        Confine::Workspace => writable
+            .iter()
+            .cloned()
+            .chain([std::env::temp_dir(), PathBuf::from("/tmp")])
+            .collect(),
+        Confine::ReadOnly => vec![],
     };
-    if cfg!(target_os = "macos") {
+    let layout = layout(
+        home,
+        writable,
+        (confine != Confine::No).then_some(workspace.as_slice()),
+    )?;
+    let mut command = if cfg!(target_os = "macos") {
         let mut command = tokio::process::Command::new("/usr/bin/sandbox-exec");
+        command.args(["-p", &sandbox_profile(&layout), program]);
         command
-            .args(["-p", &sandbox_profile(&layout)])
-            .args(&launch);
-        return Ok(command);
-    }
-    if let Some(bwrap) = bwrap() {
+    } else if let Some(bwrap) = bwrap() {
         let mut command = tokio::process::Command::new(bwrap);
         command
             .args(bwrap_arguments(&layout))
             .arg("--")
-            .args(&launch);
-        return Ok(command);
+            .arg(program);
+        command
+    } else {
+        warn_unavailable_isolation();
+        tokio::process::Command::new(program)
+    };
+    if confine != Confine::No {
+        // The child applies the cap before it starts the sandbox, which keeps it;
+        // a program that cannot be capped does not start.
+        let limit = process_limit()
+            .ok_or_else(|| Error::new(5240, "Hexbot could not cap processes for the sandbox."))?
+            as libc::rlim_t;
+        // SAFETY: setrlimit is async-signal-safe and touches only this child.
+        unsafe {
+            command.pre_exec(move || {
+                let cap = libc::rlimit {
+                    rlim_cur: limit,
+                    rlim_max: limit,
+                };
+                if libc::setrlimit(libc::RLIMIT_NPROC, &cap) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
     }
-    warn_unavailable_isolation();
-    Ok(tokio::process::Command::new(program))
+    Ok(command)
 }
 /// Variables every child may inherit. Provider keys, connector secrets, and runtime
 /// injection variables (NODE_OPTIONS, BASH_ENV) are never on the list.
@@ -1107,7 +1132,7 @@ mod tests {
                 home.join("profiles/owl/artifacts"),
                 home.join("runtime/sessions/one/attachments"),
             ],
-            false,
+            Confine::No,
         )
         .unwrap()
         .args(["-c", &script])
@@ -1145,7 +1170,7 @@ mod tests {
         }
         let home = tempfile::tempdir().unwrap();
         let limit = |confine| {
-            let mut command = isolated_command(home.path(), "/bin/sh", &[], confine).unwrap();
+            let mut command = isolated_command(home.path(), "/bin/bash", &[], confine).unwrap();
             command.args(["-c", "ulimit -u"]);
             async move {
                 let output = command.output().await.unwrap();
@@ -1155,8 +1180,11 @@ mod tests {
                     .unwrap_or(u64::MAX)
             }
         };
-        let (capped, own) = (limit(true).await, limit(false).await);
-        assert!(capped > 512 && capped < own, "{capped} {own}");
+        let own = limit(Confine::No).await;
+        for confine in [Confine::Workspace, Confine::ReadOnly] {
+            let capped = limit(confine).await;
+            assert!(capped > 512 && capped < own, "{confine:?} {capped} {own}");
+        }
     }
     #[test]
     fn code_floor() {
@@ -1193,7 +1221,7 @@ mod tests {
         }
         let home = tempfile::tempdir().unwrap();
         let script = "curl -s -o \"$HOME/.aws/credentials\" \"file://$HOME/source\" 2>/dev/null && exit 17; truncate -s0 \"$HOME/.netrc\" 2>/dev/null && exit 18; echo x > \"$HOME/.aws/credentials\" 2>/dev/null && exit 10; echo x > \"$HOME/.netrc\" 2>/dev/null && exit 12; echo x > \"$HOME/.npmrc\" 2>/dev/null && exit 13; python3 -c 'open(\"'\"$HOME\"'/.aws/other\",\"w\")' 2>/dev/null && exit 15; echo ok > \"$HOME/notes.txt\" || exit 16; echo done";
-        let result = isolated_command(home.path(), "/bin/bash", &[], false)
+        let result = isolated_command(home.path(), "/bin/bash", &[], Confine::No)
             .unwrap()
             .args(["-c", script])
             .output()
@@ -1266,14 +1294,14 @@ mod tests {
     async fn python_isolated_from_secrets() {
         let home = tempfile::tempdir().unwrap();
         std::fs::write(home.path().join(".env"), "SECRET").unwrap();
-        let result = isolated_command(home.path(), "/bin/cat", &[], false)
+        let result = isolated_command(home.path(), "/bin/cat", &[], Confine::No)
             .unwrap()
             .arg(home.path().join(".env"))
             .output()
             .await
             .unwrap();
         assert!(!result.status.success());
-        let result = isolated_command(home.path(), "python3", &[], false)
+        let result = isolated_command(home.path(), "python3", &[], Confine::No)
             .unwrap()
             .args([
                 "-c",
@@ -1286,7 +1314,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.status.success());
-        let result = isolated_command(home.path(), "/bin/echo", &[], false)
+        let result = isolated_command(home.path(), "/bin/echo", &[], Confine::No)
             .unwrap()
             .arg("ordinary")
             .output()

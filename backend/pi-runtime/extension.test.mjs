@@ -277,6 +277,14 @@ test('Auto asks before full access, with the bot reason, and before writes outsi
   assert.equal((await f.gate('write', {path:join(user, '.zshrc')}))?.block, true);
   assert.match(f.choices[2].reason, /shell profile/);
   assert.equal(f.choices.length, 3);
+  // Allowing outside files for the section does not cover shell profiles.
+  f.settings.cwd = join(user, 'Hexbot');
+  f.ctx.choice = 'session';
+  assert.equal(await f.gate('write', {path:'/usr/local/hexbot-elsewhere.txt'}), undefined);
+  f.ctx.choice = 'deny';
+  assert.equal(await f.gate('write', {path:'/usr/local/hexbot-other.txt'}), undefined);
+  assert.equal((await f.gate('write', {path:join(user, '.zshrc')}))?.block, true);
+  assert.equal(f.choices.length, 5);
 });
 
 test('Manual asks before every file change and full access, not before reads or sandboxed commands', async t => {

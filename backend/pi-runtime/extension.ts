@@ -113,7 +113,7 @@ export default function hexbot(pi: any) {
           const denial = writeDenial(input, cwd, live.home, live.outputDirs);
           if (denial) return {block: true, reason: denial};
           if (live.approvalMode === 'manual') ask = {key: 'file', command: path, reason: 'Manual mode asks before every file change.'};
-          else if (hostWriteTier(input, cwd) === 'ask') ask = {key: 'file:outside', command: path, reason: 'This changes a shell profile, login item or other host configuration file.'};
+          else if (hostWriteTier(input, cwd) === 'ask') ask = {key: 'file:host-config', command: path, reason: 'This changes a shell profile, login item or other host configuration file.'};
           else if (!inWorkspace(path)) ask = {key: 'file:outside', command: path, reason: 'This changes a file outside the workspace.'};
         }
       }

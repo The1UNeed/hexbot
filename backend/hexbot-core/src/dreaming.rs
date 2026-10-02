@@ -1096,8 +1096,13 @@ impl Dreaming {
         // Only the admin's bots run in Bypass, as in their sections.
         let bypass = mode == "off" && crate::runtime::owner_is_admin(&conn, &owner)?;
         crate::credentials::require_isolation(if bypass { "off" } else { "smart" })?;
-        // A script runs in the workspace sandbox, like the bot's commands, or
-        // with none in Bypass.
+        // A script runs in the sandbox the bot's commands get: read-only in
+        // Manual, the workspace in Auto, none in Bypass.
+        let confine = if mode == "manual" {
+            crate::credentials::Confine::ReadOnly
+        } else {
+            crate::credentials::Confine::Workspace
+        };
         let mut command = if bypass {
             tokio::process::Command::new(&program)
         } else {
@@ -1105,7 +1110,7 @@ impl Dreaming {
                 &self.home,
                 &program,
                 &[workspace, artifacts],
-                true,
+                confine,
             )?
         };
         if matches!(
@@ -1774,6 +1779,41 @@ mod interpreter_tests {
                 .code,
             4302
         );
+    }
+    /// Manual promises a read-only sandbox, so its scheduled scripts write nothing.
+    #[tokio::test]
+    async fn manual_scheduled_scripts_are_read_only() {
+        if !crate::credentials::isolation_available() {
+            return;
+        }
+        let home = common::TestHome::new();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO bots(name,owner_id,workdir,approval_mode) VALUES('owl','local',?,'manual')",
+                [home.workspace().to_str().unwrap()],
+            )
+            .unwrap();
+        fs::create_dir_all(home.path().join("profiles/owl/scripts")).unwrap();
+        let workspace = home.workspace();
+        fs::create_dir_all(&workspace).unwrap();
+        let target = workspace.join("written.txt");
+        fs::write(
+            home.path().join("profiles/owl/scripts/write.sh"),
+            format!("echo x > '{}'\n", target.display()),
+        )
+        .unwrap();
+        let events = EventHub::new();
+        let runtime = Runtime::new(home.path().into(), events.clone(), "unused".into()).unwrap();
+        let scheduler = Dreaming::new(home.path().into(), runtime, events);
+        assert!(
+            scheduler
+                .script("owl", "write.sh", workspace.to_str())
+                .await
+                .is_err()
+        );
+        assert!(!target.exists());
     }
     #[tokio::test]
     async fn scheduled_scripts_do_not_receive_provider_credentials() {

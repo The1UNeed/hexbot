@@ -1101,7 +1101,11 @@ async fn execute_code(
                 home,
                 python,
                 &[sandbox.1.clone(), artifacts_dir(home, bot)?],
-                sandbox.0 == Some(true),
+                if sandbox.0 == Some(true) {
+                    crate::credentials::Confine::Workspace
+                } else {
+                    crate::credentials::Confine::No
+                },
             )?
         };
         desktop_environment(&mut command);
