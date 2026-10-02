@@ -74,9 +74,11 @@ async fn request(request: reqwest::RequestBuilder) -> Result<Value> {
     serde_json::from_slice(&body).map_err(|_| failure("tool service returned invalid JSON"))
 }
 tokio::task_local! { static SECTION_CWD: PathBuf; }
-// How the section's code runs: whether in the workspace sandbox (Manual and
-// Auto), and the live working directory, which a bot or section can change.
-tokio::task_local! { pub(crate) static CODE_SANDBOX: (bool, PathBuf); }
+// How the section's code runs: in the workspace sandbox (Manual and Auto,
+// `Some(true)`), with no sandbox (Bypass, `Some(false)`), or with the base
+// layer when the caller does not say; and the live working directory, which
+// a bot or section can change.
+tokio::task_local! { pub(crate) static CODE_SANDBOX: (Option<bool>, PathBuf); }
 pub(crate) fn workdir(home: &Path, bot: &str) -> Result<PathBuf> {
     if let Ok(cwd) = SECTION_CWD.try_with(Clone::clone) {
         return Ok(cwd);
@@ -958,7 +960,7 @@ for line in sys.stdin:
  except Exception as error: print(json.dumps({'success':False,'error':str(error)}),flush=True)
 "#;
 struct Kernel {
-    sandbox: (bool, PathBuf),
+    sandbox: (Option<bool>, PathBuf),
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
@@ -1058,7 +1060,7 @@ async fn execute_code(
     let mut kernel = kernel.lock().await;
     let sandbox = match CODE_SANDBOX.try_with(Clone::clone) {
         Ok(sandbox) => sandbox,
-        Err(_) => (false, workdir(home, bot)?),
+        Err(_) => (None, workdir(home, bot)?),
     };
     // A mode or workspace change takes effect on the next run: the worker
     // restarts in the new sandbox.
@@ -1092,12 +1094,16 @@ async fn execute_code(
                 &configured
             },
         );
-        let mut command = crate::credentials::isolated_command(
-            home,
-            python,
-            &[sandbox.1.clone(), artifacts_dir(home, bot)?],
-            sandbox.0,
-        )?;
+        let mut command = if sandbox.0 == Some(false) {
+            Command::new(python)
+        } else {
+            crate::credentials::isolated_command(
+                home,
+                python,
+                &[sandbox.1.clone(), artifacts_dir(home, bot)?],
+                sandbox.0 == Some(true),
+            )?
+        };
         desktop_environment(&mut command);
         let mut child = command
             .args(["-u", "-c", KERNEL])

@@ -2012,7 +2012,7 @@ impl Runtime {
             let live = self.session_settings(s)?;
             let mode = live["approvalMode"].clone();
             code_sandbox = Some((
-                mode != "off",
+                Some(mode != "off"),
                 PathBuf::from(live["cwd"].as_str().unwrap_or(".")),
             ));
             let sandboxed = crate::credentials::isolation_available();

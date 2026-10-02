@@ -27,6 +27,20 @@ fn defaults_and_settings_are_persisted_and_access_controlled() {
     assert_eq!(settings["room_bot_turns_per_human_turn"], 8);
     assert_eq!(settings["approval_mode"], "smart");
     assert!(settings.get("auto_approver_model").is_none());
+    // An older app's approver model picker is accepted and ignored.
+    let accepted = settings::update(
+        home.path(),
+        "alice",
+        &json!({"auto_approver_model":"openai/small"}),
+    )
+    .unwrap();
+    assert!(accepted.get("auto_approver_model").is_none());
+    assert!(
+        settings::get(home.path())
+            .unwrap()
+            .get("auto_approver_model")
+            .is_none()
+    );
     assert_eq!(
         settings::update(home.path(), "bob", &json!({}))
             .unwrap_err()

@@ -44,6 +44,10 @@ fn validate(patch: &Value) -> Result<()> {
         .as_object()
         .ok_or_else(|| Error::new(4201, "patch must be an object"))?;
     for (key, value) in patch {
+        // Apps from before the approver model was removed may still send it.
+        if key == "auto_approver_model" {
+            continue;
+        }
         if defaults().get(key).is_none() {
             return Err(Error::new(4201, format!("unknown setting: {key}")));
         }
@@ -135,7 +139,9 @@ pub fn update(home: &Path, caller: &str, patch: &Value) -> Result<Value> {
     }
     let mut settings = get(home)?;
     for (key, value) in patch.as_object().unwrap() {
-        settings[key] = value.clone();
+        if key != "auto_approver_model" {
+            settings[key] = value.clone();
+        }
     }
     let mut profiles = vec![home.to_path_buf()];
     if home.join("profiles").exists() {
@@ -154,7 +160,12 @@ pub fn update(home: &Path, caller: &str, patch: &Value) -> Result<Value> {
         .collect::<Result<Vec<_>>>()?;
     let mut conn = db::open(home)?;
     let tx = conn.transaction()?;
-    for (key, value) in patch.as_object().unwrap() {
+    for (key, value) in patch
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(key, _)| *key != "auto_approver_model")
+    {
         tx.execute(
             "INSERT OR REPLACE INTO settings(key,value) VALUES (?,?)",
             params![key, value.to_string()],

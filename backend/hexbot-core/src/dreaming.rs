@@ -1096,13 +1096,18 @@ impl Dreaming {
         // Only the admin's bots run in Bypass, as in their sections.
         let bypass = mode == "off" && crate::runtime::owner_is_admin(&conn, &owner)?;
         crate::credentials::require_isolation(if bypass { "off" } else { "smart" })?;
-        // Outside Bypass a script runs in the workspace sandbox, like the bot's commands.
-        let mut command = crate::credentials::isolated_command(
-            &self.home,
-            &program,
-            &[workspace, artifacts],
-            !bypass,
-        )?;
+        // A script runs in the workspace sandbox, like the bot's commands, or
+        // with none in Bypass.
+        let mut command = if bypass {
+            tokio::process::Command::new(&program)
+        } else {
+            crate::credentials::isolated_command(
+                &self.home,
+                &program,
+                &[workspace, artifacts],
+                true,
+            )?
+        };
         if matches!(
             path.extension().and_then(|s| s.to_str()),
             Some("sh" | "bash" | "py")
@@ -1777,7 +1782,7 @@ mod interpreter_tests {
         db::open(home.path())
             .unwrap()
             .execute(
-                "INSERT INTO bots(name,owner_id,workdir,approval_mode) VALUES('owl','local',?,'off')",
+                "INSERT INTO bots(name,owner_id,workdir,approval_mode) VALUES('owl','local',?,'smart')",
                 [home.workspace().to_str().unwrap()],
             )
             .unwrap();
