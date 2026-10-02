@@ -58,8 +58,10 @@ function Question({
     return (
       <div className="grid gap-2">
         <div className="font-medium">{question.question}</div>
-        <div className="flex items-center gap-3 rounded-control bg-surface-3/50 px-3 py-2 text-muted">
-          <span className="min-w-0 flex-1 truncate">{shown}</span>
+        <div className="flex min-w-0 items-center gap-3 rounded-control bg-surface-3/50 px-3 py-2 text-muted">
+          <span className="min-w-0 flex-1 truncate" title={shown}>
+            {shown}
+          </span>
           <Check className="shrink-0" size={14} />
         </div>
       </div>
