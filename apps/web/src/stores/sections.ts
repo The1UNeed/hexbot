@@ -43,6 +43,10 @@ export interface SectionsState {
   refresh: (options?: { bot?: string; include_archived?: boolean }) => Promise<void>
   remove: (id: string, purgeMemory?: boolean) => Promise<void>
   rename: (id: string, title: string) => Promise<void>
+  /** Titles from first messages still on their way to the daemon, by section id. */
+  sendingTitles: Record<string, string>
+  /** The first message reached the daemon, or failed: take the daemon's title again. */
+  settleTitle: (id: string) => Promise<void>
   unarchive: (id: string) => Promise<void>
 }
 
@@ -51,26 +55,42 @@ const DEFAULT_TITLE = 'New section'
 
 const QUOTES = /^["'“”]+|["'“”]+$/g
 
+// Rust's char::is_whitespace, which its trim uses; JavaScript's trim differs at U+0085 and U+FEFF.
+const SPACE = '[\\t-\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]+'
+const EDGE_SPACE = new RegExp(`^${SPACE}|${SPACE}$`, 'g')
+const trim = (text: string) => text.replace(EDGE_SPACE, '')
+
 /** The title the daemon gives a section from its first message (`clean_title` in catalog.rs). */
 export const titleFromPrompt = (text: string) =>
   [
-    ...text
-      .trim()
-      .replace(QUOTES, '')
-      .replace(/[.!]+$/, '')
-      .replace(QUOTES, '')
-      .trim()
-      .replace(/[\n\r]/g, ' ')
+    ...trim(
+      trim(text)
+        .replace(QUOTES, '')
+        .replace(/[.!]+$/, '')
+        .replace(QUOTES, '')
+    ).replace(/[\n\r]/g, ' ')
   ]
     .slice(0, 60)
     .join('')
 
-function indexSections(sections: Section[]): Pick<SectionsState, 'byId' | 'idsByBot'> {
+/** A section as the daemon reported it, keeping the title of a first message still being sent. */
+function withSendingTitle(section: Section, titles: Record<string, string>): Section {
+  const title = titles[section.id]
+
+  return title && section.title === DEFAULT_TITLE && !section.title_by
+    ? { ...section, title, title_by: 'bot' }
+    : section
+}
+
+function indexSections(
+  sections: Section[],
+  titles: Record<string, string>
+): Pick<SectionsState, 'byId' | 'idsByBot'> {
   const byId: Record<string, Section> = {}
   const idsByBot: Record<string, string[]> = {}
 
   for (const section of sections) {
-    byId[section.id] = section
+    byId[section.id] = withSendingTitle(section, titles)
     idsByBot[section.bot] = [...(idsByBot[section.bot] ?? []), section.id]
   }
 
@@ -83,7 +103,10 @@ function mergeSection(state: SectionsState, section: Section): Partial<SectionsS
   const preview = section.preview || state.byId[section.id]?.preview || ''
 
   return {
-    byId: { ...state.byId, [section.id]: { ...section, preview } },
+    byId: {
+      ...state.byId,
+      [section.id]: { ...withSendingTitle(section, state.sendingTitles), preview }
+    },
     idsByBot: {
       ...state.idsByBot,
       [section.bot]: existing.includes(section.id) ? existing : [section.id, ...existing]
@@ -97,6 +120,7 @@ export const useSections = create<SectionsState>((set, get) => ({
   idsByBot: {},
   liveSessionId: {},
   loading: false,
+  sendingTitles: {},
 
   async refresh(options = {}) {
     set({ error: null, loading: true })
@@ -105,7 +129,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       const result = await sectionsList({ include_archived: true, ...options })
 
       set(state => ({
-        ...indexSections(result.sections ?? []),
+        ...indexSections(result.sections ?? [], state.sendingTitles),
         liveSessionId: {
           ...state.liveSessionId,
           ...Object.fromEntries(
@@ -171,9 +195,26 @@ export const useSections = create<SectionsState>((set, get) => ({
                 message_count: section.message_count || 1,
                 ...(title ? { title, title_by: 'bot' as const } : {})
               }
-            }
+            },
+            sendingTitles: title ? { ...state.sendingTitles, [id]: title } : state.sendingTitles
           }
     })
+  },
+
+  async settleTitle(id) {
+    if (!(id in get().sendingTitles)) {
+      return
+    }
+
+    set(state => {
+      const sendingTitles = { ...state.sendingTitles }
+      delete sendingTitles[id]
+
+      return { sendingTitles }
+    })
+
+    // The daemon titled the section before it answered, or kept its name, or refused the message.
+    await get().refresh()
   },
 
   async create(bot, title) {

@@ -8,10 +8,16 @@ import { cn } from '../../lib/cn'
  * as a change rather than a flicker.
  */
 export function Title({ className, text }: { className?: string; text: string }) {
-  const [first] = useState(text)
+  const [shown, setShown] = useState(text)
+  const [renamed, setRenamed] = useState(false)
+
+  if (text !== shown) {
+    setShown(text)
+    setRenamed(true)
+  }
 
   return (
-    <span className={cn(text !== first && 'hex-fade', className)} key={text}>
+    <span className={cn(renamed && 'hex-fade', className)} key={text}>
       {text}
     </span>
   )

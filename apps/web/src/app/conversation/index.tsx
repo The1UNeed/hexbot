@@ -571,6 +571,10 @@ function Composer({
       }
     } finally {
       setSending(false)
+
+      if (sectionId) {
+        void sectionsActions().settleTitle(sectionId)
+      }
     }
   }
 
@@ -1019,7 +1023,9 @@ function BotConversation() {
                     if (liveId && section) {
                       transcriptActions().appendUserMessage(liveId, prompt)
                       sectionsActions().markTouched(section.id, prompt)
-                      void promptSubmit(liveId, prompt)
+                      void promptSubmit(liveId, prompt).finally(
+                        () => void sectionsActions().settleTitle(section.id)
+                      )
                     }
                   }}
                   size="sm"

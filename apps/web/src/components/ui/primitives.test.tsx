@@ -18,6 +18,8 @@ describe('UI components', () => {
     expect(screen.getByText('New section')).not.toHaveClass('hex-fade')
     rerender(<Title text="Garden plans" />)
     expect(screen.getByText('Garden plans')).toHaveClass('hex-fade')
+    rerender(<Title text="New section" />)
+    expect(screen.getByText('New section')).toHaveClass('hex-fade')
   })
   it('renders Button', () => {
     render(<Button variant="primary">Save</Button>)
