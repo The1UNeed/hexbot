@@ -12,7 +12,7 @@
 #            Always a prerelease; the last 14 are kept.
 #
 # Both channels: six packages (full and client, for macOS arm64, macOS x64,
-# Linux x64) plus the daemon source archive, the update feed on
+# Linux x64) plus native daemon archives, the update feed on
 # updates.hexbot.app when the R2 secrets are present, and a GitHub release
 # with every package. Signing and notarization
 # happen when the Apple secrets are present and are skipped otherwise.
@@ -144,12 +144,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # Installs the pnpm pinned by `packageManager` in the root package.json.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - uses: actions/setup-node@v7
         with:
           node-version: 26
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Prepare the native compiler
+        if: matrix.edition == 'full'
+        run: |
+          rustup show active-toolchain
+          if [ "${{ matrix.build }}" = mac-x64 ]; then rustup target add x86_64-apple-darwin; fi
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        if: matrix.edition == 'full'
+        with:
+          workspaces: backend/hexbot-core
+          key: ${{ matrix.build }}
       - name: Set the release version
         run: node scripts/desktop/set-version.mjs "$VERSION"
       - name: Prepare macOS signing
@@ -189,19 +199,45 @@ jobs:
         env:
           HEXBOT_CRASH_URL: ${{ vars.HEXBOT_CRASH_URL }}
         run: node scripts/desktop/dist.mjs ${{ matrix.target }} --channel "$CHANNEL" ${{ matrix.edition == 'client' && '--client' || '' }}
+      - name: Verify packaged macOS signatures and launch
+        if: runner.os == 'macOS'
+        env:
+          HEXBOT_PACKAGED_TEST_EDITION: ${{ matrix.edition }}
+        run: HEXBOT_PACKAGED_TEST_DIR="$GITHUB_WORKSPACE/apps/desktop/release" node --test scripts/desktop/runtime-signing.test.mjs
       - name: List the output
         run: ls -l apps/desktop/release
-      # The daemon source the full package stages (scripts/desktop/stage-python-src.mjs),
-      # as one archive a daemon downloads to update itself when a newer client
-      # asks (hexbot/update.py). Platform-independent, so one job makes it.
+      # One release of compatibility source for existing Python services
+      # updating through hexbot/update.py. It hands off to the native daemon.
+      # This compatibility source archive is platform-independent.
       - name: Archive the daemon source
         if: matrix.edition == 'full' && matrix.build == 'linux-x64'
-        run: tar -czf "hexbot-src-$VERSION.tar.gz" -C apps/desktop/resources hexbot-src
+        run: |
+          node scripts/desktop/stage-python-src.mjs --native-transition
+          tar -czf "hexbot-src-$VERSION.tar.gz" -C apps/desktop/resources hexbot-src
       - uses: actions/upload-artifact@v7
         if: matrix.edition == 'full' && matrix.build == 'linux-x64'
         with:
           name: daemon-src
           path: hexbot-src-*.tar.gz
+          if-no-files-found: error
+      - name: Archive the native daemon
+        if: matrix.edition == 'full'
+        run: |
+          set -euo pipefail
+          bundle=apps/desktop/resources/hexbot-native
+          if [ "$RUNNER_OS" = macOS ]; then
+            # Packaging signs the runtime inside the app, not the staged copy.
+            bundles=(apps/desktop/release/mac*/*.app/Contents/Resources/hexbot-native)
+            [ "${#bundles[@]}" -eq 1 ]
+            [ -d "${bundles[0]}" ]
+            bundle="${bundles[0]}"
+          fi
+          node scripts/desktop/make-native-update.mjs "$bundle" native-updates
+      - uses: actions/upload-artifact@v7
+        if: matrix.edition == 'full'
+        with:
+          name: daemon-native-${{ matrix.build }}
+          path: native-updates/daemon/native/
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:
@@ -244,6 +280,11 @@ jobs:
           mkdir -p release/full release/client release/daemon
           cp artifacts/full-*/* release/full/
           cp artifacts/client-*/* release/client/
+          mkdir -p dist/updates/daemon/native
+          for native in artifacts/daemon-native-*; do
+            cp -R "$native"/* dist/updates/daemon/native/
+            find "$native" -name '*.tar.gz' -exec cp {} release/daemon/ \;
+          done
           cp artifacts/daemon-src/*.tar.gz release/daemon/
           ls -l release/full release/client release/daemon
       - name: Build the update feed
@@ -301,6 +342,12 @@ jobs:
               echo "::error::$url does not announce $VERSION. Check the R2 custom domain and the bucket name ($R2_BUCKET)."
               exit 1
             fi
+          done
+          for target in macos-aarch64 macos-x86_64 linux-x86_64; do
+            url="https://updates.hexbot.app/daemon/native/$VERSION/$target/manifest.json"
+            curl -fsS --retry 5 --retry-delay 5 "$url" > native-manifest.json
+            node -e 'const fs=require("fs"); const m=JSON.parse(fs.readFileSync("native-manifest.json")); if(m.version!==process.env.VERSION || m.format!=="tar.gz") process.exit(1)'
+            echo "ok  $url"
           done
           url="https://updates.hexbot.app/daemon/hexbot-src-$VERSION.tar.gz"
           if curl -fsSI --retry 5 --retry-delay 5 "$url" > /dev/null; then

@@ -10,9 +10,9 @@ export function hexbotHome(): string {
 }
 
 export const runtimeDir = (): string => join(hexbotHome(), 'runtime')
-export const venvDir = (): string => join(runtimeDir(), 'venv')
+export const nativeDir = (version = app.getVersion()): string => join(runtimeDir(), 'native', version)
+export const nativeServiceExecutable = (): string => join(runtimeDir(), 'native-executable')
 export const binDir = (): string => join(hexbotHome(), 'bin')
-export const srcDir = (version: string): string => join(runtimeDir(), 'src', version)
 
 export function repoRoot(): string {
   const appPath = app?.getAppPath?.()
@@ -21,14 +21,14 @@ export function repoRoot(): string {
     : resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..')
 }
 
-export function activeSourceDir(version = app.getVersion()): string {
-  return app.isPackaged ? srcDir(version) : repoRoot()
+// The daemon's working directory.
+export function daemonDirectory(): string {
+  return app.isPackaged ? runtimeDir() : repoRoot()
 }
 
 export function hexbotExecutable(): string {
-  if (!app.isPackaged) {
-    const developmentExecutable = join(repoRoot(), 'venv', 'bin', 'hexbot')
-    if (existsSync(developmentExecutable)) return developmentExecutable
-  }
-  return join(venvDir(), 'bin', 'hexbot')
+  if (app.isPackaged) return nativeServiceExecutable()
+  const native = process.env.HEXBOT_EXECUTABLE || join(repoRoot(), 'backend', 'hexbot-core', 'target', 'debug', 'hexbot')
+  if (!existsSync(native)) throw new Error('Hexbot daemon is missing. Run pnpm dev --desktop.')
+  return native
 }

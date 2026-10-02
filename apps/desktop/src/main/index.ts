@@ -130,7 +130,7 @@ async function createWindow(): Promise<BrowserWindow> {
     }
   })
   window.on('close', event => {
-    if (!quitting && process.platform === 'darwin' && daemon.status().state === 'running') {
+    if (!quitting && process.platform === 'darwin' && ['running', 'external'].includes(daemon.status().state)) {
       event.preventDefault()
       window.hide()
     }

@@ -6,6 +6,20 @@ describe('transcript reducer', () => {
     setTranscriptEffects({ ackApproval: vi.fn(), notify: vi.fn(), touchSection: vi.fn() })
   })
   afterEach(resetTranscriptEffects)
+  it('keeps a replayed room status through hydration and replaces it when work resumes', () => {
+    const actions = useTranscripts.getState()
+    actions.statusUpdate('s', { kind: 'waiting', text: 'Waiting for Alice' })
+    actions.open('s', 'room:r', [])
+    expect(useTranscripts.getState().bySession.s?.status).toEqual({
+      kind: 'waiting',
+      text: 'Waiting for Alice'
+    })
+    actions.statusUpdate('s', { kind: 'working', text: 'Working' })
+    actions.open('s', 'room:r', [])
+    expect(useTranscripts.getState().bySession.s?.status?.kind).toBe('working')
+    actions.messageComplete('s')
+    expect(useTranscripts.getState().bySession.s?.status).toBeNull()
+  })
   it('opens on a delta and does not duplicate streamed interim text', () => {
     const actions = useTranscripts.getState()
     actions.messageDelta('s', 'hello')

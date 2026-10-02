@@ -17,8 +17,8 @@ editors or ship built-in presets.
 
 ## Prerequisites
 
-- Write access to the Hexbot home dir — `~/.hexbot` by default, or `$HERMES_HOME`
-  / the active profile's dir. Skins live in `<hermes-home>/skins/`.
+- Write access to `./hexbot-setup/skins/` in the section working directory.
+  Create skin drafts there; the user installs them into `<hermes-home>/skins/`.
 - Native tools: `write_file` (create the YAML), `read_file` / `search_files`
   (inspect existing skins), `terminal` (activate via `hexbot core config set`).
 

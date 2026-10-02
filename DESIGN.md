@@ -5,29 +5,25 @@ decision. The glossary in `CLAUDE.md` defines the words used here.
 
 ## 1. Product
 
-Hexbot is a self-hosted, Grok Bot shaped multi-agent desktop app. It began
-as a fork of Hermes Agent v0.21.0 by Nous Research (`NOTICE` records the
-import commit); the core is now Hexbot's own code and tracks no upstream.
+Hexbot is a self-hosted multi-agent desktop app. A Rust daemon runs persistent
+agent conversations through Pi.
 Bots on any provider share rooms, each with its own memory and skills, with
 more freedom and more capability than a hosted product can offer.
 
 - Repo: private `The1UNeed/hexbot`, no upstream git history, one import commit.
-- License: AGPL-3.0. `NOTICE` carries the Hermes Agent and T3 Code MIT attributions.
-- Layout: one monorepo. The core Python sits at the root and keeps its
-  `hermes` identifiers. Product code lives in `hexbot/` (Python),
-  `apps/desktop/` (Electron) and `apps/web/` (the shared React bundle).
-- Cut at fork time: the upstream desktop app, the Ink TUI, website, evals, contributors,
-  Windows-only scripts and tests. The 22 messenger platforms stay in the tree
-  but are disabled by default. `scripts/install.sh` is kept for the runtime
-  installer.
+- License: AGPL-3.0. `NOTICE` carries the inherited MIT attributions.
+- Layout: one monorepo. The daemon lives in `backend/hexbot-core/`, with a
+  pinned agent runtime and private extension in `backend/pi-runtime/`.
+  `apps/desktop/` hosts the shared React bundle from `apps/web/`.
+  Legacy Python remains for one release of background-service handoff.
 - Scope: macOS (Apple Silicon and Intel), Linux x86_64 (AppImage, .deb).
-  No phone app. No import from an existing Hermes Agent install. English UI.
+  No phone app. No import from unrelated agent installs. English UI.
   No telemetry until opt-in crash reports before public release.
 
 ## 2. Daemon
 
-- The core with profiles multiplexed in one process
-  (`gateway.multiplex_profiles`). A bot is a profile.
+- Rust owns storage, rooms, tools, approvals, networking and scheduling.
+  Each section has one persistent Pi conversation and cached prompt prefix.
 - No cap on bots per user or bots per room.
 - All core providers are supported. Credentials are configured once at the
   deployment level. Each bot picks any model from any configured provider.
@@ -80,6 +76,25 @@ more freedom and more capability than a hosted product can offer.
 - Modes: Manual (default), Auto (`smart` in config), Off. Overridable per bot
   and per room. The auto-approver runs on the cheapest model of the first
   configured provider.
+- Off skips approval prompts. Manual asks before dangerous shell commands
+  and protected actions. Auto uses the same gates
+  with a small model deciding. Every mode blocks catastrophic commands and
+  prevents tools from reading Hexbot credential files, including app device
+  tokens in `desktop-data/`. On macOS, shell, Python, and scheduled scripts
+  cannot write the Hexbot home except their workspace and artifact or attachment
+  folders. Linux applies these restrictions when bubblewrap passes its startup
+  probe; otherwise Hexbot warns, Manual asks before every shell command and
+  code run, Auto sends them to the section owner, and scheduled scripts wait
+  for Off. Credential stores (`~/.aws`, `~/.netrc`, `~/.npmrc` and the rest of
+  the deny list in `credential-policy.json`) are never written by tools; the
+  sandbox denies writes there for every program a command starts, and a shell
+  command that names one asks in Manual and Auto. bubblewrap can only bind a
+  store that exists, so on Linux in Off mode a command can still create a
+  missing one. SSH private keys
+  (`id_*` except `.pub`, `*.pem`, `*.key`) are protected. SSH config, known hosts,
+  public keys, and the SSH agent remain available. A bot scheduling an absolute
+  script path asks the section owner in Manual and Auto. Scripts must stay in
+  the bot scripts folder or workspace.
 - Approvals render inline in the transcript with approve, deny and
   always-allow. Native notifications for approvals and mentions.
 - New bots get files, web search, browser and terminal (terminal gated by
@@ -91,7 +106,7 @@ more freedom and more capability than a hosted product can offer.
 ### Sections
 
 - Persistent, Discord-thread-like conversations per bot and per room. Each is
-  its own core session with its own context window.
+  its own persistent conversation with its own context window.
 - A new section starts with only the bot's memory and skills.
 - Sidebar: one list of bots and rooms ordered by recent activity. Each entry
   shows one or two recent sections and expands to show the rest. Archived
@@ -134,8 +149,10 @@ more freedom and more capability than a hosted product can offer.
 - One Electron app, delivered as a single complete package. First launch
   asks: connect to a Hexbot daemon, or run one on this machine. No container
   engine or separate server install is ever required of a user.
-- The app bundles the Python source. First run downloads uv, Python 3.11,
-  Git and ripgrep into `~/.hexbot` using the core's installer.
+- The full package bundles the native daemon, Node, the agent runtime, web
+  assets and skills. First launch downloads a pinned, checksum-verified uv
+  binary, managed Python 3.11 for code tools and edge-tts for voice.
+  The client-only edition installs no runtime.
 - The daemon installs as a user service (launchd on macOS, systemd user unit
   on Linux), starts at login and keeps running when the app quits. A tray
   item shows status. If the user declines, the daemon runs only while the
@@ -145,8 +162,8 @@ more freedom and more capability than a hosted product can offer.
 - Update feed, downloads and docs at hexbot.app. GitHub Actions CI on macOS
   and Linux runners; release builds on tags. Versions start at 0.1.0. One
   stable channel; beta later.
-- `hexbot` CLI adds `serve`, `pair`, `bots`, `rooms`, `send`, and runs
-  the core CLI as `hexbot core <command>`.
+- The native `hexbot` CLI provides `serve`, `pair`, `bots`, `rooms`, `devices`,
+  `connect` and `send`. Legacy core administration commands are not included.
 
 ## 6. Multi-user (later)
 

@@ -60,7 +60,8 @@ registry.register(
 
 All handlers must return JSON strings. Use `get_hermes_home()` for paths,
 never hardcode `~/.hexbot`. For custom/local-only tools, write a plugin in
-`~/.hexbot/plugins/` instead of editing core — see the developer docs.
+`./hexbot-setup/plugins/` in the section working directory. The user installs
+it into their Hexbot home. See the developer docs.
 
 ### Adding a Slash Command
 

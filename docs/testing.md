@@ -2,17 +2,41 @@
 
 ## Hexbot suites
 
-- Python: `./venv/bin/pytest tests/hexbot -q` (the Connect tests also run the Node sidecar; they skip without `node`)
+- Rust daemon: `cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml`
+  and `cargo clippy --locked --manifest-path backend/hexbot-core/Cargo.toml --all-targets -- -D warnings`.
+  Node and Python 3 are needed by subprocess/database comparison fixtures.
+  Database upgrades are compared with the original Python implementation in
+  temporary homes. Local HTTP/SSE/MCP fixtures test provider/tool behavior.
+  Actual Pi and unchanged-browser checks are documented in
+  [`backend/hexbot-core/README.md`](../backend/hexbot-core/README.md).
+- Pi runtime: `node --test backend/pi-runtime/*.test.mjs` after `npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund`. CI runs every test file and the Rust suite on Linux and macOS. The approval gate tests stand in a stub `bwrap` for the sandbox, so they test the sandboxed host on every platform; the no-sandbox path has its own test. `isolation.test.mjs` runs the real sandbox: `sandbox-exec` on macOS, and on Linux a bubblewrap that passes the daemon's probe (skipped otherwise; CI installs it with the AppArmor profile from the install docs). Path and command case fold on macOS only, so the case probes assert the case-sensitive result on Linux.
+- Native browser end to end: `node scripts/dev/native-ui-smoke.mjs` after building
+  Rust and the web bundle and installing the locked Pi dependency and Chromium.
+  Uses a local streaming model with actual Pi; no provider credentials needed.
+  Add `--desktop --edition=full` or `--desktop --edition=client` for Electron.
+  On headless Linux run these Electron checks through `xvfb-run -a`.
+- Legacy Python: `./venv/bin/pytest tests/hexbot -q` (the Connect tests also run the Node sidecar; they skip without `node`)
 - Connect sidecar: `node --test tests/hexbot/*.test.mts`
+- Legacy service handoff: `python3 -m unittest tests/hexbot/test_native_transition.py -v`
+  (also included in the Python suite). Uses temporary homes and local archives to
+  check the old service's upgrade, native restart, service migration,
+  checksums, archive limits, failure recovery, and preservation of existing data.
 - Web bundle: `pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint && pnpm --filter ./apps/web run build`
 - Desktop: `pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run && pnpm --filter ./apps/desktop run build`
 - Packaging and release scripts: `node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs`
 - Site: `pnpm --filter ./apps/site run check`
 - Connect (unit): `pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run && pnpm --filter ./apps/connect run lint`
-- End to end: `pnpm --filter ./apps/desktop run e2e` (Playwright driving the built Electron app against a daemon in a temp home).
-- Connect: `HEXBOT_CONNECT_E2E=1 ./venv/bin/pytest tests/hexbot/test_connect_e2e.py -q` (a real Connect service with the in-memory store, a real daemon, and the CLI, web, desktop, and browser sign-in HTTP calls; no Cloudflare).
+- Legacy desktop end to end: `pnpm --filter ./apps/desktop run e2e` (Playwright driving the built Electron app against the retained Python daemon in a temp home). Native Electron coverage uses `native-ui-smoke.mjs` above.
+- Legacy Connect end to end: `HEXBOT_CONNECT_E2E=1 ./venv/bin/pytest tests/hexbot/test_connect_e2e.py -q` (a real Connect service with the in-memory store, the retained Python daemon, and the CLI, web, desktop, and browser sign-in HTTP calls; no Cloudflare).
 
-## Core suites
+## Legacy core suites
+
+Install the retained Python environment before running comparison or legacy tests:
+
+```sh
+uv venv venv --python 3.11
+UV_PROJECT_ENVIRONMENT=venv uv sync --extra all --extra dev --locked
+```
 
 Run these when you change the core at the repository root, plus the
 suites under `tests/` that cover the files you touched:
@@ -52,9 +76,13 @@ These suites pin the universal system prompt text and must stay green:
 `HEXBOT_HOME=<checkout>/.hexbot` (gitignored) and ports derived from the
 checkout path, so worktrees do not collide. `pnpm dev --desktop` starts
 the Electron app instead. The smoke scripts below take the printed daemon
-port. Never point a dev daemon at `~/.hexbot`.
+port. Never point a dev daemon at `~/.hexbot`. The runner reinstalls locked Pi
+dependencies when the lockfile changes and installs the desktop's pinned,
+checksum-verified ripgrep and fd into the dev home's `bin` directory before
+starting either the daemon or the app. It no longer accepts
+`--backend`; legacy comparison tests use their own Python fixtures.
 
-## Real-model checks
+## Legacy Python real-model checks
 
 The `openai-codex` provider works on a machine with a Codex CLI login. To
 seed a temporary home for manual or end-to-end runs:
@@ -66,9 +94,11 @@ HERMES_HOME=$HEXBOT_HOME ./venv/bin/python -c \
 ./venv/bin/hexbot serve --port 9131
 ```
 
-## Desktop end-to-end smoke test
+## Legacy desktop end-to-end smoke test
 
-Build the Electron app, then run its Playwright test against a temporary daemon:
+Build the Electron app, then run its retained Playwright test against a temporary
+Python daemon. This requires the legacy Python environment above. Use
+`native-ui-smoke.mjs` for the shipped Rust daemon:
 
 ```bash
 pnpm desktop:build
@@ -89,5 +119,45 @@ All of these need a Codex CLI login on the machine (see "Real-model checks").
 - `scripts/dev/multiuser_smoke.sh`: admin pairing, invite, member pairing, ownership filtering, admin-only refusal.
 - `scripts/dev/rooms_smoke.py --url ws://127.0.0.1:<port>/api/ws?token=<t> --token <t>`: two bots in a room with a main bot, one human message, prints the room log.
 - `scripts/dev/dream_smoke.py` (same flags): creates a bot, chats, runs a dream now, prints the memory notes and the Dreams section.
-- `scripts/dev/rpc.py <port> '<calls json>'`: ad-hoc JSON-RPC calls against a loopback daemon.
-- `scripts/dev/ui-review.mjs`, `ui-review-app.mjs`, `ui-shot.mjs`, `ui-error.mjs`, `ui-room-chat.mjs`: Playwright helpers that drive the daemon-served web bundle in Chromium and write screenshots to `/tmp/hexbot-shots`.
+- `HEXBOT_HOME=<home> python3 scripts/dev/rpc.py <port> '<calls json>'`: ad-hoc JSON-RPC calls against a loopback daemon.
+- `scripts/dev/ui-review.mjs`, `ui-review-app.mjs`, `ui-shot.mjs`, `ui-error.mjs`, `ui-room-chat.mjs`: Playwright helpers that drive the daemon-served web bundle in Chromium and write screenshots to `/tmp/hexbot-shots`. Set `HEXBOT_HOME=<home>` to sign in using the local device token.
+
+## Packaged runtime checks
+
+`rust-toolchain.toml` is the only Rust toolchain pin. Run `rustup show
+active-toolchain` from the checkout to install it before building. Native staging
+uses an explicit Cargo target and installs npm dependencies for that OS and CPU.
+On Apple Silicon, `rustup target add x86_64-apple-darwin` enables the Intel build;
+Rosetta is required to run its packaged Node probe.
+
+```sh
+pnpm --filter ./apps/web run build
+node scripts/desktop/stage-runtime.mjs
+HEXBOT_NATIVE_TEST_BUNDLE="$PWD/apps/desktop/resources/hexbot-native" \
+  pnpm --filter ./apps/desktop run test --run src/main/backend/native-bootstrap.test.ts
+```
+
+CI also runs live extension and permission tests through the staged launcher, including
+its pruned dependencies:
+
+```sh
+HEXBOT_TEST_PI="$PWD/apps/desktop/resources/hexbot-native/pi/hexbot-pi" \
+  cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test runtime -- --ignored
+```
+
+After packaging on macOS, verify the app and native executables with their shipped
+signatures. The check launches both editions, exercises Node's JIT and checks that
+a self-update archive preserves the full package's runtime bytes and signatures.
+It also compares bundled executable minimum macOS versions with the packaged
+app's minimum, on both release architectures:
+
+```sh
+HEXBOT_PACKAGED_TEST_DIR="$PWD/apps/desktop/release" \
+  node --test scripts/desktop/runtime-signing.test.mjs
+```
+
+Staging reports dependency bytes before and after pruning. The installed-runtime
+test uses a temporary home and checks the launcher, agent runtime, daemon HTTP
+listener, managed Python and voice executable. Desktop unit tests cover bad uv
+checksums, consecutive updates, failed activation, running-runtime retention and
+service migration. Rust tests cover update pruning and legacy listener refusal.

@@ -19,6 +19,10 @@ metadata:
 
 # Google Workspace
 
+## Workspace and user setup
+
+Write generated files and nonsecret configuration drafts under `./hexbot-setup/` in the section working directory. Home paths below are final installation locations, including paths used by helper scripts and references. The user must run installation, migration, sign-in, and credential/configuration writes outside the bot shell. Do not write to `~/.hexbot` or `$HEXBOT_HOME` from a tool, and do not copy credentials into workspace drafts.
+
 Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hexbot-managed OAuth and a thin CLI wrapper. When `gws` is installed, the skill uses it as the execution backend for broader Google Workspace coverage; otherwise it falls back to the bundled Python client implementation.
 
 ## References

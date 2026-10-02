@@ -8,7 +8,7 @@ export HEXBOT_HOME="$(mktemp -d)"; export HERMES_HOME="$HEXBOT_HOME"
 SERVER=$!; trap 'kill $SERVER 2>/dev/null' EXIT
 for i in $(seq 1 90); do grep -qE "_READY" "$HEXBOT_HOME/serve.log" 2>/dev/null && break; sleep 1; done
 login() { # $1=code $2=device -> prints token
-  curl -s -i -X POST "http://127.0.0.1:$PORT/auth/password-login" -H 'content-type: application/json' -d "{\"provider\":\"hexbot\",\"username\":\"$2\",\"password\":\"$1\"}" | grep -i "set-cookie: hermes_session_at=" | sed -E 's/.*hermes_session_at=([^;]+).*/\1/' | head -1
+  curl -s -i -X POST "http://127.0.0.1:$PORT/auth/password-login" -H 'content-type: application/json' -d "{\"provider\":\"hexbot\",\"username\":\"$2\",\"password\":\"$1\"}" | grep -iE "set-cookie: hermes_session_at(_[0-9]+)?=" | sed -E 's/.*hermes_session_at(_[0-9]+)?=([^;]+).*/\2/' | head -1
 }
 rpc() { # $1=token $2=calls-json
   "$ROOT/venv/bin/python" - "$PORT" "$1" "$2" <<'PY'

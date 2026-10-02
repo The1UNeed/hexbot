@@ -153,10 +153,10 @@ describe('onboarding', () => {
     const before = Number(screen.getByRole('progressbar').getAttribute('aria-valuenow'))
     rerender(
       <InstallStep
-        progress={[uv, { message: 'Installing locked dependencies', stage: 'dependencies' }]}
+        progress={[uv, { message: 'Installing voice tools', stage: 'dependencies' }]}
       />
     )
-    expect(screen.getByRole('status')).toHaveTextContent('Installing dependencies')
+    expect(screen.getByRole('status')).toHaveTextContent('Installing voice tools')
     expect(document.querySelector('[data-act]')).toHaveAttribute('data-act', 'type')
     expect(Number(screen.getByRole('progressbar').getAttribute('aria-valuenow'))).toBeGreaterThan(
       before
@@ -205,10 +205,29 @@ describe('onboarding', () => {
     const line = (stage: string, percent?: number) => ({ message: stage, percent, stage })
 
     expect(installPercent([])).toBe(0)
-    expect(installPercent([line('uv', 50)])).toBe(3)
+    expect(installPercent([line('runtime', 50)])).toBe(10)
+    expect(installPercent([line('runtime'), line('uv', 50)])).toBe(23)
     expect(installPercent([line('uv', 50), line('python')])).toBeGreaterThanOrEqual(5)
     expect(installPercent([line('dependencies'), line('error')])).toBeGreaterThanOrEqual(30)
     expect(installPercent([line('done', 100)])).toBe(95)
+
+    // A first launch as the desktop reports it: stages in order, some with a
+    // percent, some only with log lines.
+    const progress = [
+      line('runtime', 30),
+      line('runtime', 90),
+      line('uv'),
+      line('uv', 50),
+      line('python'),
+      line('python'),
+      line('python'),
+      line('dependencies', 10),
+      line('dependencies', 80),
+      line('done', 100)
+    ]
+
+    const values = progress.map((_, index) => installPercent(progress.slice(0, index + 1)))
+    expect(values).toEqual([6, 18, 20, 23, 26, 27, 27, 64, 88, 95])
   })
 
   it('sets up web search before the first bot, and lets you skip', async () => {

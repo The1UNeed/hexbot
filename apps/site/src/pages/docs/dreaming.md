@@ -18,7 +18,7 @@ Dreaming must be enabled for the daemon and for the individual bot. You can also
 
 Hexbot posts each summary in that bot's `Dreams` section. The section stays out of the sidebar. Open the bot's settings, Memory, and find the dream log at the bottom. Each dream that changed memory shows what it looked like before and after, with a button to restore the memory from before that dream.
 
-A dream reads only that bot's sections and the rooms it belongs to. Long transcripts are capped, with the newest part kept for review.
+A dream reads only that bot's sections and the rooms it belongs to. Long transcripts are capped, with the newest part kept for review. Titles and room names are shortened too. On a busy day the dream keeps the most recent conversations that fit in one prompt.
 
 ## What a dream may change
 

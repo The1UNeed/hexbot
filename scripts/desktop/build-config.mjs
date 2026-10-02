@@ -1,4 +1,6 @@
 export function parseBuildArgs(args) {
+  if (args.some(arg => arg === '--backend' || arg.startsWith('--backend=')))
+    throw new Error('--backend was removed; Hexbot builds use the native daemon')
   const client = args.includes('--client')
   const channelIndex = args.indexOf('--channel')
   const channel = channelIndex === -1 ? 'dev' : args[channelIndex + 1]

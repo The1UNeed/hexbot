@@ -1,8 +1,10 @@
-// Send one message in a room through the UI and capture what happens. Usage: node scripts/dev/ui-room-chat.mjs <base> <roomId> "<text>" <out.png>
+// Send one message in a room through the UI and capture what happens. Usage: HEXBOT_HOME=<home> node scripts/dev/ui-room-chat.mjs <base> <roomId> "<text>" <out.png>
 import { chromium } from 'playwright'
+import { signIn } from './browser-session.mjs'
 const [base, roomId, text, out] = process.argv.slice(2)
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1360, height: 860 } })
+await signIn(page, base)
 page.on('pageerror', e => console.log('PAGEERROR', e.message.slice(0, 200)))
 await page.addInitScript(() => localStorage.setItem('hexbot.target', JSON.stringify({ kind: 'local' })))
 await page.goto(`${base}/r/${roomId}`, { waitUntil: 'networkidle' }); await page.waitForTimeout(2500)

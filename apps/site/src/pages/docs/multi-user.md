@@ -17,10 +17,14 @@ Hexbot assigns every bot, section, room, dream, and device to a user. Members se
 Open the Users settings and create an invite with a display name and role. Hexbot returns a pairing code bound to the new user. The invitee uses that code when pairing their first device.
 
 The admin can rename or disable a user later. Disabling a user blocks their devices and new requests without transferring their data.
+Hexbot refuses to disable or demote the last enabled admin. Members do not
+receive the daemon's state directory path in daemon information.
+
+Hexbot enforces ownership, not the operating system. Every bot runs as the daemon's OS user, so a member's bot with the terminal or file toolset can read any user's About you, memory, soul, and section history on that daemon. The sandbox hides credential files only. Invite people you trust with the data your bots keep.
 
 ## Shareable bots
 
-A bot owner can mark a bot as shareable. Other members may then add it to their rooms. The bot keeps its owner's soul, skills, and memory. It does not gain access to the room owner's About you text.
+A bot owner can mark a bot as shareable. Other members may then add it to their rooms. The bot keeps its owner's soul, skills, and memory. It does not gain access to the room owner's About you text. Older shared conversations that included that text refresh their prompt when reopened.
 
 Usage in that room counts against the member who invited the shared bot. This keeps the cost attached to the person who started the work.
 

@@ -7,18 +7,19 @@ Code, Codex, Cursor) and for people; `CLAUDE.md` imports it.
 
 Hexbot is a self-hosted multi-agent desktop app. Named **bots**, each with a
 face, a model, skills, and its own memory, talk to you and to each other in
-**rooms**. A Python **daemon** runs the bots and serves a WebSocket API plus a
+**rooms**. A Rust **daemon** runs Pi agent sessions and serves a WebSocket API plus a
 web UI; an Electron **app** connects to it over LAN, Tailscale, or **Hex
-Connect**. The **core** (agent loop, tools, providers, gateway, CLI) sits at
-the repository root; product code sits in `hexbot/` and `apps/`. The core
-is Hexbot's own code; there is no upstream to track.
+Connect**. The native daemon is in `backend/hexbot-core/`, with pinned Pi and
+its private extension in `backend/pi-runtime/`. The former Python backend
+stays in `hexbot/` and the repository root for one release, so existing
+background services can hand over to the native daemon.
 
 Three facts shape most decisions:
 
-- **Product behaviour lives at the edges.** New behaviour goes in `hexbot/`
-  (a core plugin plus its own modules), `apps/`, or a skill. Change the core
-  when the fix belongs there, not to bolt on a product feature.
-- **Prompt caching is sacred.** A section is one long-lived core session
+- **Rust owns the daemon; Pi runs the agent loop.** New daemon behaviour goes
+  in `backend/hexbot-core/`; the private Pi extension adapts tools and events.
+  The existing frontend contract stays in `apps/`.
+- **Prompt caching is sacred.** A section is one persistent Pi session
   that reuses a cached prefix every turn. Do not mutate past context, swap
   toolsets, or rebuild the system prompt mid-conversation.
 - **One product, two packages, three channels.** Full package (app plus
@@ -37,10 +38,10 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Channel**: how a build is named and published. **Stable** (tagged `v<version>`, updatable; named `Hexbot [alpha]` while the version is `0.x`), **Nightly** (`Hexbot Nightly`, daily from `main`, updatable on its own track), **Dev** (the source tree). See `docs/channels.md`.
 - **Track**: the channel an installed app takes updates from, Stable or Nightly. Defaults to the channel the build came from; the user switches it in Settings, Updates.
 - **Update server**: `updates.hexbot.app`, a Cloudflare R2 bucket holding every package and the electron-updater feed files. Written only by `release.yml`.
-- **Bot**: a named agent with its own soul, model, skills, and memory. One core profile, multiplexed in one daemon process.
-- **Section** = **conversation** = **thread**: one persistent chat with a bot or inside a room. A section lives until the user archives or deletes it. Each section is its own core session with its own context window.
+- **Bot**: a named agent with its own soul, model, skills, and memory. One bot profile with independent Pi conversations managed by the daemon.
+- **Section** = **conversation** = **thread**: one persistent chat with a bot or inside a room. A section lives until the user archives or deletes it. Each section is its own Pi session with its own context window.
 - **Room**: a group chat with one or more humans and any number of bots. May have a **main bot** that responds when nobody is @-mentioned.
-- **Turn**: one user message and everything the bots do in response. The room turn engine (`hexbot/rooms/`) decides who speaks.
+- **Turn**: one user message and everything the bots do in response. The room turn engine (`backend/hexbot-core/src/rooms.rs`) decides who speaks.
 - **Soul**: a bot's persona, the `SOUL.md` in its profile. The user and the bot both edit it; the bot says so when it does.
 - **Memory**: a bot's own notes, the `MEMORY.md` in its profile. The bot writes it during chat, dreaming curates it, the user can edit it. Deleting a section removes its history and leaves memory alone.
 - **About you**: one text per user, written only by the user and read by every bot they own (`users/<id>/user.md`).
@@ -55,19 +56,22 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 
 | Path | What | Channel |
 | --- | --- | --- |
-| `hexbot/` | Hexbot Python package: CLI, daemon plugin, pairing, bots, sections, rooms, memory, dreaming, users, Connect client | all |
+| `backend/hexbot-core/` | Rust daemon, CLI, storage, rooms, tools, scheduling, providers, Connect | all |
+| `backend/pi-runtime/` | Pinned Pi runtime and private Hexbot extension | all |
+| `hexbot/` | Legacy Python daemon and compatibility reference | one-release service handoff |
 | `apps/web/` | React bundle (Vite, Tailwind). Used by the app and served to browsers | all |
-| `apps/desktop/` | Electron shell, updater, runtime bootstrap, two electron-builder configs | all |
+| `apps/desktop/` | Electron shell, updater, runtime bootstrap, three electron-builder configs: base, full, client | all |
 | `apps/shared/` | `@hermes/shared`. `apps/web` imports its gateway client and event types; the core `web/` dashboard uses the rest | all |
 | `apps/site/` | Astro site at hexbot.app: landing page, docs, pairing page | stable |
 | `apps/connect/` | Next.js Connect service at connect.hexbot.app | all |
-| `tests/hexbot/` | Hexbot Python tests. Core suites stay under `tests/` | all |
+| `tests/hexbot/` | Legacy Python and service-handoff tests. Core suites stay under `tests/` | compatibility |
 | `scripts/desktop/` | Version, build, icon, update feed, and cask scripts, each with tests | stable, nightly |
 | `scripts/dev/` | `run.mjs` (`pnpm dev`) and the live smoke scripts | dev |
 | `.github/workflows/` | `ci.yml` (tests, also called by release), `release.yml` (stable and nightly) | see file |
 | `.devcontainer/` | Dev environment | dev |
 | `docs/` | Design and operations docs. `docs/core/` covers the core: development guide, plugin APIs, the WebSocket API | |
-| Root `*.py`, `agent/`, `tools/`, `hermes_cli/`, `tui_gateway/`, `gateway/`, `plugins/`, `skills/` | The core: agent loop, tools, providers, gateway, core CLI (`hexbot core <command>`) | |
+| Root `*.py`, `agent/`, `tools/`, `hermes_cli/`, `tui_gateway/`, `gateway/`, `plugins/` | Legacy Python core, retained for comparison and the service handoff | compatibility |
+| `skills/` | Skills bundled by the native runtime | all |
 
 `DESIGN.md` is the product design; `docs/channels.md` explains how the three
 channels map to files, GitHub, and the update server, and what was borrowed
@@ -79,17 +83,19 @@ from T3 Code; `docs/release.md` is the release procedure and one-time setup;
 Install once:
 
 ```sh
-uv venv venv --python 3.11 && UV_PROJECT_ENVIRONMENT=venv uv sync --extra all --extra dev --locked
+rustup show active-toolchain # installs the toolchain pinned in rust-toolchain.toml
 pnpm install --frozen-lockfile
 ```
 
-Or open the repository in the dev container (`.devcontainer/`), which runs
-those two lines for you.
+The development runner builds Rust and installs locked Pi dependencies. For
+legacy comparison tests, also install the Python environment documented in
+`docs/testing.md`. `pnpm dev --backend python` is removed; the runner always
+starts the native daemon.
 
 Run Hexbot from the checkout (the Dev channel):
 
 ```sh
-pnpm dev                # daemon + web bundle; open the printed URL
+pnpm dev                # daemon + web bundle; open the printed sign-in link
 pnpm dev --desktop      # web bundle + Electron app (the app runs the daemon)
 pnpm dev --home DIR     # daemon state elsewhere; --port N fixes the daemon port
 pnpm site:dev           # hexbot.app on 4321
@@ -103,11 +109,15 @@ side by side and nothing touches `~/.hexbot`. It ignores an ambient
 read them from its output rather than assuming. It stops what it started by
 PID. This mirrors T3 Code's `vp run dev` and its per-worktree `.t3` state.
 
-Starting pieces by hand is fine too, with the same rule:
+Starting pieces by hand is fine too, with the same rule. In a terminal the
+daemon prints a one-time sign-in link for its own port; the dev server
+proxies the daemon, so open the same code on the dev server's origin
+(`http://localhost:5173/login?code=...`) or run `hexbot pair` for another.
+`HEXBOT_WEB_DEV_URL` lets the dev server's origin through:
 
 ```sh
-HEXBOT_HOME=$(mktemp -d) ./venv/bin/hexbot serve --port 9119
-VITE_HEXBOT_ORIGIN=http://127.0.0.1:9119 pnpm --filter ./apps/web run dev
+HEXBOT_HOME=$(mktemp -d) HEXBOT_WEB_DEV_URL=http://localhost:5173 backend/hexbot-core/target/debug/hexbot serve --port 9119
+VITE_HEXBOT_ORIGIN=http://127.0.0.1:9119 pnpm --filter ./apps/web run dev --port 5173 --strictPort
 ```
 
 Three ways to hurt yourself:
@@ -118,15 +128,18 @@ Three ways to hurt yourself:
    never start a server against it.
 2. **Killing by pattern.** Do not `pkill -f hexbot` or `pkill -f python`;
    your own agent process may match. Kill only PIDs you started.
-3. **Growing the core for a product feature.** Prefer a plugin hook, a
-   `hexbot/` module, or the RPC registration in `hexbot/plugin.py`. Change
-   the core when the fix belongs there.
+3. **Adding new daemon work to the legacy backend.** Use
+   `backend/hexbot-core/` or the private extension in `backend/pi-runtime/`.
+   The Python tree exists for compatibility and comparison only.
 
 ## Verifying
 
 Run the suite that covers what you touched, not everything:
 
 ```sh
+cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml
+cargo clippy --locked --manifest-path backend/hexbot-core/Cargo.toml --all-targets -- -D warnings
+node --test backend/pi-runtime/*.test.mjs
 ./venv/bin/pytest tests/hexbot -q && node --test tests/hexbot/*.test.mts
 pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint
 pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run
@@ -199,7 +212,7 @@ exercise the graph.
 ## Taste
 
 - Simple over clever. The smallest change that fixes the whole bug class.
-- Complexity belongs at boundaries: the core plugin seam, the WebSocket
+- Complexity belongs at boundaries: the private extension, the WebSocket
   RPC layer, the Electron main process. Components and daemon handlers stay
   plain.
 - Users notice dropped frames and stale labels. No continuous repaint
@@ -207,8 +220,8 @@ exercise the graph.
 - Copy is short, concrete, and uses glossary words. No "seamless", no
   exclamation marks.
 
-## Core reference
+## Legacy core reference
 
-`docs/core/development.md` is the development guide for the core (tools,
-plugins, skills, cron, the AIAgent class, prompt caching rules). Read it
-before editing anything at the repository root.
+`docs/core/development.md` covers the retained Python core only: tools,
+plugins, cron, and the AIAgent class. Read it before changing legacy Python
+code. New daemon work follows `backend/hexbot-core/README.md`.

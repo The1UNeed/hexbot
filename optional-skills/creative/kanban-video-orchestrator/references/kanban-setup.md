@@ -1,5 +1,9 @@
 # Kanban Setup — Project Bootstrap & Profile Configuration
 
+## Workspace and user setup
+
+Write generated files and nonsecret configuration drafts under `./hexbot-setup/` in the section working directory. Home paths below are final installation locations, including paths used by helper scripts and references. The user must run installation, migration, sign-in, and credential/configuration writes outside the bot shell. Do not write to `~/.hexbot` or `$HEXBOT_HOME` from a tool, and do not copy credentials into workspace drafts.
+
 Once the brief is locked and the team is designed, the next step is producing
 the actual `setup.sh` that creates the project workspace, configures Hexbot
 profiles, and fires the initial kanban task.

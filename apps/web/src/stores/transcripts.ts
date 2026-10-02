@@ -299,7 +299,8 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
               ...emptyTranscript(sessionId, sectionId),
               approvals: existing?.approvals ?? [],
               clarifies: existing?.clarifies ?? [],
-              messages
+              messages,
+              status: existing?.status ?? null
             }
           }
         }

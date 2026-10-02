@@ -30,6 +30,8 @@ On your daemons page, press **Open in browser** next to an online daemon. Connec
 
 The browser then appears in that daemon's Settings under Devices with a name like "Safari on iPhone", and you can revoke it there like any paired device. Going straight to the daemon's address shows a sign-in page with the same **Sign in with Hex Connect** button.
 
+Starting browser sign-in from a LAN, Tailscale, or localhost address first redirects to the daemon's tunnel hostname. Sign-in finishes on that hostname.
+
 ## Sign in from the app
 
 On a computer without a daemon, or in the client-only package, open Hexbot, choose **Sign in with Hex Connect**, and finish signing in in your system browser. The browser returns to Hexbot, which lists your daemons; pick one and you are connected over TLS. The app appears under **Apps signed in with your account** on connect.hexbot.app, where you can sign it out.

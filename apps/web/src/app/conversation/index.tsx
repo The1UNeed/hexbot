@@ -405,7 +405,7 @@ export function MessageRow({
 }
 
 /** A card the bot is waiting on, in the same row as its bubbles: face, then card. */
-function CardRow({ bot, children }: { bot?: Bot; children: React.ReactNode }) {
+export function CardRow({ bot, children }: { bot?: Bot; children: React.ReactNode }) {
   return (
     <div className="flex gap-2 py-1">
       <Avatar className="mt-1" image={avatarData(bot)} name={bot?.display_name ?? 'Bot'} size="sm" />
@@ -414,7 +414,7 @@ function CardRow({ bot, children }: { bot?: Bot; children: React.ReactNode }) {
   )
 }
 
-function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
+export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
   const choose = async (choice: ApprovalChoice) => {
     await approvalRespond(approval.sessionId, approval.requestId, choice)
     transcriptActions().resolveApproval(approval.sessionId, approval.requestId, choice)

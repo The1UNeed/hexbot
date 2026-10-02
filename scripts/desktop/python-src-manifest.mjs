@@ -1,8 +1,9 @@
-import { cp, mkdir, readdir, rm } from 'node:fs/promises'
+import { cp, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 
 export const excludedRoots = new Set([
   'apps',
+  'backend',
   'web',
   'tests',
   'docs',
@@ -11,6 +12,10 @@ export const excludedRoots = new Set([
   '.venv',
   '.git',
   '.github',
+  '.hexbot',
+  '.t3',
+  '.env',
+  'HEXBOT_NATIVE_TRANSITION.json',
   'dist'
 ])
 
@@ -28,7 +33,10 @@ export function includePythonSource(repositoryRoot, source) {
   )
 }
 
-export async function stagePythonSource(repositoryRoot, destination) {
+export async function stagePythonSource(repositoryRoot, destination, { nativeTransitionVersion } = {}) {
+  if (nativeTransitionVersion !== undefined && !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(nativeTransitionVersion)) {
+    throw new Error('Invalid native transition version')
+  }
   await rm(destination, { recursive: true, force: true })
   await mkdir(destination, { recursive: true })
   for (const entry of await readdir(repositoryRoot)) {
@@ -45,5 +53,8 @@ export async function stagePythonSource(repositoryRoot, destination) {
     })
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error
+  }
+  if (nativeTransitionVersion !== undefined) {
+    await writeFile(join(destination, 'HEXBOT_NATIVE_TRANSITION.json'), `${JSON.stringify({ version: nativeTransitionVersion })}\n`)
   }
 }

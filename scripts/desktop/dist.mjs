@@ -8,12 +8,14 @@ import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { nativeBuildEnvironment } from './native-build.mjs'
 import { productName } from './release-version.mjs'
 import { iconOptions, parseBuildArgs } from './build-config.mjs'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const desktopRoot = resolve(repositoryRoot, 'apps/desktop')
-const { client, channel, builderArgs } = parseBuildArgs(process.argv.slice(2))
+const rawArgs = process.argv.slice(2)
+const { client, channel, builderArgs } = parseBuildArgs(rawArgs)
 
 // Each channel is the same code with a different name, so users can tell
 // builds apart and install them side by side. Artifact names already carry
@@ -39,6 +41,7 @@ if (!builderArgs.some(arg => arg === '--mac' || arg === '--linux'))
   )
 
 const env = { ...process.env, HEXBOT_EDITION: client ? 'client' : 'full', HEXBOT_CHANNEL: channel }
+if (!client) Object.assign(env, nativeBuildEnvironment(builderArgs))
 if (!env.CSC_LINK && !env.CSC_NAME) env.CSC_IDENTITY_AUTO_DISCOVERY = 'false'
 
 // Xcode 26 compiles the channel's Icon Composer source into a layered macOS

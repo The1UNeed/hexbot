@@ -17,19 +17,12 @@ describe('connection gate', () => {
     rejectFetch(new Error('test stopped'))
     await action
   })
-  it('does not reuse the old ungated token when LAN now requires login', async () => {
-    window.__HERMES_SESSION_TOKEN__ = 'stale-token'
-
-    try {
-      const probe = await probeDaemon(window.location.origin, {
+  it('reports a reachable daemon without reading anything from its page', async () => {
+    await expect(
+      probeDaemon(window.location.origin, {
         fetch: vi.fn(async () => response('<html>Sign in</html>'))
       })
-
-      expect(probe.authRequired).toBe(true)
-      expect(probe.sessionToken).toBeUndefined()
-    } finally {
-      delete window.__HERMES_SESSION_TOKEN__
-    }
+    ).resolves.toBeUndefined()
   })
   it('sends the required username when pairing a browser', async () => {
     const fetch = vi.fn(async () => response('{"ok":true}'))
@@ -41,23 +34,6 @@ describe('connection gate', () => {
         credentials: 'include',
         body: expect.stringContaining('"username":"My browser"')
       }))
-  })
-  it('uses the fresh daemon token after a restart', async () => {
-    window.__HERMES_SESSION_TOKEN__ = 'stale-token'
-
-    const fetch = vi.fn(async () =>
-      response(
-        'window.__HERMES_AUTH_REQUIRED__ = false; window.__HERMES_SESSION_TOKEN__ = "fresh-token"'
-      )
-    )
-
-    try {
-      expect((await probeDaemon(window.location.origin, { fetch })).sessionToken).toBe(
-        'fresh-token'
-      )
-    } finally {
-      delete window.__HERMES_SESSION_TOKEN__
-    }
   })
   it('resolves a bare local target to the page origin in a browser', () => {
     expect(targetOrigin({ kind: 'local' })).toBe(window.location.origin)
@@ -87,34 +63,35 @@ describe('connection gate', () => {
       })
     ).toBe('https://bot.connect.hexbot.app')
   })
-  it('uses the page token when the gate is off', async () => {
-    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      response(
-        '<script>window.__HERMES_AUTH_REQUIRED__ = false; window.__HERMES_SESSION_TOKEN__ = "session"</script>'
-      )
+  it('never takes a credential from the page, even one claiming the gate is off', async () => {
+    const fetch = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).endsWith('/api/auth/ws-ticket')
+        ? response('{"ticket":"short"}', { headers: { 'Content-Type': 'application/json' } })
+        : response(
+            '<script>window.__HERMES_AUTH_REQUIRED__ = false; window.__HERMES_SESSION_TOKEN__ = "session"</script>'
+          )
     )
 
-    const probe = await probeDaemon('http://box:9119', { fetch })
-    expect(
-      await resolveWsUrl(
-        { kind: 'remote', host: 'box', port: 9119, deviceToken: 'device', tls: false },
-        probe,
-        { fetch }
-      )
-    ).toContain('token=session')
+    await probeDaemon('http://box:9119', { fetch })
+
+    const url = await resolveWsUrl(
+      { kind: 'remote', host: 'box', port: 9119, deviceToken: 'device', tls: false },
+      { fetch }
+    )
+
+    expect(url).toContain('ticket=short')
+    expect(url).not.toContain('session')
   })
-  it('mints a ticket when the gate is on', async () => {
+  it('mints a ticket with the device token', async () => {
     const fetch = vi.fn(async (input: RequestInfo | URL) =>
       String(input).endsWith('/api/auth/ws-ticket')
         ? response('{"ticket":"short"}', { headers: { 'Content-Type': 'application/json' } })
         : response('window.__HERMES_AUTH_REQUIRED__ = true')
     )
 
-    const probe = await probeDaemon('http://box:9119', { fetch })
     expect(
       await resolveWsUrl(
         { kind: 'remote', host: 'box', port: 9119, deviceToken: 'device', tls: false },
-        probe,
         { fetch }
       )
     ).toContain('ticket=short')
@@ -132,11 +109,7 @@ describe('connection gate', () => {
       })
     )
 
-    const url = await resolveWsUrl(
-      { kind: 'local' },
-      { authRequired: true, reachable: true },
-      { bridge: () => null, fetch }
-    )
+    const url = await resolveWsUrl({ kind: 'local' }, { bridge: () => null, fetch })
 
     expect(url).toContain('ticket=cookie-ticket')
     expect(fetch).toHaveBeenCalledWith(
@@ -150,7 +123,6 @@ describe('connection gate', () => {
     await expect(
       resolveWsUrl(
         { kind: 'remote', host: 'box', port: 9119, deviceToken: 'revoked', tls: false },
-        { authRequired: true, reachable: true },
         { fetch }
       )
     ).rejects.toBeInstanceOf(UnauthorizedError)

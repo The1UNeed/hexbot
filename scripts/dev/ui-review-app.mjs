@@ -1,8 +1,11 @@
+// Usage: HEXBOT_HOME=<home> node scripts/dev/ui-review-app.mjs <base> <bot> <section>
 import { chromium } from 'playwright'
+import { signIn } from './browser-session.mjs'
 const [base, bot, section] = [process.argv[2], process.argv[3], process.argv[4]]
 const browser = await chromium.launch()
 for (const scheme of ['light', 'dark']) {
   const page = await browser.newPage({ viewport: { width: 1360, height: 860 }, colorScheme: scheme })
+  await signIn(page, base)
   page.on('pageerror', e => console.log('PAGEERROR', e.message))
   page.on('console', m => { if (m.type() === 'error') console.log('CONSOLE', m.text().slice(0, 240)) })
   await page.addInitScript(({ bot, section }) => {

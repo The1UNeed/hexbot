@@ -43,6 +43,15 @@ describe('toolLabel', () => {
       'Searched the web for weather'
     )
     expect(toolLabel(call({ name: 'terminal', summary: 'date' }), 'live')).toBe('Running date')
+    // Room members get no preview of another person's bot.
+    expect(toolLabel(call({ name: 'terminal' }), 'live')).toBe('Running a command')
+    expect(toolLabel(call({ name: 'read_file' }))).toBe('Read a file')
+    expect(toolLabel(call({ name: 'web_search' }))).toBe('Searched the web')
+    expect(toolLabel(call({ name: 'ls', status: 'running', summary: 'src' }))).toBe(
+      'Listing files in src'
+    )
+    expect(toolLabel(call({ name: 'ls', summary: 'src' }))).toBe('Listed files in src')
+    expect(toolLabel(call({ name: 'ls' }))).toBe('Listed files')
   })
 
   it('drops the preview for tools where it is noise', () => {
@@ -129,6 +138,15 @@ describe('workShown', () => {
 })
 
 describe('workSummary', () => {
+  it.each([undefined, 'Hmm.'])('keeps a blocked tool in present tense with trace %s', thinking => {
+    const pending = call({ status: 'running', summary: 'rm -rf ./approval-probe' })
+    const blocked = message({ streaming: false, thinking, toolCalls: [pending] })
+    expect(workSummary(blocked)).toContain('Running rm -rf ./approval-probe')
+    expect(workSummary(blocked)).not.toContain('Ran ')
+    expect(workSummary({ ...blocked, toolCalls: [{ ...pending, status: 'ok' }] })).toContain(
+      'Ran rm -rf ./approval-probe'
+    )
+  })
   it('names the thinking time and the steps', () => {
     expect(
       workSummary(message({ createdAt: 1_000, thinking: 'Hmm.', workUntil: 13_400 }))

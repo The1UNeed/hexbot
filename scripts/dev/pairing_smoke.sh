@@ -34,7 +34,7 @@ BODY=$(printf '{"provider":"hexbot","username":"smoke","password":"%s"}' "$CODE"
 curl -si -X POST http://127.0.0.1:9132/auth/password-login \
   -H 'content-type: application/json' -d "$BODY" >"$SMOKE_HOME/login.txt" || fail "password login"
 grep -q '^HTTP/.* 200' "$SMOKE_HOME/login.txt" || fail "password login"
-TOKEN=$(sed -n 's/^set-cookie: hermes_session_at=\([^;]*\).*/\1/ip' "$SMOKE_HOME/login.txt" | tr -d '\r')
+TOKEN=$(sed -nE 's/^set-cookie: hermes_session_at(_[0-9]+)?=([^;]*).*/\2/ip' "$SMOKE_HOME/login.txt" | tr -d '\r')
 [[ "$TOKEN" == hxb_* ]] || fail "device token cookie"
 pass "password login and cookie"
 

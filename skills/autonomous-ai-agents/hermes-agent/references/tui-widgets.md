@@ -22,8 +22,8 @@ widgets.
 
 ## How to Run
 
-1. Use `write_file` to create `~/.hexbot/tui-widgets/<name>.mjs` (see
-   `templates/clock.mjs` for a complete working widget).
+1. Use `write_file` to create `./hexbot-setup/tui-widgets/<name>.mjs` in the section working directory. The user installs it into `~/.hexbot/tui-widgets/`. See
+   `templates/clock.mjs` for a complete working widget.
 2. If the TUI is running it hot-loads the file within ~a second (the
    widgets directory is watched); `/widgets-reload` forces a rescan.
 3. The widget's id becomes its slash command automatically (`/<id>`), with

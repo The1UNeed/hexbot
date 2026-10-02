@@ -67,6 +67,8 @@ def main(argv=None):
             from hermes_cli.main import main as hermes_main
             return hermes_main()
         finally: sys.argv = old
+    from hexbot.native_transition import handoff
+    handoff(argv)
     args = parser().parse_args(argv)
     if args.command == "serve":
         from hexbot.serve import run

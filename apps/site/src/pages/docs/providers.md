@@ -19,11 +19,13 @@ Credentials belong to the daemon deployment, not to one bot. Every bot on that d
 
 Provider settings also hold two deployment-wide choices. The **default model** is pre-filled whenever you create a bot. The optional **fallback** is the model every bot switches to when its own provider is down or rate limited.
 
-Treat provider keys like passwords. Do not paste them into a chat, a bot persona, or a project file. Hexbot stores credentials in the daemon's private configuration.
+Treat provider keys like passwords. Do not paste them into a chat, a bot persona, or a project file. Hexbot stores credentials in the daemon's private configuration. Replacing a provider key updates open sections before their next provider request.
 
 ## Choose a model
 
 Each bot has a provider and model. The picker combines a short curated list with models reported by configured providers. A section can also carry a temporary model override.
+
+LM Studio lists the models available at its local `/v1/models` endpoint when you open its model picker. Start LM Studio's server before choosing a model. If discovery fails, the daemon's current configured model stays in the list.
 
 Model names, prices, context limits, and availability can change. Check the provider's own pricing page before using an unfamiliar model or enabling long unattended tasks.
 
@@ -35,4 +37,4 @@ Hexbot does not add a fee to provider requests. Your provider dashboard is the s
 
 ## Remove access
 
-Clear a provider key, or sign out of a subscription provider, in settings to stop new requests through that provider. Bots configured for it will need another model before they can reply.
+Clear a provider key, or sign out of a subscription provider, in settings to stop new requests through that provider, including requests from open sections. Bots configured for it will need another model before they can reply.

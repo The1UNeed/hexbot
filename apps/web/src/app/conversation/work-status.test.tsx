@@ -2,6 +2,11 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
 import type { Message, ToolCall } from '../../lib/types'
+import {
+  resetTranscriptEffects,
+  setTranscriptEffects,
+  useTranscripts
+} from '../../stores/transcripts'
 
 import { WorkStatus } from './work-status'
 
@@ -29,6 +34,30 @@ const message = (partial: Partial<Message>): Message => ({
 })
 
 describe('WorkStatus', () => {
+  it('keeps the tool above an approval in present tense until tool.complete', () => {
+    useTranscripts.setState({ bySession: {} })
+    setTranscriptEffects({ ackApproval: vi.fn(), notify: vi.fn() })
+    const actions = useTranscripts.getState()
+    actions.toolStart('s', {
+      context: 'rm -rf ./approval-probe',
+      name: 'terminal',
+      tool_id: 't'
+    })
+    useTranscripts.getState().bySession.s!.messages[0]!.createdAt = Date.now() - 5_000
+    actions.approvalRequest('s', { request_id: 'a' })
+    resetTranscriptEffects()
+    const current = () => useTranscripts.getState().bySession.s!.messages[0]!
+    expect(current().streaming).toBe(false)
+    const { rerender } = render(<WorkStatus message={current()} name="Scout" />)
+    expect(screen.getByRole('button', { name: 'Running rm -rf ./approval-probe' })).toBeVisible()
+    expect(screen.queryByText('Ran rm -rf ./approval-probe')).not.toBeInTheDocument()
+    actions.resolveApproval('s', 'a', 'once')
+    rerender(<WorkStatus message={current()} name="Scout" />)
+    expect(screen.getByRole('button', { name: 'Running rm -rf ./approval-probe' })).toBeVisible()
+    actions.toolComplete('s', { result: 'ok', tool_id: 't' })
+    rerender(<WorkStatus message={current()} name="Scout" />)
+    expect(screen.getByRole('button', { name: /Ran rm -rf \.\/approval-probe/ })).toBeVisible()
+  })
   it('shows the running step while streaming', () => {
     render(
       <WorkStatus

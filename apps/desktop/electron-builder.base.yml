@@ -9,6 +9,9 @@ files:
   - out/**
   - resources/**
   - '!resources/hexbot-src/**'
+  - '!resources/hexbot-native/**'
+  - '!resources/hexbot-native.tar.gz*'
+  - '!resources/hexbot-native.staging-*/**'
   - package.json
 asar: true
 protocols:
@@ -25,6 +28,7 @@ mac:
   hardenedRuntime: true
   entitlements: entitlements.mac.plist
   entitlementsInherit: entitlements.mac.plist
+  sign: ../../scripts/desktop/mac-sign.cjs
   # electron-builder notarizes only when APPLE_API_KEY, APPLE_API_KEY_ID,
   # and APPLE_API_ISSUER are all present in the release environment.
 linux:

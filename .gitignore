@@ -230,3 +230,6 @@ dist/
 
 # Per-checkout dev daemon state (scripts/dev/run.mjs). Never ~/.hexbot.
 .hexbot/
+
+# Native desktop runtime staging and daemon update bundles.
+apps/desktop/resources/hexbot-native*

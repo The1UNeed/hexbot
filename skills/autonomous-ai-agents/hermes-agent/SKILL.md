@@ -14,6 +14,10 @@ metadata:
 
 # Hexbot
 
+## Workspace and user setup
+
+Write generated files and nonsecret configuration drafts under `./hexbot-setup/` in the section working directory. Home paths below are final installation locations, including paths used by helper scripts and references. The user must run installation, migration, sign-in, and credential/configuration writes outside the bot shell. Do not write to `~/.hexbot` or `$HEXBOT_HOME` from a tool, and do not copy credentials into workspace drafts.
+
 Hexbot is a self-hosted multi-agent app: named bots, each with its own soul, model, skills, and memory, talk to you and to each other in rooms. A daemon runs the bots; the Hexbot app and browsers connect to it. The agent core underneath also runs in your terminal (`hexbot core`), on messaging platforms, and in IDEs. It's in the same category as Claude Code (Anthropic), Codex (OpenAI), and OpenClaw — autonomous coding and task-execution agents that use tool calling to interact with your system. Hexbot works with any LLM provider (OpenRouter, Anthropic, OpenAI, Google, DeepSeek, xAI, local models, and 20+ others) and runs on Linux, macOS, Windows, and WSL.
 
 What makes Hexbot different:

@@ -133,6 +133,7 @@ function RoomRow({
   const bots = useBots(state => state.byName)
   const events = useRooms(state => state.eventsByRoom[room.id] ?? NO_EVENTS)
   const turns = useRooms(state => state.liveTurnsByRoom[room.id])
+  const currentId = useUsers(state => state.current?.id)
 
   if (query && !room.name.toLowerCase().includes(query)) {
     return null
@@ -141,7 +142,7 @@ function RoomRow({
   const active_ = room.members.filter(member => member.member_kind === 'bot' && !member.left_at)
   const latest = events.at(-1)
   const status = roomStatus(events, turns)
-  const dot = status === 'idle' && roomUnread(room, events) ? 'done' : status
+  const dot = status === 'idle' && roomUnread(room, events, currentId) ? 'done' : status
 
   return (
     <button

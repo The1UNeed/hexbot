@@ -38,7 +38,7 @@ Do NOT use this for:
 
 ## How to Run
 
-Invoke through the `terminal` tool from the target repo's root, then use `read_file` / `search_files` / `write_file` to produce the wiki. Default output location is `~/.hexbot/wikis/<repo-name>/`. Only write into the repo (`docs/wiki/`) when the user explicitly requests it.
+Invoke through the `terminal` tool from the target repo's root, then use `read_file` / `search_files` / `write_file` to produce the wiki. Default output location is `./wikis/<repo-name>/`. Use the section working directory. Use `docs/wiki/` only when the user requests it.
 
 ## Quick Reference
 
@@ -64,6 +64,7 @@ Invoke through the `terminal` tool from the target repo's root, then use `read_f
 For a GitHub URL:
 
 ```bash
+WORKSPACE=$PWD  # the section working directory
 WIKI_TMP=$(mktemp -d)
 git clone --depth 50 <url> "$WIKI_TMP/repo"
 cd "$WIKI_TMP/repo"
@@ -74,6 +75,7 @@ REPO_NAME=$(basename <url> .git)
 For a local path (or cwd if none given):
 
 ```bash
+WORKSPACE=$PWD  # the section working directory
 cd <path>
 REPO_SHA=$(git rev-parse HEAD 2>/dev/null || echo "uncommitted")
 REPO_NAME=$(basename "$PWD")
@@ -82,7 +84,7 @@ REPO_NAME=$(basename "$PWD")
 Then set the output dir:
 
 ```bash
-OUTPUT_DIR="$HOME/.hexbot/wikis/$REPO_NAME"
+OUTPUT_DIR="$WORKSPACE/wikis/$REPO_NAME"
 mkdir -p "$OUTPUT_DIR/modules" "$OUTPUT_DIR/diagrams"
 ```
 
@@ -378,7 +380,7 @@ EOF
 State exactly what was generated and where:
 
 ```
-Generated wiki at ~/.hexbot/wikis/<repo-name>/:
+Generated wiki at ./wikis/<repo-name>/:
   README.md                   project overview, module map
   architecture.md             system architecture + flowchart
   getting-started.md          setup, first run, workflows
@@ -418,7 +420,7 @@ Full incremental-regeneration is a future enhancement — for now, regenerating 
 - **Restating code as prose.** A module doc that says "the `process` function processes things by calling `process_item` on each item" is worse than just linking to the function.
 - **Mermaid > 50 nodes.** They don't render legibly. Split them.
 - **Documenting tests, generated code, or vendored deps as if they were product code.** Skip them.
-- **In-repo output without asking.** Default is `~/.hexbot/wikis/`. Only write into the repo when the user explicitly requests it.
+- **In-repo output without asking.** Default is `./wikis/`. Use the section working directory; use `docs/wiki/` only when requested.
 - **Mermaid special chars need quotes:** `A["Tool / Agent"]` not `A[Tool / Agent]`. `<br>` for line breaks inside a node.
 - **Nested code fences in SKILL.md.** When writing a markdown example that contains a Mermaid block, use 4-backtick outer fences so the 3-backtick inner ` ```mermaid ` doesn't close the outer. (This SKILL.md does it.)
 - **classDiagram generics** render as `~T~` (e.g. `List~Tool~`), not `<T>`.

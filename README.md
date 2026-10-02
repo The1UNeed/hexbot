@@ -57,20 +57,20 @@ Docs live at [hexbot.app/docs](https://hexbot.app/docs/) and are built from
 
 ## Develop
 
-This version of Hexbot is based on the Hex Hermes backend, a fork of
-[Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research.
-The core (agent loop, tools, providers, gateway) sits at the repository root;
-product code sits in `hexbot/` (daemon: bots, sections, rooms, memory,
-pairing, Connect) and `apps/` (web bundle, Electron app, site, Connect).
-`AGENTS.md` is the guide for anyone, human or agent, working on the code.
-`hexbot core <command>` runs a core CLI command, for example
-`hexbot core doctor`.
+Hexbot's daemon is Rust in `backend/hexbot-core/`; agents run on pinned Pi
+0.87.1 through the private extension in `backend/pi-runtime/`. The web bundle,
+Electron app, site, and Connect service live in `apps/`. The former Python
+daemon in `hexbot/`, built on a fork of
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research,
+stays for one release so existing background services can move to the native
+daemon. `AGENTS.md` is the guide for anyone, human or agent, working on the
+code; `backend/hexbot-core/README.md` covers storage compatibility.
 
-Fastest start: open the repository in the dev container (`.devcontainer/`),
-which installs everything. By hand:
+Install rustup and Node 26, then use the Rust toolchain pinned in
+`rust-toolchain.toml`:
 
 ```sh
-uv venv venv --python 3.11 && UV_PROJECT_ENVIRONMENT=venv uv sync --extra all --extra dev --locked
+rustup show active-toolchain
 pnpm install --frozen-lockfile
 ```
 
@@ -90,7 +90,7 @@ touches `~/.hexbot`, your real install. `scripts/dev/run.mjs` has the flags.
 Tests:
 
 ```sh
-./venv/bin/pytest tests/hexbot -q
+cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml
 pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint
 pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run
 node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs

@@ -12,12 +12,9 @@ export interface DaemonProgress {
     | 'dependencies'
     | 'done'
     | 'error'
-    | 'git'
     | 'python'
-    | 'ripgrep'
-    | 'source'
+    | 'runtime'
     | 'uv'
-    | 'venv'
     | (string & {})
 }
 
@@ -154,7 +151,6 @@ export function updateAction(state: UpdateState): 'check' | 'download' | 'instal
 declare global {
   interface Window {
     __HERMES_AUTH_REQUIRED__?: boolean
-    __HERMES_SESSION_TOKEN__?: string
     hexbot?: HexbotBridge
   }
 }

@@ -1,8 +1,10 @@
-// Print the error shown by the app's error boundary for a route. Usage: node scripts/dev/ui-error.mjs <base> <path>
+// Print the error shown by the app's error boundary for a route. Usage: HEXBOT_HOME=<home> node scripts/dev/ui-error.mjs <base> <path>
 import { chromium } from 'playwright'
+import { signIn } from './browser-session.mjs'
 const [base, path] = process.argv.slice(2)
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1360, height: 860 } })
+await signIn(page, base)
 page.on('pageerror', e => console.log('PAGEERROR', e.message.slice(0, 300)))
 page.on('console', m => { if (m.type() === 'error') console.log('CONSOLE', m.text().slice(0, 300)) })
 await page.addInitScript(() => localStorage.setItem('hexbot.target', JSON.stringify({ kind: 'local' })))

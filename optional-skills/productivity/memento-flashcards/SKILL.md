@@ -61,7 +61,7 @@ Do not use this skill for general Q&A, coding help, or non-memory tasks.
 Cards are stored in a JSON file at:
 
 ```
-~/.hexbot/skills/productivity/memento-flashcards/data/cards.json
+./memento-data/cards.json
 ```
 
 **Never edit this file directly.** Always use `memento_cards.py` subcommands. The script handles atomic writes (write to temp file, then rename) to prevent corruption.

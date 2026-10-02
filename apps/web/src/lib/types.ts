@@ -226,6 +226,8 @@ export interface DaemonInfo {
   install_id: null | string
   lan_enabled: boolean
   platform: string
+  /** The OS sandbox for shell and code tools, null when none; absent on older daemons. */
+  sandbox?: 'bubblewrap' | 'sandbox-exec' | null
   /** How the daemon can update itself when asked; absent on older daemons. */
   update_capability?: 'desktop' | 'service' | null
   version: string
@@ -403,6 +405,8 @@ export interface UsageSummary {
 export interface RoomMember {
   added_at: number
   added_by: string
+  /** The member's display name; older daemons may leave it out. */
+  display_name?: null | string
   last_read_seq: number
   left_at: null | number
   member_id: string
@@ -428,6 +432,8 @@ export interface Room {
   members: RoomMember[]
   name: string
   owner_id: string
+  /** Bots with a turn running now; older daemons leave it out. */
+  turns?: Pick<RoomTurn, 'bot' | 'live_session_id'>[]
   updated_at: number
 }
 

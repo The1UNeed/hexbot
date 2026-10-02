@@ -148,7 +148,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
     }
 
     case 'hexbot.rooms.changed':
-      if (typeof payload.id === 'string' && payload.deleted === true) {
+      if (typeof payload.id === 'string' && (payload.deleted === true || payload.removed === true)) {
         rooms.drop(payload.id)
       } else if (typeof payload.id === 'string') {
         void rooms.refreshOne(payload.id)

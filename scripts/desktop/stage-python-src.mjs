@@ -19,7 +19,9 @@ try {
   /* Source archives may not contain Git metadata. */
 }
 
-await stagePythonSource(repositoryRoot, destination)
+await stagePythonSource(repositoryRoot, destination, {
+  nativeTransitionVersion: process.argv.includes('--native-transition') ? packageJson.version : undefined
+})
 await writeFile(
   join(destination, 'HEXBOT_BUILD.json'),
   `${JSON.stringify({ version: packageJson.version, commit, date: new Date().toISOString() }, null, 2)}\n`

@@ -37,6 +37,15 @@ describe('status tag', () => {
 })
 
 describe('room cluster', () => {
+  it('names bot faces from the room without access to the bot catalog', () => {
+    const shared = room(['scout', 'writer'])
+    shared.members[0]!.display_name = 'Scout'
+    shared.members[1]!.display_name = 'Writer'
+    render(<RoomCluster bots={{}} room={shared} />)
+    expect(screen.getByRole('img', { name: 'Scout' })).toBeVisible()
+    expect(screen.getByRole('img', { name: 'Writer' })).toBeVisible()
+  })
+
   const bots = {
     scout: { avatar: null, display_name: 'Scout', name: 'scout' } as Bot,
     writer: { avatar: null, display_name: 'Writer', name: 'writer' } as Bot

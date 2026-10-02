@@ -15,20 +15,23 @@ end-to-end test. No Effect.
 
 A connection target is one of:
 
-- `local`: the daemon this app spawned or found on 127.0.0.1. Token comes
-  from the daemon's `/` page (`window.__HERMES_SESSION_TOKEN__`) when the
-  gate is off, or from `~/.hexbot/local-device.token` via the bridge when
-  the gate is on.
+- `local`: the daemon this app spawned or found on 127.0.0.1. Inside
+  Electron the token comes from `<HEXBOT_HOME>/local-device.token` via the
+  bridge. In a browser the page came from the daemon (or the Vite dev server
+  proxying it), and the HttpOnly session cookie set by the one-time sign-in
+  link or the pairing form is the credential. The page itself never carries
+  a token.
 - `remote`: `{host, port, deviceToken}` obtained by pairing.
 
 Connect sequence:
 
-1. `GET http://host:port/` and read `__HERMES_AUTH_REQUIRED__`.
-2. Gate off: open `ws://host:port/api/ws?token=<session token>`.
-3. Gate on: `POST /api/auth/ws-ticket` with `Authorization: Bearer
-   <deviceToken>`, then open `/api/ws?ticket=<ticket>` within 30 seconds.
-4. Wait for the `gateway.ready` event; keep its `replay_epoch`.
-5. Call `hexbot.info`, `hexbot.settings.get`, `hexbot.bots.list`.
+1. `GET http://host:port/` to reach the daemon; the bundle carries only
+   `__HERMES_AUTH_REQUIRED__ = true`.
+2. `POST /api/auth/ws-ticket` with `Authorization: Bearer <deviceToken>`
+   (same-origin cookie in a browser), then open `/api/ws?ticket=<ticket>`
+   within 30 seconds.
+3. Wait for the `gateway.ready` event; keep its `replay_epoch`.
+4. Call `hexbot.info`, `hexbot.settings.get`, `hexbot.bots.list`.
 
 Reconnect with exponential backoff from 1 s to 16 s, forever, reset after
 30 s stable. On reconnect, for every open live session call

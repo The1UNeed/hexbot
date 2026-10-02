@@ -18,7 +18,9 @@ summarises them into its section memory. Facts about core cron in
   and rooms with activity since the last dream, includes for each a
   transcript digest (core session search over the profile's `state.db`
   by time range; capped at 12k characters per section, older parts
-  summarised first), and instructs the bot to curate its memory with the
+  summarised first; the native daemon keeps the most recently active
+  sections and rooms up to 60k characters in total and reports how many it
+  left out as `omitted_conversations`), and instructs the bot to curate its memory with the
   memory tool: merge duplicates, sharpen vague entries, drop stale ones, add
   durable facts and lessons about working with the user, and keep it dense.
   Unfinished work and day-by-day events stay in section history. It never
@@ -63,4 +65,6 @@ about the room in their memory.
   own dream.
 - Transcript caps keep the newest 12,000 characters and prepend
   `[earlier messages omitted]`. Room prompt memory keeps its first 3,000
-  characters.
+  characters. The complete serialized digest is capped at 60,000 bytes,
+  including metadata and JSON escaping. Section titles and room names keep
+  their first 256 characters.
