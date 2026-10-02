@@ -67,7 +67,10 @@ more freedom and more capability than a hosted product can offer.
 
 ### Bots talking to bots
 
-- Bots may message each other unprompted.
+- Bots may message each other unprompted. Each bot reads its teammates'
+  descriptions (the user's, or a hidden one the daemon writes) and asks the
+  one that fits, in a private one-to-one conversation the user opens on
+  demand. Both bots dream over these conversations like any other.
 - The activity view shows bot pairs with message counts, later a network
   graph, with click-through to the conversation.
 

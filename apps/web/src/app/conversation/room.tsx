@@ -18,6 +18,7 @@ import { roomFailure, roomStatus, useRooms } from '../../stores/rooms'
 import { useTranscripts } from '../../stores/transcripts'
 import { useUsers } from '../../stores/users'
 
+import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
 import { MemoryMarks } from './memory-marks'
@@ -357,6 +358,7 @@ export function RoomConversation() {
                     ) : (
                       <Thinking name={name} />
                     )}
+                    {message ? <AskingRow message={message} sender={turn.bot} /> : null}
                     {waiting ? (
                       <p
                         className="py-1 text-[length:var(--text-secondary)] text-muted"

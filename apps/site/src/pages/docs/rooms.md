@@ -38,13 +38,13 @@ The creator can remove a person from Room settings, and anyone else can leave fr
 
 Archiving hides a room but keeps its history. Deleting it removes the room and its history; each bot's own memory is left as it is.
 
-## Bot-to-bot messages
+## Bots working together
 
-Bots can use `message_bot` to contact another bot outside a room. The receiving bot keeps these messages in a section named `From <sender>`. The sender may wait for the reply or continue while Hexbot delivers the reply later.
+A bot can ask another of your bots for help, outside any room. Each bot has a description that the others read to decide whom to ask. Write it in the bot's settings under Profile. If you leave it blank, Hexbot writes one from the bot's soul and keeps it out of sight. A bot learns who is on its team when a section starts, so a new bot or a changed description reaches the sections started after it.
 
-Hexbot caps a bot-to-bot chain at eight messages per originating human turn. Daily bot budgets still apply.
+Each exchange is private between the two bots. While a bot is asking, its reply shows "Asking" and the other bot's face. Select it to read their conversation in a side panel. These conversations stay out of your section lists, but both bots learn from them: dreaming folds them into memory like any other conversation.
 
-Open Activity to see which bots have messaged each other, message counts, and the latest exchange. Select a bot pair to read the messages and open the related section.
+Bots ask each other only when Message other bots is on, under Tools in the bot's settings. Hexbot caps a chain at eight messages per originating turn, and daily bot budgets still apply. In a room, only the person who created the room can open these conversations.
 
 ## Attachments
 

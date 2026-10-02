@@ -41,6 +41,7 @@ import { roomStatus, roomUnread, useRoomList, useRooms } from '../../stores/room
 import {
   botStatusWithLive,
   introduceBot,
+  isThread,
   type LiveSections,
   liveSectionsOf,
   sectionsActions,
@@ -173,9 +174,12 @@ type Drafts = Record<string, string>
 export const touched = (section: Section, drafts: Drafts = {}) =>
   section.message_count > 0 || Boolean(section.preview) || Boolean(drafts[section.id])
 
-/** Sections the roster lists: touched ones, minus the bot's background Dreams section. */
+/**
+ * Sections the roster lists: touched ones, minus the bot's background Dreams
+ * section and the threads in which other bots ask it for help.
+ */
 export const listed = (section: Section, drafts: Drafts = {}) =>
-  touched(section, drafts) && section.title !== 'Dreams'
+  touched(section, drafts) && section.title !== 'Dreams' && !isThread(section)
 
 /**
  * The sections listed under a bot, newest first. Folded, only the two most recent from
@@ -486,7 +490,9 @@ export function RosterColumn() {
       return matchesBot || matching.length > 0
     })
 
-  const archived = Object.values(sectionMap).filter(section => section.archived_at)
+  const archived = Object.values(sectionMap).filter(
+    section => section.archived_at && !isThread(section)
+  )
 
   const open = (bot: string, section: string) => {
     void sectionsActions()

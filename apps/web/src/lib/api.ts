@@ -346,10 +346,17 @@ export const usageSummary = (user?: string) =>
 // Sections
 // ---------------------------------------------------------------------------
 
-export function sectionsList(options: { bot?: string; include_archived?: boolean } = {}): Promise<{
+export function sectionsList(
+  options: { bot?: string; include_archived?: boolean; include_threads?: boolean } = {}
+): Promise<{
   sections: Section[]
 }> {
   return rpcCall<{ sections: Section[] }>('hexbot.sections.list', { ...options })
+}
+
+/** The thread on `bot` in which `peer` asks it for help; null until the first ask. Owner only. */
+export function sectionsThread(bot: string, peer: string): Promise<{ section: Section | null }> {
+  return rpcCall<{ section: Section | null }>('hexbot.sections.thread', { bot, peer })
 }
 
 export function sectionsCreate(bot: string, title?: string): Promise<{ section: Section }> {
@@ -685,13 +692,27 @@ export function nextMessageId(prefix = 'm'): string {
 /**
  * Hexbot history rows carry no timestamps, so restored messages get `createdAt: 0`
  * ("unknown") and the transcript draws no time separator for them.
+ *
+ * Hidden rows are dropped, with one exception: in a thread (`sender` given),
+ * the sender bot's questions arrive as hidden user rows `@<sender>: <text>`
+ * and become its bubbles, prefix stripped.
  */
-export function messagesFromHistory(rows: HistoryRow[]): Message[] {
+export function messagesFromHistory(
+  rows: HistoryRow[],
+  options: { sender?: string } = {}
+): Message[] {
   const messages: Message[] = []
+  const prefix = options.sender ? `@${options.sender}: ` : null
 
   for (const row of rows) {
+    let text = typeof row.text === 'string' ? row.text : ''
+
     if (row.display_kind === 'hidden') {
-      continue
+      if (!(prefix && row.role === 'user' && text.startsWith(prefix))) {
+        continue
+      }
+
+      text = text.slice(prefix.length)
     }
 
     if (row.role === 'tool') {
@@ -730,7 +751,6 @@ export function messagesFromHistory(rows: HistoryRow[]): Message[] {
         ? row.role
         : 'assistant'
 
-    const text = typeof row.text === 'string' ? row.text : ''
     const previous = messages.at(-1)
 
     // Hexbot stores one turn as assistant(tool calls) → tool rows → assistant(text).

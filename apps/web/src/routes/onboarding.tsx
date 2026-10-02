@@ -1125,7 +1125,7 @@ function BotStep({
           <Input
             aria-label="Bot description"
             onChange={event => setDescription(event.target.value)}
-            placeholder="One-line description"
+            placeholder="What this bot is for. Other bots read this."
             value={description}
           />
           <Textarea

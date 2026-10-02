@@ -27,6 +27,7 @@ pub mod runtime_store;
 pub mod server;
 pub mod services;
 pub mod settings;
+pub mod team;
 
 pub fn version() -> String {
     serde_json::from_str::<serde_json::Value>(include_str!("../../../apps/desktop/package.json"))

@@ -5,6 +5,7 @@ import { type CSSProperties, type ReactNode, useEffect, useState } from 'react'
 import { cn } from '../lib/cn'
 import { useUi } from '../stores/ui'
 
+import { ThreadPanel } from './panel/thread'
 import { ConversationColumn, ProfilePanel, RosterColumn } from './slots'
 
 export function AppShell({ children }: { children?: ReactNode }) {
@@ -14,10 +15,14 @@ export function AppShell({ children }: { children?: ReactNode }) {
   const setSidebarWidth = useUi(state => state.setSidebarWidth)
   const panelOpen = useUi(state => state.rightPanelOpen)
   const togglePanel = useUi(state => state.toggleRightPanel)
+  const thread = useUi(state => state.thread)
+  const closeThread = useUi(state => state.closeThread)
   const [compact, setCompact] = useState(() => window.matchMedia('(max-width: 1100px)').matches)
   const params = useParams({ strict: false }) as { bot?: string; room?: string; section?: string }
   const roomMode = Boolean(params.room)
-  const showPanel = panelOpen && !roomMode && !children
+  // The thread panel takes the same slot as the profile, in rooms too, and goes first.
+  const showThread = Boolean(thread) && !children
+  const showPanel = showThread || (panelOpen && !roomMode && !children)
 
   useEffect(() => {
     const media = window.matchMedia('(max-width: 1100px)')
@@ -37,6 +42,8 @@ export function AppShell({ children }: { children?: ReactNode }) {
   }, [togglePanel])
 
   useEffect(() => setMobileRosterOpen(false), [params.bot, params.room, params.section])
+  // A thread belongs to the chat it was opened from; leaving that chat closes it.
+  useEffect(() => closeThread(), [closeThread, params.bot, params.room, params.section])
 
   const resize = (side: 'left' | 'right', start: number) => (event: React.PointerEvent) => {
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -115,7 +122,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
       {showPanel ? (
         <>
           <div
-            aria-label="Resize profile"
+            aria-label={showThread ? 'Resize conversation' : 'Resize profile'}
             className={cn(handle, 'max-[1100px]:hidden')}
             onPointerDown={event => resize('right', event.clientX)(event)}
             role="separator"
@@ -123,7 +130,11 @@ export function AppShell({ children }: { children?: ReactNode }) {
             <span className={handleLine} />
           </div>
           <aside className="hex-fade min-w-0 overflow-hidden bg-surface max-[1100px]:fixed max-[1100px]:inset-y-0 max-[1100px]:right-0 max-[1100px]:z-40 max-[1100px]:w-[min(92vw,360px)] max-[1100px]:shadow-popup">
-            <ProfilePanel />
+            {thread && showThread ? (
+              <ThreadPanel key={`${thread.bot}/${thread.peer}`} thread={thread} />
+            ) : (
+              <ProfilePanel />
+            )}
           </aside>
         </>
       ) : null}

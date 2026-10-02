@@ -46,6 +46,17 @@ describe('sections under a bot', () => {
     ).toEqual(['blank', 'b'])
   })
 
+  it('never lists a thread in which another bot asks this one for help', async () => {
+    const { listed, visibleRecentSections } = await import('./index')
+    const thread = { ...section('thread', 5, 6), peer_bot: 'scout', title: 'From scout' }
+    expect(listed(thread)).toBe(false)
+    expect(visibleRecentSections(bot, true, [...all, thread]).map(item => item.id)).toEqual([
+      'b',
+      'c',
+      'old'
+    ])
+  })
+
   it('expanded shows every touched section and never the Dreams one', async () => {
     const { visibleRecentSections } = await import('./index')
     const dreams = { ...section('dreams', 10, 4), title: 'Dreams' }

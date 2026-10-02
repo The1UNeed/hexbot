@@ -69,6 +69,20 @@ describe('WorkStatus', () => {
     expect(screen.queryByTestId('work-status')).toBeNull()
   })
 
+  it('leaves an ask in progress to its own row instead of an empty working line', () => {
+    render(
+      <WorkStatus
+        message={message({
+          createdAt: Date.now(),
+          streaming: true,
+          toolCalls: [call({ args: { to: 'writer' }, name: 'message_bot', status: 'running' })]
+        })}
+        name="Scout"
+      />
+    )
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
   it('opens a live panel with the trace and the running step once the turn has run a while', () => {
     render(
       <WorkStatus

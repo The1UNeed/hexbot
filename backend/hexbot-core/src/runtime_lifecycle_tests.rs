@@ -792,12 +792,15 @@ async fn bot_message_hops_count_per_turn_and_follow_the_chain() {
     open(&runtime).await;
     let owl = runtime.sessions.lock().unwrap()["first"].clone();
     for _ in 0..MAX_HOPS {
-        runtime.deliver_message(&owl, "cat", "hello").await.unwrap();
+        let (stored, _, hops) = runtime.prepare_delivery(&owl, "cat", "hello").unwrap();
+        runtime
+            .deliver_message(&owl, "cat", "hello", &stored, hops)
+            .await
+            .unwrap();
     }
     assert_eq!(
         runtime
-            .deliver_message(&owl, "cat", "one too many")
-            .await
+            .prepare_delivery(&owl, "cat", "one too many")
             .unwrap_err()
             .code,
         4240
@@ -818,8 +821,7 @@ async fn bot_message_hops_count_per_turn_and_follow_the_chain() {
     }
     assert_eq!(
         runtime
-            .deliver_message(&cat, "owl", "back")
-            .await
+            .prepare_delivery(&cat, "owl", "back")
             .unwrap_err()
             .code,
         4240
@@ -833,7 +835,11 @@ async fn bot_message_hops_count_per_turn_and_follow_the_chain() {
         &owl.state.lock().unwrap().hops,
         &cat.state.lock().unwrap().hops
     ));
-    runtime.deliver_message(&owl, "cat", "hello").await.unwrap();
+    let (stored, _, hops) = runtime.prepare_delivery(&owl, "cat", "hello").unwrap();
+    runtime
+        .deliver_message(&owl, "cat", "hello", &stored, hops)
+        .await
+        .unwrap();
     assert_eq!(owl.state.lock().unwrap().hops.load(Ordering::Acquire), 1);
     runtime.shutdown().await;
 }
@@ -1357,7 +1363,7 @@ async fn concurrent_deliveries_reserve_writes_before_reading_the_target_section(
             .map(|_| {
                 scope.spawn(|| {
                     barrier.wait();
-                    runtime.record_delivery(&s, "cat", "hello").unwrap()
+                    runtime.record_delivery(&s, "cat", "hello").unwrap().0
                 })
             })
             .collect();
@@ -1386,4 +1392,445 @@ async fn concurrent_deliveries_reserve_writes_before_reading_the_target_section(
         1
     );
     runtime.shutdown().await;
+}
+
+fn team_pi(home: &Path) {
+    fs::write(home.join("pi.cjs"), r#"#!/usr/bin/env node
+const fs=require('node:fs'),rl=require('node:readline').createInterface({input:process.stdin});
+const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
+const args=process.argv.slice(2),one=args.includes('--no-session');
+fs.appendFileSync('team-processes.jsonl',JSON.stringify({args,one})+'\n');
+rl.on('line',line=>{const c=JSON.parse(line);let profile;
+if(c.type==='prompt'&&one){profile=JSON.parse(c.message);fs.appendFileSync('team-prompts.jsonl',JSON.stringify(profile)+'\n');}
+emit({type:'response',id:c.id,command:c.type,success:profile?.soul!=='fail',data:{}});
+if(c.type==='prompt'){
+if(profile?.soul==='fail')return;
+emit({type:'agent_start'});if(!one)emit({type:'message_end',message:{role:'user',content:c.message}});
+const text=one?(args[args.indexOf('--system-prompt')+1].includes('Auto mode')?'{"approved":true}':'"Owl helps\n  with code."'):'Reply: '+c.message;
+emit({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:text}});
+emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text}],stopReason:profile?.soul==='model-error'?'error':'stop'}});emit({type:'agent_settled'});
+}if(c.type==='abort')emit({type:'agent_settled'});});
+"#).unwrap();
+}
+fn team_processes(home: &Path, bot: &str) -> Vec<Value> {
+    fs::read_to_string(home.join("profiles").join(bot).join("team-processes.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect()
+}
+
+#[test]
+fn team_prompt_uses_descriptions_owner_scope_toolsets_order_and_limit() {
+    let (home, runtime, _) = setup();
+    let h = home.path();
+    let conn = db::open(h).unwrap();
+    conn.execute_batch("UPDATE bots SET display_name='Owl',description='User description',auto_description='Auto description',title='Title' WHERE name='owl';
+        INSERT INTO bots(name,owner_id,display_name,description,last_activity_at) VALUES('cat','alice','Cat','Reviews code',2),('dog','alice','Dog','Writes prose',1),('ant','alice','Ant','Checks numbers',2),('foreign','bob','Foreign','PRIVATE',10);").unwrap();
+    fs::write(
+        h.join("profiles/owl/config.yaml"),
+        "tools:\n  enabled_toolsets: [hexbot]\n",
+    )
+    .unwrap();
+    let mut row = bot_row(home.path(), "owl").unwrap();
+    let prompt = runtime
+        .session_prompt(&row, "alice", "owl", &home.workspace())
+        .unwrap()
+        .0;
+    assert!(prompt.contains("Other bots see you as: User description"));
+    assert!(prompt.contains(crate::team::REQUEST_GUIDANCE));
+    assert!(prompt.contains(crate::team::REPLY_GUIDANCE));
+    assert!(prompt.find("# Team").unwrap() < prompt.find("# Available skills").unwrap());
+    assert!(
+        prompt.find("- ant (Ant): Checks numbers").unwrap()
+            < prompt.find("- cat (Cat): Reviews code").unwrap()
+    );
+    assert!(
+        prompt.find("- cat (Cat): Reviews code").unwrap()
+            < prompt.find("- dog (Dog): Writes prose").unwrap()
+    );
+    assert!(!prompt.contains("PRIVATE"));
+    row["description"] = json!(" \n");
+    assert!(
+        runtime
+            .team_block(&row, "alice", "owl")
+            .unwrap()
+            .contains("Other bots see you as: Auto description")
+    );
+    row["auto_description"] = Value::Null;
+    assert!(
+        runtime
+            .team_block(&row, "alice", "owl")
+            .unwrap()
+            .contains("Other bots see you as: Title")
+    );
+    row["title"] = Value::Null;
+    assert!(
+        runtime
+            .team_block(&row, "alice", "owl")
+            .unwrap()
+            .contains("Other bots see you as: no description yet")
+    );
+    assert!(
+        !runtime
+            .session_prompt(&row, "bob", "owl", &home.workspace())
+            .unwrap()
+            .0
+            .contains("# Team")
+    );
+    for n in 0..25 {
+        conn.execute("INSERT INTO bots(name,owner_id,description,last_activity_at) VALUES(?,'alice','Helps',3)", [format!("helper{n:02}")]).unwrap();
+    }
+    let block = runtime.team_block(&row, "alice", "owl").unwrap();
+    assert_eq!(block.lines().filter(|s| s.starts_with("- ")).count(), 24);
+    assert!(!block.contains("helper24"));
+    fs::write(
+        h.join("profiles/owl/config.yaml"),
+        "tools:\n  enabled_toolsets: []\n",
+    )
+    .unwrap();
+    let block = runtime.team_block(&row, "alice", "owl").unwrap();
+    assert!(block.contains(crate::team::REPLY_GUIDANCE));
+    assert!(!block.contains(crate::team::REQUEST_GUIDANCE));
+    assert!(!block.contains("- helper"));
+}
+
+#[tokio::test]
+async fn team_prompt_stays_frozen_across_profile_changes_and_restart() {
+    let (home, runtime, _) = setup();
+    db::open(home.path()).unwrap().execute_batch("UPDATE bots SET description='Original description'; INSERT INTO bots(name,owner_id,description) VALUES('cat','alice','Reviews code');").unwrap();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "tools:\n  enabled_toolsets: [hexbot]\n",
+    )
+    .unwrap();
+    open(&runtime).await;
+    let saved = || {
+        store::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT prompt FROM native_sessions WHERE stored_id='first'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+    };
+    let before = saved();
+    assert!(before.contains("Original description") && before.contains("Reviews code"));
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("UPDATE bots SET description='Changed description';")
+        .unwrap();
+    age(&runtime);
+    runtime.retire_idle(f64::INFINITY).await.unwrap();
+    open(&runtime).await;
+    assert_eq!(saved(), before);
+    runtime.shutdown().await;
+    let restarted = Runtime::new(
+        home.path().into(),
+        EventHub::new(),
+        home.path().join("pi.cjs"),
+    )
+    .unwrap();
+    open(&restarted).await;
+    assert_eq!(saved(), before);
+    restarted.shutdown().await;
+}
+
+#[tokio::test]
+async fn descriptions_use_one_shot_skip_current_keys_and_coalesce() {
+    let (home, runtime, _) = setup();
+    team_pi(home.path());
+    let h = home.path();
+    fs::write(h.join("profiles/owl/SOUL.md"), "Soul".repeat(1200)).unwrap();
+    db::open(h).unwrap().execute_batch("UPDATE bots SET display_name='Owl',title='Coder'; INSERT INTO settings(key,value) VALUES('auto_approver_model','\"openai/reviewer\"');").unwrap();
+    tokio::join!(
+        runtime.refresh_description("owl"),
+        runtime.refresh_description("owl")
+    );
+    let row = bot_row(home.path(), "owl").unwrap();
+    assert_eq!(row["auto_description"], "Owl helps with code.");
+    assert_eq!(
+        row["auto_description_key"],
+        crate::team::description_key("Owl", "Coder", &"Soul".repeat(1200))
+    );
+    let calls = team_processes(h, "owl");
+    assert_eq!(calls.len(), 1);
+    let args = calls[0]["args"].as_array().unwrap();
+    for flag in [
+        "--no-session",
+        "--no-tools",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+    ] {
+        assert!(args.contains(&json!(flag)));
+    }
+    assert!(args.contains(&json!(crate::team::DESCRIPTION_PROMPT)));
+    assert!(args.contains(&json!("reviewer")));
+    let message: Value = serde_json::from_str(
+        fs::read_to_string(h.join("profiles/owl/team-prompts.jsonl"))
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(message["soul"].as_str().unwrap().chars().count(), 4000);
+    assert_eq!(message["name"], "owl");
+    runtime.refresh_description("owl").await;
+    assert_eq!(team_processes(h, "owl").len(), 1);
+    assert!(!runtime.description_stale("owl"));
+    fs::write(h.join("profiles/owl/SOUL.md"), "Changed").unwrap();
+    assert!(runtime.description_stale("owl"));
+    runtime.refresh_description("owl").await;
+    assert_eq!(team_processes(h, "owl").len(), 2);
+    db::open(h)
+        .unwrap()
+        .execute_batch("UPDATE bots SET description='User written';")
+        .unwrap();
+    fs::write(h.join("profiles/owl/SOUL.md"), "Changed again").unwrap();
+    runtime.refresh_description("owl").await;
+    assert_eq!(team_processes(h, "owl").len(), 2);
+    assert_eq!(
+        db::open(h)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM sections", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store::open(h)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM native_sessions", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn description_fallback_model_and_failure_leave_no_cached_result() {
+    let (home, runtime, _) = setup();
+    team_pi(home.path());
+    let h = home.path();
+    fs::write(h.join("profiles/owl/SOUL.md"), "fail").unwrap();
+    runtime.refresh_description("owl").await;
+    let row = bot_row(home.path(), "owl").unwrap();
+    assert!(row["auto_description"].is_null() && row["auto_description_key"].is_null());
+    let calls = team_processes(h, "owl");
+    assert!(
+        calls[0]["args"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("fixture"))
+    );
+    fs::write(h.join("profiles/owl/SOUL.md"), "model-error").unwrap();
+    runtime.refresh_description("owl").await;
+    let row = bot_row(home.path(), "owl").unwrap();
+    assert!(row["auto_description"].is_null() && row["auto_description_key"].is_null());
+    fs::write(h.join("profiles/owl/SOUL.md"), "Coder").unwrap();
+    runtime.refresh_description("owl").await;
+    assert_eq!(
+        bot_row(home.path(), "owl").unwrap()["auto_description"],
+        "Owl helps with code."
+    );
+    common::write_config(
+        h,
+        &json!({"model":{"provider":"openai","default":"global-model"}}),
+    )
+    .unwrap();
+    fs::write(
+        h.join("profiles/owl/config.yaml"),
+        "tools:\n  enabled_toolsets: []\n",
+    )
+    .unwrap();
+    db::open(h)
+        .unwrap()
+        .execute_batch("UPDATE bots SET auto_description_key=NULL;")
+        .unwrap();
+    runtime.refresh_description("owl").await;
+    let calls = team_processes(h, "owl");
+    assert!(
+        calls.last().unwrap()["args"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("global-model"))
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn auto_approval_still_uses_no_tools_and_strict_boolean_json() {
+    let (home, runtime, _) = setup();
+    team_pi(home.path());
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("UPDATE bots SET approval_mode='smart';")
+        .unwrap();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    assert_eq!(
+        runtime
+            .auto_approve(&s, &json!({"tool":"read","path":"file"}))
+            .await
+            .unwrap(),
+        json!({"approved":true})
+    );
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("UPDATE bots SET approval_mode='manual';")
+        .unwrap();
+    assert_eq!(
+        runtime.auto_approve(&s, &json!({})).await.unwrap(),
+        json!({"approved":false})
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn message_bot_checks_teammates_reuses_threads_and_returns_section_ids() {
+    let (home, runtime, hub) = setup();
+    team_pi(home.path());
+    let h = home.path();
+    db::open(h).unwrap().execute_batch("UPDATE bots SET display_name='Wise Owl',description='Helps with code'; INSERT INTO bots(name,owner_id,display_name,description) VALUES('cat','alice','Cat','Reviews code'),('foreign','bob','Foreign','PRIVATE');").unwrap();
+    fs::write(
+        h.join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [hexbot]\n",
+    )
+    .unwrap();
+    fs::create_dir_all(h.join("profiles/cat")).unwrap();
+    fs::write(
+        h.join("profiles/cat/config.yaml"),
+        "tools:\n  enabled_toolsets: []\n",
+    )
+    .unwrap();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    for wait in [true, false] {
+        let error = runtime
+            .tool(
+                &s,
+                "message_bot",
+                &json!({"to":"owl","text":"Help","wait":wait}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, 4202);
+        assert_eq!(error.message, "A bot cannot message itself.");
+        for to in ["missing", "foreign"] {
+            let error = runtime
+                .tool(
+                    &s,
+                    "message_bot",
+                    &json!({"to":to,"text":"Help","wait":wait}),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, 4205);
+            assert_eq!(
+                error.message,
+                format!("No bot named {to}. Your teammates: cat.")
+            );
+        }
+    }
+    let result = runtime
+        .tool(
+            &s,
+            "message_bot",
+            &json!({"to":"cat","text":"Review the plan"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["reply"], "Reply: @owl: Review the plan");
+    let id = result["section_id"].as_str().unwrap();
+    let section = crate::catalog::section(h, "alice", id).unwrap();
+    assert_eq!(section["peer_bot"], "owl");
+    assert_eq!(section["title"], "From Wise Owl");
+    let opened = runtime
+        .call("alice", "hexbot.sections.open", &json!({"id":id}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(opened["messages"][0]["text"], "@owl: Review the plan");
+    assert_eq!(opened["messages"][0]["display_kind"], "hidden");
+    let mut events = hub.subscribe();
+    let sent = runtime
+        .tool(
+            &s,
+            "message_bot",
+            &json!({"to":"cat","text":"More help","wait":false}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(sent["status"], "sent");
+    assert_eq!(sent["section_id"], id);
+    assert!(
+        db::open(h)
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM bot_messages WHERE id=? AND section_id=?)",
+                params![sent["message_id"].as_str().unwrap(), id],
+                |r| r.get::<_, bool>(0)
+            )
+            .unwrap()
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap().frame;
+            if event["params"]["type"] == "message.complete"
+                && event["params"]["session_id"] == s.id
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(store::history(h, "first").unwrap().iter().any(|m| {
+        m["role"] == "user"
+            && m["display_kind"] == "hidden"
+            && m["text"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("[reply from cat]")
+    }));
+    assert_eq!(tool_context("message_bot", &json!({"to":"cat"})), "cat");
+    let cat = runtime.sessions.lock().unwrap()[id].clone();
+    let reverse = runtime.record_delivery(&cat, "owl", "Reply").unwrap().0;
+    assert_ne!(reverse, id);
+    assert_eq!(
+        crate::catalog::section(h, "alice", &reverse).unwrap()["peer_bot"],
+        "cat"
+    );
+    assert_ne!(reverse, "first");
+    // Titles no longer identify the pair; renaming the sender keeps the same thread.
+    db::open(h)
+        .unwrap()
+        .execute_batch("UPDATE bots SET display_name='New Owl' WHERE name='owl';")
+        .unwrap();
+    assert_eq!(runtime.record_delivery(&s, "cat", "Again").unwrap().0, id);
+    db::open(h)
+        .unwrap()
+        .execute("UPDATE sections SET archived_at=1 WHERE id=?", [id])
+        .unwrap();
+    let next = runtime.record_delivery(&s, "cat", "New thread").unwrap().0;
+    assert_ne!(next, id);
+    assert_eq!(
+        crate::catalog::section(h, "alice", &next).unwrap()["title"],
+        "From New Owl"
+    );
+    runtime.shutdown().await;
+}
+
+fn bot_row(home: &Path, name: &str) -> Result<Value> {
+    common::rows(
+        &db::open(home)?,
+        "SELECT * FROM bots WHERE name=?",
+        &[&name],
+    )?
+    .into_iter()
+    .next()
+    .ok_or_else(|| Error::new(4205, "bot not found"))
 }

@@ -1510,3 +1510,129 @@ async fn plain_cookies_are_scoped_by_daemon_port_and_accept_upgrade_cookies() {
     first.shutdown().await;
     second.shutdown().await;
 }
+
+#[tokio::test]
+async fn private_threads_open_with_hidden_questions_for_the_owner_only() {
+    let fixture = Fixture::new(false).await;
+    db::open(&fixture.home).unwrap().execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES('other','Other','member',0); INSERT INTO bots(name,owner_id,description) VALUES('owl','local','Reviews code'); INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('private-thread','owl','local','From Cat','cat');").unwrap();
+    fs::create_dir_all(fixture.home.join("profiles/owl")).unwrap();
+    fs::write(
+        fixture.home.join("profiles/owl/config.yaml"),
+        "tools:\n  enabled_toolsets: []\n",
+    )
+    .unwrap();
+    hexbot_core::runtime_store::append(
+        &fixture.home,
+        "private-thread",
+        json!({"role":"user","text":"@cat: Review this code","display_kind":"hidden"}),
+    )
+    .unwrap();
+    let opened = fixture
+        .app
+        .call(
+            "local",
+            "hexbot.sections.open",
+            &json!({"id":"private-thread"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(opened["section"]["peer_bot"], "cat");
+    assert_eq!(opened["messages"][0]["text"], "@cat: Review this code");
+    assert_eq!(opened["messages"][0]["display_kind"], "hidden");
+    assert_eq!(
+        fixture
+            .app
+            .call(
+                "other",
+                "hexbot.sections.open",
+                &json!({"id":"private-thread"})
+            )
+            .await
+            .unwrap_err()
+            .code,
+        4302
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn description_startup_and_catalog_triggers_do_not_block_rpc_replies() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let home = support::TestHome::new();
+    let h = home.path();
+    db::migrate(h).unwrap();
+    db::open(h).unwrap().execute_batch("INSERT INTO bots(name,owner_id,description) VALUES('seed','local',''),('updated','local','User description'),('configured','local','User description');").unwrap();
+    for bot in ["seed", "updated", "configured"] {
+        fs::create_dir_all(h.join("profiles").join(bot)).unwrap();
+        fs::write(
+            h.join("profiles").join(bot).join("config.yaml"),
+            "tools:\n  enabled_toolsets: []\n",
+        )
+        .unwrap();
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let script = h.join("descriptions.cjs");
+    fs::write(&script, format!(r#"#!/usr/bin/env node
+const net=require('node:net'),rl=require('node:readline').createInterface({{input:process.stdin}});
+const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
+rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,command:c.type,success:true,data:{{}}}});if(c.type==='prompt'){{const socket=net.connect({port},'127.0.0.1',()=>socket.write(c.message+'\n'));socket.once('data',()=>{{emit({{type:'message_end',message:{{role:'assistant',content:[{{type:'text',text:'Helps with code.'}}]}}}});emit({{type:'agent_settled'}});socket.end();}});}}}});
+"#)).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let app = App::new(h.into(), "127.0.0.1:0".parse().unwrap(), script, None).unwrap();
+    let mut pending = vec![];
+    async fn refresh(
+        listener: &tokio::net::TcpListener,
+    ) -> (Value, BufReader<tokio::net::TcpStream>) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = BufReader::new(socket);
+            let mut line = String::new();
+            socket.read_line(&mut line).await.unwrap();
+            (serde_json::from_str(&line).unwrap(), socket)
+        })
+        .await
+        .unwrap()
+    }
+    let (profile, socket) = refresh(&listener).await;
+    assert_eq!(profile["name"], "seed");
+    pending.push(socket);
+    for (method, params, name) in [
+        (
+            "hexbot.bots.create",
+            json!({"name":"created","description":"","tools":[]}),
+            "created",
+        ),
+        (
+            "hexbot.bots.update",
+            json!({"name":"updated","description":""}),
+            "updated",
+        ),
+        (
+            "profiles.configure",
+            json!({"name":"configured","description":""}),
+            "configured",
+        ),
+    ] {
+        tokio::time::timeout(Duration::from_secs(5), app.call("local", method, &params))
+            .await
+            .unwrap()
+            .unwrap();
+        let (profile, socket) = refresh(&listener).await;
+        assert_eq!(profile["name"], name);
+        pending.push(socket);
+    }
+    for mut socket in pending {
+        socket.get_mut().write_all(b"finish\n").await.unwrap();
+        let mut end = String::new();
+        tokio::time::timeout(Duration::from_secs(5), socket.read_line(&mut end))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    app.shutdown().await;
+}

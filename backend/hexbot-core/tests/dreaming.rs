@@ -682,3 +682,33 @@ fn digest_bounds_metadata_and_counts_json_escaping_and_unicode() {
             .all(|room| { room["name"].as_str().unwrap().chars().count() <= 256 })
     );
 }
+
+#[test]
+fn digest_keeps_private_thread_questions_and_sender_tool_replies() {
+    let home = setup();
+    let h = home.path();
+    db::open(h).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('cat','alice'); INSERT INTO sections(id,bot,owner_id,title,peer_bot,created_at) VALUES('private','cat','alice','From Owl','owl',0);").unwrap();
+    runtime_store::append(
+        h,
+        "private",
+        json!({"role":"user","text":"@owl: Review the plan","display_kind":"hidden"}),
+    )
+    .unwrap();
+    runtime_store::append(
+        h,
+        "private",
+        json!({"role":"assistant","text":"The plan needs a rollback"}),
+    )
+    .unwrap();
+    runtime_store::append(h, "chat", json!({"role":"tool","name":"message_bot","text":"{\"reply\":\"The plan needs a rollback\",\"section_id\":\"private\"}"})).unwrap();
+    let receiver = dreaming::build_digest(h, "cat", 0., None)
+        .unwrap()
+        .to_string();
+    assert!(receiver.contains("user: @owl: Review the plan"));
+    assert!(receiver.contains("assistant: The plan needs a rollback"));
+    let sender = dreaming::build_digest(h, "owl", 0., None)
+        .unwrap()
+        .to_string();
+    assert!(sender.contains("tool: "));
+    assert!(sender.contains("The plan needs a rollback"));
+}

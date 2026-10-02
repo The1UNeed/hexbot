@@ -341,6 +341,11 @@ export interface Section {
   id: string
   live_session_id: null | string
   message_count: number
+  /**
+   * Set on a thread: the private conversation in which `peer_bot` asked `bot`
+   * for help through `message_bot`. Threads stay out of every section list.
+   */
+  peer_bot?: null | string
   preview: string
   title: string
   /** `bot` when the bot named the section itself; null once the user renames it. */

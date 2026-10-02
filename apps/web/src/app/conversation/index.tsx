@@ -43,6 +43,7 @@ import type {
 import { useBot } from '../../stores/bots'
 import { draftsActions } from '../../stores/drafts'
 import {
+  isThread,
   liveSectionsOf,
   sectionsActions,
   sectionStatusOf,
@@ -54,6 +55,7 @@ import { useSettings } from '../../stores/settings'
 import { transcriptActions, type TranscriptMessage, useTranscript } from '../../stores/transcripts'
 import { uiActions, useUi } from '../../stores/ui'
 
+import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
 import { MemoryMarks } from './memory-marks'
@@ -368,7 +370,7 @@ export function MessageRow({
 
   // The bot's face beside its column, one size, bobbing while the turn runs. No name: the
   // header already says whose chat this is. The column reads in order: the work that
-  // produced the reply, the reply, then its actions.
+  // produced the reply, the bots it asked, the reply, then its actions.
   return (
     <article
       className={cn('group flex gap-2 py-1', assistant ? 'justify-start' : 'flex-row-reverse')}
@@ -387,6 +389,7 @@ export function MessageRow({
         className={cn('flex min-w-0 max-w-[80%] flex-col', assistant ? 'items-start' : 'items-end')}
       >
         {assistant ? <WorkStatus message={message} name={name} /> : null}
+        {assistant ? <AskingRow message={message} sender={bot?.name ?? null} /> : null}
         {hasBody ? (
           <div className={assistant ? bubbleClass : userBubbleClass}>
             {message.text ? (
@@ -831,7 +834,10 @@ function BotConversation() {
 
     // Leave the archived section: go to the bot's latest open one, or start a fresh one.
     const next = Object.values(useSections.getState().byId)
-      .filter(item => item.bot === section.bot && !item.archived_at && item.id !== section.id)
+      .filter(
+        item =>
+          item.bot === section.bot && !item.archived_at && !isThread(item) && item.id !== section.id
+      )
       .sort((a, b) => toMillis(b.updated_at) - toMillis(a.updated_at))[0]
 
     const target = next ?? (await sectionsActions().create(section.bot))

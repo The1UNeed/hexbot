@@ -6,6 +6,7 @@ import { cn } from '../../lib/cn'
 import type { Message, ToolCall } from '../../lib/types'
 
 import {
+  asks,
   liveLabel,
   MIN_WORK_S,
   runningLabel,
@@ -124,9 +125,12 @@ export function WorkStatus({ message, name }: { message: Message; name: string }
   const running = runningLabel(message)
 
   if (!shown) {
-    return message.streaming ? (
-      <Thinking label={running ?? message.activity} name={name} />
-    ) : null
+    const label = running ?? message.activity
+    // An ask in progress has its own row with the other bot's face; an empty line would push it
+    // below this bot's face.
+    const asking = asks(message).some(ask => ask.status === 'running')
+
+    return message.streaming && (label || !asking) ? <Thinking label={label} name={name} /> : null
   }
 
   const working = message.streaming && (Boolean(running) || !message.text)

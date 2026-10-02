@@ -1,4 +1,4 @@
-import type { Message, ToolCall } from '../../lib/types'
+import type { Message, ToolCall, ToolCallStatus } from '../../lib/types'
 
 /** Present and past phrasing per built-in tool; unknown tools fall back to their name. */
 const VERBS: Record<string, [live: string, done: string]> = {
@@ -14,6 +14,7 @@ const VERBS: Record<string, [live: string, done: string]> = {
   image_generate: ['Generating an image', 'Generated an image'],
   ls: ['Listing files', 'Listed files'],
   memory: ['Updating memory', 'Updated memory'],
+  message_bot: ['Asking a teammate', 'Asked a teammate'],
   patch: ['Editing', 'Edited'],
   read_file: ['Reading', 'Read'],
   search_files: ['Searching files', 'Searched files'],
@@ -67,6 +68,8 @@ export const QUIET_TOOLS = new Set([
   // Memory and soul writes get their own marks under the bubble (memoryMarks).
   'hexbot_soul',
   'memory',
+  // Asking another bot gets its own row with that bot's face (asks).
+  'message_bot',
   'session_search',
   'skill_view',
   'skills_list',
@@ -147,6 +150,66 @@ export const memoryMarks = (message: Message): MemoryMark[] =>
     return mark ? [mark] : []
   })
 
+/** The tool a bot asks another bot with; its row carries the other bot's face. */
+export const ASKING_TOOL = 'message_bot'
+
+/** One bot this turn asked for help, with the thread id once the daemon reported it. */
+export interface Ask {
+  /** The thread section on `target`, from the tool result; null until the ask completed. */
+  sectionId: null | string
+  status: ToolCallStatus
+  /** The target bot's name; null when a room member got the call stripped of its arguments. */
+  target: null | string
+}
+
+/** The result as an object: live calls carry one, restored history a JSON string. */
+function resultOf(call: ToolCall): Record<string, unknown> {
+  if (typeof call.result !== 'string') {
+    return record(call.result)
+  }
+
+  try {
+    return record(JSON.parse(call.result))
+  } catch {
+    return {}
+  }
+}
+
+/** Who a `message_bot` call asked: its `to` argument, else the daemon's context line. */
+export const askTarget = (call: ToolCall): null | string =>
+  string(record(call.args).to) || call.summary?.trim() || null
+
+/**
+ * The bots this turn asked, one entry per bot in first-ask order. Asking the
+ * same bot twice is one row: the thread between the two is one conversation.
+ * Running while any ask to that bot still runs.
+ */
+export function asks(message: Message): Ask[] {
+  const byTarget = new Map<string, Ask>()
+
+  for (const call of message.toolCalls) {
+    if (call.name !== ASKING_TOOL) {
+      continue
+    }
+
+    const target = askTarget(call)
+    const key = target ?? ''
+    const previous = byTarget.get(key)
+    const sectionId = string(resultOf(call).section_id) || previous?.sectionId || null
+
+    const status: ToolCallStatus =
+      call.status === 'running' || previous?.status === 'running' ? 'running' : call.status
+
+    byTarget.set(key, { sectionId, status, target })
+  }
+
+  return [...byTarget.values()]
+}
+
+/** "Asking Writer" while it runs, "Asked Writer" after; "a teammate" when the name is withheld. */
+export const askLabel = (status: ToolCallStatus, name: null | string): string =>
+  `${status === 'running' ? 'Asking' : 'Asked'} ${name ?? 'a teammate'}`
+
 const humanize = (name: string) => name.replace(/[_-]+/g, ' ').trim() || 'tool'
 
 const preview = (call: ToolCall) => {
@@ -171,9 +234,14 @@ export function toolLabel(
   return detail ? `${verb}${connector}${detail}` : verb
 }
 
-/** The step in progress, phrased for the working face; nothing while the bot thinks or writes. */
+/**
+ * The step in progress, phrased for the working face; nothing while the bot
+ * thinks or writes. An ask in progress has its own row and is not repeated here.
+ */
 export function runningLabel(message: Message): string | undefined {
-  const running = message.toolCalls.findLast(call => call.status === 'running')
+  const running = message.toolCalls.findLast(
+    call => call.status === 'running' && call.name !== ASKING_TOOL
+  )
 
   return running ? toolLabel(running, 'live') : undefined
 }

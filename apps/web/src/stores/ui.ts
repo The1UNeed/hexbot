@@ -1,7 +1,8 @@
 /**
  * Client-only preferences, persisted to localStorage: theme, right panel,
  * sidebar width and the last opened section (used by `/` to restore the app
- * where the user left it).
+ * where the user left it). The open thread panel is session state and is not
+ * persisted.
  */
 
 import { create } from 'zustand'
@@ -16,14 +17,29 @@ export interface LastSection {
   section: string
 }
 
+/** The private conversation the side panel shows: `peer` asking `bot` for help. */
+export interface ThreadRef {
+  /** The bot that was asked; the thread is a section of its. */
+  bot: string
+  /** The bot that asked. */
+  peer: string
+  /** Known once the ask completed; otherwise the panel looks the thread up. */
+  sectionId?: string
+}
+
 export interface UiState {
+  closeThread: () => void
   lastSection: LastSection | null
+  openThread: (thread: ThreadRef) => void
+  /** A finished ask learned the thread's id: fill it in if that thread is open. */
+  resolveThread: (bot: string, peer: string, sectionId: string) => void
   rightPanelOpen: boolean
   setLastSection: (value: LastSection | null) => void
   setSidebarWidth: (width: number) => void
   setTheme: (theme: ThemePreference) => void
   sidebarWidth: number
   theme: ThemePreference
+  thread: null | ThreadRef
   toggleRightPanel: (open?: boolean) => void
 }
 
@@ -37,6 +53,7 @@ export const useUi = create<UiState>()(
       rightPanelOpen: true,
       sidebarWidth: 280,
       theme: 'system',
+      thread: null,
 
       setTheme(theme) {
         set({ theme })
@@ -55,9 +72,34 @@ export const useUi = create<UiState>()(
 
       setLastSection(value) {
         set({ lastSection: value })
+      },
+
+      openThread(thread) {
+        set({ thread })
+      },
+
+      closeThread() {
+        set({ thread: null })
+      },
+
+      resolveThread(bot, peer, sectionId) {
+        set(state =>
+          state.thread && state.thread.bot === bot && state.thread.peer === peer
+            ? { thread: { ...state.thread, sectionId: state.thread.sectionId ?? sectionId } }
+            : state
+        )
       }
     }),
-    { name: 'hexbot.ui', version: 1 }
+    {
+      name: 'hexbot.ui',
+      partialize: ({ lastSection, rightPanelOpen, sidebarWidth, theme }) => ({
+        lastSection,
+        rightPanelOpen,
+        sidebarWidth,
+        theme
+      }),
+      version: 1
+    }
   )
 )
 

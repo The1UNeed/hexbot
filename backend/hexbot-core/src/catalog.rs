@@ -173,6 +173,7 @@ fn shape_section(home: &Path, row: Value) -> Result<Value> {
     Ok(json!({
         "id": row["id"],
         "bot": row["bot"],
+        "peer_bot": row["peer_bot"],
         "title": row["title"],
         "title_by": row["title_by"],
         "created_at": row["created_at"],
@@ -195,10 +196,11 @@ fn list_sections(home: &Path, caller: &str, p: &Value) -> Result<Vec<Value>> {
     }
     let bot = p["bot"].as_str();
     let archived = p["include_archived"].as_bool().unwrap_or(false);
+    let threads = p["include_threads"] == true;
     rows(
         &db::open(home)?,
-        "SELECT * FROM sections WHERE (? OR owner_id=?) AND (? IS NULL OR bot=?) AND (? OR archived_at IS NULL) ORDER BY updated_at DESC,id ASC",
-        &[&all, &caller, &bot, &bot, &archived],
+        "SELECT * FROM sections WHERE (? OR owner_id=?) AND (? IS NULL OR bot=?) AND (? OR archived_at IS NULL) AND (? OR peer_bot IS NULL) ORDER BY updated_at DESC,id ASC",
+        &[&all, &caller, &bot, &bot, &archived, &threads],
     )?
     .into_iter()
     .map(|r| shape_section(home, r))
@@ -1042,7 +1044,11 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             bot_owner(home, caller, name)?;
             let dir = profile(home, name)?;
             // The daemon checks for running turns and removes conversations first.
-            for s in list_sections(home, caller, &json!({"bot":name,"include_archived":true}))? {
+            for s in list_sections(
+                home,
+                caller,
+                &json!({"bot":name,"include_archived":true,"include_threads":true}),
+            )? {
                 delete_section(home, caller, s["id"].as_str().unwrap_or(""), true)?;
             }
             let mut conn = db::open(home)?;
@@ -1072,6 +1078,13 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             jobs.execute("DELETE FROM native_jobs WHERE bot=?", [name])?;
             jobs.execute("DELETE FROM native_job_imports WHERE bot=?", [name])?;
             Ok(json!({"deleted":true}))
+        }
+        "hexbot.sections.thread" => {
+            let bot = required(p, "bot")?;
+            let peer = required(p, "peer")?;
+            bot_owner(home, caller, bot)?;
+            let row = rows(&db::open(home)?, "SELECT * FROM sections WHERE bot=? AND owner_id=? AND peer_bot=? AND archived_at IS NULL ORDER BY created_at LIMIT 1", &[&bot, &caller, &peer])?.into_iter().next();
+            Ok(json!({"section":row.map(|r| shape_section(home,r)).transpose()?}))
         }
         "hexbot.sections.list" => Ok(json!({"sections":list_sections(home,caller,p)?})),
         "hexbot.sections.create" => Ok(

@@ -52,7 +52,7 @@ export const TOOL_GROUPS: { rows: ToolRow[]; title: string }[] = [
   {
     rows: [
       {
-        description: 'Send a message to another bot without being asked.',
+        description: 'Ask your other bots for help, one to one.',
         key: 'message_bots',
         label: 'Message other bots'
       },

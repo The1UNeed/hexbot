@@ -89,6 +89,21 @@ fn shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
         .collect()
 }
 
+fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
+    let mut expected = shape(connection);
+    for (table, columns) in &mut expected {
+        let names: &[&str] = match table.as_str() {
+            "bots" => &["auto_description", "auto_description_key"],
+            "sections" => &["peer_bot"],
+            _ => &[],
+        };
+        for name in names {
+            columns.push(((*name).into(), "TEXT".into(), false, None, 0));
+        }
+    }
+    expected
+}
+
 #[test]
 fn all_python_versions_upgrade_without_losing_rows() {
     let python_v11 = legacy_home(11);
@@ -98,7 +113,11 @@ fn all_python_versions_upgrade_without_losing_rows() {
         db::migrate(home.path()).unwrap();
         db::migrate(home.path()).unwrap();
         let connection = db::open(home.path()).unwrap();
-        assert_eq!(shape(&connection), shape(&reference), "schema {version}");
+        assert_eq!(
+            shape(&connection),
+            team_shape(&reference),
+            "schema {version}"
+        );
         assert_eq!(
             connection
                 .query_row(
@@ -331,7 +350,7 @@ fn current_python_database_preserves_title_attribution_and_spent_grants() {
         .unwrap();
     conn.execute("INSERT INTO spent_grants VALUES ('spent',9999999999)", [])
         .unwrap();
-    let before = shape(&conn);
+    let before = team_shape(&conn);
     db::migrate(home.path()).unwrap();
     assert_eq!(shape(&conn), before);
     assert_eq!(
@@ -346,5 +365,51 @@ fn current_python_database_preserves_title_attribution_and_spent_grants() {
         })
         .unwrap(),
         9999999999.
+    );
+}
+
+#[test]
+fn bot_thread_backfill_uses_first_sender_and_is_idempotent() {
+    let home = legacy_home(11);
+    let conn = db::open(home.path()).unwrap();
+    conn.execute_batch("INSERT INTO sections(id,bot,title) VALUES('thread','receiver','Old title'),('normal','receiver','Normal');
+        INSERT INTO bot_messages(id,from_bot,to_bot,section_id,created_at,text) VALUES('later','second','receiver','thread',2,'later'),('first','sender','receiver','thread',1,'first'),('unassigned','sender','receiver',NULL,0,'unassigned');").unwrap();
+    db::migrate(home.path()).unwrap();
+    let snapshot = || {
+        conn.prepare("SELECT id,peer_bot FROM sections WHERE id IN ('normal','thread') ORDER BY id")
+            .unwrap()
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    let before = snapshot();
+    assert_eq!(
+        before,
+        vec![
+            ("normal".into(), None),
+            ("thread".into(), Some("sender".into()))
+        ]
+    );
+    conn.execute(
+        "UPDATE sections SET peer_bot='preserved' WHERE id='normal'",
+        [],
+    )
+    .unwrap();
+    db::migrate(home.path()).unwrap();
+    assert_eq!(
+        snapshot(),
+        vec![
+            ("normal".into(), Some("preserved".into())),
+            ("thread".into(), Some("sender".into()))
+        ]
+    );
+    assert_eq!(
+        conn.query_row("SELECT version FROM schema_version", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        11
     );
 }
