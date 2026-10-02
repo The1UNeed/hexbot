@@ -34,14 +34,36 @@ export interface SectionsState {
   idsByBot: Record<string, string[]>
   liveSessionId: Record<string, string>
   loading: boolean
-  /** The user just sent a message: list the section now, ahead of the daemon's count. */
-  markTouched: (id: string) => void
+  /**
+   * The user just sent `text`: list the section now, ahead of the daemon's count, and
+   * title an unnamed one after it the way the daemon will.
+   */
+  markTouched: (id: string, text?: string) => void
   open: (id: string) => Promise<{ liveSessionId: null | string; section: Section }>
   refresh: (options?: { bot?: string; include_archived?: boolean }) => Promise<void>
   remove: (id: string, purgeMemory?: boolean) => Promise<void>
   rename: (id: string, title: string) => Promise<void>
   unarchive: (id: string) => Promise<void>
 }
+
+/** What the daemon calls a section nobody has named yet. */
+const DEFAULT_TITLE = 'New section'
+
+const QUOTES = /^["'“”]+|["'“”]+$/g
+
+/** The title the daemon gives a section from its first message (`clean_title` in catalog.rs). */
+export const titleFromPrompt = (text: string) =>
+  [
+    ...text
+      .trim()
+      .replace(QUOTES, '')
+      .replace(/[.!]+$/, '')
+      .replace(QUOTES, '')
+      .trim()
+      .replace(/[\n\r]/g, ' ')
+  ]
+    .slice(0, 60)
+    .join('')
 
 function indexSections(sections: Section[]): Pick<SectionsState, 'byId' | 'idsByBot'> {
   const byId: Record<string, Section> = {}
@@ -128,13 +150,29 @@ export const useSections = create<SectionsState>((set, get) => ({
     return { liveSessionId: live, section }
   },
 
-  markTouched(id) {
+  markTouched(id, text = '') {
     set(state => {
       const section = state.byId[id]
 
-      return section && !section.message_count
-        ? { byId: { ...state.byId, [id]: { ...section, message_count: 1 } } }
-        : state
+      if (!section) {
+        return state
+      }
+
+      const title =
+        section.title === DEFAULT_TITLE && !section.title_by ? titleFromPrompt(text) : ''
+
+      return section.message_count && !title
+        ? state
+        : {
+            byId: {
+              ...state.byId,
+              [id]: {
+                ...section,
+                message_count: section.message_count || 1,
+                ...(title ? { title, title_by: 'bot' as const } : {})
+              }
+            }
+          }
     })
   },
 

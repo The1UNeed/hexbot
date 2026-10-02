@@ -94,6 +94,7 @@ describe('runningLabel', () => {
 describe('stepsSummary', () => {
   it('is empty when only housekeeping ran', () => {
     expect(stepsSummary([call({ name: 'memory' }), call({ name: 'todo_list' })])).toBe('')
+    expect(stepsSummary([call({ name: 'hexbot_rename_section' })])).toBe('')
     expect(visibleSteps([call({ name: 'memory' }), call({ name: 'terminal' })])).toHaveLength(1)
   })
 

@@ -62,10 +62,10 @@ Three columns, resizable, min widths 240 / 480 / 300.
   "Waiting" (question-mark icon) or a blue "Working" (wrench). A section
   row shows only "Waiting"; "Working" there would be noise.
 - Under each bot: its two most recent touched sections from the last 14
-  days, newest first, plus the open one. A section row is its title, a
-  sparkle when the bot named it (the daemon names a section from its first
-  message; the bot can rename it with its tool), the status tag, and the
-  first message beneath in muted text. A section is touched once the user
+  days, newest first, plus the open one. A section row is one line: its
+  title and the status tag. The title is the first message until the bot
+  names the section with its tool; it changes the moment you send, and a
+  rename fades in where the old title was. A section is touched once the user
   has sent something in it, or typed a draft in its composer; drafts are
   kept per section in the browser and the row shows a pencil until the text
   is sent. Untouched sections and older ones stay behind "More", which lists
@@ -109,8 +109,8 @@ Three columns, resizable, min widths 240 / 480 / 300.
   "Searched the web for apple · 3s") that opens into the same panel; each
   step expands to arguments and output in monospace. Work that finished in
   under two seconds leaves no line.
-  Housekeeping tools (memory, tasks, section search, skills) never appear
-  once finished. The Computer tab in the panel still lists every call.
+  Housekeeping tools (memory, tasks, section search, skills, renaming the
+  section) never appear once finished. The Computer tab in the panel still lists every call.
 - Approvals: an inline card with the command or action in monospace, the
   reason, and three buttons: Approve, Deny, Always allow. The card stays in
   the transcript after the decision, marked with the outcome.

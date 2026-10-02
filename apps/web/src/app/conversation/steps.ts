@@ -9,6 +9,7 @@ const VERBS: Record<string, [live: string, done: string]> = {
   cronjob_manage: ['Scheduling', 'Scheduled'],
   delegate_task: ['Delegating', 'Delegated'],
   execute_code: ['Running code', 'Ran code'],
+  hexbot_rename_section: ['Naming the section', 'Named the section'],
   hexbot_soul: ['Updating soul', 'Updated soul'],
   image_generate: ['Generating an image', 'Generated an image'],
   ls: ['Listing files', 'Listed files'],
@@ -61,6 +62,8 @@ const NO_PREVIEW: Record<string, [live: string, done: string]> = {
 export const QUIET_TOOLS = new Set([
   // The question card is the clarify tool's whole UI; a step row would repeat it.
   'clarify',
+  // The new title in the roster and the header is the rename's whole result.
+  'hexbot_rename_section',
   // Memory and soul writes get their own marks under the bubble (memoryMarks).
   'hexbot_soul',
   'memory',
