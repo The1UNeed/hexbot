@@ -162,10 +162,15 @@ export interface Ask {
   target: null | string
 }
 
-/** The result as an object: live calls carry one, restored history a JSON string. */
+/**
+ * The daemon's result as an object. Live calls carry Pi's `{content, details}` with the daemon's
+ * result in `details`; restored history carries the result as a JSON string.
+ */
 function resultOf(call: ToolCall): Record<string, unknown> {
   if (typeof call.result !== 'string') {
-    return record(call.result)
+    const result = record(call.result)
+
+    return 'details' in result ? record(result.details) : result
   }
 
   try {
@@ -307,8 +312,7 @@ export function stepsSummary(calls: ToolCall[]): string {
 
   const seconds = calls.reduce((total, call) => total + (call.durationS ?? 0), 0)
 
-  const head =
-    steps.length === 1 && steps[0] ? toolLabel(steps[0]) : `${steps.length} steps`
+  const head = steps.length === 1 && steps[0] ? toolLabel(steps[0]) : `${steps.length} steps`
 
   return seconds > 0 ? `${head} · ${formatSeconds(seconds)}` : head
 }

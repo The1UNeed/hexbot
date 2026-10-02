@@ -1051,6 +1051,12 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             )? {
                 delete_section(home, caller, s["id"].as_str().unwrap_or(""), true)?;
             }
+            // Threads where this bot asked others stay with them, closed: a new bot with the
+            // same name starts its own.
+            db::open(home)?.execute(
+                "UPDATE sections SET archived_at=? WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL",
+                params![now(), name, caller],
+            )?;
             let mut conn = db::open(home)?;
             let tx = conn.transaction()?;
             tx.execute("DELETE FROM dreams WHERE bot=?", [name])?;

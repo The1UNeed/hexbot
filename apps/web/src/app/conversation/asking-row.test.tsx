@@ -38,6 +38,12 @@ describe('asks', () => {
     expect(asks(message([call({})]))).toEqual([
       { sectionId: 'th1', status: 'ok', target: 'writer' }
     ])
+    // Live results arrive as Pi's {content, details}; the daemon's result is in details.
+    expect(
+      asks(
+        message([call({ result: { content: [], details: { reply: 'ok', section_id: 'th3' } } })])
+      )
+    ).toEqual([{ sectionId: 'th3', status: 'ok', target: 'writer' }])
     // Restored history keeps the result as a JSON string.
     expect(asks(message([call({ result: '{"reply":"ok","section_id":"th2"}' })]))).toEqual([
       { sectionId: 'th2', status: 'ok', target: 'writer' }

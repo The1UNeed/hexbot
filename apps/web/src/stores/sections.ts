@@ -199,11 +199,16 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   async openThread(id, peer) {
-    const { messages, section } = await sectionsOpen(id)
+    const { messages, pending_clarify, section } = await sectionsOpen(id)
     const live = section.live_session_id
 
     if (live) {
       set(state => ({ liveSessionId: { ...state.liveSessionId, [id]: live } }))
+
+      // The owner answers the receiving bot's questions here: threads have no other view.
+      if (pending_clarify) {
+        useTranscripts.getState().clarifyRequest(live, pending_clarify, { notify: false })
+      }
     }
 
     return {

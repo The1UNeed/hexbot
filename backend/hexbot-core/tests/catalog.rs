@@ -559,6 +559,37 @@ fn deleting_a_bot_removes_its_scheduled_jobs() {
 }
 
 #[test]
+fn deleting_a_bot_closes_the_threads_where_it_asked_others() {
+    let home = setup();
+    let h = home.path();
+    create(h);
+    call(
+        h,
+        "alice",
+        "hexbot.bots.create",
+        json!({"name":"writer","model":"model-a","provider":"openai"}),
+    );
+    db::open(h).unwrap().execute_batch("INSERT INTO sections(id,bot,owner_id,title,peer_bot,created_at) VALUES('asked','writer','alice','From Research Owl','research-owl',1);").unwrap();
+    call(
+        h,
+        "alice",
+        "hexbot.bots.delete",
+        json!({"name":"research-owl"}),
+    );
+    // A new bot with the same name must not inherit the old conversation.
+    assert!(
+        call(
+            h,
+            "alice",
+            "hexbot.sections.thread",
+            json!({"bot":"writer","peer":"research-owl"})
+        )["section"]
+            .is_null()
+    );
+    assert!(!catalog::section(h, "alice", "asked").unwrap()["archived_at"].is_null());
+}
+
+#[test]
 fn threads_are_hidden_from_lists_and_counts_but_readable_by_the_owner() {
     let home = setup();
     let h = home.path();

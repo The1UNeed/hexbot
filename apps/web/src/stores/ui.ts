@@ -40,7 +40,10 @@ export interface UiState {
   sidebarWidth: number
   theme: ThemePreference
   thread: null | ThreadRef
+  /** Bumped when the daemon reports a section changed while a thread is open: read it again. */
+  threadChanged: number
   toggleRightPanel: (open?: boolean) => void
+  touchThread: () => void
 }
 
 export const SIDEBAR_MIN_WIDTH = 240
@@ -54,6 +57,7 @@ export const useUi = create<UiState>()(
       sidebarWidth: 280,
       theme: 'system',
       thread: null,
+      threadChanged: 0,
 
       setTheme(theme) {
         set({ theme })
@@ -80,6 +84,10 @@ export const useUi = create<UiState>()(
 
       closeThread() {
         set({ thread: null })
+      },
+
+      touchThread() {
+        set(state => (state.thread ? { threadChanged: state.threadChanged + 1 } : state))
       },
 
       resolveThread(bot, peer, sectionId) {

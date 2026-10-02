@@ -1580,9 +1580,9 @@ async fn descriptions_use_one_shot_skip_current_keys_and_coalesce() {
     assert_eq!(message["name"], "owl");
     runtime.refresh_description("owl").await;
     assert_eq!(team_processes(h, "owl").len(), 1);
-    assert!(!runtime.description_stale("owl"));
+    assert!(!description_stale(&runtime, "owl"));
     fs::write(h.join("profiles/owl/SOUL.md"), "Changed").unwrap();
-    assert!(runtime.description_stale("owl"));
+    assert!(description_stale(&runtime, "owl"));
     runtime.refresh_description("owl").await;
     assert_eq!(team_processes(h, "owl").len(), 2);
     db::open(h)
@@ -1607,6 +1607,59 @@ async fn descriptions_use_one_shot_skip_current_keys_and_coalesce() {
             .unwrap(),
         0
     );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_profile_changed_during_a_description_call_is_described_next() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let (home, runtime, _) = setup();
+    let h = home.path();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    fs::write(
+        h.join("hold-port"),
+        listener.local_addr().unwrap().port().to_string(),
+    )
+    .unwrap();
+    // Each one-shot call reports the soul it was given, then answers when the test says so.
+    fs::write(h.join("pi.cjs"), r#"#!/usr/bin/env node
+const fs=require('node:fs'),net=require('node:net'),rl=require('node:readline').createInterface({input:process.stdin});
+const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
+rl.on('line',line=>{const c=JSON.parse(line);emit({type:'response',id:c.id,command:c.type,success:true,data:{}});if(c.type!=='prompt')return;
+const soul=JSON.parse(c.message).soul,socket=net.connect(Number(fs.readFileSync('../../hold-port','utf8')),'127.0.0.1',()=>socket.write(soul+'\n'));
+socket.once('data',()=>{const text='Described from '+soul+'.';emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text}],stopReason:'stop'}});emit({type:'agent_settled'});socket.end();});});
+"#).unwrap();
+    async fn call(
+        listener: &tokio::net::TcpListener,
+    ) -> (String, BufReader<tokio::net::TcpStream>) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = BufReader::new(socket);
+            let mut soul = String::new();
+            socket.read_line(&mut soul).await.unwrap();
+            (soul.trim().to_owned(), socket)
+        })
+        .await
+        .unwrap()
+    }
+    fs::write(h.join("profiles/owl/SOUL.md"), "First").unwrap();
+    let first = tokio::spawn({
+        let runtime = runtime.clone();
+        async move { runtime.refresh_description("owl").await }
+    });
+    let (soul, mut socket) = call(&listener).await;
+    assert_eq!(soul, "First");
+    // The soul changes mid-call; its refresh returns at once and leaves a rerun behind.
+    fs::write(h.join("profiles/owl/SOUL.md"), "Second").unwrap();
+    runtime.refresh_description("owl").await;
+    socket.get_mut().write_all(b"go\n").await.unwrap();
+    let (soul, mut socket) = call(&listener).await;
+    assert_eq!(soul, "Second");
+    socket.get_mut().write_all(b"go\n").await.unwrap();
+    first.await.unwrap();
+    let row = bot_row(h, "owl").unwrap();
+    assert_eq!(row["auto_description"], "Described from Second.");
+    assert!(runtime.description_refreshes.lock().unwrap().is_empty());
     runtime.shutdown().await;
 }
 
@@ -1833,4 +1886,8 @@ fn bot_row(home: &Path, name: &str) -> Result<Value> {
     .into_iter()
     .next()
     .ok_or_else(|| Error::new(4205, "bot not found"))
+}
+
+fn description_stale(runtime: &Runtime, bot: &str) -> bool {
+    matches!(runtime.description_inputs(bot), Ok(Some((row, _, key))) if row["auto_description_key"] != key.as_str())
 }

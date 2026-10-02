@@ -12,7 +12,7 @@ use base64::Engine;
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -86,7 +86,7 @@ pub struct Runtime {
     weak: Weak<Self>,
     stopping: AtomicBool,
     children: Mutex<HashMap<String, delegation::Child>>,
-    description_refreshes: Mutex<HashSet<String>>,
+    description_refreshes: Mutex<HashMap<String, bool>>,
 }
 impl Runtime {
     pub fn new(home: PathBuf, events: EventHub, pi_executable: PathBuf) -> Result<Arc<Self>> {
@@ -104,7 +104,7 @@ impl Runtime {
             weak: weak.clone(),
             stopping: AtomicBool::new(false),
             children: Mutex::new(HashMap::new()),
-            description_refreshes: Mutex::new(HashSet::new()),
+            description_refreshes: Mutex::new(HashMap::new()),
         });
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let weak = Arc::downgrade(&runtime);
@@ -2094,19 +2094,28 @@ impl Runtime {
             });
         }
     }
+    /// One refresh per bot at a time. A request while one runs marks it to run
+    /// once more, so a profile changed mid-call still gets described.
     pub async fn refresh_description(&self, bot: &str) {
-        if !self
-            .description_refreshes
-            .lock()
-            .unwrap()
-            .insert(bot.to_owned())
         {
-            return;
+            let mut running = self.description_refreshes.lock().unwrap();
+            if let Some(again) = running.get_mut(bot) {
+                *again = true;
+                return;
+            }
+            running.insert(bot.to_owned(), false);
         }
-        let result = self.write_description(bot).await;
-        self.description_refreshes.lock().unwrap().remove(bot);
-        if let Err(error) = result {
-            eprintln!("Could not refresh description for {bot}: {}", error.message);
+        loop {
+            if let Err(error) = self.write_description(bot).await {
+                eprintln!("Could not refresh description for {bot}: {}", error.message);
+            }
+            let mut running = self.description_refreshes.lock().unwrap();
+            if running.get(bot) == Some(&true) {
+                running.insert(bot.to_owned(), false);
+            } else {
+                running.remove(bot);
+                return;
+            }
         }
     }
     /// The bot row, soul, and input key behind a hidden description; None when
@@ -2134,9 +2143,6 @@ impl Runtime {
             &soul,
         );
         Ok(Some((row, soul, key)))
-    }
-    fn description_stale(&self, bot: &str) -> bool {
-        matches!(self.description_inputs(bot), Ok(Some((row, _, key))) if row["auto_description_key"] != key.as_str())
     }
     async fn write_description(&self, bot: &str) -> Result<()> {
         let Some((row, soul, key)) = self.description_inputs(bot)? else {
@@ -2236,9 +2242,6 @@ impl Runtime {
                             &description
                         }
                     ));
-                    if self.description_stale(name) {
-                        self.spawn_description_refresh(name);
-                    }
                 }
             }
         }

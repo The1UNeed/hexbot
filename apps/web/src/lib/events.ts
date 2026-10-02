@@ -33,6 +33,7 @@ import type {
   ToolStartPayload
 } from '../stores/transcripts'
 import { transcriptNotify, useTranscripts } from '../stores/transcripts'
+import { useUi } from '../stores/ui'
 
 import type { HexbotRpcClient } from './rpc'
 import type { ClarifyRequestPayload, RoomEvent, RoomTurn, SessionInfo, Usage } from './types'
@@ -180,6 +181,9 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
     case 'hexbot.sections.changed':
       effects.refreshSections()
       effects.refreshBots()
+      // Every ask touches its thread; an open thread panel reads it again (new live session,
+      // first ask while the panel waited).
+      useUi.getState().touchThread()
 
       return
 

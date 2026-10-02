@@ -8,10 +8,12 @@ import { avatarSrc } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import type { Bot, Message } from '../../lib/types'
 import { useBot } from '../../stores/bots'
+import { useConnection } from '../../stores/connection'
 import { sectionsActions, useLiveSessionId } from '../../stores/sections'
-import { useTranscript } from '../../stores/transcripts'
+import { useTranscript, useTranscripts } from '../../stores/transcripts'
 import { type ThreadRef, useUi } from '../../stores/ui'
-import { bubbleClass, Markdown } from '../conversation'
+import { ApprovalCard, bubbleClass, CardRow, Markdown } from '../conversation'
+import { ClarifyCard } from '../conversation/clarify-card'
 import { MemoryMarks } from '../conversation/memory-marks'
 import { WorkStatus } from '../conversation/work-status'
 
@@ -98,6 +100,9 @@ export function ThreadPanel({ thread }: { thread: ThreadRef }): React.JSX.Elemen
   // Counts finished replies: each one is a reason to read the history again.
   const [completed, setCompleted] = useState(0)
   const wasStreaming = useRef(false)
+  // A daemon restart drops live sessions; read the thread again to pick up its new one.
+  const epoch = useConnection(state => state.epoch)
+  const changed = useUi(state => state.threadChanged)
   const receiverName = receiver?.display_name ?? thread.bot
   const senderName = sender?.display_name ?? thread.peer
 
@@ -119,8 +124,21 @@ export function ThreadPanel({ thread }: { thread: ThreadRef }): React.JSX.Elemen
 
         const opened = await sectionsActions().openThread(id, thread.peer)
 
+        // A reply still streaming lives in the live transcript, earlier parts included; showing
+        // its stored parts as well would repeat them until it completes.
+        const streaming = opened.liveSessionId
+          ? useTranscripts.getState().bySession[opened.liveSessionId]?.streamingMessageId
+          : null
+
+        const lastQuestion = opened.messages.findLastIndex(message => message.role === 'user')
+
+        const messages =
+          streaming && lastQuestion >= 0
+            ? opened.messages.slice(0, lastQuestion + 1)
+            : opened.messages
+
         if (!stale) {
-          setLoaded({ kind: 'ready', messages: opened.messages, sectionId: id })
+          setLoaded({ kind: 'ready', messages, sectionId: id })
           setTail([])
         }
       } catch (error) {
@@ -135,7 +153,7 @@ export function ThreadPanel({ thread }: { thread: ThreadRef }): React.JSX.Elemen
     return () => {
       stale = true
     }
-  }, [completed, thread.bot, thread.peer, thread.sectionId])
+  }, [changed, completed, epoch, thread.bot, thread.peer, thread.sectionId])
 
   // A reply in progress stays on screen once done, until the history read after it lands.
   useEffect(() => {
@@ -213,6 +231,17 @@ export function ThreadPanel({ thread }: { thread: ThreadRef }): React.JSX.Elemen
           <>
             {loaded.kind === 'ready' ? loaded.messages.map(row) : null}
             {live.map(row)}
+            {/* The owner answers the receiving bot here: threads have no other view. */}
+            {transcript?.clarifies.map(clarify => (
+              <CardRow bot={receiver} key={clarify.requestId}>
+                <ClarifyCard clarify={clarify} />
+              </CardRow>
+            ))}
+            {transcript?.approvals.map(approval => (
+              <CardRow bot={receiver} key={approval.requestId}>
+                <ApprovalCard approval={approval} />
+              </CardRow>
+            ))}
             <div ref={bottom} />
           </>
         )}

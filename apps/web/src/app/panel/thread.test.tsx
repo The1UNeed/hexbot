@@ -152,6 +152,57 @@ describe('ThreadPanel', () => {
     expect(threadErrorText(new Error('socket closed'))).toBe('socket closed')
   })
 
+  it('lets the owner answer the asked bot: its questions and approvals show here', async () => {
+    rpc({
+      'hexbot.sections.open': () => ({
+        messages: history,
+        pending_clarify: { question: 'Which tone?', request_id: 'q1' },
+        section: thread
+      })
+    })
+    render(<ThreadPanel thread={{ bot: 'writer', peer: 'scout', sectionId: 'th1' }} />)
+    expect(await screen.findByText('Which tone?')).toBeVisible()
+    act(() =>
+      useTranscripts
+        .getState()
+        .approvalRequest('live-t', { command: 'curl example.com', request_id: 'ap1' })
+    )
+    expect(screen.getByText('curl example.com')).toBeVisible()
+  })
+
+  it('shows a reply in progress once, from the live transcript', async () => {
+    const transcripts = useTranscripts.getState()
+    act(() => {
+      transcripts.messageStart('live-t')
+      transcripts.messageDelta('live-t', 'Drafting. Checking the style guide.')
+    })
+    rpc({
+      'hexbot.sections.open': () => ({
+        // The reply's first part is already stored while it streams on.
+        messages: [...history, { role: 'assistant', row_id: 'a2', text: 'Drafting.' }],
+        section: thread
+      })
+    })
+    render(<ThreadPanel thread={{ bot: 'writer', peer: 'scout', sectionId: 'th1' }} />)
+    expect(await screen.findByText('Drafting. Checking the style guide.')).toBeVisible()
+    expect(screen.queryByText('Drafting.')).toBeNull()
+  })
+
+  it('reads the thread again when the daemon says it changed', async () => {
+    const call = rpc({ 'hexbot.sections.thread': () => ({ section: null }) })
+    render(<ThreadPanel thread={{ bot: 'writer', peer: 'scout' }} />)
+    expect(await screen.findByText('Scout has not asked Writer anything yet.')).toBeVisible()
+    call.mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'hexbot.sections.thread'
+          ? { section: thread }
+          : { messages: history, section: thread }
+      )
+    )
+    act(() => useUi.getState().touchThread())
+    expect(await screen.findByText('Can you draft the intro?')).toBeVisible()
+  })
+
   it('closes from its button and from Escape', async () => {
     rpc({ 'hexbot.sections.open': () => ({ messages: history, section: thread }) })
     render(<ThreadPanel thread={{ bot: 'writer', peer: 'scout', sectionId: 'th1' }} />)
