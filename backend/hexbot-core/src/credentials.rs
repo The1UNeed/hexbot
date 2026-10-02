@@ -319,9 +319,18 @@ struct Layout {
     confine: Option<Confine>,
 }
 /// Codex's workspace sandbox for a section's code in Manual and Auto: no
-/// network and no host Unix sockets, writes only inside the workspace (none in
-/// Manual), and shell profiles and login items read-only even inside it.
-/// Matches isolation.ts.
+/// network, no host Unix sockets, no signals outside it, writes only inside the
+/// workspace (none in Manual) and to a few device files, and shell profiles
+/// and login items read-only even inside it. On Linux /run and /tmp are
+/// private. Matches isolation.ts.
+const DEVICES: [&str; 6] = [
+    "/dev/null",
+    "/dev/zero",
+    "/dev/tty",
+    "/dev/stdout",
+    "/dev/stderr",
+    "/dev/dtracehelper",
+];
 struct Confine {
     writable: Vec<PathBuf>,
     config: Vec<PathBuf>,
@@ -496,9 +505,14 @@ fn sandbox_profile(layout: &Layout) -> String {
         format!("(deny file-write-unlink {ancestors})")
     };
     let confine = layout.confine.as_ref().map_or_else(String::new, |confine| {
-        let inside = std::iter::once(Path::new("/dev"))
-            .chain(confine.writable.iter().map(PathBuf::as_path))
-            .map(|p| format!("(subpath {})", quoted(p.to_string_lossy())))
+        let inside = DEVICES
+            .iter()
+            .map(|p| format!("(literal {})", quoted(p)))
+            .chain(
+                std::iter::once(Path::new("/dev/fd"))
+                    .chain(confine.writable.iter().map(PathBuf::as_path))
+                    .map(|p| format!("(subpath {})", quoted(p.to_string_lossy()))),
+            )
             .collect::<Vec<_>>()
             .join(" ");
         let config = confine
@@ -511,7 +525,7 @@ fn sandbox_profile(layout: &Layout) -> String {
             .collect::<Vec<_>>()
             .join(" ");
         format!(
-            "(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny file-write* (require-not (require-any {inside})))(deny file-write* {config})"
+            "(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-write* (require-not (require-any {inside})))(deny file-write* {config})"
         )
     });
     format!(
@@ -534,6 +548,8 @@ fn bwrap_arguments(layout: &Layout) -> Vec<OsString> {
             "/proc",
             "--tmpfs",
             "/run",
+            "--tmpfs",
+            "/tmp",
         ]
     } else {
         &[
@@ -547,7 +563,12 @@ fn bwrap_arguments(layout: &Layout) -> Vec<OsString> {
         ]
     };
     let mut args: Vec<OsString> = base.iter().map(Into::into).collect();
-    for path in layout.confine.iter().flat_map(|c| &c.writable) {
+    for path in layout
+        .confine
+        .iter()
+        .flat_map(|c| &c.writable)
+        .filter(|p| *p != Path::new("/tmp"))
+    {
         args.extend(["--bind".into(), path.into(), path.into()]);
     }
     for root in &layout.roots {

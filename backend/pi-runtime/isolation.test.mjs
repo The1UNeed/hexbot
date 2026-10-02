@@ -247,6 +247,8 @@ test('the workspace sandbox confines writes and blocks the network', {skip:proce
   const unix = createServer(c => c.end()).listen(socket);
   await new Promise(resolve => unix.on('listening', resolve)); t.after(() => unix.close());
   assert.equal(run(`python3 -c "import socket;s=socket.socket(socket.AF_UNIX);s.connect('${socket}')" 2>/dev/null && exit 14; echo done`, [user]), 'done\n');
+  // No signals leave the sandbox (kill -9 -1 would reach every process you own), and only a few device files take writes.
+  assert.equal(run(`kill -0 ${process.pid} 2>/dev/null && exit 15; sleep 5 & kill $! || exit 16; (echo x > /dev/random) 2>/dev/null && exit 17; echo x > /dev/null || exit 18; echo done`, [user]), 'done\n');
   assert.equal(run(`echo ok > '${user}/notes.txt' || exit 10; (echo x > '${other}/x') 2>/dev/null && exit 11; (echo x > '${user}/.zshrc') 2>/dev/null && exit 12; (exec 3<>/dev/tcp/127.0.0.1/${port}) 2>/dev/null && exit 13; echo done`, [user]), 'done\n');
   // Manual's workspace is empty: nothing is writable.
   assert.equal(run(`(echo x > '${user}/notes.txt') 2>/dev/null && exit 10; cat '${user}/notes.txt'`, []), 'ok\n');
@@ -267,7 +269,9 @@ test('bubblewrap confines a workspace command to its folders without a network',
   const outputs = join(home, 'hexbot/profiles/owl/artifacts'); mkdirSync(outputs, {recursive:true});
   const command = workspace => execFileSync(process.execPath, ['--input-type=module', '-e', `Object.defineProperty(process,'platform',{value:'linux'}); const {isolatedCommand}=await import(${JSON.stringify(moduleUrl)}); console.log(isolatedCommand('true',${JSON.stringify(join(home, 'hexbot'))},[${JSON.stringify(outputs)}],${JSON.stringify(workspace)}));`], {env:{...process.env, HOME:user, PATH:home}, encoding:'utf8'});
   const confined = command([workspace]);
-  assert.ok(confined.includes(`'--unshare-net' '--ro-bind' '/' '/' '--dev' '/dev' '--proc' '/proc' '--tmpfs' '/run'`));
+  assert.ok(confined.includes(`'--unshare-net' '--ro-bind' '/' '/' '--dev' '/dev' '--proc' '/proc' '--tmpfs' '/run' '--tmpfs' '/tmp'`));
+  // Host sockets under /tmp (X11, agents) stay hidden even though /tmp is part of every workspace.
+  assert.ok(!command([workspace, '/tmp']).includes(`'--bind' '/tmp' '/tmp'`));
   // Output folders open only when the workspace holds them: Manual's is empty.
   assert.ok(!confined.includes(`'--bind' '${outputs}'`));
   assert.ok(command([workspace, outputs]).includes(`'--bind' '${outputs}' '${outputs}'`));

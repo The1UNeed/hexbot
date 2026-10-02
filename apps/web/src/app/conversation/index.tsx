@@ -1,14 +1,5 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
-import {
-  Check,
-  Copy,
-  File,
-  MoreHorizontal,
-  PanelRight,
-  RotateCcw,
-  Trash2,
-  X
-} from 'lucide-react'
+import { Check, Copy, File, MoreHorizontal, PanelRight, RotateCcw, Trash2, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -420,12 +411,14 @@ export function CardRow({ bot, children }: { bot?: Bot; children: React.ReactNod
 }
 
 const APPROVAL_BUTTONS: Record<ApprovalChoice, string> = {
+  always: 'Always allow',
   deny: 'Deny',
   once: 'Approve',
   session: 'Allow in this section'
 }
 
 const APPROVAL_CHOICES: Record<ApprovalChoice, string> = {
+  always: 'Always allowed',
   deny: 'Denied',
   once: 'Approved',
   session: 'Allowed in this section'

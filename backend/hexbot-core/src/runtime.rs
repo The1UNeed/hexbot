@@ -1541,11 +1541,18 @@ impl Runtime {
                     if request["kind"] != "approval" {
                         return Err(Error::new(4202, "not an approval request"));
                     }
-                    let choice = required(p, "choice")?;
-                    if !request["approval_payload"]["choices"]
-                        .as_array()
-                        .is_some_and(|choices| choices.iter().any(|c| c == choice))
-                    {
+                    let offered = |choice: &str| {
+                        request["approval_payload"]["choices"]
+                            .as_array()
+                            .is_some_and(|choices| choices.iter().any(|c| c == choice))
+                    };
+                    // Apps from before Always allow was removed still send it.
+                    let choice = match required(p, "choice")? {
+                        "always" if offered("session") => "session",
+                        "always" => "once",
+                        choice => choice,
+                    };
+                    if !offered(choice) {
                         return Err(Error::new(4202, "invalid approval choice"));
                     }
                     if request["method"] == "confirm" {
@@ -1593,7 +1600,8 @@ impl Runtime {
                     {
                         let mut state = s.state.lock().unwrap();
                         if let Some(sender) = state.native_approvals.remove(id) {
-                            let _ = sender.send(required(p, "choice")?.to_owned());
+                            let _ =
+                                sender.send(answer["value"].as_str().unwrap_or("deny").to_owned());
                         }
                         state.pending.remove(id);
                     }
@@ -3502,7 +3510,8 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
                 .unwrap()
         };
         assert_eq!(respond("session").await.unwrap_err().code, 4202);
-        respond("once").await.unwrap();
+        // An older app's Always allow approves once where a section choice is not offered.
+        respond("always").await.unwrap();
         assert!(worker.await.unwrap());
         db::open(home.path())
             .unwrap()

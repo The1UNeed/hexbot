@@ -76,10 +76,11 @@ export default function hexbot(pi: any) {
   // inside it. Manual: the sandbox is read-only and every file change asks. Off
   // (Bypass): Pi's own behaviour, with no prompts, checks or sandbox. A command
   // that needs more sets full_access, and the user decides.
-  const workspace = () => live.approvalMode === 'manual' ? [] : [live.cwd ?? config.cwd, ...live.outputDirs ?? [], tmpdir(), '/tmp'];
+  const workspaceRoots = () => [live.cwd ?? config.cwd, ...live.outputDirs ?? [], tmpdir(), '/tmp'];
+  const workspace = () => live.approvalMode === 'manual' ? [] : workspaceRoots();
   const inWorkspace = (path: string) => {
     const target = canonicalPath(path, process.cwd());
-    return [live.cwd ?? config.cwd, ...live.outputDirs ?? []].some(root => under(target, canonicalPath(root, process.cwd())));
+    return workspaceRoots().some(root => under(target, canonicalPath(root, process.cwd())));
   };
   type Level = 'none' | 'base' | 'confined';
   const levelFor = (input: any): Level => live.approvalMode === 'off' ? 'none' : input.full_access === true ? 'base' : 'confined';
@@ -87,11 +88,12 @@ export default function hexbot(pi: any) {
   // runs, and the file it checked. Pi may gate several calls before running
   // them, so execution refuses a call whose mode or target has changed since.
   const allowedCalls = new Map<string, {mode: string, level: Level, target?: string}>();
+  const wrapped = new Set<string>();
   const sessionAllowed = new Set<string>();
   const gate = async (event: any, ctx: any) => {
     let target: string | undefined;
     const denial = await check(event, ctx, path => { target = path; });
-    if (!denial && event.toolCallId) allowedCalls.set(event.toolCallId, {mode: live.approvalMode, level: levelFor(event.input), target});
+    if (!denial && event.toolCallId && wrapped.has(event.toolName)) allowedCalls.set(event.toolCallId, {mode: live.approvalMode, level: levelFor(event.input), target});
     return denial;
   };
   const check = async (event: any, ctx: any, checked: (path: string) => void = () => {}) => {
@@ -149,6 +151,7 @@ export default function hexbot(pi: any) {
     config.enabledToolsets?.includes(name === 'bash' ? 'terminal' : 'file');
   for (const [name, factory] of Object.entries(factories) as [string, any][]) {
     if (!enabled(name)) continue;
+    wrapped.add(name);
     const bypass = () => live.approvalMode === 'off';
     const options = (level: Level = 'confined') => name === 'bash' ? {spawnHook: (c: any) => level === 'none' ? c : {...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)}} :
       name === 'grep' && !bypass() ? {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: (path: string) => credentialPath(path, live.home) ? '' : readFileSync(path, 'utf8')}} : {};

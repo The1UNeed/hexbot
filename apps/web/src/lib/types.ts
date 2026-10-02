@@ -9,7 +9,8 @@
  * docs/client-architecture.md.
  */
 
-export type ApprovalChoice = 'deny' | 'once' | 'session'
+/** `always` comes only from daemons before Always allow was removed. */
+export type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 
 export type ApprovalMode = 'manual' | 'off' | 'smart'
 
@@ -419,7 +420,7 @@ export interface RoomLimits {
 }
 
 export interface Room {
-  approval_mode: ApprovalMode | null
+  approval_mode: BotApprovalMode | null
   archived_at: null | number
   created_at: number
   id: string

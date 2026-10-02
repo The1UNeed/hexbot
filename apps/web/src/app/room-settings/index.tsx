@@ -12,7 +12,7 @@ import { roomsPeople } from '../../lib/api'
 import { useApprovalModes } from '../../lib/approval-modes'
 import { avatarSrc } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
-import type { ApprovalMode, Bot, Room, User } from '../../lib/types'
+import type { Bot, BotApprovalMode, Room, User } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useRooms } from '../../stores/rooms'
 import { useUsers } from '../../stores/users'
@@ -460,13 +460,16 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
               <div className="w-36 shrink-0">
                 <Select
                   label="Room approval mode"
-                  onValueChange={value => void save({ approval_mode: value as ApprovalMode })}
-                  options={approvalModes.map(({ label, value }) => ({ label, value }))}
-                  value={room.approval_mode ?? 'smart'}
+                  onValueChange={value => void save({ approval_mode: value as BotApprovalMode })}
+                  options={[
+                    { label: 'Inherit', value: 'inherit' },
+                    ...approvalModes.map(({ label, value }) => ({ label, value }))
+                  ]}
+                  value={room.approval_mode ?? 'inherit'}
                 />
               </div>
             }
-            description="How tool actions in this room get approved."
+            description="How tool actions in this room get approved. Inherit uses each bot's own mode."
             title="Approval mode"
           />
           <Row
