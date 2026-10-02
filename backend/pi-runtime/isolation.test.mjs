@@ -5,7 +5,12 @@ import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync} from 'node:
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createInterface} from 'node:readline';
-import {isolatedCommand} from './isolation.ts';
+import {isolatedCommand, probeIsolation} from './isolation.ts';
+
+// The Linux tests run the real bubblewrap when it passes the daemon's probe.
+// CI installs it; Ubuntu 24.04 needs the AppArmor profile from the install docs.
+const bubblewrap = process.platform === 'linux' && !!probeIsolation();
+const needsBubblewrap = {skip: !bubblewrap && 'needs a working bubblewrap on Linux'};
 
 test('sandbox protects newly created secrets and home writes but permits output folders and unrelated files', {skip:process.platform !== 'darwin'}, async t => {
   const base = mkdtempSync(join(tmpdir(), 'hexbot-isolation-'));
@@ -63,6 +68,63 @@ test('the sandbox keeps the parent of a nested store in place but lets siblings 
   const profile = execFileSync(process.execPath, ['--input-type=module', '-e', `const {sandboxProfile} = await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); process.stdout.write(sandboxProfile(${JSON.stringify(home)}));`], {env:{...process.env, HOME:user}, encoding:'utf8'});
   assert.ok(profile.includes(`(deny file-write-unlink (literal ${JSON.stringify(join(user, '.config'))}))`), profile);
   assert.ok(!profile.includes(`file-write-unlink (literal ${JSON.stringify(user)})`));
+});
+
+// Masked files are bound to /dev/null, which a user namespace mounts nodev, so
+// opening one fails; masked folders are empty; the home is read-only except the
+// output folders; everything outside stays as it was.
+test('bubblewrap masks secrets, keeps the home read-only and reopens output folders', needsBubblewrap, async t => {
+  const {spawnSync} = await import('node:child_process');
+  const base = mkdtempSync(join(tmpdir(), 'hexbot-bwrap-run-'));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const home = join(base, 'home'), work = join(home, 'workspace');
+  for (const dir of [work, join(home,'profiles/owl'), join(home,'bin'), join(home,'hooks'), join(home,'skills'), join(home,'profiles/owl/artifacts'), join(home,'runtime/sessions/one/attachments'), join(home,'desktop-data')]) mkdirSync(dir,{recursive:true});
+  for (const file of ['profiles/owl/.env', 'profiles/owl/auth.json', 'desktop-data/token']) writeFileSync(join(home, file), 'secret');
+  writeFileSync(join(base,'auth.json'),'outside');
+  writeFileSync(join(base,'.env'),'outside');
+  const script = `cat '${home}/profiles/owl/.env' >/dev/null 2>&1 && exit 10; cat '${home}/profiles/owl/auth.json' >/dev/null 2>&1 && exit 13; [ -z "$(ls -A '${home}/desktop-data')" ] || exit 15; cat '${base}/auth.json' || exit 11; cat '${base}/.env' || exit 14; for p in config.yaml bin/script hooks/script skills/script profiles/owl/config.yaml workspace/result; do (echo bad > '${home}'/"$p") 2>/dev/null && exit 12; done; echo ok > '${home}/profiles/owl/artifacts/result' || exit 16; echo ok > '${home}/runtime/sessions/one/attachments/result' || exit 17; echo ok > '${base}/normal-workspace' || exit 18; echo done`;
+  const result = spawnSync('/bin/bash', ['-c', isolatedCommand(script, home, [join(home,'profiles/owl/artifacts'), join(home,'runtime/sessions/one/attachments')])], {cwd:work, encoding:'utf8'});
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'outsideoutsidedone\n');
+  assert.equal(readFileSync(join(home, 'profiles/owl/artifacts/result'), 'utf8'), 'ok\n');
+  assert.equal(readFileSync(join(home, 'profiles/owl/.env'), 'utf8'), 'secret');
+});
+
+// An existing store is bound read-only, so no program can write, truncate or
+// remove it, while its parent still takes new siblings. A store that does not
+// exist yet has no bind (the shell guard asks when a command names one).
+test('bubblewrap refuses writes to existing credential stores by any program', needsBubblewrap, async t => {
+  const {spawnSync} = await import('node:child_process');
+  const base = mkdtempSync(join(tmpdir(), 'hexbot-bwrap-stores-'));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const user = join(base, 'user'), home = join(base, 'home');
+  mkdirSync(join(user, '.aws'), {recursive:true}); mkdirSync(join(user, '.config/gh'), {recursive:true}); mkdirSync(home);
+  for (const file of ['.aws/credentials', '.netrc', '.config/gh/hosts.yml']) writeFileSync(join(user, file), 'keep');
+  writeFileSync(join(user, 'source'), 'replacement');
+  const script = `curl -s -o "$HOME/.aws/credentials" "file://$HOME/source" 2>/dev/null && exit 17; truncate -s0 "$HOME/.netrc" 2>/dev/null && exit 18; echo x > "$HOME/.aws/credentials" 2>/dev/null && exit 10; echo x > "$HOME/.netrc" 2>/dev/null && exit 12; echo x > "$HOME/.config/gh/hosts.yml" 2>/dev/null && exit 13; rm -f "$HOME/.netrc" 2>/dev/null && exit 19; rm -rf "$HOME/.aws" 2>/dev/null; [ -f "$HOME/.aws/credentials" ] || exit 20; python3 -c 'open("'"$HOME"'/.aws/other","w")' 2>/dev/null && exit 15; mkdir "$HOME/.config/newapp" && echo ok > "$HOME/.config/newapp/settings" || exit 14; echo ok > "$HOME/notes.txt" || exit 16; echo done`;
+  const previous = process.env.HOME; process.env.HOME = user;
+  let command;
+  try { command = isolatedCommand(script, home); } finally { process.env.HOME = previous; }
+  const result = spawnSync('/bin/bash', ['-c', command], {env:{...process.env, HOME:user}, encoding:'utf8'});
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'done\n');
+  for (const file of ['.aws/credentials', '.netrc', '.config/gh/hosts.yml']) assert.equal(readFileSync(join(user, file), 'utf8'), 'keep', file);
+  assert.equal(readFileSync(join(user, 'notes.txt'), 'utf8'), 'ok\n');
+});
+
+test('bubblewrap masks SSH private keys and leaves public SSH files readable', needsBubblewrap, async t => {
+  const {spawnSync} = await import('node:child_process');
+  const base = mkdtempSync(join(tmpdir(), 'hexbot-bwrap-ssh-'));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  mkdirSync(join(base, '.ssh/nested'), {recursive:true}); mkdirSync(join(base, 'hexbot'));
+  for (const name of ['github', 'deploy_key', 'nested/id_ed25519', 'config', 'known_hosts', 'key.pub', 'authorized_keys']) writeFileSync(join(base, '.ssh', name), 'fixture');
+  const command = `for key in github deploy_key nested/id_ed25519; do cat '${base}/.ssh/'"$key" >/dev/null 2>&1 && exit 10; done; for public in config known_hosts key.pub authorized_keys; do [ "$(cat '${base}/.ssh/'"$public")" = fixture ] || exit 11; done; echo done`;
+  const previous = process.env.HOME; process.env.HOME = base;
+  let wrapped;
+  try { wrapped = isolatedCommand(command, join(base, 'hexbot')); } finally { process.env.HOME = previous; }
+  const result = spawnSync('/bin/bash', ['-c', wrapped], {env:{...process.env, HOME:base}, encoding:'utf8'});
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'done\n');
 });
 
 test('walk skips heavy trees while policy still covers their names', {skip:process.platform !== 'darwin'}, t => {

@@ -2,8 +2,17 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync} from 'node:fs';
 import {tmpdir, homedir} from 'node:os';
-import {join} from 'node:path';
+import {join, dirname} from 'node:path';
 import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, hardlineCommand, dangerousCommand, sanitizeSearchResult, hostWriteTier} from './extension.ts';
+
+// These gates assume the OS sandbox is in place, as it always is on macOS. On
+// Linux the probe looks for bwrap on PATH, so a stand-in that passes the probe
+// and runs the command after "--" plays bubblewrap here. isolation.test.mjs
+// covers the real sandbox; the no-sandbox path has its own test below.
+const shims = mkdtempSync(join(tmpdir(), 'hexbot-bwrap-shim-'));
+writeFileSync(join(shims, 'bwrap'), '#!/bin/sh\nwhile [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done\n[ "$#" -gt 0 ] && shift\nexec "$@"\n', {mode:0o755});
+process.env.PATH = `${shims}:${process.env.PATH ?? ''}`;
+process.on('exit', () => rmSync(shims, {recursive:true, force:true}));
 
 function fixture(t, mode = 'manual', enabledToolsets = []) {
   const home = mkdtempSync(join(tmpdir(), 'hexbot-gates-'));
@@ -334,7 +343,9 @@ test('Codex stream uses the current daemon token on every request and stops on a
   }
 });
 
-for (const command of ['env -S "rm -rf /"', 'xargs -I{} rm -rf /', 'nice --adjustment 5 rm -rf /', 'timeout 5 rm -rf /', 'nice -n 10 rm -rf /', 'ionice -c 3 rm -rf /', 'stdbuf -o L rm -rf /', 'doas rm -rf /', 'xargs -I ITEM rm -rf /', 'busybox rm -rf /', '{ rm -rf /; }', 'if true; then rm -rf /; fi', 'while true; do rm -rf /; done', '! rm -rf /', 'true && rm -rf /', 'false || rm -rf /', 'rm -rf /Users/$USER', 'rm -rf /Users/${USER}']) {
+// The home spelled by user name is /Users/$USER on macOS and /home/$USER on Linux.
+const homeByUser = join(dirname(homedir()), '$USER'), homeByBracedUser = join(dirname(homedir()), '${USER}');
+for (const command of ['env -S "rm -rf /"', 'xargs -I{} rm -rf /', 'nice --adjustment 5 rm -rf /', 'timeout 5 rm -rf /', 'nice -n 10 rm -rf /', 'ionice -c 3 rm -rf /', 'stdbuf -o L rm -rf /', 'doas rm -rf /', 'xargs -I ITEM rm -rf /', 'busybox rm -rf /', '{ rm -rf /; }', 'if true; then rm -rf /; fi', 'while true; do rm -rf /; done', '! rm -rf /', 'true && rm -rf /', 'false || rm -rf /', `rm -rf ${homedir()}`, `rm -rf ${homeByUser}`, `rm -rf ${homeByBracedUser}`]) {
   test(`wrapper and command position floor: ${command}`, () => assert.ok(hardlineCommand(command), command));
 }
 test('dynamic commands and secret references require approval', async t => {

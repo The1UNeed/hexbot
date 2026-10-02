@@ -2,13 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {homedir, tmpdir} from 'node:os';
 import {mkdtempSync, symlinkSync, rmSync} from 'node:fs';
-import {join} from 'node:path';
+import {join, dirname, basename} from 'node:path';
 import {hardlineCommand, dangerousCommand} from './extension.ts';
-const H = homedir(), U = process.env.USER, cwd = '/tmp';
+import {foldCase} from './isolation.ts';
+const H = homedir(), U = process.env.USER ?? basename(H), cwd = '/tmp';
 const ssh = 'remote shell or copy over SSH (uses your SSH agent)';
 test('writes to a credential store and catastrophic commands hit the hard floor', () => {
   for (const c of [
-    'echo x > ~/.netrc', 'echo x >~/.netrc', 'echo x >> ~/.netrc', 'echo x > ~/.NETRC', 'echo x > $HOME/.netrc', 'echo x > ${HOME}/.netrc',
+    'echo x > ~/.netrc', 'echo x >~/.netrc', 'echo x >> ~/.netrc', 'echo x > $HOME/.netrc', 'echo x > ${HOME}/.netrc',
     'echo x > "$HOME/.netrc"', `echo x > ${H}/.netrc`, `echo x > ~${U}/.netrc`,
     'cat x | tee ~/.netrc', 'cat x | tee -a ~/.aws/credentials', 'tee -a ~/.aws/config < x', 'env FOO=1 tee ~/.netrc',
     'cp x ~/.aws/credentials', 'cp x ~/.aws/', 'cp -t ~/.aws x', 'mv x ~/.kube/config', 'install x ~/.config/gh/hosts.yml', 'ln -s x ~/.netrc',
@@ -23,7 +24,10 @@ test('writes to a credential store and catastrophic commands hit the hard floor'
     'cp x ~/.aws/credentials > /tmp/log',
     // Path and quoting disguises.
     'echo x > ~/.aws/../.netrc', 'echo x > ~/./.netrc', 'echo x > ~//.netrc', "echo x > ~/'.netrc'", 'echo x > ~/.net\\rc', 'echo x > ~/.ne""trc',
-    'rm -rf ~', `rm -rf ~${U}`, `rm -rf ~${U}/`, 'rm -rf ~/', 'RM -rf ~', 'caffeinate -i rm -rf ~', 'script -q /dev/null rm -rf ~',
+    // The real home by every spelling: ~, $HOME, its path, and by user name
+    // (/Users/$USER on macOS, /home/$USER on Linux).
+    'rm -rf ~', `rm -rf ~${U}`, `rm -rf ~${U}/`, 'rm -rf ~/', `rm -rf ${H}`, `rm -rf ${H}/`, `rm -rf ${dirname(H)}/${U}`, `rm -rf ${dirname(H)}/$USER`, `rm -rf ${dirname(H)}/\${USER}/`,
+    'caffeinate -i rm -rf ~', 'script -q /dev/null rm -rf ~',
     'script -c "rm -rf ~" /dev/null', 'env -S "rm -rf ~"', 'echo x > /dev/sda',
   ]) assert.ok(hardlineCommand(c, cwd), c);
 });
@@ -33,7 +37,7 @@ test('system configuration writes and writes after a cd ask', () => {
   for (const c of [
     'cd ~ && echo x > .netrc', 'cd ~; echo x > .netrc', 'cd ~/.aws && echo x > credentials', 'cd ~/.aws; > credentials echo x', 'pushd ~ && echo x > .netrc',
     'cd /etc && echo x > hosts', 'sudo tee /etc/hosts', 'echo x | sudo tee -a /etc/hosts', 'echo x > /etc/hosts', 'echo x > /private/etc/hosts',
-    'echo x > /ETC/hosts', 'echo x &> /etc/hosts', 'sudo bash -c "echo x >| /etc/hosts"', 'sudo cp nginx.conf /etc/nginx/nginx.conf',
+    'echo x &> /etc/hosts', 'sudo bash -c "echo x >| /etc/hosts"', 'sudo cp nginx.conf /etc/nginx/nginx.conf',
     'sudo sh -c "echo 127.0.0.1 x >> /etc/hosts"',
   ]) {
     assert.equal(hardlineCommand(c, cwd), undefined, c);
@@ -56,16 +60,32 @@ test('benign commands do not hit the hard floor', () => {
 });
 test('host configuration writes and remote actions ask', () => {
   for (const c of [
-    'echo x >> ~/.zshrc', 'echo x >> ~/.ZSHRC', 'cat x >> ~/.bashrc', 'echo x > ~/.config/git/config', 'cp plist ~/Library/LaunchAgents/x.plist',
+    'echo x >> ~/.zshrc', 'cat x >> ~/.bashrc', 'echo x > ~/.config/git/config', 'cp plist ~/Library/LaunchAgents/x.plist',
     'cp plist /Library/LaunchDaemons/x.plist', 'echo x > ~/.cargo/config.toml', 'echo x > ~/.config/systemd/user/x.service',
     'echo x > ~/.local/share/systemd/user/x.service', 'sed -i s/a/b/ ~/.gitconfig', 'cd ~ && echo x >> .zshrc',
     '> ~/.gitconfig echo x', 'echo x &> ~/.gitconfig', 'cp x ~/.gitconfig 2>/dev/null', 'cp x ~/Library/LaunchAgents/a.plist 2>/dev/null',
     '> ~/Library/LaunchAgents/a.plist echo x', 'echo x &> ~/Library/LaunchAgents/a.plist', 'echo x >| ~/.config/systemd/user/a.service',
     'echo x > ~/.ssh/authorized_keys', 'tee -a ~/.ssh/authorized_keys',
-    'ssh host', 'SSH=1 ssh host', '/usr/bin/ssh host', 'SSH host', 'scp x host:', 'autossh host', 'nohup ssh host &', 'timeout 10 ssh host', 'xargs ssh',
+    'ssh host', 'SSH=1 ssh host', '/usr/bin/ssh host', 'scp x host:', 'autossh host', 'nohup ssh host &', 'timeout 10 ssh host', 'xargs ssh',
     'bash -c "ssh host"', 'echo $(ssh host ls)', 'true && ssh host', 'rsync -av src/ host:dst', 'rsync -av -e ssh src dst', 'rsync -av src rsync://host/x',
   ]) assert.ok(dangerousCommand(c, undefined, cwd).length, c);
   for (const c of ['git clone git@github.com:x/y.git', 'command -v ssh']) assert.deepEqual(dangerousCommand(c, undefined, cwd), [], c);
+});
+// Path and command case follow the file system (isolation.ts foldCase): macOS
+// ignores it, so ~/.NETRC is ~/.netrc and SSH is ssh; Linux does not, so they
+// are an ordinary file and an unknown command. The regex gates stay
+// case-insensitive everywhere, so the /etc and shell profile spellings still
+// ask on Linux, under their own keys rather than file:host-config.
+test('case variants reach the path gates only on a case-insensitive file system', () => {
+  assert.equal(hardlineCommand('echo x > ~/.NETRC', cwd) !== undefined, foldCase, '~/.NETRC');
+  assert.equal(hardlineCommand('RM -rf ~', cwd) !== undefined, foldCase, 'RM');
+  assert.equal(hardlineCommand('echo x > /ETC/hosts', cwd), undefined);
+  for (const c of ['echo x > /ETC/hosts', 'echo x >> ~/.ZSHRC']) {
+    const keys = dangerousCommand(c, undefined, cwd);
+    assert.equal(keys.includes('file:host-config'), foldCase, c);
+    assert.ok(keys.length, c);
+  }
+  assert.equal(dangerousCommand('SSH host', undefined, cwd).includes(ssh), foldCase, 'SSH');
 });
 test('benign commands do not become SSH clients or host writes', () => {
   for (const c of [
