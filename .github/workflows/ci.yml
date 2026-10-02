@@ -40,6 +40,24 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: backend/hexbot-core
+      # The daemon and the Pi extension sandbox shell commands with bubblewrap
+      # on Linux, and both suites branch on whether it works. Ubuntu 24.04
+      # confines unprivileged user namespaces with AppArmor and the apt package
+      # ships no profile, so a fresh install fails the daemon's probe; this is
+      # the profile the install docs give users. The final probe is the
+      # daemon's own, so a sandbox that cannot start fails here, not as a
+      # skipped test.
+      - name: Install bubblewrap, the Linux sandbox
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          probe() { bwrap --die-with-parent --unshare-pid --ro-bind / / --proc /proc -- /usr/bin/env true; }
+          if ! probe 2>/dev/null; then
+            printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' 'profile bwrap /usr/bin/bwrap flags=(unconfined) {' '  userns,' '}' | sudo tee /etc/apparmor.d/bwrap
+            sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          fi
+          probe
       - run: cargo fmt --check
       - run: cargo test --locked --no-fail-fast
       - run: cargo clippy --locked --all-targets -- -D warnings

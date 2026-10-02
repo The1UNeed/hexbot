@@ -9,7 +9,7 @@
   temporary homes. Local HTTP/SSE/MCP fixtures test provider/tool behavior.
   Actual Pi and unchanged-browser checks are documented in
   [`backend/hexbot-core/README.md`](../backend/hexbot-core/README.md).
-- Pi runtime: `node --test backend/pi-runtime/*.test.mjs` after `npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund`. CI runs every test file and the Rust suite on Linux and macOS.
+- Pi runtime: `node --test backend/pi-runtime/*.test.mjs` after `npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund`. CI runs every test file and the Rust suite on Linux and macOS. The approval gate tests stand in a stub `bwrap` for the sandbox, so they test the sandboxed host on every platform; the no-sandbox path has its own test. `isolation.test.mjs` runs the real sandbox: `sandbox-exec` on macOS, and on Linux a bubblewrap that passes the daemon's probe (skipped otherwise; CI installs it with the AppArmor profile from the install docs). Path and command case fold on macOS only, so the case probes assert the case-sensitive result on Linux.
 - Native browser end to end: `node scripts/dev/native-ui-smoke.mjs` after building
   Rust and the web bundle and installing the locked Pi dependency and Chromium.
   Uses a local streaming model with actual Pi; no provider credentials needed.
