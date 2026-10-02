@@ -152,11 +152,19 @@ async fn child_environment_is_an_allowlist() {
     assert_eq!(env["GH_TOKEN"], "gh-login");
     assert!(env["PATH"].is_string());
     // macOS re-adds its own `__CF_*` variables to every child; everything else the
-    // daemon holds must be allowlisted.
+    // daemon holds must be allowlisted or one of Copilot's GitHub login variables.
+    let copilot_login = [
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "COPILOT_GITHUB_TOKEN",
+        "GH_HOST",
+        "XDG_CONFIG_HOME",
+    ];
     for (key, _) in std::env::vars() {
         assert!(
             key.starts_with("__")
                 || credentials::inherited_environment(&key)
+                || copilot_login.contains(&key.as_str())
                 || env.get(&key).is_none(),
             "Copilot received {key}"
         );
