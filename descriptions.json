@@ -1,0 +1,17 @@
+[
+  {
+    "name": "designer",
+    "description": "Sketches layouts and picks colors and type for anything visual.",
+    "auto_description": null
+  },
+  {
+    "name": "research",
+    "description": "Finds and reads sources, then summarizes what they say with links.",
+    "auto_description": null
+  },
+  {
+    "name": "writer",
+    "description": "",
+    "auto_description": "Turns rough notes into clear, short prose; ask it to draft, tighten, or edit anything a reader will see."
+  }
+]

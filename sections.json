@@ -1,0 +1,24 @@
+{
+  "listed": [
+    {
+      "title": "General",
+      "peer_bot": null
+    }
+  ],
+  "with_threads": [
+    {
+      "title": "From Research",
+      "peer_bot": "research"
+    },
+    {
+      "title": "General",
+      "peer_bot": null
+    }
+  ],
+  "thread": {
+    "id": "77bd6a352e174d39a1b7d3973cbceb3d",
+    "title": "From Research",
+    "peer_bot": "research",
+    "message_count": 2
+  }
+}

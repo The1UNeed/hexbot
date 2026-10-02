@@ -1,0 +1,51 @@
+[
+  {
+    "bot": "You write the one-line description other",
+    "last": {
+      "role": "user",
+      "text": "{\"display_name\":\"Writer\",\"name\":\"writer\",\"soul\":\"You are Writer. You turn rough notes into clear, short prose for the user.\",\"title\":\"\"}"
+    },
+    "tools": []
+  },
+  {
+    "bot": "You are Research, a Hexbot bot. Use your",
+    "last": {
+      "role": "user",
+      "text": "Draft a two-line launch note for Hexbot teams, then ask Writer to tighten it."
+    },
+    "tools": [
+      "hexbot_rename_section",
+      "message_bot",
+      "memory",
+      "hexbot_soul",
+      "clarify"
+    ]
+  },
+  {
+    "bot": "You are Writer, a Hexbot bot. Use your t",
+    "last": {
+      "role": "user",
+      "text": "@research: Please tighten this launch note to two short sentences for a general reader: \"Hexbot bots can now seamlessly work together as a team. Each bot now knows what the others do and can ask them for help.\""
+    },
+    "tools": [
+      "hexbot_rename_section",
+      "memory",
+      "hexbot_soul",
+      "clarify"
+    ]
+  },
+  {
+    "bot": "You are Research, a Hexbot bot. Use your",
+    "last": {
+      "role": "tool",
+      "text": "{\"reply\":\"Tighter version:\\n\\n**Your bots now work as a team.** Each one knows what the others are good at and asks the right one for help, privately. Open any exchange to read it.\\n\\nI cut \\\"seamlessly\\\" and the second \\\"now\\\", and led with the benefit.\",\"section_id\":\"77bd6a352e174d39a1b7d3973cbceb3d\"}"
+    },
+    "tools": [
+      "hexbot_rename_section",
+      "message_bot",
+      "memory",
+      "hexbot_soul",
+      "clarify"
+    ]
+  }
+]
