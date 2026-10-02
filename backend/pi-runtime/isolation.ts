@@ -96,7 +96,22 @@ function layout(home: string, outputs: string[] = []) {
   const writable = outputs.filter(p => existsSync(p)).map(p => realpathSync(p)).filter(p => roots.some(root => p.startsWith(root + '/')));
   return {roots, paths: secretPaths(home), writable, denied: deniedWrites()};
 }
-export function sandboxProfile(home: string, outputs: string[] = []): string {
+// Codex's workspace sandbox, for a session's own commands in Manual and Auto:
+// no network and no host Unix sockets (a user service manager or Docker would
+// start programs outside it), and writes only inside `workspace` (empty in
+// Manual, so read-only). Output folders stay writable only inside it. Shell
+// profiles and login items stay read-only even inside it. A command the user
+// lets out of it runs with the base layer alone.
+function confined(workspace: string[]) {
+  const writable = [...new Set(workspace.filter(p => existsSync(p)).map(p => realpathSync(p)))];
+  const config: string[] = [];
+  for (const entry of credentialPolicy.write.ask as string[]) {
+    const root = policyRoot(entry);
+    for (const path of [root, realRoot(root)]) if (!config.includes(path)) config.push(path);
+  }
+  return {writable, config};
+}
+export function sandboxProfile(home: string, outputs: string[] = [], workspace?: string[]): string {
   const {roots, paths, writable, denied} = layout(home, outputs);
   const patterns = roots.flatMap(root => ['^' + regexEscape(root) + '/(.*/)?' + credentialPolicy.basename.slice(1), '^' + regexEscape(root) + '/' + credentialPolicy.home.slice(1)]);
   const ssh = join(homedir(), '.ssh');
@@ -106,22 +121,30 @@ export function sandboxProfile(home: string, outputs: string[] = []): string {
   const exceptWritable = writable.length ? `(require-not (require-any ${writable.map(p => `(subpath ${JSON.stringify(p)})`).join(' ')}))` : '';
   const stores = denied.map(p => `(literal ${JSON.stringify(p)}) (subpath ${JSON.stringify(p)}) (regex ${JSON.stringify(sandboxRegex("^" + regexEscape(p) + "(/|$)"))})`).join(' ');
   const ancestors = storeAncestors(denied).map(p => `(literal ${JSON.stringify(p)})`).join(' ');
-  return `(version 1)(allow default)(deny process-exec (literal "/usr/bin/open") (literal "/bin/launchctl") (literal "/usr/bin/osascript"))(deny file-write* (require-all ${insideHome} ${exceptWritable}))(deny file-write* ${stores})${ancestors ? `(deny file-write-unlink ${ancestors})` : ''}(deny file-read* file-write* ${filters.join(' ')})`;
+  let confine = '';
+  if (workspace) {
+    const {writable: open, config} = confined(workspace);
+    const inside = ['/dev', ...open].map(p => `(subpath ${JSON.stringify(p)})`).join(' ');
+    confine = `(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny file-write* (require-not (require-any ${inside})))(deny file-write* ${config.map(p => `(literal ${JSON.stringify(p)}) (subpath ${JSON.stringify(p)})`).join(' ')})`;
+  }
+  return `(version 1)(allow default)(deny process-exec (literal "/usr/bin/open") (literal "/bin/launchctl") (literal "/usr/bin/osascript"))(deny file-write* (require-all ${insideHome} ${exceptWritable}))(deny file-write* ${stores})${ancestors ? `(deny file-write-unlink ${ancestors})` : ''}${confine}(deny file-read* file-write* ${filters.join(' ')})`;
 }
-export function bwrapArguments(home: string, outputs: string[] = []): string[] {
+export function bwrapArguments(home: string, outputs: string[] = [], workspace?: string[]): string[] {
   const {roots, paths, writable, denied} = layout(home, outputs);
-  const args = ['--die-with-parent', '--unshare-pid', '--bind', '/', '/', '--proc', '/proc'];
+  const confine = workspace && confined(workspace);
+  const args = confine ? ['--die-with-parent', '--unshare-pid', '--unshare-net', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/run'] : ['--die-with-parent', '--unshare-pid', '--bind', '/', '/', '--proc', '/proc'];
+  if (confine) for (const path of confine.writable) args.push('--bind', path, path);
   for (const root of roots) args.push('--ro-bind', root, root);
-  for (const path of writable) args.push('--bind', path, path);
+  for (const path of writable) if (!confine || confine.writable.some(root => path === root || path.startsWith(root + '/'))) args.push('--bind', path, path);
   // A store that does not exist yet cannot be bound (bubblewrap would create the
-  // mount point on the host); the shell guard asks when a command names one.
-  for (const path of denied) if (existsSync(path)) args.push('--ro-bind', path, path);
+  // mount point on the host).
+  for (const path of [...denied, ...confine ? confine.config : []]) if (existsSync(path)) args.push('--ro-bind', path, path);
   for (const path of paths) if (existsSync(path)) args.push(...(statSync(path).isDirectory() ? ['--tmpfs', path, '--remount-ro', path] : ['--ro-bind', '/dev/null', path]));
   return args;
 }
-export function isolatedCommand(command: string, home: string, outputs: string[] = []): string {
-  if (process.platform === 'darwin') return `/usr/bin/sandbox-exec -p ${quote(sandboxProfile(home, outputs))} /bin/bash --noprofile --norc -c ${quote(command)}`;
+export function isolatedCommand(command: string, home: string, outputs: string[] = [], workspace?: string[]): string {
+  if (process.platform === 'darwin') return `/usr/bin/sandbox-exec -p ${quote(sandboxProfile(home, outputs, workspace))} /bin/bash --noprofile --norc -c ${quote(command)}`;
   const executable = probeIsolation();
-  if (executable) return [executable, ...bwrapArguments(home, outputs), '--', '/bin/bash', '--noprofile', '--norc', '-c', command].map(quote).join(' ');
+  if (executable) return [executable, ...bwrapArguments(home, outputs, workspace), '--', '/bin/bash', '--noprofile', '--norc', '-c', command].map(quote).join(' ');
   return command;
 }

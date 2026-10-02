@@ -224,3 +224,57 @@ test('sandbox case policy covers uppercase secrets and permits uppercase public 
   const script = `const {sandboxProfile, isolatedCommand}=await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); const {spawnSync}=await import('node:child_process'); const profile=sandboxProfile(${JSON.stringify(home)}); if(!profile.includes('/profiles/owl/AUTH.JSON')) throw Error('uppercase secret not enumerated'); const command=${JSON.stringify(`cat '${home}/profiles/owl/AUTH.JSON' >/dev/null 2>&1 && exit 10; cat '${base}/.ssh/ID_ED25519.PUB' || exit 11`)}; const result=spawnSync('/bin/bash',['-c',isolatedCommand(command,${JSON.stringify(home)})],{encoding:'utf8'}); if(result.status!==0) throw Error(result.stderr+'status '+result.status); process.stdout.write(result.stdout);`;
   assert.equal(execFileSync(process.execPath, ['--input-type=module','-e',script], {env:{...process.env,HOME:base},encoding:'utf8'}), 'public');
 });
+
+// Codex's workspace sandbox: no network, writes only inside the workspace, and
+// shell profiles stay read-only even when the workspace holds them.
+test('the workspace sandbox confines writes and blocks the network', {skip:process.platform !== 'darwin'}, async t => {
+  const {execFileSync} = await import('node:child_process');
+  const {realpathSync} = await import('node:fs');
+  const {createServer} = await import('node:net');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-confine-')));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const user = join(base, 'user'), home = join(base, 'home'), other = join(base, 'other');
+  for (const dir of [user, home, other]) mkdirSync(dir);
+  const server = createServer(socket => socket.end()).listen(0, '127.0.0.1');
+  await new Promise(resolve => server.on('listening', resolve)); t.after(() => server.close());
+  const run = (script, workspace) => {
+    const code = `const {isolatedCommand} = await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); const {spawnSync} = await import('node:child_process'); const child = spawnSync('/bin/bash', ['-c', isolatedCommand(${JSON.stringify(script)}, ${JSON.stringify(home)}, [], ${JSON.stringify(workspace)})], {encoding:'utf8'}); process.stdout.write(child.stdout); process.exit(child.status);`;
+    return execFileSync(process.execPath, ['--input-type=module', '-e', code], {env:{...process.env, HOME:user}, encoding:'utf8'});
+  };
+  const port = server.address().port;
+  // A host Unix socket (a user service manager, Docker) would start programs outside the sandbox.
+  const socket = join(base, 's.sock');
+  const unix = createServer(c => c.end()).listen(socket);
+  await new Promise(resolve => unix.on('listening', resolve)); t.after(() => unix.close());
+  assert.equal(run(`python3 -c "import socket;s=socket.socket(socket.AF_UNIX);s.connect('${socket}')" 2>/dev/null && exit 14; echo done`, [user]), 'done\n');
+  assert.equal(run(`echo ok > '${user}/notes.txt' || exit 10; (echo x > '${other}/x') 2>/dev/null && exit 11; (echo x > '${user}/.zshrc') 2>/dev/null && exit 12; (exec 3<>/dev/tcp/127.0.0.1/${port}) 2>/dev/null && exit 13; echo done`, [user]), 'done\n');
+  // Manual's workspace is empty: nothing is writable.
+  assert.equal(run(`(echo x > '${user}/notes.txt') 2>/dev/null && exit 10; cat '${user}/notes.txt'`, []), 'ok\n');
+  // Without a workspace only the base layer applies, as for an approved full_access command.
+  assert.equal(run(`echo x > '${other}/x' && (exec 3<>/dev/tcp/127.0.0.1/${port}) && echo done`, undefined), 'done\n');
+});
+
+test('bubblewrap confines a workspace command to its folders without a network', async t => {
+  const {execFileSync} = await import('node:child_process');
+  const {chmodSync, realpathSync} = await import('node:fs');
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-bwrap-confine-')));
+  t.after(() => rmSync(home, {recursive:true, force:true}));
+  const user = join(home, 'user'), workspace = join(home, 'work');
+  for (const dir of [user, workspace]) mkdirSync(dir, {recursive:true});
+  writeFileSync(join(user, '.zshrc'), 'keep');
+  const executable = join(home, 'bwrap'); writeFileSync(executable, '#!/bin/sh\ncase "$*" in *"/usr/bin/env true") exit 0;; *) exit 1;; esac\n'); chmodSync(executable, 0o755);
+  const moduleUrl = new URL('./isolation.ts', import.meta.url).href;
+  const outputs = join(home, 'hexbot/profiles/owl/artifacts'); mkdirSync(outputs, {recursive:true});
+  const command = workspace => execFileSync(process.execPath, ['--input-type=module', '-e', `Object.defineProperty(process,'platform',{value:'linux'}); const {isolatedCommand}=await import(${JSON.stringify(moduleUrl)}); console.log(isolatedCommand('true',${JSON.stringify(join(home, 'hexbot'))},[${JSON.stringify(outputs)}],${JSON.stringify(workspace)}));`], {env:{...process.env, HOME:user, PATH:home}, encoding:'utf8'});
+  const confined = command([workspace]);
+  assert.ok(confined.includes(`'--unshare-net' '--ro-bind' '/' '/' '--dev' '/dev' '--proc' '/proc' '--tmpfs' '/run'`));
+  // Output folders open only when the workspace holds them: Manual's is empty.
+  assert.ok(!confined.includes(`'--bind' '${outputs}'`));
+  assert.ok(command([workspace, outputs]).includes(`'--bind' '${outputs}' '${outputs}'`));
+  assert.ok(command(undefined).includes(`'--bind' '${outputs}' '${outputs}'`));
+  assert.ok(confined.includes(`'--bind' '${workspace}' '${workspace}'`));
+  assert.ok(confined.includes(`'--ro-bind' '${join(user, '.zshrc')}' '${join(user, '.zshrc')}'`));
+  assert.ok(!command([]).includes(`'--bind' '${workspace}'`));
+  const base = command(undefined);
+  assert.ok(base.includes(`'--bind' '/' '/'`)); assert.ok(!base.includes('--unshare-net'));
+});

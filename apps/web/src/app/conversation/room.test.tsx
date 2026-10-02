@@ -131,7 +131,12 @@ describe('approvals and questions in a room', () => {
 
   const approval = (id: string) =>
     ({
-      payload: { command: 'rm -rf build', reason: 'Run command', request_id: id },
+      payload: {
+        choices: ['once', 'session', 'deny'],
+        command: 'rm -rf build',
+        reason: 'Run command',
+        request_id: id
+      },
       session_id: 'live-1',
       type: 'approval.request'
     }) as GatewayEvent
@@ -166,7 +171,7 @@ describe('approvals and questions in a room', () => {
 
   it.each([
     ['Approve', 'once'],
-    ['Always allow', 'always'],
+    ['Allow in this section', 'session'],
     ['Deny', 'deny']
   ])(
     'shows the owner the card on the live turn; %s answers it and it goes',

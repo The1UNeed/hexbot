@@ -90,6 +90,16 @@ pub fn admin(home: &Path, caller: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Bypass reads everything the daemon can, the admin's provider keys included,
+/// so only the admin chooses it for a bot or a room.
+pub fn bypass_allowed(home: &Path, caller: &str, patch: &Value) -> Result<()> {
+    if patch.get("approval_mode").and_then(Value::as_str) == Some("off")
+        && user(home, caller)?["role"] != "admin"
+    {
+        return Err(Error::new(4301, "Only the admin can choose Bypass."));
+    }
+    Ok(())
+}
 pub fn owner(home: &Path, caller: &str, owner: &str) -> Result<()> {
     user(home, caller)?;
     if caller != owner {

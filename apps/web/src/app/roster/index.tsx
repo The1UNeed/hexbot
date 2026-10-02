@@ -22,6 +22,7 @@ import { Select } from '../../components/ui/select'
 import { StatusDot, StatusTag } from '../../components/ui/status-dot'
 import { Title } from '../../components/ui/title'
 import { modelsList, sectionsMarkRead } from '../../lib/api'
+import { useApprovalModes } from '../../lib/approval-modes'
 import {
   avatarPng,
   avatarSrc,
@@ -455,7 +456,8 @@ export function RosterColumn() {
 
   // The store only learns a section once it opens; the bot's own list knows it sooner.
   const activeSectionDoneAt = params.section
-    ? (sectionMap[params.section] ??
+    ? (
+        sectionMap[params.section] ??
         bots.flatMap(bot => bot.sections_recent).find(section => section.id === params.section)
       )?.done_at
     : null
@@ -925,7 +927,8 @@ function NewRoomDialog({
   const [members, setMembers] = useState<string[]>([])
   const [humanMembers, setHumanMembers] = useState<string[]>([])
   const [mainBot, setMainBot] = useState('')
-  const [approvalMode, setApprovalMode] = useState(settings?.approval_mode ?? 'manual')
+  const [approvalMode, setApprovalMode] = useState(settings?.approval_mode ?? 'smart')
+  const approvalModes = useApprovalModes(approvalMode)
   const [turns, setTurns] = useState(String(settings?.room_bot_turns_per_human_turn ?? 8))
   const [budget, setBudget] = useState(String(settings?.room_budget_tokens_per_human_turn ?? ''))
   const [error, setError] = useState<string | null>(null)
@@ -1036,11 +1039,7 @@ function NewRoomDialog({
           <Select
             label="Room approval mode"
             onValueChange={value => setApprovalMode(value as typeof approvalMode)}
-            options={[
-              { label: 'Manual', value: 'manual' },
-              { label: 'Auto', value: 'smart' },
-              { label: 'Off', value: 'off' }
-            ]}
+            options={approvalModes.map(({ label, value }) => ({ label, value }))}
             value={approvalMode}
           />
         </label>

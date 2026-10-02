@@ -221,15 +221,13 @@ describe('settings', () => {
     await waitFor(() => expect(revokeDevice).toHaveBeenCalledExactlyOnceWith('other'))
   })
 
-  it('maps Auto approvals to smart', () => {
+  it('maps Auto approvals to smart and offers Bypass to the admin only', () => {
     const patch = vi.fn().mockResolvedValue(undefined)
     useSettings.setState({
       patch,
       refresh: vi.fn().mockResolvedValue(undefined),
-      refreshModels: vi.fn().mockResolvedValue(undefined),
       settings: {
         approval_mode: 'manual',
-        auto_approver_model: null,
         billing_notice_ack: false,
         dream_enabled: true,
         dream_time: '03:00',
@@ -238,20 +236,28 @@ describe('settings', () => {
         workspace_dir: ''
       }
     })
-    render(<ApprovalsSettings />)
+    useUsers.setState({
+      current: { display_name: 'Ana', id: 'ana', role: 'member' } as never,
+      supported: true
+    })
+    const { unmount } = render(<ApprovalsSettings />)
+    expect(screen.queryByRole('radio', { name: /^Bypass/ })).toBeNull()
     fireEvent.click(screen.getByRole('radio', { name: /^Auto/ }))
     expect(patch).toHaveBeenCalledWith({ approval_mode: 'smart' })
+    unmount()
+    useUsers.setState({ current: { display_name: 'Ana', id: 'ana', role: 'admin' } as never })
+    render(<ApprovalsSettings />)
+    fireEvent.click(screen.getByRole('radio', { name: /^Bypass/ }))
+    expect(patch).toHaveBeenCalledWith({ approval_mode: 'off' })
+    expect(screen.queryByText(/approver model/i)).toBeNull()
   })
 
   it('warns when the daemon has no OS sandbox, and only then', async () => {
-    useSettings.setState({
-      refresh: vi.fn().mockResolvedValue(undefined),
-      refreshModels: vi.fn().mockResolvedValue(undefined)
-    })
+    useSettings.setState({ refresh: vi.fn().mockResolvedValue(undefined) })
     vi.mocked(daemonInfo).mockResolvedValueOnce({ sandbox: null, version: '0.1.5' } as DaemonInfo)
     const { unmount } = render(<ApprovalsSettings />)
     expect(await screen.findByRole('status')).toHaveTextContent(
-      'No OS sandbox is available, so Manual and Auto ask before every shell command and Python code run. Install bubblewrap on the computer running the daemon, then restart the daemon to restore isolation.'
+      'No OS sandbox is available, so Manual and Auto ask before every shell command and code run. Install bubblewrap on the computer running the daemon, then restart the daemon to restore isolation.'
     )
     unmount()
     vi.mocked(daemonInfo).mockResolvedValueOnce({

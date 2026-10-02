@@ -12,8 +12,7 @@ pub const PLATFORM_HINT: &str = "You are chatting in Hexbot, a desktop app. Mark
 
 pub fn defaults() -> Value {
     json!({
-        "approval_mode": "manual",
-        "auto_approver_model": null,
+        "approval_mode": "smart",
         "lan_enabled": false,
         "service_installed": false,
         "workspace_dir": "~/Hexbot",
@@ -50,7 +49,7 @@ fn validate(patch: &Value) -> Result<()> {
         }
         let valid = match key.as_str() {
             "approval_mode" => matches!(value.as_str(), Some("manual" | "smart" | "off")),
-            "auto_approver_model" | "default_model" | "fallback_model" => {
+            "default_model" | "fallback_model" => {
                 value.is_null() || value.as_str().is_some_and(|s| s.contains('/'))
             }
             "dream_enabled" | "lan_enabled" | "service_installed" | "billing_notice_ack" => {
@@ -112,16 +111,6 @@ fn managed_config(home: &Path, profile: &Path, settings: &Value) -> Result<Value
             .insert(platform.into(), json!({"replace":PLATFORM_HINT}));
     }
     object(&mut data["memory"]).insert("user_profile_enabled".into(), json!(false));
-    if let Some(choice) = settings["auto_approver_model"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        && let Some((provider, model)) = choice.split_once('/')
-    {
-        object(&mut data["auxiliary"]);
-        let approval = object(&mut data["auxiliary"]["approval"]);
-        approval.insert("provider".into(), json!(provider));
-        approval.insert("model".into(), json!(model));
-    }
     if let Some(choice) = settings["fallback_model"]
         .as_str()
         .filter(|s| !s.is_empty())

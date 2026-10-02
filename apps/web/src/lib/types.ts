@@ -9,7 +9,7 @@
  * docs/client-architecture.md.
  */
 
-export type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
+export type ApprovalChoice = 'deny' | 'once' | 'session'
 
 export type ApprovalMode = 'manual' | 'off' | 'smart'
 
@@ -52,8 +52,6 @@ export interface ApprovalRequest {
   receivedAt: number
   requestId: string
   sessionId: string
-  /** Hexbot sets this when the auto-approver refused the action. */
-  smartDenied?: boolean
   toolName?: string
 }
 
@@ -361,7 +359,6 @@ export interface SessionInfo {
 
 export interface Settings {
   approval_mode: ApprovalMode
-  auto_approver_model: null | string
   /** `provider/model` pre-filled for new bots. */
   default_model?: null | string
   /** `provider/model` bots fall back to when their own provider fails. */

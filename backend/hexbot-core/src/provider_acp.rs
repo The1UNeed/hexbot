@@ -89,6 +89,7 @@ pub async fn complete(home: &Path, bot: &str, stored: &str, args: &Value) -> Res
         home,
         &program.to_string_lossy(),
         std::slice::from_ref(&cwd),
+        false,
     )?;
     command
         .args(command_args)

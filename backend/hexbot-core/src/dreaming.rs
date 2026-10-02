@@ -1076,22 +1076,33 @@ impl Dreaming {
         };
         let artifacts = self.home.join("profiles").join(bot).join("artifacts");
         fs::create_dir_all(&artifacts)?;
-        let mode: Option<String> = db::open(&self.home)?
-            .query_row("SELECT approval_mode FROM bots WHERE name=?", [bot], |r| {
-                r.get::<_, Option<String>>(0)
-            })
+        let conn = db::open(&self.home)?;
+        let (mode, owner): (Option<String>, String) = conn
+            .query_row(
+                "SELECT approval_mode,owner_id FROM bots WHERE name=?",
+                [bot],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .optional()?
-            .flatten()
-            .filter(|m: &String| matches!(m.as_str(), "manual" | "smart" | "off"));
-        let mode = mode.unwrap_or_else(|| {
-            settings::get(&self.home)
-                .ok()
-                .and_then(|s| s["approval_mode"].as_str().map(str::to_owned))
-                .unwrap_or_else(|| "manual".to_owned())
-        });
-        crate::credentials::require_isolation(&mode)?;
-        let mut command =
-            crate::credentials::isolated_command(&self.home, &program, &[workspace, artifacts])?;
+            .unwrap_or_default();
+        let mode = mode
+            .filter(|m| matches!(m.as_str(), "manual" | "smart" | "off"))
+            .unwrap_or_else(|| {
+                settings::get(&self.home)
+                    .ok()
+                    .and_then(|s| s["approval_mode"].as_str().map(str::to_owned))
+                    .unwrap_or_else(|| "manual".to_owned())
+            });
+        // Only the admin's bots run in Bypass, as in their sections.
+        let bypass = mode == "off" && crate::runtime::owner_is_admin(&conn, &owner)?;
+        crate::credentials::require_isolation(if bypass { "off" } else { "smart" })?;
+        // Outside Bypass a script runs in the workspace sandbox, like the bot's commands.
+        let mut command = crate::credentials::isolated_command(
+            &self.home,
+            &program,
+            &[workspace, artifacts],
+            !bypass,
+        )?;
         if matches!(
             path.extension().and_then(|s| s.to_str()),
             Some("sh" | "bash" | "py")

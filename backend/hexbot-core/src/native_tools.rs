@@ -74,6 +74,9 @@ async fn request(request: reqwest::RequestBuilder) -> Result<Value> {
     serde_json::from_slice(&body).map_err(|_| failure("tool service returned invalid JSON"))
 }
 tokio::task_local! { static SECTION_CWD: PathBuf; }
+// How the section's code runs: whether in the workspace sandbox (Manual and
+// Auto), and the live working directory, which a bot or section can change.
+tokio::task_local! { pub(crate) static CODE_SANDBOX: (bool, PathBuf); }
 pub(crate) fn workdir(home: &Path, bot: &str) -> Result<PathBuf> {
     if let Ok(cwd) = SECTION_CWD.try_with(Clone::clone) {
         return Ok(cwd);
@@ -955,6 +958,7 @@ for line in sys.stdin:
  except Exception as error: print(json.dumps({'success':False,'error':str(error)}),flush=True)
 "#;
 struct Kernel {
+    sandbox: (bool, PathBuf),
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
@@ -1052,7 +1056,14 @@ async fn execute_code(
         .or_insert_with(|| Arc::new(Mutex::new(None)))
         .clone();
     let mut kernel = kernel.lock().await;
+    let sandbox = match CODE_SANDBOX.try_with(Clone::clone) {
+        Ok(sandbox) => sandbox,
+        Err(_) => (false, workdir(home, bot)?),
+    };
+    // A mode or workspace change takes effect on the next run: the worker
+    // restarts in the new sandbox.
     if (args["reset"] == true
+        || kernel.as_ref().is_some_and(|k| k.sandbox != sandbox)
         || kernel
             .as_mut()
             .is_some_and(|k| k.child.try_wait().ok().flatten().is_some()))
@@ -1084,12 +1095,13 @@ async fn execute_code(
         let mut command = crate::credentials::isolated_command(
             home,
             python,
-            &[workdir(home, bot)?, artifacts_dir(home, bot)?],
+            &[sandbox.1.clone(), artifacts_dir(home, bot)?],
+            sandbox.0,
         )?;
         desktop_environment(&mut command);
         let mut child = command
             .args(["-u", "-c", KERNEL])
-            .current_dir(workdir(home, bot)?)
+            .current_dir(&sandbox.1)
             .env("PYTHONUNBUFFERED", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1098,6 +1110,7 @@ async fn execute_code(
             .spawn()
             .map_err(|_| failure(format!("Python code runtime could not start: {python}")))?;
         *kernel = Some(Kernel {
+            sandbox: sandbox.clone(),
             input: child.stdin.take().expect("piped stdin"),
             output: BufReader::new(child.stdout.take().expect("piped stdout")),
             child,

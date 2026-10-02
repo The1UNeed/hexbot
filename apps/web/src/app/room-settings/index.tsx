@@ -9,6 +9,7 @@ import { Menu } from '../../components/ui/menu'
 import { activeBots, RoomCluster } from '../../components/ui/room-cluster'
 import { Select } from '../../components/ui/select'
 import { roomsPeople } from '../../lib/api'
+import { useApprovalModes } from '../../lib/approval-modes'
 import { avatarSrc } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import type { ApprovalMode, Bot, Room, User } from '../../lib/types'
@@ -113,12 +114,7 @@ function MemberRow({
                 : `Remove ${label} from this room? Its memory of the room stays with the bot.`}
           </p>
           <div className="mt-2 flex gap-2">
-            <Button
-              busy={busy}
-              onClick={() => void run(onRemove)}
-              size="sm"
-              variant="danger"
-            >
+            <Button busy={busy} onClick={() => void run(onRemove)} size="sm" variant="danger">
               {last ? 'Remove and delete room' : 'Remove'}
             </Button>
             <Button disabled={busy} onClick={() => setConfirming(false)} size="sm" variant="ghost">
@@ -209,7 +205,11 @@ function DeleteRoom({ onDelete, room }: { onDelete: () => Promise<void>; room: R
       <p className="text-[length:var(--text-secondary)]">
         Type <strong>{room.name}</strong> to delete this room.
       </p>
-      <Input aria-label="Confirm room name" onChange={e => setTyped(e.target.value)} value={typed} />
+      <Input
+        aria-label="Confirm room name"
+        onChange={e => setTyped(e.target.value)}
+        value={typed}
+      />
       <div className="flex gap-2">
         <Button
           disabled={typed !== room.name}
@@ -252,6 +252,7 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
   // else. Without user accounts there is one person, the owner. Until the
   // current user is known, neither owner controls nor the note show.
   const owner = current ? current.id === room.owner_id : supported === false ? true : null
+  const approvalModes = useApprovalModes(room.approval_mode)
   const [directory, setDirectory] = useState<Pick<User, 'id' | 'display_name'>[]>([])
   const [name, setName] = useState(room.name)
   const [turns, setTurns] = useState(String(room.limits.bot_turns_per_human_turn ?? ''))
@@ -346,9 +347,7 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
     <section aria-label="Room settings" className="min-w-0 max-w-3xl space-y-6 p-8">
       <div className="flex flex-col items-center gap-2">
         <RoomCluster bots={bots} room={room} size="xl" />
-        <Heading description={roomSummary(members.length, people.length)}>
-          {room.name}
-        </Heading>
+        <Heading description={roomSummary(members.length, people.length)}>{room.name}</Heading>
       </div>
       {owner !== false ? null : (
         <p className="text-center text-[length:var(--text-secondary)] text-muted" role="note">
@@ -462,12 +461,8 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
                 <Select
                   label="Room approval mode"
                   onValueChange={value => void save({ approval_mode: value as ApprovalMode })}
-                  options={[
-                    { label: 'Manual', value: 'manual' },
-                    { label: 'Auto', value: 'smart' },
-                    { label: 'Off', value: 'off' }
-                  ]}
-                  value={room.approval_mode ?? 'manual'}
+                  options={approvalModes.map(({ label, value }) => ({ label, value }))}
+                  value={room.approval_mode ?? 'smart'}
                 />
               </div>
             }

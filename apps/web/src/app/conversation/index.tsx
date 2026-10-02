@@ -408,10 +408,27 @@ export function MessageRow({
 export function CardRow({ bot, children }: { bot?: Bot; children: React.ReactNode }) {
   return (
     <div className="flex gap-2 py-1">
-      <Avatar className="mt-1" image={avatarData(bot)} name={bot?.display_name ?? 'Bot'} size="sm" />
+      <Avatar
+        className="mt-1"
+        image={avatarData(bot)}
+        name={bot?.display_name ?? 'Bot'}
+        size="sm"
+      />
       {children}
     </div>
   )
+}
+
+const APPROVAL_BUTTONS: Record<ApprovalChoice, string> = {
+  deny: 'Deny',
+  once: 'Approve',
+  session: 'Allow in this section'
+}
+
+const APPROVAL_CHOICES: Record<ApprovalChoice, string> = {
+  deny: 'Denied',
+  once: 'Approved',
+  session: 'Allowed in this section'
 }
 
 export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
@@ -433,23 +450,20 @@ export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
       ) : null}
       {approval.decision ? (
         <Chip tone={approval.decision === 'deny' ? 'danger' : 'success'}>
-          {approval.decision === 'deny'
-            ? 'Denied'
-            : approval.decision === 'always'
-              ? 'Always allowed'
-              : 'Approved'}
+          {APPROVAL_CHOICES[approval.decision]}
         </Chip>
       ) : (
         <div className="flex flex-wrap gap-2">
-          <Button onClick={() => void choose('once')} size="sm" variant="primary">
-            Approve
-          </Button>
-          <Button onClick={() => void choose('deny')} size="sm">
-            Deny
-          </Button>
-          <Button onClick={() => void choose('always')} size="sm">
-            Always allow
-          </Button>
+          {approval.choices.map(choice => (
+            <Button
+              key={choice}
+              onClick={() => void choose(choice)}
+              size="sm"
+              variant={choice === 'once' ? 'primary' : undefined}
+            >
+              {APPROVAL_BUTTONS[choice]}
+            </Button>
+          ))}
         </div>
       )}
     </div>
