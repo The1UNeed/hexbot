@@ -41,7 +41,7 @@ jobs:
         with:
           workspaces: backend/hexbot-core
       - run: cargo fmt --check
-      - run: cargo test --locked
+      - run: cargo test --locked --no-fail-fast
       - run: cargo clippy --locked --all-targets -- -D warnings
       - name: Verify real Pi sessions and native tools
         run: |

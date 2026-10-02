@@ -442,17 +442,22 @@ async fn run() -> Result<()> {
     }
     Ok(())
 }
-async fn shutdown_signal() {
-    #[cfg(unix)]
-    {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut term) => {
-                tokio::select! {_=tokio::signal::ctrl_c()=>{},_=term.recv()=>{}}
+/// Registers the handlers before returning, so a SIGTERM or SIGINT that arrives
+/// between the ready line and the first poll still shuts the daemon down cleanly.
+fn shutdown_signal() -> impl std::future::Future<Output = ()> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let term = signal(SignalKind::terminate()).ok();
+    let interrupt = signal(SignalKind::interrupt()).ok();
+    async move {
+        let wait = |signal: Option<tokio::signal::unix::Signal>| async move {
+            match signal {
+                Some(mut signal) => {
+                    signal.recv().await;
+                }
+                None => std::future::pending().await,
             }
-            Err(_) => {
-                let _ = tokio::signal::ctrl_c().await;
-            }
-        }
+        };
+        tokio::select! {_=wait(term)=>{},_=wait(interrupt)=>{}}
     }
 }
 #[tokio::main]

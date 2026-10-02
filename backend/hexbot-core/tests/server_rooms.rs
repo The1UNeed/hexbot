@@ -953,7 +953,14 @@ async fn the_owner_answers_room_approvals_and_questions_and_opening_the_room_res
         app.call("bob", "hexbot.rooms.get", &json!({"id":room}))
             .await
             .unwrap();
-        let replayed = sent(events);
+        // The turn keeps emitting its own room events, so count only status updates bob sees.
+        let replayed: Vec<_> = sent(events)
+            .into_iter()
+            .filter(|e| {
+                e.frame_for("bob")
+                    .is_some_and(|f| f["params"]["type"] == "status.update")
+            })
+            .collect();
         assert_eq!(replayed.len(), 1);
         let status = &replayed[0];
         assert!(status.frame_for("alice").is_none());
