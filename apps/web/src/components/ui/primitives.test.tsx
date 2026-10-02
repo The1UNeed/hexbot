@@ -9,9 +9,18 @@ import { Menu } from './menu'
 import { Select } from './select'
 import { Spinner } from './spinner'
 import { Textarea } from './textarea'
+import { Title } from './title'
 import { Tooltip } from './tooltip'
 
 describe('UI components', () => {
+  it('fades a Title in only when its text changes', () => {
+    const { rerender } = render(<Title text="New section" />)
+    expect(screen.getByText('New section')).not.toHaveClass('hex-fade')
+    rerender(<Title text="Garden plans" />)
+    expect(screen.getByText('Garden plans')).toHaveClass('hex-fade')
+    rerender(<Title text="New section" />)
+    expect(screen.getByText('New section')).toHaveClass('hex-fade')
+  })
   it('renders Button', () => {
     render(<Button variant="primary">Save</Button>)
     expect(screen.getByRole('button', { name: 'Save' })).toBeVisible()

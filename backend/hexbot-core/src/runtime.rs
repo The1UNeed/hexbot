@@ -2786,7 +2786,7 @@ fn base_tools() -> Vec<Value> {
     vec![
         json!({
             "name": "hexbot_rename_section",
-            "description": "Give this conversation a short title when its topic is clear. Not available in rooms or Dreams.",
+            "description": "Name this conversation. It starts out titled with the user's first message; once the topic is clear, give it a short title of a few words, and rename it again if the topic changes. Not available in rooms or Dreams.",
             "parameters": {
                 "type": "object",
                 "properties": { "title": { "type": "string" } },

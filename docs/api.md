@@ -130,15 +130,16 @@ Section shape: `{id, bot, title, title_by: "bot" | null, created_at,
 updated_at, archived_at | null, done_at | null, preview, message_count,
 live_session_id | null}`
 
-`title_by` is `"bot"` when the bot named the section, either through the
-`hexbot_rename_section` tool or because the listing adopted the title the core
-generates from the first prompt; a user rename clears it. `preview` is the
-first user message, also returned by `open`.
+`title_by` is `"bot"` when the daemon named the section, either from the
+first prompt or through the bot's `hexbot_rename_section` tool; a user rename
+clears it. `preview` is the first user message, also returned by `open`. The
+roster shows only the title.
 
 - `hexbot.sections.list {bot?, include_archived?}` → `{sections: [Section]}`.
-  A section still called `New section` takes its title from the first prompt.
-  The `General` section created with a bot, and any name the user or bot set,
-  are kept.
+  A section still called `New section` takes its title from the first prompt
+  as soon as `prompt.submit` accepts it, before the bot replies. The
+  `General` section created with a bot, and any name the user or bot set, are
+  kept.
 - `hexbot.sections.create {bot, title?}` → `{section: Section}` (calls
   `session.create {profile: bot, close_on_disconnect: false}`, records the
   stored id). `title` is passed to the core only when given; an untitled
@@ -268,7 +269,8 @@ for the builtin memory tool.
 The `hexbot_rename_section {title}` tool (toolset `hexbot-section`, kept on
 the same way) renames the section the bot is speaking in, up to 60
 characters, and broadcasts `hexbot.sections.changed`. It refuses in rooms and
-in the Dreams section. The roster marks a bot-named section with a sparkle.
+in the Dreams section. The roster and the conversation header fade the new
+title in where the old one was.
 
 ### Connectors and skills
 

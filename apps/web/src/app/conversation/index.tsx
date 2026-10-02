@@ -6,7 +6,6 @@ import {
   MoreHorizontal,
   PanelRight,
   RotateCcw,
-  Sparkles,
   Trash2,
   X
 } from 'lucide-react'
@@ -21,6 +20,7 @@ import { Dialog } from '../../components/ui/dialog'
 import { Input } from '../../components/ui/input'
 import { Menu } from '../../components/ui/menu'
 import { StatusDot } from '../../components/ui/status-dot'
+import { Title } from '../../components/ui/title'
 import {
   approvalRespond,
   attachFile,
@@ -559,7 +559,7 @@ function Composer({
       transcriptActions().appendUserMessage(sessionId, text.trim(), attachments)
 
       if (sectionId) {
-        sectionsActions().markTouched(sectionId)
+        sectionsActions().markTouched(sectionId, text)
       }
 
       await submitOrReopen(sessionId, sectionId, text.trim())
@@ -571,6 +571,10 @@ function Composer({
       }
     } finally {
       setSending(false)
+
+      if (sectionId) {
+        void sectionsActions().settleTitle(sectionId)
+      }
     }
   }
 
@@ -901,17 +905,10 @@ function BotConversation() {
             <button
               className="min-w-0 truncate text-left text-[length:var(--text-secondary)] text-muted hover:text-foreground"
               onClick={() => setEditing(true)}
-              title={
-                section.title_by === 'bot'
-                  ? `Named by ${bot?.display_name ?? 'the bot'}. Click to rename`
-                  : 'Rename section'
-              }
+              title="Rename section"
               type="button"
             >
-              {section.title}
-              {section.title_by === 'bot' ? (
-                <Sparkles aria-label="Named by the bot" className="ml-1 inline" size={11} />
-              ) : null}
+              <Title key={section.id} text={section.title} />
             </button>
           ) : null}
         </div>
@@ -1025,8 +1022,10 @@ function BotConversation() {
                   onClick={() => {
                     if (liveId && section) {
                       transcriptActions().appendUserMessage(liveId, prompt)
-                      sectionsActions().markTouched(section.id)
-                      void promptSubmit(liveId, prompt)
+                      sectionsActions().markTouched(section.id, prompt)
+                      void promptSubmit(liveId, prompt).finally(
+                        () => void sectionsActions().settleTitle(section.id)
+                      )
                     }
                   }}
                   size="sm"
