@@ -100,11 +100,11 @@ function layout(home: string, outputs: string[] = []) {
 // no network, no host Unix sockets (a user service manager or Docker would
 // start programs outside it), no signals to processes outside it, and writes
 // only inside `workspace` (empty in Manual, so read-only) and to a few device
-// files. Output folders stay writable only inside it. Shell profiles and login
+// files. Credential stores are unreadable, not just unwritable. Output folders stay writable only inside it. Shell profiles and login
 // items stay read-only even inside it. On Linux /run and /tmp, where host
 // sockets live, are private. A command the user lets out of it runs with the
 // base layer alone.
-const DEVICES = ['/dev/null', '/dev/zero', '/dev/tty', '/dev/stdout', '/dev/stderr', '/dev/dtracehelper'];
+const DEVICES = ['/dev/null', '/dev/zero', '/dev/stdout', '/dev/stderr', '/dev/dtracehelper'];
 function confined(workspace: string[]) {
   const writable = [...new Set(workspace.filter(p => existsSync(p)).map(p => realpathSync(p)))];
   const config: string[] = [];
@@ -128,7 +128,7 @@ export function sandboxProfile(home: string, outputs: string[] = [], workspace?:
   if (workspace) {
     const {writable: open, config} = confined(workspace);
     const inside = [...DEVICES.map(p => `(literal ${JSON.stringify(p)})`), ...['/dev/fd', ...open].map(p => `(subpath ${JSON.stringify(p)})`)].join(' ');
-    confine = `(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-write* (require-not (require-any ${inside})))(deny file-write* ${config.map(p => `(literal ${JSON.stringify(p)}) (subpath ${JSON.stringify(p)})`).join(' ')})`;
+    confine = `(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-read* ${stores})(deny file-write* (require-not (require-any ${inside})))(deny file-write* ${config.map(p => `(literal ${JSON.stringify(p)}) (subpath ${JSON.stringify(p)})`).join(' ')})`;
   }
   return `(version 1)(allow default)(deny process-exec (literal "/usr/bin/open") (literal "/bin/launchctl") (literal "/usr/bin/osascript"))(deny file-write* (require-all ${insideHome} ${exceptWritable}))(deny file-write* ${stores})${ancestors ? `(deny file-write-unlink ${ancestors})` : ''}${confine}(deny file-read* file-write* ${filters.join(' ')})`;
 }
@@ -141,7 +141,8 @@ export function bwrapArguments(home: string, outputs: string[] = [], workspace?:
   for (const path of writable) if (!confine || confine.writable.some(root => path === root || path.startsWith(root + '/'))) args.push('--bind', path, path);
   // A store that does not exist yet cannot be bound (bubblewrap would create the
   // mount point on the host).
-  for (const path of [...denied, ...confine ? confine.config : []]) if (existsSync(path)) args.push('--ro-bind', path, path);
+  for (const path of denied) if (existsSync(path)) args.push(...!confine ? ['--ro-bind', path, path] : statSync(path).isDirectory() ? ['--tmpfs', path, '--remount-ro', path] : ['--ro-bind', '/dev/null', path]);
+  for (const path of confine ? confine.config : []) if (existsSync(path)) args.push('--ro-bind', path, path);
   for (const path of paths) if (existsSync(path)) args.push(...(statSync(path).isDirectory() ? ['--tmpfs', path, '--remount-ro', path] : ['--ro-bind', '/dev/null', path]));
   return args;
 }

@@ -247,6 +247,10 @@ test('the workspace sandbox confines writes and blocks the network', {skip:proce
   const unix = createServer(c => c.end()).listen(socket);
   await new Promise(resolve => unix.on('listening', resolve)); t.after(() => unix.close());
   assert.equal(run(`python3 -c "import socket;s=socket.socket(socket.AF_UNIX);s.connect('${socket}')" 2>/dev/null && exit 14; echo done`, [user]), 'done\n');
+  // Credential stores are unreadable inside the workspace sandbox, readable after full access.
+  mkdirSync(join(user, '.aws')); writeFileSync(join(user, '.aws/credentials'), 'aws-secret');
+  assert.equal(run(`cat '${user}/.aws/credentials' 2>/dev/null && exit 19; echo done`, [user]), 'done\n');
+  assert.equal(run(`cat '${user}/.aws/credentials'`, undefined), 'aws-secret');
   // No signals leave the sandbox (kill -9 -1 would reach every process you own), and only a few device files take writes.
   assert.equal(run(`kill -0 ${process.pid} 2>/dev/null && exit 15; sleep 5 & kill $! || exit 16; (echo x > /dev/random) 2>/dev/null && exit 17; echo x > /dev/null || exit 18; echo done`, [user]), 'done\n');
   assert.equal(run(`echo ok > '${user}/notes.txt' || exit 10; (echo x > '${other}/x') 2>/dev/null && exit 11; (echo x > '${user}/.zshrc') 2>/dev/null && exit 12; (exec 3<>/dev/tcp/127.0.0.1/${port}) 2>/dev/null && exit 13; echo done`, [user]), 'done\n');

@@ -392,7 +392,8 @@ test('file tools never write credential stores or daemon configuration outside B
   for (const mode of ['manual', 'smart']) {
     const f = fixture(t, mode, ['file']);
     for (const path of [join(user, '.netrc'), join(user, '.git-credentials'), join(user, '.aws/credentials'), join(user, '.config/gh/hosts.yml'), join(user, '.kube/config'), '~/.npmrc', '/etc/hosts']) {
-      for (const tool of ['write', 'edit']) assert.match((await f.gate(tool, {path})).reason, /never written/, `${mode} ${tool} ${path}`);
+      for (const tool of ['write', 'edit']) assert.match((await f.gate(tool, {path})).reason, /never written|private/, `${mode} ${tool} ${path}`);
+      if (path !== '/etc/hosts') for (const tool of ['read', 'grep', 'ls']) assert.match((await f.gate(tool, {path})).reason, /private/, `${mode} ${tool} ${path}`);
       await assert.rejects(f.tools.write.execute('write', {path, content:'bad'}), /Try again/);
     }
     for (const path of ['config.yaml', 'bin/script', 'hooks/script', 'profiles/owl/config.yaml', 'skills/script']) {

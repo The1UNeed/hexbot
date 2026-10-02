@@ -3803,8 +3803,9 @@ mod file_bridge_tests {
                     assert!(guarded_file_path(&home, Path::new(path), true, mode, &[]).is_err());
                 }
                 let denied = guarded_file_path(&home, &user.join(".netrc"), true, mode, &[]);
-                assert!(denied.unwrap_err().to_string().contains("never written"));
-                assert!(guarded_file_path(&home, &user.join(".netrc"), false, mode, &[]).is_ok());
+                assert!(denied.unwrap_err().to_string().contains("private"));
+                // Credential stores are private to reads too.
+                assert!(guarded_file_path(&home, &user.join(".netrc"), false, mode, &[]).is_err());
                 // A shell profile asks even inside the workspace.
                 let (_, ask) = guarded_file_path(
                     &home,

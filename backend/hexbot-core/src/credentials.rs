@@ -76,7 +76,9 @@ fn home_credential_name(home: &Path, path: &Path) -> bool {
 }
 pub fn credential_name(home: &Path, path: &Path) -> bool {
     if std::env::var_os("HOME").is_some_and(|user| {
-        user_credential_name(Path::new(&user), path) || ssh_credential_name(Path::new(&user), path)
+        user_credential_name(Path::new(&user), path)
+            || ssh_credential_name(Path::new(&user), path)
+            || store_credential_name(path)
     }) {
         return true;
     }
@@ -87,6 +89,17 @@ fn user_credential_name(user: &Path, path: &Path) -> bool {
         let secret = user.join(local);
         under(path, &secret) || std::fs::canonicalize(secret).is_ok_and(|p| under(path, &p))
     })
+}
+/// Credential stores such as ~/.aws and ~/.netrc are private to reads too.
+fn store_credential_name(path: &Path) -> bool {
+    policy()
+        .write
+        .deny
+        .iter()
+        .filter_map(|entry| policy_root(entry))
+        .any(|store| {
+            under(path, &store) || std::fs::canonicalize(&store).is_ok_and(|p| under(path, &p))
+        })
 }
 fn ssh_credential_name(user: &Path, path: &Path) -> bool {
     let ssh = user.join(".ssh");
@@ -323,10 +336,9 @@ struct Layout {
 /// workspace (none in Manual) and to a few device files, and shell profiles
 /// and login items read-only even inside it. On Linux /run and /tmp are
 /// private. Matches isolation.ts.
-const DEVICES: [&str; 6] = [
+const DEVICES: [&str; 5] = [
     "/dev/null",
     "/dev/zero",
-    "/dev/tty",
     "/dev/stdout",
     "/dev/stderr",
     "/dev/dtracehelper",
@@ -525,7 +537,7 @@ fn sandbox_profile(layout: &Layout) -> String {
             .collect::<Vec<_>>()
             .join(" ");
         format!(
-            "(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-write* (require-not (require-any {inside})))(deny file-write* {config})"
+            "(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-read* {stores})(deny file-write* (require-not (require-any {inside})))(deny file-write* {config})"
         )
     });
     format!(
@@ -584,10 +596,24 @@ fn bwrap_arguments(layout: &Layout) -> Vec<OsString> {
     }
     // A store that does not exist yet cannot be bound (bubblewrap would create the
     // mount point on the host).
+    for path in layout.denied.iter().filter(|p| p.exists()) {
+        if layout.confine.is_none() {
+            args.extend(["--ro-bind".into(), path.into(), path.into()]);
+        } else if path.is_dir() {
+            args.extend([
+                "--tmpfs".into(),
+                path.into(),
+                "--remount-ro".into(),
+                path.into(),
+            ]);
+        } else {
+            args.extend(["--ro-bind".into(), "/dev/null".into(), path.into()]);
+        }
+    }
     for path in layout
-        .denied
+        .confine
         .iter()
-        .chain(layout.confine.iter().flat_map(|c| &c.config))
+        .flat_map(|c| &c.config)
         .filter(|p| p.exists())
     {
         args.extend(["--ro-bind".into(), path.into(), path.into()]);

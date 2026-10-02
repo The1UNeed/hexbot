@@ -332,6 +332,11 @@ function credentialName(path: string, home: string): boolean {
     const secret = join(homedir(), local);
     return under(path, secret) || under(path, canonicalPath(secret, process.cwd()));
   })) return true;
+  // Credential stores such as ~/.aws and ~/.netrc are private to reads too.
+  if ((credentialPolicy.write.deny as string[]).some(entry => {
+    const store = policyRoot(entry);
+    return under(path, store) || under(path, canonicalPath(store, process.cwd()));
+  })) return true;
   const name = basename(path);
 
   if (!home) throw new Error('Hexbot home is unavailable');
