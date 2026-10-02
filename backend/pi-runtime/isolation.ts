@@ -146,7 +146,16 @@ export function bwrapArguments(home: string, outputs: string[] = [], workspace?:
   for (const path of paths) if (existsSync(path)) args.push(...(statSync(path).isDirectory() ? ['--tmpfs', path, '--remount-ro', path] : ['--ro-bind', '/dev/null', path]));
   return args;
 }
+// Neither sandbox caps process creation, so a workspace command may start at
+// most this many more processes than you already run: a fork bomb stops there.
+export const PROCESS_HEADROOM = 512;
+export function processLimit(): number | undefined {
+  const listed = spawnSync('ps', ['-U', String(process.getuid?.() ?? ''), '-o', 'pid='], {encoding: 'utf8', timeout: 5000});
+  return listed.status === 0 ? listed.stdout.split('\n').filter(Boolean).length + PROCESS_HEADROOM : undefined;
+}
 export function isolatedCommand(command: string, home: string, outputs: string[] = [], workspace?: string[]): string {
+  const limit = workspace && processLimit();
+  if (limit) command = `ulimit -u ${limit}\n${command}`;
   if (process.platform === 'darwin') return `/usr/bin/sandbox-exec -p ${quote(sandboxProfile(home, outputs, workspace))} /bin/bash --noprofile --norc -c ${quote(command)}`;
   const executable = probeIsolation();
   if (executable) return [executable, ...bwrapArguments(home, outputs, workspace), '--', '/bin/bash', '--noprofile', '--norc', '-c', command].map(quote).join(' ');

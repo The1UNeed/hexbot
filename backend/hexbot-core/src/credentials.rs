@@ -632,6 +632,25 @@ fn bwrap_arguments(layout: &Layout) -> Vec<OsString> {
     }
     args
 }
+/// Neither sandbox caps process creation, so a workspace program may start at
+/// most this many more processes than the user already runs.
+const PROCESS_HEADROOM: usize = 512;
+fn process_limit() -> Option<usize> {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let listed = std::process::Command::new("ps")
+        .args(["-U", &uid.to_string(), "-o", "pid="])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    Some(
+        String::from_utf8_lossy(&listed.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count()
+            + PROCESS_HEADROOM,
+    )
+}
 /// A sandboxed command. `confine` adds the workspace sandbox, with `writable`
 /// and the temporary folders as the workspace.
 pub fn isolated_command(
@@ -646,9 +665,23 @@ pub fn isolated_command(
         .chain([std::env::temp_dir(), PathBuf::from("/tmp")])
         .collect();
     let layout = layout(home, writable, confine.then_some(workspace.as_slice()))?;
+    // A confined program starts behind a shell that caps its processes, as in
+    // isolation.ts; the caller's arguments follow the program unchanged.
+    let limit = confine.then(process_limit).flatten();
+    let launch: Vec<String> = match limit {
+        Some(limit) => vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            format!("ulimit -u {limit}; exec \"$0\" \"$@\""),
+            program.into(),
+        ],
+        None => vec![program.into()],
+    };
     if cfg!(target_os = "macos") {
         let mut command = tokio::process::Command::new("/usr/bin/sandbox-exec");
-        command.args(["-p", &sandbox_profile(&layout), program]);
+        command
+            .args(["-p", &sandbox_profile(&layout)])
+            .args(&launch);
         return Ok(command);
     }
     if let Some(bwrap) = bwrap() {
@@ -656,7 +689,7 @@ pub fn isolated_command(
         command
             .args(bwrap_arguments(&layout))
             .arg("--")
-            .arg(program);
+            .args(&launch);
         return Ok(command);
     }
     warn_unavailable_isolation();
@@ -1103,6 +1136,27 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&result.stderr)
         );
+    }
+    /// Neither sandbox caps processes, so a workspace program runs behind a limit.
+    #[tokio::test]
+    async fn confined_programs_cannot_start_unbounded_processes() {
+        if !isolation_available() {
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let limit = |confine| {
+            let mut command = isolated_command(home.path(), "/bin/sh", &[], confine).unwrap();
+            command.args(["-c", "ulimit -u"]);
+            async move {
+                let output = command.output().await.unwrap();
+                String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .parse::<u64>()
+                    .unwrap_or(u64::MAX)
+            }
+        };
+        let (capped, own) = (limit(true).await, limit(false).await);
+        assert!(capped > 512 && capped < own, "{capped} {own}");
     }
     #[test]
     fn code_floor() {

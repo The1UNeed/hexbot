@@ -251,6 +251,10 @@ test('the workspace sandbox confines writes and blocks the network', {skip:proce
   mkdirSync(join(user, '.aws')); writeFileSync(join(user, '.aws/credentials'), 'aws-secret');
   assert.equal(run(`cat '${user}/.aws/credentials' 2>/dev/null && exit 19; echo done`, [user]), 'done\n');
   assert.equal(run(`cat '${user}/.aws/credentials'`, undefined), 'aws-secret');
+  // Process creation is capped, so a fork bomb stops; a full-access command keeps your own limit.
+  const limit = workspace => {const value = run('ulimit -u', workspace).trim(); return value === 'unlimited' ? Infinity : Number(value);};
+  const capped = limit([user]), own = limit(undefined);
+  assert.ok(capped > 512 && capped < own, `${capped} ${own}`);
   // No signals leave the sandbox (kill -9 -1 would reach every process you own), and only a few device files take writes.
   assert.equal(run(`kill -0 ${process.pid} 2>/dev/null && exit 15; sleep 5 & kill $! || exit 16; (echo x > /dev/random) 2>/dev/null && exit 17; echo x > /dev/null || exit 18; echo done`, [user]), 'done\n');
   assert.equal(run(`echo ok > '${user}/notes.txt' || exit 10; (echo x > '${other}/x') 2>/dev/null && exit 11; (echo x > '${user}/.zshrc') 2>/dev/null && exit 12; (exec 3<>/dev/tcp/127.0.0.1/${port}) 2>/dev/null && exit 13; echo done`, [user]), 'done\n');

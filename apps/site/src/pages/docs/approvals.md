@@ -12,7 +12,7 @@ The **workspace** is the bot's working directory (`~/Hexbot` by default) plus it
 
 Auto is the default. Bots work freely inside the workspace and ask before anything outside it.
 
-- Shell commands run in a sandbox with no internet access and no access to local service sockets, and can write only inside the workspace. Shell profiles and login items stay read-only even there; on Linux, a profile that does not exist yet is not protected when the workspace holds your home folder, and a service socket inside your home folder stays reachable (the ones in `/run` and `/tmp` are hidden).
+- Shell commands run in a sandbox with no internet access and no access to local service sockets, and can write only inside the workspace. They cannot signal your other programs, and they can start only a few hundred processes, so a runaway loop stops there. Shell profiles and login items stay read-only even there; on Linux, a profile that does not exist yet is not protected when the workspace holds your home folder, and a service socket inside your home folder stays reachable (the ones in `/run` and `/tmp` are hidden).
 - When a command needs the internet or must write outside the workspace, the bot says so. You see a card with the command and the bot's one-sentence reason. If you approve, the command runs outside the workspace sandbox; credential files stay unreadable.
 - File tools change files inside the workspace without asking, and ask before changing anything outside it or a shell profile.
 - Python code and scheduled scripts run in the same workspace sandbox without asking.
