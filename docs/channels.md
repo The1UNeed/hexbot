@@ -29,7 +29,7 @@ never moves the daemon back.
 ## Which files belong to which channel
 
 The native daemon under `backend/` and clients under `apps/` are shared.
-The Python tree remains for one release of service handoff. Channel behaviour
+`backend/python-handoff/` provides the service handoff. Channel behaviour
 lives in a small set of files:
 
 | File | Channel | Role |
@@ -37,13 +37,13 @@ lives in a small set of files:
 | `.github/workflows/ci.yml` | all | Tests and builds on every push and pull request. Publishes nothing. Also called by `release.yml`. Ends with `release-smoke.mjs` |
 | `.github/workflows/release.yml` | stable, nightly | One workflow for both channels: `preflight` picks the channel and version, `check` runs CI, `build` makes six packages, `publish` uploads the feed, creates the GitHub release, and after a nightly redeploys the site, `finalize` (stable only) commits the website manifest and casks |
 | `scripts/desktop/release-version.mjs` | stable, nightly | Channel and version rules: tag must match `package.json`, nightly version format, product names. Tested in `packaging.test.mjs` |
-| `scripts/desktop/set-version.mjs` | all | Writes one version into `apps/desktop/package.json` and `hexbot/__init__.py` |
+| `scripts/desktop/set-version.mjs` | all | Writes one version into `apps/desktop/package.json`, which Rust reads at build time |
 | `scripts/desktop/dist.mjs` | all | `--channel stable\|nightly\|dev` sets the product name and app id passed to electron-builder |
 | `scripts/desktop/make-update-feed.mjs` | stable, nightly | Builds the `updates.hexbot.app` directory tree from a build output: artifacts plus `latest-*.yml` or `nightly-*.yml` |
 | `scripts/desktop/finalize-release.mjs` | stable | Rewrites `apps/site/public/downloads/manifest.json` and both Homebrew casks for a version |
 | `scripts/desktop/release-smoke.mjs` | stable, nightly | Runs the scripts above the way `release.yml` does, against synthetic packages. CI runs it on every push |
 | `scripts/dev/run.mjs` | dev | `pnpm dev`: daemon and web bundle (or Electron) from the checkout with a per-checkout home and ports |
-| `.devcontainer/devcontainer.json` | dev | Rust from `rust-toolchain.toml`, Node 26 and locked agent dependencies; Python 3.11 and uv for legacy comparison tests |
+| `.devcontainer/devcontainer.json` | dev | Rust from `rust-toolchain.toml`, Node 26 and locked agent dependencies; Python 3.11 and uv for handoff tests |
 | `apps/desktop/electron-builder.yml`, `electron-builder.client.yml` | all | Full and client-only package definitions and their feed URLs; channel flags override `productName` and `appId` |
 | `apps/desktop/src/main/updater.ts`, `update-state.ts`, `desktop-state.ts` | stable, nightly | The in-app updater: a check 15 s after launch and every 4 minutes, one action at a time, logged to `<home>/logs/desktop.log`. The track defaults to the one the build came from and can be switched in Settings, Updates |
 | `apps/desktop/src/main/remote-update.ts`, `backend/hexbot-core/src/services.rs` | stable, nightly | A daemon updating on a client's request: the app that runs it updates itself, or a service-run daemon verifies `daemon/native/<v>/<target>/manifest.json` and its archive, then restarts |
@@ -132,7 +132,7 @@ full/linux/x64/latest-linux.yml, nightly-linux.yml, Hexbot-<v>-linux-x64.AppImag
 client/...                          the same for HexbotClient-*
 daemon/native/<v>/<target>/manifest.json   native archive URL, version, target and SHA-256
 daemon/native/<v>/<target>/hexbot-native-<v>-<target>.tar.gz
-daemon/hexbot-src-<v>.tar.gz               one-release handoff for existing Python services
+daemon/hexbot-src-<v>.tar.gz               handoff for existing Python services
 ```
 
 Artifacts are immutable (their names carry the version); the `.yml` files are
@@ -178,8 +178,8 @@ its machine. The daemon says how, through `update_capability` in
   and restarts. Targets are `macos-aarch64`, `macos-x86_64` and `linux-x86_64`.
   It retains the active runtime and its predecessor, protecting any older
   runtime still used by a running daemon. `HEXBOT_UPDATE_URL` selects another
-  server. For one release, existing Python services can use the historical
-  source feed to install this native runtime and hand over their home.
+  server. Existing Python services use the historical source feed, published
+  with every release, to install this native runtime and hand over their home.
 - unset: a checkout or a hand-started daemon. The page says to update by
   hand.
 

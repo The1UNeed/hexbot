@@ -4,11 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./billing": "./src/billing-types.ts",
-    "./billing-policy": "./src/billing-policy.ts",
-    "./charge-settlement": "./src/charge-settlement.ts",
-    "./skin": "./src/skin.ts"
+    ".": "./src/index.ts"
   },
   "types": "./src/index.ts",
   "scripts": {

@@ -130,17 +130,14 @@ need a second copy.
 ### The model
 
 A connector is one row in a catalog that Hexbot owns
-(`hexbot/connectors.py`). Each entry names:
+(`backend/hexbot-core/src/connectors.rs`). Each entry names:
 
 - `id`, `name`, `description`, `group`, `icon`.
 - `scope`: `daemon` (an API key shared by every bot, like a provider
   key) or `bot` (a token that is the bot's own identity, like a
   Telegram bot token).
-- `fields`: the credentials and options to collect, taken from the core's
-  `OPTIONAL_ENV_VARS` in `hermes_cli/config_defaults.py` (description,
-  where to get it, secret or not, advanced or not). That catalog is
-  already the schema the core's own setup uses; Hexbot reads it rather
-  than retyping it.
+- `fields`: credentials and options from the native connector catalog,
+  including descriptions, secret flags, and setup instructions.
 - `enables`: what turning it on for a bot means in core terms, one or
   more of: a toolset in `tools.enabled_toolsets`, a skill left out of
   `skills.disabled`, an MCP server entry, or a platform under
@@ -257,7 +254,7 @@ Settings.
 
 Daemon:
 
-- `hexbot/connectors.py`: the catalog and the mapping onto core
+- `backend/hexbot-core/src/connectors.rs`: the catalog and the mapping onto core
   config.
 - RPC: `connectors.list` (catalog with daemon state and this bot's
   state), `connectors.setup`, `connectors.test`, `connectors.clear`,

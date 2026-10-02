@@ -25,7 +25,7 @@ known gap.
 
 Existing Python background services try to install the native daemon during their
 next update. If the download or runtime validation fails, the update reports failure
-and the Python daemon remains available. A later service restart retries the install.
+and the running daemon keeps going unchanged. Try the update again later.
 
 ## Stable and nightly
 

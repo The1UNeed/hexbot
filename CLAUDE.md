@@ -9,8 +9,8 @@
   Nightly, and Dev and what was borrowed from T3 Code; `docs/release.md` is
   the release procedure.
 - Put daemon behaviour in `backend/hexbot-core/` or the private extension in
-  `backend/pi-runtime/`. Client code lives in `apps/`. The Python tree and
-  `docs/core/development.md` are legacy compatibility references only.
+  `backend/pi-runtime/`. Client code lives in `apps/`.
+  `backend/python-handoff/` is only the service handoff.
 - Run Hexbot from the checkout with `pnpm dev` (state in
   `<checkout>/.hexbot`). If you start a daemon by hand, set `HEXBOT_HOME` to a
   temp directory. Never point a dev daemon at `~/.hexbot`.

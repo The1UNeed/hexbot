@@ -8,7 +8,7 @@ import { keep, updateNightlyIndex } from './update-nightly-index.mjs'
 import { nightlyBase, productName, resolveRelease } from './release-version.mjs'
 import { setVersion } from './set-version.mjs'
 import { feedMetadataName, writeFeedMetadata } from './update-feed-utils.mjs'
-import { excludedRoots, includePythonSource } from './python-src-manifest.mjs'
+import { handoffFiles } from './python-src-manifest.mjs'
 import { updateCask } from './update-cask.mjs'
 import { iconOptions, parseBuildArgs } from './build-config.mjs'
 
@@ -35,11 +35,10 @@ test('nightly and dev packages select their own icon, with and without Icon Comp
   assert.deepEqual(iconOptions('stable', false), [])
 })
 
-test('Python source manifest shares root and nested exclusions', () => {
-  const root = '/repo'
-  assert.equal(excludedRoots.has('apps'), true)
-  assert.equal(includePythonSource(root, join(root, 'hexbot', 'serve.py')), true)
-  assert.equal(includePythonSource(root, join(root, 'hexbot', '__pycache__', 'serve.pyc')), false)
+test('service source manifest contains only the handoff package', () => {
+  assert.deepEqual(handoffFiles, [
+    'pyproject.toml', 'uv.lock', 'hexbot/__init__.py', 'hexbot/cli.py', 'hexbot/native_transition.py'
+  ])
 })
 
 test('cask updater rewrites version and both architecture hashes', async () => {
@@ -170,17 +169,11 @@ test('product names carry the channel and keep [alpha] before 1.0', () => {
 test('set-version writes the app and daemon versions', async () => {
   const root = await mkdtemp(join(tmpdir(), 'hexbot-version-'))
   await mkdir(join(root, 'apps/desktop'), { recursive: true })
-  await mkdir(join(root, 'hexbot'), { recursive: true })
   await writeFile(join(root, 'apps/desktop/package.json'), '{\n  "version": "0.0.0"\n}\n')
-  await writeFile(join(root, 'hexbot/__init__.py'), '"""Hexbot."""\n\n__version__ = "0.0.0"\n')
   await setVersion('0.1.5-nightly.20260906.42', root)
   assert.equal(
     JSON.parse(await readFile(join(root, 'apps/desktop/package.json'), 'utf8')).version,
     '0.1.5-nightly.20260906.42'
-  )
-  assert.match(
-    await readFile(join(root, 'hexbot/__init__.py'), 'utf8'),
-    /__version__ = "0\.1\.5-nightly\.20260906\.42"/
   )
   await assert.rejects(setVersion('not a version', root), /SemVer/)
 })
@@ -236,12 +229,11 @@ test('update-nightly-index puts the new nightly first, replaces reruns, and keep
   assert.throws(() => updateNightlyIndex({}, { version: '0.1.5', commit: 'c0ffee0' }), /not a nightly/)
 })
 
-test('the devcontainer and the Dockerfile install the pnpm that packageManager pins', async () => {
+test('the devcontainer installs the pnpm that packageManager pins', async () => {
   const root = new URL('../../', import.meta.url)
   const { packageManager } = JSON.parse(await readFile(new URL('package.json', root), 'utf8'))
   const version = packageManager.replace(/^pnpm@/, '').split('+')[0]
   assert.ok(
     (await readFile(new URL('.devcontainer/devcontainer.json', root), 'utf8')).includes(`pnpm@${version} `)
   )
-  assert.ok((await readFile(new URL('Dockerfile', root), 'utf8')).includes(`ARG PNPM_VERSION=${version}\n`))
 })

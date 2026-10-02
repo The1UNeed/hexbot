@@ -18,7 +18,7 @@ test('creates a bot, chats, and creates another section', async () => {
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined
 
   try {
-    await seedCodexTokens(repoRoot, daemonHome)
+    await seedCodexTokens(daemonHome)
     daemon = await startDaemon(
       repoRoot,
       daemonHome,
@@ -44,14 +44,15 @@ test('creates a bot, chats, and creates another section', async () => {
     if (process.env.HEXBOT_E2E_CLIENT === '1') {
       // Exercise a real pairing against a LAN-enabled daemon.
       const code = execFileSync(
-        resolve(repoRoot, 'venv/bin/python'),
-        ['-c', 'from hexbot.pairing import new_code; print(new_code())'],
+        resolve(repoRoot, 'backend/hexbot-core/target/debug/hexbot'),
+        ['pair'],
         {
           cwd: repoRoot,
           env: { ...process.env, HEXBOT_HOME: daemonHome, HERMES_HOME: daemonHome },
           encoding: 'utf8'
         }
-      ).trim()
+      ).match(/^Pairing code: (.+)$/m)?.[1]
+      if (!code) throw new Error('Native daemon did not print a pairing code')
       await page.getByTestId('connect-address-input').fill(`127.0.0.1:${daemon.port}`)
       await page.getByTestId('connect-code-input').fill(code)
       await page.getByTestId('connect-submit').click()

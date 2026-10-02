@@ -1,5 +1,5 @@
 """Call JSON-RPC methods on a loopback daemon. Usage:
-  HEXBOT_HOME=<home> ./venv/bin/python scripts/dev/rpc.py <port> '<json list of [method, params]>'
+  HEXBOT_HOME=<home> uv run --no-project --with websockets python scripts/dev/rpc.py <port> '<json list of [method, params]>'
 The daemon never puts its token in a page; read it from the home's private token file.
 Placeholders "$name" in params are replaced from earlier results carrying that key."""
 import asyncio, json, os, sys

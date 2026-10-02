@@ -4,8 +4,8 @@ The client speaks JSON-RPC 2.0 over the daemon WebSocket at `/api/ws`
 (newline-delimited text frames; server events arrive as notifications with
 method `"event"` and `params: {type, session_id, seq, payload}`). Core
 methods are used as-is for chat. Hexbot adds `hexbot.*` methods for its own
-data model. Reference for the core subset: `/tmp/hexbot-notes/ws-api.md`
-(copied to `docs/core/ws-api.md`).
+data model. The native transport and event projection live in
+`backend/hexbot-core/src/server.rs` and `events.rs`.
 
 ## Mapping
 
@@ -105,7 +105,7 @@ inside the Hexbot home, symlinks included.
   which is free-form caller text stored verbatim.
 - `hexbot.bots.introduce {name, section}` → `{submitted: true, section}`.
   Resumes the section on the calling transport, then submits the bot's
-  hidden first prompt (`hexbot/kickoff.py`): a one-line greeting and up to
+  hidden first prompt (`backend/hexbot-core/src/catalog.rs`): a one-line greeting and up to
   three clarify questions about what the bot is for, whose answers it writes
   into its soul and memory. Clients call it right after `hexbot.bots.create`,
   once they have navigated to the section. Refused (4243) once the section
@@ -325,8 +325,7 @@ or a clear.
   auth_type, models_source}]}` (all core providers). `configured` is
   always a boolean: key providers are checked against the deployment
   `.env` and the process env, OAuth providers against the core auth
-  store (`openai-codex` via `hermes_cli.auth._read_codex_tokens`, the rest
-  via their stored provider state). `label` is the provider's display
+  store in `auth.json`, read by `backend/hexbot-core/src/providers.rs`. `label` is the provider's display
   name, never the raw slug.
 - `hexbot.providers.set_key {provider, key}` / `hexbot.providers.clear_key {provider}`.
   Key changes and completed sign-ins refresh existing Pi credential copies.
@@ -473,5 +472,3 @@ kind, connector, text, created_at, resolved_at}}` followed by
   `hexbot rooms list`, and `hexbot send <bot> <text>`.
 - Native commands use the running daemon when available, preserving event
   delivery and the single runtime owner. Offline mutations require its home lock.
-- `hexbot core <args>` exists only in the legacy Python installation; the
-  Rust daemon has no core CLI.

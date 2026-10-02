@@ -1,20 +1,8 @@
 # Rooms and bot-to-bot messaging
 
 Milestone 3 design. Words per `CLAUDE.md`; product rules per `DESIGN.md`
-section 2. Facts about the core in `docs/core/rooms-internals.md`.
-
-## Why not the core's Hosted Rooms
-
-Hosted Rooms is a discussion engine: two to six members, everyone answers a
-message with no recognised @-handle, at most three rounds and ten messages,
-membership fixed at creation, no client notifications, one task at a time
-per room, and its caps are baked into validators and turn-id regexes.
-Hexbot's rules (optional main bot, silence without a mention, members added
-mid-conversation, parallel fan-out with a collecting turn, per-room caps and
-budgets, a bot tagging a human) contradict most of that. Hosted Rooms stays
-untouched for cross-gateway federation later. Hexbot rooms run on their own
-engine over ordinary core sessions, so personas, memory, skills, tools and
-approvals come from the core unchanged, and no core edit is needed.
+section 2. The native room engine lives in `backend/hexbot-core/src/rooms.rs`
+and uses a persistent Pi session for each room bot.
 
 ## Data model (hexbot.db)
 
@@ -28,7 +16,7 @@ approvals come from the core unchanged, and no core edit is needed.
   `member.left`, `waiting.human`, `limit.tripped`, `turn.started`,
   `turn.failed`, `note` (system line)
 - `room_sessions(room_id, bot, stored_session_id, live_session_id null)`
-  one hidden core session per (room, bot) on that bot's profile, created
+  one hidden Pi session per (room, bot) on that bot's profile, created
   with `room_plumbing: true, follow_profile_config: true,
   close_on_disconnect: false`, titled `Room: <name>`
 - `room_turns(id, room_id, bot, trigger_seq, started_at, finished_at,
@@ -38,8 +26,8 @@ approvals come from the core unchanged, and no core edit is needed.
 
 ## Turn engine
 
-`hexbot/rooms/engine.py` runs inside the daemon (a supervisor thread with a
-small pool). It reacts to appended events.
+`backend/hexbot-core/src/rooms.rs` runs inside the daemon and reacts to
+appended events.
 
 1. **Responder selection** on `message.user`: the set of bot members whose
    handle is @-mentioned; if the message mentions no bot member and the room
@@ -133,10 +121,7 @@ section today; room sections come with threads later.
 
 ## Bot-to-bot messages
 
-The core's `message_agent` tool delivers through a subprocess per profile and
-is only injected into a special "Bot Chat" session. Hexbot registers its own
-tool `message_bot {to, text, wait: bool}` for every bot through
-`ctx.register_tool`:
+The native daemon provides `message_bot {to, text, wait: bool}` for bots:
 
 - Delivery is in-process: resume or create the target bot's section titled
   `From <sender>` (one per sender), submit the text as a user-role message

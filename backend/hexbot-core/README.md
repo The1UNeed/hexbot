@@ -32,16 +32,14 @@ HEXBOT_HOME="$test_home" backend/hexbot-core/target/debug/hexbot serve --port 91
 
 `HEXBOT_PI_EXECUTABLE` selects an explicit Pi executable; `HEXBOT_WEB_DIST`
 selects the built web bundle. Full desktop packages include Rust, Node, Pi,
-web assets, and skills from `skills/`. The `optional-skills/` directory is not
-packaged or loaded automatically. Desktop bootstrap provisions an isolated Python interpreter
+web assets, and skills from `skills/`. Desktop bootstrap provisions an isolated Python interpreter
 for code tools and pinned edge-tts for free voice, separately from the daemon.
 Client-only packages contain no daemon. Native package
 builds use their target OS and architecture. Intel macOS also cross-compiles
 on Apple Silicon with Rosetta for the runtime probe.
 
-The former Python backend remains for comparison and one release of service
-handoff. `pnpm dev --backend python` and Python rollback builds are removed.
-It is not called by the Rust daemon. Python code execution is a language tool and still needs a Python interpreter; browser,
+`../python-handoff/` provides the service handoff for existing
+Python background services. It is not called by the Rust daemon. Python code execution is a language tool and still needs a Python interpreter; browser,
 voice, and desktop tools likewise use their configured command-line dependencies.
 PDF attachments use Poppler's `pdftoppm`, as in the former daemon, to render
 selected pages for the model. Install Poppler on standalone daemon hosts.
@@ -50,10 +48,8 @@ The native CLI implements Hexbot commands. Legacy core administration commands a
 ## Storage and compatibility
 
 - `hexbot.db` keeps schema v11, IDs, ownership, rooms, sections, and settings.
-  Migrations compare against the original Python implementation for fresh
-  homes and starting versions 1–9. Checks include repeat runs and opening the
-  upgraded result with Python. Native tests also cover opening schema v11.
-  Starting versions 10 and 11 are not in the Python comparison matrix.
+  Migrations use captured legacy schema fixtures for starting versions 1–11
+  and check that rows survive upgrades and repeated runs.
 - Memory stays in `profiles/<bot>/memories/MEMORY.md`, soul in `SOUL.md`, and
   About you in `users/<id>/user.md`. Deleting a section leaves bot memory alone.
 - `hexbot-runtime.db` stores native transcript projections, usage, and frozen

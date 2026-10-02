@@ -22,13 +22,10 @@ Three parts:
    identity, Postgres (Neon) for state, the Cloudflare API for tunnels,
    PostHog for product analytics (consent-gated, shared project with the
    site). AGPL like the rest of the repo. Free during beta.
-2. **Daemon side**, `hexbot/connect.py`, `hexbot/auth_provider.py`, and the
-   `hexbot connect` CLI: registers the daemon, heartbeats, and accepts
-   Connect grants for login through two core auth providers (`hexbot` for
-   apps, `connect` for browsers). A TypeScript sidecar,
-   `hexbot/connect_agent.mts`, supervises `cloudflared` and verifies grants
-   for the legacy Python daemon. The native daemon does both in
-   `backend/hexbot-core/src/services.rs` and needs no separate Node.
+2. **Daemon side**, `backend/hexbot-core/src/services.rs` and the
+   `hexbot connect` CLI: registers the daemon, heartbeats, supervises
+   `cloudflared`, and verifies grants. `server.rs` accepts grants through
+   the app and browser sign-in flows.
 3. **Client side**: the app's connect screen signs in through the system
    browser, lists daemons, and turns a pick into a normal remote target;
    Settings, Connect registers the daemon and links to its address.
@@ -46,7 +43,7 @@ accepts a grant only if it names the owner and issuer pinned at registration,
 names this daemon as its audience, and is signed by a key that was pinned at
 registration and is still published. A Connect account other than the owner
 cannot log in, and a key dropped from the JWKS stops working within ten
-minutes. Tunnels are locally managed: the sidecar sets ingress to the
+minutes. Tunnels are locally managed: the daemon sets ingress to the
 daemon's own loopback port, and Connect never sends an ingress config.
 
 ## Data model (Postgres)
@@ -96,22 +93,17 @@ forward to, so the whole flow runs on one machine.
    approval time: one locally managed tunnel per daemon, hostname
    `<slug>.<CONNECT_DOMAIN>` with a slug of 64 random bits.
 4. The daemon stores the tokens, the owner, the issuer, and the keys in
-   `~/.hexbot/connect.json` (0600). On every `hexbot serve` the sidecar
+   `~/.hexbot/connect.json` (0600). On every `hexbot serve` the daemon
    downloads the pinned `cloudflared` into `~/.hexbot/bin/cloudflared-<version>`
    if missing, refusing a file whose SHA-256 differs from the pin, and runs
    it with a config file of its own (`~/.hexbot/cloudflared.yml`) whose only
    ingress rule is `http://127.0.0.1:<port>`, so neither Connect nor a
    `~/.cloudflared/config.yml` can point the tunnel elsewhere. The token
-   travels in `TUNNEL_TOKEN`, not on the command line. The sidecar retries a
-   failed download or a crashed `cloudflared` with backoff and exits, taking
-   `cloudflared` with it, when the daemon's pipe to it closes. The heartbeat
-   restarts a sidecar that died, and a new sidecar first stops any
-   `cloudflared` its killed predecessor left running with this daemon's
-   config. Settings shows the tunnel as running only while `cloudflared`
-   itself is up. Without Node the daemon serves on and logs that the tunnel
-   did not start. The daemon also sets the core's
-   `dashboard.public_url` to the tunnel hostname (which turns the auth gate
-   on whatever the bind) and registers the `connect` auth provider so the
+   travels in `TUNNEL_TOKEN`, not on the command line. The daemon retries a
+   failed download or a crashed `cloudflared` with backoff. The daemon stops
+   its tunnel child during shutdown. Settings shows the tunnel as running
+   only while `cloudflared` itself is up. The tunnel supervisor and grant
+   verification are native and require no separate Node sidecar. The
    daemon's login page offers "Sign in with Hex Connect". A
    `connect.json` from before owner pinning is ignored with a warning; run
    `hexbot connect` again.
@@ -135,10 +127,10 @@ forward to, so the whole flow runs on one machine.
 4. The app logs in to the daemon with the password-login route:
    `POST https://<host>/auth/password-login {provider: "hexbot", username:
    <device name>, password: "cg_<jwt>"}`. The `hexbot` provider treats a
-   password starting with `cg_` as a grant: the sidecar checks the pinned
+   password starting with `cg_` as a grant: the daemon checks the pinned
    bindings (see Trust), the signature, and expiry, the daemon checks that
    the `jti` has not been seen, then mints a device token exactly as pairing
-   does. The sidecar caches Connect's published keys for ten minutes and
+   does. The daemon caches Connect's published keys for ten minutes and
    refetches for an unknown key id at most once a minute. The desktop reads the token from the
    `hermes_session_at_<port>` cookie, or `__Host-hermes_session_at` over HTTPS.
 5. From here it is a normal remote target: `{host, port: 443, tls: true,
@@ -233,21 +225,12 @@ signing key.
   (expired, wrong daemon, unknown key id, `jti`), device-code lifecycle, slug
   generation, the browser sign-in decision table and code exchange, daemon
   addresses and device labels, consent parsing, CORS.
-- Sidecar (`tests/hexbot/connect_agent.test.mts`, `node --test`): pinned
-  owner, audience, issuer, type, and keys; a pinned key no longer published;
-  forged, expired, and malformed grants; a damaged or future-dated key cache;
-  a `cloudflared` download that fails its pin.
-- Daemon side (`tests/hexbot/test_connect.py`, `test_auth_provider.py`):
-  registration state machine with a fake API, the real sidecar running a
-  stand-in `cloudflared` (loopback ingress, token off argv, exit on EOF),
-  grant login through both providers with locally signed JWTs, single-use
-  grants, PKCE start and exchange, provider registration, serving on without
-  Node.
+- Daemon (`backend/hexbot-core/tests/connect.rs`, `server.rs`): registration
+  with a local fake API, pinned owner/audience/issuer/keys, malformed and
+  expired grants, single-use grants, PKCE exchange, and tunnel lifecycle
+  using a stand-in `cloudflared`.
 - Client: the `hexbot://connect` handler, the `tls` connection path, the
   prefixed cookie names.
-- End to end (`HEXBOT_CONNECT_E2E=1`): a real Connect dev server with the
-  in-memory store, a real daemon, and every HTTP call the CLI, the app, and a
-  browser make, including the browser sign-in round trip.
 
 Browser sign-in started on LAN, Tailscale, or localhost redirects to the registered
 tunnel hostname before creating PKCE state or setting its cookie. Pending sign-ins

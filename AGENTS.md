@@ -10,9 +10,9 @@ face, a model, skills, and its own memory, talk to you and to each other in
 **rooms**. A Rust **daemon** runs Pi agent sessions and serves a WebSocket API plus a
 web UI; an Electron **app** connects to it over LAN, Tailscale, or **Hex
 Connect**. The native daemon is in `backend/hexbot-core/`, with pinned Pi and
-its private extension in `backend/pi-runtime/`. The former Python backend
-stays in `hexbot/` and the repository root for one release, so existing
-background services can hand over to the native daemon.
+its private extension in `backend/pi-runtime/`. The tiny
+`backend/python-handoff/` package hands existing Python background services
+over to the native daemon.
 
 Three facts shape most decisions:
 
@@ -49,8 +49,7 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Auto mode**: the approval mode that lets a small model auto-approve low-risk tool actions. The core calls it `smart`. The other modes are Manual (default) and Off.
 - **Pairing**: connecting an app to a daemon with a one-time code or link over LAN. Never depends on Connect.
 - **Hex Connect**: the optional cloud service at connect.hexbot.app (Clerk auth, Cloudflare tunnels) for reaching a daemon from outside the LAN. Brokers identity and a hostname; chat traffic never passes through it.
-- **Core**: the Python code at the repository root. Core words that leak into Hexbot (`profile`, `session`, `smart`) stay internal; UI copy uses the Hexbot word.
-- **`hermes` identifiers**: the core began as a fork of Hermes Agent, so some code names keep a `hermes` prefix for compatibility with existing installs: `hermes_cli/`, `HERMES_HOME` and other `HERMES_*` variables, `@hermes/shared`, the `hermes_session_at` cookie. Do not rename them. Never write "Hermes" in UI copy, docs, or prompts; the only exceptions are the credits to Hermes Agent in `README.md`, `NOTICE`, the site, and Settings, About.
+- **`hermes` identifiers**: some code names keep a `hermes` prefix for compatibility with existing installs: `HERMES_HOME` and other `HERMES_*` variables, `@hermes/shared`, the `hermes_session_at` cookie. Do not rename them. Never write "Hermes" in UI copy, docs, or prompts; the only exceptions are the credits to Hermes Agent in `README.md`, `NOTICE`, the site, and Settings, About.
 
 ## Where code lives
 
@@ -58,19 +57,17 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 | --- | --- | --- |
 | `backend/hexbot-core/` | Rust daemon, CLI, storage, rooms, tools, scheduling, providers, Connect | all |
 | `backend/pi-runtime/` | Pinned Pi runtime and private Hexbot extension | all |
-| `hexbot/` | Legacy Python daemon and compatibility reference | one-release service handoff |
+| `backend/python-handoff/` | Minimal service handoff to the native daemon | all |
 | `apps/web/` | React bundle (Vite, Tailwind). Used by the app and served to browsers | all |
 | `apps/desktop/` | Electron shell, updater, runtime bootstrap, three electron-builder configs: base, full, client | all |
-| `apps/shared/` | `@hermes/shared`. `apps/web` imports its gateway client and event types; the core `web/` dashboard uses the rest | all |
+| `apps/shared/` | `@hermes/shared`. `apps/web` imports its gateway client and event types | all |
 | `apps/site/` | Astro site at hexbot.app: landing page, docs, pairing page | stable |
 | `apps/connect/` | Next.js Connect service at connect.hexbot.app | all |
-| `tests/hexbot/` | Legacy Python and service-handoff tests. Core suites stay under `tests/` | compatibility |
 | `scripts/desktop/` | Version, build, icon, update feed, and cask scripts, each with tests | stable, nightly |
 | `scripts/dev/` | `run.mjs` (`pnpm dev`) and the live smoke scripts | dev |
 | `.github/workflows/` | `ci.yml` (tests, also called by release), `release.yml` (stable and nightly) | see file |
 | `.devcontainer/` | Dev environment | dev |
-| `docs/` | Design and operations docs. `docs/core/` covers the core: development guide, plugin APIs, the WebSocket API | |
-| Root `*.py`, `agent/`, `tools/`, `hermes_cli/`, `tui_gateway/`, `gateway/`, `plugins/` | Legacy Python core, retained for comparison and the service handoff | compatibility |
+| `docs/` | Product design, native WebSocket API, testing and operations docs | |
 | `skills/` | Skills bundled by the native runtime | all |
 
 `DESIGN.md` is the product design; `docs/channels.md` explains how the three
@@ -87,10 +84,9 @@ rustup show active-toolchain # installs the toolchain pinned in rust-toolchain.t
 pnpm install --frozen-lockfile
 ```
 
-The development runner builds Rust and installs locked Pi dependencies. For
-legacy comparison tests, also install the Python environment documented in
-`docs/testing.md`. `pnpm dev --backend python` is removed; the runner always
-starts the native daemon.
+The development runner builds Rust and installs locked Pi dependencies.
+The handoff tests use their own Python environment, documented in
+`docs/testing.md`. The runner always starts the native daemon.
 
 Run Hexbot from the checkout (the Dev channel):
 
@@ -128,9 +124,9 @@ Three ways to hurt yourself:
    never start a server against it.
 2. **Killing by pattern.** Do not `pkill -f hexbot` or `pkill -f python`;
    your own agent process may match. Kill only PIDs you started.
-3. **Adding new daemon work to the legacy backend.** Use
+3. **Adding daemon work to the handoff package.** Use
    `backend/hexbot-core/` or the private extension in `backend/pi-runtime/`.
-   The Python tree exists for compatibility and comparison only.
+   The Python package only transfers existing services to the native daemon.
 
 ## Verifying
 
@@ -140,7 +136,8 @@ Run the suite that covers what you touched, not everything:
 cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml
 cargo clippy --locked --manifest-path backend/hexbot-core/Cargo.toml --all-targets -- -D warnings
 node --test backend/pi-runtime/*.test.mjs
-./venv/bin/pytest tests/hexbot -q && node --test tests/hexbot/*.test.mts
+uv sync --project backend/python-handoff --extra dev --locked
+backend/python-handoff/.venv/bin/pytest backend/python-handoff/tests -q
 pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint
 pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run
 pnpm --filter ./apps/site run check
@@ -151,9 +148,7 @@ node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/de
 `ci.yml` runs all of these on every push and pull request, and `release.yml`
 runs it again before building packages.
 
-If you edited a core file, also run the core suites named in
-`docs/testing.md` and compare against the recorded baseline. Backend tests
-wait on events and RPC replies, never on `sleep`.
+Backend tests wait on events and RPC replies, never on `sleep`.
 
 ## Hit every surface
 
@@ -189,8 +184,8 @@ nightly, and a finalize step that commits bookkeeping back to `main`.
   nightly feed. Nightly versions are never committed. The last 14 are kept.
 - **Dev** is your checkout (`pnpm dev`). `node scripts/desktop/dist.mjs
   --mac` produces a `Hexbot (dev)` package with its own app id.
-- Versions live in two files and change together through
-  `node scripts/desktop/set-version.mjs <version>`.
+- The version lives in `apps/desktop/package.json`; Rust reads it at build
+  time. Set it through `node scripts/desktop/set-version.mjs <version>`.
 - The `[alpha]` suffix in the app name comes from `productName()` in
   `scripts/desktop/release-version.mjs` and goes away at 1.0. Never remove
   it by hand while the version is `0.x`.
@@ -220,8 +215,6 @@ exercise the graph.
 - Copy is short, concrete, and uses glossary words. No "seamless", no
   exclamation marks.
 
-## Legacy core reference
+## Daemon reference
 
-`docs/core/development.md` covers the retained Python core only: tools,
-plugins, cron, and the AIAgent class. Read it before changing legacy Python
-code. New daemon work follows `backend/hexbot-core/README.md`.
+Daemon work follows `backend/hexbot-core/README.md`.

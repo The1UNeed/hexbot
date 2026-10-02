@@ -1,1 +1,0 @@
-# Hexbot plugins package

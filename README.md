@@ -59,11 +59,9 @@ Docs live at [hexbot.app/docs](https://hexbot.app/docs/) and are built from
 
 Hexbot's daemon is Rust in `backend/hexbot-core/`; agents run on pinned Pi
 0.87.1 through the private extension in `backend/pi-runtime/`. The web bundle,
-Electron app, site, and Connect service live in `apps/`. The former Python
-daemon in `hexbot/`, built on a fork of
-[Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research,
-stays for one release so existing background services can move to the native
-daemon. `AGENTS.md` is the guide for anyone, human or agent, working on the
+Electron app, site, and Connect service live in `apps/`. `backend/python-handoff/` provides the service handoff for
+existing Python installs. Hexbot began as a fork of
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research. `AGENTS.md` is the guide for anyone, human or agent, working on the
 code; `backend/hexbot-core/README.md` covers storage compatibility.
 
 Install rustup and Node 26, then use the Rust toolchain pinned in
@@ -98,8 +96,8 @@ pnpm --filter ./apps/site run check
 pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run
 ```
 
-`docs/testing.md` lists everything, including the core suites and the
-Electron end-to-end test.
+`docs/testing.md` lists everything, including the handoff package and
+Electron end-to-end tests.
 
 ## How releases work
 

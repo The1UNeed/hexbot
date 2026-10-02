@@ -37,18 +37,16 @@ it('rejects a bad download checksum before extraction or execution', async () =>
   }
 })
 
-it('installs voice tools only at the versions and hashes locked in uv.lock', async () => {
+it('pins every voice dependency with hashes for managed Python', async () => {
   const { readFile } = await import('node:fs/promises')
   const requirements = await readFile(new URL('./edge-tts.requirements.txt', import.meta.url), 'utf8')
-  const lock = await readFile(new URL('../../../../../uv.lock', import.meta.url), 'utf8')
-  const packages = new Map(lock.split('\n[[package]]\n').slice(1).map(block =>
-    [`${/^name = "(.+)"$/m.exec(block)![1]}==${/^version = "(.+)"$/m.exec(block)![1]}`, block]))
-  const pins = [...requirements.matchAll(/^(\S+==\S+) \\\n((?: {4}--hash=sha256:[a-f0-9]{64}(?: \\\n|\n|$))+)/gm)]
-  expect(pins.map(pin => pin[1])).toContain('edge-tts==7.2.7')
-  expect(pins).toHaveLength(requirements.split('\n').filter(line => /^\S+==/.test(line)).length)
-  for (const [, pin, hashes] of pins) {
-    expect(packages.has(pin!), pin).toBe(true)
-    for (const hash of hashes!.match(/sha256:[a-f0-9]{64}/g)!)
-      expect(packages.get(pin!), `${pin} ${hash}`).toContain(`hash = "${hash}"`)
+  const entries = requirements.split('\n').filter(line => line && !line.startsWith('#'))
+  const pins = entries.filter(line => !line.startsWith(' '))
+  expect(pins).toContain('edge-tts==7.2.7 \\')
+  for (const pin of pins) expect(pin).toMatch(/^[a-z][a-z0-9-]*==[0-9][^ ]* \\$/)
+  for (const hash of entries.filter(line => line.startsWith(' ')))
+    expect(hash).toMatch(/^ {4}--hash=sha256:[a-f0-9]{64}( \\)?$/)
+  for (let index = 0; index < entries.length; index++) {
+    if (!entries[index]!.startsWith(' ')) expect(entries[index + 1]).toMatch(/^ {4}--hash=sha256:/)
   }
 })
