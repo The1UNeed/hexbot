@@ -1003,7 +1003,12 @@ async fn code_approval_manual_auto_and_floor() {
         .await
         .unwrap();
         assert_eq!(payload["tool"], "execute_code");
-        assert_eq!(payload["smart_denied"], mode == "smart");
+        // Without an OS sandbox, code goes to the owner and Auto never consults the approver.
+        let sandboxed = crate::credentials::isolation_available();
+        assert_eq!(payload["smart_denied"], mode == "smart" && sandboxed);
+        if !sandboxed {
+            assert_eq!(payload["reason"], crate::credentials::UNSANDBOXED_REASON);
+        }
         runtime
             .call(
                 "alice",

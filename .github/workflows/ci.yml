@@ -130,6 +130,8 @@ jobs:
         run: HEXBOT_TEST_PI="$GITHUB_WORKSPACE/apps/desktop/resources/hexbot-native/pi/hexbot-pi" cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test runtime -- --ignored
       - name: Install the native desktop runtime in isolated state
         run: HEXBOT_NATIVE_TEST_BUNDLE="$GITHUB_WORKSPACE/apps/desktop/resources/hexbot-native" pnpm --filter ./apps/desktop run test --run src/main/backend/native-bootstrap.test.ts
+      # The search-tool tests launch the repository's pinned Pi.
+      - run: npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund
       - name: Release script tests
         run: node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs
       # Runs the exact commands release.yml runs after a build (version
