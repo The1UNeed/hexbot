@@ -43,8 +43,9 @@ The app follows the track it was installed from; switch in Settings, Updates.
 - **Any model.** Bring keys for OpenAI, Anthropic, Google, OpenRouter, local
   servers, and more. Pick a model per bot.
 - **Tools with approvals.** Bots can run commands, browse, and edit files.
-  Manual approval by default; **Auto mode** lets a small model approve
-  low-risk actions.
+  In **Auto mode**, the default, they work freely inside the workspace
+  behind an OS sandbox and ask before anything outside it. Manual asks
+  before every change; Bypass asks nothing.
 - **Your hardware.** The daemon runs where you install it. Pair devices over
   LAN or Tailscale, revoke them from settings, and delete conversations
   together with the memory they produced.

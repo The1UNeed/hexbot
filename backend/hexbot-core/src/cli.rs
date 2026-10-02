@@ -139,20 +139,23 @@ async fn answers(event: &Value) -> Result<Vec<(&'static str, Value)>> {
     let payload = &event["payload"];
     let base = json!({"session_id":event["session_id"],"request_id":payload["request_id"]});
     if kind == "approval.request" {
+        let choices: Vec<&str> = payload["choices"]
+            .as_array()
+            .map(|c| c.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_else(|| vec!["once", "deny"]);
         let prompt = format!(
-            "Allow {}: {}? [once/session/always/deny] ",
+            "Allow {}: {}? [{}] ",
             payload["tool"].as_str().unwrap_or("tool"),
-            payload["command"].as_str().unwrap_or("")
+            payload["command"].as_str().unwrap_or(""),
+            choices.join("/")
         );
         let choice = input(prompt).await?;
         let mut params = base;
-        params["choice"] = json!(
-            if ["once", "session", "always"].contains(&choice.as_str()) {
-                choice
-            } else {
-                "deny".into()
-            }
-        );
+        params["choice"] = json!(if choices.contains(&choice.as_str()) {
+            choice
+        } else {
+            "deny".into()
+        });
         return Ok(vec![("approval.respond", params)]);
     }
     let questions = payload["questions"]

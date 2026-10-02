@@ -8,7 +8,7 @@ One Hexbot daemon can serve a household or small group. The first user is the ad
 
 ## Admin and members
 
-The admin manages users, provider credentials, network settings, system limits, and usage for the whole daemon. Members manage their own bots, sections, rooms, memory, and paired devices.
+The admin manages users, provider credentials, network settings, system limits, and usage for the whole daemon. Members manage their own bots, sections, rooms, memory, and paired devices. Only the admin can set a bot or room to the Bypass [approval mode](/docs/approvals/), because a bot in Bypass runs without a sandbox and can read the provider keys; a member's bots run in Manual or Auto.
 
 Hexbot assigns every bot, section, room, dream, and device to a user. Members see their own items plus bots that another owner has made shareable. Each user has their own About you text, and only that user's bots receive it.
 

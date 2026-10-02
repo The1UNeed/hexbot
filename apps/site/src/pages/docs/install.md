@@ -52,7 +52,7 @@ Install a deb package with your usual package manager:
 sudo apt install ./Hexbot-0.1.5-alpha.1-linux-amd64.deb
 ```
 
-The deb package depends on `bubblewrap`; with the AppImage, install it yourself (`sudo apt install bubblewrap`). Hexbot uses it to keep shell commands, Python code, and scheduled scripts away from your credentials. Without it, Manual asks before every shell command and code run, Auto sends them to you instead of its approver, scheduled scripts wait, and Settings, Approvals shows a notice. Restart the daemon after installing it. See [Approvals](/docs/approvals/).
+The deb package depends on `bubblewrap`; with the AppImage, install it yourself (`sudo apt install bubblewrap`). Hexbot uses it to keep shell commands, Python code, and scheduled scripts inside the workspace and away from your credentials. Without it, Manual and Auto ask before every shell command and code run, scheduled scripts run only in Bypass, and Settings, Approvals shows a notice. Restart the daemon after installing it. See [Approvals](/docs/approvals/).
 
 ### Ubuntu 24.04 and later
 

@@ -135,15 +135,33 @@ by running the tests. App install count is not a daemon capacity measurement.
 
 ## Tool boundaries
 
-Python code execution uses the same live approval mode as shell actions. Manual
-asks before each script; Auto consults the approver and asks when it declines;
-Off skips consent. A small destructive-operation guard applies in every mode.
+Approval modes follow Codex: the OS sandbox is the boundary, not a judging
+model and not a list of command patterns. Pi has no approval modes of its own;
+Bypass (`off`) is plain Pi with no prompts, no sandbox, and no credential
+checks, and only the admin may choose it (`common::bypass_allowed` rejects it
+for a member's bot or room, error 4301, and such a bot runs in Auto). In Auto (`smart`, the default) the
+private extension runs each shell command in a sandbox with no network that
+writes only inside the workspace: the bot's working directory, its artifact
+and attachment folders, and temp folders, with shell profiles and login items
+read-only even there. A command that needs more sets `full_access` with a
+`reason` on the bash tool; the user sees both and, if approved, the command
+runs with the sandbox's base layer only (credential paths still masked). In
+Manual the shell sandbox is read-only and every file change asks. Both modes
+ask before browser page scripts and before scheduling an absolute script path.
+
+Python code execution runs in the same workspace sandbox outside Bypass.
+Auto runs it without asking; Manual asks first (`runtime.rs`, `native_approval`);
+Bypass runs it unsandboxed. A small literal guard (`check_code`) refuses a
+handful of catastrophic one-liners in every mode. The extension offers
+`once`, `session`, and `deny` on its cards, and a `session` choice quiets that
+kind of request for the rest of the section; daemon-raised requests offer
+`once` and `deny`. Nothing is saved across sections.
 Memory and soul edits, including removals, scan the complete result before bot writes. Existing flagged text may remain; newly assembled matches are rejected.
 
 `../pi-runtime/credential-policy.json` is the one source for the credential
-paths, the host write tiers (`write.deny` is never written by a tool, `write.ask`
-prompts in Manual and Auto, `write.fileDeny` is refused to the file tools and
-asks in shell commands), the child environment allowlist, and the sandbox
+paths, the host write tiers (`write.deny` is never written by a tool outside
+Bypass, `write.ask` prompts the file tools in Manual and Auto, `write.fileDeny`
+is refused to the file tools), the child environment allowlist, and the sandbox
 walk. `credentials.rs` and the private extension both read it, and a parity test
 in `credentials.rs` checks that both sides build the same sandbox profile and
 bubblewrap arguments. macOS shell and Python children use
@@ -156,9 +174,8 @@ once, and replaced by the default workspace. SSH private keys are protected; SSH
 config, known hosts, public keys, and the SSH agent remain available. If bubblewrap
 is missing or cannot start, a startup warning records the lack of OS isolation,
 `hexbot.info` reports `sandbox: null` so Settings can show a notice,
-Manual asks before every shell command and code run, Auto sends them to the
-section owner instead of its approver, and scheduled scripts refuse to run
-unless approval mode is Off.
+Manual and Auto ask before every shell command and code run, and scheduled
+scripts refuse to run unless approval mode is Bypass.
 Provider keys reach the agent through its auth file. The selected Bedrock or Vertex provider also receives its cloud environment settings; shell and scheduled script children do not.
 The Python environment does not include `HEXBOT_HOME`.
 

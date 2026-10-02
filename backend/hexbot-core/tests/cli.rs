@@ -48,7 +48,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
  out({type:'response',id:c.id,command:c.type,success:true,data:{}});
  if(c.type==='prompt'){
    out({type:'agent_start'});out({type:'message_end',message:{role:'user',content:c.message}});
-   if(c.message==='approval')out({type:'extension_ui_request',id:'approval',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'terminal',command:'echo test'}),options:['once','session','always','deny']});
+   if(c.message==='approval')out({type:'extension_ui_request',id:'approval',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'terminal',command:'echo test'}),options:['once','session','deny']});
    else if(c.message==='clarify')out({type:'extension_ui_request',id:'clarify',method:'input',title:'__HEXBOT_CLARIFY__'+JSON.stringify({questions:[{qid:'q1',question:'First?'},{qid:'q2',question:'Second?'}]})});
    else if(c.message!=='hang')finish();
  }
@@ -499,7 +499,7 @@ async fn terminal_approval_and_ctrl_c_do_not_leave_blocking_stdin_readers() {
         tokio::time::timeout(Duration::from_secs(8), async {
             let mut prompt = Vec::new();
             let mut bytes = [0; 512];
-            while !String::from_utf8_lossy(&prompt).contains("[once/session/always/deny]") {
+            while !String::from_utf8_lossy(&prompt).contains("[once/session/deny]") {
                 let count = stderr.read(&mut bytes).await.unwrap();
                 assert!(count > 0, "{}", String::from_utf8_lossy(&prompt));
                 prompt.extend_from_slice(&bytes[..count]);

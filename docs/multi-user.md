@@ -15,6 +15,13 @@ the provider keys. Owner ids exist on every row from milestone 1.
   no About you at all, neither its owner's nor the room owner's; the room
   section and its usage are attributed to the inviter. The room cannot
   loosen the bot's approval mode below what its owner configured.
+- Only the admin can choose Bypass. Bypass runs tools with no sandbox and no
+  credential checks, so a bot in that mode can read the admin's provider
+  keys and every other file under the Hexbot home. The daemon refuses `off`
+  for a member's bot or room ("Only the admin can choose Bypass.") and runs
+  a member's bot in Auto if Bypass was stored before. Bypass also needs the
+  section owner and the room owner to be the admin, so the admin's shared
+  bot runs in Auto in a member's room. The app hides the option from members.
 - Rooms may have several human members; `room_members.member_kind = human`
   rows point at users. Humans-only rooms are allowed; bots can be added
   later and see the transcript from the start. Members see the room in

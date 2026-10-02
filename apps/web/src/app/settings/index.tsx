@@ -22,6 +22,7 @@ import {
   usersInvite,
   usersUpdate
 } from '../../lib/api'
+import { useApprovalModes } from '../../lib/approval-modes'
 import {
   defaultDeviceName,
   getBridge,
@@ -32,7 +33,7 @@ import {
 import { cn } from '../../lib/cn'
 import { connectBaseUrl } from '../../lib/connect-url'
 import { pairWithDaemon, targetOrigin } from '../../lib/connection'
-import type { ApprovalMode, DaemonInfo, ModelOption, PairingCode, Provider } from '../../lib/types'
+import type { DaemonInfo, ModelOption, PairingCode, Provider } from '../../lib/types'
 import { daemonBehind } from '../../lib/version-skew'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
@@ -226,8 +227,8 @@ export function ConnectSettings() {
             <dd>{status.tunnel_running ? 'Running' : 'Stopped'}</dd>
           </dl>
           <p className="mt-3 text-secondary text-muted">
-            Open the address in any browser and sign in with Hex Connect, or manage this
-            daemon and your signed-in apps at{' '}
+            Open the address in any browser and sign in with Hex Connect, or manage this daemon and
+            your signed-in apps at{' '}
             <a
               className="text-accent hover:underline"
               href={`${connectBaseUrl()}/connect`}
@@ -993,51 +994,41 @@ function formatDate(value: null | number): string {
   return value ? new Date(value * (value < 10_000_000_000 ? 1000 : 1)).toLocaleString() : 'never'
 }
 
-const MODES: { description: string; label: string; value: ApprovalMode }[] = [
-  {
-    description: 'Ask before every tool action that needs permission.',
-    label: 'Manual',
-    value: 'manual'
-  },
-  {
-    description: 'Let a small model approve low-risk actions and ask you about the rest.',
-    label: 'Auto',
-    value: 'smart'
-  },
-  { description: 'Run actions without approval prompts.', label: 'Off', value: 'off' }
-]
-
 export function ApprovalsSettings(): React.JSX.Element {
   const settings = useSettings(state => state.settings)
-  const models = useSettings(state => state.models)
   const refresh = useSettings(state => state.refresh)
-  const refreshModels = useSettings(state => state.refreshModels)
   const patch = useSettings(state => state.patch)
-  const [sandbox, setSandbox] = useState<DaemonInfo['sandbox']>(undefined)
+  const modes = useApprovalModes(settings?.approval_mode)
+  const [info, setInfo] = useState<DaemonInfo | undefined>(undefined)
   useEffect(() => {
-    void Promise.all([refresh(), refreshModels()])
+    void refresh()
     // Without daemon info, as from an older daemon, there is nothing to warn about.
     void daemonInfo()
-      .then(info => setSandbox(info.sandbox))
+      .then(setInfo)
       .catch(() => {})
-  }, [refresh, refreshModels])
-  const curated = models.curated.length ? models.curated : models.all
+  }, [refresh])
 
   return (
     <>
-      <Heading description="Choose when Hexbot asks before a bot uses a protected tool.">
+      <Heading description="Choose when Hexbot asks before a bot acts. Bots and rooms can override it.">
         Approvals
       </Heading>
-      {sandbox === null && (
+      {info && info.approvals !== 'sandbox' && (
         <p className="mb-5 rounded-control bg-warning/12 p-3 text-warning" role="status">
-          No OS sandbox is available, so Manual and Auto ask before every shell command and Python
-          code run. Install bubblewrap on the computer running the daemon, then restart the
-          daemon to restore isolation.
+          This daemon is older than the app and still uses its previous approval rules. Update the
+          daemon to get the sandbox these modes describe.
+        </p>
+      )}
+      {info?.approvals === 'sandbox' && info.sandbox === null && (
+        <p className="mb-5 rounded-control bg-warning/12 p-3 text-warning" role="status">
+          No OS sandbox is available, so Manual and Auto ask before every shell command and code
+          run. Install bubblewrap on the computer running the daemon, then restart the daemon to
+          restore isolation.
         </p>
       )}
       <fieldset className="space-y-1">
         <legend className="sr-only">Approval mode</legend>
-        {MODES.map(mode => (
+        {modes.map(mode => (
           <label className="flex cursor-pointer gap-3 border-b border-border py-3" key={mode.value}>
             <input
               checked={settings?.approval_mode === mode.value}
@@ -1055,24 +1046,8 @@ export function ApprovalsSettings(): React.JSX.Element {
           </label>
         ))}
       </fieldset>
-      {settings?.approval_mode === 'smart' && (
-        <label className="mt-5 block">
-          <span className="mb-2 block font-medium">Auto approver model</span>
-          <Select
-            label="Auto approver model"
-            onValueChange={model => void patch({ auto_approver_model: model })}
-            options={modelOptions(curated)}
-            placeholder="Choose a model"
-            value={settings.auto_approver_model ?? undefined}
-          />
-        </label>
-      )}
     </>
   )
-}
-
-function modelOptions(models: ModelOption[]) {
-  return models.map(model => ({ label: model.label, value: model.id }))
 }
 
 export function AppearanceSettings(): React.JSX.Element {
@@ -1335,9 +1310,7 @@ export function AboutSettings(): React.JSX.Element {
 
   return (
     <>
-      <Heading description="Hexbot is a self-hosted multi-agent app.">
-        About
-      </Heading>
+      <Heading description="Hexbot is a self-hosted multi-agent app.">About</Heading>
       <dl className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-2">
         <dt className="text-muted">Hexbot</dt>
         <dd>{bridge?.version ?? info?.version ?? '—'}</dd>

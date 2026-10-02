@@ -1076,22 +1076,43 @@ impl Dreaming {
         };
         let artifacts = self.home.join("profiles").join(bot).join("artifacts");
         fs::create_dir_all(&artifacts)?;
-        let mode: Option<String> = db::open(&self.home)?
-            .query_row("SELECT approval_mode FROM bots WHERE name=?", [bot], |r| {
-                r.get::<_, Option<String>>(0)
-            })
+        let conn = db::open(&self.home)?;
+        let (mode, owner): (Option<String>, String) = conn
+            .query_row(
+                "SELECT approval_mode,owner_id FROM bots WHERE name=?",
+                [bot],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .optional()?
-            .flatten()
-            .filter(|m: &String| matches!(m.as_str(), "manual" | "smart" | "off"));
-        let mode = mode.unwrap_or_else(|| {
-            settings::get(&self.home)
-                .ok()
-                .and_then(|s| s["approval_mode"].as_str().map(str::to_owned))
-                .unwrap_or_else(|| "manual".to_owned())
-        });
-        crate::credentials::require_isolation(&mode)?;
-        let mut command =
-            crate::credentials::isolated_command(&self.home, &program, &[workspace, artifacts])?;
+            .unwrap_or_default();
+        let mode = mode
+            .filter(|m| matches!(m.as_str(), "manual" | "smart" | "off"))
+            .unwrap_or_else(|| {
+                settings::get(&self.home)
+                    .ok()
+                    .and_then(|s| s["approval_mode"].as_str().map(str::to_owned))
+                    .unwrap_or_else(|| "manual".to_owned())
+            });
+        // Only the admin's bots run in Bypass, as in their sections.
+        let bypass = mode == "off" && crate::runtime::owner_is_admin(&conn, &owner)?;
+        crate::credentials::require_isolation(if bypass { "off" } else { "smart" })?;
+        // A script runs in the sandbox the bot's commands get: read-only in
+        // Manual, the workspace in Auto, none in Bypass.
+        let confine = if mode == "manual" {
+            crate::credentials::Confine::ReadOnly
+        } else {
+            crate::credentials::Confine::Workspace
+        };
+        let mut command = if bypass {
+            tokio::process::Command::new(&program)
+        } else {
+            crate::credentials::isolated_command(
+                &self.home,
+                &program,
+                &[workspace, artifacts],
+                confine,
+            )?
+        };
         if matches!(
             path.extension().and_then(|s| s.to_str()),
             Some("sh" | "bash" | "py")
@@ -1759,6 +1780,41 @@ mod interpreter_tests {
             4302
         );
     }
+    /// Manual promises a read-only sandbox, so its scheduled scripts write nothing.
+    #[tokio::test]
+    async fn manual_scheduled_scripts_are_read_only() {
+        if !crate::credentials::isolation_available() {
+            return;
+        }
+        let home = common::TestHome::new();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO bots(name,owner_id,workdir,approval_mode) VALUES('owl','local',?,'manual')",
+                [home.workspace().to_str().unwrap()],
+            )
+            .unwrap();
+        fs::create_dir_all(home.path().join("profiles/owl/scripts")).unwrap();
+        let workspace = home.workspace();
+        fs::create_dir_all(&workspace).unwrap();
+        let target = workspace.join("written.txt");
+        fs::write(
+            home.path().join("profiles/owl/scripts/write.sh"),
+            format!("echo x > '{}'\n", target.display()),
+        )
+        .unwrap();
+        let events = EventHub::new();
+        let runtime = Runtime::new(home.path().into(), events.clone(), "unused".into()).unwrap();
+        let scheduler = Dreaming::new(home.path().into(), runtime, events);
+        assert!(
+            scheduler
+                .script("owl", "write.sh", workspace.to_str())
+                .await
+                .is_err()
+        );
+        assert!(!target.exists());
+    }
     #[tokio::test]
     async fn scheduled_scripts_do_not_receive_provider_credentials() {
         let home = common::TestHome::new();
@@ -1766,7 +1822,7 @@ mod interpreter_tests {
         db::open(home.path())
             .unwrap()
             .execute(
-                "INSERT INTO bots(name,owner_id,workdir,approval_mode) VALUES('owl','local',?,'off')",
+                "INSERT INTO bots(name,owner_id,workdir,approval_mode) VALUES('owl','local',?,'smart')",
                 [home.workspace().to_str().unwrap()],
             )
             .unwrap();

@@ -112,8 +112,10 @@ Three columns, resizable, min widths 240 / 480 / 300.
   Housekeeping tools (memory, tasks, section search, skills, renaming the
   section) never appear once finished. The Computer tab in the panel still lists every call.
 - Approvals: an inline card with the command or action in monospace, the
-  reason, and three buttons: Approve, Deny, Always allow. The card stays in
-  the transcript after the decision, marked with the outcome.
+  reason, and three buttons: Approve, Allow in this section, Deny. Requests
+  raised by the daemon (code runs, browser scripts, cron) show Approve and
+  Deny only. The card stays in the transcript after the decision, marked
+  with the outcome.
 - Streaming: text appears as it arrives with a subtle caret; the composer's
   send button becomes Stop.
 - Attachments: images render inline with a lightbox; files render as chips
@@ -179,7 +181,8 @@ notice. Working and idle draw the plain pill.
   shared and links to Settings, Memory), Tools (switches grouped as
   Computer, Senses, Working with others, plus the working directory),
   Connectors (below), Skills (installed skills with switches, grouped by
-  category), Approvals (Inherit, Manual, Auto, Off), Sections (open and
+  category), Approvals (Inherit, Manual, Auto, and Bypass for the admin),
+  Sections (open and
   archived, with archive and delete), Advanced (Delete bot with the
   type-the-name confirmation).
 - Connectors: a search pill, filter chips (All, On for this bot, Needs
@@ -232,8 +235,9 @@ notice. Working and idle draw the plain pill.
   address list, the current pairing code (rotates every 10 minutes or after
   use), a QR of the hexbot:// link, and the list of paired devices with
   last seen and a Revoke button.
-- Approvals: mode Manual, Auto, Off; explanation of each; the small model
-  used by Auto.
+- Approvals: "Choose when Hexbot asks before a bot acts. Bots and rooms can
+  override it." Modes Manual, Auto, and Bypass (admin only), one line each;
+  a notice when the daemon has no OS sandbox.
 - Appearance: theme System, Light, Dark.
 - Updates: current version, channel, check now.
 - About: version, license, links.

@@ -9,6 +9,7 @@
  * docs/client-architecture.md.
  */
 
+/** `always` comes only from daemons before Always allow was removed. */
 export type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 
 export type ApprovalMode = 'manual' | 'off' | 'smart'
@@ -52,8 +53,6 @@ export interface ApprovalRequest {
   receivedAt: number
   requestId: string
   sessionId: string
-  /** Hexbot sets this when the auto-approver refused the action. */
-  smartDenied?: boolean
   toolName?: string
 }
 
@@ -228,6 +227,8 @@ export interface DaemonInfo {
   platform: string
   /** The OS sandbox for shell and code tools, null when none; absent on older daemons. */
   sandbox?: 'bubblewrap' | 'sandbox-exec' | null
+  /** `sandbox` once the daemon has sandboxed approvals; absent on older daemons. */
+  approvals?: 'sandbox'
   /** How the daemon can update itself when asked; absent on older daemons. */
   update_capability?: 'desktop' | 'service' | null
   version: string
@@ -361,7 +362,6 @@ export interface SessionInfo {
 
 export interface Settings {
   approval_mode: ApprovalMode
-  auto_approver_model: null | string
   /** `provider/model` pre-filled for new bots. */
   default_model?: null | string
   /** `provider/model` bots fall back to when their own provider fails. */
@@ -422,7 +422,7 @@ export interface RoomLimits {
 }
 
 export interface Room {
-  approval_mode: ApprovalMode | null
+  approval_mode: BotApprovalMode | null
   archived_at: null | number
   created_at: number
   id: string

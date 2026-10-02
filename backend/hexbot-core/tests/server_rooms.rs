@@ -905,7 +905,7 @@ async fn rebinding_keeps_running_turns_and_closes_old_connections() {
 const ASKING_PI: &str = r#"#!/usr/bin/env node
 const rl=require('node:readline').createInterface({input:process.stdin});const emit=x=>process.stdout.write(JSON.stringify(x)+'\n');
 function finish(text){emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text}],model:'test-model',provider:'test',usage:{input:1,output:1},stopReason:'stop'}});emit({type:'agent_settled'});}
-rl.on('line',l=>{const c=JSON.parse(l);if(c.type==='extension_ui_response'){finish(String(c.value));return;}emit({type:'response',id:c.id,command:c.type,success:true,data:{}});if(c.type==='prompt'){emit({type:'agent_start'});emit({type:'message_end',message:{role:'user',content:c.message}});if(c.message.includes('ask me')){emit({type:'extension_ui_request',id:'ask-'+c.id,method:'input',title:'__HEXBOT_CLARIFY__'+JSON.stringify({questions:[{qid:'q1',question:'Which color?'}]})});}else{emit({type:'extension_ui_request',id:'approve-'+c.id,method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'terminal',command:'rm -rf build',reason:'Run command'}),options:['once','session','always','deny']});}}if(c.type==='abort')emit({type:'agent_settled'});});
+rl.on('line',l=>{const c=JSON.parse(l);if(c.type==='extension_ui_response'){finish(String(c.value));return;}emit({type:'response',id:c.id,command:c.type,success:true,data:{}});if(c.type==='prompt'){emit({type:'agent_start'});emit({type:'message_end',message:{role:'user',content:c.message}});if(c.message.includes('ask me')){emit({type:'extension_ui_request',id:'ask-'+c.id,method:'input',title:'__HEXBOT_CLARIFY__'+JSON.stringify({questions:[{qid:'q1',question:'Which color?'}]})});}else{emit({type:'extension_ui_request',id:'approve-'+c.id,method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'terminal',command:'rm -rf build',reason:'Run command'}),options:['once','session','deny']});}}if(c.type==='abort')emit({type:'agent_settled'});});
 "#;
 type Events = tokio::sync::broadcast::Receiver<hexbot_core::events::Event>;
 async fn wait_for(
@@ -973,7 +973,7 @@ async fn the_owner_answers_room_approvals_and_questions_and_opening_the_room_res
             json!({"kind":"waiting","text":"Waiting for Alice"})
         );
     };
-    for choice in ["once", "session", "always", "deny"] {
+    for choice in ["once", "session", "deny"] {
         let mut events = app.events.subscribe();
         app.call(
             "bob",
