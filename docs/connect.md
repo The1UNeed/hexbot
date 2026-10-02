@@ -225,7 +225,7 @@ signing key.
   (expired, wrong daemon, unknown key id, `jti`), device-code lifecycle, slug
   generation, the browser sign-in decision table and code exchange, daemon
   addresses and device labels, consent parsing, CORS.
-- Daemon (`backend/hexbot-core/tests/connect.rs`, `server.rs`): registration
+- Daemon (`backend/hexbot-core/tests/services.rs`, `server.rs`): registration
   with a local fake API, pinned owner/audience/issuer/keys, malformed and
   expired grants, single-use grants, PKCE exchange, and tunnel lifecycle
   using a stand-in `cloudflared`.

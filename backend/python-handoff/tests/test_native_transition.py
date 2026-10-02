@@ -317,5 +317,52 @@ class NativeTransitionTests(unittest.TestCase):
         self.assertIn("native download unavailable", result.stderr)
 
 
+    def legacy_source(self, name, built, project="hermes-agent"):
+        source = self.home / "runtime/src" / name
+        source.mkdir(parents=True)
+        (source / "pyproject.toml").write_text(f'[project]\nname = "{project}"\n')
+        if built is not None:
+            (source / "HEXBOT_BUILD.json").write_text(json.dumps({"date": built}))
+        return source
+
+    def test_failed_probe_restores_the_newest_legacy_source(self):
+        venv = self.home / "runtime/venv"
+        venv.mkdir(parents=True)
+        self.legacy_source("0.1.4", "2026-09-01T00:00:00Z")
+        newest = self.legacy_source("0.1.5-nightly.1", "2026-09-20T00:00:00Z")
+        self.legacy_source("0.1.6", "2026-10-01T00:00:00Z", project="hexbot-handoff")
+        self.legacy_source("broken", None).joinpath("pyproject.toml").unlink()
+        calls = []
+        with patch.object(transition.sys, "prefix", str(venv)):
+            transition._restore_legacy_environment(self.home, run=lambda *args, **kwargs: calls.append((args, kwargs)))
+        (command,), options = calls[0]
+        self.assertEqual(command[1:], ["sync", "--extra", "all", "--locked"])
+        self.assertEqual(options["cwd"], str(newest))
+        self.assertEqual(options["env"]["UV_PROJECT_ENVIRONMENT"], str(venv))
+        self.assertTrue(options["check"])
+
+    def test_restore_skips_a_venv_outside_the_service_home(self):
+        self.legacy_source("0.1.4", "2026-09-01T00:00:00Z")
+        calls = []
+        transition._restore_legacy_environment(self.home, run=lambda *args, **kwargs: calls.append(args))
+        self.assertEqual(calls, [])
+
+    def test_restore_without_legacy_source_fails_loudly(self):
+        venv = self.home / "runtime/venv"
+        venv.mkdir(parents=True)
+        with patch.object(transition.sys, "prefix", str(venv)), self.assertRaisesRegex(RuntimeError, "No previous"):
+            transition._restore_legacy_environment(self.home, run=lambda *args, **kwargs: None)
+
+    def test_failed_version_probe_restores_before_failing(self):
+        restored = []
+        with patch.object(transition, "install", side_effect=OSError("offline")), \
+                patch.object(transition, "_restore_legacy_environment", side_effect=restored.append), \
+                patch.object(transition.Path, "is_file", return_value=True), \
+                patch.object(transition.Path, "read_text", return_value=json.dumps({"version": self.version})), \
+                self.assertRaisesRegex(OSError, "offline"):
+            transition.handoff(["version"])
+        self.assertEqual(restored, [self.home])
+
+
 if __name__ == "__main__":
     unittest.main()

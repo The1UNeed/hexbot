@@ -220,6 +220,43 @@ def _migrate_service(home: Path, user_home: Path | None = None) -> None:
             subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, timeout=30)
 
 
+def _restore_legacy_environment(home: Path, *, run=subprocess.run) -> None:
+    """Put the previous Python daemon's packages back after a failed probe.
+
+    The legacy updater syncs the venv to this package before it runs the
+    ``version`` probe and never rolls back. Without this the running daemon
+    loses its packages and a restart finds no daemon. Both legacy installers
+    keep each version's source in ``runtime/src/<version>``.
+    """
+    venv = home / "runtime/venv"
+    if Path(sys.prefix).resolve() != venv.resolve():
+        return  # Not the service venv, say a checkout. Nothing to restore.
+    ours = Path(__file__).resolve().parent.parent
+    candidates = []
+    for source in (home / "runtime/src").glob("*/pyproject.toml"):
+        source = source.parent
+        if source.resolve() == ours:
+            continue
+        try:
+            if not re.search(r'(?m)^name = "hermes-agent"$', (source / "pyproject.toml").read_text()):
+                continue
+        except OSError:
+            continue
+        try:  # Newest build first; every staged legacy source records its date.
+            built = json.loads((source / "HEXBOT_BUILD.json").read_text()).get("date", "")
+        except (OSError, ValueError, AttributeError):
+            built = ""
+        candidates.append((str(built), source.stat().st_mtime, source))
+    if not candidates:
+        raise RuntimeError("No previous Python daemon source to restore")
+    previous = max(candidates)[2]
+    uv = shutil.which("uv") or str(home / "bin/uv")
+    env = {**os.environ, "UV_PROJECT_ENVIRONMENT": str(venv), "VIRTUAL_ENV": str(venv),
+           "UV_PYTHON": str(venv / "bin/python")}
+    run([uv, "sync", "--extra", "all", "--locked"], cwd=str(previous), env=env, check=True,
+        capture_output=True, timeout=900)
+
+
 def handoff(argv=None) -> None:
     marker = Path(__file__).resolve().parent.parent / MARKER
     if not marker.is_file():
@@ -243,6 +280,10 @@ def handoff(argv=None) -> None:
             executable = install(home, version)
         except Exception as error:
             if arguments[:1] == ["version"]:
+                try:
+                    _restore_legacy_environment(home)
+                except Exception as restore_error:
+                    print(f"Could not restore the previous Python daemon ({restore_error})", file=sys.stderr)
                 raise  # The legacy updater's validation probe must still fail.
             print(f"Native runtime unavailable ({error}); service handoff failed", file=sys.stderr)
             return

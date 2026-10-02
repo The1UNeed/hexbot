@@ -46,7 +46,7 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Memory**: a bot's own notes, the `MEMORY.md` in its profile. The bot writes it during chat, dreaming curates it, the user can edit it. Deleting a section removes its history and leaves memory alone.
 - **About you**: one text per user, written only by the user and read by every bot they own (`users/<id>/user.md`).
 - **Dreaming**: a bot's daily pass over that day's conversations that folds what matters into its memory.
-- **Auto mode**: the approval mode that lets a small model auto-approve low-risk tool actions. The core calls it `smart`. The other modes are Manual (default) and Off.
+- **Auto mode**: the approval mode that lets a small model auto-approve low-risk tool actions. The daemon calls it `smart`. The other modes are Manual (default) and Off.
 - **Pairing**: connecting an app to a daemon with a one-time code or link over LAN. Never depends on Connect.
 - **Hex Connect**: the optional cloud service at connect.hexbot.app (Clerk auth, Cloudflare tunnels) for reaching a daemon from outside the LAN. Brokers identity and a hostname; chat traffic never passes through it.
 - **`hermes` identifiers**: some code names keep a `hermes` prefix for compatibility with existing installs: `HERMES_HOME` and other `HERMES_*` variables, `@hermes/shared`, the `hermes_session_at` cookie. Do not rename them. Never write "Hermes" in UI copy, docs, or prompts; the only exceptions are the credits to Hermes Agent in `README.md`, `NOTICE`, the site, and Settings, About.
@@ -160,8 +160,9 @@ A change is done when it works in every place the feature appears:
 - **Connection modes**: LAN pairing, Tailscale, and Connect.
 - **Reverse states**: a toggle needs both directions; archive needs
   unarchive; a revoked device needs to land back on the connect screen.
-- **Words**: UI copy uses the glossary. `docs/` and the site docs change in
-  the same PR when behaviour changes.
+- **Words**: UI copy uses the glossary. Internal names (`profile`,
+  `session`, `smart`) stay internal; UI copy uses the Hexbot word. `docs/`
+  and the site docs change in the same PR when behaviour changes.
 
 ## Channels and releases
 

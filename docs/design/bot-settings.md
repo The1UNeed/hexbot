@@ -204,8 +204,7 @@ message under the field.
 
 ### Where credentials live
 
-Daemon-scoped values go in the daemon's `.env` as the core expects, so
-`hexbot core` CLI commands run against the same install see them.
+Daemon-scoped values go in the daemon's `.env`.
 Bot-scoped values go in the bot's profile `.env`. Global Settings gets
 a Connectors tab that is the same catalog without the per-bot switch,
 for administrators who want to set everything up before making bots.

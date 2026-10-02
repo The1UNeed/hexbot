@@ -31,7 +31,7 @@ Each daemon gets `<slug>.<CONNECT_DOMAIN>`, where the slug is 16 hex characters 
 ## Daemon integration tests
 
 Native registration, grants, PKCE, revocation, and tunnel fixtures live in
-`backend/hexbot-core/tests/connect.rs` and `server.rs`. Run
+`backend/hexbot-core/tests/services.rs` and `server.rs`. Run
 `cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml` from the
 repository root. Connect service unit tests run with
 `pnpm --filter ./apps/connect run test --run`.

@@ -62,11 +62,12 @@ follow that source feed, validate the native
 bundle and version, then replace their process with the native daemon. Their
 home, conversations and bot memory stay in place. If the native download or
 validation fails, the version probe exits non-zero and the installed old
-daemon reports failure without restarting. The handoff package contains no
-Python daemon and cannot serve as a fallback: `uv sync` has already replaced the
-old venv, so when the service next starts, `serve` stays up and retries the
-native install with backoff (30 seconds, doubling to an hour) rather than
-exiting into a launchd or systemd restart loop. Native startup refuses a home
+daemon reports failure without restarting. The old updater has already synced
+its venv to the handoff package by then, so before failing the probe re-syncs
+the newest legacy source in `runtime/src/` and the Python daemon keeps its
+packages and survives a restart. If that restore fails too, `serve` stays up
+and retries the native install with backoff (30 seconds, doubling to an hour)
+rather than exiting into a launchd or systemd restart loop. Native startup refuses a home
 whose previous listener is still reachable. Python rollback packages,
 `HEXBOT_BACKEND` selection and `pnpm dev --backend python` are removed.
 
