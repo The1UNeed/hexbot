@@ -151,8 +151,9 @@ async fn child_environment_is_an_allowlist() {
     let env: Value = serde_json::from_str(result["text"].as_str().unwrap()).unwrap();
     assert_eq!(env["GH_TOKEN"], "gh-login");
     assert!(env["PATH"].is_string());
-    // macOS re-adds its own `__CF_*` variables to every child; everything else the
-    // daemon holds must be allowlisted or one of Copilot's GitHub login variables.
+    // macOS re-adds its own `__CF_*` variables to every child, and bubblewrap sets
+    // PWD to the working directory it enters; everything else the daemon holds
+    // must be allowlisted or one of Copilot's GitHub login variables.
     let copilot_login = [
         "GH_TOKEN",
         "GITHUB_TOKEN",
@@ -160,14 +161,20 @@ async fn child_environment_is_an_allowlist() {
         "GH_HOST",
         "XDG_CONFIG_HOME",
     ];
+    let bubblewrap = credentials::sandbox() == Some("bubblewrap");
     for (key, _) in std::env::vars() {
         assert!(
             key.starts_with("__")
+                || (bubblewrap && key == "PWD")
                 || credentials::inherited_environment(&key)
                 || copilot_login.contains(&key.as_str())
                 || env.get(&key).is_none(),
             "Copilot received {key}"
         );
+    }
+    if bubblewrap {
+        let workspace = fs::canonicalize(home.workspace()).unwrap();
+        assert_eq!(env["PWD"].as_str().unwrap(), workspace.to_str().unwrap());
     }
     assert!(env.get("OPENAI_API_KEY").is_none());
     assert!(env.get("CUSTOM_CONNECTOR_VALUE").is_none());
