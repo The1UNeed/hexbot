@@ -219,6 +219,18 @@ impl App {
                     )
                     .await?;
             }
+            // Threads where this bot asked others are archived below; stop any still answering
+            // or waiting on the owner, since their panel can no longer be opened.
+            let threads = common::rows(
+                &db::open(&self.home)?,
+                "SELECT id FROM sections WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL",
+                &[&bot, &owner],
+            )?;
+            for thread in threads {
+                self.runtime
+                    .close_stored(owner, common::required(&thread, "id")?)
+                    .await?;
+            }
         }
         let mut removed_sessions = Vec::new();
         // Removing a bot or the room closes sessions first, so ownership is

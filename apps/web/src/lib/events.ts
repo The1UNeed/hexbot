@@ -188,7 +188,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       effects.refreshBots()
       // Every ask touches its thread; an open thread panel reads it again (new live session,
       // first ask while the panel waited).
-      useUi.getState().touchThread()
+      useUi.getState().touchThread(typeof payload.id === 'string' ? payload.id : undefined)
 
       return
 

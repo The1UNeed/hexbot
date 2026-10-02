@@ -214,3 +214,19 @@ describe('ThreadPanel', () => {
     expect(useUi.getState().thread).toBeNull()
   })
 })
+
+describe('touchThread', () => {
+  it('reads an open thread again only for its own changes, or any while its id is unknown', () => {
+    useUi.setState({ thread: { bot: 'writer', peer: 'scout' }, threadChanged: 0 })
+    useUi.getState().touchThread('elsewhere')
+    expect(useUi.getState().threadChanged).toBe(1)
+    useUi.setState({ thread: { bot: 'writer', peer: 'scout', sectionId: 'th1' } })
+    useUi.getState().touchThread('elsewhere')
+    expect(useUi.getState().threadChanged).toBe(1)
+    useUi.getState().touchThread('th1')
+    expect(useUi.getState().threadChanged).toBe(2)
+    useUi.setState({ thread: null })
+    useUi.getState().touchThread('th1')
+    expect(useUi.getState().threadChanged).toBe(2)
+  })
+})

@@ -11,7 +11,7 @@ import { useBot } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { sectionsActions, useLiveSessionId } from '../../stores/sections'
 import { useTranscript, useTranscripts } from '../../stores/transcripts'
-import { type ThreadRef, useUi } from '../../stores/ui'
+import { type ThreadRef, uiActions, useUi } from '../../stores/ui'
 import { ApprovalCard, bubbleClass, CardRow, Markdown } from '../conversation'
 import { AskingRow } from '../conversation/asking-row'
 import { ClarifyCard } from '../conversation/clarify-card'
@@ -125,6 +125,8 @@ export function ThreadPanel({ thread }: { thread: ThreadRef }): React.JSX.Elemen
           return
         }
 
+        // Tell the ui store which section this is, so only its changes read it again.
+        uiActions().resolveThread(thread.bot, thread.peer, id)
         const opened = await sectionsActions().openThread(id, thread.peer)
 
         // A reply still streaming lives in the live transcript, earlier parts included; showing

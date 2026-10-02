@@ -162,7 +162,7 @@ pub fn migrate(home: &Path) -> Result<()> {
     transaction.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_bot_messages_source ON bot_messages(source_section,created_at);",
     )?;
-    transaction.execute("UPDATE sections SET peer_bot=(SELECT from_bot FROM bot_messages b WHERE b.section_id=sections.id ORDER BY created_at LIMIT 1) WHERE peer_bot IS NULL AND id IN (SELECT section_id FROM bot_messages WHERE section_id IS NOT NULL)", [])?;
+    transaction.execute("UPDATE sections SET peer_bot=(SELECT from_bot FROM bot_messages b WHERE b.section_id=sections.id ORDER BY created_at LIMIT 1) WHERE peer_bot IS NULL AND title=('From '||(SELECT from_bot FROM bot_messages b WHERE b.section_id=sections.id ORDER BY created_at LIMIT 1))", [])?;
     fold_core_memory(&transaction, home)?;
     transaction
         .execute_batch("DROP TABLE IF EXISTS core_memory; DROP TABLE IF EXISTS memory_entries;")?;

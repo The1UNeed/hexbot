@@ -43,7 +43,7 @@ export interface UiState {
   /** Bumped when the daemon reports a section changed while a thread is open: read it again. */
   threadChanged: number
   toggleRightPanel: (open?: boolean) => void
-  touchThread: () => void
+  touchThread: (sectionId?: string) => void
 }
 
 export const SIDEBAR_MIN_WIDTH = 240
@@ -86,8 +86,14 @@ export const useUi = create<UiState>()(
         set({ thread: null })
       },
 
-      touchThread() {
-        set(state => (state.thread ? { threadChanged: state.threadChanged + 1 } : state))
+      // Only the open thread's changes matter, or any change while its id is still unknown.
+      touchThread(sectionId) {
+        set(state =>
+          state.thread &&
+          (!state.thread.sectionId || !sectionId || sectionId === state.thread.sectionId)
+            ? { threadChanged: state.threadChanged + 1 }
+            : state
+        )
       },
 
       resolveThread(bot, peer, sectionId) {

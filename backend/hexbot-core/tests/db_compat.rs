@@ -370,14 +370,14 @@ fn current_python_database_preserves_title_attribution_and_spent_grants() {
 }
 
 #[test]
-fn bot_thread_backfill_uses_first_sender_and_is_idempotent() {
+fn bot_thread_backfill_uses_first_sender_keeps_renamed_sections_and_is_idempotent() {
     let home = legacy_home(11);
     let conn = db::open(home.path()).unwrap();
-    conn.execute_batch("INSERT INTO sections(id,bot,title) VALUES('thread','receiver','Old title'),('normal','receiver','Normal');
-        INSERT INTO bot_messages(id,from_bot,to_bot,section_id,created_at,text) VALUES('later','second','receiver','thread',2,'later'),('first','sender','receiver','thread',1,'first'),('unassigned','sender','receiver',NULL,0,'unassigned');").unwrap();
+    conn.execute_batch("INSERT INTO sections(id,bot,title) VALUES('thread','receiver','From sender'),('normal','receiver','Normal'),('renamed','receiver','Plans');
+        INSERT INTO bot_messages(id,from_bot,to_bot,section_id,created_at,text) VALUES('later','second','receiver','thread',2,'later'),('first','sender','receiver','thread',1,'first'),('unassigned','sender','receiver',NULL,0,'unassigned'),('kept','sender','receiver','renamed',3,'kept');").unwrap();
     db::migrate(home.path()).unwrap();
     let snapshot = || {
-        conn.prepare("SELECT id,peer_bot FROM sections WHERE id IN ('normal','thread') ORDER BY id")
+        conn.prepare("SELECT id,peer_bot FROM sections WHERE id IN ('normal','renamed','thread') ORDER BY id")
             .unwrap()
             .query_map([], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
@@ -391,6 +391,8 @@ fn bot_thread_backfill_uses_first_sender_and_is_idempotent() {
         before,
         vec![
             ("normal".into(), None),
+            // The user renamed it; it is their conversation and stays in their lists.
+            ("renamed".into(), None),
             ("thread".into(), Some("sender".into()))
         ]
     );
@@ -404,6 +406,7 @@ fn bot_thread_backfill_uses_first_sender_and_is_idempotent() {
         snapshot(),
         vec![
             ("normal".into(), Some("preserved".into())),
+            ("renamed".into(), None),
             ("thread".into(), Some("sender".into()))
         ]
     );

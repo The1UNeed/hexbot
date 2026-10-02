@@ -1208,3 +1208,42 @@ async fn actual_pi_generates_descriptions_and_messages_a_private_teammate() {
     runtime.shutdown().await;
     server.abort();
 }
+
+#[tokio::test]
+async fn deleting_a_bot_stops_the_threads_where_it_asked_others() {
+    let home = setup();
+    let h = home.path();
+    db::open(h).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('cat','alice'); INSERT INTO sections(id,bot,owner_id,title,peer_bot,created_at,updated_at) VALUES('asked','cat','alice','From Owl','owl',0,0);").unwrap();
+    fs::create_dir_all(h.join("profiles/cat")).unwrap();
+    fs::write(
+        h.join("profiles/cat/config.yaml"),
+        "model:\n  provider: openai\n  default: test-model\ntools:\n  enabled_toolsets: []\n",
+    )
+    .unwrap();
+    let app =
+        hexbot_core::server::App::new(h.into(), "127.0.0.1:0".parse().unwrap(), fake_pi(h), None)
+            .unwrap();
+    // Cat is still answering Owl, which asked without waiting.
+    app.runtime
+        .ensure_hidden("alice", "cat", "asked")
+        .await
+        .unwrap();
+    app.call("alice", "hexbot.bots.delete", &json!({"name":"owl"}))
+        .await
+        .unwrap();
+    let active = app
+        .call("alice", "session.active_list", &json!({}))
+        .await
+        .unwrap();
+    assert!(active["sessions"].as_array().unwrap().is_empty());
+    let archived: Option<f64> = db::open(h)
+        .unwrap()
+        .query_row(
+            "SELECT archived_at FROM sections WHERE id='asked'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(archived.is_some());
+    app.shutdown().await;
+}
