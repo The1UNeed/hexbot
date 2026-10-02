@@ -267,6 +267,23 @@ class NativeTransitionTests(unittest.TestCase):
         install.assert_called_once_with(self.home, self.version)
         execute.assert_called_once_with(str(selected), [str(selected), "version"])
 
+    def test_pointer_without_its_stable_link_reinstalls(self):
+        executable = self.install()
+        stable = self.home / "runtime/native-executable"
+        source = self.root / "source"
+        (source / "hexbot").mkdir(parents=True)
+        (source / transition.MARKER).write_text(json.dumps({"version": self.version}))
+        for state in ("missing", "stale"):
+            stable.unlink(missing_ok=True)
+            if state == "stale":
+                stable.symlink_to(sys.executable)
+            with self.subTest(state=state), \
+                 patch.object(transition, "__file__", str(source / "hexbot/native_transition.py")), \
+                 patch.object(transition, "install", return_value=executable) as install, \
+                 patch.object(transition.os, "execv"):
+                transition.handoff(["version"])
+            install.assert_called_once_with(self.home, self.version)
+
     def test_invalid_cached_pointer_types_fall_back_to_verified_install(self):
         runtime = self.home / "runtime"
         runtime.mkdir()
@@ -365,7 +382,7 @@ class NativeTransitionTests(unittest.TestCase):
             self.assertTrue(transition._restore_legacy_environment(self.home, run=run))
         self.assertEqual(tried, ["0.1.5-nightly.1", "0.1.4"])
 
-    def test_restore_tries_the_two_newest_sources_and_reports_both(self):
+    def test_restore_tries_every_source_and_reports_each_failure(self):
         venv = self.home / "runtime/venv"
         venv.mkdir(parents=True)
         self.legacy_source("0.1.3", "2026-08-01T00:00:00Z")
@@ -378,9 +395,9 @@ class NativeTransitionTests(unittest.TestCase):
             raise subprocess.TimeoutExpired(command, 900)
 
         with patch.object(transition.sys, "prefix", str(venv)), \
-                self.assertRaisesRegex(RuntimeError, "^0.1.5-nightly.1: .*; 0.1.4: [^;]*$"):
+                self.assertRaisesRegex(RuntimeError, "^0.1.5-nightly.1: .*; 0.1.4: .*; 0.1.3: "):
             transition._restore_legacy_environment(self.home, run=run)
-        self.assertEqual(tried, ["0.1.5-nightly.1", "0.1.4"])
+        self.assertEqual(tried, ["0.1.5-nightly.1", "0.1.4", "0.1.3"])
 
     def test_restore_without_legacy_source_fails_loudly(self):
         venv = self.home / "runtime/venv"

@@ -255,8 +255,8 @@ def _restore_legacy_environment(home: Path, *, run=subprocess.run) -> bool:
            "UV_PYTHON": str(venv / "bin/python")}
     failures = []
     # Newest build first. The old updater keeps the source of an update that
-    # failed, so the newest may not be the one that ran; the next one did.
-    for _, _, source in sorted(candidates, reverse=True)[:2]:
+    # failed, so the newest may not be the one that ran; fall back in order.
+    for _, _, source in sorted(candidates, reverse=True):
         try:
             run([uv, "sync", "--extra", "all", "--locked"], cwd=source, env=env, check=True,
                 capture_output=True, timeout=900)
@@ -279,7 +279,10 @@ def handoff(argv=None) -> None:
         if not isinstance(selected, dict) or not isinstance(selected.get("executable"), str):
             raise ValueError("Invalid native runtime pointer")
         candidate = Path(selected["executable"])
-        if selected["version"] == version and candidate.resolve().is_relative_to(home / "runtime/native") and candidate.is_file():
+        # install() records the pointer before it swaps the stable link; a crash
+        # between the two leaves a pointer the service path does not reach.
+        if (selected["version"] == version and candidate.resolve().is_relative_to(home / "runtime/native")
+                and candidate.is_file() and (home / "runtime/native-executable").resolve() == candidate.resolve()):
             executable = candidate
     except (OSError, KeyError, ValueError):
         pass

@@ -64,8 +64,8 @@ home, conversations and bot memory stay in place. If the native download or
 validation fails, the version probe exits non-zero and the installed old
 daemon reports failure without restarting. The old updater has already synced
 its venv to the handoff package by then, so before failing the probe re-syncs
-the newest legacy source in `runtime/src/`, or the one before it if that
-fails, and the Python daemon keeps its packages and survives a restart. A `serve` that finds the
+the legacy sources in `runtime/src/`, newest first, until one syncs, and the
+Python daemon keeps its packages and survives a restart. A `serve` that finds the
 handoff package installed tries the native install, then the same restore,
 and execs the restored Python daemon. If both fail, `serve` stays up and
 retries with backoff (30 seconds, doubling to an hour) rather than exiting
