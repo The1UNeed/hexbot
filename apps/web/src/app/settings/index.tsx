@@ -999,12 +999,12 @@ export function ApprovalsSettings(): React.JSX.Element {
   const refresh = useSettings(state => state.refresh)
   const patch = useSettings(state => state.patch)
   const modes = useApprovalModes(settings?.approval_mode)
-  const [sandbox, setSandbox] = useState<DaemonInfo['sandbox']>(undefined)
+  const [info, setInfo] = useState<DaemonInfo | undefined>(undefined)
   useEffect(() => {
     void refresh()
     // Without daemon info, as from an older daemon, there is nothing to warn about.
     void daemonInfo()
-      .then(info => setSandbox(info.sandbox))
+      .then(setInfo)
       .catch(() => {})
   }, [refresh])
 
@@ -1013,7 +1013,13 @@ export function ApprovalsSettings(): React.JSX.Element {
       <Heading description="Choose when Hexbot asks before a bot acts. Bots and rooms can override it.">
         Approvals
       </Heading>
-      {sandbox === null && (
+      {info && info.approvals !== 'sandbox' && (
+        <p className="mb-5 rounded-control bg-warning/12 p-3 text-warning" role="status">
+          This daemon is older than the app and still uses its previous approval rules. Update the
+          daemon to get the sandbox these modes describe.
+        </p>
+      )}
+      {info?.approvals === 'sandbox' && info.sandbox === null && (
         <p className="mb-5 rounded-control bg-warning/12 p-3 text-warning" role="status">
           No OS sandbox is available, so Manual and Auto ask before every shell command and code
           run. Install bubblewrap on the computer running the daemon, then restart the daemon to

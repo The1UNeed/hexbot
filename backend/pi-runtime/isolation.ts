@@ -135,7 +135,7 @@ export function sandboxProfile(home: string, outputs: string[] = [], workspace?:
 export function bwrapArguments(home: string, outputs: string[] = [], workspace?: string[]): string[] {
   const {roots, paths, writable, denied} = layout(home, outputs);
   const confine = workspace && confined(workspace);
-  const args = confine ? ['--die-with-parent', '--unshare-pid', '--unshare-net', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/run', '--tmpfs', '/tmp'] : ['--die-with-parent', '--unshare-pid', '--bind', '/', '/', '--proc', '/proc'];
+  const args = confine ? ['--die-with-parent', '--new-session', '--unshare-pid', '--unshare-net', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/run', '--tmpfs', '/tmp'] : ['--die-with-parent', '--unshare-pid', '--bind', '/', '/', '--proc', '/proc'];
   if (confine) for (const path of confine.writable) if (path !== '/tmp') args.push('--bind', path, path);
   for (const root of roots) args.push('--ro-bind', root, root);
   for (const path of writable) if (!confine || confine.writable.some(root => path === root || path.startsWith(root + '/'))) args.push('--bind', path, path);

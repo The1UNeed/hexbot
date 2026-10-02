@@ -277,7 +277,7 @@ test('bubblewrap confines a workspace command to its folders without a network',
   const outputs = join(home, 'hexbot/profiles/owl/artifacts'); mkdirSync(outputs, {recursive:true});
   const command = workspace => execFileSync(process.execPath, ['--input-type=module', '-e', `Object.defineProperty(process,'platform',{value:'linux'}); const {isolatedCommand}=await import(${JSON.stringify(moduleUrl)}); console.log(isolatedCommand('true',${JSON.stringify(join(home, 'hexbot'))},[${JSON.stringify(outputs)}],${JSON.stringify(workspace)}));`], {env:{...process.env, HOME:user, PATH:home}, encoding:'utf8'});
   const confined = command([workspace]);
-  assert.ok(confined.includes(`'--unshare-net' '--ro-bind' '/' '/' '--dev' '/dev' '--proc' '/proc' '--tmpfs' '/run' '--tmpfs' '/tmp'`));
+  assert.ok(confined.includes(`'--new-session' '--unshare-pid' '--unshare-net' '--ro-bind' '/' '/' '--dev' '/dev' '--proc' '/proc' '--tmpfs' '/run' '--tmpfs' '/tmp'`));
   // Host sockets under /tmp (X11, agents) stay hidden even though /tmp is part of every workspace.
   assert.ok(!command([workspace, '/tmp']).includes(`'--bind' '/tmp' '/tmp'`));
   // Output folders open only when the workspace holds them: Manual's is empty.

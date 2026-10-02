@@ -549,6 +549,7 @@ fn bwrap_arguments(layout: &Layout) -> Vec<OsString> {
     let base: &[&str] = if layout.confine.is_some() {
         &[
             "--die-with-parent",
+            "--new-session",
             "--unshare-pid",
             "--unshare-net",
             "--ro-bind",

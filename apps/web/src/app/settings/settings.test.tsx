@@ -254,13 +254,18 @@ describe('settings', () => {
 
   it('warns when the daemon has no OS sandbox, and only then', async () => {
     useSettings.setState({ refresh: vi.fn().mockResolvedValue(undefined) })
-    vi.mocked(daemonInfo).mockResolvedValueOnce({ sandbox: null, version: '0.1.5' } as DaemonInfo)
+    vi.mocked(daemonInfo).mockResolvedValueOnce({
+      approvals: 'sandbox',
+      sandbox: null,
+      version: '0.1.5'
+    } as DaemonInfo)
     const { unmount } = render(<ApprovalsSettings />)
     expect(await screen.findByRole('status')).toHaveTextContent(
       'No OS sandbox is available, so Manual and Auto ask before every shell command and code run. Install bubblewrap on the computer running the daemon, then restart the daemon to restore isolation.'
     )
     unmount()
     vi.mocked(daemonInfo).mockResolvedValueOnce({
+      approvals: 'sandbox',
       sandbox: 'bubblewrap',
       version: '0.1.5'
     } as DaemonInfo)
@@ -270,13 +275,13 @@ describe('settings', () => {
     })
     expect(screen.queryByRole('status')).toBeNull()
     second.unmount()
-    // An older daemon reports nothing, which is not the same as no sandbox.
-    vi.mocked(daemonInfo).mockResolvedValueOnce({ version: '0.1.4' } as DaemonInfo)
+    // A daemon from before sandboxed approvals is told apart from one without a sandbox.
+    vi.mocked(daemonInfo).mockResolvedValueOnce({
+      sandbox: 'sandbox-exec',
+      version: '0.1.4'
+    } as DaemonInfo)
     render(<ApprovalsSettings />)
-    await act(async () => {
-      await vi.mocked(daemonInfo).mock.results.at(-1)?.value
-    })
-    expect(screen.queryByRole('status')).toBeNull()
+    expect(await screen.findByRole('status')).toHaveTextContent(/older than the app/)
   })
 
   it('applies a selected theme to the document', () => {

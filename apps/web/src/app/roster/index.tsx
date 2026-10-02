@@ -932,6 +932,14 @@ function NewRoomDialog({
   const [turns, setTurns] = useState(String(settings?.room_bot_turns_per_human_turn ?? 8))
   const [budget, setBudget] = useState(String(settings?.room_budget_tokens_per_human_turn ?? ''))
   const [error, setError] = useState<string | null>(null)
+  // Settings can arrive after the dialog first renders; each opening starts from them.
+  useEffect(() => {
+    if (open) {
+      setApprovalMode(settings?.approval_mode ?? 'smart')
+      setTurns(String(settings?.room_bot_turns_per_human_turn ?? 8))
+      setBudget(String(settings?.room_budget_tokens_per_human_turn ?? ''))
+    }
+  }, [open, settings])
 
   return (
     <Dialog onOpenChange={value => !value && onClose()} open={open} title="New room">

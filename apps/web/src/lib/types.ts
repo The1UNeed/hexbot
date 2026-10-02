@@ -227,6 +227,8 @@ export interface DaemonInfo {
   platform: string
   /** The OS sandbox for shell and code tools, null when none; absent on older daemons. */
   sandbox?: 'bubblewrap' | 'sandbox-exec' | null
+  /** `sandbox` once the daemon has sandboxed approvals; absent on older daemons. */
+  approvals?: 'sandbox'
   /** How the daemon can update itself when asked; absent on older daemons. */
   update_capability?: 'desktop' | 'service' | null
   version: string
