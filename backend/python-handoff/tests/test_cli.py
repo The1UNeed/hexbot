@@ -72,3 +72,35 @@ def test_version_never_retries(tmp_path):
     with patch.dict(os.environ, {"HEXBOT_HOME": str(tmp_path)}), \
             patch.object(cli, "handoff", lambda arguments: None), patch.object(cli, "_has_marker", lambda: True):
         assert cli.main(["version"], sleep=lambda delay: (_ for _ in ()).throw(AssertionError("slept"))) == 1
+
+
+def test_serve_retries_after_any_handoff_error(tmp_path):
+    calls, delays = [], []
+
+    def handoff(arguments):
+        calls.append(arguments)
+        if len(calls) == 1:
+            raise RuntimeError("Stop the existing Hexbot daemon before starting the native daemon")
+        raise SystemExit(0)  # Stands in for os.execv into the native daemon.
+
+    with patch.dict(os.environ, {"HEXBOT_HOME": str(tmp_path)}), \
+            patch.object(cli, "handoff", handoff), patch.object(cli, "_has_marker", lambda: True):
+        try:
+            cli.main(["serve"], sleep=delays.append)
+        except SystemExit as exit:
+            assert exit.code == 0
+    assert len(calls) == 2
+    assert delays == [cli.RETRY_FIRST]
+
+
+def test_version_probe_errors_still_fail_the_probe(tmp_path):
+    def handoff(arguments):
+        raise OSError("offline")
+
+    with patch.dict(os.environ, {"HEXBOT_HOME": str(tmp_path)}), patch.object(cli, "handoff", handoff):
+        try:
+            cli.main(["version"])
+        except OSError as error:
+            assert str(error) == "offline"
+        else:
+            raise AssertionError("the probe succeeded")

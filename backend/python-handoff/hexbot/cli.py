@@ -23,14 +23,19 @@ def main(argv=None, sleep=time.sleep):
     arguments = list(sys.argv[1:] if argv is None else argv)
     delay = RETRY_FIRST
     while True:
-        # A successful handoff replaces this process, so returning means it failed.
-        handoff(arguments)
+        try:
+            # A successful handoff replaces this process, so returning means it failed.
+            handoff(arguments)
+        except Exception as error:
+            if arguments[:1] != ["serve"]:
+                raise
+            print(f"Hexbot service handoff failed ({error})", file=sys.stderr, flush=True)
         if arguments[:1] != ["serve"] or not _has_marker():
             print("Hexbot service handoff unavailable. Install the native Hexbot runtime.", file=sys.stderr)
             return 1
         # launchd and systemd restart a failing service at once, and systemd soon
         # gives up. Stay up and retry so the service recovers once the install works.
-        print(f"Retrying the native runtime install in {delay} seconds", file=sys.stderr, flush=True)
+        print(f"Retrying the service handoff in {delay} seconds", file=sys.stderr, flush=True)
         sleep(delay)
         delay = min(delay * 2, RETRY_MAX)
 

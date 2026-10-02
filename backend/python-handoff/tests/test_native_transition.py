@@ -304,7 +304,7 @@ class NativeTransitionTests(unittest.TestCase):
                                  cwd=source, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             self.assertIn("service handoff failed", serve.stderr.readline())
-            self.assertIn("Retrying the native runtime install", serve.stderr.readline())
+            self.assertIn("Retrying the service handoff", serve.stderr.readline())
             self.assertIsNone(serve.poll())
             self.assertEqual(launcher.read_bytes(), old_launcher)
         finally:
@@ -334,7 +334,9 @@ class NativeTransitionTests(unittest.TestCase):
         self.legacy_source("broken", None).joinpath("pyproject.toml").unlink()
         calls = []
         with patch.object(transition.sys, "prefix", str(venv)):
-            transition._restore_legacy_environment(self.home, run=lambda *args, **kwargs: calls.append((args, kwargs)))
+            self.assertTrue(transition._restore_legacy_environment(
+                self.home, run=lambda *args, **kwargs: calls.append((args, kwargs))))
+        self.assertEqual(len(calls), 1)
         (command,), options = calls[0]
         self.assertEqual(command[1:], ["sync", "--extra", "all", "--locked"])
         self.assertEqual(options["cwd"], str(newest))
@@ -344,8 +346,41 @@ class NativeTransitionTests(unittest.TestCase):
     def test_restore_skips_a_venv_outside_the_service_home(self):
         self.legacy_source("0.1.4", "2026-09-01T00:00:00Z")
         calls = []
-        transition._restore_legacy_environment(self.home, run=lambda *args, **kwargs: calls.append(args))
+        self.assertFalse(transition._restore_legacy_environment(self.home, run=lambda *args, **kwargs: calls.append(args)))
         self.assertEqual(calls, [])
+
+    def test_restore_falls_back_to_an_older_source_when_the_newest_fails(self):
+        venv = self.home / "runtime/venv"
+        venv.mkdir(parents=True)
+        working = self.legacy_source("0.1.4", "2026-09-01T00:00:00Z")
+        self.legacy_source("0.1.5-nightly.1", "2026-09-20T00:00:00Z")
+        tried = []
+
+        def run(command, **options):
+            tried.append(Path(options["cwd"]).name)
+            if options["cwd"] != str(working):
+                raise subprocess.CalledProcessError(1, command)
+
+        with patch.object(transition.sys, "prefix", str(venv)):
+            self.assertTrue(transition._restore_legacy_environment(self.home, run=run))
+        self.assertEqual(tried, ["0.1.5-nightly.1", "0.1.4"])
+
+    def test_restore_tries_the_two_newest_sources_and_reports_both(self):
+        venv = self.home / "runtime/venv"
+        venv.mkdir(parents=True)
+        self.legacy_source("0.1.3", "2026-08-01T00:00:00Z")
+        self.legacy_source("0.1.4", "2026-09-01T00:00:00Z")
+        self.legacy_source("0.1.5-nightly.1", "2026-09-20T00:00:00Z")
+        tried = []
+
+        def run(command, **options):
+            tried.append(Path(options["cwd"]).name)
+            raise subprocess.TimeoutExpired(command, 900)
+
+        with patch.object(transition.sys, "prefix", str(venv)), \
+                self.assertRaisesRegex(RuntimeError, "^0.1.5-nightly.1: .*; 0.1.4: [^;]*$"):
+            transition._restore_legacy_environment(self.home, run=run)
+        self.assertEqual(tried, ["0.1.5-nightly.1", "0.1.4"])
 
     def test_restore_without_legacy_source_fails_loudly(self):
         venv = self.home / "runtime/venv"
@@ -362,6 +397,47 @@ class NativeTransitionTests(unittest.TestCase):
                 self.assertRaisesRegex(OSError, "offline"):
             transition.handoff(["version"])
         self.assertEqual(restored, [self.home])
+
+    def test_failed_version_probe_reports_the_install_error_when_restore_fails(self):
+        with patch.object(transition, "install", side_effect=OSError("offline")), \
+                patch.object(transition, "_restore_legacy_environment", side_effect=RuntimeError("no source")), \
+                patch.object(transition.Path, "is_file", return_value=True), \
+                patch.object(transition.Path, "read_text", return_value=json.dumps({"version": self.version})), \
+                self.assertRaisesRegex(OSError, "offline"):
+            transition.handoff(["version"])
+
+    def handoff_with_failed_install(self, arguments, restored):
+        with patch.object(transition, "install", side_effect=OSError("offline")), \
+                patch.object(transition, "_restore_legacy_environment", return_value=restored), \
+                patch.object(transition.Path, "is_file", return_value=True), \
+                patch.object(transition.Path, "read_text", return_value=json.dumps({"version": self.version})), \
+                patch.object(transition.os, "execv") as execv:
+            transition.handoff(arguments)
+        return execv
+
+    def test_failed_serve_install_runs_the_restored_python_daemon(self):
+        execv = self.handoff_with_failed_install(["serve", "--port", "9119"], True)
+        legacy = str(self.home / "runtime/venv/bin/hexbot")
+        execv.assert_called_once_with(legacy, [legacy, "serve", "--port", "9119"])
+
+    def test_restored_python_daemon_never_starts_beside_a_live_one(self):
+        with patch.object(transition, "_refuse_running_daemon", side_effect=RuntimeError("Stop the existing")), \
+                self.assertRaisesRegex(RuntimeError, "Stop the existing"):
+            self.handoff_with_failed_install(["serve", "--port", "9120"], True)
+
+    def test_failed_serve_install_without_restore_returns_to_the_retry_loop(self):
+        self.handoff_with_failed_install(["serve"], False).assert_not_called()
+
+    def test_service_definition_failure_still_hands_off(self):
+        executable = self.install()
+        with patch.object(transition, "_migrate_service", side_effect=subprocess.CalledProcessError(1, "systemctl")), \
+                patch.object(transition.Path, "is_file", return_value=True), \
+                patch.object(transition.Path, "read_text", side_effect=[
+                    json.dumps({"version": self.version}),
+                    json.dumps({"version": self.version, "executable": str(executable)})]), \
+                patch.object(transition.os, "execv") as execv:
+            transition.handoff(["serve"])
+        execv.assert_called_once_with(str(executable), [str(executable), "serve"])
 
 
 if __name__ == "__main__":

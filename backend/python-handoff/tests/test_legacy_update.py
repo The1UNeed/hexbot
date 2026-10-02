@@ -75,3 +75,10 @@ def test_failed_native_install_keeps_the_legacy_daemon(tmp_path):
     assert probe.stdout == ""
     assert subprocess.run([hexbot], capture_output=True, text=True).stdout == "legacy daemon\n"
     assert not (home / "runtime/native-executable").exists()
+
+    # A restart that finds the handoff package still installed, say after a
+    # restore that failed, brings the previous Python daemon back.
+    sync(source, env)
+    serve = subprocess.run([hexbot, "serve"], env=env, capture_output=True, text=True, timeout=120)
+    assert serve.stdout == "legacy daemon\n"
+    assert subprocess.run([hexbot], capture_output=True, text=True).stdout == "legacy daemon\n"
