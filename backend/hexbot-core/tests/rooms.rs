@@ -326,6 +326,20 @@ async fn a_room_reply_keeps_the_teammates_its_bot_asked() {
         reply["payload"]["asks"],
         json!([{"to":"fox","section_id":"fox-thread"}])
     );
+    // Another person in the room sees the reply, not the owner's private threads.
+    call(&h, "add_member", json!({"id":room,"user":"bob"}));
+    let seen = rooms::call(h.path(), "bob", "hexbot.rooms.log", &json!({"id":room}))
+        .unwrap()
+        .unwrap();
+    let reply = seen["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "message.bot")
+        .unwrap()
+        .clone();
+    assert_eq!(reply["payload"]["text"], "Fox helped.");
+    assert!(reply["payload"].get("asks").is_none());
 }
 #[tokio::test]
 async fn limits_failures_and_pass_are_durable() {

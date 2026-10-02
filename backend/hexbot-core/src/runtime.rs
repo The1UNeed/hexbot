@@ -213,7 +213,12 @@ impl Runtime {
         }
         Ok(expired.len())
     }
-    fn emit(&self, s: &Live, kind: &str, payload: Value) {
+    fn emit(&self, s: &Live, kind: &str, mut payload: Value) {
+        // A card names its bot, so a client that does not list the section (a private thread)
+        // still honours that bot's Notify me.
+        if matches!(kind, "approval.request" | "clarify.request") && payload.is_object() {
+            payload["bot"] = json!(s.bot);
+        }
         self.events.emit(&s.owner, Some(&s.id), kind, payload);
     }
     /// The approval and the question a session waits on, as their events.
@@ -1771,6 +1776,19 @@ impl Runtime {
     ) -> Result<(String, String, Arc<AtomicUsize>)> {
         if to == s.bot {
             return Err(Error::new(4202, "A bot cannot message itself."));
+        }
+        // A shared bot running in someone else's room has no team there: their bots, memory, and
+        // names stay private to them.
+        let sender_owner: Option<String> = db::open(&self.home)?
+            .query_row("SELECT owner_id FROM bots WHERE name=?", [&s.bot], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if sender_owner.as_deref() != Some(s.owner.as_str()) {
+            return Err(Error::new(
+                4302,
+                "Only the user's own bots can ask their other bots for help.",
+            ));
         }
         let teammates = common::rows(
             &db::open(&self.home)?,

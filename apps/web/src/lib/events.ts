@@ -84,6 +84,11 @@ function botOfSection(sectionId?: string | null): string | undefined {
   return sectionId ? useSections.getState().byId[sectionId]?.bot : undefined
 }
 
+/** Whose card this is: its section's bot, else the bot the daemon names (private threads are unlisted). */
+function cardBot(payload: Record<string, unknown>, sectionId?: string | null): string | undefined {
+  return botOfSection(sectionId) ?? (typeof payload.bot === 'string' ? payload.bot : undefined)
+}
+
 /** The open transcript for an incident: the section's live session, else the id as sent. */
 function incidentSession(payload: Record<string, unknown>): null | string {
   const sections = useSections.getState()
@@ -204,14 +209,14 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
   switch (event.type) {
     case 'approval.request':
       transcripts.approvalRequest(sessionId, payload as ApprovalRequestPayload, {
-        notify: botNotifies(botOfSection(transcripts.bySession[sessionId]?.sectionId))
+        notify: botNotifies(cardBot(payload, transcripts.bySession[sessionId]?.sectionId))
       })
 
       return
 
     case 'clarify.request':
       transcripts.clarifyRequest(sessionId, payload as ClarifyRequestPayload, {
-        notify: botNotifies(botOfSection(transcripts.bySession[sessionId]?.sectionId))
+        notify: botNotifies(cardBot(payload, transcripts.bySession[sessionId]?.sectionId))
       })
 
       return

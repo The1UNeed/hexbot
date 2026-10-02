@@ -1788,6 +1788,21 @@ async fn message_bot_checks_teammates_reuses_threads_and_returns_section_ids() {
             );
         }
     }
+    // A shared bot running for someone else gets no team of theirs, and no names from it.
+    db::open(h)
+        .unwrap()
+        .execute_batch("UPDATE bots SET owner_id='bob' WHERE name='owl'")
+        .unwrap();
+    let error = runtime
+        .tool(&s, "message_bot", &json!({"to":"cat","text":"Help"}))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, 4302);
+    assert!(!error.message.contains("cat"));
+    db::open(h)
+        .unwrap()
+        .execute_batch("UPDATE bots SET owner_id='alice' WHERE name='owl'")
+        .unwrap();
     let result = runtime
         .tool(
             &s,

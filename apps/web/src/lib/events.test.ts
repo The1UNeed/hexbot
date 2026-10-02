@@ -17,7 +17,12 @@ const incident = (overrides: Record<string, unknown> = {}): GatewayEvent =>
   ({
     payload: {
       bot: 'scout',
-      incident: { connector: 'notion', id: 'inc-1', kind: 'connector_error', text: 'Token expired' },
+      incident: {
+        connector: 'notion',
+        id: 'inc-1',
+        kind: 'connector_error',
+        text: 'Token expired'
+      },
       section_id: 'section-1',
       session_id: 'section-1',
       ...overrides
@@ -100,6 +105,21 @@ describe('event routing', () => {
       payload: { request_id: 'a', tool: 'terminal' },
       session_id: 'live-9',
       type: 'approval.request'
+    } as unknown as GatewayEvent)
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it("honours a private thread's bot, which no section list names", () => {
+    const notify = vi.fn()
+    setTranscriptEffects({ notify })
+    useBots.setState({
+      byName: { writer: { display_name: 'Writer', name: 'writer', notify: false } as Bot }
+    })
+    useSections.setState({ byId: {}, liveSessionId: {} })
+    routeEvent({
+      payload: { bot: 'writer', question: 'Which tone?', request_id: 'q' },
+      session_id: 'live-thread',
+      type: 'clarify.request'
     } as unknown as GatewayEvent)
     expect(notify).not.toHaveBeenCalled()
   })

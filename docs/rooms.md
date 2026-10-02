@@ -151,7 +151,12 @@ The native daemon provides `message_bot {to, text, wait: bool}` for bots:
   any other section, so both bots learn from the exchange. In a room, a
   bot's `message.bot` event carries `asks: [{to, section_id}]` for the
   teammates it asked during that turn (from `bot_messages.source_section`),
-  so the room keeps the "Asked <bot>" row after the turn ends.
+  so the room keeps the "Asked <bot>" row after the turn ends. Only the
+  room owner receives `asks`; other members get the reply without it.
+- Only a bot owned by the section owner can ask: a shared bot running in
+  someone else's room gets 4302 and never sees their bots. Approval and
+  question events carry `bot`, so a client honours that bot's Notify me
+  for a thread it does not list.
 - Loops are bounded by the same per-bot daily budget and a hop limit of 8
   messages per originating turn (a user message, a room turn, or a scheduled
   job); every section in the chain shares that count, and each new turn
