@@ -214,10 +214,11 @@ impl Runtime {
         Ok(expired.len())
     }
     fn emit(&self, s: &Live, kind: &str, mut payload: Value) {
-        // A card names its bot, so a client that does not list the section (a private thread)
-        // still honours that bot's Notify me.
+        // A card names its bot and section, so a client that does not list the section (a
+        // private thread) still honours that bot's Notify me and can notify about it.
         if matches!(kind, "approval.request" | "clarify.request") && payload.is_object() {
             payload["bot"] = json!(s.bot);
+            payload["section_id"] = json!(s.stored);
         }
         self.events.emit(&s.owner, Some(&s.id), kind, payload);
     }

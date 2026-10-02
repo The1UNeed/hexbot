@@ -158,6 +158,9 @@ async fn approval_interrupt_hidden_and_frozen_prompt() {
         .unwrap();
     let approval = next_kind(&mut events, "approval.request").await;
     assert_eq!(approval["payload"]["request_id"], "approval-1");
+    // Cards name their bot and section, for clients that do not list it (private threads).
+    assert_eq!(approval["payload"]["bot"], "owl");
+    assert_eq!(approval["payload"]["section_id"], opened["section"]["id"]);
     assert!(
         runtime
             .call(

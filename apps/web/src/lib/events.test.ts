@@ -123,4 +123,18 @@ describe('event routing', () => {
     } as unknown as GatewayEvent)
     expect(notify).not.toHaveBeenCalled()
   })
+
+  it('notifies about a question in a thread nobody has opened, with its section', () => {
+    const notify = vi.fn()
+    setTranscriptEffects({ notify })
+    useBots.setState({ byName: { writer: { display_name: 'Writer', name: 'writer' } as Bot } })
+    useSections.setState({ byId: {}, liveSessionId: {} })
+    useTranscripts.setState({ bySession: {} })
+    routeEvent({
+      payload: { bot: 'writer', question: 'Which tone?', request_id: 'q', section_id: 'th1' },
+      session_id: 'live-unopened',
+      type: 'clarify.request'
+    } as unknown as GatewayEvent)
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ sectionId: 'th1' }))
+  })
 })

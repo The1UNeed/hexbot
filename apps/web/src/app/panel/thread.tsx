@@ -144,7 +144,8 @@ export function ThreadPanel({ thread }: { thread: ThreadRef }): React.JSX.Elemen
 
         if (!stale) {
           setLoaded({ kind: 'ready', messages, sectionId: id })
-          setTail([])
+          // The stored history now holds every finished reply; keep only the one still streaming.
+          setTail(streaming ? [streaming] : [])
         }
       } catch (error) {
         if (!stale) {
@@ -163,6 +164,11 @@ export function ThreadPanel({ thread }: { thread: ThreadRef }): React.JSX.Elemen
   // A reply in progress stays on screen once done, until the history read after it lands.
   useEffect(() => {
     if (streamingId) {
+      // A new reply started: its question is stored by now, so read it in above the reply.
+      if (!wasStreaming.current) {
+        setCompleted(count => count + 1)
+      }
+
       wasStreaming.current = true
       setTail(ids => (ids.includes(streamingId) ? ids : [...ids, streamingId]))
     } else if (wasStreaming.current) {

@@ -206,6 +206,15 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
     return
   }
 
+  // A card from a thread no list names still carries its section, which a notification needs.
+  if (
+    (event.type === 'approval.request' || event.type === 'clarify.request') &&
+    typeof payload.section_id === 'string' &&
+    !transcripts.bySession[sessionId]?.sectionId
+  ) {
+    transcripts.setSectionId(sessionId, payload.section_id)
+  }
+
   switch (event.type) {
     case 'approval.request':
       transcripts.approvalRequest(sessionId, payload as ApprovalRequestPayload, {
