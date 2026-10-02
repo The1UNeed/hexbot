@@ -54,6 +54,25 @@ sudo apt install ./Hexbot-0.1.5-alpha.1-linux-amd64.deb
 
 The deb package depends on `bubblewrap`; with the AppImage, install it yourself (`sudo apt install bubblewrap`). Hexbot uses it to keep shell commands, Python code, and scheduled scripts away from your credentials. Without it, Manual asks before every shell command and code run, Auto sends them to you instead of its approver, scheduled scripts wait, and Settings, Approvals shows a notice. Restart the daemon after installing it. See [Approvals](/docs/approvals/).
 
+### Ubuntu 24.04 and later
+
+Ubuntu 24.04 confines unprivileged user namespaces with AppArmor, and the `bubblewrap` package ships no profile, so a fresh install still has no sandbox: `bwrap --ro-bind / / --unshare-pid --proc /proc -- true` prints `bwrap: setting up uid map: Permission denied`, and Settings, Approvals keeps its notice. Give bubblewrap its own profile; it lets only `bwrap` create user namespaces and leaves the system-wide restriction in place:
+
+```sh
+sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOF'
+abi <abi/4.0>,
+include <tunables/global>
+
+# bubblewrap builds its sandbox in an unprivileged user namespace.
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+}
+EOF
+sudo apparmor_parser -r /etc/apparmor.d/bwrap
+```
+
+Run the `bwrap` command above again; it should print nothing and exit 0. Then restart the daemon. The profile loads again on every boot. Other distributions that restrict user namespaces need the same kind of exception; one with `sysctl kernel.unprivileged_userns_clone=0` needs that setting turned on.
+
 ## Data and updates
 
 Hexbot stores configuration, bots, memory, and its managed runtime in `~/.hexbot`. Back up that directory before moving a daemon to another machine. The client-only package keeps only window state and pairing tokens there.
