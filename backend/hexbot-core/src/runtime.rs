@@ -1759,7 +1759,7 @@ impl Runtime {
             id
         };
         let message = common::id();
-        tx.execute("INSERT INTO bot_messages(id,from_bot,to_bot,section_id,created_at,text) VALUES(?,?,?,?,?,?)",params![message,s.bot,to,stored,common::now(),text])?;
+        tx.execute("INSERT INTO bot_messages(id,from_bot,to_bot,section_id,source_section,created_at,text) VALUES(?,?,?,?,?,?,?)",params![message,s.bot,to,stored,s.stored,common::now(),text])?;
         tx.commit()?;
         Ok((stored, message))
     }

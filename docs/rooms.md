@@ -148,7 +148,10 @@ The native daemon provides `message_bot {to, text, wait: bool}` for bots:
 - Threads are private one-to-one conversations. Section lists leave them
   out unless asked (`include_threads`); the app opens one on demand from the
   sender's "Asking <bot>" step, in a side panel. Dreaming reads them like
-  any other section, so both bots learn from the exchange.
+  any other section, so both bots learn from the exchange. In a room, a
+  bot's `message.bot` event carries `asks: [{to, section_id}]` for the
+  teammates it asked during that turn (from `bot_messages.source_section`),
+  so the room keeps the "Asked <bot>" row after the turn ends.
 - Loops are bounded by the same per-bot daily budget and a hop limit of 8
   messages per originating turn (a user message, a room turn, or a scheduled
   job); every section in the chain shares that count, and each new turn

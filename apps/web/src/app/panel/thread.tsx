@@ -13,6 +13,7 @@ import { sectionsActions, useLiveSessionId } from '../../stores/sections'
 import { useTranscript, useTranscripts } from '../../stores/transcripts'
 import { type ThreadRef, useUi } from '../../stores/ui'
 import { ApprovalCard, bubbleClass, CardRow, Markdown } from '../conversation'
+import { AskingRow } from '../conversation/asking-row'
 import { ClarifyCard } from '../conversation/clarify-card'
 import { MemoryMarks } from '../conversation/memory-marks'
 import { WorkStatus } from '../conversation/work-status'
@@ -66,6 +67,8 @@ function ThreadMessage({ bot, message, name }: { bot?: Bot; message: Message; na
         {reply && (message.toolCalls.length || !message.streaming) ? (
           <WorkStatus message={message} name={name} />
         ) : null}
+        {/* The asked bot may ask a third; its row opens that conversation in turn. */}
+        {reply ? <AskingRow message={message} sender={bot?.name ?? null} /> : null}
         {message.text ? (
           <div className={cn(bubbleClass, 'text-[length:var(--text-secondary)]')}>
             <div className="hex-prose">

@@ -95,6 +95,7 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
         let names: &[&str] = match table.as_str() {
             "bots" => &["auto_description", "auto_description_key"],
             "sections" => &["peer_bot"],
+            "bot_messages" => &["source_section"],
             _ => &[],
         };
         for name in names {

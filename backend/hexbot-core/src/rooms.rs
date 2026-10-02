@@ -1226,14 +1226,18 @@ impl RoomEngine {
                 if answer.is_empty() || answer.eq_ignore_ascii_case("(pass)") {
                     return Ok(None);
                 }
-                self.emit(
-                    owner,
-                    rid,
-                    "message.bot",
-                    "bot",
-                    Some(bot),
-                    json!({"text":answer,"trigger_seq":event["seq"]}),
+                // The teammates this bot asked during the turn stay with its reply, so the room
+                // can open those conversations after the live turn is gone.
+                let asks = rows(
+                    &db::open(&self.home)?,
+                    "SELECT to_bot AS \"to\",section_id FROM bot_messages WHERE source_section=? AND created_at>=(SELECT started_at FROM room_turns WHERE id=?) GROUP BY to_bot ORDER BY MIN(created_at)",
+                    &[&stored, &turn],
                 )?;
+                let mut payload = json!({"text":answer,"trigger_seq":event["seq"]});
+                if !asks.is_empty() {
+                    payload["asks"] = json!(asks);
+                }
+                self.emit(owner, rid, "message.bot", "bot", Some(bot), payload)?;
                 Ok(Some((bot.into(), answer.into())))
             }
             other => {

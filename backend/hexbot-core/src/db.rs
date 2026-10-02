@@ -101,6 +101,7 @@ const COLUMNS: &[(&str, &str, &str)] = &[
     ("bots", "auto_description", "TEXT"),
     ("bots", "auto_description_key", "TEXT"),
     ("sections", "peer_bot", "TEXT"),
+    ("bot_messages", "source_section", "TEXT"),
 ];
 
 /// Open the explicitly selected database without running schema migrations.

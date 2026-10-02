@@ -87,8 +87,11 @@ function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
  * is the bot speaking: the section's bot, or the author of a room turn.
  */
 export function AskingRow({ message, sender }: { message: Message; sender: null | string }) {
-  const list = asks(message)
+  return <AskRows asks={asks(message)} sender={sender} />
+}
 
+/** The rows for asks known some other way, such as a finished room turn's stored asks. */
+export function AskRows({ asks: list, sender }: { asks: Ask[]; sender: null | string }) {
   if (!list.length) {
     return null
   }
