@@ -459,6 +459,11 @@ test('execution refuses a call whose mode or file changed after the gate allowed
   assert.equal(await f.gate('bash', {command:'echo plain'}, 'early'), undefined);
   f.settings.approvalMode = 'manual';
   await assert.rejects(f.tools.bash.execute('early', {command:'echo plain'}, undefined, undefined, f.ctx), /approval mode changed/);
+  // A call checked for one working directory does not run in another.
+  assert.equal(await f.gate('bash', {command:'echo moved'}, 'moved'), undefined);
+  f.settings.cwd = outside;
+  await assert.rejects(f.tools.bash.execute('moved', {command:'echo moved'}, undefined, undefined, f.ctx), /working directory changed/);
+  f.settings.cwd = work;
   // An unchecked call never runs.
   await assert.rejects(f.tools.bash.execute('unknown', {command:'echo plain'}, undefined, undefined, f.ctx), /Try again/);
   // Auto approved a write inside the workspace; a link swapped to point outside is refused.

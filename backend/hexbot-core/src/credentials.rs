@@ -638,7 +638,14 @@ const PROCESS_HEADROOM: usize = 512;
 fn process_limit() -> Option<usize> {
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
+    // Linux charges the limit per thread, macOS per process.
+    let threads: &[&str] = if cfg!(target_os = "linux") {
+        &["-L"]
+    } else {
+        &[]
+    };
     let listed = std::process::Command::new("ps")
+        .args(threads)
         .args(["-U", &uid.to_string(), "-o", "pid="])
         .output()
         .ok()

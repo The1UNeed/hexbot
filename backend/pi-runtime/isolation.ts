@@ -150,7 +150,8 @@ export function bwrapArguments(home: string, outputs: string[] = [], workspace?:
 // most this many more processes than you already run: a fork bomb stops there.
 export const PROCESS_HEADROOM = 512;
 export function processLimit(): number | undefined {
-  const listed = spawnSync('ps', ['-U', String(process.getuid?.() ?? ''), '-o', 'pid='], {encoding: 'utf8', timeout: 5000});
+  // Linux charges the limit per thread, macOS per process.
+  const listed = spawnSync('ps', [...process.platform === 'linux' ? ['-L'] : [], '-U', String(process.getuid?.() ?? ''), '-o', 'pid='], {encoding: 'utf8', timeout: 5000});
   return listed.status === 0 ? listed.stdout.split('\n').filter(Boolean).length + PROCESS_HEADROOM : undefined;
 }
 export function isolatedCommand(command: string, home: string, outputs: string[] = [], workspace?: string[]): string {

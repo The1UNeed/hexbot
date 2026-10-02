@@ -87,13 +87,13 @@ export default function hexbot(pi: any) {
   // What the gate allowed for each call: the mode it decided under, how bash
   // runs, and the file it checked. Pi may gate several calls before running
   // them, so execution refuses a call whose mode or target has changed since.
-  const allowedCalls = new Map<string, {mode: string, level: Level, target?: string}>();
+  const allowedCalls = new Map<string, {mode: string, cwd: string, level: Level, target?: string}>();
   const wrapped = new Set<string>();
   const sessionAllowed = new Set<string>();
   const gate = async (event: any, ctx: any) => {
     let target: string | undefined;
     const denial = await check(event, ctx, path => { target = path; });
-    if (!denial && event.toolCallId && wrapped.has(event.toolName)) allowedCalls.set(event.toolCallId, {mode: live.approvalMode, level: levelFor(event.input), target});
+    if (!denial && event.toolCallId && wrapped.has(event.toolName)) allowedCalls.set(event.toolCallId, {mode: live.approvalMode, cwd: live.cwd ?? config.cwd, level: levelFor(event.input), target});
     return denial;
   };
   const check = async (event: any, ctx: any, checked: (path: string) => void = () => {}) => {
@@ -170,6 +170,7 @@ export default function hexbot(pi: any) {
       allowedCalls.delete(id);
       if (ctx) await refresh(ctx);
       if (!allowed || allowed.mode !== live.approvalMode) throw new Error('The approval mode changed before this ran. Try again.');
+      if (allowed.cwd !== (live.cwd ?? config.cwd)) throw new Error('The working directory changed before this ran. Try again.');
       const cwd = live.cwd ?? config.cwd;
       if (name === 'bash') {
         const level = allowed.level;
