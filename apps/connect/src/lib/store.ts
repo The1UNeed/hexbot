@@ -23,6 +23,8 @@ export interface Store {
   findDaemonByTokenHash(hash: string): Promise<Daemon | null>;
   setDaemonTokenHash(id: string, tokenHash: string): Promise<void>;
   updateDaemonHeartbeat(id: string, at: Date, ingressPort: number): Promise<void>;
+  /** Compare-and-set: true only if the row still pointed at `from`, so two repairs cannot both win. */
+  swapDaemonTunnel(id: string, from: string, to: string): Promise<boolean>;
   renameDaemon(id: string, name: string): Promise<void>;
   revokeDaemon(id: string, at: Date): Promise<void>;
   createClientSession(input: Omit<ClientSession, "id" | "createdAt" | "lastSeenAt" | "revokedAt">): Promise<ClientSession>;
@@ -49,6 +51,7 @@ export class MemoryStore implements Store {
   async findDaemonByTokenHash(hash: string) { return this.daemons.find(x => x.tokenHash === hash) ?? null; }
   async setDaemonTokenHash(id: string, tokenHash: string) { const row = await this.getDaemon(id); if (row) row.tokenHash = tokenHash; }
   async updateDaemonHeartbeat(id: string, at: Date, ingressPort: number) { const row = await this.getDaemon(id); if (row) { row.lastSeenAt = at; row.ingressPort = ingressPort; } }
+  async swapDaemonTunnel(id: string, from: string, to: string) { const row = await this.getDaemon(id); if (!row || row.tunnelId !== from) return false; row.tunnelId = to; return true; }
   async renameDaemon(id: string, name: string) { const row = await this.getDaemon(id); if (row) row.name = name; }
   async revokeDaemon(id: string, at: Date) { const row = await this.getDaemon(id); if (row) row.revokedAt = at; }
   async createClientSession(input: Omit<ClientSession, "id" | "createdAt" | "lastSeenAt" | "revokedAt">) { const row = { ...input, id: randomUUID(), createdAt: new Date(), lastSeenAt: null, revokedAt: null }; this.clientSessions.push(row); return row; }
@@ -83,6 +86,7 @@ export class NeonStore implements Store {
   async findDaemonByTokenHash(h: string) { const rows = await this.sql`SELECT * FROM daemons WHERE token_hash=${h} LIMIT 1`; return rows[0] ? daemonRow(rows[0] as DbRow) : null; }
   async setDaemonTokenHash(id: string, h: string) { await this.sql`UPDATE daemons SET token_hash=${h} WHERE id=${id}`; }
   async updateDaemonHeartbeat(id: string, at: Date, ingressPort: number) { await this.sql`UPDATE daemons SET last_seen_at=${at.toISOString()}, ingress_port=${ingressPort} WHERE id=${id}`; }
+  async swapDaemonTunnel(id: string, from: string, to: string) { const rows = await this.sql`UPDATE daemons SET tunnel_id=${to} WHERE id=${id} AND tunnel_id=${from} RETURNING id`; return rows.length === 1; }
   async renameDaemon(id: string, name: string) { await this.sql`UPDATE daemons SET name=${name} WHERE id=${id}`; }
   async revokeDaemon(id: string, at: Date) { await this.sql`UPDATE daemons SET revoked_at=${at.toISOString()} WHERE id=${id}`; }
   async createClientSession(i: Omit<ClientSession, "id" | "createdAt" | "lastSeenAt" | "revokedAt">) { const rows = await this.sql`INSERT INTO client_sessions (user_id,token_hash,device_name) VALUES (${i.userId},${i.tokenHash},${i.deviceName}) RETURNING *`; return sessionRow(rows[0] as DbRow); }

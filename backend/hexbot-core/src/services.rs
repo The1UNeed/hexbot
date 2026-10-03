@@ -226,6 +226,51 @@ fn forget_later(home: &Path, service: &Arc<Service>, daemon_id: &str) {
         }
     });
 }
+/// A cloudflared that lives shorter than this counts as a failed start.
+const QUICK_EXIT: Duration = Duration::from_secs(30);
+/// This many failed starts in a row mean the tunnel itself may be broken.
+const QUICK_EXITS_BEFORE_REPAIR: u32 = 3;
+/// Repairs are asked for at most this often.
+const REPAIR_INTERVAL: Duration = Duration::from_secs(120);
+/// Ask Connect for a tunnel that works: a fresh token for the existing tunnel, or a
+/// replacement under the same hostname. The new token is saved before it is returned.
+/// `None` when Connect predates repair (404) or refused for now (429): keep retrying as before.
+async fn repair_tunnel(home: &Path, config: &ConnectConfig) -> Result<Option<ConnectConfig>> {
+    let result = daemon_request(
+        home,
+        config,
+        Method::POST,
+        &format!("/api/daemons/{}/tunnel", config.daemon_id),
+        None,
+    )
+    .await;
+    let value = match result {
+        Ok(value) => value,
+        Err(error)
+            if error
+                .data
+                .as_ref()
+                .is_some_and(|data| data["status"] == 404 || data["status"] == 429) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    let token = common::required(&value, "tunnel_token")?.to_owned();
+    let mut updated = ConnectConfig::load(home)?
+        .filter(|current| current.daemon_id == config.daemon_id)
+        .ok_or_else(|| Error::new(5241, "Hex Connect registration changed"))?;
+    updated.tunnel_token = token;
+    if let Some(host) = value["tunnel_hostname"]
+        .as_str()
+        .filter(|host| !host.is_empty() && *host != updated.tunnel_hostname)
+    {
+        apply_public_url(home, Some(host))?;
+        updated.tunnel_hostname = host.to_owned();
+    }
+    updated.save(home)?;
+    Ok(Some(updated))
+}
 /// A Connect call with the daemon token. On `410 daemon_revoked` the registration is dropped.
 async fn daemon_request(
     home: &Path,
@@ -663,10 +708,14 @@ async fn run_tunnel(
     let (stop, mut stopped) = watch::channel(false);
     let mut heartbeat_stop = stopped.clone();
     let tunnel_service = service.clone();
-    let tunnel_config = config.clone();
+    let tunnel_home = home.to_owned();
+    let mut tunnel_config = config.clone();
     let tunnel = tokio::spawn(async move {
         let mut child = child;
         let mut backoff = 1;
+        let mut started = std::time::Instant::now();
+        let mut quick_exits = 0;
+        let mut last_repair: Option<std::time::Instant> = None;
         loop {
             tokio::select! {
                 _ = stopped.changed() => {
@@ -680,6 +729,31 @@ async fn run_tunnel(
                         Ok(status) => format!("cloudflared exited: {status}"),
                         Err(_) => "cloudflared process failed".into(),
                     });
+                    quick_exits = if started.elapsed() < QUICK_EXIT { quick_exits + 1 } else { 0 };
+                }
+            }
+            // cloudflared that cannot even start usually means the tunnel is gone on
+            // Cloudflare's side. Ask Connect to repair it rather than restarting forever.
+            if quick_exits >= QUICK_EXITS_BEFORE_REPAIR
+                && last_repair.is_none_or(|at| at.elapsed() >= REPAIR_INTERVAL)
+            {
+                last_repair = Some(std::time::Instant::now());
+                match repair_tunnel(&tunnel_home, &tunnel_config).await {
+                    Ok(Some(updated)) => {
+                        tunnel_config = updated;
+                        backoff = 1;
+                        quick_exits = 0;
+                    }
+                    Ok(None) => {}
+                    Err(error) if revoked_by_connect(&error) => {
+                        // The registration is being dropped; it stops these workers.
+                        tunnel_service.data.lock().await.running = false;
+                        return;
+                    }
+                    Err(error) => {
+                        tunnel_service.data.lock().await.error =
+                            Some(format!("tunnel repair failed: {}", error.message));
+                    }
                 }
             }
             loop {
@@ -695,6 +769,7 @@ async fn run_tunnel(
                 match restarted {
                     Ok(new_child) => {
                         child = new_child;
+                        started = std::time::Instant::now();
                         tunnel_service.data.lock().await.running = true;
                         break;
                     }

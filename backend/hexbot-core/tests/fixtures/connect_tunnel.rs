@@ -246,6 +246,110 @@ async fn connect_errors_other_than_revoked_keep_the_registration() {
     services::shutdown(home.path()).await.unwrap();
 }
 
+/// Three starts with the registered token, then the repair call, with the stand-in exiting at once.
+#[cfg(unix)]
+async fn failing_tunnel_until_repair(mock: &mut Mock, home: &std::path::Path) -> std::sync::Arc<super::Service> {
+    let binary = stand_in_cloudflared(home, &mock.base, "process.exit(1)");
+    let service = super::service(home).await.unwrap();
+    super::run_tunnel(
+        home,
+        9119,
+        service.clone(),
+        services::ConnectConfig::load(home).unwrap().unwrap(),
+        binary,
+    )
+    .await
+    .unwrap();
+    for _ in 0..3 {
+        let (started, _) = mock.event("/tunnel_started").await;
+        assert_eq!(started["token"], "tunnel-secret");
+    }
+    let (_, authorization) = mock.event("/api/daemons/daemon-1/tunnel").await;
+    assert_eq!(authorization, "Bearer daemon-secret");
+    service
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn failing_cloudflared_repairs_the_tunnel_and_keeps_the_address() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut mock = Mock::new().await;
+    let home = home();
+    mock.persist_registration(home.path());
+    services::apply_public_url(home.path(), Some("kitchen.connect.example")).unwrap();
+    mock.data.overrides.lock().await.insert(
+        "/api/daemons/daemon-1/tunnel".into(),
+        (200, json!({"tunnel_token":"repaired-secret","tunnel_hostname":"kitchen.connect.example","replaced":true})),
+    );
+    failing_tunnel_until_repair(&mut mock, home.path()).await;
+    let (restarted, _) = mock.event("/tunnel_started").await;
+    assert_eq!(restarted["token"], "repaired-secret");
+    let config = services::ConnectConfig::load(home.path()).unwrap().unwrap();
+    assert_eq!(config.tunnel_token, "repaired-secret");
+    assert_eq!(config.tunnel_hostname, "kitchen.connect.example");
+    assert_eq!(config.daemon_token, "daemon-secret");
+    assert_eq!(
+        fs::metadata(home.path().join("connect.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    assert_eq!(
+        common::read_config(home.path()).unwrap()["dashboard"]["public_url"],
+        "https://kitchen.connect.example"
+    );
+    services::shutdown(home.path()).await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn older_connect_without_repair_keeps_the_backoff_and_the_token() {
+    let mut mock = Mock::new().await;
+    let home = home();
+    mock.persist_registration(home.path());
+    mock.data.overrides.lock().await.insert(
+        "/api/daemons/daemon-1/tunnel".into(),
+        (404, json!({"error":"not_found"})),
+    );
+    failing_tunnel_until_repair(&mut mock, home.path()).await;
+    let (restarted, _) = mock.event("/tunnel_started").await;
+    assert_eq!(restarted["token"], "tunnel-secret");
+    assert_eq!(
+        services::ConnectConfig::load(home.path())
+            .unwrap()
+            .unwrap()
+            .tunnel_token,
+        "tunnel-secret"
+    );
+    let state = services::call(home.path(), "local", "hexbot.connect.status", &json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state["registered"], true);
+    services::shutdown(home.path()).await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn revoked_answer_to_repair_drops_the_registration() {
+    let mut mock = Mock::new().await;
+    let home = home();
+    mock.persist_registration(home.path());
+    mock.data.overrides.lock().await.insert(
+        "/api/daemons/daemon-1/tunnel".into(),
+        (410, json!({"error":"daemon_revoked"})),
+    );
+    let service = super::service(home.path()).await.unwrap();
+    let mut changes = service.changed.subscribe();
+    failing_tunnel_until_repair(&mut mock, home.path()).await;
+    wait_for_error(&service, &mut changes, super::REVOKED_REASON).await;
+    assert!(!home.path().join("connect.json").exists());
+    assert!(service.workers.lock().await.is_none());
+    services::shutdown(home.path()).await.unwrap();
+}
+
 #[tokio::test]
 async fn pinned_download_replaces_unversioned_and_tampered_cache() {
     use sha2::{Digest, Sha256};
