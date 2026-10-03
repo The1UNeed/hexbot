@@ -143,27 +143,29 @@ export function RoomEventRow({ event }: { event: RoomEvent }) {
   const asked = event.kind === 'message.bot' ? storedAsks(event.payload.asks) : []
 
   return (
-    <article
-      className={`flex gap-2 py-1 ${mine ? 'flex-row-reverse' : ''}`}
-      data-testid="room-event"
-    >
-      {mine ? null : (
-        <Avatar className="mt-1" image={avatarData(bot)} name={name ?? 'Bot'} size="sm" />
-      )}
-      <div className="flex min-w-0 max-w-[80%] flex-col items-start">
-        {asked.length ? <AskRows asks={asked} sender={event.actor_id ?? null} /> : null}
-        <div className={cn(mine ? userBubbleClass : bubbleClass, 'max-w-full')}>
-          {!mine ? (
-            <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
-              {name}
+    <>
+      <article
+        className={`flex gap-2 py-1 ${mine ? 'flex-row-reverse' : ''}`}
+        data-testid="room-event"
+      >
+        {mine ? null : (
+          <Avatar className="mt-1" image={avatarData(bot)} name={name ?? 'Bot'} size="sm" />
+        )}
+        <div className="flex min-w-0 max-w-[80%] flex-col items-start">
+          <div className={cn(mine ? userBubbleClass : bubbleClass, 'max-w-full')}>
+            {!mine ? (
+              <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
+                {name}
+              </div>
+            ) : null}
+            <div className="hex-prose">
+              <Markdown text={text} />
             </div>
-          ) : null}
-          <div className="hex-prose">
-            <Markdown text={text} />
           </div>
         </div>
-      </div>
-    </article>
+      </article>
+      {asked.length ? <AskRows asks={asked} sender={event.actor_id ?? null} /> : null}
+    </>
   )
 }
 
@@ -175,6 +177,7 @@ function storedAsks(value: unknown): Ask[] {
           ? [
               {
                 sectionId: typeof item.section_id === 'string' ? item.section_id : null,
+                sent: false,
                 status: 'ok' as const,
                 target: item.to
               }
@@ -381,7 +384,6 @@ export function RoomConversation() {
                     ) : (
                       <Thinking name={name} />
                     )}
-                    {message ? <AskingRow message={message} sender={turn.bot} /> : null}
                     {waiting ? (
                       <p
                         className="py-1 text-[length:var(--text-secondary)] text-muted"
@@ -401,6 +403,7 @@ export function RoomConversation() {
                     {message ? <MemoryMarks message={message} /> : null}
                   </div>
                 </article>
+                {message ? <AskingRow message={message} sender={turn.bot} /> : null}
                 {clarifies.map(clarify => (
                   <CardRow bot={bot} key={clarify.requestId}>
                     <ClarifyCard clarify={clarify} />

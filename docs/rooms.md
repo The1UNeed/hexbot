@@ -147,11 +147,13 @@ The native daemon provides `message_bot {to, text, wait: bool}` for bots:
   `[reply from <bot>]` message.
 - Threads are private one-to-one conversations. Section lists leave them
   out unless asked (`include_threads`); the app opens one on demand from the
-  sender's "Asking <bot>" step, in a side panel. Dreaming reads them like
+  row under the sender's reply (the two bots' faces turned toward each other,
+  "<sender> is asking <bot>" with the reply streaming in, then "<bot> helped"),
+  in a side panel. Dreaming reads them like
   any other section, so both bots learn from the exchange. In a room, a
   bot's `message.bot` event carries `asks: [{to, section_id}]` for the
   teammates it asked during that turn (from `bot_messages.source_section`),
-  so the room keeps the "Asked <bot>" row after the turn ends. Only the
+  so the room keeps the "<bot> helped" row after the turn ends. Only the
   room owner receives `asks`; other members get the reply without it.
 - Only a bot owned by the section owner can ask: a shared bot running in
   someone else's room gets 4302 and never sees their bots. Approval and

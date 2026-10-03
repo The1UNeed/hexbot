@@ -557,6 +557,32 @@ body {
 .hex-face .hex-gaze {
   animation: hex-gaze 9s ease-in-out infinite;
 }
+/*
+ * A face turned toward the bot beside it: eyes over, body tilted. A pose
+ * answering a state change, not a loop; units are the face's 100-unit space.
+ */
+.hex-look-right.hex-face .hex-gaze,
+.hex-look-left.hex-face .hex-gaze {
+  animation: none;
+  transition: transform var(--hex-motion-enter) var(--hex-ease-out);
+}
+.hex-look-right.hex-face .hex-gaze {
+  transform: translate(7px, 0.5px);
+}
+.hex-look-left.hex-face .hex-gaze {
+  transform: translate(-7px, 0.5px);
+}
+.hex-lean-right,
+.hex-lean-left {
+  display: inline-flex;
+  transition: transform var(--hex-motion-enter) var(--hex-ease-out);
+}
+.hex-lean-right {
+  transform: rotate(10deg);
+}
+.hex-lean-left {
+  transform: rotate(-10deg);
+}
 /* Eye geometry morphs between moods instead of snapping. */
 .hex-face .hex-eyes ellipse {
   transition:

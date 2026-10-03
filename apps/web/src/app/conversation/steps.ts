@@ -157,6 +157,8 @@ export const ASKING_TOOL = 'message_bot'
 export interface Ask {
   /** The thread section on `target`, from the tool result; null until the ask completed. */
   sectionId: null | string
+  /** The message was sent without waiting for a reply (`wait: false`); nothing came back. */
+  sent: boolean
   status: ToolCallStatus
   /** The target bot's name; null when a room member got the call stripped of its arguments. */
   target: null | string
@@ -200,20 +202,47 @@ export function asks(message: Message): Ask[] {
     const target = askTarget(call)
     const key = target ?? ''
     const previous = byTarget.get(key)
-    const sectionId = string(resultOf(call).section_id) || previous?.sectionId || null
+    const result = resultOf(call)
+    const sectionId = string(result.section_id) || previous?.sectionId || null
 
     const status: ToolCallStatus =
       call.status === 'running' || previous?.status === 'running' ? 'running' : call.status
 
-    byTarget.set(key, { sectionId, status, target })
+    // One row per bot: it "helped" if any ask to it waited for a reply.
+    const sent = result.status === 'sent' && (previous?.sent ?? true)
+
+    byTarget.set(key, { sectionId, sent, status, target })
   }
 
   return [...byTarget.values()]
 }
 
-/** "Asking Writer" while it runs, "Asked Writer" after; "a teammate" when the name is withheld. */
-export const askLabel = (status: ToolCallStatus, name: null | string): string =>
-  `${status === 'running' ? 'Asking' : 'Asked'} ${name ?? 'a teammate'}`
+/**
+ * The ask row's line: "Research is asking Writer" while it runs, "Writer
+ * helped" once the reply is in, "Sent to Writer" when no reply was waited
+ * for. "A teammate" stands in when a room member is not told the name.
+ */
+export function askLabel(
+  ask: Pick<Ask, 'sent' | 'status'>,
+  target: null | string,
+  sender: null | string
+): string {
+  const name = target ?? 'a teammate'
+
+  if (ask.status === 'running') {
+    return sender ? `${sender} is asking ${name}` : `Asking ${name}`
+  }
+
+  if (ask.status === 'error') {
+    return `Asked ${name}`
+  }
+
+  if (ask.sent) {
+    return `Sent to ${name}`
+  }
+
+  return target ? `${target} helped` : 'A teammate helped'
+}
 
 const humanize = (name: string) => name.replace(/[_-]+/g, ' ').trim() || 'tool'
 

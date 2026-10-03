@@ -40,7 +40,12 @@ export function threadErrorText(error: unknown): string {
   return message || 'The conversation could not be opened.'
 }
 
-/** One bubble: the face and name of whichever bot spoke, its work, then its words. */
+/**
+ * One turn of the dialogue. The asker speaks from the left, looking right;
+ * the asked bot answers from the right, looking left, so the two read as
+ * facing each other. The face and name of whichever bot spoke, its work,
+ * then its words.
+ */
 function ThreadMessage({ bot, message, name }: { bot?: Bot; message: Message; name: string }) {
   if (message.role === 'system' || message.role === 'tool') {
     return message.error ? (
@@ -53,32 +58,54 @@ function ThreadMessage({ bot, message, name }: { bot?: Bot; message: Message; na
   const reply = message.role === 'assistant'
 
   return (
-    <article className="flex gap-2 py-1" data-testid={reply ? 'thread-reply' : 'thread-question'}>
-      <Avatar
-        className={cn('mt-1', message.streaming && 'hex-think')}
-        image={avatarSrc(bot?.avatar)}
-        mood={message.streaming ? 'working' : undefined}
-        name={name}
-        size="sm"
-      />
-      <div className="flex min-w-0 flex-1 flex-col items-start">
-        <span className="px-1 text-[length:var(--text-meta)] font-semibold text-muted">{name}</span>
-        {/* The name above already marks who is working; show work only once there is some. */}
-        {reply && (message.toolCalls.length || !message.streaming) ? (
-          <WorkStatus message={message} name={name} />
-        ) : null}
-        {/* The asked bot may ask a third; its row opens that conversation in turn. */}
-        {reply ? <AskingRow message={message} sender={bot?.name ?? null} /> : null}
-        {message.text ? (
-          <div className={cn(bubbleClass, 'text-[length:var(--text-secondary)]')}>
-            <div className="hex-prose">
-              <Markdown text={message.text} />
+    <>
+      <article
+        className={cn('flex gap-2 py-1', reply && 'flex-row-reverse')}
+        data-testid={reply ? 'thread-reply' : 'thread-question'}
+      >
+        <Avatar
+          className={cn(
+            'mt-1',
+            reply ? 'hex-look-left' : 'hex-look-right',
+            message.streaming && 'hex-think'
+          )}
+          image={avatarSrc(bot?.avatar)}
+          mood={message.streaming ? 'working' : undefined}
+          name={name}
+          size="sm"
+        />
+        <div
+          className={cn(
+            'flex min-w-0 flex-1 flex-col',
+            reply ? 'items-end pl-6' : 'items-start pr-6'
+          )}
+        >
+          <span className="px-1 text-[length:var(--text-meta)] font-semibold text-muted">
+            {name}
+          </span>
+          {/* The name above already marks who is working; show work only once there is some. */}
+          {reply && (message.toolCalls.length || !message.streaming) ? (
+            <WorkStatus message={message} name={name} />
+          ) : null}
+          {message.text ? (
+            <div
+              className={cn(
+                bubbleClass,
+                'text-[length:var(--text-secondary)]',
+                reply && 'bg-surface-3'
+              )}
+            >
+              <div className="hex-prose">
+                <Markdown text={message.text} />
+              </div>
             </div>
-          </div>
-        ) : null}
-        {reply ? <MemoryMarks message={message} /> : null}
-      </div>
-    </article>
+          ) : null}
+          {reply ? <MemoryMarks message={message} /> : null}
+        </div>
+      </article>
+      {/* The asked bot may ask a third; its row opens that conversation in turn. */}
+      {reply ? <AskingRow message={message} sender={bot?.name ?? null} /> : null}
+    </>
   )
 }
 
@@ -209,8 +236,18 @@ export function ThreadPanel({ thread }: { thread: ThreadRef }): React.JSX.Elemen
     <div className="flex h-screen min-h-0 flex-col" data-testid="thread-panel">
       <header className="hex-drag flex h-11 shrink-0 items-center gap-2 px-3">
         <span className="flex shrink-0 items-center gap-1">
-          <Avatar image={avatarSrc(sender?.avatar)} name={senderName} size="sm" />
-          <Avatar image={avatarSrc(receiver?.avatar)} name={receiverName} size="sm" />
+          <Avatar
+            className="hex-look-right"
+            image={avatarSrc(sender?.avatar)}
+            name={senderName}
+            size="sm"
+          />
+          <Avatar
+            className="hex-look-left"
+            image={avatarSrc(receiver?.avatar)}
+            name={receiverName}
+            size="sm"
+          />
         </span>
         <h2 className="hex-no-drag min-w-0 flex-1 truncate text-[length:var(--text-secondary)] font-semibold">
           {senderName} and {receiverName}

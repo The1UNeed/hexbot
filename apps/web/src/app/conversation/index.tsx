@@ -370,40 +370,43 @@ export function MessageRow({
 
   // The bot's face beside its column, one size, bobbing while the turn runs. No name: the
   // header already says whose chat this is. The column reads in order: the work that
-  // produced the reply, the bots it asked, the reply, then its actions.
+  // produced the reply, the reply, then its actions. The bots it asked get their own row
+  // under the message, two faces turned toward each other.
   return (
-    <article
-      className={cn('group flex gap-2 py-1', assistant ? 'justify-start' : 'flex-row-reverse')}
-      data-testid={assistant ? 'bot-message' : 'user-message'}
-    >
-      {assistant ? (
-        <Avatar
-          className={cn('mt-1', message.streaming && 'hex-think')}
-          image={avatarData(bot)}
-          mood={message.streaming ? 'working' : undefined}
-          name={name}
-          size="sm"
-        />
-      ) : null}
-      <div
-        className={cn('flex min-w-0 max-w-[80%] flex-col', assistant ? 'items-start' : 'items-end')}
+    <>
+      <article
+        className={cn('group flex gap-2 py-1', assistant ? 'justify-start' : 'flex-row-reverse')}
+        data-testid={assistant ? 'bot-message' : 'user-message'}
       >
-        {assistant ? <WorkStatus message={message} name={name} /> : null}
-        {assistant ? <AskingRow message={message} sender={bot?.name ?? null} /> : null}
-        {hasBody ? (
-          <div className={assistant ? bubbleClass : userBubbleClass}>
-            {message.text ? (
-              <div className="hex-prose">
-                <Markdown text={message.text} />
-              </div>
-            ) : null}
-            <Attachments attachments={message.attachments} onImage={onImage} />
-          </div>
+        {assistant ? (
+          <Avatar
+            className={cn('mt-1', message.streaming && 'hex-think')}
+            image={avatarData(bot)}
+            mood={message.streaming ? 'working' : undefined}
+            name={name}
+            size="sm"
+          />
         ) : null}
-        {assistant ? <MemoryMarks message={message} /> : null}
-        {message.streaming || !hasBody ? null : <BubbleActions actions={actions} />}
-      </div>
-    </article>
+        <div
+          className={cn('flex min-w-0 max-w-[80%] flex-col', assistant ? 'items-start' : 'items-end')}
+        >
+          {assistant ? <WorkStatus message={message} name={name} /> : null}
+          {hasBody ? (
+            <div className={assistant ? bubbleClass : userBubbleClass}>
+              {message.text ? (
+                <div className="hex-prose">
+                  <Markdown text={message.text} />
+                </div>
+              ) : null}
+              <Attachments attachments={message.attachments} onImage={onImage} />
+            </div>
+          ) : null}
+          {assistant ? <MemoryMarks message={message} /> : null}
+          {message.streaming || !hasBody ? null : <BubbleActions actions={actions} />}
+        </div>
+      </article>
+      {assistant ? <AskingRow message={message} sender={bot?.name ?? null} /> : null}
+    </>
   )
 }
 
