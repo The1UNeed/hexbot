@@ -59,7 +59,7 @@ Docs live at [hexbot.app/docs](https://hexbot.app/docs/) and are built from
 ## Develop
 
 Hexbot's daemon is Rust in `backend/hexbot-core/`; agents run on pinned Pi
-0.87.1 through the private extension in `backend/pi-runtime/`. The web bundle,
+1.0.1 through the private extension in `backend/pi-runtime/`. The web bundle,
 Electron app, site, and Connect service live in `apps/`. `backend/python-handoff/` provides the service handoff for
 existing Python installs. Hexbot began as a fork of
 [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research. `AGENTS.md` is the guide for anyone, human or agent, working on the

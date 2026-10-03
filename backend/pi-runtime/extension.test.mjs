@@ -331,6 +331,28 @@ test('Bypass is plain Pi: no prompts, credential checks or sandbox', async t => 
   assert.equal(f.choices.length, 0);
 });
 
+test('failed bash results keep the exit code and add a hint only inside the sandbox', async t => {
+  const f = fixture(t, 'manual', ['terminal']);
+  const input = {command:'echo failed; exit 7'};
+  for (const mode of ['manual', 'smart', 'off']) {
+    f.settings.approvalMode = mode;
+    const result = await f.run('bash', input);
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent.exit_code, 7);
+    assert.equal(result.structuredContent.output.trim(), 'failed');
+    const text = result.content.map(item => item.text).join('\n');
+    assert.match(text, /Command exited with code 7/);
+    if (mode === 'off') assert.doesNotMatch(text, /run it again with full_access/);
+    else assert.match(text, /run it again with full_access/);
+  }
+  f.settings.approvalMode = 'manual';
+  f.ctx.choice = 'once';
+  const result = await f.run('bash', {...input, full_access:true, reason:'Checks an unsandboxed failure.'});
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.exit_code, 7);
+  assert.doesNotMatch(JSON.stringify(result), /run it again with full_access/);
+});
+
 test('the sandbox follows the mode, and an approved full_access command leaves it', {skip: process.platform !== 'darwin'}, async t => {
   const f = fixture(t, 'manual', ['terminal']);
   const work = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-work-'))); t.after(() => rmSync(work, {recursive:true, force:true}));

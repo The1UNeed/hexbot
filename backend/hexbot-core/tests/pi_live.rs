@@ -6,16 +6,16 @@ use hexbot_core::pi::{PiOptions, PiProcess};
 use serde_json::json;
 
 #[tokio::test]
-#[ignore = "requires HEXBOT_TEST_PI pointing to the Pi 0.87.1 executable"]
+#[ignore = "requires HEXBOT_TEST_PI pointing to the Pi 1.0.1 executable"]
 async fn pinned_pi_accepts_commands_in_an_isolated_home() {
     let executable =
-        std::env::var_os("HEXBOT_TEST_PI").expect("set HEXBOT_TEST_PI to the Pi 0.87.1 executable");
+        std::env::var_os("HEXBOT_TEST_PI").expect("set HEXBOT_TEST_PI to the Pi 1.0.1 executable");
     let version = std::process::Command::new(&executable)
         .arg("--version")
         .output()
         .expect("start Pi");
     assert!(version.status.success());
-    assert_eq!(String::from_utf8_lossy(&version.stdout).trim(), "0.87.1");
+    assert_eq!(String::from_utf8_lossy(&version.stdout).trim(), "1.0.1");
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().join("work");
     let agent_home = dir.path().join("agent");

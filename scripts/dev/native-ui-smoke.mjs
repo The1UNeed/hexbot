@@ -26,7 +26,7 @@ const daemonPath = process.env.HEXBOT_SMOKE_DAEMON || path.join(root, 'backend/h
 const piPath = process.env.HEXBOT_TEST_PI || path.join(root, 'backend/pi-runtime/node_modules/.bin/pi')
 const webDist = path.join(root, 'apps/web/dist')
 await Promise.all([access(daemonPath), access(piPath), access(path.join(webDist, 'index.html'))])
-assert.equal((await promisify(execFile)(piPath, ['--version'])).stdout.trim(), '0.87.1')
+assert.equal((await promisify(execFile)(piPath, ['--version'])).stdout.trim(), '1.0.1')
 const home = await mkdtemp(path.join(tmpdir(), 'hexbot-native-ui-'))
 // The daemon refuses a workspace inside its home.
 const workspace = await mkdtemp(path.join(tmpdir(), 'hexbot-native-ui-workspace-'))
