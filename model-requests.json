@@ -38,7 +38,7 @@
     "bot": "You are Research, a Hexbot bot. Use your",
     "last": {
       "role": "tool",
-      "text": "{\"reply\":\"Tighter version:\\n\\n**Your bots now work as a team.** Each one knows what the others are good at and asks the right one for help, privately. Open any exchange to read it.\\n\\nI cut \\\"seamlessly\\\" and the second \\\"now\\\", and led with the benefit.\",\"section_id\":\"2af25c1ef0b44f059f902fad1caf6472\"}"
+      "text": "{\"reply\":\"Tighter version:\\n\\n**Your bots now work as a team.** Each one knows what the others are good at and asks the right one for help, privately. Open any exchange to read it.\\n\\nI cut \\\"seamlessly\\\" and the second \\\"now\\\", and led with the benefit.\",\"section_id\":\"5fb8231c1c29490db215af8b14c7d46f\"}"
     },
     "tools": [
       "hexbot_rename_section",
@@ -79,7 +79,7 @@
     "bot": "You are Research, a Hexbot bot. Use your",
     "last": {
       "role": "tool",
-      "text": "{\"reply\":\"Tighter version:\\n\\n**Your bots now work as a team.** Each one knows what the others are good at and asks the right one for help, privately. Open any exchange to read it.\\n\\nI cut \\\"seamlessly\\\" and the second \\\"now\\\", and led with the benefit.\",\"section_id\":\"2af25c1ef0b44f059f902fad1caf6472\"}"
+      "text": "{\"reply\":\"Tighter version:\\n\\n**Your bots now work as a team.** Each one knows what the others are good at and asks the right one for help, privately. Open any exchange to read it.\\n\\nI cut \\\"seamlessly\\\" and the second \\\"now\\\", and led with the benefit.\",\"section_id\":\"5fb8231c1c29490db215af8b14c7d46f\"}"
     },
     "tools": [
       "hexbot_rename_section",
