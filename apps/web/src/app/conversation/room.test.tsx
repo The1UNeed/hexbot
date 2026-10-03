@@ -12,9 +12,10 @@ import {
   setTranscriptEffects,
   useTranscripts
 } from '../../stores/transcripts'
+import { useUi } from '../../stores/ui'
 import { useUsers } from '../../stores/users'
 
-import { RoomConversation, RoomMentionPopover } from './room'
+import { RoomConversation, RoomEventRow, RoomMentionPopover } from './room'
 
 const navigate = vi.fn()
 
@@ -300,5 +301,35 @@ describe('approvals and questions in a room', () => {
     expect(await screen.findByText('Waiting for Alice')).toBeVisible()
     expect(screen.queryByText('Approval needed')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+  })
+})
+
+describe('room history', () => {
+  it('keeps the teammates a bot asked with its reply, and opens their conversation', () => {
+    useBots.setState({
+      byName: {
+        owl: { avatar: null, display_name: 'Owl', name: 'owl' } as unknown as Bot,
+        writer: { avatar: null, display_name: 'Writer', name: 'writer' } as unknown as Bot
+      }
+    })
+    render(
+      <RoomEventRow
+        event={
+          {
+            actor_id: 'owl',
+            actor_kind: 'bot',
+            kind: 'message.bot',
+            payload: { asks: [{ section_id: 'th1', to: 'writer' }], text: 'Writer helped.' },
+            room_id: 'r1',
+            seq: 3
+          } as never
+        }
+      />
+    )
+    expect(screen.getByText('Writer helped.')).toBeVisible()
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Open the conversation between Owl and Writer' })
+    )
+    expect(useUi.getState().thread).toEqual({ bot: 'writer', peer: 'owl', sectionId: 'th1' })
   })
 })

@@ -272,6 +272,75 @@ async fn engine_fanout_collects_reuses_sessions_and_never_replays() {
     engine.drain("alice", &room).await.unwrap();
     assert_eq!(runner.calls.lock().unwrap()[3].1, calls[0].1);
 }
+/// Owl asks a teammate during its room turn; another section of owl's asks too.
+struct Asker(std::path::PathBuf);
+impl RoomRunner for Asker {
+    fn run<'a>(
+        &'a self,
+        _: &'a str,
+        bot: &'a str,
+        stored: &'a str,
+        _: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
+        Box::pin(async move {
+            if bot != "owl" {
+                return Ok("(pass)".into());
+            }
+            let now = hexbot_core::common::now();
+            db::open(&self.0).unwrap().execute(
+                "INSERT INTO bot_messages(id,from_bot,to_bot,section_id,source_section,created_at,text) VALUES('m1','owl','fox','fox-thread',?1,?2,'Help'),('m2','owl','fox','fox-thread',?1,?2,'More'),('m3','owl','fox','fox-thread','elsewhere',?2,'Other')",
+                rusqlite::params![stored, now],
+            ).unwrap();
+            Ok("Fox helped.".into())
+        })
+    }
+    fn interrupt<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+#[tokio::test]
+async fn a_room_reply_keeps_the_teammates_its_bot_asked() {
+    let h = setup();
+    let room = create(&h);
+    let engine = RoomEngine::with_runner(
+        h.path().into(),
+        Arc::new(Asker(h.path().into())),
+        EventHub::new(),
+    );
+    call(&h, "send", json!({"id":room,"text":"start"}));
+    engine.drain("alice", &room).await.unwrap();
+    let events = call(&h, "log", json!({"id":room}));
+    let reply = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "message.bot")
+        .unwrap()
+        .clone();
+    assert_eq!(reply["payload"]["text"], "Fox helped.");
+    assert_eq!(
+        reply["payload"]["asks"],
+        json!([{"to":"fox","section_id":"fox-thread"}])
+    );
+    // Another person in the room sees the reply, not the owner's private threads.
+    call(&h, "add_member", json!({"id":room,"user":"bob"}));
+    let seen = rooms::call(h.path(), "bob", "hexbot.rooms.log", &json!({"id":room}))
+        .unwrap()
+        .unwrap();
+    let reply = seen["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "message.bot")
+        .unwrap()
+        .clone();
+    assert_eq!(reply["payload"]["text"], "Fox helped.");
+    assert!(reply["payload"].get("asks").is_none());
+}
 #[tokio::test]
 async fn limits_failures_and_pass_are_durable() {
     let h = setup();
@@ -381,7 +450,7 @@ async fn old_rooms_continue_after_more_than_a_thousand_events() {
 fn activity_queries_are_owner_scoped() {
     let h = setup();
     let conn = db::open(h.path()).unwrap();
-    conn.execute_batch("INSERT INTO bot_messages VALUES ('a','owl','fox',NULL,NULL,1,'hello'),('b','private','private',NULL,NULL,2,'secret');").unwrap();
+    conn.execute_batch("INSERT INTO bot_messages(id,from_bot,to_bot,room_id,section_id,created_at,text) VALUES ('a','owl','fox',NULL,NULL,1,'hello'),('b','private','private',NULL,NULL,2,'secret');").unwrap();
     let pairs = rooms::call(h.path(), "alice", "hexbot.activity.pairs", &json!({}))
         .unwrap()
         .unwrap();

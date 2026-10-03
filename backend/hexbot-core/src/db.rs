@@ -98,6 +98,10 @@ const COLUMNS: &[(&str, &str, &str)] = &[
     ("dreams", "memory_before", "TEXT"),
     ("dreams", "memory_after", "TEXT"),
     ("sections", "title_by", "TEXT"),
+    ("bots", "auto_description", "TEXT"),
+    ("bots", "auto_description_key", "TEXT"),
+    ("sections", "peer_bot", "TEXT"),
+    ("bot_messages", "source_section", "TEXT"),
 ];
 
 /// Open the explicitly selected database without running schema migrations.
@@ -155,6 +159,10 @@ pub fn migrate(home: &Path) -> Result<()> {
             ))?;
         }
     }
+    transaction.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_bot_messages_source ON bot_messages(source_section,created_at);",
+    )?;
+    transaction.execute("UPDATE sections SET peer_bot=(SELECT from_bot FROM bot_messages b WHERE b.section_id=sections.id ORDER BY created_at LIMIT 1) WHERE peer_bot IS NULL AND title=('From '||(SELECT from_bot FROM bot_messages b WHERE b.section_id=sections.id ORDER BY created_at LIMIT 1))", [])?;
     fold_core_memory(&transaction, home)?;
     transaction
         .execute_batch("DROP TABLE IF EXISTS core_memory; DROP TABLE IF EXISTS memory_entries;")?;

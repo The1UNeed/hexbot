@@ -60,8 +60,22 @@ pub fn audience(home: &Path, room: &str) -> Result<Vec<String>> {
     .collect())
 }
 
+/// The teammates a bot asked are private threads of the room owner; other members see the reply
+/// without them, as they see live tool calls without their arguments.
+fn for_member(mut event: Value, owner: &str, user: &str) -> Value {
+    if user != owner
+        && let Some(payload) = event["payload"].as_object_mut()
+    {
+        payload.remove("asks");
+    }
+    event
+}
+
 pub fn log(home: &Path, caller: &str, room: &str, after: i64, limit: i64) -> Result<Vec<Value>> {
-    get(home, caller, room, false)?;
+    let owner = get(home, caller, room, false)?["owner_id"]
+        .as_str()
+        .unwrap_or("")
+        .to_owned();
     let mut events = rows(
         &db::open(home)?,
         "SELECT * FROM room_events WHERE room_id=? AND seq>? ORDER BY seq LIMIT ?",
@@ -71,7 +85,10 @@ pub fn log(home: &Path, caller: &str, room: &str, after: i64, limit: i64) -> Res
         e["payload"] = json_field(&e["payload_json"]);
         e.as_object_mut().unwrap().remove("payload_json");
     }
-    Ok(events)
+    Ok(events
+        .into_iter()
+        .map(|e| for_member(e, &owner, caller))
+        .collect())
 }
 
 pub fn append(
@@ -882,12 +899,15 @@ impl RoomEngine {
         payload: Value,
     ) -> Result<Value> {
         let event = append(&self.home, owner, room, kind, actor_kind, actor, payload)?;
-        self.broadcast(
-            owner,
-            room,
-            "hexbot.rooms.event",
-            json!({"room_id":room,"event":event}),
-        );
+        for user in audience(&self.home, room).unwrap_or_else(|_| vec![owner.into()]) {
+            let shown = for_member(event.clone(), owner, &user);
+            self.events.emit(
+                &user,
+                None,
+                "hexbot.rooms.event",
+                json!({"room_id":room,"event":shown}),
+            );
+        }
         Ok(event)
     }
     /// Human members watch the room's bots work live. Bots run as the owner,
@@ -1228,14 +1248,18 @@ impl RoomEngine {
                 if answer.is_empty() || answer.eq_ignore_ascii_case("(pass)") {
                     return Ok(None);
                 }
-                self.emit(
-                    owner,
-                    rid,
-                    "message.bot",
-                    "bot",
-                    Some(bot),
-                    json!({"text":answer,"trigger_seq":event["seq"]}),
+                // The teammates this bot asked during the turn stay with its reply, so the room
+                // can open those conversations after the live turn is gone.
+                let asks = rows(
+                    &db::open(&self.home)?,
+                    "SELECT to_bot AS \"to\",section_id FROM bot_messages WHERE source_section=? AND created_at>=(SELECT started_at FROM room_turns WHERE id=?) GROUP BY to_bot ORDER BY MIN(created_at)",
+                    &[&stored, &turn],
                 )?;
+                let mut payload = json!({"text":answer,"trigger_seq":event["seq"]});
+                if !asks.is_empty() {
+                    payload["asks"] = json!(asks);
+                }
+                self.emit(owner, rid, "message.bot", "bot", Some(bot), payload)?;
                 Ok(Some((bot.into(), answer.into())))
             }
             other => {

@@ -86,6 +86,7 @@ pub struct Runtime {
     weak: Weak<Self>,
     stopping: AtomicBool,
     children: Mutex<HashMap<String, delegation::Child>>,
+    description_refreshes: Mutex<HashMap<String, bool>>,
 }
 impl Runtime {
     pub fn new(home: PathBuf, events: EventHub, pi_executable: PathBuf) -> Result<Arc<Self>> {
@@ -103,6 +104,7 @@ impl Runtime {
             weak: weak.clone(),
             stopping: AtomicBool::new(false),
             children: Mutex::new(HashMap::new()),
+            description_refreshes: Mutex::new(HashMap::new()),
         });
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let weak = Arc::downgrade(&runtime);
@@ -211,7 +213,13 @@ impl Runtime {
         }
         Ok(expired.len())
     }
-    fn emit(&self, s: &Live, kind: &str, payload: Value) {
+    fn emit(&self, s: &Live, kind: &str, mut payload: Value) {
+        // A card names its bot and section, so a client that does not list the section (a
+        // private thread) still honours that bot's Notify me and can notify about it.
+        if matches!(kind, "approval.request" | "clarify.request") && payload.is_object() {
+            payload["bot"] = json!(s.bot);
+            payload["section_id"] = json!(s.stored);
+        }
         self.events.emit(&s.owner, Some(&s.id), kind, payload);
     }
     /// The approval and the question a session waits on, as their events.
@@ -782,6 +790,7 @@ impl Runtime {
             profile.display(),
             cwd.display()
         );
+        let prompt = format!("{}{}", prompt, self.team_block(botrow, owner, bot)?);
         let skills = crate::catalog::enabled_skills(&self.home, bot)?;
         let prompt = format!(
             "{}\n\n# Available skills\n{}",
@@ -1740,31 +1749,75 @@ impl Runtime {
             self.events.emit(owner, None, "warning", json!({"section_id":stored,"message":"A background result could not be delivered", "error":error.message}));
         }
     }
-    fn record_delivery(&self, s: &Live, to: &str, text: &str) -> Result<String> {
-        let title = format!("From {}", s.bot);
+    fn record_delivery(&self, s: &Live, to: &str, text: &str) -> Result<(String, String)> {
         let mut conn = db::open(&self.home)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let stored: Option<String> = tx
-            .query_row(
-                "SELECT id FROM sections WHERE bot=? AND owner_id=? AND title=? AND archived_at IS NULL ORDER BY created_at LIMIT 1",
-                params![to, s.owner, title],
-                |r| r.get(0),
-            )
-            .optional()?;
-
+        let stored: Option<String> = tx.query_row(
+            "SELECT id FROM sections WHERE bot=? AND owner_id=? AND peer_bot=? AND archived_at IS NULL ORDER BY created_at LIMIT 1",
+            params![to, s.owner, s.bot], |r| r.get(0),
+        ).optional()?;
         let stored = if let Some(id) = stored {
             id
         } else {
+            let display: Option<String> = tx.query_row(
+                "SELECT display_name FROM bots WHERE name=?",
+                [&s.bot],
+                |r| r.get(0),
+            )?;
+            let title = format!(
+                "From {}",
+                display
+                    .as_deref()
+                    .filter(|v| !v.trim().is_empty())
+                    .unwrap_or(&s.bot)
+            );
             let id = common::id();
-            tx.execute("INSERT INTO sections(id,bot,owner_id,title,created_at,updated_at) VALUES(?,?,?,?,?,?)",params![id,to,s.owner,title,common::now(),common::now()])?;
+            tx.execute("INSERT INTO sections(id,bot,owner_id,title,peer_bot,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", params![id,to,s.owner,title,s.bot,common::now(),common::now()])?;
             id
         };
-        tx.execute("INSERT INTO bot_messages(id,from_bot,to_bot,section_id,created_at,text) VALUES(?,?,?,?,?,?)",params![common::id(),s.bot,to,stored,common::now(),text])?;
+        let message = common::id();
+        tx.execute("INSERT INTO bot_messages(id,from_bot,to_bot,section_id,source_section,created_at,text) VALUES(?,?,?,?,?,?,?)",params![message,s.bot,to,stored,s.stored,common::now(),text])?;
         tx.commit()?;
-        Ok(stored)
+        Ok((stored, message))
     }
-    async fn deliver_message(&self, s: &Live, to: &str, text: &str) -> Result<String> {
-        common::bot_owner(&self.home, &s.owner, to)?;
+    fn prepare_delivery(
+        &self,
+        s: &Live,
+        to: &str,
+        text: &str,
+    ) -> Result<(String, String, Arc<AtomicUsize>)> {
+        if to == s.bot {
+            return Err(Error::new(4202, "A bot cannot message itself."));
+        }
+        // A shared bot running in someone else's room has no team there: their bots, memory, and
+        // names stay private to them.
+        let sender_owner: Option<String> = db::open(&self.home)?
+            .query_row("SELECT owner_id FROM bots WHERE name=?", [&s.bot], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if sender_owner.as_deref() != Some(s.owner.as_str()) {
+            return Err(Error::new(
+                4302,
+                "Only the user's own bots can ask their other bots for help.",
+            ));
+        }
+        let teammates = common::rows(
+            &db::open(&self.home)?,
+            "SELECT name FROM bots WHERE owner_id=? AND name<>? ORDER BY last_activity_at DESC,name",
+            &[&s.owner, &s.bot],
+        )?;
+        if !teammates.iter().any(|b| b["name"] == to) {
+            let names = teammates
+                .iter()
+                .filter_map(|b| b["name"].as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(Error::new(
+                4205,
+                format!("No bot named {to}. Your teammates: {names}."),
+            ));
+        }
         let hops = s.state.lock().unwrap().hops.clone();
         if hops.fetch_add(1, Ordering::AcqRel) >= MAX_HOPS {
             return Err(Error::new(
@@ -1772,17 +1825,28 @@ impl Runtime {
                 format!("bot message hop limit ({MAX_HOPS}) reached"),
             ));
         }
-        let stored = self.record_delivery(s, to, text)?;
+        let (stored, message) = self.record_delivery(s, to, text)?;
         self.events.emit(
             &s.owner,
             None,
             "hexbot.sections.changed",
             json!({"id":stored}),
         );
+        Ok((stored, message, hops))
+    }
+    async fn deliver_message(
+        &self,
+        s: &Live,
+        to: &str,
+        text: &str,
+        stored: &str,
+        hops: Arc<AtomicUsize>,
+    ) -> Result<String> {
+        common::bot_owner(&self.home, &s.owner, to)?;
         self.run_hidden_deadline(
             &s.owner,
             to,
-            &stored,
+            stored,
             &format!("@{}: {}", s.bot, text),
             HIDDEN_TURN_DEADLINE,
             Some(hops),
@@ -1888,6 +1952,252 @@ impl Runtime {
         let answer = receiver.await.unwrap_or_else(|_| "deny".into());
         s.state.lock().unwrap().pending.remove(&id);
         Ok(answer != "deny")
+    }
+    async fn one_shot(
+        &self,
+        bot: &str,
+        saved: &Value,
+        dir: &Path,
+        system_prompt: &str,
+        message: &Value,
+        timeout: Duration,
+    ) -> Result<(String, bool)> {
+        let profile = self.home.join("profiles").join(bot);
+        let mut options = PiOptions::new(&self.pi_executable, dir, profile.join("pi"));
+        options.args = [
+            "--mode",
+            "rpc",
+            "--no-session",
+            "--no-extensions",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-tools",
+            "--system-prompt",
+            system_prompt,
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let (provider, model) = (saved["provider"].as_str(), saved["model"].as_str());
+        if let Some(provider) = provider {
+            options
+                .args
+                .extend(["--provider".into(), crate::providers::pi_provider(provider)]);
+        }
+        if let Some(model) = model {
+            options.args.extend(["--model".into(), model.into()]);
+        }
+        crate::providers::prepare_pi_for_request(&self.home, bot, &profile.join("pi"), provider)
+            .await?;
+        options.env.extend(
+            std::env::vars()
+                .chain(crate::connectors::credentials(&self.home, bot)?)
+                .filter(|(name, _)| crate::pi::provider_environment(name, provider.unwrap_or(""))),
+        );
+        let (process, mut events) = PiProcess::spawn(options).map_err(pi_error)?;
+        let result = tokio::time::timeout(timeout, async {
+            let response = process
+                .request(
+                    json!({"type":"prompt","message":message.to_string()}),
+                    DEADLINE,
+                )
+                .await
+                .map_err(pi_error)?;
+            if !response.success {
+                return Err(Error::new(
+                    5201,
+                    response
+                        .error
+                        .unwrap_or_else(|| "One-shot prompt failed".into()),
+                ));
+            }
+            let mut result = String::new();
+            let mut failed = false;
+            loop {
+                let event = events.recv().await.map_err(pi_error)?;
+                if event["type"] == "message_end" && event["message"]["role"] == "assistant" {
+                    result = store::text(&event["message"]["content"]);
+                    failed = matches!(
+                        event["message"]["stopReason"].as_str(),
+                        Some("error" | "aborted")
+                    ) || event["message"]["errorMessage"].is_string();
+                }
+                if event["type"] == "agent_settled" {
+                    return Ok((result, failed));
+                }
+            }
+        })
+        .await;
+        let _ = process.shutdown().await;
+        // A failed call reads as a failed result; callers decide what that means.
+        match result {
+            Ok(Ok(text)) => Ok(text),
+            other => {
+                eprintln!("One-shot call failed for {bot}: {other:?}");
+                Ok((String::new(), true))
+            }
+        }
+    }
+    pub fn spawn_description_refresh(&self, bot: &str) {
+        if let (Some(runtime), Ok(handle)) =
+            (self.weak.upgrade(), tokio::runtime::Handle::try_current())
+        {
+            let bot = bot.to_owned();
+            handle.spawn(async move {
+                runtime.refresh_description(&bot).await;
+            });
+        }
+    }
+    /// One refresh per bot at a time. A request while one runs marks it to run
+    /// once more, so a profile changed mid-call still gets described.
+    pub async fn refresh_description(&self, bot: &str) {
+        {
+            let mut running = self.description_refreshes.lock().unwrap();
+            if let Some(again) = running.get_mut(bot) {
+                *again = true;
+                return;
+            }
+            running.insert(bot.to_owned(), false);
+        }
+        loop {
+            if let Err(error) = self.write_description(bot).await {
+                eprintln!("Could not refresh description for {bot}: {}", error.message);
+            }
+            let mut running = self.description_refreshes.lock().unwrap();
+            if running.get(bot) == Some(&true) {
+                running.insert(bot.to_owned(), false);
+            } else {
+                running.remove(bot);
+                return;
+            }
+        }
+    }
+    /// The bot row, soul, and input key behind a hidden description; None when
+    /// the user wrote the description themselves.
+    fn description_inputs(&self, bot: &str) -> Result<Option<(Value, String, String)>> {
+        let row = common::rows(
+            &db::open(&self.home)?,
+            "SELECT * FROM bots WHERE name=?",
+            &[&bot],
+        )?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::new(4205, "bot not found"))?;
+        if row["description"]
+            .as_str()
+            .is_some_and(|v| !v.trim().is_empty())
+        {
+            return Ok(None);
+        }
+        let soul = fs::read_to_string(self.home.join("profiles").join(bot).join("SOUL.md"))
+            .unwrap_or_default();
+        let key = crate::team::description_key(
+            row["display_name"].as_str().unwrap_or(""),
+            row["title"].as_str().unwrap_or(""),
+            &soul,
+        );
+        Ok(Some((row, soul, key)))
+    }
+    async fn write_description(&self, bot: &str) -> Result<()> {
+        let Some((row, soul, key)) = self.description_inputs(bot)? else {
+            return Ok(());
+        };
+        if row["auto_description_key"] == key.as_str() {
+            return Ok(());
+        }
+        let profile = self.home.join("profiles").join(bot);
+        fs::create_dir_all(&profile)?;
+        let mut config = common::read_config(&self.home)?;
+        if let Ok(text) = fs::read_to_string(profile.join("config.yaml")) {
+            let local: Value =
+                serde_yaml::from_str(&text).map_err(|e| Error::new(5200, e.to_string()))?;
+            for (key, value) in local.as_object().into_iter().flatten() {
+                config[key] = value.clone();
+            }
+        }
+        let saved = json!({
+            "provider": config["model"]["provider"],
+            "model": config["model"]
+                .as_str()
+                .map(Value::from)
+                .unwrap_or_else(|| config["model"]["default"].clone())
+        });
+        let message = json!({
+            "name": bot,
+            "display_name": row["display_name"],
+            "title": row["title"],
+            "soul": soul.chars().take(4000).collect::<String>()
+        });
+        let (text, failed) = self
+            .one_shot(
+                bot,
+                &saved,
+                &profile,
+                crate::team::DESCRIPTION_PROMPT,
+                &message,
+                Duration::from_secs(45),
+            )
+            .await?;
+        let text = crate::team::clean(text.trim().trim_matches(['"', '\'', '“', '”', '‘', '’']));
+        if failed || text.is_empty() {
+            return Err(Error::new(5201, "The model wrote no description"));
+        }
+        // The profile may have changed while the model ran; describe only what is current.
+        if self
+            .description_inputs(bot)?
+            .is_some_and(|(_, _, current)| current == key)
+        {
+            db::open(&self.home)?.execute(
+                "UPDATE bots SET auto_description=?,auto_description_key=? WHERE name=?",
+                params![text, key, bot],
+            )?;
+        }
+        Ok(())
+    }
+    fn team_block(&self, row: &Value, owner: &str, bot: &str) -> Result<String> {
+        if row["owner_id"] != owner {
+            return Ok(String::new());
+        }
+        let own = crate::team::description(row);
+        let mut block = format!(
+            "\n\n{}{}",
+            crate::team::HEADER,
+            if own.is_empty() {
+                "no description yet"
+            } else {
+                &own
+            }
+        );
+        if crate::connectors::toolsets(&self.home, bot)?
+            .iter()
+            .any(|v| v == "hexbot")
+        {
+            let teammates = common::rows(
+                &db::open(&self.home)?,
+                "SELECT * FROM bots WHERE owner_id=? AND name<>? ORDER BY last_activity_at DESC,name LIMIT 24",
+                &[&owner, &bot],
+            )?;
+            if !teammates.is_empty() {
+                block.push_str(&format!("\n\n{}", crate::team::REQUEST_GUIDANCE));
+                for teammate in teammates {
+                    let name = teammate["name"].as_str().unwrap_or("");
+                    let display = teammate["display_name"]
+                        .as_str()
+                        .filter(|v| !v.trim().is_empty())
+                        .unwrap_or(name);
+                    let description = crate::team::description(&teammate);
+                    block.push_str(&format!(
+                        "\n- {name} ({display}): {}",
+                        if description.is_empty() {
+                            "no description yet"
+                        } else {
+                            &description
+                        }
+                    ));
+                }
+            }
+        }
+        block.push_str(&format!("\n\n{}", crate::team::REPLY_GUIDANCE));
+        Ok(block)
     }
     fn register_worker_bridge(&self, s: &Arc<Live>) {
         let runtime = self.weak.clone();
@@ -2036,17 +2346,20 @@ impl Runtime {
                 self.require_toolset(s, "hexbot", name)?;
                 let to = required(args, "to")?.to_owned();
                 let text = required(args, "text")?.to_owned();
+                let (stored, message_id, hops) = self.prepare_delivery(s, &to, &text)?;
                 if args["wait"] == false {
                     let runtime = self
                         .weak
                         .upgrade()
                         .ok_or_else(|| Error::new(5201, "daemon is stopping"))?;
                     let source = s.clone();
-                    let message_id = common::id();
+                    let thread = stored.clone();
                     let mut tasks = s.requests.lock().unwrap();
                     while tasks.try_join_next().is_some() {}
                     tasks.spawn(async move {
-                        let result = runtime.deliver_message(&source, &to, &text).await;
+                        let result = runtime
+                            .deliver_message(&source, &to, &text, &thread, hops)
+                            .await;
                         let reply = match result {
                             Ok(reply) => format!("[reply from {to}] {reply}"),
                             Err(error) => format!("[delivery to {to} failed] {}", error.message),
@@ -2055,9 +2368,11 @@ impl Runtime {
                             .return_result(&source.owner, &source.bot, &source.stored, &reply)
                             .await;
                     });
-                    Ok(json!({"status":"sent","message_id":message_id}))
+                    Ok(json!({"status":"sent","message_id":message_id,"section_id":stored}))
                 } else {
-                    Ok(json!({"reply":self.deliver_message(s,&to,&text).await?}))
+                    Ok(
+                        json!({"reply":self.deliver_message(s,&to,&text,&stored,hops).await?,"section_id":stored}),
+                    )
                 }
             }
             "cronjob_manage" => {
@@ -2166,6 +2481,7 @@ impl Runtime {
                     }
                     check_memory_edit(&std::fs::read_to_string(&path).unwrap_or_default(), text)?;
                     common::atomic_write(&path, text.as_bytes())?;
+                    self.spawn_description_refresh(&s.bot);
                     self.events.emit(
                         &bot_owner,
                         None,
@@ -2677,13 +2993,13 @@ fn base_tools() -> Vec<Value> {
         }),
         json!({
             "name": "message_bot",
-            "description": "Send a message to another Hexbot bot. Returns its reply when wait is true.",
+            "description": "Ask another of the user's bots for help, one to one. Pick the bot from your Team list by its description. The exchange is private between you two; the user can open it. With wait true (the default) you get the reply; with wait false you keep working and the reply arrives later.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "to": { "type": "string" },
-                    "text": { "type": "string" },
-                    "wait": { "type": "boolean" }
+                    "to": { "type": "string", "description": "The bot's name from your Team list" },
+                    "text": { "type": "string", "description": "Your message, written the way the user would ask, with the context the bot needs" },
+                    "wait": { "type": "boolean", "description": "Wait for the reply (default true)" }
                 },
                 "required": ["to", "text"]
             }
@@ -2855,6 +3171,7 @@ fn tool_context(name: &str, args: &Value) -> String {
         "cronjob_manage" => "action",
         "execute_code" => "code",
         "delegate_task" => "goal",
+        "message_bot" => "to",
         _ => return String::new(),
     };
     let value = &args[key];

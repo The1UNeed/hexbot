@@ -123,20 +123,48 @@ section today; room sections come with threads later.
 
 The native daemon provides `message_bot {to, text, wait: bool}` for bots:
 
-- Delivery is in-process: resume or create the target bot's section titled
-  `From <sender>` (one per sender), submit the text as a user-role message
-  attributed to the sender bot, and record a `bot_messages` row.
+- Every bot has a description. The user writes `bots.description`; when it
+  is blank the daemon writes `bots.auto_description` with a one-shot call
+  to the bot's own model from the display
+  name, title, and soul, and never returns it to clients. It is rewritten in
+  the background when those inputs change (`auto_description_key` is their
+  hash), after create, update, `profiles.configure`, a `hexbot_soul` write,
+  and once at daemon start.
+- When a section's prompt is built, a bot the section owner owns gets a
+  `# Team` block before its skills: how other bots see it and, when its
+  `hexbot` toolset is on, the owner's other bots (up to 24) with their
+  descriptions. Like the rest of the prompt it is frozen with the section;
+  new teammates and changed descriptions reach new sections only.
+- Delivery is in-process: resume or create the target bot's thread with the
+  sender, a section with `peer_bot` set to the sender (one per pair, titled
+  `From <sender>`), submit the text there as a hidden user-role message
+  `@<sender>: <text>`, and record a `bot_messages` row. The thread exists
+  before the tool returns, and the result carries its `section_id`.
 - `wait: true` blocks the sender's tool call until the target's turn
-  completes (bounded by 10 minutes) and returns the reply text; `wait:
-  false` returns immediately and the reply, when it arrives, is injected
-  into the sender's originating section as a message from the target.
+  completes and returns `{reply, section_id}`; `wait: false` returns
+  `{status: "sent", message_id, section_id}` and the reply, when it
+  arrives, is injected into the sender's originating section as a hidden
+  `[reply from <bot>]` message.
+- Threads are private one-to-one conversations. Section lists leave them
+  out unless asked (`include_threads`); the app opens one on demand from the
+  row under the sender's reply (the two bots' faces turned toward each other,
+  "<sender> is asking <bot>" with the reply streaming in, then "<bot> helped"),
+  in a side panel. Dreaming reads them like
+  any other section, so both bots learn from the exchange. In a room, a
+  bot's `message.bot` event carries `asks: [{to, section_id}]` for the
+  teammates it asked during that turn (from `bot_messages.source_section`),
+  so the room keeps the "<bot> helped" row after the turn ends. Only the
+  room owner receives `asks`; other members get the reply without it.
+- Only a bot owned by the section owner can ask: a shared bot running in
+  someone else's room gets 4302 and never sees their bots. Approval and
+  question events carry `bot`, so a client honours that bot's Notify me
+  for a thread it does not list.
 - Loops are bounded by the same per-bot daily budget and a hop limit of 8
   messages per originating turn (a user message, a room turn, or a scheduled
   job); every section in the chain shares that count, and each new turn
   starts a fresh one.
-- The activity view reads `bot_messages` aggregated per pair
-  (`hexbot.activity.pairs`) and lists conversations per pair
-  (`hexbot.activity.list {from, to}`), each linking to the section.
+- `hexbot.activity.pairs` and `hexbot.activity.list {from, to}` read
+  `bot_messages` per pair, each row linking to its thread section.
 
 ## Client
 

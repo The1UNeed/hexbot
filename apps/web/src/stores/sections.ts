@@ -19,10 +19,17 @@ import {
   sectionsUnarchive
 } from '../lib/api'
 import { KICKOFF_MARKER } from '../lib/bot-kickoff'
-import type { Bot, BotStatus, Section } from '../lib/types'
+import type { Bot, BotStatus, Message, Section } from '../lib/types'
 
 import { draftsActions } from './drafts'
 import { useTranscripts } from './transcripts'
+
+/**
+ * A thread: the private conversation in which `peer_bot` asks `bot` for help.
+ * The daemon leaves threads out of its lists; this guards every other path a
+ * section can arrive by (a bot's recent sections, a changed event, an open).
+ */
+export const isThread = (section: Pick<Section, 'peer_bot'>) => Boolean(section.peer_bot)
 
 export interface SectionsState {
   archive: (id: string) => Promise<void>
@@ -40,6 +47,15 @@ export interface SectionsState {
    */
   markTouched: (id: string, text?: string) => void
   open: (id: string) => Promise<{ liveSessionId: null | string; section: Section }>
+  /**
+   * Open a thread for the side panel: its history with `peer`'s questions as
+   * messages, and its live session registered so events stream in. The
+   * thread itself stays out of the section index.
+   */
+  openThread: (
+    id: string,
+    peer: string
+  ) => Promise<{ liveSessionId: null | string; messages: Message[]; section: Section }>
   refresh: (options?: { bot?: string; include_archived?: boolean }) => Promise<void>
   remove: (id: string, purgeMemory?: boolean) => Promise<void>
   rename: (id: string, title: string) => Promise<void>
@@ -90,6 +106,10 @@ function indexSections(
   const idsByBot: Record<string, string[]> = {}
 
   for (const section of sections) {
+    if (isThread(section)) {
+      continue
+    }
+
     byId[section.id] = withSendingTitle(section, titles)
     idsByBot[section.bot] = [...(idsByBot[section.bot] ?? []), section.id]
   }
@@ -98,6 +118,10 @@ function indexSections(
 }
 
 function mergeSection(state: SectionsState, section: Section): Partial<SectionsState> {
+  if (isThread(section)) {
+    return {}
+  }
+
   const existing = state.idsByBot[section.bot] ?? []
   // Only the list carries the preview; a rename or archive reply must not blank it.
   const preview = section.preview || state.byId[section.id]?.preview || ''
@@ -172,6 +196,26 @@ export const useSections = create<SectionsState>((set, get) => ({
     }
 
     return { liveSessionId: live, section }
+  },
+
+  async openThread(id, peer) {
+    const { messages, pending_clarify, section } = await sectionsOpen(id)
+    const live = section.live_session_id
+
+    if (live) {
+      set(state => ({ liveSessionId: { ...state.liveSessionId, [id]: live } }))
+
+      // The owner answers the receiving bot's questions here: threads have no other view.
+      if (pending_clarify) {
+        useTranscripts.getState().clarifyRequest(live, pending_clarify, { notify: false })
+      }
+    }
+
+    return {
+      liveSessionId: live,
+      messages: messagesFromHistory(messages ?? [], { sender: peer }),
+      section
+    }
   },
 
   markTouched(id, text = '') {

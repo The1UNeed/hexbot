@@ -18,9 +18,11 @@ import { roomFailure, roomStatus, useRooms } from '../../stores/rooms'
 import { useTranscripts } from '../../stores/transcripts'
 import { useUsers } from '../../stores/users'
 
+import { AskingRow, AskRows } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
 import { MemoryMarks } from './memory-marks'
+import type { Ask } from './steps'
 import { WaitingBanner } from './waiting-banner'
 import { WorkStatus } from './work-status'
 
@@ -137,27 +139,52 @@ export function RoomEventRow({ event }: { event: RoomEvent }) {
   // Without user accounts (or before you are known) every message is yours.
   const mine = event.kind === 'message.user' && (!currentId || event.actor_id === currentId)
   const name = member
+  // The teammates this bot asked during its turn, kept with its reply.
+  const asked = event.kind === 'message.bot' ? storedAsks(event.payload.asks) : []
 
   return (
-    <article
-      className={`flex gap-2 py-1 ${mine ? 'flex-row-reverse' : ''}`}
-      data-testid="room-event"
-    >
-      {mine ? null : (
-        <Avatar className="mt-1" image={avatarData(bot)} name={name ?? 'Bot'} size="sm" />
-      )}
-      <div className={cn(mine ? userBubbleClass : bubbleClass, 'max-w-[80%]')}>
-        {!mine ? (
-          <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
-            {name}
+    <>
+      <article
+        className={`flex gap-2 py-1 ${mine ? 'flex-row-reverse' : ''}`}
+        data-testid="room-event"
+      >
+        {mine ? null : (
+          <Avatar className="mt-1" image={avatarData(bot)} name={name ?? 'Bot'} size="sm" />
+        )}
+        <div className="flex min-w-0 max-w-[80%] flex-col items-start">
+          <div className={cn(mine ? userBubbleClass : bubbleClass, 'max-w-full')}>
+            {!mine ? (
+              <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
+                {name}
+              </div>
+            ) : null}
+            <div className="hex-prose">
+              <Markdown text={text} />
+            </div>
           </div>
-        ) : null}
-        <div className="hex-prose">
-          <Markdown text={text} />
         </div>
-      </div>
-    </article>
+      </article>
+      {asked.length ? <AskRows asks={asked} sender={event.actor_id ?? null} /> : null}
+    </>
   )
+}
+
+/** A finished turn's asks from its `message.bot` payload: `[{to, section_id}]`. */
+function storedAsks(value: unknown): Ask[] {
+  return Array.isArray(value)
+    ? value.flatMap(item =>
+        item && typeof item.to === 'string'
+          ? [
+              {
+                sectionId: typeof item.section_id === 'string' ? item.section_id : null,
+                sent: false,
+                status: 'ok' as const,
+                target: item.to
+              }
+            ]
+          : []
+      )
+    : []
 }
 
 /** The bot behind the latest "waiting on a human" event, for the banner. */
@@ -376,6 +403,7 @@ export function RoomConversation() {
                     {message ? <MemoryMarks message={message} /> : null}
                   </div>
                 </article>
+                {message ? <AskingRow message={message} sender={turn.bot} /> : null}
                 {clarifies.map(clarify => (
                   <CardRow bot={bot} key={clarify.requestId}>
                     <ClarifyCard clarify={clarify} />

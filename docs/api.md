@@ -134,14 +134,19 @@ inside the Hexbot home, symlinks included.
 
 Section shape: `{id, bot, title, title_by: "bot" | null, created_at,
 updated_at, archived_at | null, done_at | null, preview, message_count,
-live_session_id | null}`
+live_session_id | null, peer_bot | null}`
+
+`peer_bot` is set on a thread: the private conversation in which `peer_bot`
+asked `bot` for help through `message_bot`.
 
 `title_by` is `"bot"` when the daemon named the section, either from the
 first prompt or through the bot's `hexbot_rename_section` tool; a user rename
 clears it. `preview` is the first user message, also returned by `open`. The
 roster shows only the title.
 
-- `hexbot.sections.list {bot?, include_archived?}` → `{sections: [Section]}`.
+- `hexbot.sections.list {bot?, include_archived?, include_threads?}` →
+  `{sections: [Section]}`. Threads are left out unless `include_threads` is
+  true; so are the `sections_total` and `sections_recent` of a bot.
   A section still called `New section` takes its title from the first prompt
   as soon as `prompt.submit` accepts it, before the bot replies. The
   `General` section created with a bot, and any name the user or bot set, are
@@ -151,6 +156,8 @@ roster shows only the title.
   stored id). `title` is passed to the core only when given; an untitled
   core session is what its auto-titler names from the first prompt, and the
   row shows `New section` until then.
+- `hexbot.sections.thread {bot, peer}` → `{section: Section | null}`: the
+  caller's thread on `bot` whose sender is `peer`. It never creates one.
 - `hexbot.sections.open {id}` → `{section: Section, messages: [Message],
   pending_clarify?}` (resumes the stored session on the bot's profile;
   idempotent if live). If the bot is waiting on an approval, the daemon
@@ -258,10 +265,12 @@ rooms and sections stay in the present tense until the tool completes.
 - `hexbot.activity.list {from?, to?, limit?}` → `{messages: [BotMessage]}`
 
 The `message_bot {to, text, wait}` tool delivers into the target bot's
-`From <sender>` section. With `wait: false`, a background watcher submits the
-eventual reply to the sender section as hidden input prefixed
-`[reply from <bot>]`. This is the closest supported core mechanism to a
-hidden note and preserves it in the section context.
+thread with the sender: a section with `peer_bot` set to the sender. With
+`wait: true` the result is `{reply, section_id}`; with `wait: false` it is
+`{status: "sent", message_id, section_id}`, and a background watcher submits
+the eventual reply to the sender section as hidden input prefixed
+`[reply from <bot>]`. `to` naming the sender itself answers 4202; a bot the
+section owner does not own answers 4205 with the names of their other bots.
 
 The `hexbot_soul {action: read | write, text?}` tool lets a bot read or
 replace its own `SOUL.md` (capped at 4000 characters). It sits in its own

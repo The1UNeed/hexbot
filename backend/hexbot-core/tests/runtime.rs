@@ -158,6 +158,9 @@ async fn approval_interrupt_hidden_and_frozen_prompt() {
         .unwrap();
     let approval = next_kind(&mut events, "approval.request").await;
     assert_eq!(approval["payload"]["request_id"], "approval-1");
+    // Cards name their bot and section, for clients that do not list it (private threads).
+    assert_eq!(approval["payload"]["bot"], "owl");
+    assert_eq!(approval["payload"]["section_id"], opened["section"]["id"]);
     assert!(
         runtime
             .call(
@@ -1080,4 +1083,170 @@ async fn deleting_section_removes_delegated_transcripts() {
         !dir.exists(),
         "Deleting a section retained its delegated transcript"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
+async fn actual_pi_generates_descriptions_and_messages_a_private_teammate() {
+    use axum::{Json, Router, extract::State, routing::post};
+    use std::sync::{Arc, Mutex};
+    async fn complete(
+        State(requests): State<Arc<Mutex<Vec<Value>>>>,
+        Json(body): Json<Value>,
+    ) -> ([(&'static str, &'static str); 1], String) {
+        let messages = body["messages"].as_array().unwrap();
+        let description = messages.iter().any(|m| {
+            m.to_string()
+                .contains(hexbot_core::team::DESCRIPTION_PROMPT)
+        });
+        let receiver = messages
+            .iter()
+            .any(|m| m["role"] == "user" && m.to_string().contains("@owl:"));
+        let has_tool = messages.iter().any(|m| m["role"] == "tool");
+        let text = if description {
+            Some("Cat reviews code and checks plans.")
+        } else if receiver {
+            Some("Add a rollback to the plan.")
+        } else if has_tool {
+            Some("Cat helped review the plan. Add a rollback.")
+        } else {
+            None
+        };
+        let delta = if let Some(text) = text {
+            json!({"role":"assistant","content":text})
+        } else {
+            json!({"role":"assistant","tool_calls":[{"index":0,"id":"team-1","type":"function","function":{"name":"message_bot","arguments":"{\"to\":\"cat\",\"text\":\"Review the plan\"}"}}]})
+        };
+        requests.lock().unwrap().push(body);
+        let data = json!({"id":"team-test","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":delta,"finish_reason":null}]});
+        let end = json!({"id":"team-test","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":if text.is_some(){"stop"}else{"tool_calls"}}],"usage":{"prompt_tokens":30,"completion_tokens":10,"total_tokens":40}});
+        (
+            [("content-type", "text/event-stream")],
+            format!("data: {data}\n\ndata: {end}\n\ndata: [DONE]\n\n"),
+        )
+    }
+    let requests = Arc::new(Mutex::new(vec![]));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route("/v1/chat/completions", post(complete))
+        .with_state(requests.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let home = setup();
+    let h = home.path();
+    db::open(h).unwrap().execute_batch("UPDATE bots SET description='Owl implements plans'; INSERT INTO bots(name,owner_id,display_name,title) VALUES('cat','alice','Cat','Reviewer');").unwrap();
+    fs::create_dir_all(h.join("profiles/cat")).unwrap();
+    for (bot, tools) in [("owl", "hexbot"), ("cat", "")] {
+        fs::write(h.join("profiles").join(bot).join("config.yaml"), format!("model:\n  provider: lmstudio\n  default: test-model\n  api_key: test-key\n  base_url: http://{address}/v1\ntools:\n  enabled_toolsets: [{tools}]\n")).unwrap();
+    }
+    let runtime = Runtime::new(
+        h.into(),
+        EventHub::new(),
+        PathBuf::from(std::env::var_os("HEXBOT_TEST_PI").unwrap()),
+    )
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(20), runtime.refresh_description("cat"))
+        .await
+        .unwrap();
+    assert_eq!(
+        db::open(h)
+            .unwrap()
+            .query_row(
+                "SELECT auto_description FROM bots WHERE name='cat'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        "Cat reviews code and checks plans."
+    );
+    let reply = tokio::time::timeout(
+        Duration::from_secs(30),
+        runtime.run_hidden("alice", "owl", "section-a", "Ask cat to review the plan."),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(reply, "Cat helped review the plan. Add a rollback.");
+    let thread = hexbot_core::catalog::call(
+        h,
+        "alice",
+        "hexbot.sections.thread",
+        &json!({"bot":"cat","peer":"owl"}),
+    )
+    .unwrap()
+    .unwrap();
+    let id = thread["section"]["id"].as_str().unwrap();
+    let rows = runtime_store::history(h, "section-a").unwrap();
+    let tool = rows.iter().find(|m| m["role"] == "tool").unwrap();
+    assert!(tool["text"].as_str().unwrap().contains(id));
+    assert!(tool["text"].as_str().unwrap().contains("section_id"));
+    let opened = runtime
+        .call("alice", "hexbot.sections.open", &json!({"id":id}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(opened["messages"][0]["text"], "@owl: Review the plan");
+    assert_eq!(opened["messages"][0]["display_kind"], "hidden");
+    assert!(
+        hexbot_core::dreaming::build_digest(h, "owl", 0., None)
+            .unwrap()
+            .to_string()
+            .contains("tool: ")
+    );
+    assert!(
+        hexbot_core::dreaming::build_digest(h, "cat", 0., None)
+            .unwrap()
+            .to_string()
+            .contains("@owl: Review the plan")
+    );
+    {
+        let requests = requests.lock().unwrap();
+        assert!(requests[0]["tools"].as_array().is_none_or(Vec::is_empty));
+        assert!(
+            requests[1]["messages"]
+                .to_string()
+                .contains("Cat reviews code and checks plans.")
+        );
+    }
+    runtime.shutdown().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn deleting_a_bot_stops_the_threads_where_it_asked_others() {
+    let home = setup();
+    let h = home.path();
+    db::open(h).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('cat','alice'); INSERT INTO sections(id,bot,owner_id,title,peer_bot,created_at,updated_at) VALUES('asked','cat','alice','From Owl','owl',0,0);").unwrap();
+    fs::create_dir_all(h.join("profiles/cat")).unwrap();
+    fs::write(
+        h.join("profiles/cat/config.yaml"),
+        "model:\n  provider: openai\n  default: test-model\ntools:\n  enabled_toolsets: []\n",
+    )
+    .unwrap();
+    let app =
+        hexbot_core::server::App::new(h.into(), "127.0.0.1:0".parse().unwrap(), fake_pi(h), None)
+            .unwrap();
+    // Cat is still answering Owl, which asked without waiting.
+    app.runtime
+        .ensure_hidden("alice", "cat", "asked")
+        .await
+        .unwrap();
+    app.call("alice", "hexbot.bots.delete", &json!({"name":"owl"}))
+        .await
+        .unwrap();
+    let active = app
+        .call("alice", "session.active_list", &json!({}))
+        .await
+        .unwrap();
+    assert!(active["sessions"].as_array().unwrap().is_empty());
+    let archived: Option<f64> = db::open(h)
+        .unwrap()
+        .query_row(
+            "SELECT archived_at FROM sections WHERE id='asked'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(archived.is_some());
+    app.shutdown().await;
 }

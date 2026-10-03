@@ -575,3 +575,129 @@ fn deleting_a_bot_removes_its_scheduled_jobs() {
     assert_eq!(count("SELECT COUNT(*) FROM native_job_imports"), 0);
     assert_eq!(count("SELECT COUNT(*) FROM native_jobs"), 1);
 }
+
+#[test]
+fn deleting_a_bot_closes_the_threads_where_it_asked_others() {
+    let home = setup();
+    let h = home.path();
+    create(h);
+    call(
+        h,
+        "alice",
+        "hexbot.bots.create",
+        json!({"name":"writer","model":"model-a","provider":"openai"}),
+    );
+    db::open(h).unwrap().execute_batch("INSERT INTO sections(id,bot,owner_id,title,peer_bot,created_at) VALUES('asked','writer','alice','From Research Owl','research-owl',1);").unwrap();
+    call(
+        h,
+        "alice",
+        "hexbot.bots.delete",
+        json!({"name":"research-owl"}),
+    );
+    // A new bot with the same name must not inherit the old conversation.
+    assert!(
+        call(
+            h,
+            "alice",
+            "hexbot.sections.thread",
+            json!({"bot":"writer","peer":"research-owl"})
+        )["section"]
+            .is_null()
+    );
+    assert!(!catalog::section(h, "alice", "asked").unwrap()["archived_at"].is_null());
+}
+
+#[test]
+fn threads_are_hidden_from_lists_and_counts_but_readable_by_the_owner() {
+    let home = setup();
+    let h = home.path();
+    create(h);
+    db::open(h).unwrap().execute_batch("INSERT INTO sections(id,bot,owner_id,title,peer_bot,created_at) VALUES('thread','research-owl','alice','From Cat','cat',1),('archived-thread','research-owl','alice','From Dog','dog',2); UPDATE sections SET archived_at=3 WHERE id='archived-thread';").unwrap();
+    let list = call(
+        h,
+        "alice",
+        "hexbot.sections.list",
+        json!({"bot":"research-owl"}),
+    );
+    assert_eq!(list["sections"].as_array().unwrap().len(), 1);
+    assert!(list["sections"][0]["peer_bot"].is_null());
+    let list = call(
+        h,
+        "alice",
+        "hexbot.sections.list",
+        json!({"bot":"research-owl","include_threads":true}),
+    );
+    assert_eq!(list["sections"].as_array().unwrap().len(), 2);
+    let bot = call(
+        h,
+        "alice",
+        "hexbot.bots.get",
+        json!({"name":"research-owl"}),
+    );
+    assert_eq!(bot["bot"]["sections_total"], 1);
+    assert_eq!(bot["bot"]["sections_recent"].as_array().unwrap().len(), 1);
+    let thread = call(
+        h,
+        "alice",
+        "hexbot.sections.thread",
+        json!({"bot":"research-owl","peer":"cat"}),
+    );
+    assert_eq!(thread["section"]["id"], "thread");
+    assert_eq!(thread["section"]["peer_bot"], "cat");
+    assert!(
+        call(
+            h,
+            "alice",
+            "hexbot.sections.thread",
+            json!({"bot":"research-owl","peer":"dog"})
+        )["section"]
+            .is_null()
+    );
+    assert!(
+        call(
+            h,
+            "alice",
+            "hexbot.sections.thread",
+            json!({"bot":"research-owl","peer":"missing"})
+        )["section"]
+            .is_null()
+    );
+    let error = catalog::call(
+        h,
+        "bob",
+        "hexbot.sections.thread",
+        &json!({"bot":"research-owl","peer":"cat"}),
+    )
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(error.code, 4302);
+    assert!(catalog::section(h, "bob", "thread").is_err());
+    assert_eq!(
+        catalog::section(h, "alice", "thread").unwrap()["peer_bot"],
+        "cat"
+    );
+    runtime_store::append(
+        h,
+        "thread",
+        json!({"role":"user","text":"@cat: Help","display_kind":"hidden"}),
+    )
+    .unwrap();
+    call(
+        h,
+        "alice",
+        "hexbot.bots.delete",
+        json!({"name":"research-owl"}),
+    );
+    assert!(runtime_store::history(h, "thread").unwrap().is_empty());
+    assert_eq!(
+        db::open(h)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sections WHERE bot='research-owl'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+}

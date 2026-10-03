@@ -257,6 +257,10 @@ export function IdentityFields({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           placeholder="What this bot is for"
           value={bot.description}
         />
+        <span className="mt-1.5 block text-[length:var(--text-meta)] text-muted">
+          Other bots read this to decide when to ask {bot.display_name} for help. Leave it blank and
+          Hexbot writes one for them.
+        </span>
       </label>
     </div>
   )

@@ -80,6 +80,26 @@ impl App {
         db::migrate(&home)?;
         let events = EventHub::new();
         let runtime = Runtime::new(home.clone(), events.clone(), pi)?;
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let runtime = runtime.clone();
+            let home = home.clone();
+            handle.spawn(async move {
+                match db::open(&home).and_then(|conn| {
+                    common::rows(&conn, "SELECT name FROM bots ORDER BY name", &[])
+                }) {
+                    Ok(bots) => {
+                        for bot in bots {
+                            if let Some(name) = bot["name"].as_str() {
+                                runtime.refresh_description(name).await;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("Could not refresh bot descriptions: {}", error.message)
+                    }
+                }
+            });
+        }
         let rooms = Arc::new(RoomEngine::new(
             home.clone(),
             runtime.clone(),
@@ -197,6 +217,18 @@ impl App {
                         common::required(&session, "owner")?,
                         common::required(&session, "stored_id")?,
                     )
+                    .await?;
+            }
+            // Threads where this bot asked others are archived below; stop any still answering
+            // or waiting on the owner, since their panel can no longer be opened.
+            let threads = common::rows(
+                &db::open(&self.home)?,
+                "SELECT id FROM sections WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL",
+                &[&bot, &owner],
+            )?;
+            for thread in threads {
+                self.runtime
+                    .close_stored(owner, common::required(&thread, "id")?)
                     .await?;
             }
         }
@@ -322,6 +354,15 @@ impl App {
                 } else if let Some(result) = auth::call(&self.home, owner, method, p) {
                     result
                 } else if let Some(result) = catalog::call(&self.home, owner, method, p) {
+                    if let Ok(value) = &result
+                        && matches!(
+                            method,
+                            "hexbot.bots.create" | "hexbot.bots.update" | "profiles.configure"
+                        )
+                        && let Some(name) = value["bot"]["name"].as_str().or(value["name"].as_str())
+                    {
+                        self.runtime.spawn_description_refresh(name);
+                    }
                     result
                 } else if let Some(result) = settings::call(&self.home, owner, method, p) {
                     result

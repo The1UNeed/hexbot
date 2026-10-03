@@ -9,10 +9,12 @@ vi.mock('@tanstack/react-router', () => ({
 vi.mock('../stores/ui', () => ({
   useUi: (selector: (state: object) => unknown) =>
     selector({
+      closeThread: vi.fn(),
       rightPanelOpen: true,
       toggleRightPanel: vi.fn(),
       setSidebarWidth: vi.fn(),
-      sidebarWidth: 280
+      sidebarWidth: 280,
+      thread: null
     })
 }))
 
