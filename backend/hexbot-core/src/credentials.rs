@@ -76,7 +76,9 @@ fn home_credential_name(home: &Path, path: &Path) -> bool {
 }
 pub fn credential_name(home: &Path, path: &Path) -> bool {
     if std::env::var_os("HOME").is_some_and(|user| {
-        user_credential_name(Path::new(&user), path) || ssh_credential_name(Path::new(&user), path)
+        user_credential_name(Path::new(&user), path)
+            || ssh_credential_name(Path::new(&user), path)
+            || store_credential_name(path)
     }) {
         return true;
     }
@@ -87,6 +89,17 @@ fn user_credential_name(user: &Path, path: &Path) -> bool {
         let secret = user.join(local);
         under(path, &secret) || std::fs::canonicalize(secret).is_ok_and(|p| under(path, &p))
     })
+}
+/// Credential stores such as ~/.aws and ~/.netrc are private to reads too.
+fn store_credential_name(path: &Path) -> bool {
+    policy()
+        .write
+        .deny
+        .iter()
+        .filter_map(|entry| policy_root(entry))
+        .any(|store| {
+            under(path, &store) || std::fs::canonicalize(&store).is_ok_and(|p| under(path, &p))
+        })
 }
 fn ssh_credential_name(user: &Path, path: &Path) -> bool {
     let ssh = user.join(".ssh");
@@ -109,8 +122,8 @@ fn entries(dir: &Path) -> impl Iterator<Item = std::fs::DirEntry> {
 pub(crate) fn private_key(name: &str) -> bool {
     !patterns().2.is_match(name)
 }
-/// Host paths the file tools treat specially: `Deny` is never written by a tool in
-/// any approval mode; `Ask` needs approval in Manual and Auto.
+/// Host paths the file tools treat specially: `Deny` is never written by a tool
+/// outside Bypass; `Ask` needs approval in Manual and Auto.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteTier {
     Deny,
@@ -270,7 +283,7 @@ pub fn warn_unavailable_isolation() {
     static WARN: std::sync::Once = std::sync::Once::new();
     WARN.call_once(|| {
         eprintln!(
-            "Hexbot has no OS sandbox on this system (bubblewrap is missing or cannot start). Shell commands and scripts can read any file you can. Manual asks before every shell command, Auto never decides alone, and scheduled scripts run only in Off. Install bubblewrap and restart the daemon to restore isolation."
+            "Hexbot has no OS sandbox on this system (bubblewrap is missing or cannot start). Shell commands and scripts can read any file you can. Manual and Auto ask before every shell command and code run, and scheduled scripts run only in Bypass. Install bubblewrap and restart the daemon to restore isolation."
         )
     });
 }
@@ -281,7 +294,7 @@ pub fn require_isolation(mode: &str) -> Result<()> {
     }
     Err(Error::new(
         4302,
-        "No OS sandbox is available, so scheduled scripts do not run in Manual or Auto approval mode. Install bubblewrap and restart the daemon, or set approval mode to Off.",
+        "No OS sandbox is available, so scheduled scripts do not run in Manual or Auto approval mode. Install bubblewrap and restart the daemon, or set approval mode to Bypass.",
     ))
 }
 fn quoted(path: impl AsRef<str>) -> String {
@@ -316,6 +329,49 @@ struct Layout {
     paths: Vec<PathBuf>,
     writable: Vec<PathBuf>,
     denied: Vec<PathBuf>,
+    confine: Option<Confinement>,
+}
+/// Codex's workspace sandbox for a section's code in Manual and Auto: no
+/// network, no host Unix sockets, no signals outside it, writes only inside the
+/// workspace (none in Manual) and to a few device files, and shell profiles
+/// and login items read-only even inside it. On Linux /run and /tmp are
+/// private. Matches isolation.ts.
+const DEVICES: [&str; 5] = [
+    "/dev/null",
+    "/dev/zero",
+    "/dev/stdout",
+    "/dev/stderr",
+    "/dev/dtracehelper",
+];
+struct Confinement {
+    writable: Vec<PathBuf>,
+    config: Vec<PathBuf>,
+}
+fn confine(workspace: &[PathBuf]) -> Result<Confinement> {
+    let mut writable: Vec<PathBuf> = vec![];
+    for path in workspace
+        .iter()
+        .filter_map(|p| std::fs::canonicalize(p).ok())
+    {
+        if !writable.contains(&path) {
+            writable.push(path);
+        }
+    }
+    let mut config: Vec<PathBuf> = vec![];
+    for root in policy()
+        .write
+        .ask
+        .iter()
+        .filter_map(|entry| policy_root(entry))
+    {
+        let real = real_root(&root)?;
+        for path in [root, real] {
+            if !config.contains(&path) {
+                config.push(path);
+            }
+        }
+    }
+    Ok(Confinement { writable, config })
 }
 fn real_root(path: &Path) -> std::io::Result<PathBuf> {
     match std::fs::canonicalize(path) {
@@ -370,7 +426,7 @@ fn store_ancestors(denied: &[PathBuf]) -> Vec<PathBuf> {
     }
     ancestors
 }
-fn layout(home: &Path, writable: &[PathBuf]) -> Result<Layout> {
+fn layout(home: &Path, writable: &[PathBuf], workspace: Option<&[PathBuf]>) -> Result<Layout> {
     let mut roots = vec![home.to_owned(), std::fs::canonicalize(home)?];
     roots.dedup();
     let writable = writable
@@ -383,6 +439,7 @@ fn layout(home: &Path, writable: &[PathBuf]) -> Result<Layout> {
         paths: secret_paths(home),
         writable,
         denied: denied_writes()?,
+        confine: workspace.map(confine).transpose()?,
     })
 }
 fn sandbox_profile(layout: &Layout) -> String {
@@ -459,33 +516,107 @@ fn sandbox_profile(layout: &Layout) -> String {
     } else {
         format!("(deny file-write-unlink {ancestors})")
     };
+    let confine = layout.confine.as_ref().map_or_else(String::new, |confine| {
+        let inside = DEVICES
+            .iter()
+            .map(|p| format!("(literal {})", quoted(p)))
+            .chain(
+                std::iter::once(Path::new("/dev/fd"))
+                    .chain(confine.writable.iter().map(PathBuf::as_path))
+                    .map(|p| format!("(subpath {})", quoted(p.to_string_lossy()))),
+            )
+            .collect::<Vec<_>>()
+            .join(" ");
+        let config = confine
+            .config
+            .iter()
+            .map(|p| {
+                let path = quoted(p.to_string_lossy());
+                format!("(literal {path}) (subpath {path})")
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            "(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-read* {stores})(deny file-write* (require-not (require-any {inside})))(deny file-write* {config})"
+        )
+    });
     format!(
-        "(version 1)(allow default)(deny process-exec (literal \"/usr/bin/open\") (literal \"/bin/launchctl\") (literal \"/usr/bin/osascript\"))(deny file-write* (require-all (require-any {inside_home}) {except_writable}))(deny file-write* {stores}){ancestors}(deny file-read* file-write* {})",
+        "(version 1)(allow default)(deny process-exec (literal \"/usr/bin/open\") (literal \"/bin/launchctl\") (literal \"/usr/bin/osascript\"))(deny file-write* (require-all (require-any {inside_home}) {except_writable}))(deny file-write* {stores}){ancestors}{confine}(deny file-read* file-write* {})",
         filters.join(" ")
     )
 }
 fn bwrap_arguments(layout: &Layout) -> Vec<OsString> {
-    let mut args: Vec<OsString> = [
-        "--die-with-parent",
-        "--unshare-pid",
-        "--bind",
-        "/",
-        "/",
-        "--proc",
-        "/proc",
-    ]
-    .into_iter()
-    .map(Into::into)
-    .collect();
+    let base: &[&str] = if layout.confine.is_some() {
+        &[
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-pid",
+            "--unshare-net",
+            "--ro-bind",
+            "/",
+            "/",
+            "--dev",
+            "/dev",
+            "--proc",
+            "/proc",
+            "--tmpfs",
+            "/run",
+            "--tmpfs",
+            "/tmp",
+        ]
+    } else {
+        &[
+            "--die-with-parent",
+            "--unshare-pid",
+            "--bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+        ]
+    };
+    let mut args: Vec<OsString> = base.iter().map(Into::into).collect();
+    for path in layout
+        .confine
+        .iter()
+        .flat_map(|c| &c.writable)
+        .filter(|p| *p != Path::new("/tmp"))
+    {
+        args.extend(["--bind".into(), path.into(), path.into()]);
+    }
     for root in &layout.roots {
         args.extend(["--ro-bind".into(), root.into(), root.into()]);
     }
-    for path in &layout.writable {
+    for path in layout.writable.iter().filter(|path| {
+        layout
+            .confine
+            .as_ref()
+            .is_none_or(|c| c.writable.iter().any(|root| path.starts_with(root)))
+    }) {
         args.extend(["--bind".into(), path.into(), path.into()]);
     }
     // A store that does not exist yet cannot be bound (bubblewrap would create the
-    // mount point on the host); the shell guard asks when a command names one.
+    // mount point on the host).
     for path in layout.denied.iter().filter(|p| p.exists()) {
+        if layout.confine.is_none() {
+            args.extend(["--ro-bind".into(), path.into(), path.into()]);
+        } else if path.is_dir() {
+            args.extend([
+                "--tmpfs".into(),
+                path.into(),
+                "--remount-ro".into(),
+                path.into(),
+            ]);
+        } else {
+            args.extend(["--ro-bind".into(), "/dev/null".into(), path.into()]);
+        }
+    }
+    for path in layout
+        .confine
+        .iter()
+        .flat_map(|c| &c.config)
+        .filter(|p| p.exists())
+    {
         args.extend(["--ro-bind".into(), path.into(), path.into()]);
     }
     for path in layout.paths.iter().filter(|p| p.exists()) {
@@ -502,27 +633,100 @@ fn bwrap_arguments(layout: &Layout) -> Vec<OsString> {
     }
     args
 }
+/// Neither sandbox caps process creation, so a workspace program may start at
+/// most this many more processes than the user already runs.
+const PROCESS_HEADROOM: usize = 512;
+fn process_limit() -> Option<usize> {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    // Linux charges the limit per thread, macOS per process.
+    let threads: &[&str] = if cfg!(target_os = "linux") {
+        &["-L"]
+    } else {
+        &[]
+    };
+    let listed = std::process::Command::new("ps")
+        .args(threads)
+        .args(["-U", &uid.to_string(), "-o", "pid="])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    Some(
+        String::from_utf8_lossy(&listed.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count()
+            + PROCESS_HEADROOM,
+    )
+}
+/// Which sandbox a program gets on top of the base layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Confine {
+    /// The base layer only: credential files hidden, the Hexbot home read-only.
+    No,
+    /// Codex's workspace sandbox, with `writable` and the temp folders writable (Auto).
+    Workspace,
+    /// The workspace sandbox with nothing writable (Manual).
+    ReadOnly,
+}
+/// A sandboxed command.
 pub fn isolated_command(
     home: &Path,
     program: &str,
     writable: &[PathBuf],
+    confine: Confine,
 ) -> Result<tokio::process::Command> {
-    let layout = layout(home, writable)?;
-    if cfg!(target_os = "macos") {
+    let workspace: Vec<PathBuf> = match confine {
+        Confine::No => vec![],
+        Confine::Workspace => writable
+            .iter()
+            .cloned()
+            .chain([std::env::temp_dir(), PathBuf::from("/tmp")])
+            .collect(),
+        Confine::ReadOnly => vec![],
+    };
+    let layout = layout(
+        home,
+        writable,
+        (confine != Confine::No).then_some(workspace.as_slice()),
+    )?;
+    let mut command = if cfg!(target_os = "macos") {
         let mut command = tokio::process::Command::new("/usr/bin/sandbox-exec");
         command.args(["-p", &sandbox_profile(&layout), program]);
-        return Ok(command);
-    }
-    if let Some(bwrap) = bwrap() {
+        command
+    } else if let Some(bwrap) = bwrap() {
         let mut command = tokio::process::Command::new(bwrap);
         command
             .args(bwrap_arguments(&layout))
             .arg("--")
             .arg(program);
-        return Ok(command);
+        command
+    } else {
+        warn_unavailable_isolation();
+        tokio::process::Command::new(program)
+    };
+    if confine != Confine::No {
+        // The child applies the cap before it starts the sandbox, which keeps it;
+        // a program that cannot be capped does not start.
+        let limit = process_limit()
+            .ok_or_else(|| Error::new(5240, "Hexbot could not cap processes for the sandbox."))?
+            as libc::rlim_t;
+        // SAFETY: setrlimit is async-signal-safe and touches only this child.
+        unsafe {
+            command.pre_exec(move || {
+                let cap = libc::rlimit {
+                    rlim_cur: limit,
+                    rlim_max: limit,
+                };
+                if libc::setrlimit(libc::RLIMIT_NPROC, &cap) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
     }
-    warn_unavailable_isolation();
-    Ok(tokio::process::Command::new(program))
+    Ok(command)
 }
 /// Variables every child may inherit. Provider keys, connector secrets, and runtime
 /// injection variables (NODE_OPTIONS, BASH_ENV) are never on the list.
@@ -649,6 +853,7 @@ mod tests {
             paths: vec![],
             writable: vec![],
             denied: denied_writes().unwrap(),
+            confine: None,
         });
         for binary in ["/usr/bin/open", "/bin/launchctl", "/usr/bin/osascript"] {
             assert!(profile.contains(&format!("(literal {})", quoted(binary))));
@@ -704,6 +909,7 @@ mod tests {
             paths,
             writable: vec![],
             denied: denied_writes().unwrap(),
+            confine: None,
         });
         if let Some(user) = std::env::var_os("HOME") {
             let user = PathBuf::from(user);
@@ -747,15 +953,23 @@ mod tests {
         std::fs::write(home.join("profiles/owl/AUTH.JSON"), "secret").unwrap();
         std::fs::write(home.join("python/deep/auth.json"), "skipped").unwrap();
         std::fs::write(home.join("desktop-data/token"), "secret").unwrap();
-        let layout = layout(&home, &[attachments.clone(), outputs.clone()]).unwrap();
-        let script = "const {sandboxProfile, bwrapArguments} = await import(process.argv[1]); const [home, ...outputs] = process.argv.slice(2); console.log(JSON.stringify({profile: sandboxProfile(home, outputs), bwrap: bwrapArguments(home, outputs)}));";
+        let layout = layout(&home, &[attachments.clone(), outputs.clone()], None).unwrap();
+        let workspace = [base.path().join("work"), outputs.clone()];
+        std::fs::create_dir_all(&workspace[0]).unwrap();
+        let confined = super::layout(
+            &home,
+            &[attachments.clone(), outputs.clone()],
+            Some(&workspace),
+        )
+        .unwrap();
+        let script = "const {sandboxProfile, bwrapArguments} = await import(process.argv[1]); const [home, work, ...outputs] = process.argv.slice(2); const workspace = [work, outputs[1]]; console.log(JSON.stringify({profile: sandboxProfile(home, outputs), bwrap: bwrapArguments(home, outputs), confined: sandboxProfile(home, outputs, workspace), confinedBwrap: bwrapArguments(home, outputs, workspace)}));";
         let output = std::process::Command::new("node")
             .args(["--input-type=module", "-e", script, "--"])
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../pi-runtime/isolation.ts"
             ))
-            .args([&home, &attachments, &outputs])
+            .args([&home, &workspace[0], &attachments, &outputs])
             .output()
             .expect("node runs the extension's isolation module");
         assert!(
@@ -775,6 +989,19 @@ mod tests {
             .map(|v| v.as_str().unwrap().into())
             .collect();
         assert_eq!(bwrap, bwrap_arguments(&layout));
+        assert_eq!(
+            extension["confined"].as_str().unwrap(),
+            sandbox_profile(&confined)
+        );
+        assert!(sandbox_profile(&confined).contains("(deny network-outbound (remote ip))"));
+        let confined_bwrap: Vec<OsString> = extension["confinedBwrap"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().into())
+            .collect();
+        assert_eq!(confined_bwrap, bwrap_arguments(&confined));
+        assert!(confined_bwrap.iter().any(|arg| arg == "--unshare-net"));
         assert!(
             bwrap
                 .iter()
@@ -913,6 +1140,7 @@ mod tests {
                 home.join("profiles/owl/artifacts"),
                 home.join("runtime/sessions/one/attachments"),
             ],
+            Confine::No,
         )
         .unwrap()
         .args(["-c", &script])
@@ -942,6 +1170,30 @@ mod tests {
             String::from_utf8_lossy(&result.stderr)
         );
     }
+    /// Neither sandbox caps processes, so a workspace program runs behind a limit.
+    #[tokio::test]
+    async fn confined_programs_cannot_start_unbounded_processes() {
+        if !isolation_available() {
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let limit = |confine| {
+            let mut command = isolated_command(home.path(), "/bin/bash", &[], confine).unwrap();
+            command.args(["-c", "ulimit -u"]);
+            async move {
+                let output = command.output().await.unwrap();
+                String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .parse::<u64>()
+                    .unwrap_or(u64::MAX)
+            }
+        };
+        let own = limit(Confine::No).await;
+        for confine in [Confine::Workspace, Confine::ReadOnly] {
+            let capped = limit(confine).await;
+            assert!(capped > 512 && capped < own, "{confine:?} {capped} {own}");
+        }
+    }
     #[test]
     fn code_floor() {
         for code in [
@@ -965,7 +1217,7 @@ mod tests {
         let user = PathBuf::from(std::env::var_os("HOME").unwrap());
         if !isolation_available() {
             let home = tempfile::tempdir().unwrap();
-            let args = bwrap_arguments(&layout(home.path(), &[]).unwrap());
+            let args = bwrap_arguments(&layout(home.path(), &[], None).unwrap());
             for local in &policy().write.deny {
                 let path = user.join(local);
                 assert!(
@@ -977,7 +1229,7 @@ mod tests {
         }
         let home = tempfile::tempdir().unwrap();
         let script = "curl -s -o \"$HOME/.aws/credentials\" \"file://$HOME/source\" 2>/dev/null && exit 17; truncate -s0 \"$HOME/.netrc\" 2>/dev/null && exit 18; echo x > \"$HOME/.aws/credentials\" 2>/dev/null && exit 10; echo x > \"$HOME/.netrc\" 2>/dev/null && exit 12; echo x > \"$HOME/.npmrc\" 2>/dev/null && exit 13; python3 -c 'open(\"'\"$HOME\"'/.aws/other\",\"w\")' 2>/dev/null && exit 15; echo ok > \"$HOME/notes.txt\" || exit 16; echo done";
-        let result = isolated_command(home.path(), "/bin/bash", &[])
+        let result = isolated_command(home.path(), "/bin/bash", &[], Confine::No)
             .unwrap()
             .args(["-c", script])
             .output()
@@ -1050,14 +1302,14 @@ mod tests {
     async fn python_isolated_from_secrets() {
         let home = tempfile::tempdir().unwrap();
         std::fs::write(home.path().join(".env"), "SECRET").unwrap();
-        let result = isolated_command(home.path(), "/bin/cat", &[])
+        let result = isolated_command(home.path(), "/bin/cat", &[], Confine::No)
             .unwrap()
             .arg(home.path().join(".env"))
             .output()
             .await
             .unwrap();
         assert!(!result.status.success());
-        let result = isolated_command(home.path(), "python3", &[])
+        let result = isolated_command(home.path(), "python3", &[], Confine::No)
             .unwrap()
             .args([
                 "-c",
@@ -1070,7 +1322,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.status.success());
-        let result = isolated_command(home.path(), "/bin/echo", &[])
+        let result = isolated_command(home.path(), "/bin/echo", &[], Confine::No)
             .unwrap()
             .arg("ordinary")
             .output()

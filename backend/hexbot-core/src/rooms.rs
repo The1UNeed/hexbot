@@ -233,6 +233,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             }
             "hexbot.rooms.create" => {
                 validate_approval_mode(p)?;
+                bypass_allowed(home, caller, p)?;
                 validate_limits(p)?;
                 let name = required(p, "name")?.trim();
                 if name.is_empty() {
@@ -326,6 +327,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             }
             "hexbot.rooms.update" => {
                 validate_approval_mode(p)?;
+                bypass_allowed(home, caller, p)?;
                 validate_limits(p)?;
                 let room = required(p, "id")?;
                 let current = owned(home, caller, room)?;

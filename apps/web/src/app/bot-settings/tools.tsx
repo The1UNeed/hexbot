@@ -18,12 +18,16 @@ export const TOOL_GROUPS: { rows: ToolRow[]; title: string }[] = [
   {
     rows: [
       {
-        description: 'Run commands. Each command asks for approval in Manual mode.',
+        description: 'Run commands in a sandbox. Leaving it asks first, except in Bypass.',
         key: 'terminal',
         label: 'Terminal',
-        note: 'Approval-gated'
+        note: 'Sandboxed'
       },
-      { description: 'Read, write and search files in the workspace.', key: 'files', label: 'Files' },
+      {
+        description: 'Read, write and search files in the workspace.',
+        key: 'files',
+        label: 'Files'
+      },
       {
         description: 'Run scripts in a sandbox for data work and quick checks.',
         key: 'code_execution',

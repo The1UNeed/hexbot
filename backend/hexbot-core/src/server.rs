@@ -326,6 +326,8 @@ impl App {
                 "addresses": self.addresses(),
                 "platform": std::env::consts::OS,
                 "sandbox": crate::credentials::sandbox(),
+                // Clients describe Manual, Auto and Bypass only to a daemon that has them.
+                "approvals": "sandbox",
                 "home": if common::admin(&self.home, owner).is_ok() {
                     json!(self.home)
                 } else {

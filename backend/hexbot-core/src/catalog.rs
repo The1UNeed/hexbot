@@ -806,6 +806,7 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
 fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     user(home, caller)?;
     validate_patch(home, p)?;
+    bypass_allowed(home, caller, p)?;
     let name = required(p, "name")?;
     if name.len() > 64
         || !name
@@ -946,6 +947,7 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     let name = required(p, "name")?;
     bot_row(home, caller, name, false)?;
     validate_patch(home, p)?;
+    bypass_allowed(home, caller, p)?;
     configure(home, name, p)?;
     let mut conn = db::open(home)?;
     let tx = conn.transaction()?;

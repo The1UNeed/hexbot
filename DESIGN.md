@@ -76,30 +76,43 @@ more freedom and more capability than a hosted product can offer.
 
 ### Approvals and tools
 
-- Modes: Manual (default), Auto (`smart` in config), Off. Overridable per bot
-  and per room. The auto-approver runs on the cheapest model of the first
-  configured provider.
-- Off skips approval prompts. Manual asks before dangerous shell commands
-  and protected actions. Auto uses the same gates
-  with a small model deciding. Every mode blocks catastrophic commands and
-  prevents tools from reading Hexbot credential files, including app device
-  tokens in `desktop-data/`. On macOS, shell, Python, and scheduled scripts
-  cannot write the Hexbot home except their workspace and artifact or attachment
-  folders. Linux applies these restrictions when bubblewrap passes its startup
-  probe; otherwise Hexbot warns, Manual asks before every shell command and
-  code run, Auto sends them to the section owner, and scheduled scripts wait
-  for Off. Credential stores (`~/.aws`, `~/.netrc`, `~/.npmrc` and the rest of
-  the deny list in `credential-policy.json`) are never written by tools; the
-  sandbox denies writes there for every program a command starts, and a shell
-  command that names one asks in Manual and Auto. bubblewrap can only bind a
-  store that exists, so on Linux in Off mode a command can still create a
-  missing one. SSH private keys
-  (`id_*` except `.pub`, `*.pem`, `*.key`) are protected. SSH config, known hosts,
-  public keys, and the SSH agent remain available. A bot scheduling an absolute
-  script path asks the section owner in Manual and Auto. Scripts must stay in
-  the bot scripts folder or workspace.
-- Approvals render inline in the transcript with approve, deny and
-  always-allow. Native notifications for approvals and mentions.
+- Modes: Auto (default, `smart` in config), Manual, Bypass (`off` in
+  config). Overridable per bot and per room. The model follows Codex: the
+  OS sandbox is the boundary, not a judging model and not pattern matching.
+  Pi itself has no approval modes; Bypass is plain Pi.
+- Auto: shell commands run in a sandbox with no network that can write only
+  inside the workspace (the bot's working directory, its artifact and
+  attachment folders, temp folders); shell profiles and login items stay
+  read-only even there. A command that needs the internet or a write outside
+  the workspace sets `full_access` with a one-sentence `reason`, and the user
+  sees the command and the reason before it runs with the sandbox's base
+  layer only (credential files still unreadable). File tools change the
+  workspace without asking and ask outside it. Code execution runs in the
+  same workspace sandbox without asking. Browser page scripts and absolute
+  cron script paths ask.
+- Manual: the shell sandbox is read-only, so a command that writes or
+  reaches the network sets `full_access` and asks. Every file change and
+  every code run asks. Reads are free in both modes except credential files,
+  which stay private: Hexbot's own `.env`, provider auth, device tokens in
+  `desktop-data/`, the stores in `credential-policy.json` (`~/.aws`,
+  `~/.netrc`, `~/.npmrc` and the rest), and SSH private keys (`id_*` except
+  `.pub`, `*.pem`, `*.key`). SSH config, known hosts, public keys, and the
+  SSH agent remain available. The sandbox denies writes to the stores for
+  every program a command starts, and to the Hexbot home except the output
+  folders. Scheduled scripts must stay in the bot scripts folder or
+  workspace.
+- Bypass: no prompts, no sandbox, no credential checks. A bot can read and
+  change anything the daemon's OS user can, including provider keys, so only
+  the admin may choose it; the daemon rejects it for a member's bot or room
+  and runs such a bot in Auto.
+- Without an OS sandbox (Linux where bubblewrap fails its startup probe)
+  Hexbot warns, Settings shows a notice, Manual and Auto ask before every
+  shell command and code run, and scheduled scripts run only in Bypass.
+- Approvals render inline in the transcript with Approve, Allow in this
+  section, and Deny. "Allow in this section" quiets the same kind of request
+  for the rest of that section; nothing is saved across sections. Requests
+  the daemon raises itself (code runs, browser scripts, cron) offer Approve
+  and Deny. Native notifications for approvals and mentions.
 - New bots get files, web search, browser and terminal (terminal gated by
   approvals). Computer use is off until enabled. Self-authored skills are on,
   with a transcript notice.

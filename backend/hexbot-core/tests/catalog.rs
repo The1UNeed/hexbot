@@ -73,12 +73,30 @@ fn lifecycle_preserves_memory_and_reopens_archived_sections() {
         memory.get_bot("alice", "research-owl").unwrap()["memory_md"],
         "Durable memory"
     );
+    // Bypass reads the admin's provider keys, so a member cannot choose it.
+    assert_eq!(
+        catalog::call(
+            h,
+            "alice",
+            "hexbot.bots.update",
+            &json!({"name":"research-owl","approval_mode":"off"}),
+        )
+        .unwrap()
+        .unwrap_err()
+        .code,
+        4301
+    );
+    db::open(h)
+        .unwrap()
+        .execute("UPDATE users SET role='admin' WHERE id='alice'", [])
+        .unwrap();
     let updated = call(
         h,
         "alice",
         "hexbot.bots.update",
         json!({"name":"research-owl","display_name":"Owl","persona":"Custom soul","model":"model-b","tools":["files"],"dream_enabled":false,"workdir":" /tmp/work ","approval_mode":"off"}),
     );
+    assert_eq!(updated["bot"]["approval_mode"], "off");
     assert_eq!(updated["bot"]["persona"], "Custom soul");
     assert_eq!(updated["bot"]["tools"], json!(["files"]));
     assert_eq!(updated["bot"]["workdir"], "/tmp/work");

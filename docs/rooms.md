@@ -124,8 +124,8 @@ section today; room sections come with threads later.
 The native daemon provides `message_bot {to, text, wait: bool}` for bots:
 
 - Every bot has a description. The user writes `bots.description`; when it
-  is blank the daemon writes `bots.auto_description` with a one-shot model
-  call (the Auto mode model when set, else the bot's own) from the display
+  is blank the daemon writes `bots.auto_description` with a one-shot call
+  to the bot's own model from the display
   name, title, and soul, and never returns it to clients. It is rewritten in
   the background when those inputs change (`auto_description_key` is their
   hash), after create, update, `profiles.configure`, a `hexbot_soul` write,

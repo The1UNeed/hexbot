@@ -101,7 +101,6 @@ export interface ApprovalRequestPayload {
   command?: string
   reason?: string
   request_id?: string
-  smart_denied?: boolean
   tool?: string
 }
 
@@ -556,13 +555,12 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       const requestId = String(payload.request_id ?? nextMessageId('ap'))
 
       const approval: ApprovalRequest = {
-        choices: payload.choices ?? ['once', 'session', 'always', 'deny'],
+        choices: payload.choices ?? ['once', 'deny'],
         command: payload.command,
         reason: payload.reason,
         receivedAt: Date.now(),
         requestId,
         sessionId,
-        smartDenied: payload.smart_denied,
         toolName: payload.tool
       }
 
@@ -686,7 +684,9 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     errorEvent(sessionId, message, detail) {
       update(sessionId, transcript => {
         const existing = detail?.incidentId
-          ? transcript.messages.findIndex(item => item.errorDetail?.incidentId === detail.incidentId)
+          ? transcript.messages.findIndex(
+              item => item.errorDetail?.incidentId === detail.incidentId
+            )
           : -1
 
         const messages = transcript.messages.map(item =>
@@ -716,7 +716,9 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     incidentEvent(sessionId, message, detail) {
       update(sessionId, transcript => {
         const existing = detail.incidentId
-          ? transcript.messages.findIndex(item => item.errorDetail?.incidentId === detail.incidentId)
+          ? transcript.messages.findIndex(
+              item => item.errorDetail?.incidentId === detail.incidentId
+            )
           : -1
 
         const messages = [...transcript.messages]

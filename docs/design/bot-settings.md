@@ -72,7 +72,7 @@ fourth alone:
 | --- | --- | --- |
 | Idle | Nowhere in the chat. The roster row shows the last-active time. | |
 | Working | The existing status line above the reply. | Stop |
-| Needs you | The existing approval card, the "Waiting on you" room banner. | Approve, Deny, Always allow |
+| Needs you | The existing approval card, the "Waiting on you" room banner. | Approve, Allow in this section, Deny |
 | Stopped | A new inline card at the point of failure: red dot, "<bot> stopped", why, which task did not finish. | Fix <connector>, Retry |
 
 The Stopped card stays in the transcript after the fix, marked with the
@@ -113,8 +113,8 @@ Tabs, in order:
    with a search over the skills hub and one-click install. The
    current free-text "Attach a skill" field goes away.
 8. **Approvals.** Inherit the daemon default, or override to Manual,
-   Auto, or Off for this bot, with the same three descriptions as
-   global Settings.
+   Auto, or Bypass for this bot, with the same descriptions as global
+   Settings. Bypass is offered to the admin only.
 9. **Sections.** As today, with room for the last-active time and
    archived sections in their own group.
 10. **Advanced.** Daily token budget, and Delete bot with the

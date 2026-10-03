@@ -12,8 +12,7 @@ pub const PLATFORM_HINT: &str = "You are chatting in Hexbot, a desktop app. Mark
 
 pub fn defaults() -> Value {
     json!({
-        "approval_mode": "manual",
-        "auto_approver_model": null,
+        "approval_mode": "smart",
         "lan_enabled": false,
         "service_installed": false,
         "workspace_dir": "~/Hexbot",
@@ -45,12 +44,16 @@ fn validate(patch: &Value) -> Result<()> {
         .as_object()
         .ok_or_else(|| Error::new(4201, "patch must be an object"))?;
     for (key, value) in patch {
+        // Apps from before the approver model was removed may still send it.
+        if key == "auto_approver_model" {
+            continue;
+        }
         if defaults().get(key).is_none() {
             return Err(Error::new(4201, format!("unknown setting: {key}")));
         }
         let valid = match key.as_str() {
             "approval_mode" => matches!(value.as_str(), Some("manual" | "smart" | "off")),
-            "auto_approver_model" | "default_model" | "fallback_model" => {
+            "default_model" | "fallback_model" => {
                 value.is_null() || value.as_str().is_some_and(|s| s.contains('/'))
             }
             "dream_enabled" | "lan_enabled" | "service_installed" | "billing_notice_ack" => {
@@ -112,16 +115,6 @@ fn managed_config(home: &Path, profile: &Path, settings: &Value) -> Result<Value
             .insert(platform.into(), json!({"replace":PLATFORM_HINT}));
     }
     object(&mut data["memory"]).insert("user_profile_enabled".into(), json!(false));
-    if let Some(choice) = settings["auto_approver_model"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        && let Some((provider, model)) = choice.split_once('/')
-    {
-        object(&mut data["auxiliary"]);
-        let approval = object(&mut data["auxiliary"]["approval"]);
-        approval.insert("provider".into(), json!(provider));
-        approval.insert("model".into(), json!(model));
-    }
     if let Some(choice) = settings["fallback_model"]
         .as_str()
         .filter(|s| !s.is_empty())
@@ -146,7 +139,9 @@ pub fn update(home: &Path, caller: &str, patch: &Value) -> Result<Value> {
     }
     let mut settings = get(home)?;
     for (key, value) in patch.as_object().unwrap() {
-        settings[key] = value.clone();
+        if key != "auto_approver_model" {
+            settings[key] = value.clone();
+        }
     }
     let mut profiles = vec![home.to_path_buf()];
     if home.join("profiles").exists() {
@@ -165,7 +160,12 @@ pub fn update(home: &Path, caller: &str, patch: &Value) -> Result<Value> {
         .collect::<Result<Vec<_>>>()?;
     let mut conn = db::open(home)?;
     let tx = conn.transaction()?;
-    for (key, value) in patch.as_object().unwrap() {
+    for (key, value) in patch
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(key, _)| *key != "auto_approver_model")
+    {
         tx.execute(
             "INSERT OR REPLACE INTO settings(key,value) VALUES (?,?)",
             params![key, value.to_string()],

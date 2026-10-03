@@ -25,7 +25,22 @@ fn defaults_and_settings_are_persisted_and_access_controlled() {
     let settings = settings::get(home.path()).unwrap();
     assert_eq!(settings["dream_time"], "03:00");
     assert_eq!(settings["room_bot_turns_per_human_turn"], 8);
-    assert_eq!(settings["approval_mode"], "manual");
+    assert_eq!(settings["approval_mode"], "smart");
+    assert!(settings.get("auto_approver_model").is_none());
+    // An older app's approver model picker is accepted and ignored.
+    let accepted = settings::update(
+        home.path(),
+        "alice",
+        &json!({"auto_approver_model":"openai/small"}),
+    )
+    .unwrap();
+    assert!(accepted.get("auto_approver_model").is_none());
+    assert!(
+        settings::get(home.path())
+            .unwrap()
+            .get("auto_approver_model")
+            .is_none()
+    );
     assert_eq!(
         settings::update(home.path(), "bob", &json!({}))
             .unwrap_err()
@@ -88,7 +103,12 @@ fn mirrors_overrides_and_preserves_unmanaged_config_values() {
             [workdir.to_str().unwrap()],
         )
         .unwrap();
-    settings::update(home.path(),"alice",&json!({"approval_mode":"smart","auto_approver_model":"openai/small","fallback_model":"anthropic/backup"})).unwrap();
+    settings::update(
+        home.path(),
+        "alice",
+        &json!({"approval_mode":"smart","fallback_model":"anthropic/backup"}),
+    )
+    .unwrap();
     let read = |path: &std::path::Path| -> serde_json::Value {
         serde_yaml::from_str(&fs::read_to_string(path.join("config.yaml")).unwrap()).unwrap()
     };
@@ -100,7 +120,6 @@ fn mirrors_overrides_and_preserves_unmanaged_config_values() {
     assert_eq!(config["memory"]["memory_char_limit"], 9000);
     assert_eq!(config["memory"]["user_profile_enabled"], false);
     assert_eq!(config["auxiliary"]["approval"]["timeout"], 15);
-    assert_eq!(config["auxiliary"]["approval"]["model"], "small");
     assert_eq!(
         config["fallback_providers"],
         json!([{"provider":"anthropic","model":"backup"}])

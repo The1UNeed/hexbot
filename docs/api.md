@@ -32,7 +32,9 @@ data model. The native transport and event projection live in
   before reading or uploading. WebSocket frames and in-flight request bytes
   are capped at 64 MiB per connection.
 - Approvals: `approval.pending`, `approval.respond {session_id, request_id, choice}`
-  with `choice` in `once | session | always | deny`.
+  with `choice` in `once | session | deny`. `session` quiets the same kind
+  of request for the rest of the section; nothing persists across sections.
+  Requests raised by the daemon offer `once | deny` only.
 - Per-section model override: `config.set {key: "model", value, session_id}`.
 - Model picker source: `model.options`.
 - Keys: `model.save_key`, `model.disconnect`.
@@ -68,8 +70,9 @@ user. Get and mutation methods always check ownership.
   credential, whatever the bind address. `install_id` preserves the existing
   `<HEXBOT_HOME>/install_id` file and migrates an early native `install-id` file
   only if the original file has no ID.
-- `hexbot.settings.get {}` → `{approval_mode, auto_approver_model, lan_enabled,
-  service_installed, workspace_dir, billing_notice_ack, dream_time, dream_enabled}`
+- `hexbot.settings.get {}` → `{approval_mode, lan_enabled,
+  service_installed, workspace_dir, billing_notice_ack, dream_time, dream_enabled}`.
+  `approval_mode` defaults to `smart` (Auto).
 - `hexbot.settings.set {patch}` → same shape; only whitelisted keys.
   Room settings are `room_bot_turns_per_human_turn` (default 8),
   `room_budget_tokens_per_human_turn` (default null), and
@@ -87,8 +90,11 @@ reverse order), folded by the daemon from live session state, room turns,
 room `waiting.human` events, and open incidents. `status_detail` is
 `{text, section_id, room_id, session_id, since, action}` where `action` is
 null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
-`approval_mode` is `inherit` (the deployment setting), `manual`, `smart`, or
-`off`; `workdir` overrides the deployment workspace for that bot's terminal.
+`approval_mode` is `inherit` (the deployment setting), `manual`, `smart`
+(Auto), or `off` (Bypass); `workdir` overrides the deployment workspace for
+that bot's terminal. Only the admin may set `off`: the daemon refuses it for
+a member's bot or room with "Only the admin can choose Bypass." and runs a
+member's bot in Auto if `off` was stored earlier.
 `workdir` and the `workspace_dir` setting are refused (4202) when they resolve
 inside the Hexbot home, symlinks included.
 

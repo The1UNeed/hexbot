@@ -636,7 +636,7 @@ async fn reopening_a_section_replays_the_approval_it_is_waiting_on() {
                     "reason":"Run command"}
                     )
                 ),
-                "options": ["once", "session", "always", "deny"]
+                "options": ["once", "session", "deny"]
             }),
         )
         .unwrap();
@@ -650,7 +650,7 @@ async fn reopening_a_section_replays_the_approval_it_is_waiting_on() {
     assert_eq!(again["payload"]["command"], "pwd");
     assert_eq!(
         again["payload"]["choices"],
-        json!(["once", "session", "always", "deny"])
+        json!(["once", "session", "deny"])
     );
     runtime
         .call(
@@ -979,63 +979,89 @@ async fn notes_scan_the_complete_edit_and_soul() {
     runtime.shutdown().await;
 }
 
+/// Code runs in the workspace sandbox without asking in Auto, asks first in
+/// Manual, and leaves the sandbox in Bypass. The code floor holds in every mode.
 #[tokio::test]
-async fn code_approval_manual_auto_and_floor() {
+async fn code_runs_sandboxed_in_auto_asks_in_manual_and_keeps_its_floor() {
     let (home, runtime, hub) = setup();
     let s = runtime.open_session("alice", "owl", "first").await.unwrap();
-    for mode in ["manual", "smart"] {
+    let sandboxed = crate::credentials::isolation_available();
+    let set_mode = |mode: &str| {
         db::open(home.path())
             .unwrap()
             .execute("UPDATE bots SET approval_mode=?", [mode])
             .unwrap();
-        let mut events = hub.subscribe();
-        let task = {
-            let runtime = runtime.clone();
-            let s = s.clone();
-            tokio::spawn(async move {
-                runtime
-                    .tool(&s, "execute_code", &json!({"code":"print(42)"}))
-                    .await
-            })
-        };
-        let payload = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let event = events.recv().await.unwrap();
-                if event.frame["params"]["type"] == "approval.request" {
-                    break event.frame["params"]["payload"].clone();
-                }
-            }
+    };
+    set_mode("manual");
+    let mut events = hub.subscribe();
+    let task = {
+        let runtime = runtime.clone();
+        let s = s.clone();
+        tokio::spawn(async move {
+            runtime
+                .tool(&s, "execute_code", &json!({"code":"print(42)"}))
+                .await
         })
-        .await
-        .unwrap();
-        assert_eq!(payload["tool"], "execute_code");
-        // Without an OS sandbox, code goes to the owner and Auto never consults the approver.
-        let sandboxed = crate::credentials::isolation_available();
-        assert_eq!(payload["smart_denied"], mode == "smart" && sandboxed);
-        if !sandboxed {
-            assert_eq!(payload["reason"], crate::credentials::UNSANDBOXED_REASON);
+    };
+    let payload = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "approval.request" {
+                break event.frame["params"]["payload"].clone();
+            }
         }
-        runtime
-            .call(
-                "alice",
-                "approval.respond",
-                &json!({"session_id":s.id,"request_id":payload["request_id"],"choice":"deny"}),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(task.await.unwrap().unwrap_err().code, 4302);
-    }
-    db::open(home.path())
-        .unwrap()
-        .execute("UPDATE bots SET approval_mode='off'", [])
-        .unwrap();
-    assert!(
-        runtime
-            .native_approval(&s, json!({"tool":"execute_code"}))
-            .await
-            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert_eq!(payload["tool"], "execute_code");
+    assert_eq!(
+        payload["reason"],
+        if sandboxed {
+            "Manual mode asks before running code."
+        } else {
+            crate::credentials::UNSANDBOXED_REASON
+        }
     );
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":s.id,"request_id":payload["request_id"],"choice":"deny"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.await.unwrap().unwrap_err().code, 4302);
+    if sandboxed {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let code = format!(
+            "import socket\ntry:\n    socket.create_connection(('127.0.0.1', {port}), 2)\n    print('connected')\nexcept OSError:\n    print('blocked')"
+        );
+        std::fs::write(
+            home.path().join("profiles/owl/config.yaml"),
+            "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [code_execution]\n",
+        )
+        .unwrap();
+        set_mode("smart");
+        let mut events = hub.subscribe();
+        let result = runtime
+            .tool(&s, "execute_code", &json!({"code":code}))
+            .await
+            .unwrap();
+        assert!(result.to_string().contains("blocked"), "{result}");
+        while let Ok(event) = events.try_recv() {
+            assert_ne!(event.frame["params"]["type"], "approval.request");
+        }
+        // The worker restarts outside the workspace sandbox once the mode allows it.
+        set_mode("off");
+        let result = runtime
+            .tool(&s, "execute_code", &json!({"code":code}))
+            .await
+            .unwrap();
+        assert!(result.to_string().contains("connected"), "{result}");
+    }
+    set_mode("off");
     assert!(
         runtime
             .tool(&s, "execute_code", &json!({"code":"shutil.rmtree('/')"}))
@@ -1406,7 +1432,7 @@ emit({type:'response',id:c.id,command:c.type,success:profile?.soul!=='fail',data
 if(c.type==='prompt'){
 if(profile?.soul==='fail')return;
 emit({type:'agent_start'});if(!one)emit({type:'message_end',message:{role:'user',content:c.message}});
-const text=one?(args[args.indexOf('--system-prompt')+1].includes('Auto mode')?'{"approved":true}':'"Owl helps\n  with code."'):'Reply: '+c.message;
+const text=one?'"Owl helps\n  with code."':'Reply: '+c.message;
 emit({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:text}});
 emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text}],stopReason:profile?.soul==='model-error'?'error':'stop'}});emit({type:'agent_settled'});
 }if(c.type==='abort')emit({type:'agent_settled'});});
@@ -1543,7 +1569,10 @@ async fn descriptions_use_one_shot_skip_current_keys_and_coalesce() {
     team_pi(home.path());
     let h = home.path();
     fs::write(h.join("profiles/owl/SOUL.md"), "Soul".repeat(1200)).unwrap();
-    db::open(h).unwrap().execute_batch("UPDATE bots SET display_name='Owl',title='Coder'; INSERT INTO settings(key,value) VALUES('auto_approver_model','\"openai/reviewer\"');").unwrap();
+    db::open(h)
+        .unwrap()
+        .execute_batch("UPDATE bots SET display_name='Owl',title='Coder';")
+        .unwrap();
     tokio::join!(
         runtime.refresh_description("owl"),
         runtime.refresh_description("owl")
@@ -1567,7 +1596,8 @@ async fn descriptions_use_one_shot_skip_current_keys_and_coalesce() {
         assert!(args.contains(&json!(flag)));
     }
     assert!(args.contains(&json!(crate::team::DESCRIPTION_PROMPT)));
-    assert!(args.contains(&json!("reviewer")));
+    // The bot's own model writes its description.
+    assert!(args.contains(&json!("fixture")));
     let message: Value = serde_json::from_str(
         fs::read_to_string(h.join("profiles/owl/team-prompts.jsonl"))
             .unwrap()
@@ -1710,34 +1740,6 @@ async fn description_fallback_model_and_failure_leave_no_cached_result() {
             .as_array()
             .unwrap()
             .contains(&json!("global-model"))
-    );
-    runtime.shutdown().await;
-}
-
-#[tokio::test]
-async fn auto_approval_still_uses_no_tools_and_strict_boolean_json() {
-    let (home, runtime, _) = setup();
-    team_pi(home.path());
-    db::open(home.path())
-        .unwrap()
-        .execute_batch("UPDATE bots SET approval_mode='smart';")
-        .unwrap();
-    open(&runtime).await;
-    let s = runtime.sessions.lock().unwrap()["first"].clone();
-    assert_eq!(
-        runtime
-            .auto_approve(&s, &json!({"tool":"read","path":"file"}))
-            .await
-            .unwrap(),
-        json!({"approved":true})
-    );
-    db::open(home.path())
-        .unwrap()
-        .execute_batch("UPDATE bots SET approval_mode='manual';")
-        .unwrap();
-    assert_eq!(
-        runtime.auto_approve(&s, &json!({})).await.unwrap(),
-        json!({"approved":false})
     );
     runtime.shutdown().await;
 }
