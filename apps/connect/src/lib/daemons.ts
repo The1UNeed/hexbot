@@ -1,10 +1,5 @@
 import type { Daemon } from "./store";
 
-/** A daemon counts as online while heartbeats keep arriving (they are five minutes apart). */
-export const ONLINE_WINDOW_MS = 10 * 60_000;
-export const isOnline = (daemon: Pick<Daemon, "lastSeenAt">, now = Date.now()) =>
-  !!daemon.lastSeenAt && now - daemon.lastSeenAt.getTime() < ONLINE_WINDOW_MS;
-
 /**
  * Where browsers and apps reach a daemon. Through Cloudflare that is its tunnel
  * hostname over TLS. With the fake tunnel provider (development, tests) the

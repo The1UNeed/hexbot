@@ -65,6 +65,8 @@ function ConnectPage() {
       daemon_name?: string
       tunnel_hostname: string
       online?: boolean
+      /** `unreachable` is a daemon that heartbeats but whose address does not answer. */
+      status?: 'offline' | 'online' | 'unreachable'
     }>
   >([])
 
@@ -271,7 +273,11 @@ function ConnectPage() {
                 >
                   <span>{daemon.name ?? daemon.daemon_name ?? daemon.tunnel_hostname}</span>
                   <span className="text-muted">
-                    {daemon.online === false ? 'Offline' : 'Connect'}
+                    {daemon.status === 'unreachable'
+                      ? 'Running, but not reachable'
+                      : daemon.online === false
+                        ? 'Offline'
+                        : 'Connect'}
                   </span>
                 </button>
               ))}

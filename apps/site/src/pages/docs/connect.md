@@ -18,7 +18,7 @@ On the machine that runs your bots, run:
 hexbot connect
 ```
 
-It prints an address and an eight-character code. Open the address, sign in, and approve the code. The daemon stores its Connect credentials in `~/.hexbot/connect.json`, starts its tunnel whenever `hexbot serve` runs, and reports in every five minutes so the Connect page can show whether it is online. Give the daemon a different name with `hexbot connect --name "Studio Mac"`. A daemon installed without the desktop app needs Node.js 24 or newer for Connect. A daemon registered before owner pinning ignores its old registration and asks you to run `hexbot connect` again.
+It prints an address and an eight-character code. Open the address, sign in, and approve the code. The daemon stores its Connect credentials in `~/.hexbot/connect.json`, starts its tunnel whenever `hexbot serve` runs, and reports in every five minutes. Your daemons page shows a daemon as online only when its address answers; a daemon that reports in but whose tunnel is down shows as running but not reachable, and one that has not reported in for ten minutes shows as offline. Give the daemon a different name with `hexbot connect --name "Studio Mac"`. A daemon installed without the desktop app needs Node.js 24 or newer for Connect. A daemon registered before owner pinning ignores its old registration and asks you to run `hexbot connect` again.
 
 You can also register from the app: open Settings, choose Connect, and press **Sign in and register**. The app shows the same code and starts the tunnel as soon as you approve it.
 
