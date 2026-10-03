@@ -68,6 +68,7 @@ function validatePair(value: unknown): PairOptions {
     host,
     port: Number(item.port),
     code: validString(item.code, 'code', 64),
+    proof: item.proof === undefined ? undefined : validString(item.proof, 'device proof', 8192),
     deviceName: validString(item.deviceName, 'device name', 128)
   }
 }
@@ -81,6 +82,7 @@ function validateGrantPair(value: unknown): GrantPairOptions {
   return {
     host,
     grant: validString(item.grant, 'grant', 4_096),
+    proof: item.proof === undefined ? undefined : validString(item.proof, 'device proof', 8192),
     deviceName: validString(item.deviceName, 'device name', 128),
     tls: item.tls as boolean | undefined
   }

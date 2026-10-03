@@ -1,5 +1,5 @@
 use crate::{
-    Error, Result, auth, catalog, common, connectors, db,
+    Error, Result, auth, catalog, common, connectors, db, dpop,
     events::EventHub,
     memory::MemoryStore,
     providers,
@@ -38,6 +38,7 @@ pub struct App {
     pub dreaming: Arc<crate::dreaming::Dreaming>,
     memory: MemoryStore,
     tickets: Mutex<HashMap<String, (String, f64)>>,
+    proofs: Arc<dpop::Proofs>,
     logins: Mutex<HashMap<String, BrowserLogin>>,
     auth_connection: Mutex<rusqlite::Connection>,
     pub address: SocketAddr,
@@ -118,6 +119,7 @@ impl App {
             rooms,
             dreaming,
             tickets: Mutex::new(HashMap::new()),
+            proofs: Arc::new(dpop::Proofs::default()),
             logins: Mutex::new(HashMap::new()),
             address,
             _network_guard: common::DaemonListener::register(address),
@@ -138,6 +140,7 @@ impl App {
             rooms: self.rooms.clone(),
             dreaming: self.dreaming.clone(),
             tickets: Mutex::new(std::mem::take(&mut *self.tickets.lock().unwrap())),
+            proofs: self.proofs.clone(),
             logins: Mutex::new(std::mem::take(&mut *self.logins.lock().unwrap())),
             address,
             _network_guard: common::DaemonListener::register(address),
@@ -887,6 +890,7 @@ async fn login_page(
     let signed_in = || {
         cookie(&app, &headers)
             .and_then(|token| auth::verify_token(&app.home, &token).ok().flatten())
+            .filter(|device| device["jkt"].is_null())
             .is_some()
     };
     // Only a navigation the user started spends a code. A terminal link sends no
@@ -1033,6 +1037,49 @@ fn bearer(app: &App, headers: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
         .or_else(|| cookie(app, headers))
 }
+fn proof_key(
+    app: &App,
+    headers: &HeaderMap,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    expected: Option<&str>,
+) -> Result<Option<String>> {
+    let mut values = headers.get_all("dpop").iter();
+    let Some(value) = values.next() else {
+        return if expected.is_some() {
+            Err(Error::new(4231, "device proof required"))
+        } else {
+            Ok(None)
+        };
+    };
+    if values.next().is_some() {
+        return Err(Error::new(4231, "invalid device proof"));
+    }
+    let proof = value
+        .to_str()
+        .map_err(|_| Error::new(4231, "invalid device proof"))?;
+    let host = headers
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .ok_or_else(|| Error::new(4231, "missing host"))?;
+    app.proofs
+        .verify(proof, method, host, path, token, expected)
+        .map(Some)
+}
+fn request_device(
+    app: &App,
+    headers: &HeaderMap,
+    method: &str,
+    path: &str,
+    token: &str,
+) -> Result<Option<Value>> {
+    let device = auth::verify_token(&app.home, token)?;
+    if let Some(jkt) = device.as_ref().and_then(|d| d["jkt"].as_str()) {
+        proof_key(app, headers, method, path, Some(token), Some(jkt))?;
+    }
+    Ok(device)
+}
 fn valid_origin(app: &App, headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get("origin") else {
         return true;
@@ -1092,7 +1139,7 @@ async fn origin_guard(
             .insert("vary", HeaderValue::from_static("Origin"));
         response.headers_mut().insert(
             "access-control-allow-headers",
-            HeaderValue::from_static("Content-Type, Authorization"),
+            HeaderValue::from_static("Content-Type, Authorization, DPoP"),
         );
         response.headers_mut().insert(
             "access-control-allow-methods",
@@ -1139,17 +1186,32 @@ async fn login(
             .chars()
             .take(80)
             .collect::<String>();
+        auth::check_attempt(&app.home, &client)?;
+        let jkt = proof_key(
+            &app,
+            &headers,
+            "POST",
+            "/auth/password-login",
+            password.starts_with("cg_").then_some(password),
+            None,
+        )?;
         if let Some(grant) = password.strip_prefix("cg_") {
-            auth::check_attempt(&app.home, &client)?;
-            services::redeem_grant(&app.home, grant, &name, "connect").await
+            services::redeem_grant_bound(&app.home, grant, &name, "connect", jkt.as_deref()).await
         } else {
-            auth::redeem_code_from(&app.home, password, &name, "browser", &client)
+            auth::redeem_code_bound(&app.home, password, &name, "browser", jkt.as_deref())
         }
     }
     .await;
     match result {
         Ok(device) => {
             let mut response = Json(json!({"ok":true,"daemon_name":device["daemon_name"],"next":safe_next(p["next"].as_str().unwrap_or("/"))})).into_response();
+            // Remote app clients need the token; ordinary cookie logins keep the old response.
+            if headers.contains_key("dpop") || p["return_token"] == true {
+                response = Json(json!({"ok":true,"daemon_name":device["daemon_name"],"device_token":device["device_token"],"device_id":device["device_id"]})).into_response();
+            }
+            response
+                .headers_mut()
+                .insert("cache-control", HeaderValue::from_static("no-store"));
             if let Some(token) = device["device_token"].as_str() {
                 response
                     .headers_mut()
@@ -1211,12 +1273,14 @@ async fn pair(
     Json(p): Json<Value>,
 ) -> Response {
     match common::required(&p, "code").and_then(|code| {
-        auth::redeem_code_from(
+        auth::check_attempt(&app.home, &client_address(&app, peer, &headers))?;
+        let jkt = proof_key(&app, &headers, "POST", "/hexbot/pair", None, None)?;
+        auth::redeem_code_bound(
             &app.home,
             code,
             p["device_name"].as_str().unwrap_or("Unnamed device"),
             p["platform"].as_str().unwrap_or("browser"),
-            &client_address(&app, peer, &headers),
+            jkt.as_deref(),
         )
     }) {
         Ok(value) => Json(value).into_response(),
@@ -1230,7 +1294,7 @@ async fn session(
 ) -> Response {
     let address = peer.map(|Extension(ConnectInfo(p))| p);
     let token = bearer(&app, &headers).unwrap_or_default();
-    if auth::verify_token(&app.home, &token)
+    if request_device(&app, &headers, "POST", "/hexbot/session", &token)
         .ok()
         .flatten()
         .is_none()
@@ -1246,7 +1310,7 @@ async fn session(
 }
 async fn ticket(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     let token = bearer(&app, &headers).unwrap_or_default();
-    if auth::verify_token(&app.home, &token)
+    if request_device(&app, &headers, "POST", "/api/auth/ws-ticket", &token)
         .ok()
         .flatten()
         .is_none()
@@ -1272,6 +1336,7 @@ async fn index(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         .is_some_and(|h| h.contains("text/html"))
         && cookie(&app, &headers)
             .and_then(|token| auth::verify_token(&app.home, &token).ok().flatten())
+            .filter(|device| device["jkt"].is_null())
             .is_none()
     {
         return axum::response::Redirect::to("/login").into_response();
@@ -1328,7 +1393,13 @@ async fn upgrade(
     let Some(token) = token else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let Some(device) = auth::verify_token(&app.home, &token).ok().flatten() else {
+    let verified = if p.contains_key("ticket") {
+        // The single-use ticket was minted only after the device proof succeeded.
+        auth::verify_token(&app.home, &token)
+    } else {
+        request_device(&app, &headers, "GET", "/api/ws", &token)
+    };
+    let Some(device) = verified.ok().flatten() else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     let owner = device["owner_id"].as_str().unwrap_or("").to_owned();

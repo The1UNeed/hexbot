@@ -94,6 +94,7 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
     for (table, columns) in &mut expected {
         let names: &[&str] = match table.as_str() {
             "bots" => &["auto_description", "auto_description_key"],
+            "devices" => &["jkt"],
             "sections" => &["peer_bot"],
             "bot_messages" => &["source_section"],
             _ => &[],
@@ -144,7 +145,7 @@ fn all_python_versions_upgrade_without_losing_rows() {
                 .query_row("SELECT version FROM schema_version", [], |r| r
                     .get::<_, i64>(0))
                 .unwrap(),
-            11
+            db::SCHEMA_VERSION
         );
         assert_eq!(
             connection
@@ -184,7 +185,7 @@ fn open_does_not_migrate_and_future_versions_remain_untouched() {
     );
     connection
         .execute_batch(
-            "CREATE TABLE schema_version(version INTEGER); INSERT INTO schema_version VALUES (12);",
+            "CREATE TABLE schema_version(version INTEGER); INSERT INTO schema_version VALUES (99);",
         )
         .unwrap();
     assert!(db::migrate(home.path()).is_err());
@@ -193,7 +194,7 @@ fn open_does_not_migrate_and_future_versions_remain_untouched() {
             .query_row("SELECT version FROM schema_version", [], |r| r
                 .get::<_, i64>(0))
             .unwrap(),
-        12
+        99
     );
     assert_eq!(
         connection
@@ -414,6 +415,6 @@ fn bot_thread_backfill_uses_first_sender_keeps_renamed_sections_and_is_idempoten
         conn.query_row("SELECT version FROM schema_version", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
-        11
+        db::SCHEMA_VERSION
     );
 }

@@ -12,3 +12,14 @@ describe("tokens", () => {
   it("rejects an unknown key id", async () => { const token = await issueGrant({ sub: "user", daemon_id: "one", device_name: "Laptop" }); const jwks = await getJwks(); jwks.keys[0].kid = "unknown"; await expect(verifyGrant(token, undefined, jwks)).rejects.toThrow("unknown signing key"); });
 });
 describe("slugs", () => { it("are 64 random bits, so hostnames cannot be enumerated", () => { expect(generateSlug()).toMatch(/^[0-9a-f]{16}$/); expect(generateSlug()).not.toBe(generateSlug()); }); });
+
+it("signs optional key confirmation without changing legacy grants", async () => {
+  const claims = { sub: "owner", daemon_id: "daemon", device_name: "Laptop" };
+  const cnf = { jkt: Buffer.alloc(32, 7).toString("base64url") };
+  for (const binding of [undefined, cnf]) {
+    const token = await issueGrant({ ...claims, ...(binding ? { cnf: binding } : {}) });
+    await expect(verifyGrant(token, "daemon")).resolves.toMatchObject(claims);
+    const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString());
+    expect(payload.cnf).toEqual(binding);
+  }
+});

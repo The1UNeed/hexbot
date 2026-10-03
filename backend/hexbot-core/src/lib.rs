@@ -10,6 +10,7 @@ pub mod common;
 pub mod connectors;
 pub mod credentials;
 pub mod db;
+pub mod dpop;
 pub mod dreaming;
 pub mod events;
 pub mod http;

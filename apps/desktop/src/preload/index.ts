@@ -47,8 +47,8 @@ const hexbot = Object.freeze({
   }),
   // The main process returns camelCase; the renderer reads the daemon's wire
   // shape (daemon_name, device_id, device_token), so normalise here.
-  pair: async (host: string, port: number, code: string, deviceName: string) => {
-    const result = (await ipcRenderer.invoke('hexbot:pair', { host, port, code, deviceName })) as {
+  pair: async (host: string, port: number, code: string, deviceName: string, proof?: string) => {
+    const result = (await ipcRenderer.invoke('hexbot:pair', { host, port, code, deviceName, proof })) as {
       deviceToken: string
       daemonName: string
     }
@@ -59,6 +59,7 @@ const hexbot = Object.freeze({
     grant: string
     deviceName: string
     tls?: boolean
+    proof?: string
   }) => {
     const token = (await ipcRenderer.invoke('hexbot:pair-with-grant', {
       tls: true,

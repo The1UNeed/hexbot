@@ -6,6 +6,7 @@ import { Input } from '../components/ui/input'
 import { Spinner } from '../components/ui/spinner'
 import { Wordmark } from '../components/ui/wordmark'
 import { defaultDeviceName, getBridge } from '../lib/bridge'
+import { fetchConnect } from '../lib/connect-grant'
 import { connectBaseUrl, grantTarget } from '../lib/connect-url'
 import {
   connectTo,
@@ -15,6 +16,7 @@ import {
   targetOrigin,
   UnauthorizedError
 } from '../lib/connection'
+import { deviceKey, deviceProof } from '../lib/dpop'
 import { formatAddress, parseAddress, parsePairLink } from '../lib/pair-link'
 
 export const Route = createFileRoute('/connect')({ component: ConnectPage })
@@ -27,25 +29,6 @@ export function parseConnectCallback(input: string): { session: string; state: s
   const session = new URLSearchParams(hash).get('session')
 
   return state && session ? { session, state } : null
-}
-
-async function fetchConnect(
-  path: string,
-  token: string,
-  body?: Record<string, unknown>
-): Promise<unknown> {
-  const response = await fetch(`${connectBaseUrl()}${path}`, {
-    body: body ? JSON.stringify(body) : undefined,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(body ? { 'Content-Type': 'application/json' } : {})
-    },
-    method: body ? 'POST' : 'GET'
-  })
-
-  if (!response.ok) {throw new Error(`Hex Connect request failed (${response.status})`)}
-
-  return response.json()
 }
 
 function ConnectPage() {
@@ -113,20 +96,27 @@ function ConnectPage() {
     setBusy(true)
 
     try {
+      const key = await deviceKey()
+
       const granted = (await fetchConnect(
         `/api/daemons/${encodeURIComponent(daemon.id)}/grant`,
         clientSession,
-        { device_name: deviceName }
+        { device_name: deviceName, ...(key ? { jkt: key.jkt } : {}) }
       )) as { grant: string; daemon?: { host?: string; port?: number; tls?: boolean } }
 
       const { host, port, tls } = grantTarget(granted, daemon.tunnel_hostname)
       const origin = targetOrigin({ deviceToken: '', host, kind: 'remote', port, tls })
       const bridge = getBridge()
 
+      const proof = key
+        ? await deviceProof(key, 'POST', `${origin}/auth/password-login`, `cg_${granted.grant}`)
+        : undefined
+
       if (bridge?.pairWithGrant) {
         const result = await bridge.pairWithGrant({
           deviceName,
           grant: granted.grant,
+          proof,
           host: origin.replace(/^https?:\/\//, ''),
           tls
         })
@@ -136,16 +126,18 @@ function ConnectPage() {
         const response = await fetch(`${origin}/auth/password-login`, {
           body: JSON.stringify({
             password: `cg_${granted.grant}`,
+            return_token: true,
             provider: 'hexbot',
             username: deviceName
           }),
           credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...(proof ? { DPoP: proof } : {}) },
           method: 'POST'
         })
 
         if (!response.ok) {throw new Error(`Connect login failed (${response.status})`)}
-        await connectTo({ deviceToken: '', host, kind: 'remote', port, tls })
+        const login = await response.json() as { device_token?: string }
+        await connectTo({ deviceToken: login.device_token ?? '', host, kind: 'remote', port, tls })
       }
 
       await navigate({ to: '/' })

@@ -1014,8 +1014,17 @@ async fn published_keys(home: &Path, config: &ConnectConfig, kid: &str) -> Resul
 pub async fn redeem_grant(
     home: &Path,
     grant: &str,
+    device_name: &str,
+    platform: &str,
+) -> Result<Value> {
+    redeem_grant_bound(home, grant, device_name, platform, None).await
+}
+pub async fn redeem_grant_bound(
+    home: &Path,
+    grant: &str,
     _device_name: &str,
     platform: &str,
+    proof_jkt: Option<&str>,
 ) -> Result<Value> {
     let check = async {
         use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::Jwk};
@@ -1077,12 +1086,22 @@ pub async fn redeem_grant(
         if name.is_empty() {
             return Err(invalid());
         }
-        crate::auth::redeem_verified_grant(
+        if let Some(cnf) = claims.get("cnf") {
+            let jkt = cnf["jkt"]
+                .as_str()
+                .filter(|jkt| !jkt.is_empty())
+                .ok_or_else(invalid)?;
+            if proof_jkt != Some(jkt) {
+                return Err(invalid());
+            }
+        }
+        crate::auth::redeem_verified_grant_bound(
             home,
             &name,
             platform,
             jti,
             claims["exp"].as_f64().ok_or_else(invalid)?,
+            proof_jkt,
         )
     }
     .await;

@@ -24,6 +24,7 @@ import { uiActions } from '../stores/ui'
 import { useUsers } from '../stores/users'
 
 import { getBridge, type HexbotBridge } from './bridge'
+import { proofHeaders } from './dpop'
 import { attachEventRouting } from './events'
 import { DEFAULT_DAEMON_PORT } from './pair-link'
 import { HexbotRpcClient, setActiveRpc } from './rpc'
@@ -177,8 +178,11 @@ async function mintTicket(origin: string, bearer: string, deps: ConnectionDeps):
   try {
     response = await doFetch(`${origin}/api/auth/ws-ticket`, {
       ...(bearer
-        ? { headers: { Authorization: `Bearer ${bearer}` } }
-        : { credentials: 'same-origin' as const }),
+        ? { headers: {
+            Authorization: `Bearer ${bearer}`,
+            ...await proofHeaders('POST', `${origin}/api/auth/ws-ticket`, bearer)
+          } }
+        : { credentials: origin === window.location.origin ? 'same-origin' as const : 'include' as const }),
       method: 'POST'
     })
   } catch (error) {
@@ -230,7 +234,8 @@ export async function pairWithDaemon(
   const bridge = (deps.bridge ?? getBridge)()
 
   if (bridge) {
-    const result = await bridge.pair(host, port, code, deviceName)
+    const proof = await proofHeaders('POST', `http://${host}:${port}/auth/password-login`)
+    const result = await bridge.pair(host, port, code, deviceName, proof.DPoP)
 
     return {
       daemonName: result.daemon_name,
@@ -246,12 +251,18 @@ export async function pairWithDaemon(
     response = await doFetch(`http://${host}:${port}/auth/password-login`, {
       body: JSON.stringify({
         password: code,
+        return_token: new URL(`http://${host}:${port}`).origin !== window.location.origin,
         provider: 'hexbot',
         username: deviceName,
         device_name: deviceName,
         platform: typeof navigator === 'undefined' ? 'web' : navigator.platform
       }),
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(new URL(`http://${host}:${port}`).origin === window.location.origin
+          ? {}
+          : await proofHeaders('POST', `http://${host}:${port}/auth/password-login`))
+      },
       method: 'POST',
       credentials: 'include'
     })
@@ -280,8 +291,7 @@ export async function pairWithDaemon(
   return {
     daemonName: body.daemon_name ?? host,
     deviceId: body.device_id ?? '',
-    // Browser auth lives in an HttpOnly cookie. Electron receives and stores
-    // the long-lived token in the main process instead.
+    // Same-origin browsers keep their cookie session. Remote proof clients receive a token.
     deviceToken: body.device_token ?? ''
   }
 }

@@ -74,3 +74,12 @@ describe('pair cookie parsing', () => {
     )
   })
 })
+
+it('forwards a renderer proof to old and new daemons and lets the renderer verify the token', async () => {
+  const headers = new Headers({ 'set-cookie': 'hermes_session_at=hxb_device; HttpOnly; Path=/' })
+  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { headers }))
+  vi.stubGlobal('fetch', fetchMock)
+  await expect(pairWithGrant({ host: 'daemon.test', grant: 'grant', deviceName: 'app', proof: 'signed-proof' })).resolves.toBe('hxb_device')
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(fetchMock).toHaveBeenCalledWith('https://daemon.test/auth/password-login', expect.objectContaining({ headers: { 'content-type': 'application/json', DPoP: 'signed-proof' } }))
+})

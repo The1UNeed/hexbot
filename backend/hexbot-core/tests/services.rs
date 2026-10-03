@@ -762,3 +762,46 @@ async fn parallel_grant_redemption_and_jwks_cache() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn grant_confirmation_requires_matching_verified_proof_before_spending() {
+    let mock = Mock::new().await;
+    let home = home();
+    pinned_registration(&mock, home.path());
+    let mut claims = grant_claims();
+    claims["cnf"] = json!({"jkt":"client-thumbprint"});
+    let grant = signed_grant(&claims);
+    for key in [None, Some("wrong-key")] {
+        assert!(
+            services::redeem_grant_bound(home.path(), &grant, "", "connect", key)
+                .await
+                .is_err()
+        );
+    }
+    let device = services::redeem_grant_bound(
+        home.path(),
+        &grant,
+        "",
+        "connect",
+        Some("client-thumbprint"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        auth::verify_token(home.path(), device["device_token"].as_str().unwrap())
+            .unwrap()
+            .unwrap()["jkt"],
+        "client-thumbprint"
+    );
+    assert!(
+        services::redeem_grant_bound(
+            home.path(),
+            &grant,
+            "",
+            "connect",
+            Some("client-thumbprint")
+        )
+        .await
+        .is_err()
+    );
+}

@@ -47,9 +47,10 @@ The native CLI implements Hexbot commands. Legacy core administration commands a
 
 ## Storage and compatibility
 
-- `hexbot.db` keeps schema v11, IDs, ownership, rooms, sections, and settings.
+- `hexbot.db` keeps schema v12, IDs, ownership, rooms, sections, and settings.
   Migrations use captured legacy schema fixtures for starting versions 1–11
-  and check that rows survive upgrades and repeated runs.
+  and check that rows survive upgrades and repeated runs. Version 12 adds
+  `devices.jkt` for optional device proof-key binding.
 - Memory stays in `profiles/<bot>/memories/MEMORY.md`, soul in `SOUL.md`, and
   About you in `users/<id>/user.md`. Deleting a section leaves bot memory alone.
 - `hexbot-runtime.db` stores native transcript projections, usage, and frozen

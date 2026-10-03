@@ -53,8 +53,9 @@ export interface HexbotBridge {
     grant: string
     deviceName: string
     tls?: boolean
+    proof?: string
   }): Promise<PairResult>
-  pair(host: string, port: number, code: string, deviceName: string): Promise<PairResult>
+  pair(host: string, port: number, code: string, deviceName: string, proof?: string): Promise<PairResult>
   httpFetch(
     url: string,
     init?: { method?: string; headers?: Record<string, string>; body?: string }

@@ -376,3 +376,35 @@ describe("durable tunnel removal", () => {
     expect(daemon.tunnelId).toBe("");
   });
 });
+
+describe("app grant proof binding", () => {
+  async function app() {
+    const { approved } = await registration();
+    const token = randomToken("hxc_");
+    await store.createClientSession({ userId: store.users[0].id, tokenHash: hashToken(token), deviceName: "Trusted label" });
+    return { token, id: approved.daemon_id as string };
+  }
+  it("signs the supplied thumbprint and keeps legacy requests unbound", async () => {
+    const { token, id } = await app();
+    const jkt = Buffer.alloc(32, 7).toString("base64url");
+    for (const body of [undefined, { device_name: "ignored" }, { jkt, device_name: "ignored" }]) {
+      const response = await grant(request(`/api/daemons/${id}/grant`, body, token), { params: Promise.resolve({ id }) });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      const { grant: jwt } = await response.json();
+      const { verifyGrant } = await import("@/lib/tokens");
+      await expect(verifyGrant(jwt, id)).resolves.toMatchObject({ sub: store.users[0].id, device_name: "Trusted label" });
+      const payload = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString());
+      expect(payload.cnf).toEqual(body && "jkt" in body ? { jkt } : undefined);
+    }
+  });
+  it("rejects malformed thumbprints and request bodies", async () => {
+    const { token, id } = await app();
+    for (const jkt of [null, 12, "", "short", "a".repeat(44), "=".repeat(43), "A".repeat(42) + "B"]) {
+      const response = await grant(request(`/api/daemons/${id}/grant`, { jkt }, token), { params: Promise.resolve({ id }) });
+      expect(response.status).toBe(400);
+    }
+    const malformed = new Request(`http://localhost/api/daemons/${id}/grant`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: "{" });
+    expect((await grant(malformed, { params: Promise.resolve({ id }) })).status).toBe(400);
+  });
+});

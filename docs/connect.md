@@ -68,6 +68,16 @@ repair, consistent with the registration requirement for signing-key rotation
 below. Publishing an extra public key does not preserve the old tunnel-secret
 derivation.
 
+New app device tokens can be bound to a non-extractable client proof key.
+Stealing such a token alone does not allow reuse. Cloudflare still reads the
+traffic, and an active intermediary can race a short-lived proof or WebSocket
+ticket. DPoP provides neither confidentiality nor protection against code
+running in the client that can use its signing key. A compromised Connect
+signing key remains bounded by owner, issuer, daemon, and key pinning, but can
+impersonate the pinned owner, including issuing grants bound to its own key.
+Browser cookie sessions and older unbound device tokens retain their existing
+trust model. See `docs/auth.md` for the in-memory replay cache and limits.
+
 ## Data model (Postgres)
 
 - `users(id, clerk_user_id unique, created_at)`
@@ -167,9 +177,14 @@ app's daemon list enable a daemon only while it is online.
    stays in the fragment; the Electron protocol handler delivers it.
 2. `GET /api/daemons` with the client session token lists the user's daemons
    with online state (`status` and `online`, see "Online state").
-3. Picking one: `POST /api/daemons/{id}/grant` → an ES256 JWT, `typ`
+3. Picking one: the app loads its persistent profile proof key and sends
+   `POST /api/daemons/{id}/grant` with optional `{jkt: <key thumbprint>}`.
+   Connect returns an ES256 JWT, `typ`
    `hexbot-grant+jwt`, `{iss, aud: daemon id, sub: user id, daemon_id,
-   device_name, jti, exp: +5 min}` plus the daemon's address.
+   device_name, jti, exp: +5 min}` plus the daemon's address. When `jkt` is
+   supplied, the signed grant also carries `cnf: {jkt}`. The old route ignores
+   the request body; the app also retries without `jkt` on HTTP 400 for older
+   deployments that reject unknown fields. No Postgres migration is needed.
 4. The app logs in to the daemon with the password-login route:
    `POST https://<host>/auth/password-login {provider: "hexbot", username:
    <device name>, password: "cg_<jwt>"}`. The `hexbot` provider treats a
@@ -180,7 +195,11 @@ app's daemon list enable a daemon only while it is online.
    refetches for an unknown key id at most once a minute. The desktop reads the token from the
    `hermes_session_at_<port>` cookie, or `__Host-hermes_session_at` over HTTPS.
 5. From here it is a normal remote target: `{host, port: 443, tls: true,
-   deviceToken}`.
+   deviceToken}`. Ticket requests carry a new proof with the device token hash.
+   The key persists in IndexedDB beside the profile's saved targets. If crypto
+   or storage is unavailable, login proceeds without requesting binding.
+   New apps work with old daemons, which ignore `cnf` and `DPoP`; old apps
+   work with new daemons, which mint unbound devices when no proof is sent.
 
 ## Browser sign-in
 

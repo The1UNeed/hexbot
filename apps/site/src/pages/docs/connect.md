@@ -38,6 +38,12 @@ On a computer without a daemon, or in the client-only package, open Hexbot, choo
 
 Behind the scenes the app receives a short-lived, single-use login grant and exchanges it directly with the daemon for a normal revocable device token. The daemon owner can revoke that device as with a LAN-paired device.
 
+New apps can bind a device token to a key kept in the app profile, so copying
+the token alone does not grant access. This requires an updated daemon and
+working browser key storage. Older apps, older daemons, and browser cookie
+sessions keep their existing sign-in behavior. Cloudflare can still read the
+traffic; key binding does not add end-to-end encryption.
+
 ## What Connect holds
 
 Connect stores your sign-in identity (through Clerk), the names and hostnames of your daemons, hashed service tokens, the device names of apps and browsers that signed in, and recent check-in times. It uses these records to list your daemons, issue login grants, and manage tunnels. The [privacy policy](/privacy/#connect) lists every record and how long it is kept.

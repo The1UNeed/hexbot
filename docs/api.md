@@ -469,9 +469,29 @@ kind, connector, text, created_at, resolved_at}}` followed by
 
 - `POST /hexbot/pair {code, device_name, platform}` → `{device_token,
   device_id, daemon_name}`; the code is single-use and expires in 10 minutes.
-- Device token is sent as `Authorization: Bearer <token>` on HTTP and as the
-  `?token=` query on `/api/ws` (see `docs/auth.md` once the dashboard-auth
-  integration is settled).
+- Device tokens use `Authorization: Bearer <token>`. Prefer `POST
+  /api/auth/ws-ticket` then `/api/ws?ticket=<single-use ticket>`; tickets expire
+  after 30 seconds. The legacy `/api/ws?token=<device token>` and direct bearer
+  or cookie upgrade remain accepted, but keep long-lived tokens out of URLs.
+- `DPoP: <signed JWT>` optionally binds a new device at `/hexbot/pair` or
+  `/auth/password-login`. For password-login with proof or `return_token: true`,
+  the response includes `device_token` and `device_id`. The flag also works
+  without proof for clients that cannot store a key. Ordinary cookie login responses are unchanged.
+  Bound tokens require this header at `/api/auth/ws-ticket`, `/hexbot/session`,
+  and direct `/api/ws` authentication, including tokens carried in cookies.
+  Missing, invalid, or replayed proof returns 401 with no bearer fallback.
+  A WebSocket ticket carries the proof-authenticated device forward, so its
+  upgrade needs no further proof. Unbound devices keep the old behavior.
+- Proof header: `typ: dpop+jwt`, `alg: ES256`, public P-256 `jwk`. Claims:
+  `htm` is the HTTP method, `htu` is the HTTP(S) request URL without query or
+  fragment, `iat` is integer seconds within ±60 of daemon time, `jti` is unique
+  per key, and `ath` is base64url SHA-256 of a presented token. At Connect login,
+  hash the entire `cg_<jwt>` password. The daemon compares Host, port, and path,
+  ignoring scheme and forwarded headers. See `docs/auth.md` for replay limits.
+- Connect `POST /api/daemons/{id}/grant` accepts optional `jkt`, a base64url
+  SHA-256 JWK thumbprint, and signs it as `cnf: {jkt}`. Such a grant requires a
+  matching proof at daemon login. No proof on an ordinary pairing request or
+  a grant without `cnf` creates an unbound device.
 - `POST /hexbot/session` with the bearer token sets the browser cookie session
   for the web bundle.
 
