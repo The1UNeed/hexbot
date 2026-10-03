@@ -118,12 +118,121 @@ impl Default for Data {
         }
     }
 }
-#[derive(Default)]
 struct Service {
     data: Mutex<Data>,
     workers: Mutex<Option<Workers>>,
     lifecycle: Mutex<()>,
     jwks: Mutex<JwksCache>,
+    /// Bumped after every heartbeat outcome and after a registration is dropped, so
+    /// in-crate tests can wait for the worker instead of sleeping.
+    changed: watch::Sender<u64>,
+}
+impl Default for Service {
+    fn default() -> Self {
+        Self {
+            data: Mutex::default(),
+            workers: Mutex::default(),
+            lifecycle: Mutex::default(),
+            jwks: Mutex::default(),
+            changed: watch::channel(0).0,
+        }
+    }
+}
+fn bump(service: &Service) {
+    service.changed.send_modify(|generation| *generation += 1);
+}
+/// What Settings shows after the owner revoked this daemon on the Connect dashboard.
+const REVOKED_REASON: &str = "Removed in Hex Connect";
+/// Only Connect's own `410 daemon_revoked` means the owner revoked this daemon. A 401, a
+/// 5xx, or an unreachable service never does: a Connect outage must not disconnect daemons.
+fn revoked_by_connect(error: &Error) -> bool {
+    error
+        .data
+        .as_ref()
+        .is_some_and(|data| data["status"] == 410 && data["error"] == "daemon_revoked")
+}
+/// Forget the registration the way `hexbot.connect.disconnect` does: stop the workers,
+/// remove `connect.json`, clear the public URL (which also removes the login button).
+/// With `only` set, nothing happens unless that daemon id is still the registered one,
+/// so a stale worker cannot remove a registration made after it.
+async fn drop_registration(
+    home: &Path,
+    service: &Service,
+    only: Option<&str>,
+    reason: Option<&str>,
+    notify_connect: bool,
+) -> Result<bool> {
+    let _operation = service.lifecycle.lock().await;
+    let config = ConnectConfig::load(home).ok().flatten();
+    if let Some(expected) = only
+        && config.as_ref().is_none_or(|c| c.daemon_id != expected)
+    {
+        return Ok(false);
+    }
+    stop_workers(service).await;
+    if notify_connect
+        && let Some(config) = &config
+        && common::identifier(&config.daemon_id).is_ok()
+    {
+        let _ = object(
+            Method::DELETE,
+            &format!("{}/api/daemons/{}", config.api_base, config.daemon_id),
+            Some(&config.daemon_token),
+            None,
+        )
+        .await;
+    }
+    match fs::remove_file(home.join("connect.json")) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    apply_public_url(home, None)?;
+    {
+        let mut data = service.data.lock().await;
+        data.heartbeat = None;
+        data.error = reason.map(str::to_owned);
+    }
+    bump(service);
+    Ok(true)
+}
+/// A worker cannot stop itself (stopping waits for it), so it hands the removal to a task
+/// of its own and returns.
+fn forget_later(home: &Path, service: &Arc<Service>, daemon_id: &str) {
+    let home = home.to_owned();
+    let service = service.clone();
+    let daemon_id = daemon_id.to_owned();
+    tokio::spawn(async move {
+        if let Err(error) =
+            drop_registration(&home, &service, Some(&daemon_id), Some(REVOKED_REASON), false)
+                .await
+        {
+            eprintln!("Connect: {error}");
+        }
+    });
+}
+/// A Connect call with the daemon token. On `410 daemon_revoked` the registration is dropped.
+async fn daemon_request(
+    home: &Path,
+    config: &ConnectConfig,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value> {
+    let result = object(
+        method,
+        &format!("{}{path}", config.api_base),
+        Some(&config.daemon_token),
+        body,
+    )
+    .await;
+    if let Err(error) = &result
+        && revoked_by_connect(error)
+        && let Ok(service) = service(home).await
+    {
+        forget_later(home, &service, &config.daemon_id);
+    }
+    result
 }
 static SERVICES: OnceLock<Mutex<HashMap<PathBuf, Arc<Service>>>> = OnceLock::new();
 async fn service(home: &Path) -> Result<Arc<Service>> {
@@ -192,13 +301,23 @@ async fn object(
         .await
         .map_err(|_| Error::new(5241, "Hex Connect service unreachable"))?;
     if !response.status().is_success() {
-        return Err(Error::new(
-            5241,
-            format!(
-                "Hex Connect service returned HTTP {}",
-                response.status().as_u16()
-            ),
-        ));
+        // Keep the status and Connect's error code: a 410 `daemon_revoked` means something
+        // (see `revoked_by_connect`), every other failure is just an error.
+        let status = response.status().as_u16();
+        let code = crate::http::json(
+            response,
+            64 * 1024,
+            |_| Error::new(5241, "Hex Connect response failed"),
+            Error::new(5241, "Hex Connect response exceeds byte limit"),
+            Error::new(5241, "Hex Connect returned invalid JSON"),
+        )
+        .await
+        .ok()
+        .and_then(|value| value["error"].as_str().map(str::to_owned));
+        return Err(
+            Error::new(5241, format!("Hex Connect service returned HTTP {status}"))
+                .with_data(json!({"status":status,"error":code})),
+        );
     }
     let value = crate::http::json(
         response,
@@ -574,28 +693,36 @@ async fn run_tunnel(
         tunnel_service.data.lock().await.running = false;
     });
     let heartbeat_service = service.clone();
+    let heartbeat_home = home.to_owned();
     let heartbeat = tokio::spawn(async move {
-        let heartbeat_url = format!(
-            "{}/api/daemons/{}/heartbeat",
-            config.api_base, config.daemon_id
-        );
+        let heartbeat_path = format!("/api/daemons/{}/heartbeat", config.daemon_id);
+        // The first beat goes out at once; the rest every five minutes.
         loop {
-            let request = object(
+            let request = daemon_request(
+                &heartbeat_home,
+                &config,
                 Method::POST,
-                &heartbeat_url,
-                Some(&config.daemon_token),
+                &heartbeat_path,
                 Some(json!({"port":port})),
             );
             tokio::select! {
                 _ = heartbeat_stop.changed() => break,
                 result = request => {
-                    let mut data = heartbeat_service.data.lock().await;
-                    match result {
-                        Ok(_) => {
-                            data.heartbeat = Some(common::now());
-                            data.error = None;
+                    let revoked = result.as_ref().is_err_and(revoked_by_connect);
+                    {
+                        let mut data = heartbeat_service.data.lock().await;
+                        match result {
+                            Ok(_) => {
+                                data.heartbeat = Some(common::now());
+                                data.error = None;
+                            }
+                            Err(error) => data.error = Some(error.message),
                         }
-                        Err(error) => data.error = Some(error.message),
+                    }
+                    bump(&heartbeat_service);
+                    if revoked {
+                        // `daemon_request` is dropping the registration; it will stop the tunnel too.
+                        break;
                     }
                 }
             }
@@ -747,15 +874,17 @@ pub async fn redeem_grant(
 }
 
 pub async fn exchange_browser_grant(
+    home: &Path,
     config: &ConnectConfig,
     code: &str,
     verifier: &str,
     redirect_uri: &str,
 ) -> Result<String> {
-    let result = object(
+    let result = daemon_request(
+        home,
+        config,
         Method::POST,
-        &format!("{}/api/grants/exchange", config.api_base),
-        Some(&config.daemon_token),
+        "/api/grants/exchange",
         Some(json!({"code":code,"code_verifier":verifier,"redirect_uri":redirect_uri})),
     )
     .await?;
@@ -1323,25 +1452,7 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                 }
                 "hexbot.connect.disconnect" => {
                     let service = service(home).await?;
-                    let _operation = service.lifecycle.lock().await;
-                    stop_workers(&service).await;
-                    if let Ok(Some(config)) = ConnectConfig::load(home)
-                        && common::identifier(&config.daemon_id).is_ok()
-                    {
-                        let _ = object(
-                            Method::DELETE,
-                            &format!("{}/api/daemons/{}", config.api_base, config.daemon_id),
-                            Some(&config.daemon_token),
-                            None,
-                        )
-                        .await;
-                    }
-                    match fs::remove_file(home.join("connect.json")) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(e) => return Err(e.into()),
-                    }
-                    apply_public_url(home, None)?;
+                    drop_registration(home, &service, None, None, true).await?;
                     connect_status(home).await
                 }
                 "hexbot.update.status" => update_status(home).await,

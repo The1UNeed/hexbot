@@ -192,10 +192,24 @@ Spent grant ids live in the daemon's SQLite database (`spent_grants`), so a
 restart inside a grant's five minutes cannot replay it; grants are verified
 with sixty seconds of clock leeway.
 
-`hexbot connect disconnect` unregisters the provider in the process that runs
-it: disconnecting from the app's Settings (RPC) takes effect at once, while the
-CLI run against a live daemon leaves the button on that daemon's login page
-until it restarts (clicking it answers 503, since the config is gone).
+## Disconnecting and revoking
+
+Disconnect in Settings and `hexbot connect disconnect` both run
+`hexbot.connect.disconnect` inside the running daemon (the CLI talks to it over
+its socket when one is up), so the tunnel stops, `connect.json` goes, the
+public URL is cleared, and the login button disappears at once. The daemon
+also tells Connect with `DELETE /api/daemons/{id}`.
+
+Revoke on the dashboard is the reverse direction. Connect deletes the tunnel,
+marks the row revoked, and from then on answers every call made with that
+daemon's token with `410 {error: "daemon_revoked"}` (an unknown token stays
+401). The daemon treats that answer, and only that answer, as the owner's
+decision: it drops the registration exactly as disconnect does, minus the
+DELETE, and Settings shows "Not connected. Removed in Hex Connect." The
+first heartbeat goes out when the tunnel starts and the rest every five
+minutes, so a revoked daemon disconnects within a few minutes. A 401, a 5xx,
+or an unreachable Connect never removes anything: a Connect outage must not
+disconnect daemons.
 
 ## Connect API routes
 
@@ -210,7 +224,8 @@ until it restarts (clicking it answers 503, since the config is gone).
 
 Authentication: Clerk session for pages, server actions, and
 `POST /api/register/approve`; bearer tokens for daemons and apps (hashes
-stored); the signing key for grants in an environment variable. To rotate,
+stored; a revoked daemon's token answers `410 daemon_revoked`); the signing
+key for grants in an environment variable. To rotate,
 publish the next public key in `CONNECT_JWKS_EXTRA`; daemons registered from
 then on pin both, and older daemons register again after the swap. API
 routes answer CORS for any origin.
@@ -250,8 +265,10 @@ signing key.
   parsing, CORS.
 - Daemon (`backend/hexbot-core/tests/services.rs`, `server.rs`): registration
   with a local fake API, pinned owner/audience/issuer/keys, malformed and
-  expired grants, single-use grants, PKCE exchange, and tunnel lifecycle
-  using a stand-in `cloudflared`.
+  expired grants, single-use grants, PKCE exchange, tunnel lifecycle using a
+  stand-in `cloudflared`, a `410 daemon_revoked` heartbeat dropping the
+  registration while 401 and 5xx keep it, and CLI disconnect against a
+  running daemon (`tests/cli.rs`).
 - Client: the `hexbot://connect` handler, the `tls` connection path, the
   prefixed cookie names.
 

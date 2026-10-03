@@ -335,6 +335,21 @@ describe('settings', () => {
     expect(await screen.findByText('home.connect.hexbot.app')).toBeVisible()
   })
 
+  it('says why Connect is not connected after the daemon was revoked', async () => {
+    vi.mocked(connectStatus).mockResolvedValue({
+      registered: false,
+      daemon_id: null,
+      slug: null,
+      tunnel_hostname: null,
+      tunnel_running: false,
+      last_heartbeat_at: null,
+      last_error: 'Removed in Hex Connect'
+    })
+    render(<ConnectSettings />)
+    expect(await screen.findByText('Removed in Hex Connect. Sign in to register it again.')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Sign in and register' })).toBeVisible()
+  })
+
   it('walks an app update from check to restart', async () => {
     const idle: UpdateState = {
       availableVersion: null,

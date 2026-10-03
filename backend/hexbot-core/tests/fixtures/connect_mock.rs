@@ -20,6 +20,8 @@ pub(super) struct StateData {
     pub(super) bad: Mutex<bool>,
     pub(super) binary: Mutex<Vec<u8>>,
     pub(super) manifest: Mutex<Value>,
+    /// Per-path replies `(status, body)`, for routes the daemon must handle by status.
+    pub(super) overrides: Mutex<std::collections::HashMap<String, (u16, Value)>>,
 }
 pub(super) struct Mock {
     pub(super) base: String,
@@ -52,6 +54,13 @@ async fn handler(
     if *state.bad.lock().await {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
+    if let Some((status, body)) = state.overrides.lock().await.get(&path) {
+        return (
+            StatusCode::from_u16(*status).unwrap(),
+            Json(body.clone()),
+        )
+            .into_response();
+    }
     let value = match path.as_str() {
         "/api/register/start" => {
             json!({"device_code":"device-code","user_code":"ABCD1234","verify_url":"https://connect.example/approve","interval":1})
@@ -74,6 +83,7 @@ impl Mock {
             bad: Mutex::new(false),
             binary: Mutex::new(vec![]),
             manifest: Mutex::new(Value::Null),
+            overrides: Mutex::default(),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());

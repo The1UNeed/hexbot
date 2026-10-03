@@ -192,6 +192,9 @@ export function MemorySettings() {
   )
 }
 
+/** The daemon's `last_error` after the owner revoked it on the Connect dashboard (services.rs). */
+const REVOKED_REASON = 'Removed in Hex Connect'
+
 export function ConnectSettings() {
   const [status, setStatus] = useState<Awaited<ReturnType<typeof connectStatus>> | null>(null)
 
@@ -355,7 +358,11 @@ export function ConnectSettings() {
                 Sign in and register
               </Button>
             }
-            description="Sign in to get an address for this daemon."
+            description={
+              status?.last_error === REVOKED_REASON
+                ? `${REVOKED_REASON}. Sign in to register it again.`
+                : 'Sign in to get an address for this daemon.'
+            }
             title="Not connected"
           />
         </Group>

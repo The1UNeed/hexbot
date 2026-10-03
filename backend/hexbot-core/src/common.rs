@@ -193,7 +193,10 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 pub fn read_config(home: &Path) -> Result<Value> {
     let path = home.join("config.yaml");
     match fs::read_to_string(path) {
-        Ok(s) => serde_yaml::from_str(&s).map_err(|e| Error::new(5200, e.to_string())),
+        // A file with only comments, or none at all, is the empty mapping.
+        Ok(s) => serde_yaml::from_str::<Value>(&s)
+            .map(|value| if value.is_null() { json!({}) } else { value })
+            .map_err(|e| Error::new(5200, e.to_string())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
         Err(e) => Err(e.into()),
     }
@@ -265,7 +268,10 @@ pub fn write_yaml(path: &Path, value: &Value) -> Result<()> {
     // formatting edit unless the independent semantic parser confirms its value.
     let actual: Value = serde_yaml::from_str(&text)
         .map_err(|e| Error::new(5200, format!("edited YAML failed validation: {e}")))?;
-    if &actual != value {
+    // Removing the last key leaves a document with no value, which reads as null; that is
+    // the empty mapping the caller asked for (`read_config` treats it the same way).
+    let emptied = actual.is_null() && value.as_object().is_some_and(|map| map.is_empty());
+    if &actual != value && !emptied {
         return Err(Error::new(5200, "edited YAML changed configuration values"));
     }
     atomic_write(path, text.as_bytes())

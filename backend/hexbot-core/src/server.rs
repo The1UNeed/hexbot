@@ -832,9 +832,14 @@ async fn browser_callback(
                 "Hex Connect registration changed. Sign in again.",
             ));
         }
-        let grant =
-            services::exchange_browser_grant(&config, code, &login.verifier, &login.redirect_uri)
-                .await?;
+        let grant = services::exchange_browser_grant(
+            &app.home,
+            &config,
+            code,
+            &login.verifier,
+            &login.redirect_uri,
+        )
+        .await?;
         let device = services::redeem_grant(&app.home, &grant, "", "connect").await?;
         let mut response = axum::response::Redirect::to(&login.next).into_response();
         response.headers_mut().insert(

@@ -22,7 +22,7 @@ It prints an address and an eight-character code. Open the address, sign in, and
 
 You can also register from the app: open Settings, choose Connect, and press **Sign in and register**. The app shows the same code and starts the tunnel as soon as you approve it.
 
-`hexbot connect status` shows the registration and tunnel. `hexbot connect disconnect` stops the tunnel, removes the local credentials, and revokes the registration. You can also revoke a daemon from your daemons page at connect.hexbot.app; revocation deletes its tunnel, and the daemon keeps working on its own network.
+`hexbot connect status` shows the registration and tunnel. `hexbot connect disconnect` stops the tunnel, removes the local credentials, and revokes the registration. You can also revoke a daemon from your daemons page at connect.hexbot.app; revocation deletes its tunnel, the daemon notices within a few minutes and forgets its registration, and it keeps working on its own network.
 
 ## Open a daemon in a browser
 

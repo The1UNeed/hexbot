@@ -311,4 +311,15 @@ fn yaml_deletion_and_type_changes_remain_semantically_exact() {
             .unwrap()
             .contains("# Only a comment")
     );
+    // Removing the last key (what disconnecting Connect does to a config holding only the
+    // public URL) leaves a comment-only file, which reads back as the empty mapping.
+    hexbot_core::common::write_yaml(&path, &json!({})).unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("# Only a comment"));
+    assert!(!text.contains("enabled"));
+    fs::write(home.path().join("config.yaml"), &text).unwrap();
+    assert_eq!(
+        hexbot_core::common::read_config(home.path()).unwrap(),
+        json!({})
+    );
 }
