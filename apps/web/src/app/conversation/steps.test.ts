@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest'
 import type { Message, ToolCall } from '../../lib/types'
 
 import {
-  liveLabel,
+  activityLabel,
+  liveStatus,
   runningLabel,
-  stepsSummary,
   toolLabel,
   visibleSteps,
   workShown,
@@ -91,28 +91,29 @@ describe('runningLabel', () => {
   })
 })
 
-describe('stepsSummary', () => {
-  it('is empty when only housekeeping ran', () => {
-    expect(stepsSummary([call({ name: 'memory' }), call({ name: 'todo_list' })])).toBe('')
-    expect(stepsSummary([call({ name: 'hexbot_rename_section' })])).toBe('')
+describe('visibleSteps', () => {
+  it('drops housekeeping', () => {
     expect(visibleSteps([call({ name: 'memory' }), call({ name: 'terminal' })])).toHaveLength(1)
   })
+})
 
-  it('uses the single step label and the total time', () => {
-    expect(stepsSummary([call({ name: 'web_search', summary: 'apple', durationS: 2.6 })])).toBe(
-      'Searched the web for apple · 3s'
+describe('activityLabel', () => {
+  it('says what the bot is doing in plain words, never the command or query', () => {
+    expect(activityLabel(call({ name: 'web_search', summary: 'apple' }), 'Scout')).toBe(
+      'Scout is searching the web'
     )
-  })
-
-  it('counts several steps, including time spent on housekeeping', () => {
-    expect(
-      stepsSummary([
-        call({ name: 'memory', durationS: 60 }),
-        call({ name: 'terminal', durationS: 30 }),
-        call({ name: 'read_file', durationS: 0.2 })
-      ])
-    ).toBe('2 steps · 2m')
-    expect(stepsSummary([call({ name: 'terminal' }), call({ name: 'read_file' })])).toBe('2 steps')
+    expect(activityLabel(call({ name: 'terminal', summary: 'rm -rf build' }), 'Scout')).toBe(
+      'Scout is running a command'
+    )
+    expect(activityLabel(call({ name: 'mcp_github_create_issue' }), 'Scout')).toBe(
+      'Connecting to GitHub'
+    )
+    expect(activityLabel(call({ name: 'mcp_linear_list_issues' }), 'Scout')).toBe(
+      'Connecting to Linear'
+    )
+    expect(activityLabel(call({ name: 'weather_lookup' }), 'Scout')).toBe(
+      'Scout is using weather lookup'
+    )
   })
 })
 
@@ -132,26 +133,27 @@ describe('workShown', () => {
   })
 
   it('shows restored steps whose timing is unknown', () => {
-    expect(
-      workShown(message({ createdAt: 0, streaming: false, toolCalls: [call({})] }))
-    ).toBe(true)
+    expect(workShown(message({ createdAt: 0, streaming: false, toolCalls: [call({})] }))).toBe(true)
   })
 })
 
 describe('workSummary', () => {
-  it.each([undefined, 'Hmm.'])('keeps a blocked tool in present tense with trace %s', thinking => {
-    const pending = call({ status: 'running', summary: 'rm -rf ./approval-probe' })
-    const blocked = message({ streaming: false, thinking, toolCalls: [pending] })
-    expect(workSummary(blocked)).toContain('Running rm -rf ./approval-probe')
-    expect(workSummary(blocked)).not.toContain('Ran ')
-    expect(workSummary({ ...blocked, toolCalls: [{ ...pending, status: 'ok' }] })).toContain(
-      'Ran rm -rf ./approval-probe'
+  it.each([undefined, 'Hmm.'])(
+    'reads a step blocked on approval as live work, trace %s',
+    thinking => {
+      const pending = call({ status: 'running', summary: 'rm -rf ./approval-probe' })
+      const blocked = message({ streaming: false, thinking, toolCalls: [pending] })
+      expect(workSummary(blocked, 'Scout')).toBe('Scout is running a command')
+      expect(workSummary({ ...blocked, toolCalls: [{ ...pending, status: 'ok' }] })).not.toContain(
+        'rm -rf'
+      )
+    }
+  )
+
+  it('names only the time, never the steps or their costs', () => {
+    expect(workSummary(message({ createdAt: 1_000, thinking: 'Hmm.', workUntil: 13_400 }))).toBe(
+      'Thought for 12s'
     )
-  })
-  it('names the thinking time and the steps', () => {
-    expect(
-      workSummary(message({ createdAt: 1_000, thinking: 'Hmm.', workUntil: 13_400 }))
-    ).toBe('Thought for 12s')
     expect(
       workSummary(
         message({
@@ -161,30 +163,40 @@ describe('workSummary', () => {
           workUntil: 61_000
         })
       )
-    ).toBe('Thought for 1m · 2 steps')
+    ).toBe('Thought for 1m')
+    expect(
+      workSummary(message({ toolCalls: [call({ durationS: 2.6, name: 'web_search' })] }))
+    ).toBe('Worked for 3s')
   })
 
-  it('falls back to the step summary without a trace', () => {
-    expect(workSummary(message({ toolCalls: [call({ name: 'terminal', summary: 'date' })] }))).toBe(
-      'Ran date'
+  it('counts steps when restored history has no timing, and is empty for housekeeping', () => {
+    expect(workSummary(message({ toolCalls: [call({ durationS: null, name: 'terminal' })] }))).toBe(
+      'Worked on 1 step'
     )
+    expect(workSummary(message({ toolCalls: [call({ name: 'memory' })] }))).toBe('')
   })
 })
 
-describe('liveLabel', () => {
-  it('prefers the running step, then a wait notice, then "Thinking"', () => {
-    expect(liveLabel(message({ activity: 'waiting on the provider' }))).toBe(
+describe('liveStatus', () => {
+  it('prefers the running step, then a wait notice, then what the bot is doing', () => {
+    expect(liveStatus(message({ activity: 'waiting on the provider' }), 'Scout').label).toBe(
       'waiting on the provider'
     )
-    expect(
-      liveLabel(
-        message({
-          activity: 'waiting',
-          toolCalls: [call({ name: 'web_search', status: 'running', summary: 'x' })]
-        })
-      )
-    ).toBe('Searching the web for x')
-    expect(liveLabel(message({ thinking: 'Hmm.' }))).toBe('Thinking')
-    expect(liveLabel(message({ text: 'Sure', thinking: 'Hmm.' }))).toBe('Thought for 1s')
+
+    const running = liveStatus(
+      message({
+        activity: 'waiting',
+        toolCalls: [call({ name: 'web_search', status: 'running', summary: 'x' })]
+      }),
+      'Scout'
+    )
+
+    expect(running.label).toBe('Scout is searching the web')
+    expect(running.call?.name).toBe('web_search')
+    expect(liveStatus(message({}), 'Scout')).toEqual({ label: 'Scout is working' })
+    expect(liveStatus(message({ thinking: 'Hmm.' }), 'Scout').label).toBe('Scout is thinking')
+    expect(liveStatus(message({ text: 'Sure', thinking: 'Hmm.' }), 'Scout').label).toBe(
+      'Scout is writing'
+    )
   })
 })

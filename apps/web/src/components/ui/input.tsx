@@ -7,13 +7,18 @@ export interface InputProps extends ComponentPropsWithoutRef<typeof BaseInput> {
   invalid?: boolean
 }
 
+/** Shared by Input, Textarea and the Select trigger: a soft fill, a ring on focus. */
+export const fieldClass =
+  'rounded-[10px] bg-surface-2/60 text-[length:var(--text-body)] text-foreground outline-none transition-[background-color,box-shadow] duration-[var(--hex-motion-fast)] placeholder:text-muted hover:bg-surface-2/80 focus-visible:bg-background focus-visible:ring-2 focus-visible:ring-accent/50 disabled:opacity-50'
+
 export function Input({ className, invalid = false, ...props }: InputProps) {
   return (
     <BaseInput
       aria-invalid={invalid || undefined}
       className={cn(
-        'h-9 w-full rounded-control border border-border bg-background px-3 text-[length:var(--text-body)] text-foreground outline-none transition-colors placeholder:text-muted focus-visible:border-foreground/40 disabled:opacity-50',
-        invalid && 'border-danger focus-visible:border-danger',
+        fieldClass,
+        'h-[36px] w-full px-3',
+        invalid && 'ring-2 ring-danger/50 focus-visible:ring-danger/60',
         className
       )}
       {...props}

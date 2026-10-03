@@ -11,7 +11,7 @@ import type { Bot, Connector, ConnectorGroup } from '../../lib/types'
 import { useConnectors, useConnectorsForBot } from '../../stores/connectors'
 
 import { ConnectorSetupSheet } from './connector-setup'
-import { cardClass, errorText, fieldLabel, formatTimestamp, Heading } from './shared'
+import { errorText, fieldLabel, formatTimestamp, Group, Heading } from './shared'
 
 const GROUPS: { id: ConnectorGroup; title: string }[] = [
   { id: 'search', title: 'Search and browsing' },
@@ -29,13 +29,7 @@ const FILTERS: { id: Filter; label: (bot: Bot) => string }[] = [
   { id: 'needs_setup', label: () => 'Needs setup' }
 ]
 
-export function ConnectorsTab({
-  bot,
-  initialConnector
-}: {
-  bot: Bot
-  initialConnector?: string
-}) {
+export function ConnectorsTab({ bot, initialConnector }: { bot: Bot; initialConnector?: string }) {
   const connectors = useConnectorsForBot(bot.name)
   const loading = useConnectors(state => state.loading)
   const storeError = useConnectors(state => state.error)
@@ -86,12 +80,15 @@ export function ConnectorsTab({
       <Heading description="Services this bot can reach. Keys are stored once on this daemon and shared by every bot.">
         Connectors
       </Heading>
-      <div className="mb-5 flex flex-wrap items-center gap-2">
-        <label className="relative">
-          <Search className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted" size={14} />
+      <div className="mb-6 flex flex-wrap items-center gap-2">
+        <label className="relative min-w-0 flex-1">
+          <Search
+            className="pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 text-muted"
+            size={15}
+          />
           <Input
             aria-label="Search connectors"
-            className="h-8 w-60 rounded-full pl-8"
+            className="rounded-full pl-9"
             onChange={event => setQuery(event.target.value)}
             placeholder="Search connectors"
             value={query}
@@ -102,10 +99,10 @@ export function ConnectorsTab({
             <button
               aria-selected={filter === item.id}
               className={cn(
-                'h-7 rounded-full px-3 text-[length:var(--text-secondary)] transition-colors',
+                'h-[30px] rounded-full px-3 text-[length:var(--text-secondary)] whitespace-nowrap transition-colors',
                 filter === item.id
                   ? 'bg-foreground text-background'
-                  : 'bg-surface-2 text-foreground hover:bg-surface-3'
+                  : 'bg-foreground/[0.07] text-foreground hover:bg-foreground/[0.11]'
               )}
               key={item.id}
               onClick={() => setFilter(item.id)}
@@ -128,7 +125,7 @@ export function ConnectorsTab({
         </p>
       ) : null}
       {loading && !connectors.length ? <SkeletonLines label="Loading connectors" /> : null}
-      <div className="space-y-5">
+      <div className="space-y-8">
         {GROUPS.map(group => {
           const rows = visible.filter(item => item.group === group.id)
 
@@ -137,46 +134,41 @@ export function ConnectorsTab({
           }
 
           return (
-            <div key={group.id}>
-              <p className="mb-2 pl-0.5 text-[length:var(--text-secondary)] text-muted">
-                {group.title}
-              </p>
-              <div className={cn(cardClass, 'divide-y divide-border')}>
-                {rows.map(item => (
-                  <ConnectorRow
-                    bot={bot}
-                    connector={item}
-                    expanded={expanded === item.id}
-                    key={item.id}
-                    onClear={() => act(clear(bot.name, item.id))}
-                    onExpand={() => setExpanded(expanded === item.id ? null : item.id)}
-                    onRemove={
-                      item.group === 'mcp'
-                        ? () => act(removeMcp(bot.name, item.id.replace(/^mcp:/, '')))
-                        : undefined
-                    }
-                    onSetup={() => setSheet(item.id)}
-                    onToggle={enabled => act(setForBot(bot.name, item.id, enabled))}
-                  />
-                ))}
-                {group.id === 'mcp' ? (
-                  adding ? (
-                    <AddMcpForm bot={bot} onDone={() => setAdding(false)} />
-                  ) : (
-                    <button
-                      className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-muted transition-colors hover:text-foreground"
-                      onClick={() => setAdding(true)}
-                      type="button"
-                    >
-                      <span className="inline-flex size-7 items-center justify-center rounded-control bg-surface-3">
-                        <Plus size={16} />
-                      </span>
-                      Add MCP server
-                    </button>
-                  )
-                ) : null}
-              </div>
-            </div>
+            <Group key={group.id} title={group.title}>
+              {rows.map(item => (
+                <ConnectorRow
+                  bot={bot}
+                  connector={item}
+                  expanded={expanded === item.id}
+                  key={item.id}
+                  onClear={() => act(clear(bot.name, item.id))}
+                  onExpand={() => setExpanded(expanded === item.id ? null : item.id)}
+                  onRemove={
+                    item.group === 'mcp'
+                      ? () => act(removeMcp(bot.name, item.id.replace(/^mcp:/, '')))
+                      : undefined
+                  }
+                  onSetup={() => setSheet(item.id)}
+                  onToggle={enabled => act(setForBot(bot.name, item.id, enabled))}
+                />
+              ))}
+              {group.id === 'mcp' ? (
+                adding ? (
+                  <AddMcpForm bot={bot} onDone={() => setAdding(false)} />
+                ) : (
+                  <button
+                    className="flex min-h-[52px] w-full items-center gap-3 px-4 py-2.5 text-left text-muted transition-colors hover:text-foreground"
+                    onClick={() => setAdding(true)}
+                    type="button"
+                  >
+                    <span className="inline-flex size-7 items-center justify-center rounded-[8px] bg-foreground/[0.07]">
+                      <Plus size={16} />
+                    </span>
+                    Add MCP server
+                  </button>
+                )
+              ) : null}
+            </Group>
           )
         })}
       </div>
@@ -225,16 +217,16 @@ function ConnectorRow({
 
   return (
     <div data-testid={`connector-${connector.id}`}>
-      <div className="flex items-center gap-3 px-3 py-2.5">
+      <div className="flex min-h-[56px] items-center gap-3 px-4 py-2.5">
         <ConnectorIcon icon={connector.icon} />
         <button
           aria-expanded={expanded}
-          className="min-w-0 flex-1 text-left"
+          className="min-w-0 flex-1 text-left outline-none"
           onClick={onExpand}
           type="button"
         >
           <span className="flex items-baseline gap-2">
-            <span className="font-medium">{connector.name}</span>
+            <span>{connector.name}</span>
             <span
               className={cn(
                 'min-w-0 truncate text-[length:var(--text-meta)]',
@@ -245,18 +237,22 @@ function ConnectorRow({
               {connector.state_text}
             </span>
           </span>
-          <span className="block truncate text-[length:var(--text-secondary)] text-muted">
+          <span className="mt-0.5 block truncate text-[length:var(--text-secondary)] text-muted">
             {connector.description}
           </span>
         </button>
         {control}
         <ChevronDown
-          className={cn('shrink-0 text-muted transition-transform', expanded && 'rotate-180')}
+          aria-hidden
+          className={cn(
+            'shrink-0 text-muted transition-transform duration-[var(--hex-motion-fast)]',
+            expanded && 'rotate-180'
+          )}
           size={15}
         />
       </div>
       {expanded ? (
-        <div className="grid gap-3 px-3 pt-1 pb-3 pl-[52px] text-[length:var(--text-secondary)]">
+        <div className="hex-fade grid gap-3 px-4 pt-1 pb-4 pl-[56px] text-[length:var(--text-secondary)]">
           {connector.fields.length ? (
             <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
               {connector.fields.map(field => (
@@ -320,7 +316,7 @@ function AddMcpForm({ bot, onDone }: { bot: Bot; onDone: () => void }) {
 
   return (
     <form
-      className="grid gap-3 px-3 py-3"
+      className="hex-fade grid gap-3 px-4 py-4"
       onSubmit={event => {
         event.preventDefault()
         setBusy(true)

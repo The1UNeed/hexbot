@@ -217,10 +217,15 @@ function replaceMessage(
 const SPINNER_LINE = /^[^a-z]*[a-z]+\.\.\.$/i
 
 /**
- * The assistant message deltas and tool calls attach to. Hexbot can emit a
- * delta or a tool call without a preceding `message.start` (a resumed turn),
- * so one is opened on demand.
+ * Ends the message the bot is writing: its words become a finished part, and
+ * whatever it writes next starts a new bubble.
  */
+function closePart(message: Message): Message {
+  return message.text.trim()
+    ? { ...message, parts: [...(message.parts ?? []), message.text], text: '' }
+    : message
+}
+
 /**
  * A card that blocks the turn (a question, an approval) ends the bubble in
  * progress so the bot's next words start a new one under the card. The
@@ -235,12 +240,31 @@ function closeForCard(transcript: Transcript): Transcript {
   }
 
   return {
-    ...replaceMessage(transcript, current.id, message => ({ ...message, streaming: false })),
+    ...replaceMessage(transcript, current.id, message => settle({ ...message, streaming: false })),
     streamingMessageId: null,
-    turnPrefix: (transcript.turnPrefix ?? '') + current.text
+    turnPrefix: (transcript.turnPrefix ?? '') + [...(current.parts ?? []), current.text].join('')
   }
 }
 
+/**
+ * A closed message's last words go in `text`, the parts before them stay
+ * parts. `message.complete` carries the bot's last message, which is already
+ * a part when the turn stopped right after a tool.
+ */
+function settle(message: Message, finalText?: string): Message {
+  const text = finalText || message.text
+  const last = message.parts?.at(-1)
+
+  return last !== undefined && (!text.trim() || text.trim() === last.trim())
+    ? { ...message, parts: message.parts?.slice(0, -1), text: last }
+    : { ...message, text }
+}
+
+/**
+ * The assistant message deltas and tool calls attach to. Hexbot can emit a
+ * delta or a tool call without a preceding `message.start` (a resumed turn),
+ * so one is opened on demand.
+ */
 function withCurrentAssistant(
   transcript: Transcript,
   patch: (message: Message) => Message
@@ -371,18 +395,20 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     messageInterim(sessionId, text, alreadyStreamed = false) {
-      // Commentary emitted alongside tool calls. When Hexbot already streamed
-      // it as deltas, appending again would duplicate the text.
-      if (alreadyStreamed || !text) {
+      // Commentary the bot finished alongside tool calls: a message of its
+      // own. When Hexbot already streamed it as deltas, it is closed as is.
+      if (!alreadyStreamed && !text) {
         return
       }
 
       update(sessionId, transcript =>
-        withCurrentAssistant(transcript, message => ({
-          ...message,
-          streaming: true,
-          text: message.text + text
-        }))
+        withCurrentAssistant(transcript, message =>
+          closePart({
+            ...message,
+            streaming: true,
+            text: alreadyStreamed ? message.text : message.text + text
+          })
+        )
       )
     },
 
@@ -432,7 +458,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
       update(sessionId, transcript =>
         withCurrentAssistant(transcript, message => ({
-          ...message,
+          ...closePart(message),
           toolCalls: [...message.toolCalls, call]
         }))
       )
@@ -519,12 +545,11 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         }
 
         const finalize = (message: Message): Message => ({
-          ...message,
+          ...settle(message, finalText),
           activity: undefined,
           error: payload.error ?? message.error,
           status: payload.status,
           streaming: false,
-          text: finalText ? finalText : message.text,
           toolCalls: message.toolCalls.map(call =>
             call.status === 'running' ? { ...call, status: 'ok' } : call
           ),

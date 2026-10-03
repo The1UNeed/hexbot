@@ -57,7 +57,7 @@ import { UpdatePill } from '../update-pill'
 const DAY = 86_400_000
 
 const rowClass =
-  'flex w-full items-center gap-3 rounded-panel px-2.5 py-2.5 text-left outline-none transition-colors duration-[var(--hex-motion-fast)] hover:bg-surface-2/70'
+  'flex w-full items-center gap-3 rounded-panel px-2.5 py-2.5 text-left outline-none transition-colors duration-[var(--hex-motion-fast)] hover:bg-foreground/[0.04]'
 
 const rowFocus = 'ring-1 ring-foreground/40'
 
@@ -148,7 +148,11 @@ function RoomRow({
 
   return (
     <button
-      className={cn(rowClass, active && 'bg-surface-2', focused === `room:${room.id}` && rowFocus)}
+      className={cn(
+        rowClass,
+        active && 'bg-background shadow-card',
+        focused === `room:${room.id}` && rowFocus
+      )}
       data-roster-id={`room:${room.id}`}
       onClick={() => onOpen(room.id)}
       type="button"
@@ -293,7 +297,7 @@ function BotRows({
       <button
         className={cn(
           rowClass,
-          selected && 'bg-surface-2',
+          selected && 'bg-background shadow-card',
           focused === `bot:${bot.name}` && rowFocus
         )}
         data-roster-id={`bot:${bot.name}`}
@@ -325,8 +329,8 @@ function BotRows({
             return (
               <div
                 className={cn(
-                  'group/row flex items-center rounded-control pr-1 transition-colors hover:bg-surface-2',
-                  active === section.id && 'bg-surface-2'
+                  'group/row flex items-center rounded-[10px] pr-1 transition-colors hover:bg-foreground/[0.04]',
+                  active === section.id && 'bg-background shadow-card'
                 )}
                 key={section.id}
               >
@@ -631,15 +635,25 @@ export function RosterColumn() {
   const activeRoom = (params as { room?: string }).room
 
   const footerRow =
-    'flex w-full items-center gap-3 rounded-panel px-2.5 py-2 text-left outline-none transition-colors hover:bg-surface-2/70'
+    'flex w-full items-center gap-3 rounded-panel px-2.5 py-2 text-left outline-none transition-colors hover:bg-foreground/[0.04]'
 
   const footerIcon =
     'grid size-7 shrink-0 place-items-center rounded-full border border-border text-foreground'
 
   return (
-    <div className="flex h-screen min-h-0 flex-col bg-surface" onKeyDown={keyboard} ref={root}>
-      <header className={cn('hex-drag shrink-0 px-3 pb-2', macTitleBar ? 'pt-[38px]' : 'pt-3')}>
-        <div className="hex-no-drag mb-2 flex items-center justify-end">
+    <div className="flex h-full min-h-0 flex-col" onKeyDown={keyboard} ref={root}>
+      <header className={cn('hex-drag shrink-0 px-3 pb-2', macTitleBar ? 'pt-[42px]' : 'pt-3')}>
+        <div className="hex-no-drag flex items-center gap-2">
+          <label className="relative block min-w-0 flex-1">
+            <Search className="absolute top-1/2 left-3 -translate-y-1/2 text-muted" size={14} />
+            <Input
+              aria-label="Search bots and sections"
+              className="h-9 rounded-full border-transparent bg-foreground/[0.05] pl-9 focus-visible:border-transparent focus-visible:bg-background focus-visible:shadow-card"
+              onChange={event => setQuery(event.target.value.toLowerCase())}
+              placeholder="Search"
+              value={query}
+            />
+          </label>
           <Menu
             items={[
               {
@@ -666,7 +680,7 @@ export function RosterColumn() {
             trigger={
               <button
                 aria-label="New"
-                className="grid size-8 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
+                className="hex-glass hex-glass-press grid size-9 shrink-0 place-items-center rounded-full text-foreground/75 transition-colors hover:text-foreground"
                 type="button"
               >
                 <Plus size={18} />
@@ -674,16 +688,6 @@ export function RosterColumn() {
             }
           />
         </div>
-        <label className="hex-no-drag relative block">
-          <Search className="absolute top-1/2 left-3 -translate-y-1/2 text-muted" size={14} />
-          <Input
-            aria-label="Search bots and sections"
-            className="h-9 rounded-[10px] border-transparent bg-surface-2 pl-9 focus-visible:border-transparent"
-            onChange={event => setQuery(event.target.value.toLowerCase())}
-            placeholder="Search"
-            value={query}
-          />
-        </label>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1">
         {useBots.getState().loaded && ordered.length === 0 ? (

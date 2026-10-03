@@ -5,7 +5,7 @@ import { modelsList } from '../../lib/api'
 import type { Bot, ModelOption } from '../../lib/types'
 import { useSettings } from '../../stores/settings'
 
-import { errorText, fieldLabel, Heading, type SaveBot } from './shared'
+import { errorText, Group, Heading, Row, type SaveBot } from './shared'
 
 export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const [models, setModels] = useState<{ all: ModelOption[]; curated: ModelOption[] }>({
@@ -43,62 +43,77 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const visible = ordered.filter(item => !bot.provider || item.provider === bot.provider)
   const current = visible.find(item => item.id === bot.model)
 
+  const detail = (text: string) => (
+    <span className="text-[length:var(--text-secondary)] text-muted">{text}</span>
+  )
+
   return (
     <div>
-      <Heading description="Which provider and model this bot thinks with. Keys are set once in Settings, Providers.">
+      <Heading description="Which provider and model this bot thinks with. Keys live in Settings, Providers.">
         Model
       </Heading>
-      <div className="grid max-w-xl gap-4">
-        <label className="block">
-          <span className={fieldLabel}>Provider</span>
-          <Select
-            label="Provider"
-            onValueChange={provider => void onSave({ provider })}
-            options={providers.map(provider => ({ label: providerLabel(provider), value: provider }))}
-            placeholder="Choose a provider"
-            value={bot.provider ?? undefined}
+      <div className="space-y-8">
+        <Group>
+          <Row
+            control={
+              <div className="w-[min(280px,42vw)]">
+                <Select
+                  label="Provider"
+                  onValueChange={provider => void onSave({ provider })}
+                  options={providers.map(provider => ({
+                    label: providerLabel(provider),
+                    value: provider
+                  }))}
+                  placeholder="Choose a provider"
+                  value={bot.provider ?? undefined}
+                />
+              </div>
+            }
+            title="Provider"
           />
-        </label>
-        <label className="block">
-          <span className={fieldLabel}>Model</span>
-          <Select
-            label="Model"
-            onValueChange={model => {
-              const found = ordered.find(item => item.id === model)
-              void onSave({ model, ...(found?.provider ? { provider: found.provider } : {}) })
-            }}
-            options={visible.map(item => ({ label: item.label, value: item.id }))}
-            placeholder="Choose a model"
-            value={bot.model ?? undefined}
+          <Row
+            control={
+              <div className="w-[min(280px,42vw)]">
+                <Select
+                  label="Model"
+                  onValueChange={model => {
+                    // The same id can exist under several providers; keep the chosen one.
+                    const found =
+                      visible.find(item => item.id === model) ??
+                      ordered.find(item => item.id === model)
+
+                    void onSave({
+                      model,
+                      ...(found?.provider ? { provider: found.provider } : {})
+                    })
+                  }}
+                  options={visible.map(item => ({ label: item.label, value: item.id }))}
+                  placeholder="Choose a model"
+                  value={bot.model ?? undefined}
+                />
+              </div>
+            }
+            title="Model"
           />
-        </label>
+        </Group>
         {current && (current.input_cost || current.output_cost || current.context) ? (
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-[length:var(--text-secondary)]">
+          <Group title="About this model">
             {current.context ? (
-              <>
-                <dt className="text-muted">Context</dt>
-                <dd>{current.context.toLocaleString()} tokens</dd>
-              </>
+              <Row control={detail(`${current.context.toLocaleString()} tokens`)} title="Context" />
             ) : null}
             {current.input_cost ? (
-              <>
-                <dt className="text-muted">Input</dt>
-                <dd>{current.input_cost} per million tokens</dd>
-              </>
+              <Row control={detail(`${current.input_cost} per million tokens`)} title="Input" />
             ) : null}
             {current.output_cost ? (
-              <>
-                <dt className="text-muted">Output</dt>
-                <dd>{current.output_cost} per million tokens</dd>
-              </>
+              <Row control={detail(`${current.output_cost} per million tokens`)} title="Output" />
             ) : null}
-          </dl>
+          </Group>
         ) : null}
-        {error && (
-          <p className="text-danger" role="alert">
+        {error ? (
+          <p className="text-[length:var(--text-secondary)] text-danger" role="alert">
             {error}
           </p>
-        )}
+        ) : null}
       </div>
     </div>
   )

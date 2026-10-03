@@ -87,7 +87,14 @@ describe('settings', () => {
   })
 
   it('adds and tests a provider key', async () => {
-    const setProviderKey = vi.fn().mockResolvedValue(undefined)
+    // Saving marks the provider configured, as the daemon does; the row must
+    // stay put (and open) instead of jumping to the Connected group.
+    const setProviderKey = vi.fn(async () => {
+      useSettings.setState(state => ({
+        providers: state.providers.map(item => ({ ...item, configured: true }))
+      }))
+    })
+
     useSettings.setState({
       providers: [
         { auth_type: 'key', configured: false, id: 'openai', label: 'OpenAI', models_source: 'api' }
@@ -100,6 +107,8 @@ describe('settings', () => {
       curated: []
     })
     render(<ProvidersSettings />)
+    // The key field is behind the row's "Add key" so the list stays one line per provider.
+    fireEvent.click(screen.getByRole('button', { name: 'Add key' }))
     fireEvent.change(screen.getByLabelText('OpenAI API key'), { target: { value: 'secret' } })
     fireEvent.click(screen.getByRole('button', { name: 'Test' }))
     await waitFor(() => expect(setProviderKey).toHaveBeenCalledWith('openai', 'secret'))

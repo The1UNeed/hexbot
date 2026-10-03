@@ -16,6 +16,8 @@ const TONES: Record<BotStatus, { border: string; text: string }> = {
 export interface ComposerShellProps {
   /** Attachment chips or popovers rendered above the field. */
   above?: ReactNode
+  /** A quiet control just before send, such as the model picker. */
+  accessory?: ReactNode
   canSend: boolean
   children: ReactNode
   className?: string
@@ -31,15 +33,17 @@ export interface ComposerShellProps {
 }
 
 /**
- * The floating pill that wraps a message field: attach on the left, send or
- * stop on the right. The 32px buttons sit 10px from the pill's outer edge on
- * every side, so they stay concentric with its 26px corners as the field
- * grows. They are sized in px because the root font is 14px, which makes
- * `size-8` 28px. The field itself is passed as children so the bot and room
- * composers share one look.
+ * The floating glass pill that wraps a message field: attach on the left,
+ * an optional accessory and send or stop on the right. The 30px buttons sit
+ * 8px from the pill's outer edge on every side, so they stay concentric with
+ * its 23px corners as the field grows (46px tall for one line). They are
+ * sized in px because the root font is 14px, which makes `size-8` 28px. The
+ * field itself is passed as children so the bot and room composers share one
+ * look.
  */
 export function ComposerShell({
   above,
+  accessory,
   canSend,
   children,
   className,
@@ -59,7 +63,7 @@ export function ComposerShell({
       {notice ? (
         <p
           className={cn(
-            'hex-fade mb-2 flex items-center gap-2 px-3 text-[length:var(--text-secondary)]',
+            'hex-glass hex-bubble mx-auto mb-2 flex w-fit max-w-full items-center gap-2 rounded-full px-3.5 py-1.5 text-[length:var(--text-secondary)]',
             tone.text || 'text-muted'
           )}
           data-testid="composer-notice"
@@ -71,7 +75,7 @@ export function ComposerShell({
       ) : null}
       <div
         className={cn(
-          'flex items-end gap-2 rounded-[26px] border border-border bg-surface p-[9px] shadow-[0_1px_2px_rgb(0_0_0/0.04)] transition-colors focus-within:border-foreground/25',
+          'hex-glass flex items-end gap-1.5 rounded-[23px] border border-transparent p-[7px] transition-[border-color,box-shadow] duration-[var(--hex-motion-fast)]',
           tone.border
         )}
         data-status={status}
@@ -79,7 +83,7 @@ export function ComposerShell({
         {onAttach ? (
           <button
             aria-label="Attach files"
-            className="grid size-[32px] shrink-0 place-items-center rounded-full border border-border text-foreground transition-colors hover:bg-surface-2"
+            className="hex-glass-press hex-focus grid size-[30px] shrink-0 place-items-center rounded-full bg-foreground/[0.06] text-foreground transition-colors hover:bg-foreground/10"
             onClick={onAttach}
             type="button"
           >
@@ -88,11 +92,12 @@ export function ComposerShell({
         ) : (
           <span className="w-2" />
         )}
-        <div className="min-w-0 flex-1">{children}</div>
+        <div className="min-w-0 flex-1 px-1">{children}</div>
+        {accessory}
         {streaming ? (
           <button
             aria-label="Stop"
-            className="grid size-[32px] shrink-0 place-items-center rounded-full bg-foreground text-background transition-opacity hover:opacity-85"
+            className="hex-glass-press hex-focus hex-fade grid size-[30px] shrink-0 place-items-center rounded-full bg-foreground text-background transition-opacity hover:opacity-85"
             onClick={onStop}
             type="button"
           >
@@ -102,8 +107,10 @@ export function ComposerShell({
           <button
             aria-label="Send"
             className={cn(
-              'grid size-[32px] shrink-0 place-items-center rounded-full transition-all duration-[var(--hex-motion-fast)]',
-              canSend ? 'bg-foreground text-background hover:opacity-85' : 'bg-surface-2 text-muted'
+              'hex-glass-press hex-focus grid size-[30px] shrink-0 place-items-center rounded-full transition-[background-color,color,transform] duration-[var(--hex-motion-fast)]',
+              canSend
+                ? 'bg-foreground text-background hover:opacity-85'
+                : 'bg-foreground/[0.06] text-muted'
             )}
             disabled={!canSend || sending}
             onClick={onSend}
@@ -118,4 +125,4 @@ export function ComposerShell({
 }
 
 export const composerFieldClass =
-  'block max-h-44 w-full resize-none border-0 bg-transparent px-1 py-[5px] text-[length:var(--text-body)] leading-[22px] text-foreground outline-none placeholder:text-muted disabled:opacity-50'
+  'block max-h-44 w-full resize-none border-0 bg-transparent px-1 py-1 text-[length:var(--text-body)] leading-[22px] text-foreground outline-none placeholder:text-muted disabled:opacity-50'

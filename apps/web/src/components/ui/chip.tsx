@@ -12,7 +12,7 @@ const chipVariants = cva(
         accent: 'bg-accent/12 text-accent',
         danger: 'bg-danger/12 text-danger',
         muted: 'text-muted',
-        neutral: 'bg-surface-2 text-muted',
+        neutral: 'bg-foreground/[0.07] text-muted',
         success: 'bg-success/12 text-success',
         warning: 'bg-warning/12 text-warning'
       }

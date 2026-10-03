@@ -11,8 +11,9 @@ own visual identity. Read `CLAUDE.md` for the words.
    one Avatar, one Chip. Variants via CVA, never one-off styles.
 3. Tokens over literals. Every colour, radius and shadow is a CSS variable in
    `src/styles/tokens.css`. No raw hex in components.
-4. Streaming is the normal state. Every transcript element renders correctly
-   while partial: text, tool calls, approvals, attachments.
+4. A running turn is the normal state. Every transcript element renders
+   correctly mid-turn: tool calls, approvals, attachments. A bot's words
+   appear one finished message at a time, never mid-sentence.
 5. Keyboard first: Enter sends, Shift+Enter newline, Esc stops or closes,
    Cmd/Ctrl+N new section, Cmd/Ctrl+K quick switcher (milestone 3).
 
@@ -40,19 +41,43 @@ own visual identity. Read `CLAUDE.md` for the words.
   (`components/ui/hexbot-act.tsx`, 21 acts). The install screen gives each
   stage its own act. In a chat the face never changes size or plays acts on
   its own: a working bot's face only bobs (`hex-think`).
-- Shadows only on floating layers (menus, dialogs): a hairline border plus
-  one soft shadow. Nothing in-panel.
-- Motion: 120ms ease-out for hover and open, 200ms for panel slide. Respect
-  prefers-reduced-motion.
+- Shadows only on floating layers (menus, dialogs, the glass chrome) and the
+  cards that sit on the canvas: a hairline plus one soft shadow.
+- Liquid glass (`hex-glass`, `hex-glass-strong` in `tokens.css`) is for
+  floating chrome only: the name pill and round buttons above the chat, the
+  composer, the waiting pill, the side panel, dialogs and menus. A
+  translucent fill blurs and saturates what scrolls under it, a specular rim
+  is brighter at the top left, and a soft sheen crosses the top. In
+  Chromium (the app, Chrome, Edge) the backdrop also bends a few pixels
+  through the `#hex-liquid` SVG filter in `index.html`; other browsers blur
+  only. Content (bubbles, cards, rows) is never glass.
+- Motion, one short scale in `tokens.css`: 120 ms (`fast`) for hover, press
+  and menus; 180 ms (`rise`) for a label or popover arriving, a 4 px lift
+  and a fade, never a scale; 320 ms (`enter`, `ease-spring`) for a chat
+  message arriving whole, like a text: it springs up from its tail corner
+  (bottom left for a bot, bottom right for you), the one place a scale is
+  used. The live status appears and leaves with no motion; 240 ms (`panel`) for the side panel and for anything
+  that unfolds or folds in the column; 320 ms (`enter`) for a whole screen.
+  `ease-out` settles, `ease-in-out` is for things leaving, `ease-spring` is
+  for small controls that snap into place (the switch knob). Only what
+  arrives while the chat is open animates: history is drawn still. The one
+  continuous motion is a working bot's face. Respect prefers-reduced-motion.
+- Focus: the accent ring, 2 px outside the shape (`hex-focus`), on every
+  rounded control, including the glass pills.
 
 ## Layout
 
-Three columns, resizable, min widths 240 / 480 / 300.
+Three columns, resizable, min widths 240 / 480 / 300. The window is a grey
+canvas: the roster sits on it directly, and the conversation and the side
+panel are rounded cards (22 px) inset 8 px from its edges, with the resize
+handles in the gutters. Under 700 px the conversation fills the window and
+the roster slides in as a drawer.
 
 ### Left: roster
 
-- Header: a window-drag strip (padded for the macOS traffic lights), a "+"
-  menu (New bot, New section, New room) and a search pill. No app name.
+- Header: a window-drag strip (padded for the macOS traffic lights) with one
+  row: the search pill and a round glass "+" menu (New bot, New section, New
+  room). No app name. The selected row is a white card on the canvas.
 - List: bots and rooms in one list, ordered by last activity. A bot row is
   its face (40px), name, optional label, and a status dot on the face (see
   "Status colours"). No times, no message preview: a bot has many
@@ -81,43 +106,65 @@ Three columns, resizable, min widths 240 / 480 / 300.
 
 ### Centre: conversation
 
-- Header: a 44px strip with a small face and the bot name, the section
-  title beside it in muted text (click to rename), the model as a muted
-  pill with a menu, section actions (rename, archive, delete), and a toggle
-  for the right panel.
-- Transcript: full width with a slim gutter (capped at 64rem on very wide
-  windows). Bot messages left-aligned in grey bubbles, human messages
-  right-aligned in inverse bubbles (black on light, white on dark). A
-  room bubble also carries the bot's name. Copy and retry icons appear
-  beside a bubble on hover.
-  Markdown body with code blocks (copy button), tables, images. Time
+- Header: nothing but floating glass over the transcript, which scrolls
+  under it. In the centre, a pill with the bot's face (status dot on it,
+  bobbing while it works), its name, and the section title in muted text;
+  clicking it opens or closes the side panel, double-clicking renames the
+  section. Top right, round glass buttons for section actions (Rename,
+  Archive, Delete) and, while the panel is closed, the panel toggle. The
+  model is chosen in Bot settings, Model, not in the chat.
+- Transcript: a centred column capped at 52rem. Bot messages left-aligned
+  in soft grey bubbles, human messages right-aligned in inverse bubbles
+  (black on light, white on dark). A bot's own chat draws no faces in the
+  column (the pill says whose chat it is); a room draws the bot's face and
+  name beside its bubbles. Every bubble and card is fully rounded (20 px,
+  a pill when it is one line) on a shared left edge; bubbles and cards from
+  the same side in a row stack 4 px apart, and a new speaker starts 12 px
+  lower. Each message a bot finishes is its own bubble, so a turn that
+  says "I'll run both" and then reports back is two bubbles, live and after
+  a reload. Copy and retry icons appear beside the last bubble on hover.
+  Markdown body with code blocks (a fenced block is a block even without a
+  language; its copy button shows on hover), tables, images. Time
   separators ("Today 9:13 PM") between days and after 20 quiet minutes.
-  Every bot message, pending or done, has one 24px face at the left of its
-  column. While a reply is pending the face bobs where the next bubble will
-  land. No spinner, no ring; a muted step label ("Searching the web for
-  apple") sits beside it only while a tool runs.
-  "Waiting on you" is a purple banner pinned under the header, above the
-  transcript, while a bot has asked the human something (in a room it
-  names the bot). Nothing is written into the transcript for it. A red
-  banner names the bot when a room turn failed.
-- Work panel: once a turn has thought or run tools for two seconds, a
-  panel opens beside the face with the reasoning trace as it streams and
-  each step as it happens (the running step shows its arguments live). It
-  closes on its own when the reply text starts and reopens while a tool
-  runs; a chevron toggles it by hand. When the turn ends the work collapses
-  into one small muted line under the reply ("Thought for 12s · 3 steps",
-  "Searched the web for apple · 3s") that opens into the same panel; each
-  step expands to arguments and output in monospace. Work that finished in
-  under two seconds leaves no line.
+- Live status: from the moment a turn starts until the whole turn is done,
+  a line sits at its foot, under the messages the bot has finished: the
+  bot's bobbing face and muted words, with no bubble behind them. It says
+  what the bot is doing in plain words ("General is thinking", "General is
+  writing", "General is working", "General is searching the web", "General
+  is running a command", "Connecting to GitHub" for a connector's tool, or
+  the provider's wait notice), never the command, the query or the time;
+  the side panel says the same. The face keeps bobbing while a tool runs.
+  No spinner, no ring, no shimmer. Each new label crossfades in. What the
+  bot is still writing stays hidden ("General is writing"); the message
+  appears whole when it is done and springs in. When the turn ends the line
+  is gone at once, the closing message springs in, and the summary line
+  fades in at the foot of the turn, where the status was.
+- "Waiting on you" is a purple glass pill pinned under the header pill
+  while a bot has asked the human something (in a room it names the bot).
+  Nothing is written into the transcript for it. A red banner names the bot
+  when a room turn failed.
+- Work card: thinking traces and steps are hidden until asked for. Click
+  the live status and it opens under it, set off by a thin rule on the left
+  and no background, with the
+  reasoning trace as it streams and each step as a one-line row; a row
+  opens to its arguments and output in monospace only when clicked. The
+  card and a row's detail unfold into the column rather than popping. Once
+  opened the card stays open until the turn ends; "Open in Computer" shows
+  the same steps in the side panel. When the turn ends the work collapses
+  into one small muted line at the foot of the turn ("Thought for 12s",
+  "Worked for 3s") that opens into the same card. Work that finished in under two
+  seconds leaves no line.
   Housekeeping tools (memory, tasks, section search, skills, renaming the
-  section) never appear once finished. The Computer tab in the panel still lists every call.
+  section) never appear once finished. The Computer tab in the panel still
+  lists every call.
 - Approvals: an inline card with the command or action in monospace, the
   reason, and three buttons: Approve, Allow in this section, Deny. Requests
   raised by the daemon (code runs, browser scripts, cron) show Approve and
   Deny only. The card stays in the transcript after the decision, marked
   with the outcome.
-- Streaming: text appears as it arrives with a subtle caret; the composer's
-  send button becomes Stop.
+- While a turn runs the composer's send button becomes Stop. Text does not
+  type itself out; each message appears whole and springs in. In a room the
+  bot's words arrive as its room message when its turn ends.
 - Attachments: images render inline with a lightbox; files render as chips
   with name, size, and type icon.
 - Questions: when a bot asks through the clarify tool, a card with the
@@ -135,17 +182,20 @@ One colour per state, used everywhere a bot or room shows one: blue while
 it works (the dot pulses), purple (the accent) when it needs you, red when
 it stopped, green when it finished and you have not opened it yet on any device. The dot
 sits on the face in the roster, at the start of the section row it is about,
-on the face in the conversation header, and on the room cluster. A section
+on the face in the header pill, and on the room cluster. A section
 row with an unsent draft and no status shows a draft icon in the same slot.
 The composer pill takes the same colour; a stopped bot puts its error in a
-one-line notice above it. Waiting is the banner under the header, not a
+one-line notice above it. Waiting is the pill under the header, not a
 notice. Working and idle draw the plain pill.
 
 ### Composer
 
-- A floating pill: a round "+" attach button on the left, the field, and a
-  round send arrow on the right that becomes a stop square while streaming.
-- Multiline textarea growing to 8 lines, then scrolling. Placeholder
+- A floating glass pill over the foot of the transcript, which scrolls
+  under it: a round "+" attach button on the left, the field, and a round
+  send arrow on the right that becomes a stop square while streaming.
+- 46 px tall for one line, with 30 px round buttons set 8 px in so they
+  stay concentric with the pill's corners as the field grows. Multiline
+  textarea growing to 8 lines, then scrolling. Placeholder
   "Message {bot name}".
 - Left: attach button (file picker; drag and drop anywhere over the
   transcript; paste images and text files). Attachments preview as chips
@@ -155,25 +205,58 @@ notice. Working and idle draw the plain pill.
 - @-mention: typing "@" opens a popover listing the section's bot and, in
   rooms, all members (milestone 3).
 
-### Right: profile panel
+### Right: side panel
 
-- A glance at the bot, titled with its name: a large face (click it for
-  the Bot / Upload picker with the shape and colour grids), the name with
-  the label chip and model under it, then Name, Label and Description
-  fields saved on blur, a "Notify me" switch card (native notifications
-  when this bot stops or needs you), and one "Bot settings" button that
-  opens the window below on the tab last used for this bot.
-- Status is not in the panel. It lives in the chat: the status line above
-  a reply while the bot works, the question or approval card when it needs
-  you, a Stopped card at the point of failure, and the coloured composer.
-- The panel remembers open or closed per window.
+- A glass card opened from the name pill above the chat. At the top, the
+  bot's large face (click it for the Bot / Upload picker), its name and
+  label as bare fields saved on blur ("Add a label" when empty), and while
+  the bot works, a blue status chip saying what it is doing in plain words
+  that opens Computer.
+- Three tabs in a segmented control:
+  - Details: the description, a card with Model (opens Bot settings, Model)
+    and the "Notify me" switch (native notifications when this bot stops or
+    needs you), a card of doors into Bot settings (Soul, Memory, Tools,
+    Connectors, Skills), and "Bot settings" for the tab last used.
+  - Library: images (a three-column grid) and files shared in the section,
+    newest first.
+  - Computer: every tool call in the section, housekeeping included, newest
+    first, each with its glyph, time and result mark, closed until clicked
+    open to its arguments and output. A plain-words line on top says what
+    the bot is doing while a tool runs, and the tab shows a pulsing dot.
+- Opening and closing is one 240 ms move: the panel's column widens or
+  narrows while the chat column follows, and the card slides in from the
+  right edge. The panel remembers open or closed, and its tab, per window.
+  Under 1100 px it floats over the chat and slides in from the right.
+
+### Settings windows
+
+Settings, Bot settings and Room settings share one shell
+(`components/ui/settings-shell.tsx`): a glass window (`hex-glass-strong`,
+24 px radius) over the dimmed, blurred app, with a round glass close button
+floating in the top right corner and no title bar. Tabs run down the left
+(220 px, transparent over the glass) as icon-and-label rows under tiny muted
+group labels; the active tab is a soft filled pill. Under 640 px the tabs
+become one scrolling pill row on top. Room settings has no tabs and is a
+narrower, single-column window.
+
+A page is a 20 px title, one muted line, then grouped lists in the iOS and
+macOS style: a small muted label, one white card (a faint white film in
+dark) with hairline dividers, and rows of 52 px or more that hold a title, an
+optional second line, and one control on the right (a switch, a select, a
+small button, or a value). Choices such as approval modes are rows with a
+check; text fields inside a card are bare, with their label on the left.
+Longer texts (memory, the soul) are one card-shaped editor. Nothing is
+nested inside a card and no row carries more than one line of explanation.
 
 ### Bot settings window
 
-- Route `/b/$bot/settings/$tab`, rendered as the same dialog as global
-  Settings (left tabs, 208 px) over the three columns. Closing returns to
-  the section that was open. `?connector=<id>` opens that connector's
-  set-up sheet, which is how a "Fix Notion" action in the chat lands here.
+- Route `/b/$bot/settings/$tab`, rendered in the shared shell over the
+  three columns; the bot's face and name sit at the top of the tab list.
+  Closing returns to the section that was open. `?connector=<id>` opens
+  that connector's set-up sheet, which is how a "Fix Notion" action in the
+  chat lands here.
+- Tabs in three groups: Profile, Soul, Model; Abilities (Memory, Tools,
+  Connectors, Skills); Manage (Approvals, Sections, Advanced).
 - Tabs: Profile (face, name, label, description, Shareable), Soul
   (full-height editor, template menu with a confirm, word count), Model
   (provider and model, curated group pinned on top, context and price
@@ -227,16 +310,21 @@ notice. Working and idle draw the plain pill.
 7. First bot: name, avatar, model. Persona optional. Creates the bot and its
    first section, lands in the chat.
 
-### Settings (dialog with left tabs)
+### Settings (the shared shell, global tabs)
 
-- Providers: list of configured providers with key status, add and remove,
-  test button, the billing notice.
-- Network: "Allow other devices on this network" toggle. When on: shows the
-  address list, the current pairing code (rotates every 10 minutes or after
-  use), a QR of the hexbot:// link, and the list of paired devices with
-  last seen and a Revoke button.
+Tabs in four groups: Models (Providers, Usage), Devices (Network, Hex
+Connect, Users), You (Memory, Approvals, Appearance), App (Updates, About).
+
+- Providers: a search pill, then "Connected" and "More providers" cards,
+  one row per provider with its state and one control ("Add key", "Sign
+  in", or a Connected chip). A row expands to the key field with Save and
+  Test, or the sign-in flow, and Remove key. A Defaults card holds the
+  default and fallback model. The billing notice is the page's one line.
+- Network: "Allow other devices on this network" switch, the addresses
+  while it is on, a Paired devices card with Revoke and "Create link", and
+  the pairing card (code, QR, link, Copy) once a link exists.
 - Approvals: "Choose when Hexbot asks before a bot acts. Bots and rooms can
-  override it." Modes Manual, Auto, and Bypass (admin only), one line each;
+  override it." Modes Manual, Auto, and Bypass (admin only), one row each;
   a notice when the daemon has no OS sandbox.
 - Appearance: theme System, Light, Dark.
 - Updates: current version, channel, check now.
@@ -264,7 +352,8 @@ notice. Working and idle draw the plain pill.
   Make main and a two-step Remove, Add bot, approval mode, limits, and
   Delete room. Removing the last bot deletes the room, never the bot.
 - Empty section: the bot's avatar, name, and title, and three suggested
-  prompts derived from its description.
+  prompts derived from its description, drawn as plain grey pills (content,
+  not glass).
 
 ## Accessibility
 

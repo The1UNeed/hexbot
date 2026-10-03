@@ -328,46 +328,123 @@ export const visibleSteps = (calls: ToolCall[]) => calls.filter(call => !QUIET_T
 const formatSeconds = (seconds: number) =>
   seconds >= 60 ? `${Math.round(seconds / 60)}m` : `${Math.max(1, Math.round(seconds))}s`
 
+/** What the bot is doing in plain words, per built-in tool; never the command or the query. */
+const ACTIVITY: Record<string, string> = {
+  browser_click: 'is browsing the web',
+  browser_navigate: 'is browsing the web',
+  browser_type: 'is browsing the web',
+  clarify: 'is asking you something',
+  cronjob_manage: 'is setting up a routine',
+  delegate_task: 'is asking another bot',
+  execute_code: 'is running code',
+  hexbot_rename_section: 'is naming the section',
+  hexbot_soul: 'is updating its soul',
+  image_generate: 'is making an image',
+  ls: 'is working with files',
+  memory: 'is updating its memory',
+  patch: 'is working with files',
+  read_file: 'is working with files',
+  search_files: 'is working with files',
+  session_search: 'is looking through past sections',
+  skill_manage: 'is updating its skills',
+  skill_view: 'is reading a skill',
+  skills_list: 'is checking its skills',
+  terminal: 'is running a command',
+  text_to_speech: 'is recording a voice reply',
+  todo_list: 'is planning',
+  video_generate: 'is making a video',
+  vision_analyze: 'is looking at an image',
+  web_extract: 'is reading a web page',
+  web_search: 'is searching the web',
+  write_file: 'is working with files'
+}
+
+/** Brand spellings for connector servers; anything else is capitalised. */
+const SERVICES: Record<string, string> = {
+  github: 'GitHub',
+  gitlab: 'GitLab',
+  gmail: 'Gmail',
+  hubspot: 'HubSpot',
+  linkedin: 'LinkedIn',
+  youtube: 'YouTube'
+}
+
 /**
- * One line for a finished turn: "Searched the web for weather · 3s", or
- * "4 steps · 12s". Empty when every call was housekeeping.
+ * The running step for the live status, in plain words: "Scout is searching
+ * the web", "Scout is running a command", or "Connecting to GitHub" for a
+ * connector's tool (`mcp_<server>_<tool>`). The step itself stays behind a click.
  */
-export function stepsSummary(calls: ToolCall[]): string {
-  const steps = visibleSteps(calls)
+export function activityLabel(call: ToolCall, name: string): string {
+  const server = /^mcp_([^_]+)_/.exec(call.name)?.[1]
+
+  if (server) {
+    const service =
+      SERVICES[server.toLowerCase()] ?? server.charAt(0).toUpperCase() + server.slice(1)
+
+    return `Connecting to ${service}`
+  }
+
+  return `${name} ${ACTIVITY[call.name] ?? `is using ${humanize(call.name)}`}`
+}
+
+/**
+ * One quiet line for a finished turn, with no steps or costs in it: "Thought
+ * for 12s" or "Worked for 3s" (or "Worked on 2 steps" when restored history
+ * has no timing). A step still waiting on an approval reads as live work.
+ * Empty when only housekeeping ran.
+ */
+export function workSummary(message: Message, name = 'The bot'): string {
+  const running = message.toolCalls.findLast(call => call.status === 'running')
+
+  if (running) {
+    return activityLabel(running, name)
+  }
+
+  const seconds = workSeconds(message)
+
+  if (message.thinking) {
+    return `Thought for ${formatSeconds(seconds ?? 0)}`
+  }
+
+  const steps = visibleSteps(message.toolCalls)
 
   if (!steps.length) {
     return ''
   }
 
-  const seconds = calls.reduce((total, call) => total + (call.durationS ?? 0), 0)
+  return seconds
+    ? `Worked for ${formatSeconds(seconds)}`
+    : `Worked on ${steps.length} step${steps.length === 1 ? '' : 's'}`
+}
 
-  const head = steps.length === 1 && steps[0] ? toolLabel(steps[0]) : `${steps.length} steps`
-
-  return seconds > 0 ? `${head} · ${formatSeconds(seconds)}` : head
+export interface LiveStatusLine {
+  /** The running step, when a tool is what the bot is doing right now. */
+  call?: ToolCall
+  label: string
 }
 
 /**
- * One line for a finished turn that thought: "Thought for 12s", or
- * "Thought for 12s · 3 steps". Turns that only ran tools keep `stepsSummary`.
+ * The live line at the foot of a running turn: the running step in plain
+ * words while a tool runs, a wait notice on a slow provider, else what the
+ * bot is doing ("Scout is thinking", "Scout is writing", "Scout is working").
  */
-export function workSummary(message: Message): string {
-  if (!message.thinking) {
-    return stepsSummary(message.toolCalls)
-  }
-
-  const head = `Thought for ${formatSeconds(workSeconds(message) ?? 0)}`
-  const steps = visibleSteps(message.toolCalls)
-
-  if (!steps.length) {
-    return head
-  }
-
-  return `${head} · ${steps.length === 1 && steps[0] ? toolLabel(steps[0]) : `${steps.length} steps`}`
-}
-
-/** The panel headline while the turn runs: the running step, a wait notice, else "Thinking". */
-export function liveLabel(message: Message): string {
-  return (
-    runningLabel(message) ?? message.activity ?? (message.text ? workSummary(message) : 'Thinking')
+export function liveStatus(message: Message, name: string): LiveStatusLine {
+  // An ask in progress has its own row with the other bot's face.
+  const running = message.toolCalls.findLast(
+    call => call.status === 'running' && call.name !== ASKING_TOOL
   )
+
+  if (running) {
+    return { call: running, label: activityLabel(running, name) }
+  }
+
+  if (message.activity) {
+    return { label: message.activity }
+  }
+
+  if (message.text) {
+    return { label: `${name} is writing` }
+  }
+
+  return { label: message.thinking ? `${name} is thinking` : `${name} is working` }
 }

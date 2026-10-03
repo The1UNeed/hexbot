@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { attachFile } from './api'
+import { attachFile, messagesFromHistory } from './api'
 import { rpcCall } from './rpc'
 
 vi.mock('./rpc', () => ({ rpcCall: vi.fn() }))
@@ -31,5 +31,18 @@ describe('attachment size limits', () => {
         data_url: 'data:text/plain;base64,aGVsbG8='
       })
     )
+  })
+})
+
+describe('history projection', () => {
+  it('keeps each message of a turn as its own part', () => {
+    const [message] = messagesFromHistory([
+      { role: 'assistant', text: 'I will check.' },
+      { name: 'terminal', role: 'tool', text: 'ok' },
+      { role: 'assistant', text: 'Done.' }
+    ] as Parameters<typeof messagesFromHistory>[0])
+
+    expect(message).toMatchObject({ parts: ['I will check.'], text: 'Done.' })
+    expect(message?.toolCalls).toHaveLength(1)
   })
 })

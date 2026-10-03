@@ -19,6 +19,39 @@
     </style>
   </head>
   <body>
+    <!--
+      The refraction behind .hex-glass in Chromium (tokens.css): a slow,
+      soft noise field bends what scrolls under the glass a few pixels, so it
+      reads as liquid rather than frosted. The scale stays small: text under
+      the header pill should look bent, never broken. Other engines skip it
+      and blur.
+    -->
+    <svg aria-hidden="true" height="0" style="position: absolute" width="0">
+      <filter
+        color-interpolation-filters="sRGB"
+        height="100%"
+        id="hex-liquid"
+        width="100%"
+        x="0"
+        y="0"
+      >
+        <feTurbulence
+          baseFrequency="0.005 0.011"
+          numOctaves="2"
+          result="noise"
+          seed="4"
+          type="fractalNoise"
+        />
+        <feGaussianBlur in="noise" result="soft" stdDeviation="4" />
+        <feDisplacementMap
+          in="SourceGraphic"
+          in2="soft"
+          scale="7"
+          xChannelSelector="R"
+          yChannelSelector="G"
+        />
+      </filter>
+    </svg>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

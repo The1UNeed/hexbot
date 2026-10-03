@@ -30,6 +30,37 @@ describe('transcript reducer', () => {
       text: 'hello'
     })
   })
+  it('keeps each message of a turn as its own part', () => {
+    const actions = useTranscripts.getState()
+    actions.messageStart('s')
+    actions.messageDelta('s', 'I will check.')
+    actions.toolStart('s', { name: 'terminal', tool_id: 't1' })
+    actions.messageDelta('s', 'Do')
+    // Still being written: not a part yet.
+    expect(useTranscripts.getState().bySession.s?.messages[0]).toMatchObject({
+      parts: ['I will check.'],
+      text: 'Do'
+    })
+    actions.messageComplete('s', { text: 'Done.' })
+    expect(useTranscripts.getState().bySession.s?.messages[0]).toMatchObject({
+      parts: ['I will check.'],
+      streaming: false,
+      text: 'Done.'
+    })
+  })
+
+  it('does not repeat a part when the turn ends right after a tool', () => {
+    const actions = useTranscripts.getState()
+    actions.messageStart('s')
+    actions.messageDelta('s', 'I will check.')
+    actions.toolStart('s', { name: 'terminal', tool_id: 't1' })
+    actions.messageComplete('s', { text: 'I will check.' })
+    expect(useTranscripts.getState().bySession.s?.messages[0]).toMatchObject({
+      parts: [],
+      text: 'I will check.'
+    })
+  })
+
   it('appends reasoning to the trace and times the work', () => {
     const actions = useTranscripts.getState()
     actions.messageStart('s')

@@ -85,7 +85,7 @@ export function ToolsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
       <Heading description="What this bot can do on this computer. Nothing here needs an account.">
         Tools
       </Heading>
-      <div className="space-y-5">
+      <div className="space-y-8">
         {TOOL_GROUPS.map(group => (
           <Group key={group.title} title={group.title}>
             {group.rows.map(row => (
@@ -103,9 +103,7 @@ export function ToolsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
                   <span className="flex items-baseline gap-2">
                     {row.label}
                     {row.note ? (
-                      <span className="text-[length:var(--text-meta)] font-normal text-muted">
-                        {row.note}
-                      </span>
+                      <span className="text-[length:var(--text-meta)] text-muted">{row.note}</span>
                     ) : null}
                   </span>
                 }
@@ -117,7 +115,7 @@ export function ToolsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           <Row
             control={
               editingDir ? (
-                <div className="flex gap-2">
+                <>
                   <Button
                     onClick={() => {
                       setEditingDir(false)
@@ -138,7 +136,7 @@ export function ToolsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
                   >
                     Cancel
                   </Button>
-                </div>
+                </>
               ) : (
                 <Button onClick={() => setEditingDir(true)} size="sm">
                   Change
@@ -150,7 +148,7 @@ export function ToolsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
                 <Input
                   aria-label="Working directory"
                   autoFocus
-                  className="mt-1 font-mono text-[length:var(--text-secondary)]"
+                  className="mt-1.5 h-[32px] font-mono text-[length:var(--text-secondary)]"
                   onChange={event => setDir(event.target.value)}
                   placeholder="Deployment workspace"
                   value={dir}

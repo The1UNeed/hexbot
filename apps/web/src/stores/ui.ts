@@ -27,13 +27,20 @@ export interface ThreadRef {
   sectionId?: string
 }
 
+/** The side panel's tabs: the bot at a glance, the files shared in the section, its tool calls. */
+export type PanelTab = 'computer' | 'details' | 'library'
+
 export interface UiState {
   closeThread: () => void
   lastSection: LastSection | null
   openThread: (thread: ThreadRef) => void
   /** A finished ask learned the thread's id: fill it in if that thread is open. */
   resolveThread: (bot: string, peer: string, sectionId: string) => void
+  /** Opens the side panel on a tab, as the chat's step line does for Computer. */
+  openPanel: (tab: PanelTab) => void
+  panelTab: PanelTab
   rightPanelOpen: boolean
+  setPanelTab: (tab: PanelTab) => void
   setLastSection: (value: LastSection | null) => void
   setSidebarWidth: (width: number) => void
   setTheme: (theme: ThemePreference) => void
@@ -53,6 +60,7 @@ export const useUi = create<UiState>()(
   persist(
     set => ({
       lastSection: null,
+      panelTab: 'details',
       rightPanelOpen: true,
       sidebarWidth: 280,
       theme: 'system',
@@ -62,6 +70,14 @@ export const useUi = create<UiState>()(
       setTheme(theme) {
         set({ theme })
         applyTheme(theme)
+      },
+
+      openPanel(tab) {
+        set({ panelTab: tab, rightPanelOpen: true })
+      },
+
+      setPanelTab(tab) {
+        set({ panelTab: tab })
       },
 
       toggleRightPanel(open) {

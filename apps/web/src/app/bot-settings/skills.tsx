@@ -44,7 +44,7 @@ export function SkillsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
       ) : skills.length === 0 ? (
         <p className="text-muted">No skills installed for this bot.</p>
       ) : (
-        <div className="space-y-5">
+        <div className="space-y-8">
           {categories.map(category => (
             <Group key={category} title={category}>
               {skills

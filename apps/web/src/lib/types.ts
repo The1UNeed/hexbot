@@ -273,6 +273,12 @@ export interface Message {
   /** Inline error row attached to this message (`error` event). */
   error?: string
   id: string
+  /**
+   * What the bot said earlier in the same turn, one entry per message it
+   * finished before calling a tool. Each is its own bubble; `text` is the
+   * message after the last of them.
+   */
+  parts?: string[]
   role: MessageRole
   /** Set once `message.complete` arrives with a non-ok status. */
   status?: string

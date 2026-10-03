@@ -37,10 +37,19 @@ describe('memoryMarks', () => {
           toolId: 'b'
         }),
         call({
-          args: { operations: [{ action: 'remove', old_text: 'Old' }, { action: 'add', content: 'New' }] },
+          args: {
+            operations: [
+              { action: 'remove', old_text: 'Old' },
+              { action: 'add', content: 'New' }
+            ]
+          },
           toolId: 'c'
         }),
-        call({ args: { action: 'add', content: 'Rejected' }, result: '{"success": false}', toolId: 'd' }),
+        call({
+          args: { action: 'add', content: 'Rejected' },
+          result: '{"success": false}',
+          toolId: 'd'
+        }),
         // Restored history marks every row ok; the soul tool's error is in the result.
         call({
           args: { action: 'write', text: 'Refused' },
@@ -50,7 +59,11 @@ describe('memoryMarks', () => {
         }),
         call({ args: { action: 'add', content: 'Still running' }, status: 'running', toolId: 'e' }),
         call({ args: { action: 'read' }, name: 'hexbot_soul', toolId: 'f' }),
-        call({ args: { action: 'write', text: 'You are Scout, blunt.' }, name: 'hexbot_soul', toolId: 'g' })
+        call({
+          args: { action: 'write', text: 'You are Scout, blunt.' },
+          name: 'hexbot_soul',
+          toolId: 'g'
+        })
       ])
     )
 
@@ -76,12 +89,14 @@ describe('MemoryMarks', () => {
   it('shows a mark per write and opens it to the text', () => {
     render(
       <MemoryMarks
-        message={
-          message([
-            call({ args: { action: 'add', content: 'User prefers short answers' } }),
-            call({ args: { action: 'write', text: 'You are Scout, blunt.' }, name: 'hexbot_soul', toolId: 's' })
-          ])
-        }
+        message={message([
+          call({ args: { action: 'add', content: 'User prefers short answers' } }),
+          call({
+            args: { action: 'write', text: 'You are Scout, blunt.' },
+            name: 'hexbot_soul',
+            toolId: 's'
+          })
+        ])}
       />
     )
     expect(screen.getByRole('button', { name: 'Memory updated' })).toBeVisible()

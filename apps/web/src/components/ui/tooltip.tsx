@@ -15,7 +15,7 @@ export function Tooltip({ children, content }: TooltipProps) {
         </BaseTooltip.Trigger>
         <BaseTooltip.Portal>
           <BaseTooltip.Positioner className="z-50" sideOffset={6}>
-            <BaseTooltip.Popup className="rounded-control border border-border bg-surface px-2 py-1 text-[length:var(--text-meta)] text-foreground shadow-popup">
+            <BaseTooltip.Popup className="hex-glass-strong hex-fade rounded-[10px] px-2.5 py-1.5 text-[length:var(--text-meta)] text-foreground">
               {content}
             </BaseTooltip.Popup>
           </BaseTooltip.Positioner>

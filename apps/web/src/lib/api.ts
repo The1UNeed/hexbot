@@ -754,9 +754,13 @@ export function messagesFromHistory(
     const previous = messages.at(-1)
 
     // Hexbot stores one turn as assistant(tool calls) → tool rows → assistant(text).
-    // Live streaming shows that as one bubble, so history must too.
+    // That is one turn with one work line; each message is its own bubble.
     if (role === 'assistant' && previous?.role === 'assistant' && previous.toolCalls.length) {
-      previous.text = previous.text ? `${previous.text}\n\n${text}` : text
+      if (previous.text.trim()) {
+        previous.parts = [...(previous.parts ?? []), previous.text]
+      }
+
+      previous.text = text
 
       continue
     }

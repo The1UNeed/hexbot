@@ -22,11 +22,7 @@ export function ConnectorIcon({ className, icon }: { className?: string; icon: s
 
   if (brand) {
     return (
-      <span
-        aria-hidden
-        className={cn(box, className)}
-        style={{ backgroundColor: brand.color }}
-      >
+      <span aria-hidden className={cn(box, className)} style={{ backgroundColor: brand.color }}>
         <svg fill="#ffffff" height="16" viewBox="0 0 24 24" width="16">
           <path d={brand.path} />
         </svg>
