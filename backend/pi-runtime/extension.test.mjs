@@ -23,18 +23,18 @@ function fixture(t, mode = 'manual', enabledToolsets = [], extra = {}) {
   const path = join(home, 'config.json'); writeFileSync(path, JSON.stringify(config));
   process.env.HEXBOT_SESSION_CONFIG = path;
   const handlers = {}, tools = {}, requests = [], choices = [], models = [], registrations = [], notices = [], activeTools = [];
-  const settings = {...config, approvalMode:mode};
+  const settings = {...config, approvalMode:mode, mcpState:Object.fromEntries((config.mcpServers ?? []).map(name => [name,{revision:'initial'}]))};
   const ctx = {model:{provider:'test',id:'primary'}, modelRegistry:{find:(provider,id)=>({provider,id})}, ui:{
     async input(title) {
       const request = JSON.parse(title.slice('__HEXBOT_TOOL__'.length)); requests.push(request);
-      if (request.name === 'hexbot_mcp_servers') return JSON.stringify({result:ctx.servers ?? []});
+      if (request.name === 'hexbot_mcp_servers') return JSON.stringify({result:(ctx.servers ?? (config.mcpServers ?? []).map(name => ({name,config:{command:'node'}}))).map(server => ({revision:'initial',...server}))});
       if (request.name === 'hexbot_session_settings') return JSON.stringify({result:settings});
       return JSON.stringify({result:{}});
     },
     notify:(message, type)=>notices.push({message,type}),
     async select(title, options) {choices.push({...JSON.parse(title.slice('__HEXBOT_APPROVAL__'.length)), options}); return ctx.choice ?? 'deny';}
   }};
-  const pi = {setActiveTools:names=>activeTools.push(names), getAllTools:()=>Object.values(tools), registerMcpServer:(name, config)=>registrations.push({name,config}), on:(name,handler)=>handlers[name]=handler, registerTool:tool=>tools[tool.name]=tool, registerProvider(){}, async setModel(model){models.push(model);ctx.model=model;return true;}, sendMessage(){}, getThinkingLevel(){}};
+  const pi = {setActiveTools:names=>activeTools.push(names), getAllTools:()=>Object.values(tools), unregisterMcpServer:()=>{}, registerMcpServer:(name, config)=>registrations.push({name,config}), on:(name,handler)=>handlers[name]=handler, registerTool:tool=>tools[tool.name]=tool, registerProvider(){}, async setModel(model){models.push(model);ctx.model=model;return true;}, sendMessage(){}, getThinkingLevel(){}};
   hexbot(pi);
   let calls = 0;
   const gate = (toolName, input, toolCallId = `call-${++calls}`) => handlers.tool_call({toolName, input, toolCallId}, ctx);
@@ -542,12 +542,13 @@ test('escaped server values survive Pi resolution without commands or substituti
 test('connected tool approvals follow annotations and allow a whole server only when chosen', async t => {
   for (const mode of ['manual', 'smart', 'off']) {
     const f = fixture(t, mode, [], {mcpServers:['a__long-name','b']});
+    await f.handlers.before_agent_start({}, f.ctx);
     const name = 'mcp__a__long_name__change';
     f.tools[name] = {name,namespace:{name:'mcp__a__long_name'}};
     assert.equal(await f.gate('codemode', {code:'anything'}), undefined);
     for (const annotations of [undefined, {readOnlyHint:false}, {readOnlyHint:true}]) {
       f.tools[name].annotations = annotations;
-      assert.equal((await f.gate(name, {}))?.block, mode === 'off' || annotations?.readOnlyHint === true ? undefined : true);
+      assert.equal((await f.gate(name, {}))?.block, mode === 'off' || mode === 'smart' && annotations?.readOnlyHint === true ? undefined : true);
     }
     f.tools[name].annotations = undefined;
     f.ctx.choice = 'once';
@@ -573,4 +574,48 @@ test('nested codemode calls use the same gate and execution id as direct calls',
   assert.match(JSON.stringify(await f.tools.bash.execute('c1/1', event.input)), /nested/);
   f.ctx.choice = 'deny';
   assert.equal((await f.handlers.tool_call({...event,toolName:'write',toolCallId:'c1/2',input:{path:'/usr/local/hexbot-nested.txt',content:'x'}},f.ctx)).block, true);
+});
+
+
+test('connected tools revoke current clients in every mode and reconnect only at a prompt boundary', async t => {
+  for (const mode of ['smart', 'manual', 'off']) {
+    const f = fixture(t, mode, [], {mcpServers:['demo']});
+    f.ctx.choice = 'once';
+    await f.handlers.before_agent_start({}, f.ctx);
+    const call = {toolName:'mcp__demo__read',toolCallId:'code/1',parentToolCallId:'code',input:{}};
+    f.tools[call.toolName] = {name:call.toolName,annotations:{readOnlyHint:true}};
+    assert.equal(await f.handlers.tool_call(call, f.ctx), undefined);
+    delete f.settings.mcpState.demo;
+    assert.match((await f.handlers.tool_call(call, f.ctx)).reason, /removed or disabled/);
+    f.settings.mcpState.demo = {revision:'changed'};
+    assert.match((await f.handlers.tool_call(call, f.ctx)).reason, /changed/);
+    f.ctx.servers = [{name:'demo',revision:'changed',config:{command:'node',env:{TOKEN:'new'}}}];
+    await f.handlers.before_agent_start({}, f.ctx);
+    assert.equal(await f.handlers.tool_call(call, f.ctx), undefined);
+    assert.equal(f.registrations.at(-1).config.env.TOKEN, 'new');
+    assert.equal(f.activeTools.length, 0);
+  }
+});
+
+test('connected approvals recheck mode and revocation after the answer, and hidden sections deny immediately', async t => {
+  const f = fixture(t, 'manual', [], {mcpServers:['demo']});
+  await f.handlers.before_agent_start({}, f.ctx);
+  f.ctx.ui.select = async () => { f.settings.approvalMode = 'smart'; return 'once'; };
+  assert.match((await f.gate('mcp__demo__read', {})).reason, /mode changed/);
+  f.ctx.ui.select = async () => { delete f.settings.mcpState.demo; return 'once'; };
+  assert.match((await f.gate('mcp__demo__read', {})).reason, /removed or disabled/);
+  f.settings.mcpState.demo = {revision:'initial'};
+  f.settings.canAsk = false;
+  assert.match((await f.gate('mcp__demo__read', {})).reason, /visible section/);
+});
+
+test('an interrupted first registration retries on the next prompt', async t => {
+  const f = fixture(t, 'smart', [], {mcpServers:['demo']});
+  const input = f.ctx.ui.input;
+  f.ctx.ui.input = async title => title.includes('hexbot_mcp_servers') ? undefined : input(title);
+  await f.handlers.before_agent_start({}, f.ctx);
+  assert.equal(f.registrations.length, 0);
+  f.ctx.ui.input = input;
+  await f.handlers.before_agent_start({}, f.ctx);
+  assert.equal(f.registrations.length, 1);
 });

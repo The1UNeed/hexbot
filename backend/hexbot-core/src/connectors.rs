@@ -2,6 +2,7 @@
 use crate::{Error, Result, common::*, db};
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
@@ -215,6 +216,21 @@ pub fn mcp_servers(home: &Path, bot: &str) -> Result<Value> {
     servers.retain(|_, entry| entry.is_object() && entry["disabled"] != true);
     Ok(Value::Object(servers))
 }
+// Keep executable lookup and relative arguments out of bot-controlled folders.
+fn mcp_cwd(home: &Path, bot: Option<&str>) -> Result<PathBuf> {
+    if let Some(bot) = bot {
+        identifier(bot)?;
+    }
+    let path = home.join("runtime/mcp").join(bot.unwrap_or("probe"));
+    fs::create_dir_all(&path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(fs::canonicalize(path)?)
+}
+
 pub fn pi_mcp_servers(home: &Path, bot: &str, names: &[Value]) -> Result<Vec<Value>> {
     let servers = mcp_servers(home, bot)?;
     let env = credentials(home, bot)?;
@@ -228,7 +244,10 @@ pub fn pi_mcp_servers(home: &Path, bot: &str, names: &[Value]) -> Result<Vec<Val
         }
         let description = entry.get("description").cloned();
         let entry = expand_config(entry, &env);
-        validate_mcp_security(&entry)?;
+        if validate_mcp_security(&entry).is_err() {
+            result.push(json!({"name":name,"error":format!("Connected tool {name} has an invalid configuration. Ask an admin to check it.")}));
+            continue;
+        }
         let keys: &[&str] = if entry["url"].is_string() {
             &["url", "headers", "description", "timeout"]
         } else {
@@ -244,7 +263,11 @@ pub fn pi_mcp_servers(home: &Path, bot: &str, names: &[Value]) -> Result<Vec<Val
         if let Some(description) = description {
             config["description"] = description;
         }
-        result.push(json!({"name":name,"config":config}));
+        if !entry["url"].is_string() {
+            config["cwd"] = json!(mcp_cwd(home, Some(bot))?);
+        }
+        let revision = format!("{:x}", Sha256::digest(config.to_string().as_bytes()));
+        result.push(json!({"name":name,"config":config,"revision":revision}));
     }
     Ok(result)
 }
@@ -573,6 +596,8 @@ fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
                 }
             }
             let disabled = entry["disabled"] == true;
+            let tested = last_test(home, &id)?;
+            let failed = tested.as_ref().is_some_and(|v| v["ok"] == false);
             let description = entry["url"].as_str().map(str::to_owned).unwrap_or_else(|| {
                 std::iter::once(entry["command"].as_str().unwrap_or("").to_string())
                     .chain(strings(&entry["args"]))
@@ -586,7 +611,7 @@ fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
                 "group": "mcp",
                 "icon": "glyph:server",
                 "scope": "daemon",
-                "state": if err.is_some() {
+                "state": if err.is_some() || failed {
                     "error"
                 } else if disabled {
                     "not_set_up"
@@ -602,7 +627,7 @@ fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
                             .take(80)
                             .collect::<String>()
                     })
-                    .unwrap_or_else(|| if disabled { "Disabled" } else { "Running" }.to_string()),
+                    .unwrap_or_else(|| if disabled { "Disabled" } else if failed { "Test failed" } else { "Running" }.to_string()),
                 "providers": null,
                 "provider": null,
                 "fields": [],
@@ -621,7 +646,8 @@ fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
                     } else {
                         "stdio"
                     },
-                    "tool_count": last_test(home, &id)?.and_then(|v| v.get("tool_count").cloned()),
+                    "tool_count": tested.as_ref().and_then(|v| v.get("tool_count")).cloned(),
+                    "test_failed": failed,
                     "running": !disabled
                 }
             }));
@@ -640,9 +666,15 @@ fn get(home: &Path, bot: Option<&str>, id: &str) -> Result<Value> {
 }
 async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
     if let Some(server) = id.strip_prefix("mcp:") {
-        let config = read_config(home)?;
-        let Some(entry) = config["mcp_servers"].get(server) else {
-            return Ok(json!({"ok":false,"message":"This MCP server is not defined."}));
+        let config = if let Some(bot) = bot {
+            mcp_servers(home, bot)?
+        } else {
+            read_config(home)?["mcp_servers"].clone()
+        };
+        let Some(entry) = config.get(server) else {
+            return Ok(
+                json!({"ok":false,"message":"This connected tool is not defined or is disabled."}),
+            );
         };
         if entry["disabled"] == true {
             return Ok(json!({"ok":false,"message":"Disabled."}));
@@ -653,7 +685,10 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
             read_env(home)?
         };
         let result = async {
-            let mut session = McpSession::connect(entry, &env).await?;
+            let mut entry = entry.clone();
+            entry["probe_env"] = json!(true);
+            entry["cwd"] = json!(mcp_cwd(home, bot)?);
+            let mut session = McpSession::connect(&entry, &env).await?;
             let mut count = 0;
             let mut cursor = Value::Null;
             let mut seen = BTreeSet::new();
@@ -996,6 +1031,10 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
             admin(home, caller)?;
             let (name, entry) = validate_mcp(p)?;
             write_all(home, "mcp_servers", &name, entry)?;
+            db::open(home)?.execute(
+                "DELETE FROM settings WHERE key=?",
+                [format!("connector_test:mcp:{name}")],
+            )?;
             Ok(json!({"connector":get(home,None,&format!("mcp:{name}"))?}))
         }
         "hexbot.connectors.remove_mcp" => {
@@ -1005,6 +1044,10 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
                 return Err(Error::new(4213, format!("unknown MCP server: {name}")));
             }
             write_all(home, "mcp_servers", name, Value::Null)?;
+            db::open(home)?.execute(
+                "DELETE FROM settings WHERE key=?",
+                [format!("connector_test:mcp:{name}")],
+            )?;
             drop_sessions(home, name).await;
             Ok(json!({"removed":true}))
         }
@@ -1193,7 +1236,7 @@ impl McpSession {
         let entry = expand_config(entry, env);
         validate_mcp_security(&entry)?;
         let transport = if let Some(url) = entry["url"].as_str() {
-            let url = expand(url, env);
+            let url = url.to_owned();
             let mut headers = reqwest::header::HeaderMap::new();
             headers.insert(
                 "accept",
@@ -1204,11 +1247,8 @@ impl McpSession {
                     headers.insert(
                         reqwest::header::HeaderName::from_bytes(k.as_bytes())
                             .map_err(transport_error)?,
-                        reqwest::header::HeaderValue::from_str(&expand(
-                            v.as_str().unwrap_or(""),
-                            env,
-                        ))
-                        .map_err(|_| transport_error("invalid configured header"))?,
+                        reqwest::header::HeaderValue::from_str(v.as_str().unwrap_or(""))
+                            .map_err(|_| transport_error("invalid configured header"))?,
                     );
                 }
             }
@@ -1288,10 +1328,15 @@ impl McpSession {
                 .as_str()
                 .ok_or_else(|| transport_error("server has no command or URL"))?;
             let mut cmd = tokio::process::Command::new(command);
-            if entry["isolated_env"] == true {
+            if entry["probe_env"] == true {
+                crate::credentials::shell_environment(&mut cmd);
+            } else if entry["isolated_env"] == true {
                 crate::credentials::desktop_environment(&mut cmd);
             } else {
                 cmd.envs(env);
+            }
+            if let Some(cwd) = entry["cwd"].as_str() {
+                cmd.current_dir(cwd);
             }
             cmd.args(strings(&entry["args"]))
                 .stdin(std::process::Stdio::piped())
@@ -1300,7 +1345,7 @@ impl McpSession {
                 .kill_on_drop(true);
             if let Some(overrides) = entry["env"].as_object() {
                 for (k, v) in overrides {
-                    cmd.env(k, expand(v.as_str().unwrap_or(""), env));
+                    cmd.env(k, v.as_str().unwrap_or(""));
                 }
             }
             let mut child = cmd

@@ -554,7 +554,7 @@ async fn mcp_sections_open_without_discovery_and_forward_pi_warnings() {
         if event.frame["params"]["type"] == "warning" {
             assert_eq!(
                 event.frame["params"]["payload"]["message"],
-                "Connected tools need attention: missing."
+                "Connected tools need attention: missing. Check connected tools in bot settings."
             );
             assert_eq!(event.frame["params"]["payload"]["section_id"], "first");
             warning = true;
@@ -601,6 +601,7 @@ async fn mcp_names_and_prompt_are_frozen_without_credentials_or_discovery() {
         "builtin:codemode",
         "--no-approve",
         "--no-builtin-tools",
+        "--exclude-tools",
     ] {
         assert!(args.contains(&json!(arg)));
     }
@@ -633,6 +634,19 @@ async fn mcp_names_and_prompt_are_frozen_without_credentials_or_discovery() {
             .unwrap()[0]["config"]["env"]["TOKEN"],
         "hidden-value"
     );
+    let before = runtime.session_settings(&s).unwrap();
+    assert!(before["mcpState"]["fixture-one"]["revision"].is_string());
+    assert!(!before.to_string().contains("hidden-value"));
+    fs::write(home.path().join(".env"), "MCP_SECRET=changed-value\n").unwrap();
+    let changed = runtime.session_settings(&s).unwrap();
+    assert_ne!(before["mcpState"], changed["mcpState"]);
+    common::write_config(
+        &home.path().join("profiles/owl"),
+        &json!({"mcp_servers":{"fixture-one":{"disabled":true}}}),
+    )
+    .unwrap();
+    assert!(runtime.session_settings(&s).unwrap()["mcpState"]["fixture-one"].is_null());
+    common::write_config(&home.path().join("profiles/owl"), &json!({})).unwrap();
     let prompt = process["config"]["prompt"].clone();
     fs::write(
         home.path().join("config.yaml"),
@@ -646,6 +660,7 @@ async fn mcp_names_and_prompt_are_frozen_without_credentials_or_discovery() {
             .unwrap(),
         json!([])
     );
+    assert_eq!(runtime.session_settings(&s).unwrap()["mcpState"], json!({}));
     age(&runtime);
     runtime.retire_idle(common::now()).await.unwrap();
     open(&runtime).await;
@@ -2112,4 +2127,35 @@ fn bot_row(home: &Path, name: &str) -> Result<Value> {
 
 fn description_stale(runtime: &Runtime, bot: &str) -> bool {
     matches!(runtime.description_inputs(bot), Ok(Some((row, _, key))) if row["auto_description_key"] != key.as_str())
+}
+
+#[tokio::test]
+async fn connected_approvals_require_a_visible_section_and_nested_calls_survive_history() {
+    let (home, runtime, _) = setup();
+    open(&runtime).await;
+    let s = runtime
+        .sessions
+        .lock()
+        .unwrap()
+        .get("first")
+        .unwrap()
+        .clone();
+    db::open(home.path())
+        .unwrap()
+        .execute("DELETE FROM sections WHERE id='first'", [])
+        .unwrap();
+    assert_eq!(runtime.session_settings(&s).unwrap()["canAsk"], false);
+    db::open(home.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO sections(id,bot,owner_id,title) VALUES('first','owl','alice','Visible')",
+            [],
+        )
+        .unwrap();
+    assert_eq!(runtime.session_settings(&s).unwrap()["canAsk"], true);
+    let nested = json!({"calls":[{"id":"code/1","name":"mcp__fixture__echo","arguments":{"text":"hello"},"status":"ok","durationMs":20}],"complete":true});
+    runtime.event(&s,json!({"type":"message_end","message":{"role":"toolResult","toolName":"codemode","toolCallId":"code","content":[{"type":"text","text":"hello"}],"nestedCalls":nested}})).unwrap();
+    let history = store::history(home.path(), "first").unwrap();
+    assert_eq!(history.last().unwrap()["nested_calls"], nested);
+    runtime.shutdown().await;
 }

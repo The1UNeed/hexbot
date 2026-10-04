@@ -81,24 +81,52 @@ export default function hexbot(pi: any) {
   // Resolve credentials in memory on the first prompt. RPC cannot answer a
   // bridge request during session_start, before its stdin reader is attached.
   let mcpRegistered = false;
+  let mcpState = '';
+  const mcpRevisions = new Map<string, string>();
   const registerMcp = async (ctx: any) => {
-    if (mcpRegistered || Array.isArray(config.restricted) || !Array.isArray(config.mcpServers) || !config.mcpServers.length) return;
-    mcpRegistered = true;
-    let servers: any[] = [];
+    if (Array.isArray(config.restricted) || !config.mcpServers?.length) return;
+    const state = JSON.stringify(live.mcpState);
+    if (mcpRegistered && state === mcpState) return;
+    let servers: any[];
     try { servers = await bridge(ctx, 'hexbot_mcp_servers'); }
-    catch (error: any) { ctx.ui.notify(`Connected tools are unavailable: ${error.message}`, 'warning'); }
-    for (const {name, config: entry} of servers) {
-      try { pi.registerMcpServer(name, {...entry, ...(entry.env && {env: escapeMcpValues(entry.env)}), ...(entry.headers && {headers: escapeMcpValues(entry.headers)})}); }
-      catch (error: any) { ctx.ui.notify(`Connected tool ${name}: ${error.message}`, 'warning'); }
+    catch (error: any) { ctx.ui.notify(`Connected tools are unavailable: ${error.message}`, 'warning'); return; }
+    for (const name of mcpRevisions.keys()) {
+      if (!servers.some(server => server.name === name && server.config)) {
+        pi.unregisterMcpServer(name);
+        mcpRevisions.delete(name);
+        sessionAllowed.delete(`mcp:${name}`);
+      }
     }
-    // Pi starts connecting from a change event it emits asynchronously; yield so
-    // a script in this very turn finds the connection it has to wait for.
+    let complete = true;
+    for (const {name, config: entry, revision, error} of servers) {
+      if (error) { ctx.ui.notify(error, 'warning'); continue; }
+      if (mcpRevisions.has(name) && mcpRevisions.get(name) === revision) continue;
+      try {
+        const resolved = {...entry, ...(entry.env && {env: escapeMcpValues(entry.env)}), ...(entry.headers && {headers: escapeMcpValues(entry.headers)})};
+        pi.registerMcpServer(name, resolved);
+        mcpRevisions.set(name, revision);
+        sessionAllowed.delete(`mcp:${name}`);
+      } catch (error: any) { complete = false; ctx.ui.notify(`Connected tool ${name}: ${error.message}`, 'warning'); }
+    }
+    mcpRegistered = complete;
+    mcpState = state;
+    // Pi hides old tools and closes their client before awaiting reconnect.
+    // A call during reconnect may be unavailable, but cannot use the old client.
+    // Deferred registrations never change the model's declarations.
     await new Promise(resolve => setImmediate(resolve));
+  };
+  const mcpServer = (tool: string) => config.mcpServers?.filter((name: string) => tool.startsWith(`mcp__${name.replace(/-/g, '_')}__`)).sort((a: string, b: string) => b.length - a.length)[0];
+  const mcpDenial = (tool: string) => {
+    const server = mcpServer(tool);
+    const current = live.mcpState?.[server];
+    if (!current) return 'This connected tool was removed or disabled.';
+    if (current.error) return current.error;
+    if (!mcpRevisions.has(server) || mcpRevisions.get(server) !== current.revision) return 'This connected tool changed. Try again in the next message to reconnect.';
   };
   // Approval modes follow Codex. Auto ('smart'): commands run in a sandbox with
   // no network that writes only to the workspace, and the file tools write freely
   // inside it. Manual: the sandbox is read-only and every file change asks. Off
-  // (Bypass): Pi's own behaviour, with no prompts, checks or sandbox. A command
+  // (Bypass): no approval prompts or sandbox. Revocation still applies. A command
   // that needs more sets full_access, and the user decides.
   const workspaceRoots = () => [live.cwd ?? config.cwd, ...live.outputDirs ?? [], tmpdir(), '/tmp'];
   const workspace = () => live.approvalMode === 'manual' ? [] : workspaceRoots();
@@ -126,14 +154,18 @@ export default function hexbot(pi: any) {
     if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp) return;
     try {
       await refresh(ctx);
+      if (mcp) {
+        const reason = mcpDenial(event.toolName);
+        if (reason) return {block: true, reason};
+      }
       if (live.approvalMode === 'off') return;
       const cwd = live.cwd ?? config.cwd;
       let ask: {key: string, command: string, reason: string} | undefined;
       if (mcp) {
         const tool = pi.getAllTools().find((candidate: any) => candidate.name === event.toolName);
-        if (tool?.annotations?.readOnlyHint !== true) {
+        if (live.approvalMode === 'manual' || tool?.annotations?.readOnlyHint !== true) {
           const namespace = tool?.namespace?.name ?? event.toolName;
-          const server = config.mcpServers?.find((name: string) => `mcp__${name.replace(/-/g, '_')}` === namespace) ?? namespace;
+          const server = mcpServer(event.toolName) ?? namespace;
           const label = `${server}/${event.toolName.slice(namespace.length + 2) || event.toolName}`;
           const args = JSON.stringify(event.input ?? {});
           ask = {key: `mcp:${server}`, command: args === '{}' ? label : `${label} ${args.length > 300 ? args.slice(0, 300) + '…' : args}`,
@@ -164,7 +196,17 @@ export default function hexbot(pi: any) {
       }
       if (browser) ask = {key: 'browser_console', command: event.input.expression, reason: 'This runs code in a web page.'};
       if (!ask || sessionAllowed.has(ask.key)) return;
+      if (mcp && live.canAsk === false) return {block: true, reason: 'This connected tool needs approval. Run it in a visible section.'};
+      const mode = live.approvalMode;
       const choice = await ctx.ui.select('__HEXBOT_APPROVAL__' + JSON.stringify({tool: event.toolName, command: ask.command, reason: ask.reason}), ['once', 'session', 'deny']);
+      if (mcp) {
+        // Pi emits execution_start before tool_call. Its public API has no MCP
+        // execute wrapper; the last blocking hook is this gate. Recheck after UI.
+        await refresh(ctx);
+        if (mode !== live.approvalMode) return {block: true, reason: 'The approval mode changed before this ran. Try again.'};
+        const reason = mcpDenial(event.toolName);
+        if (reason) return {block: true, reason};
+      }
       if (choice === 'session') sessionAllowed.add(ask.key);
       else if (choice !== 'once') return {block: true, reason: 'The user denied this action.'};
     } catch {

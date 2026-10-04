@@ -87,6 +87,7 @@ pub struct Runtime {
     stopping: AtomicBool,
     children: Mutex<HashMap<String, delegation::Child>>,
     description_refreshes: Mutex<HashMap<String, bool>>,
+    warned_servers: Mutex<std::collections::HashSet<String>>,
 }
 impl Runtime {
     pub fn new(home: PathBuf, events: EventHub, pi_executable: PathBuf) -> Result<Arc<Self>> {
@@ -105,6 +106,7 @@ impl Runtime {
             stopping: AtomicBool::new(false),
             children: Mutex::new(HashMap::new()),
             description_refreshes: Mutex::new(HashMap::new()),
+            warned_servers: Mutex::new(std::collections::HashSet::new()),
         });
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let weak = Arc::downgrade(&runtime);
@@ -231,6 +233,15 @@ impl Runtime {
             )
             .ok()
         });
+        let message = if room.is_some() {
+            let name = db::open(&self.home).ok().and_then(|db| db.query_row(
+                "SELECT COALESCE(b.display_name,b.name) FROM bots b JOIN room_sessions r ON r.bot=b.name WHERE r.stored_session_id=?",
+                [stored], |r| r.get::<_,String>(0)
+            ).ok()).unwrap_or_else(|| "Bot".into());
+            format!("{name}: {message}")
+        } else {
+            message.to_owned()
+        };
         self.events.emit(
             owner,
             None,
@@ -462,7 +473,19 @@ impl Runtime {
             let mut mcp_names = vec![];
             for (name, entry) in servers.as_object().unwrap() {
                 if entry["transport"] == "sse" {
-                    self.warning(owner, stored, &format!("Connected tools: {name} uses SSE and is unavailable in this section. Use its streamable HTTP URL."));
+                    if self
+                        .warned_servers
+                        .lock()
+                        .unwrap()
+                        .insert(format!("{owner}:{bot}:{name}"))
+                    {
+                        let action = if common::admin(&self.home, owner).is_ok() {
+                            "Use"
+                        } else {
+                            "Ask an admin to use"
+                        };
+                        self.warning(owner, stored, &format!("Connected tools: {name} uses SSE and is unavailable. {action} its streamable HTTP URL."));
+                    }
                 } else {
                     mcp_names.push(json!(name));
                 }
@@ -709,6 +732,21 @@ impl Runtime {
             // --tools is also a registration allowlist in Pi 1.0.1. The private
             // extension selects frozen declarations once at session_start.
             pi.args.push("--no-builtin-tools".into());
+            let excluded = [
+                "powershell",
+                "bash",
+                "read",
+                "write",
+                "edit",
+                "grep",
+                "find",
+                "ls",
+            ]
+            .into_iter()
+            .filter(|name| !names.iter().any(|enabled| enabled == name))
+            .collect::<Vec<_>>();
+            pi.args
+                .extend(["--exclude-tools".into(), excluded.join(",")]);
         } else if names.is_empty() {
             pi.args.push("--no-tools".into());
         } else {
@@ -1962,6 +2000,24 @@ impl Runtime {
         );
         saved["cwd"] = json!(common::resolve_workdir(&self.home, configured)?);
         saved["home"] = json!(self.home);
+        // Hash expanded entries, not just YAML: credential edits revoke old clients too.
+        if let Some(names) = own["mcpServers"].as_array() {
+            let servers = crate::connectors::pi_mcp_servers(&self.home, &s.bot, names)?;
+            saved["mcpState"] = servers
+                .into_iter()
+                .map(|v| {
+                    (
+                        v["name"].as_str().unwrap().to_owned(),
+                        json!({"revision":v["revision"],"error":v["error"]}),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>()
+                .into();
+        }
+        saved["canAsk"] = json!(db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?) OR EXISTS(SELECT 1 FROM room_sessions WHERE stored_session_id=?)",
+            params![s.stored,s.stored], |r| r.get::<_,bool>(0)
+        )?);
         Ok(saved)
     }
 
@@ -2731,7 +2787,7 @@ impl Runtime {
                         .insert(id.into(), std::time::Instant::now());
                     state.tool_context.insert(id.into(), context.clone());
                 }
-                self.emit(s, "tool.start", json!({"tool_id":event["toolCallId"],"name":name,"context":context,"args":event["args"]}));
+                self.emit(s, "tool.start", json!({"tool_id":event["toolCallId"],"name":name,"context":context,"args":event["args"],"parent_tool_call_id":event["parentToolCallId"]}));
             }
             "tool_execution_end" => {
                 let text = store::text(&event["result"]["content"]);
@@ -2759,6 +2815,7 @@ impl Runtime {
                     "tool.complete",
                     json!({
                         "duration_s": duration,
+                        "parent_tool_call_id": event["parentToolCallId"],
                         "tool_id": event["toolCallId"],
                         "name": store::client_tool_name(event["toolName"].as_str().unwrap_or("")),
                         "result": result,
@@ -2947,13 +3004,17 @@ impl Runtime {
                     if event["method"] == "notify"
                         && matches!(event["notifyType"].as_str(), Some("warning" | "error"))
                     {
-                        let message = event["message"]
-                            .as_str()
-                            .unwrap_or("")
-                            .replace("Run /mcp to fix.", "")
-                            .replace("MCP servers", "Connected tools")
-                            .replace("MCP server", "Connected tool")
-                            .replace("MCP", "Connected tools");
+                        let raw = event["message"].as_str().unwrap_or("");
+                        let message = if raw.starts_with("MCP tools are only reachable") {
+                            "Connected tools are unavailable in this section. Start a new section to use them.".to_owned()
+                        } else {
+                            raw.replace(
+                                "MCP servers need attention:",
+                                "Connected tools need attention:",
+                            )
+                            .replace("MCP failed to load:", "Connected tools could not load:")
+                            .replace("Run /mcp to fix.", "Check connected tools in bot settings.")
+                        };
                         self.warning(&s.owner, &s.stored, message.trim());
                     }
                 }
