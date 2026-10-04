@@ -1564,6 +1564,29 @@ async fn team_prompt_stays_frozen_across_profile_changes_and_restart() {
 }
 
 #[tokio::test]
+async fn provider_without_model_leaves_the_choice_to_pi() {
+    let (home, runtime, _) = setup();
+    team_pi(home.path());
+    let h = home.path();
+    fs::write(
+        h.join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\ntools:\n  enabled_toolsets: []\n",
+    )
+    .unwrap();
+    db::open(h)
+        .unwrap()
+        .execute_batch("UPDATE bots SET display_name='Owl',title='Coder';")
+        .unwrap();
+    runtime.refresh_description("owl").await;
+    let calls = team_processes(h, "owl");
+    assert_eq!(calls.len(), 1);
+    // Pi 1.0 exits when --provider comes without --model.
+    let args = calls[0]["args"].as_array().unwrap();
+    assert!(!args.contains(&json!("--provider")));
+    assert!(!args.contains(&json!("--model")));
+}
+
+#[tokio::test]
 async fn descriptions_use_one_shot_skip_current_keys_and_coalesce() {
     let (home, runtime, _) = setup();
     team_pi(home.path());
