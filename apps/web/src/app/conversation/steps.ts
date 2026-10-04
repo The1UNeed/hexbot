@@ -9,6 +9,7 @@ const VERBS: Record<string, [live: string, done: string]> = {
   clarify: ['Asking', 'Asked'],
   cronjob_manage: ['Scheduling', 'Scheduled'],
   delegate_task: ['Delegating', 'Delegated'],
+  codemode: ['Running code', 'Ran code'],
   execute_code: ['Running code', 'Ran code'],
   hexbot_rename_section: ['Naming the section', 'Named the section'],
   hexbot_soul: ['Updating soul', 'Updated soul'],
@@ -258,6 +259,12 @@ export function toolLabel(
   call: ToolCall,
   tense: 'done' | 'live' = call.status === 'running' ? 'live' : 'done'
 ): string {
+  const service = connectorName(call.name)
+
+  if (service) {
+    return `${tense === 'live' ? 'Connecting to' : 'Used'} ${service}`
+  }
+
   const connector = PREVIEW[call.name]
   const detail = connector === undefined ? '' : preview(call)
   const verbs = (detail ? undefined : NO_PREVIEW[call.name]) ?? VERBS[call.name]
@@ -315,6 +322,10 @@ export function workShown(message: Message, now = Date.now()): boolean {
     return false
   }
 
+  if (message.toolCalls.some(call => call.name === 'codemode')) {
+    return true
+  }
+
   const seconds = message.streaming
     ? message.createdAt > 0
       ? (now - message.createdAt) / 1000
@@ -337,6 +348,7 @@ const ACTIVITY: Record<string, string> = {
   clarify: 'is asking you something',
   cronjob_manage: 'is setting up a routine',
   delegate_task: 'is asking another bot',
+  codemode: 'is running code',
   execute_code: 'is running code',
   hexbot_rename_section: 'is naming the section',
   hexbot_soul: 'is updating its soul',
@@ -384,10 +396,14 @@ function connectorName(tool: string): null | string {
   const known = Object.values(useConnectors.getState().byBot)
     .flat()
     .flatMap(connector => connector.mcp?.name ?? [])
-    .filter(server => tool.startsWith(`mcp_${server}_`))
+    .filter(
+      server =>
+        tool.startsWith(`mcp_${server}_`) ||
+        tool.startsWith(`mcp__${server.replaceAll('-', '_')}__`)
+    )
     .sort((a, b) => b.length - a.length)[0]
 
-  const server = known ?? /^mcp_([^_]+)_/.exec(tool)?.[1]
+  const server = known ?? /^mcp__(.+?)__/.exec(tool)?.[1] ?? /^mcp_([^_]+)_/.exec(tool)?.[1]
 
   if (!server) {
     return null

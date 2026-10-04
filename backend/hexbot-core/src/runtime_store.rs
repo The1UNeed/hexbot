@@ -643,6 +643,12 @@ fn projection(message: &Value, display: Option<&str>) -> Option<Value> {
             result["tool_id"] = message["toolCallId"].clone();
             result["tool_call_id"] = message["toolCallId"].clone();
             result["is_error"] = message["isError"].clone();
+            result["nested_calls"] = message["nestedCalls"].clone();
+            if let Some(calls) = result["nested_calls"]["calls"].as_array_mut() {
+                for call in calls {
+                    call["name"] = json!(client_tool_name(call["name"].as_str().unwrap_or("")));
+                }
+            }
             result["content"] = message["content"].clone();
         }
         "custom" => {

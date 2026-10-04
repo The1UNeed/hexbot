@@ -46,7 +46,12 @@ import {
   useSection,
   useSections
 } from '../../stores/sections'
-import { transcriptActions, type TranscriptMessage, useTranscript } from '../../stores/transcripts'
+import {
+  transcriptActions,
+  type TranscriptMessage,
+  useTranscript,
+  useTranscripts
+} from '../../stores/transcripts'
 import { uiActions, useUi } from '../../stores/ui'
 
 import { AskingRow } from './asking-row'
@@ -56,6 +61,40 @@ import { MemoryMarks } from './memory-marks'
 import { RoomConversation } from './room'
 import { WaitingBanner } from './waiting-banner'
 import { LiveStatus, WorkSummary } from './work-status'
+
+export function ConnectedToolsNotice({ sectionId }: { sectionId: string }) {
+  const warnings = useTranscripts(state => state.warnings)
+
+  const entries = Object.entries(warnings).filter(
+    ([key]) =>
+      key === sectionId || (sectionId.startsWith('room:') && key.startsWith(`${sectionId}:`))
+  )
+
+  const warning = entries.map(([, text]) => text).join('\n')
+
+  if (!warning) {
+    return null
+  }
+
+  return (
+    <div
+      className="hex-glass hex-fade pointer-events-auto mx-auto flex w-fit max-w-full shrink-0 items-center gap-2 rounded-[15px] py-1.5 pr-2 pl-3.5 text-[length:var(--text-secondary)] text-warning"
+      role="status"
+    >
+      <span className="line-clamp-2 min-w-0" title={warning}>
+        {entries.map(([, text]) => text.split('\n')[0]).join(' · ')}
+      </span>
+      <button
+        aria-label="Dismiss notice"
+        className="grid size-5 shrink-0 place-items-center rounded-full text-muted hover:text-foreground"
+        onClick={() => entries.forEach(([key]) => transcriptActions().setWarning(key, null))}
+        type="button"
+      >
+        <X size={13} />
+      </button>
+    </div>
+  )
+}
 
 const avatarData = (bot?: Bot) => avatarSrc(bot?.avatar)
 
@@ -425,7 +464,7 @@ export function MessageRow({
         )}
         data-testid={assistant ? 'bot-message' : 'user-message'}
       >
-        {assistant && showFace ? (
+        {assistant && showFace && (bubbles.length > 0 || message.streaming) ? (
           <Avatar
             className={cn('mt-1', message.streaming && 'hex-think')}
             image={avatarData(bot)}
@@ -1232,6 +1271,7 @@ function BotConversation() {
           </button>
         )}
         {status === 'needs_you' ? <WaitingBanner /> : null}
+        <ConnectedToolsNotice sectionId={params.section ?? ''} />
       </header>
       <div className="hex-no-drag absolute top-2.5 right-3 z-30 flex items-center gap-1.5">
         <Menu

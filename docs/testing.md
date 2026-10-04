@@ -120,3 +120,19 @@ test uses a temporary home and checks the launcher, agent runtime, daemon HTTP
 listener, managed Python and voice executable. Desktop unit tests cover bad uv
 checksums, consecutive updates, failed activation, running-runtime retention and
 service migration. Rust tests cover update pruning and legacy listener refusal.
+
+### Connected tools through Pi
+
+`node --test backend/pi-runtime/*.test.mjs` includes `mcp.test.mjs`, which runs
+real Pi 1.0.1 against a local streaming model fixture and stdio server. It checks
+first-call connection, nested approval enforcement, literal credential values,
+untrusted workspace config, and stable provider prompt/tool declarations across
+turns. No provider account is needed. Rust tests cover frozen names, restricted
+and legacy sections, probe counts, SSE compatibility, and warning events.
+
+`node scripts/dev/mcp-smoke.mjs` runs `pnpm dev` with disposable state, configures
+a bot and connected servers by RPC, and exercises the browser with a local model
+fixture. Set `HEXBOT_SMOKE_ARTIFACTS` to choose where its screenshots and proof
+files go. It checks daemon-owned cwd, revocation after removal and disable,
+credential changes in an open section, Manual approval for read-only tools, and
+nested steps before and after reload in light and dark themes.

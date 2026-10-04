@@ -48,3 +48,47 @@ describe('history projection', () => {
     expect(message?.toolCalls[0]?.startedAt).toBe(0)
   })
 })
+
+it('restores nested code steps with their parent, arguments, duration and errors', () => {
+  const [message] = messagesFromHistory([
+    { role: 'assistant', text: '' },
+    {
+      role: 'tool',
+      name: 'codemode',
+      tool_id: 'code',
+      text: 'done',
+      is_error: true,
+      nested_calls: {
+        calls: [
+          {
+            id: 'code/1',
+            name: 'mcp__github__list',
+            arguments: { repo: 'hexbot' },
+            durationMs: 12,
+            status: 'ok'
+          },
+          {
+            id: 'code/2',
+            name: 'mcp__github__change',
+            durationMs: 30,
+            status: 'error',
+            error: 'Denied'
+          }
+        ]
+      }
+    },
+    { role: 'assistant', text: 'Finished' }
+  ])
+
+  expect(message?.toolCalls).toMatchObject([
+    { toolId: 'code', name: 'codemode', status: 'error' },
+    {
+      toolId: 'code/1',
+      parentToolCallId: 'code',
+      args: { repo: 'hexbot' },
+      durationS: 0.012,
+      status: 'ok'
+    },
+    { toolId: 'code/2', parentToolCallId: 'code', result: 'Denied', status: 'error' }
+  ])
+})

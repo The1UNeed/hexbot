@@ -114,6 +114,18 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
   const rooms = useRooms.getState()
 
   switch (event.type) {
+    case 'warning':
+      if (typeof payload.section_id === 'string' && typeof payload.message === 'string') {
+        transcripts.setWarning(
+          typeof payload.room_id === 'string'
+            ? `room:${payload.room_id}:${payload.section_id}`
+            : payload.section_id,
+          payload.message
+        )
+      }
+
+      return
+
     case 'hexbot.bots.changed':
       effects.refreshBots()
 
@@ -154,7 +166,10 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
     }
 
     case 'hexbot.rooms.changed':
-      if (typeof payload.id === 'string' && (payload.deleted === true || payload.removed === true)) {
+      if (
+        typeof payload.id === 'string' &&
+        (payload.deleted === true || payload.removed === true)
+      ) {
         rooms.drop(payload.id)
       } else if (typeof payload.id === 'string') {
         void rooms.refreshOne(payload.id)

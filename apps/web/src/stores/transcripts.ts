@@ -79,6 +79,7 @@ export interface MessageCompletePayload {
 }
 
 export interface ToolStartPayload {
+  parent_tool_call_id?: string
   args?: unknown
   args_text?: string
   context?: string
@@ -87,6 +88,7 @@ export interface ToolStartPayload {
 }
 
 export interface ToolCompletePayload {
+  parent_tool_call_id?: string
   args?: unknown
   duration_s?: number
   name?: string
@@ -118,6 +120,8 @@ export interface TranscriptsState {
     options?: { notify?: boolean }
   ) => void
   appendUserMessage: (sessionId: string, text: string, attachments?: Attachment[]) => Message
+  warnings: Record<string, string>
+  setWarning: (sectionId: string, message: string | null) => void
   bySession: Record<string, Transcript>
   drop: (sessionId: string) => void
   dropAll: () => void
@@ -298,6 +302,20 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
   }
 
   return {
+    warnings: {},
+    setWarning(sectionId, message) {
+      set(state => {
+        const warnings = { ...state.warnings }
+
+        if (message) {
+          warnings[sectionId] = message
+        } else {
+          delete warnings[sectionId]
+        }
+
+        return { warnings }
+      })
+    },
     bySession: {},
 
     open(sessionId, sectionId, messages) {
@@ -344,7 +362,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     dropAll() {
-      set({ bySession: {} })
+      set({ bySession: {}, warnings: {} })
     },
 
     appendUserMessage(sessionId, text, attachments = []) {
@@ -452,16 +470,27 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         result: null,
         startedAt: Date.now(),
         status: 'running',
+        ...(payload.parent_tool_call_id && { parentToolCallId: payload.parent_tool_call_id }),
         summary: payload.context,
         toolId: String(payload.tool_id ?? nextMessageId('t'))
       }
 
-      update(sessionId, transcript =>
-        withCurrentAssistant(transcript, message => ({
+      update(sessionId, transcript => {
+        const parent =
+          payload.parent_tool_call_id &&
+          transcript.messages.find(message =>
+            message.toolCalls.some(tool => tool.toolId === payload.parent_tool_call_id)
+          )
+
+        const append = (message: TranscriptMessage) => ({
           ...closePart(message),
           toolCalls: [...message.toolCalls, call]
-        }))
-      )
+        })
+
+        return parent
+          ? replaceMessage(transcript, parent.id, append)
+          : withCurrentAssistant(transcript, append)
+      })
     },
 
     toolComplete(sessionId, payload) {

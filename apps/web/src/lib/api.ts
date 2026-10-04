@@ -35,6 +35,16 @@ import type { CurrentUser, UsageSummary, User } from './types'
 
 /** Raw history row as projected by Hexbot `session.history`. */
 export interface HistoryRow {
+  nested_calls?: {
+    calls: {
+      id: string
+      name: string
+      arguments?: unknown
+      durationMs?: number
+      status: string
+      error?: string
+    }[]
+  }
   args?: unknown
   context?: string
   display_kind?: string
@@ -726,13 +736,27 @@ export function messagesFromHistory(
         result: row.text ?? null,
         // History keeps no timestamps; 0 is "unknown", so no time is shown.
         startedAt: 0,
-        status: 'ok' as const,
+        status: row.is_error === true ? ('error' as const) : ('ok' as const),
         summary: typeof row.context === 'string' ? row.context : undefined,
-        toolId: String(row.row_id ?? nextMessageId('t'))
+        toolId: String(row.tool_id ?? row.row_id ?? nextMessageId('t'))
       }
 
+      const calls = [
+        call,
+        ...(row.nested_calls?.calls ?? []).map(nested => ({
+          args: nested.arguments ?? null,
+          durationS: nested.durationMs == null ? null : nested.durationMs / 1000,
+          name: nested.name,
+          parentToolCallId: nested.id.slice(0, nested.id.lastIndexOf('/')) || call.toolId,
+          result: nested.error ?? null,
+          startedAt: 0,
+          status: nested.status === 'error' ? ('error' as const) : ('ok' as const),
+          toolId: nested.id
+        }))
+      ]
+
       if (target && target.role === 'assistant') {
-        target.toolCalls.push(call)
+        target.toolCalls.push(...calls)
       } else {
         messages.push({
           attachments: [],
@@ -741,7 +765,7 @@ export function messagesFromHistory(
           role: 'assistant',
           streaming: false,
           text: '',
-          toolCalls: [call]
+          toolCalls: calls
         })
       }
 

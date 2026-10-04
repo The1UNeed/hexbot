@@ -31,6 +31,35 @@ Manual is for work you want to watch closely. Reads are free; every change asks.
 
 Bypass is plain Pi, the agent runtime: no prompts, no sandbox, no credential checks. Bots can read and change anything the daemon's user account can, including Hexbot's own credential files and provider keys. Only the admin can choose it. A member's bots and rooms run in Auto instead, and so does an admin's bot that a member uses in their own section or room. Reserve it for a machine you can rebuild.
 
+## Connected tools
+
+In new sections, bots call connected tools from short scripts they run. Manual
+asks for every connected-tool call. Auto runs tools marked read-only freely and
+asks for all others. Bypass never asks. Reading a resource needs no approval.
+Allow in this section covers that server while the section's agent process runs.
+Shell and file calls inside a script still follow their usual approval rules.
+Removing or turning off a server stops its tools at once, even in open sections.
+
+Connected servers are trusted code configured by the admin. They run outside
+the shell sandbox, in a daemon-owned directory. Each section starts its own
+process per connected server. A server receives its explicit
+environment settings and the runtime's allowed environment variables, rather
+than every connector key. Add references for any keys it needs. New servers
+must use stdio or streamable HTTP; existing SSE servers work only in saved
+sections that already used them. Connection problems appear under the
+conversation header. The last 2 KB of server stderr may reach the bot in a
+connection error.
+
+Removing or disabling a connected server stops further calls in open sections,
+even in Bypass. Changing its configuration or credentials blocks the old
+connection and reconnects at the next message. The section's prompt and tool
+declarations stay fixed. A background section with no visible chat or room
+cannot wait for approval; the bot must ask you to run that action in a visible
+section.
+
+Codemode scripts cannot use Node, files, or the network directly. Their model
+helpers can call provider APIs with the section's credentials and incur costs.
+
 ## Answering a card
 
 Each card shows the command or action and why it asks. Approve runs it once. Allow in this section stops asking for that kind of request, for example full-access commands or file changes outside the workspace, until the section ends. Deny stops it, and the bot sees that you declined. Nothing is saved across sections, so a new section starts asking again. Requests the daemon raises itself (code runs, browser scripts, scheduling) offer Approve and Deny only.

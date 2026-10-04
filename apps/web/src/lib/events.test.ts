@@ -138,3 +138,31 @@ describe('event routing', () => {
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ sectionId: 'th1' }))
   })
 })
+
+it('keeps warnings before a section opens and clears them when dismissed or disconnected', () => {
+  routeEvent({
+    type: 'warning',
+    payload: { section_id: 'section-new', message: 'Connected tools need attention.' }
+  } as GatewayEvent)
+  expect(useTranscripts.getState().warnings['section-new']).toBe('Connected tools need attention.')
+  useTranscripts.getState().setWarning('section-new', null)
+  expect(useTranscripts.getState().warnings['section-new']).toBeUndefined()
+  routeEvent({
+    type: 'warning',
+    payload: {
+      section_id: 'bot-section',
+      room_id: 'room-1',
+      message: 'Connected tool is unavailable.'
+    }
+  } as GatewayEvent)
+  expect(useTranscripts.getState().warnings['room:room-1:bot-section']).toBe(
+    'Connected tool is unavailable.'
+  )
+  routeEvent({
+    type: 'warning',
+    payload: { section_id: 'other-bot', room_id: 'room-1', message: 'Other bot: disconnected.' }
+  } as GatewayEvent)
+  expect(Object.keys(useTranscripts.getState().warnings)).toHaveLength(2)
+  useTranscripts.getState().dropAll()
+  expect(useTranscripts.getState().warnings).toEqual({})
+})

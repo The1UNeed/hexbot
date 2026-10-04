@@ -63,9 +63,9 @@ describe('toolLabel', () => {
 
   it('falls back to the tool name', () => {
     expect(toolLabel(call({ name: 'mcp_calendar_list', status: 'running' }))).toBe(
-      'Using mcp calendar list'
+      'Connecting to Calendar'
     )
-    expect(toolLabel(call({ name: 'mcp_calendar_list' }))).toBe('Used mcp calendar list')
+    expect(toolLabel(call({ name: 'mcp_calendar_list' }))).toBe('Used Calendar')
   })
 
   it('truncates long previews', () => {
@@ -119,6 +119,11 @@ describe('activityLabel', () => {
     expect(activityLabel(call({ name: 'mcp_project_tools_search' }), 'Scout')).toBe(
       'Connecting to Project tools'
     )
+    expect(activityLabel(call({ name: 'mcp__project_tools__search' }), 'Scout')).toBe(
+      'Connecting to Project tools'
+    )
+    expect(toolLabel(call({ name: 'codemode' }))).toBe('Ran code')
+    expect(toolLabel(call({ name: 'codemode', status: 'running' }))).toBe('Running code')
     useConnectors.setState({ byBot: {} })
     expect(activityLabel(call({ name: 'weather_lookup' }), 'Scout')).toBe(
       'Scout is using weather lookup'

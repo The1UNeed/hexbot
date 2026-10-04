@@ -894,10 +894,15 @@ mod tests {
             home.path(),
             Path::new("/unrelated/connect-identity.key")
         ));
+        let oauth = home.path().join("profiles/owl/pi/mcp-auth.json");
+        std::fs::create_dir_all(oauth.parent().unwrap()).unwrap();
+        std::fs::write(&oauth, "secret").unwrap();
+        assert!(credential_name(home.path(), &oauth));
         let paths = secret_paths(home.path());
         for key in keys {
             assert!(paths.contains(&home.path().join(key)), "{key}");
         }
+        assert!(paths.contains(&oauth));
         assert!(paths.contains(&home.path().join("desktop-data")));
         assert!(
             !paths

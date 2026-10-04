@@ -38,6 +38,7 @@ const ICONS: Record<string, LucideIcon> = {
   browser_type: MousePointer2,
   cronjob_manage: Clock,
   delegate_task: Users,
+  codemode: Code,
   execute_code: Code,
   hexbot_soul: Sparkles,
   image_generate: Image,
@@ -87,7 +88,7 @@ export function StepRow({ call, meta }: { call: ToolCall; meta?: ReactNode }) {
   const Icon = toolIcon(call.name)
 
   return (
-    <li>
+    <li className={call.parentToolCallId ? 'ml-6 border-l border-foreground/10 pl-2' : undefined}>
       <button
         aria-expanded={isOpen}
         className="group/step hex-focus flex w-full items-center gap-2.5 rounded-[10px] px-1.5 py-1.5 text-left text-[length:var(--text-secondary)] transition-colors duration-[var(--hex-motion-fast)] hover:bg-foreground/[0.04]"

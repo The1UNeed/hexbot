@@ -532,7 +532,7 @@ async fn background_result_resolves_a_retired_parent_and_does_not_reopen_closed_
     runtime.shutdown().await;
 }
 #[tokio::test]
-async fn unavailable_mcp_warns_and_opens_with_no_discovered_tools() {
+async fn mcp_sections_open_without_discovery_and_forward_pi_warnings() {
     let (home, runtime, hub) = setup();
     common::write_config(
         home.path(),
@@ -541,9 +541,24 @@ async fn unavailable_mcp_warns_and_opens_with_no_discovered_tools() {
     .unwrap();
     let mut events = hub.subscribe();
     open(&runtime).await;
+    let session = runtime
+        .sessions
+        .lock()
+        .unwrap()
+        .get("first")
+        .unwrap()
+        .clone();
+    runtime.event(&session, json!({"type":"extension_ui_request","method":"notify","notifyType":"warning","message":"MCP servers need attention:\n  missing: failed: spawn /missing/hexbot-tool ENOENT\nRun /mcp to fix."})).unwrap();
     let mut warning = false;
     while let Ok(event) = events.try_recv() {
-        warning |= event.frame["params"]["type"] == "warning";
+        if event.frame["params"]["type"] == "warning" {
+            assert_eq!(
+                event.frame["params"]["payload"]["message"],
+                "owl can't reach missing. Check it in bot settings.\nmissing: failed: spawn /missing/hexbot-tool ENOENT"
+            );
+            assert_eq!(event.frame["params"]["payload"]["section_id"], "first");
+            warning = true;
+        }
     }
     assert!(warning);
     let saved = &processes(home.path())[0]["config"]["tools"];
@@ -555,6 +570,175 @@ async fn unavailable_mcp_warns_and_opens_with_no_discovered_tools() {
             .all(|t| t["server"].is_null())
     );
     runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_names_and_prompt_are_frozen_without_credentials_or_discovery() {
+    let (home, runtime, hub) = setup();
+    fs::write(home.path().join(".env"), "MCP_SECRET='hidden-value'\n").unwrap();
+    common::write_config(
+        home.path(),
+        &json!({"mcp_servers":{
+            "fixture-one":{"command":"node","env":{"TOKEN":"${MCP_SECRET}"}},
+            "legacy":{"url":"https://example.com/sse","transport":"sse"}
+        }}),
+    )
+    .unwrap();
+    let mut events = hub.subscribe();
+    open(&runtime).await;
+    let process = &processes(home.path())[0];
+    assert_eq!(process["config"]["mcpServers"], json!(["fixture-one"]));
+    assert!(
+        process["config"]["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("mcp__fixture_one")
+    );
+    assert!(!process.to_string().contains("hidden-value"));
+    let args = process["args"].as_array().unwrap();
+    for arg in [
+        "builtin:mcp",
+        "builtin:codemode",
+        "--no-approve",
+        "--no-builtin-tools",
+        "--exclude-tools",
+    ] {
+        assert!(args.contains(&json!(arg)));
+    }
+    assert!(!args.contains(&json!("--tools")));
+    assert!(!args.contains(&json!("builtin:tool-search")));
+    let excluded = args[args
+        .iter()
+        .position(|arg| arg == "--exclude-tools")
+        .unwrap()
+        + 1]
+    .as_str()
+    .unwrap();
+    assert!(excluded.split(',').any(|tool| tool == "powershell"));
+    let mut warned = false;
+    while let Ok(event) = events.try_recv() {
+        if event.frame["params"]["type"] == "warning" {
+            assert_eq!(
+                event.frame["params"]["payload"]["message"],
+                "owl can't use legacy. Its server uses an old connection type; switch it to the server's HTTP address in bot settings."
+            );
+            warned = true;
+        }
+    }
+    assert!(warned);
+    let s = runtime
+        .sessions
+        .lock()
+        .unwrap()
+        .get("first")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        runtime
+            .tool(&s, "hexbot_mcp_servers", &json!({}))
+            .await
+            .unwrap()[0]["config"]["env"]["TOKEN"],
+        "hidden-value"
+    );
+    let before = runtime.session_settings(&s).unwrap();
+    assert!(before["mcpState"]["fixture-one"]["revision"].is_string());
+    assert!(!before.to_string().contains("hidden-value"));
+    fs::write(home.path().join(".env"), "MCP_SECRET=changed-value\n").unwrap();
+    let changed = runtime.session_settings(&s).unwrap();
+    assert_ne!(before["mcpState"], changed["mcpState"]);
+    common::write_config(
+        &home.path().join("profiles/owl"),
+        &json!({"mcp_servers":{"fixture-one":{"disabled":true}}}),
+    )
+    .unwrap();
+    assert!(runtime.session_settings(&s).unwrap()["mcpState"]["fixture-one"].is_null());
+    common::write_config(&home.path().join("profiles/owl"), &json!({})).unwrap();
+    let prompt = process["config"]["prompt"].clone();
+    fs::write(
+        home.path().join("config.yaml"),
+        "mcp_servers:\n  new:\n    command: node\n",
+    )
+    .unwrap();
+    assert_eq!(
+        runtime
+            .tool(&s, "hexbot_mcp_servers", &json!({}))
+            .await
+            .unwrap(),
+        json!([])
+    );
+    assert_eq!(runtime.session_settings(&s).unwrap()["mcpState"], json!({}));
+    age(&runtime);
+    runtime.retire_idle(common::now()).await.unwrap();
+    open(&runtime).await;
+    let resumed = &processes(home.path())[1];
+    assert_eq!(resumed["config"]["mcpServers"], json!(["fixture-one"]));
+    assert_eq!(resumed["config"]["prompt"], prompt);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn legacy_sections_keep_the_bridge_and_restricted_sections_get_no_mcp() {
+    let (home, runtime, _) = setup();
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../pi-runtime/fixtures/mcp-server.mjs");
+    common::write_config(
+        home.path(),
+        &json!({"mcp_servers":{"fixture":{"command":"node","args":[script]}}}),
+    )
+    .unwrap();
+    let tools = json!([{"name":"mcp_fixture_echo","server":"fixture","tool":"echo","description":"Echo","parameters":{"type":"object"}}]);
+    store::open(home.path()).unwrap().execute("INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES('first','alice','owl','frozen',?)", [json!({"prompt":"frozen","tools":tools,"enabledToolsets":[]}).to_string()]).unwrap();
+    open(&runtime).await;
+    let s = runtime
+        .sessions
+        .lock()
+        .unwrap()
+        .get("first")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        runtime
+            .tool(&s, "mcp_fixture_echo", &json!({"text":"legacy works"}))
+            .await
+            .unwrap()["content"][0]["text"],
+        "legacy works"
+    );
+    let process = &processes(home.path())[0];
+    assert!(process["config"]["mcpServers"].is_null());
+    assert!(
+        !process["args"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("builtin:mcp"))
+    );
+    assert_eq!(
+        runtime
+            .tool(&s, "hexbot_mcp_servers", &json!({}))
+            .await
+            .unwrap(),
+        json!([])
+    );
+    let restricted = runtime
+        .open_session_with_tools("alice", "owl", "restricted", Some(&[]), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .tool(&restricted, "hexbot_mcp_servers", &json!({}))
+            .await
+            .unwrap(),
+        json!([])
+    );
+    let process = &processes(home.path())[1];
+    assert_eq!(process["config"]["mcpServers"], json!([]));
+    assert!(
+        !process["args"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("builtin:codemode"))
+    );
+    runtime.shutdown().await;
+    crate::connectors::close_bot(home.path(), "owl").await;
 }
 
 #[tokio::test]
@@ -1949,4 +2133,82 @@ fn bot_row(home: &Path, name: &str) -> Result<Value> {
 
 fn description_stale(runtime: &Runtime, bot: &str) -> bool {
     matches!(runtime.description_inputs(bot), Ok(Some((row, _, key))) if row["auto_description_key"] != key.as_str())
+}
+
+#[tokio::test]
+async fn connected_approvals_require_a_visible_section_and_nested_calls_survive_history() {
+    let (home, runtime, _) = setup();
+    open(&runtime).await;
+    let s = runtime
+        .sessions
+        .lock()
+        .unwrap()
+        .get("first")
+        .unwrap()
+        .clone();
+    db::open(home.path())
+        .unwrap()
+        .execute("DELETE FROM sections WHERE id='first'", [])
+        .unwrap();
+    assert_eq!(runtime.session_settings(&s).unwrap()["canAsk"], false);
+    db::open(home.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO sections(id,bot,owner_id,title) VALUES('first','owl','alice','Visible')",
+            [],
+        )
+        .unwrap();
+    assert_eq!(runtime.session_settings(&s).unwrap()["canAsk"], true);
+    let nested = json!({"calls":[{"id":"code/1","name":"mcp__fixture__echo","arguments":{"text":"hello"},"status":"ok","durationMs":20}],"complete":true});
+    runtime.event(&s,json!({"type":"message_end","message":{"role":"toolResult","toolName":"codemode","toolCallId":"code","content":[{"type":"text","text":"hello"}],"nestedCalls":nested}})).unwrap();
+    let history = store::history(home.path(), "first").unwrap();
+    assert_eq!(history.last().unwrap()["nested_calls"], nested);
+    runtime.shutdown().await;
+}
+
+#[test]
+fn connected_tool_notices_name_the_bot_in_plain_words() {
+    use super::connected_tools_notice as notice;
+    assert_eq!(
+        notice("Fox", "MCP servers need attention:\n  github: needs sign-in\n  linear: failed: timeout\nRun /mcp to fix.", false).unwrap(),
+        "Fox can't reach github, linear. Ask an admin to check them.\ngithub: needs sign-in\nlinear: failed: timeout"
+    );
+    assert_eq!(
+        notice("Fox", "MCP tools are only reachable from the codemode or tool_search tool, but neither is active; they cannot be called.", true).unwrap(),
+        "Fox can't use connected tools in this section. Start a new section to use them."
+    );
+    assert_eq!(
+        notice(
+            "Fox",
+            "Connected tool github has invalid settings. Ask an admin to check it.",
+            true
+        )
+        .unwrap(),
+        "Fox can't use github. Its settings are invalid. Check it in bot settings."
+    );
+    assert_eq!(
+        notice("Fox", "Connected tool github: bad config", false).unwrap(),
+        "Fox can't use github. Ask an admin to check it.\nbad config"
+    );
+    assert_eq!(
+        notice(
+            "Fox",
+            "Connected tools are unavailable: Daemon request interrupted",
+            true
+        )
+        .unwrap(),
+        "Fox can't use connected tools right now. Try again in the next message.\nDaemon request interrupted"
+    );
+    assert_eq!(
+        notice("Fox", "MCP failed to load: boom", true).unwrap(),
+        "Fox can't load connected tools. Check them in bot settings.\nboom"
+    );
+    assert!(notice("Fox", "Something else", true).is_none());
+    for raw in [
+        "MCP servers need attention:\n  a: failed\nRun /mcp to fix.",
+        "MCP failed to load: x",
+    ] {
+        let text = notice("Fox", raw, true).unwrap();
+        assert!(!text.contains("MCP") && !text.contains("/mcp"), "{text}");
+    }
 }

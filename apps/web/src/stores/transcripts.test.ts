@@ -30,6 +30,24 @@ describe('transcript reducer', () => {
       text: 'hello'
     })
   })
+  it('keeps nested steps on their parent when an approval splits the turn', () => {
+    const actions = useTranscripts.getState()
+    actions.messageStart('s')
+    actions.toolStart('s', { name: 'codemode', tool_id: 'code' })
+    actions.approvalRequest('s', { request_id: 'a' })
+    actions.toolStart('s', {
+      name: 'mcp__github__list',
+      tool_id: 'code/1',
+      parent_tool_call_id: 'code'
+    })
+    actions.toolComplete('s', { name: 'mcp__github__list', tool_id: 'code/1', result_text: 'ok' })
+    const messages = useTranscripts.getState().bySession.s?.messages ?? []
+    const parent = messages.find(message => message.toolCalls.some(call => call.toolId === 'code'))
+    expect(parent?.toolCalls).toMatchObject([
+      { toolId: 'code' },
+      { toolId: 'code/1', parentToolCallId: 'code', status: 'ok' }
+    ])
+  })
   it('keeps each message of a turn as its own part', () => {
     const actions = useTranscripts.getState()
     actions.messageStart('s')
