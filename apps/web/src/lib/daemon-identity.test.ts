@@ -2,6 +2,7 @@ import { generateKeyPairSync, sign, webcrypto } from 'node:crypto'
 
 import {
   DaemonIdentityError,
+  DaemonIdentityUnavailableError,
   DaemonUnreachableError,
   verifyDaemonIdentity
 } from './daemon-identity'
@@ -142,4 +143,23 @@ it('does not treat an empty supplied key as an older registration', async () => 
   await expect(
     verifyDaemonIdentity(origin, { ...daemon, identity_key: '' })
   ).rejects.toBeInstanceOf(DaemonIdentityError)
+})
+
+it.each([{ code: 'identity_unavailable' }, { error: 'Daemon identity is unavailable' }])(
+  'reports the daemon JSON 503 as an identity problem', async body => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(body, { status: 503 })))
+    const sendGrant = vi.fn()
+    await expect(verifyDaemonIdentity(origin, daemon).then(sendGrant)).rejects.toThrow(
+      'Studio Mac is running but could not prove it is your daemon.'
+    )
+    await expect(verifyDaemonIdentity(origin, daemon)).rejects.toBeInstanceOf(DaemonIdentityUnavailableError)
+    expect(sendGrant).not.toHaveBeenCalled()
+  }
+)
+
+it('uses the tunnel hostname when the daemon has no name', async () => {
+  answer('invalid')
+  await expect(verifyDaemonIdentity(origin, { ...daemon, name: '', tunnel_hostname: 'owl.example' })).rejects.toThrow(
+    'owl.example did not prove it is your daemon, so sign-in stopped.'
+  )
 })

@@ -80,18 +80,19 @@ trust model. See `docs/auth.md` for the in-memory replay cache and limits.
 
 Each daemon also has an Ed25519 identity key. Its private key stays in
 `connect-identity.key`, written atomically with mode 0600; Connect stores only
-the raw 32-byte public key as unpadded base64url. A key from the initial
-`connect.json` format is copied to this file before use. Older daemons may
-rewrite `connect.json` during tunnel repair, but cannot erase the separate key.
+the raw 32-byte public key as unpadded base64url. The shared credential policy
+blocks bots from reading this file in Auto and Manual modes, through file tools
+and the OS sandbox. Older daemons may rewrite `connect.json` during tunnel
+repair, but cannot erase the separate key.
 Disconnect and revocation remove both files. The daemon caches the parsed key
 for the current registration and invalidates it when the registration changes.
 
 Registration sends the public key with the device code poll. Startup prepares
 the local key under the lifecycle lock, then enrolls it in a background task
 using both the daemon token and the tunnel-credential proof used by repair.
-The local UI and tunnel do not wait for this request. Enrollment runs at most
-once per registration per process start, and is skipped after a registration
-poll already sent the key. A failed attempt waits for the next process start;
+The local UI and tunnel do not wait for this request. Enrollment is attempted
+once per daemon start, best effort, and is skipped after a registration poll
+already sent the key. A failed attempt waits for the next process start;
 an older Connect returning 404 is silently skipped. A `410 daemon_revoked`
 uses the normal removal path.
 
@@ -103,8 +104,12 @@ leaves the tunnel running; fix file access and restart. For an unparsable key,
 the daemon generates an in-memory candidate and saves it only after Connect
 accepts the first-key enrollment. An existing key in Connect produces the same
 409 conflict instead. Until recovery, the identity endpoint returns 503 and
-sign-in checks fail. No key error stops the tunnel. Rotate a key by disconnecting
-and registering again.
+the app shows "<name> is running but could not prove it is your daemon."
+Settings names `connect-identity.key in the Hexbot home` when it cannot be read
+or saved. No key error stops the tunnel. Rotate a key by disconnecting
+and registering again. Settings refreshes status every five seconds while its
+Connect panel is open and shows tunnel and identity problems separately. A new
+registration clears both errors.
 
 Connect's online probe and current apps check a fresh signature bound to the
 daemon ID, request Host, and nonce. Host is client-chosen: anyone who can reach
@@ -216,8 +221,8 @@ so enrollment takes effect without waiting for an old providers result to expire
 
 Three states follow: **online** (heartbeat within ten minutes and the address
 answers), **unreachable** (heartbeat within ten minutes, address does not
-answer: the daemon runs but its tunnel is down), and **offline** (no heartbeat
-for ten minutes; not probed). The API carries `status` plus the older
+answer or prove its identity: the daemon runs but its address fails the probe),
+and **offline** (no heartbeat for ten minutes; not probed). The API carries `status` plus the older
 `online` boolean, which is true only for `online`. "Open in browser" and the
 app's daemon list enable a daemon only while it is online.
 
@@ -244,8 +249,10 @@ app's daemon list enable a daemon only while it is online.
    signature without credentials and verifies it with WebCrypto Ed25519. An
    invalid reply, including 404 with a known key, stops sign-in with
    "<name> did not prove it is your daemon, so sign-in stopped." Network errors,
-   timeouts, and 5xx responses show "<name> could not be reached." Only an
-   unknown key or a browser without Ed25519 support proceeds as before, logging
+   timeouts, and proxy 5xx responses show "<name> could not be reached." The daemon
+   JSON 503 for an unavailable key shows "<name> is running but could not prove
+   it is your daemon." A missing daemon name falls back to its tunnel hostname.
+   Only an unknown key or a browser without Ed25519 support proceeds as before, logging
    the reason once. The public identity endpoint allows cross-origin GETs without
    credentials, including the localhost renderer used by `pnpm dev --desktop`.
    This check covers both the Electron and browser grant paths.

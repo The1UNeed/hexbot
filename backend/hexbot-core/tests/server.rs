@@ -2004,10 +2004,19 @@ async fn connect_identity_is_public_host_bound_and_validates_nonces() {
     assert_eq!(client.get(&url).send().await.unwrap().status(), 404);
     let pkcs8 = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
     let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
-    hexbot_core::common::atomic_write(&fixture.home.join("connect.json"),
+    hexbot_core::common::atomic_write(
+        &fixture.home.join("connect.json"),
         &serde_json::to_vec(&json!({"daemon_id":"daemon-1","daemon_token":"secret",
             "owner_id":"owner","issuer":"https://connect.hexbot.app","keys":[{}],
-            "tunnel_hostname":"owl.example","identity_private_key":URL_SAFE_NO_PAD.encode(pkcs8.as_ref())})).unwrap()).unwrap();
+            "tunnel_hostname":"owl.example"}))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        fixture.home.join("connect-identity.key"),
+        URL_SAFE_NO_PAD.encode(pkcs8.as_ref()),
+    )
+    .unwrap();
     // HTML Accept must not turn this public endpoint into a login redirect.
     for (host, normalized) in [
         ("OWL.Example.:443", "owl.example"),

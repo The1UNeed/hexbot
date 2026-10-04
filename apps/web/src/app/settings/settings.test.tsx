@@ -344,7 +344,8 @@ describe('settings', () => {
       tunnel_hostname: 'home.connect.hexbot.app',
       tunnel_running: true,
       last_heartbeat_at: 1,
-      last_error: conflict
+      last_error: null,
+      identity_error: conflict
     })
     render(<ConnectSettings />)
     expect(await screen.findByText(conflict)).toBeVisible()
@@ -551,4 +552,38 @@ describe('settings', () => {
     expect(screen.getByText('Only administrators can manage users.')).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Invite' })).not.toBeInTheDocument()
   })
+})
+
+it('refreshes delayed identity and tunnel errors, clears recovery, and stops on unmount', async () => {
+  vi.useFakeTimers()
+
+  const healthy = {
+    registered: true, daemon_id: 'd1', slug: 'home', tunnel_hostname: 'home.connect.hexbot.app',
+    tunnel_running: true, last_heartbeat_at: 1, last_error: null, identity_error: null
+  }
+
+  const conflict = 'Hex Connect has a different key for this daemon. Disconnect and connect again.'
+  vi.mocked(connectStatus).mockResolvedValue(healthy)
+  const view = render(<ConnectSettings />)
+
+  try {
+    await act(async () => {})
+    expect(screen.queryByText(conflict)).toBeNull()
+    vi.mocked(connectStatus).mockResolvedValue({ ...healthy, last_error: 'cloudflared exited: exit status: 1', identity_error: conflict })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(screen.getByText(conflict)).toBeVisible()
+    expect(screen.getByText('The tunnel is not connected.')).toBeVisible()
+    expect(screen.queryByText('cloudflared exited: exit status: 1')).toBeNull()
+    vi.mocked(connectStatus).mockResolvedValue(healthy)
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(screen.queryByText(conflict)).toBeNull()
+    expect(screen.queryByText('The tunnel is not connected.')).toBeNull()
+    view.unmount()
+    const calls = vi.mocked(connectStatus).mock.calls.length
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+    expect(connectStatus).toHaveBeenCalledTimes(calls)
+  } finally {
+    view.unmount()
+    vi.useRealTimers()
+  }
 })

@@ -76,6 +76,14 @@ export class DaemonIdentityError extends Error {
   }
 }
 
+export class DaemonIdentityUnavailableError extends DaemonIdentityError {
+  constructor(name: string) {
+    super(name)
+    this.message = `${name} is running but could not prove it is your daemon.`
+    this.name = 'DaemonIdentityUnavailableError'
+  }
+}
+
 export class DaemonUnreachableError extends Error {
   constructor(name: string) {
     super(`${name} could not be reached.`)
@@ -90,7 +98,7 @@ const unsupported = (error: unknown) => errorName(error) === 'NotSupportedError'
 
 export async function verifyDaemonIdentity(
   origin: string,
-  daemon: { id: string; name?: string; daemon_name?: string; identity_key?: string | null }
+  daemon: { id: string; name?: string; daemon_name?: string; tunnel_hostname?: string; identity_key?: string | null }
 ): Promise<void> {
   if (daemon.identity_key == null) {
     skip('no key known')
@@ -104,7 +112,7 @@ export async function verifyDaemonIdentity(
     return
   }
 
-  const name = daemon.name || daemon.daemon_name || 'Your daemon'
+  const name = daemon.name || daemon.daemon_name || daemon.tunnel_hostname || new URL(origin).host
   let key: CryptoKey
 
   try {
@@ -140,6 +148,14 @@ export async function verifyDaemonIdentity(
   }
 
   if (response.status >= 500) {
+    if (response.status === 503) {
+      const body = await readIdentity(response).catch(() => null)
+
+      if (body?.code === 'identity_unavailable' || body?.error === 'Daemon identity is unavailable') {
+        throw new DaemonIdentityUnavailableError(name)
+      }
+    }
+
     throw new DaemonUnreachableError(name)
   }
 

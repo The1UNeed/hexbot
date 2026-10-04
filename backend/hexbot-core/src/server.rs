@@ -1334,7 +1334,7 @@ async fn connect_identity(
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"error":"Daemon identity is unavailable"})),
+            Json(json!({"error":"Daemon identity is unavailable", "code":"identity_unavailable"})),
         )
             .into_response(),
     }

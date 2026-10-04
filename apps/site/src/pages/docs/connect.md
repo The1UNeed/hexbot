@@ -57,7 +57,10 @@ The daemon keeps its identity key in `connect-identity.key`, separately from
 `connect.json`, so an older daemon rewriting its tunnel settings cannot erase
 it. If Settings reports a different key in Hex Connect, disconnect and register
 again. A key error leaves the daemon and tunnel running, but sign-in checks
-remain blocked until the key is recovered.
+remain blocked until the key is recovered. The app then says "<name> is running
+but could not prove it is your daemon." Settings refreshes while the Connect
+panel is open and shows tunnel and identity problems separately. Enrollment
+is attempted once per daemon start, best effort.
 
 ## What Connect holds
 

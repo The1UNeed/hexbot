@@ -56,9 +56,6 @@ pub struct ConnectConfig {
     pub issuer: String,
     #[serde(default)]
     pub keys: Vec<Value>,
-    // Read the initial implementation for migration, but never write the key here again.
-    #[serde(default, skip_serializing)]
-    pub identity_private_key: String,
 }
 impl ConnectConfig {
     pub fn load(home: &Path) -> Result<Option<Self>> {
@@ -105,8 +102,7 @@ fn new_identity_key() -> Result<String> {
 const IDENTITY_FILE: &str = "connect-identity.key";
 const IDENTITY_CONFLICT: &str =
     "Hex Connect has a different key for this daemon. Disconnect and connect again.";
-const IDENTITY_UNAVAILABLE: &str =
-    "The daemon identity key could not be read or saved. Check the daemon's files and restart.";
+const IDENTITY_UNAVAILABLE: &str = "connect-identity.key in the Hexbot home could not be read or saved. Check the file and restart the daemon.";
 
 struct CachedIdentity {
     daemon_id: String,
@@ -120,17 +116,11 @@ fn parse_identity_key(encoded: &[u8]) -> Result<Arc<Ed25519KeyPair>> {
         .map(Arc::new)
         .map_err(|_| Error::new(5241, "invalid daemon identity key"))
 }
-fn read_identity_key(home: &Path, config: &ConnectConfig) -> Result<Vec<u8>> {
+fn read_identity_key(home: &Path) -> Result<Vec<u8>> {
     match fs::read(home.join(IDENTITY_FILE)) {
         Ok(bytes) => Ok(bytes),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let encoded = if config.identity_private_key.is_empty() {
-                new_identity_key()?
-            } else {
-                config.identity_private_key.clone()
-            };
-            // Validate before migrating a legacy key.
-            parse_identity_key(encoded.as_bytes())?;
+            let encoded = new_identity_key()?;
             common::atomic_write(&home.join(IDENTITY_FILE), encoded.as_bytes())?;
             Ok(encoded.into_bytes())
         }
@@ -139,9 +129,6 @@ fn read_identity_key(home: &Path, config: &ConnectConfig) -> Result<Vec<u8>> {
 }
 async fn identity_error(service: &Service, message: Option<String>) {
     let mut data = service.data.lock().await;
-    if message.is_some() || data.error == data.identity_error {
-        data.error = message.clone();
-    }
     data.identity_error = message;
     drop(data);
     bump(service);
@@ -149,7 +136,7 @@ async fn identity_error(service: &Service, message: Option<String>) {
 
 /// Local preparation runs under lifecycle; network enrollment never blocks startup.
 async fn start_identity(home: &Path, service: &Arc<Service>, config: &ConnectConfig) {
-    let prepared = read_identity_key(home, config).and_then(|encoded| parse_identity_key(&encoded));
+    let prepared = read_identity_key(home).and_then(|encoded| parse_identity_key(&encoded));
     let (key, replacement) = match prepared {
         Ok(key) => (Some(key), None),
         Err(error) => {
@@ -261,9 +248,7 @@ pub async fn identity_response(home: &Path, host: &str, nonce: &str) -> Result<O
         let Some(config) = ConnectConfig::load(home)?.filter(|c| !c.daemon_id.is_empty()) else {
             return Ok(None);
         };
-        let key = match read_identity_key(home, &config)
-            .and_then(|encoded| parse_identity_key(&encoded))
-        {
+        let key = match read_identity_key(home).and_then(|encoded| parse_identity_key(&encoded)) {
             Ok(key) => Some(key),
             Err(error) => {
                 eprintln!("Connect identity: {error}");
@@ -399,12 +384,12 @@ async fn drop_registration(
         return Ok(false);
     }
     *service.identity.lock().await = None;
-    match fs::remove_file(home.join(IDENTITY_FILE)) {
+    match fs::remove_file(home.join("connect.json")) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
-    match fs::remove_file(home.join("connect.json")) {
+    match fs::remove_file(home.join(IDENTITY_FILE)) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
@@ -1040,7 +1025,7 @@ async fn run_tunnel(
                         let mut data = tunnel_service.data.lock().await;
                         let changed = data.running != ready;
                         data.running = ready;
-                        if ready { data.error = data.identity_error.clone(); }
+                        if ready { data.error = None; }
                         drop(data);
                         if changed { bump(&tunnel_service); }
                         if !ready && last_ok.elapsed() >= timing.ready_timeout {
@@ -1148,7 +1133,7 @@ async fn run_tunnel(
                         match result {
                             Ok(_) => {
                                 data.heartbeat = Some(common::now());
-                                data.error = data.identity_error.clone();
+                                data.error = None;
                             }
                             Err(error) => data.error = Some(error.message),
                         }
@@ -1193,7 +1178,8 @@ async fn connect_status(home: &Path) -> Result<Value> {
         "tunnel_hostname": config.as_ref().map(|c| &c.tunnel_hostname),
         "tunnel_running": data.running,
         "last_heartbeat_at": data.heartbeat,
-        "last_error": data.identity_error.as_ref().or(data.error.as_ref())
+        "last_error": data.error,
+        "identity_error": data.identity_error
     }))
 }
 
@@ -1851,7 +1837,6 @@ pub async fn register_poll(home: &Path, code: &str, start_tunnel: bool) -> Resul
     result["status"] = json!(status);
     if status == "approved" {
         let config = ConnectConfig {
-            identity_private_key: String::new(),
             owner_id: common::required(&result, "owner_id")?.into(),
             issuer: common::required(&result, "issuer")?.into(),
             keys: result["keys"]
@@ -1895,6 +1880,7 @@ pub async fn register_poll(home: &Path, code: &str, start_tunnel: bool) -> Resul
                 .identity_attempted
                 .insert(config.daemon_id.clone());
             identity_error(&service, None).await;
+            service.data.lock().await.error = None;
         }
         if start_tunnel {
             let port = service(home).await?.data.lock().await.port;

@@ -389,8 +389,8 @@ external service daemon through the app leaves its status as running.
 `GET /api/connect/identity?nonce=<base64url>` is public, including through the
 tunnel and with an HTML Accept header. It returns 404 when unregistered and
 400 for a missing or invalid nonce. The nonce must be canonical unpadded
-base64url encoding 16–64 bytes. An unavailable identity key returns 503 while
-the daemon keeps serving. Successful responses carry `Cache-Control: no-store`.
+base64url encoding 16–64 bytes. An unavailable identity key returns JSON 503
+with `code: "identity_unavailable"` while the daemon keeps serving. Successful responses carry `Cache-Control: no-store`.
 Cross-origin GETs are public with `Access-Control-Allow-Origin: *`, without
 credential permission. This exemption does not apply to other daemon routes.
 
@@ -456,14 +456,16 @@ budget gate.
 ### Hex Connect
 
 - `hexbot.connect.status {}` → `{registered, daemon_id, slug,
-  tunnel_hostname, tunnel_running, last_heartbeat_at, last_error}`
+  tunnel_hostname, tunnel_running, last_heartbeat_at, last_error, identity_error}`.
+  The two nullable error fields report tunnel/Connect and identity problems
+  separately. Settings refreshes them every five seconds while the panel is open.
 - `hexbot.connect.register_start {daemon_name?}` → `{device_code, user_code,
   verify_url, interval}`
 - `hexbot.connect.register_poll {device_code}` → `{status}`. An approved result
   stores the daemon and tunnel credentials on the daemon and mirrors
   `dashboard.public_url`. The RPC returns only status, never those credentials.
-- `hexbot.connect.disconnect {}` stops Connect, deletes `connect.json`, and
-  removes the mirrored public URL.
+- `hexbot.connect.disconnect {}` stops Connect, deletes `connect.json` before
+  `connect-identity.key`, and removes the mirrored public URL.
 
 ### Events emitted by the plugin
 

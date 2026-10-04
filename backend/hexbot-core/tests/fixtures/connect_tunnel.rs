@@ -691,9 +691,14 @@ async fn startup_enrolls_a_persisted_key_once_and_keeps_it_on_conflict_or_old_co
             (status, json!({"ok": status == 200})),
         );
         let service = super::service(home.path()).await.unwrap();
+        service.data.lock().await.error = Some("cloudflared exited: exit status: 1".into());
         prepare_identity(home.path(), &service).await;
         let (body, authorization) = mock.event("/api/daemons/daemon-1/identity").await;
         identity_finished(&service).await;
+        assert_eq!(
+            super::connect_status(home.path()).await.unwrap()["last_error"],
+            "cloudflared exited: exit status: 1"
+        );
         assert_eq!(authorization, "Bearer daemon-secret");
         assert_eq!(body["tunnel_token"], "tunnel-secret");
         let response = services::identity_response(home.path(), "host", "nonce")
@@ -716,11 +721,11 @@ async fn startup_enrolls_a_persisted_key_once_and_keeps_it_on_conflict_or_old_co
         }
         if status == 409 {
             assert_eq!(
-                service.data.lock().await.error.as_deref(),
+                service.data.lock().await.identity_error.as_deref(),
                 Some(super::IDENTITY_CONFLICT)
             );
             assert_eq!(
-                super::connect_status(home.path()).await.unwrap()["last_error"],
+                super::connect_status(home.path()).await.unwrap()["identity_error"],
                 super::IDENTITY_CONFLICT
             );
         }
@@ -741,15 +746,14 @@ async fn startup_enrolls_a_persisted_key_once_and_keeps_it_on_conflict_or_old_co
 }
 
 #[tokio::test]
-async fn identity_migration_survives_an_older_daemon_rewriting_connect_json() {
+async fn identity_file_survives_an_older_daemon_rewriting_connect_json() {
     let mut mock = Mock::new().await;
     let home = home();
     mock.persist_registration(home.path());
     let encoded = super::new_identity_key().unwrap();
     let path = home.path().join("connect.json");
     let mut legacy: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    legacy["identity_private_key"] = json!(encoded);
-    fs::write(&path, legacy.to_string()).unwrap();
+    fs::write(home.path().join(super::IDENTITY_FILE), &encoded).unwrap();
     let service = super::service(home.path()).await.unwrap();
     prepare_identity(home.path(), &service).await;
     identity_finished(&service).await;
@@ -759,10 +763,6 @@ async fn identity_migration_survives_an_older_daemon_rewriting_connect_json() {
         encoded
     );
     // This is what the pre-identity struct's save during repair does.
-    legacy
-        .as_object_mut()
-        .unwrap()
-        .remove("identity_private_key");
     legacy["tunnel_token"] = json!("repaired-token");
     fs::write(&path, legacy.to_string()).unwrap();
     let restarted = std::sync::Arc::new(super::Service::default());
@@ -818,7 +818,7 @@ async fn corrupt_identity_is_replaced_only_after_connect_accepts_the_first_key()
             );
             if status == 409 {
                 assert_eq!(
-                    service.data.lock().await.error.as_deref(),
+                    service.data.lock().await.identity_error.as_deref(),
                     Some(super::IDENTITY_CONFLICT)
                 );
             }
@@ -837,7 +837,7 @@ async fn unreadable_identity_is_reported_without_blocking_or_overwriting() {
     prepare_identity(home.path(), &service).await;
     assert!(service.identity_task.lock().await.is_none());
     assert_eq!(
-        service.data.lock().await.error.as_deref(),
+        service.data.lock().await.identity_error.as_deref(),
         Some(super::IDENTITY_UNAVAILABLE)
     );
     assert!(home.path().join(super::IDENTITY_FILE).is_dir());
@@ -949,10 +949,15 @@ async fn poll_caches_the_key_and_does_not_immediately_enroll_again() {
     );
     fs::write(home.path().join("connect.json"), config).unwrap();
     // A new registration invalidates the cached parsed key.
+    service.data.lock().await.error = Some(super::REVOKED_REASON.into());
+    super::identity_error(&service, Some(super::IDENTITY_CONFLICT.into())).await;
     services::register_poll(home.path(), "other-code", false)
         .await
         .unwrap();
     let (next, _) = mock.event("/api/register/poll").await;
+    let status = super::connect_status(home.path()).await.unwrap();
+    assert!(status["last_error"].is_null());
+    assert!(status["identity_error"].is_null());
     assert_ne!(body["public_key"], next["public_key"]);
     assert_eq!(
         services::identity_response(home.path(), "host", "nonce")
@@ -960,6 +965,29 @@ async fn poll_caches_the_key_and_does_not_immediately_enroll_again() {
             .unwrap()
             .unwrap()["public_key"],
         next["public_key"]
+    );
+    services::shutdown(home.path()).await.unwrap();
+}
+
+#[tokio::test]
+async fn disconnect_removes_registration_before_attempting_key_removal() {
+    let mock = Mock::new().await;
+    let home = home();
+    mock.persist_registration(home.path());
+    // A directory makes key removal fail even when tests run with elevated access.
+    fs::create_dir(home.path().join(super::IDENTITY_FILE)).unwrap();
+    let service = super::service(home.path()).await.unwrap();
+    assert!(
+        super::drop_registration(home.path(), &service, None, None, false)
+            .await
+            .is_err()
+    );
+    assert!(!home.path().join("connect.json").exists());
+    assert!(
+        services::identity_response(home.path(), "host", "nonce")
+            .await
+            .unwrap()
+            .is_none()
     );
     services::shutdown(home.path()).await.unwrap();
 }

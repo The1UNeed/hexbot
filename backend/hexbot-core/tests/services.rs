@@ -538,7 +538,6 @@ async fn registration_persists_pins_and_returns_only_status() {
             .unwrap()
             .unwrap()["public_key"]
     );
-    assert!(config.identity_private_key.is_empty());
     assert!(
         !fs::read(home.path().join("connect-identity.key"))
             .unwrap()

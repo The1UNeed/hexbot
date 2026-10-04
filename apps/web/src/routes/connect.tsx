@@ -18,8 +18,8 @@ import {
   unwrapPairingReply,
   verifyBrowserCookie
 } from '../lib/connection'
-import { deviceKey, deviceProof } from '../lib/dpop'
 import { verifyDaemonIdentity } from '../lib/daemon-identity'
+import { deviceKey, deviceProof } from '../lib/dpop'
 import { formatAddress, parseAddress, parsePairLink } from '../lib/pair-link'
 import { useConnection } from '../stores/connection'
 
