@@ -35,6 +35,7 @@ import type {
   ClarifyRequest
 } from '../../lib/types'
 import { useBot } from '../../stores/bots'
+import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
 import {
   isThread,
@@ -830,6 +831,13 @@ function BotConversation() {
   const liveId = useLiveSessionId(params.section ?? null)
   const transcript = useTranscript(liveId)
   const [editing, setEditing] = useState(false)
+
+  // Connector tools are named from the bot's catalog ("Connecting to Project tools").
+  useEffect(() => {
+    if (params.bot) {
+      void connectorsActions().load(params.bot)
+    }
+  }, [params.bot])
   const [title, setTitle] = useState('')
   const [lightbox, setLightbox] = useState<string | null>(null)
   const [visible, setVisible] = useState(60)

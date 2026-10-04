@@ -14,6 +14,7 @@ import { useRoomOrLeave } from '../../lib/room-or-leave'
 import { toMillis } from '../../lib/time'
 import type { Bot, RoomEvent, RoomMember, RoomTurn } from '../../lib/types'
 import { useBots } from '../../stores/bots'
+import { connectorsActions } from '../../stores/connectors'
 import { roomFailure, roomStatus, useRooms } from '../../stores/rooms'
 import { useTranscripts } from '../../stores/transcripts'
 import { useUsers } from '../../stores/users'
@@ -288,6 +289,13 @@ export function RoomConversation() {
     () => room?.members.filter(member => member.member_kind === 'bot' && !member.left_at) ?? [],
     [room?.members]
   )
+
+  // Connector tools are named from each bot's catalog ("Connecting to Project tools").
+  useEffect(() => {
+    for (const member of members) {
+      void connectorsActions().load(member.member_id)
+    }
+  }, [members])
 
   const mention = /(?:^|\s)@([\w-]*)$/.exec(text)?.[1]
   const streaming = Object.keys(turns).length > 0
