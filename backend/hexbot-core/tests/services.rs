@@ -527,8 +527,33 @@ async fn registration_persists_pins_and_returns_only_status() {
         .unwrap();
     assert_eq!(response, json!({"status":"approved"}));
     let (body, _) = mock.event("/api/register/poll").await;
-    assert_eq!(body, json!({"device_code":"device-code"}));
+    assert_eq!(body["device_code"], "device-code");
     let config = services::ConnectConfig::load(home.path()).unwrap().unwrap();
+    assert_eq!(
+        body["public_key"],
+        services::identity_response(home.path(), "host", "nonce")
+            .await
+            .unwrap()
+            .unwrap()["public_key"]
+    );
+    assert!(config.identity_private_key.is_empty());
+    assert!(
+        !fs::read(home.path().join("connect-identity.key"))
+            .unwrap()
+            .is_empty()
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(home.path().join("connect-identity.key"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
     assert_eq!(config.owner_id, "cloud-user");
     assert_eq!(config.issuer, "https://connect.hexbot.app");
     assert_eq!(config.keys, jwks()["keys"].as_array().unwrap().to_vec());
@@ -761,4 +786,30 @@ async fn parallel_grant_redemption_and_jwks_cache() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn registration_with_old_connect_retries_its_strict_poll_schema() {
+    let mut mock = Mock::new().await;
+    let home = home();
+    mock.configure(home.path());
+    *mock.data.legacy_poll.lock().await = true;
+    *mock.data.response.lock().await = json!({"status":"approved","daemon_id":"daemon-1","daemon_token":"daemon-secret","slug":"kitchen","tunnel_hostname":"kitchen.connect.example","tunnel_token":"tunnel-secret","owner_id":"cloud-user","issuer":"https://connect.hexbot.app","keys":jwks()["keys"]});
+    assert_eq!(
+        services::register_poll(home.path(), "device-code", false)
+            .await
+            .unwrap(),
+        json!({"status":"approved"})
+    );
+    let (first, _) = mock.event("/api/register/poll").await;
+    let (second, _) = mock.event("/api/register/poll").await;
+    assert_eq!(second, json!({"device_code":"device-code"}));
+    assert_eq!(
+        first["public_key"],
+        services::identity_response(home.path(), "host", "nonce")
+            .await
+            .unwrap()
+            .unwrap()["public_key"]
+    );
+    services::shutdown(home.path()).await.unwrap();
 }

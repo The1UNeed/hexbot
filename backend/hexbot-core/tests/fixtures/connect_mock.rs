@@ -18,6 +18,8 @@ pub(super) struct StateData {
     pub(super) keys: Mutex<Value>,
     observed: mpsc::UnboundedSender<(String, Value, String)>,
     pub(super) bad: Mutex<bool>,
+    pub(super) legacy_poll: Mutex<bool>,
+    pub(super) identity_gate: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub(super) binary: Mutex<Vec<u8>>,
     pub(super) manifest: Mutex<Value>,
     /// Per-path replies `(status, body)`, for routes the daemon must handle by status.
@@ -49,8 +51,23 @@ async fn handler(
     let body = axum::body::to_bytes(request.into_body(), 1024 * 1024)
         .await
         .unwrap();
-    let body = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let reject_key = path == "/api/register/poll"
+        && body.get("public_key").is_some()
+        && *state.legacy_poll.lock().await;
     let _ = state.observed.send((path.clone(), body, auth));
+    if path.ends_with("/identity")
+        && let Some(gate) = state.identity_gate.lock().await.clone()
+    {
+        gate.notified().await;
+    }
+    if reject_key {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid_request"})),
+        )
+            .into_response();
+    }
     if *state.bad.lock().await {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
@@ -77,6 +94,8 @@ impl Mock {
             response: Mutex::new(json!({"status":"pending"})),
             observed: sender,
             bad: Mutex::new(false),
+            legacy_poll: Mutex::new(false),
+            identity_gate: Mutex::default(),
             binary: Mutex::new(vec![]),
             manifest: Mutex::new(Value::Null),
             overrides: Mutex::default(),
