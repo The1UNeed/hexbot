@@ -38,7 +38,15 @@ import { BOT_TEMPLATES } from '../lib/bot-templates'
 import { type DaemonProgress, getBridge, hasLocalRuntime, isElectron } from '../lib/bridge'
 import { cn } from '../lib/cn'
 import { connectTo, setLocalDaemonPort } from '../lib/connection'
-import type { Bot, Connector, ModelOption, Provider, Section } from '../lib/types'
+import { REASONING_LEVELS } from '../lib/reasoning'
+import type {
+  Bot,
+  Connector,
+  ModelOption,
+  Provider,
+  ReasoningEffort,
+  Section
+} from '../lib/types'
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
 import { introduceBot } from '../stores/sections'
@@ -989,6 +997,7 @@ function BotStep({
   )
 
   const [models, setModels] = useState<ModelOption[]>([])
+  const [reasoning, setReasoning] = useState<null | ReasoningEffort>(null)
   const [model, setModel] = useState(() => defaultModel?.split('/').slice(1).join('/') ?? '')
   const [busy, setBusy] = useState(false)
 
@@ -1042,6 +1051,7 @@ function BotStep({
         name,
         persona: persona.trim(),
         provider,
+        ...(reasoning ? { reasoning_effort: reasoning } : {}),
         title: title.trim()
       })
 
@@ -1157,6 +1167,15 @@ function BotStep({
               value={model || undefined}
             />
           </div>
+        </label>
+        <label className="block space-y-2">
+          <span className="font-medium">Reasoning</span>
+          <Select
+            label="Reasoning"
+            onValueChange={value => setReasoning(value as ReasoningEffort)}
+            options={REASONING_LEVELS}
+            value={reasoning ?? 'medium'}
+          />
         </label>
       </div>
       <SetupActions className="pt-3">

@@ -95,10 +95,12 @@ async fn offline_bot_lifecycle_and_device_output_match_python_cli() {
             "openai",
             "--persona",
             "Remember carefully",
+            "--reasoning-effort=high",
         ],
     )
     .await;
     assert_eq!(bot["bot"]["display_name"], "Owl");
+    assert_eq!(bot["bot"]["reasoning_effort"], "high");
     assert_eq!(bot["bot"]["persona"], "Remember carefully");
     assert_eq!(bot["bot"]["model"], "fixture");
     let device = support::mint_device(h, "Phone", "ios", "local").unwrap();
@@ -622,7 +624,7 @@ async fn help_and_invalid_command_describe_all_native_commands() {
         "hexbot serve [--host IP] [--port N] [--lan | --no-lan]",
         "hexbot pair",
         "hexbot bots list | create NAME",
-        "[--title TEXT] [--description TEXT] [--persona TEXT] [--provider NAME] [--model NAME]",
+        "[--title TEXT] [--description TEXT] [--persona TEXT] [--provider NAME] [--model NAME] [--reasoning-effort LEVEL]",
         "hexbot rooms list",
         "hexbot devices list | revoke ID",
         "hexbot connect [--name TEXT | status | disconnect]",

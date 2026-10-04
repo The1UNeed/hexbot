@@ -81,7 +81,7 @@ user. Get and mutation methods always check ownership.
 ### Bots
 
 Bot shape: `{name, display_name, title, description, persona, tools: [string], skills: [string], shareable,
-provider, model, avatar: {mime, data} | null, created_at, updated_at, last_activity_at,
+provider, model, reasoning_effort | null, avatar: {mime, data} | null, created_at, updated_at, last_activity_at,
 owner_id, dream_enabled, notify, approval_mode, workdir | null,
 status, status_detail | null, sections_total, sections_recent: [Section]}`
 
@@ -95,6 +95,12 @@ null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
 that bot's terminal. Only the admin may set `off`: the daemon refuses it for
 a member's bot or room with "Only the admin can choose Bypass." and runs a
 member's bot in Auto if `off` was stored earlier.
+`reasoning_effort` is the Pi thinking level a new section starts with: `off`,
+`minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, stored as
+`model.reasoning_effort` in the profile's `config.yaml`. Null means Pi's
+default, `medium`; Pi clamps a level the model lacks to the closest one it
+has. Open sections keep the level they started with, so their cached prefix
+stays valid. A scheduled job's own `reasoning_effort` wins over the bot's.
 `workdir` and the `workspace_dir` setting are refused (4202) when they resolve
 inside the Hexbot home, symlinks included.
 
@@ -117,8 +123,8 @@ inside the Hexbot home, symlinks included.
   once they have navigated to the section. Refused (4243) once the section
   has messages.
 - `hexbot.bots.update {name, display_name?, title?, description?, persona?,
-  provider?, model?, avatar?, dream_enabled?, shareable?, tools?, skills?,
-  notify?, approval_mode?, workdir?}` →
+  provider?, model?, reasoning_effort?, avatar?, dream_enabled?, shareable?,
+  tools?, skills?, notify?, approval_mode?, workdir?}` →
   `{bot: Bot}`. `tools` accepts `terminal`, `files`, `code_execution`, `browser`,
   `computer_use`, `vision`, `voice`, `message_bots`, `delegate`, and
   `scheduling`; toolsets owned by connectors (web, image_gen, mcp-*) are left

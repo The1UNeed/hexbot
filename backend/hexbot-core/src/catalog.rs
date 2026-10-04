@@ -28,6 +28,7 @@ const FIELDS: &[&str] = &[
     "persona",
     "provider",
     "model",
+    "reasoning_effort",
     "avatar",
     "dream_enabled",
     "shareable",
@@ -411,6 +412,7 @@ fn shape_bot(home: &Path, caller: &str, row: Value, all: bool) -> Result<Value> 
             .as_str()
             .map(Value::from)
             .unwrap_or_else(|| cfg["model"]["default"].clone()),
+        "reasoning_effort": cfg["model"]["reasoning_effort"],
         "avatar": avatar(home, name)?,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -469,6 +471,20 @@ fn validate_patch(home: &Path, p: &Value) -> Result<()> {
             }
             "avatar" => {
                 decode_avatar(value)?;
+            }
+            "reasoning_effort"
+                if !value.is_null()
+                    && !value
+                        .as_str()
+                        .is_some_and(|s| crate::pi::THINKING_LEVELS.contains(&s)) =>
+            {
+                return Err(Error::new(
+                    4202,
+                    format!(
+                        "reasoning_effort must be null or one of {}",
+                        crate::pi::THINKING_LEVELS.join(", ")
+                    ),
+                ));
             }
             "name" | "display_name" | "title" | "description" | "persona" | "provider"
             | "model"
@@ -713,6 +729,16 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
         if let Some(v) = p.get(key).filter(|v| !v.is_null()) {
             cfg["model"][target] = v.clone();
         }
+    }
+    match p.get("reasoning_effort") {
+        Some(Value::Null) => {
+            cfg["model"]
+                .as_object_mut()
+                .unwrap()
+                .remove("reasoning_effort");
+        }
+        Some(level) => cfg["model"]["reasoning_effort"] = level.clone(),
+        None => {}
     }
     if let Some(tools) = p["tools"].as_array() {
         // Creating a bot configures its profile before the registry row exists.

@@ -33,8 +33,16 @@ import {
 import { toHandle } from '../../lib/bot-handle'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
+import { REASONING_LEVELS } from '../../lib/reasoning'
 import { toMillis } from '../../lib/time'
-import type { Bot, ModelOption, Room, RoomEvent, Section } from '../../lib/types'
+import type {
+  Bot,
+  ModelOption,
+  ReasoningEffort,
+  Room,
+  RoomEvent,
+  Section
+} from '../../lib/types'
 import { useBotList, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useDrafts } from '../../stores/drafts'
@@ -403,7 +411,13 @@ export function RosterColumn() {
   const [botDialog, setBotDialog] = useState(false)
   const [roomDialog, setRoomDialog] = useState(false)
 
-  const [newBot, setNewBot] = useState({ model: '', name: '', provider: '' })
+  const [newBot, setNewBot] = useState<{
+    model: string
+    name: string
+    provider: string
+    reasoning: null | ReasoningEffort
+  }>({ model: '', name: '', provider: '', reasoning: null })
+
   const [newBotError, setNewBotError] = useState<null | string>(null)
   const [creatingBot, setCreatingBot] = useState(false)
   const [showModel, setShowModel] = useState(false)
@@ -432,6 +446,12 @@ export function RosterColumn() {
       provider: value.provider || provider || ''
     }))
   }, [botDialog, settings?.default_model])
+  // Each open starts at the default level, which the collapsed summary implies.
+  useEffect(() => {
+    if (botDialog) {
+      setNewBot(value => ({ ...value, reasoning: null }))
+    }
+  }, [botDialog])
   useEffect(() => {
     if (!newBot.provider) {
       return
@@ -834,6 +854,7 @@ export function RosterColumn() {
                   model: newBot.model,
                   name: handle,
                   provider: newBot.provider,
+                  ...(newBot.reasoning ? { reasoning_effort: newBot.reasoning } : {}),
                   ...(avatar ? { avatar } : {})
                 })
               )
@@ -878,6 +899,16 @@ export function RosterColumn() {
                   options={newModels.map(item => ({ label: item.label, value: item.id }))}
                   placeholder="Model"
                   value={newBot.model || undefined}
+                />
+              </Field>
+              <Field label="Reasoning">
+                <Select
+                  label="Reasoning"
+                  onValueChange={reasoning =>
+                    setNewBot(value => ({ ...value, reasoning: reasoning as ReasoningEffort }))
+                  }
+                  options={REASONING_LEVELS}
+                  value={newBot.reasoning ?? 'medium'}
                 />
               </Field>
             </div>
