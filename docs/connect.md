@@ -78,11 +78,30 @@ impersonate the pinned owner, including issuing grants bound to its own key.
 Browser cookie sessions and older unbound device tokens retain their existing
 trust model. See `docs/auth.md` for the in-memory replay cache and limits.
 
+Each daemon also has an Ed25519 identity key. Its private key stays in
+`connect.json`, written atomically with mode 0600; Connect stores only the raw
+32-byte public key as unpadded base64url. Registration sends it with the device
+code poll. Existing registrations generate a key on daemon startup and enroll
+it with both the daemon token and the same tunnel-credential proof used by
+repair. Enrollment accepts the first key, accepts that same key again, and
+refuses a different key with 409. Rotate it by registering again. The daemon
+tries enrollment once per registration per process start; a failed attempt
+waits for the next start and does not prevent tunnel startup. An older Connect
+returning 404 is silently skipped.
+
+Connect's online probe and current apps check a fresh signature bound to the
+daemon ID, request Host, and nonce. This detects misrouting and impostors that
+cannot reach the real daemon. Cloudflare terminates TLS, so an on-path party,
+including Cloudflare or whoever controls the Connect Cloudflare account or API
+token, can relay the real daemon's signature. This does not detect an active
+relay and does not add end-to-end encryption. The app's compatibility fallbacks
+below also mean it cannot guarantee verification when versions are mixed.
+
 ## Data model (Postgres)
 
 - `users(id, clerk_user_id unique, created_at)`
 - `daemons(id, user_id, name, slug unique, tunnel_id, tunnel_hostname,
-  ingress_port, token_hash, created_at, last_seen_at, revoked_at)`
+  ingress_port, token_hash, identity_key nullable, created_at, last_seen_at, revoked_at)`
 - `registrations(id, user_code, device_code_hash, daemon_name, platform,
   ingress_port, user_id null until approved, expires_at, approved_at,
   consumed_at, daemon_id)`: no secrets; cleared a day after expiry.
@@ -95,7 +114,12 @@ trust model. See `docs/auth.md` for the in-memory replay cache and limits.
 Tokens are stored only as SHA-256 hashes. Registrations hold none: the
 daemon token is minted, and the tunnel token fetched from Cloudflare, when
 the daemon collects its registration. `src/lib/migrations.sql` is idempotent;
-`pnpm --filter ./apps/connect run migrate` applies it.
+`pnpm --filter ./apps/connect run migrate` applies it. Migrations run manually
+after deploy. Ordinary reads use `SELECT *` and treat a missing `identity_key`
+column as unknown. Registration writes the key in a separate best-effort
+UPDATE, logging a failure but still delivering credentials. Only explicit
+identity enrollment requires the new column and returns 503 until it exists.
+Restart a daemon after migration to retry enrollment.
 
 ## Pages
 
@@ -119,12 +143,15 @@ forward to, so the whole flow runs on one machine.
    interval}` and prints the URL and the eight-character code. The app does
    the same through `hexbot.connect.register_start`.
 2. The user opens the URL, signs in with Clerk, approves the code.
-3. The daemon polls `POST /api/register/poll {device_code}` until it gets
+3. The daemon polls `POST /api/register/poll {device_code, public_key}` until it gets
    `{daemon_token, daemon_id, slug, tunnel_token, tunnel_hostname, owner_id,
    issuer, keys}`. Connect creates the Cloudflare tunnel at
    approval time: one locally managed tunnel per daemon, hostname
    `<slug>.<CONNECT_DOMAIN>` with a slug of 64 random bits.
-4. The daemon stores the tokens, the owner, the issuer, and the keys in
+   A new daemon retries without `public_key` if older Connect rejects the new
+   field with `400 invalid_request`.
+4. The daemon stores the tokens, the owner, the issuer, the pinned signing keys,
+   and its own private identity key in
    `~/.hexbot/connect.json` (0600). On every `hexbot serve` the daemon
    downloads the pinned `cloudflared` into `~/.hexbot/bin/cloudflared-<version>`
    if missing, refusing a file whose SHA-256 differs from the pin, and runs
@@ -151,15 +178,22 @@ forward to, so the whole flow runs on one machine.
 A heartbeat says the daemon process is up; it says nothing about the tunnel,
 which runs beside it and can be down while the daemon keeps checking in. So
 whenever Connect lists daemons (`GET /api/daemons` and the `/connect` page) it
-also probes each daemon's address: `GET https://<tunnel_hostname>/api/auth/providers`,
-public, unauthenticated, served by every daemon version. The probe follows no
-redirects, sends no credentials, times out after three seconds, reads at most
-64 KiB of the body (a larger one is not a daemon), runs for all daemons in
-parallel, and only ever targets hostnames from Connect's own rows. A 2xx JSON
-answer with a `providers` list means reachable. With the fake tunnel provider
-the probe goes to the daemon's loopback address instead. A reachable answer
-is remembered for thirty seconds per address, an unreachable one for five, so
-a daemon that just came up is not shown down for long.
+also probes each daemon's address. With a stored identity key it requests
+`GET https://<tunnel_hostname>/api/connect/identity?nonce=<fresh random>` and
+verifies the Ed25519 signature against that stored key, daemon ID, hostname,
+and nonce. A wrong ID, invalid signature, malformed reply, or failed request
+means unreachable. Invalid replies log a warning. It never falls back to the
+providers probe when a key is known.
+
+Without a key, including before the database migration, it uses
+`GET https://<tunnel_hostname>/api/auth/providers`, public and served by older
+daemons. A 2xx JSON answer with a `providers` list means reachable. Both probes
+follow no redirects, send no credentials, time out after three seconds, read
+at most 64 KiB, run in parallel, and target only addresses from Connect's rows.
+With fake tunnels the probe uses the loopback address and binds the signature
+to that request Host. A reachable answer is cached for thirty seconds, an
+unreachable one for five. The cache includes the daemon ID and identity key,
+so enrollment takes effect without waiting for an old providers result to expire.
 
 Three states follow: **online** (heartbeat within ten minutes and the address
 answers), **unreachable** (heartbeat within ten minutes, address does not
@@ -176,7 +210,8 @@ app's daemon list enable a daemon only while it is online.
    `hexbot://connect?state=<same>#session=<client session token>`. The token
    stays in the fragment; the Electron protocol handler delivers it.
 2. `GET /api/daemons` with the client session token lists the user's daemons
-   with online state (`status` and `online`, see "Online state").
+   with online state (`status` and `online`, see "Online state") and
+   `identity_key`, null when unknown.
 3. Picking one: the app loads its persistent profile proof key and sends
    `POST /api/daemons/{id}/grant` with optional `{jkt: <key thumbprint>}`.
    Connect returns an ES256 JWT, `typ`
@@ -186,7 +221,13 @@ app's daemon list enable a daemon only while it is online.
    the request body, so new apps can send `jkt` without a compatibility retry.
    A rejected grant request never retries without binding. No Postgres
    migration is needed.
-4. The app logs in to the daemon with the password-login route:
+4. Before handing the grant to the daemon, the app fetches a fresh identity
+   signature without credentials and verifies it with WebCrypto Ed25519. An
+   invalid reply stops sign-in with "This address is not answering as your
+   daemon." For compatibility, an unknown key, a daemon returning 404, or a
+   browser without Ed25519 support proceeds as before and logs the reason once.
+   This check covers both the Electron and browser grant paths.
+   The app then logs in with the password-login route:
    `POST https://<host>/auth/password-login {provider: "hexbot", username:
    <device name>, password: "cg_<jwt>"}`. The `hexbot` provider treats a
    password starting with `cg_` as a grant: the daemon checks the pinned
@@ -334,7 +375,9 @@ count. On `replaced: false` nothing is rewritten and nothing is reset. A
   /connect/approve` (page), `POST /api/register/approve {user_code}`.
 - `GET /api/daemons`, `POST /api/daemons/{id}/grant`, `POST
   /api/daemons/{id}/heartbeat`, `POST /api/daemons/{id}/tunnel` (daemon
-  token; see "Tunnel repair"), `DELETE /api/daemons/{id}` (owner session or
+  token; see "Tunnel repair"), `POST /api/daemons/{id}/identity
+  {public_key, tunnel_token}` (daemon token plus tunnel proof; first key only,
+  409 on conflict, 410 if revoked), `DELETE /api/daemons/{id}` (owner session or
   the daemon's own token), `POST /api/daemons/{id}/rename`.
 - `POST /api/grants/exchange` (daemon token).
 - `GET /connect/authorize` (page), `GET /api/me`, `DELETE /api/sessions/{id}`.
@@ -383,7 +426,8 @@ signing key.
   repair with the fake provider (existing tunnel re-pointed without a token,
   deleted tunnel replaced under its hostname, one repair per two minutes,
   compare-and-set race, revoke landing before and after the swap), consent
-  parsing, CORS.
+  parsing, CORS, identity enrollment and conflicts, registration before the
+  identity migration, and signed reachability with wrong keys, IDs, and hosts.
 - Daemon (`backend/hexbot-core/tests/services.rs`, `server.rs`): registration
   with a local fake API, pinned owner/audience/issuer/keys, malformed and
   expired grants, single-use grants, PKCE exchange, tunnel lifecycle using a
@@ -392,9 +436,12 @@ signing key.
   `cloudflared` that serves `/ready` (a replacement's token saved and used,
   `replaced: false` rewriting nothing, a never-ready tunnel stopped and
   counted as failed, 404 keeps the backoff, 410 drops the registration),
-  and CLI disconnect against a running daemon (`tests/cli.rs`).
+  CLI disconnect against a running daemon (`tests/cli.rs`), private identity
+  key persistence and permissions, startup enrollment, strict legacy poll
+  compatibility, and the public nonce-signing endpoint.
 - Client: the `hexbot://connect` handler, the `tls` connection path, the
-  prefixed cookie names.
+  prefixed cookie names, identity verification before grants, malformed or
+  replayed signatures, and missing-key, 404, and unsupported-Ed25519 fallbacks.
 
 Browser sign-in started on LAN, Tailscale, or localhost redirects to the registered
 tunnel hostname before creating PKCE state or setting its cookie. Pending sign-ins

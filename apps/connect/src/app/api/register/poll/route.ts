@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { identityKeySchema } from "@/lib/daemon-identity";
 import { jsonError, parseJson } from "@/lib/http";
 import { getStore, getTunnels } from "@/lib/runtime";
 import { connectIssuer, getJwks, hashToken, randomToken } from "@/lib/tokens";
 
-const schema = z.object({ device_code: z.string().min(1) }).strict();
+const schema = z.object({ device_code: z.string().min(1), public_key: identityKeySchema.optional() }).strict();
 export async function POST(request: Request) {
   const body = await parseJson(request, schema); if (body instanceof NextResponse) return body;
   const row = await getStore().findRegistrationByDeviceHash(hashToken(body.device_code));
@@ -18,6 +19,11 @@ export async function POST(request: Request) {
   const tunnelToken = await getTunnels().connectorToken(daemon.tunnelId);
   if (!await getStore().consumeRegistration(row.id)) return jsonError("consumed", "The registration credentials have already been collected", 410);
   const daemonToken = randomToken("hxd_"); await getStore().setDaemonTokenHash(daemon.id, hashToken(daemonToken));
+  // Registration must succeed even before the identity column has been migrated.
+  if (body.public_key) {
+    try { await getStore().enrollDaemonIdentity(daemon.id, body.public_key); }
+    catch { console.warn("Connect: could not store daemon identity key during registration", daemon.id); }
+  }
   // The daemon pins owner_id, issuer, and keys: it accepts grants only for this owner, from this issuer, signed by these keys.
   return NextResponse.json({ status: "approved", daemon_token: daemonToken, daemon_id: daemon.id, slug: daemon.slug, tunnel_token: tunnelToken, tunnel_hostname: daemon.tunnelHostname, owner_id: daemon.userId, issuer: connectIssuer(), keys: (await getJwks()).keys });
 }

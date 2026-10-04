@@ -1281,6 +1281,43 @@ async fn login(
         Err(e) => http_error(e),
     }
 }
+/// Host is lower-case, without a trailing DNS dot or the default HTTP(S) port.
+/// Forwarded headers are deliberately ignored.
+async fn connect_identity(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let config = match services::ConnectConfig::load(&app.home) {
+        Ok(Some(config)) if !config.daemon_id.is_empty() => config,
+        Ok(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(error) => return http_error(error),
+    };
+    let Some(nonce) = query.get("nonce").filter(|nonce| {
+        (22..=86).contains(&nonce.len())
+            && URL_SAFE_NO_PAD
+                .decode(nonce)
+                .is_ok_and(|bytes| (16..=64).contains(&bytes.len()))
+    }) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(host) = headers
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.parse::<axum::http::uri::Authority>().ok())
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let mut normalized = host.host().trim_end_matches('.').to_ascii_lowercase();
+    if let Some(port) = host.port_u16().filter(|p| !matches!(p, 80 | 443)) {
+        normalized.push_str(&format!(":{port}"));
+    }
+    match config.sign_identity(&normalized, nonce) {
+        Ok(value) => ([("cache-control", "no-store")], Json(value)).into_response(),
+        Err(error) => http_error(error),
+    }
+}
+
 fn tunnel_host(headers: &HeaderMap, hostname: &str) -> bool {
     headers
         .get("host")
@@ -1655,6 +1692,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/", get(index))
         .route("/login", get(login_page))
         .route("/api/auth/providers", get(auth_providers))
+        .route("/api/connect/identity", get(connect_identity))
         .route("/api/daemon/identity", get(daemon_identity))
         .route("/auth/login", get(browser_login))
         .route("/auth/callback", get(browser_callback))

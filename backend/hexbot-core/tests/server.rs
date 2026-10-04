@@ -1992,3 +1992,93 @@ async fn device_storage_failure_is_not_revocation() {
     conn.execute("ALTER TABLE unavailable_devices RENAME TO devices", [])
         .unwrap();
 }
+
+#[tokio::test]
+async fn connect_identity_is_public_host_bound_and_validates_nonces() {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
+    let fixture = Fixture::new(true).await;
+    let client = reqwest::Client::new();
+    let nonce = URL_SAFE_NO_PAD.encode([7u8; 32]);
+    let url = format!("{}/api/connect/identity?nonce={nonce}", fixture.base);
+    assert_eq!(client.get(&url).send().await.unwrap().status(), 404);
+    let pkcs8 = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+    let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+    hexbot_core::common::atomic_write(&fixture.home.join("connect.json"),
+        &serde_json::to_vec(&json!({"daemon_id":"daemon-1","daemon_token":"secret",
+            "owner_id":"owner","issuer":"https://connect.hexbot.app","keys":[{}],
+            "tunnel_hostname":"owl.example","identity_private_key":URL_SAFE_NO_PAD.encode(pkcs8.as_ref())})).unwrap()).unwrap();
+    // HTML Accept must not turn this public endpoint into a login redirect.
+    for (host, normalized) in [
+        ("OWL.Example.:443", "owl.example"),
+        ("OWL.Example:80", "owl.example"),
+        ("localhost:9119", "localhost:9119"),
+        ("[::1]:9119", "[::1]:9119"),
+    ] {
+        let response = client
+            .get(&url)
+            .header("Host", host)
+            .header("Accept", "text/html")
+            .header("X-Forwarded-Host", "evil.example")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["daemon_id"], "daemon-1");
+        assert_eq!(
+            body["public_key"],
+            URL_SAFE_NO_PAD.encode(key.public_key().as_ref())
+        );
+        let signature = URL_SAFE_NO_PAD
+            .decode(body["signature"].as_str().unwrap())
+            .unwrap();
+        let verifier = UnparsedPublicKey::new(&ED25519, key.public_key());
+        verifier
+            .verify(
+                format!("hexbot-identity-v1\ndaemon-1\n{normalized}\n{nonce}").as_bytes(),
+                &signature,
+            )
+            .unwrap();
+        assert!(
+            verifier
+                .verify(
+                    format!("hexbot-identity-v1\ndaemon-1\nother.example\n{nonce}").as_bytes(),
+                    &signature
+                )
+                .is_err()
+        );
+    }
+    for nonce in [
+        "".to_owned(),
+        "%%%".to_owned(),
+        URL_SAFE_NO_PAD.encode([0u8; 15]),
+        URL_SAFE_NO_PAD.encode([0u8; 65]),
+        format!("{}=", URL_SAFE_NO_PAD.encode([0u8; 16])),
+    ] {
+        assert_eq!(
+            client
+                .get(format!("{}/api/connect/identity", fixture.base))
+                .query(&[("nonce", nonce)])
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            400
+        );
+    }
+    for size in [16, 64] {
+        assert_eq!(
+            client
+                .get(format!("{}/api/connect/identity", fixture.base))
+                .query(&[("nonce", URL_SAFE_NO_PAD.encode(vec![0u8; size]))])
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+    }
+    fixture.shutdown().await;
+}

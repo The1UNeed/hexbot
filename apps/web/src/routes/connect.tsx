@@ -19,6 +19,7 @@ import {
   verifyBrowserCookie
 } from '../lib/connection'
 import { deviceKey, deviceProof } from '../lib/dpop'
+import { verifyDaemonIdentity } from '../lib/daemon-identity'
 import { formatAddress, parseAddress, parsePairLink } from '../lib/pair-link'
 import { useConnection } from '../stores/connection'
 
@@ -56,6 +57,7 @@ function ConnectPage() {
       name?: string
       daemon_name?: string
       tunnel_hostname: string
+      identity_key?: string | null
       online?: boolean
       /** `unreachable` is a daemon that heartbeats but whose address does not answer. */
       status?: 'offline' | 'online' | 'unreachable'
@@ -115,6 +117,7 @@ function ConnectPage() {
 
       const { host, port, tls } = grantTarget(granted, daemon.tunnel_hostname)
       const origin = targetOrigin({ deviceToken: '', host, kind: 'remote', port, tls })
+      await verifyDaemonIdentity(origin, daemon)
       const bridge = getBridge()
 
       const proof = key

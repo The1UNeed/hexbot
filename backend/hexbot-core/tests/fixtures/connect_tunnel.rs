@@ -665,3 +665,53 @@ async fn jwks_refreshes_after_ten_minutes_and_throttles_unknown_keys_and_outages
     }
     assert!(mock.events.try_recv().is_err());
 }
+
+#[tokio::test]
+async fn startup_enrolls_a_persisted_key_once_and_keeps_it_on_conflict_or_old_connect() {
+    for status in [200, 409, 404, 503] {
+        let mut mock = Mock::new().await;
+        let home = home();
+        mock.persist_registration(home.path());
+        mock.data.overrides.lock().await.insert(
+            "/api/daemons/daemon-1/identity".into(),
+            (status, json!({"ok": status == 200})),
+        );
+        let service = super::service(home.path()).await.unwrap();
+        let mut config = services::ConnectConfig::load(home.path()).unwrap().unwrap();
+        super::enroll_identity(home.path(), &service, &mut config)
+            .await
+            .unwrap();
+        let (body, authorization) = mock.event("/api/daemons/daemon-1/identity").await;
+        assert_eq!(authorization, "Bearer daemon-secret");
+        assert_eq!(body["tunnel_token"], "tunnel-secret");
+        assert_eq!(body["public_key"], config.identity_public_key().unwrap());
+        let saved = fs::read(home.path().join("connect.json")).unwrap();
+        let mut reloaded = services::ConnectConfig::load(home.path()).unwrap().unwrap();
+        assert_eq!(config.identity_private_key, reloaded.identity_private_key);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(home.path().join("connect.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        super::enroll_identity(home.path(), &service, &mut reloaded)
+            .await
+            .unwrap();
+        assert!(mock.events.try_recv().is_err());
+        assert_eq!(saved, fs::read(home.path().join("connect.json")).unwrap());
+        // A new process retries with the same key, including after an old service or a conflict.
+        let restarted = std::sync::Arc::new(super::Service::default());
+        super::enroll_identity(home.path(), &restarted, &mut reloaded)
+            .await
+            .unwrap();
+        let (again, _) = mock.event("/api/daemons/daemon-1/identity").await;
+        assert_eq!(body, again);
+        services::shutdown(home.path()).await.unwrap();
+    }
+}
