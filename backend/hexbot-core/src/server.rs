@@ -1,5 +1,5 @@
 use crate::{
-    Error, Result, auth, catalog, common, connectors, db,
+    Error, Result, auth, catalog, common, connectors, db, dpop,
     events::EventHub,
     memory::MemoryStore,
     providers,
@@ -38,6 +38,7 @@ pub struct App {
     pub dreaming: Arc<crate::dreaming::Dreaming>,
     memory: MemoryStore,
     tickets: Mutex<HashMap<String, (String, f64)>>,
+    proofs: Arc<dpop::Proofs>,
     logins: Mutex<HashMap<String, BrowserLogin>>,
     auth_connection: Mutex<rusqlite::Connection>,
     pub address: SocketAddr,
@@ -118,6 +119,7 @@ impl App {
             rooms,
             dreaming,
             tickets: Mutex::new(HashMap::new()),
+            proofs: Arc::new(dpop::Proofs::default()),
             logins: Mutex::new(HashMap::new()),
             address,
             _network_guard: common::DaemonListener::register(address),
@@ -138,6 +140,7 @@ impl App {
             rooms: self.rooms.clone(),
             dreaming: self.dreaming.clone(),
             tickets: Mutex::new(std::mem::take(&mut *self.tickets.lock().unwrap())),
+            proofs: self.proofs.clone(),
             logins: Mutex::new(std::mem::take(&mut *self.logins.lock().unwrap())),
             address,
             _network_guard: common::DaemonListener::register(address),
@@ -840,7 +843,7 @@ async fn browser_callback(
             &login.redirect_uri,
         )
         .await?;
-        let device = services::redeem_grant(&app.home, &grant, "", "connect").await?;
+        let device = services::redeem_grant(&app.home, &grant, "", "connect", None).await?;
         let mut response = axum::response::Redirect::to(&login.next).into_response();
         response.headers_mut().insert(
             "set-cookie",
@@ -884,11 +887,7 @@ async fn login_page(
     let mut notice = "";
     // A browser that is already signed in keeps its session: a link cannot swap it
     // for a device someone else minted, and the code stays unused.
-    let signed_in = || {
-        cookie(&app, &headers)
-            .and_then(|token| auth::verify_token(&app.home, &token).ok().flatten())
-            .is_some()
-    };
+    let signed_in = || page_session(&app, &headers).is_some();
     // Only a navigation the user started spends a code. A terminal link sends no
     // Sec-Fetch-Site or `none`; a page from another site cannot sign this browser
     // in by linking here.
@@ -916,7 +915,7 @@ async fn login_page(
         } else {
             "Browser"
         };
-        match auth::redeem_code_from(&app.home, code, name, "browser", &client) {
+        match auth::redeem_code_from(&app.home, code, name, "browser", &client, None) {
             Ok(device) => {
                 let mut response = axum::response::Redirect::to(&next).into_response();
                 if let Some(token) = device["device_token"].as_str() {
@@ -1033,6 +1032,70 @@ fn bearer(app: &App, headers: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
         .or_else(|| cookie(app, headers))
 }
+fn proof_key(
+    app: &App,
+    headers: &HeaderMap,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    expected: Option<&str>,
+) -> Result<Option<String>> {
+    let mut values = headers.get_all("dpop").iter();
+    let Some(value) = values.next() else {
+        return if expected.is_some() {
+            Err(Error::new(dpop::REQUIRED, "device proof required"))
+        } else {
+            Ok(None)
+        };
+    };
+    if values.next().is_some() {
+        return Err(dpop::invalid());
+    }
+    let proof = value.to_str().map_err(|_| dpop::invalid())?;
+    let host = headers
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .ok_or_else(dpop::invalid)?;
+    app.proofs
+        .verify(
+            proof,
+            &dpop::ProofRequest {
+                method,
+                host,
+                path,
+                token,
+                expected_key: expected,
+            },
+        )
+        .map(Some)
+}
+fn request_device(
+    app: &App,
+    headers: &HeaderMap,
+    method: &str,
+    path: &str,
+    token: &str,
+) -> Result<Option<Value>> {
+    let conn = db::open(&app.home)?;
+    let Some(mut device) = auth::lookup_token_with(&conn, token)? else {
+        return Ok(None);
+    };
+    if let Some(jkt) = device["jkt"].as_str() {
+        proof_key(app, headers, method, path, Some(token), Some(jkt))?;
+    }
+    auth::touch_device(&conn, &mut device)?;
+    Ok(Some(device))
+}
+fn page_session(app: &App, headers: &HeaderMap) -> Option<Value> {
+    let token = cookie(app, headers)?;
+    let conn = db::open(&app.home).ok()?;
+    let mut device = auth::lookup_token_with(&conn, &token).ok()??;
+    if !device["jkt"].is_null() {
+        return None;
+    }
+    auth::touch_device(&conn, &mut device).ok()?;
+    Some(device)
+}
 fn valid_origin(app: &App, headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get("origin") else {
         return true;
@@ -1092,7 +1155,11 @@ async fn origin_guard(
             .insert("vary", HeaderValue::from_static("Origin"));
         response.headers_mut().insert(
             "access-control-allow-headers",
-            HeaderValue::from_static("Content-Type, Authorization"),
+            HeaderValue::from_static("Content-Type, Authorization, DPoP"),
+        );
+        response.headers_mut().insert(
+            "access-control-expose-headers",
+            HeaderValue::from_static("WWW-Authenticate, Retry-After"),
         );
         response.headers_mut().insert(
             "access-control-allow-methods",
@@ -1106,6 +1173,34 @@ async fn origin_guard(
     response
 }
 fn http_error(error: Error) -> Response {
+    if let Some(code) = dpop::error_code(error.code) {
+        let busy = error.code == dpop::CACHE_FULL;
+        let status = if busy {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            StatusCode::UNAUTHORIZED
+        };
+        let mut body = json!({"error":"invalid_dpop_proof","code":code,"message":error.message});
+        if let Some(data) = error.data {
+            body.as_object_mut()
+                .unwrap()
+                .extend(data.as_object().unwrap().clone());
+        }
+        let mut response = (status, Json(body)).into_response();
+        response.headers_mut().insert(
+            "www-authenticate",
+            HeaderValue::from_static("DPoP error=\"invalid_dpop_proof\""),
+        );
+        response
+            .headers_mut()
+            .insert("cache-control", HeaderValue::from_static("no-store"));
+        if busy {
+            response
+                .headers_mut()
+                .insert("retry-after", HeaderValue::from_static("1"));
+        }
+        return response;
+    }
     let status = match error.code {
         4301 | 4302 => StatusCode::FORBIDDEN,
         4231 => StatusCode::UNAUTHORIZED,
@@ -1139,17 +1234,43 @@ async fn login(
             .chars()
             .take(80)
             .collect::<String>();
-        if let Some(grant) = password.strip_prefix("cg_") {
+        if password.starts_with("cg_") {
             auth::check_attempt(&app.home, &client)?;
-            services::redeem_grant(&app.home, grant, &name, "connect").await
+        }
+        let jkt = proof_key(
+            &app,
+            &headers,
+            "POST",
+            "/auth/password-login",
+            password.starts_with("cg_").then_some(password),
+            None,
+        )?;
+        if let Some(grant) = password.strip_prefix("cg_") {
+            services::redeem_grant(&app.home, grant, &name, "connect", jkt.as_deref()).await
         } else {
-            auth::redeem_code_from(&app.home, password, &name, "browser", &client)
+            auth::redeem_code_from(
+                &app.home,
+                password,
+                &name,
+                "browser",
+                &client,
+                jkt.as_deref(),
+            )
         }
     }
     .await;
     match result {
         Ok(device) => {
-            let mut response = Json(json!({"ok":true,"daemon_name":device["daemon_name"],"next":safe_next(p["next"].as_str().unwrap_or("/"))})).into_response();
+            let mut body = json!({"ok":true,"daemon_name":device["daemon_name"],"next":safe_next(p["next"].as_str().unwrap_or("/"))});
+            // Only proof-capable clients receive a token in the response body.
+            if headers.contains_key("dpop") {
+                body["device_token"] = device["device_token"].clone();
+                body["device_id"] = device["device_id"].clone();
+            }
+            let mut response = Json(body).into_response();
+            response
+                .headers_mut()
+                .insert("cache-control", HeaderValue::from_static("no-store"));
             if let Some(token) = device["device_token"].as_str() {
                 response
                     .headers_mut()
@@ -1211,12 +1332,14 @@ async fn pair(
     Json(p): Json<Value>,
 ) -> Response {
     match common::required(&p, "code").and_then(|code| {
+        let jkt = proof_key(&app, &headers, "POST", "/hexbot/pair", None, None)?;
         auth::redeem_code_from(
             &app.home,
             code,
             p["device_name"].as_str().unwrap_or("Unnamed device"),
             p["platform"].as_str().unwrap_or("browser"),
             &client_address(&app, peer, &headers),
+            jkt.as_deref(),
         )
     }) {
         Ok(value) => Json(value).into_response(),
@@ -1230,12 +1353,10 @@ async fn session(
 ) -> Response {
     let address = peer.map(|Extension(ConnectInfo(p))| p);
     let token = bearer(&app, &headers).unwrap_or_default();
-    if auth::verify_token(&app.home, &token)
-        .ok()
-        .flatten()
-        .is_none()
-    {
-        return StatusCode::UNAUTHORIZED.into_response();
+    match request_device(&app, &headers, "POST", "/hexbot/session", &token) {
+        Ok(Some(_)) => (),
+        Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(error) => return http_error(error),
     }
     let mut response = Json(json!({"ok":true})).into_response();
     response.headers_mut().insert(
@@ -1246,12 +1367,10 @@ async fn session(
 }
 async fn ticket(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     let token = bearer(&app, &headers).unwrap_or_default();
-    if auth::verify_token(&app.home, &token)
-        .ok()
-        .flatten()
-        .is_none()
-    {
-        return StatusCode::UNAUTHORIZED.into_response();
+    match request_device(&app, &headers, "POST", "/api/auth/ws-ticket", &token) {
+        Ok(Some(_)) => (),
+        Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(error) => return http_error(error),
     }
     let ticket = format!("{}{}", common::id(), common::id());
     let mut tickets = app.tickets.lock().unwrap_or_else(|e| e.into_inner());
@@ -1270,9 +1389,7 @@ async fn index(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         .get("accept")
         .and_then(|h| h.to_str().ok())
         .is_some_and(|h| h.contains("text/html"))
-        && cookie(&app, &headers)
-            .and_then(|token| auth::verify_token(&app.home, &token).ok().flatten())
-            .is_none()
+        && page_session(&app, &headers).is_none()
     {
         return axum::response::Redirect::to("/login").into_response();
     }
@@ -1328,8 +1445,16 @@ async fn upgrade(
     let Some(token) = token else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let Some(device) = auth::verify_token(&app.home, &token).ok().flatten() else {
-        return StatusCode::UNAUTHORIZED.into_response();
+    let verified = if p.contains_key("ticket") {
+        // The single-use ticket was minted only after the device proof succeeded.
+        auth::verify_token(&app.home, &token)
+    } else {
+        request_device(&app, &headers, "GET", "/api/ws", &token)
+    };
+    let device = match verified {
+        Ok(Some(device)) => device,
+        Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(error) => return http_error(error),
     };
     let owner = device["owner_id"].as_str().unwrap_or("").to_owned();
     let id = device["id"].as_str().unwrap_or("").to_owned();

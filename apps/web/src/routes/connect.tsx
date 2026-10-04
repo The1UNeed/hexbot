@@ -1,3 +1,4 @@
+import { readDeviceProofError } from '@hermes/shared'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 
@@ -6,16 +7,20 @@ import { Input } from '../components/ui/input'
 import { Spinner } from '../components/ui/spinner'
 import { Wordmark } from '../components/ui/wordmark'
 import { defaultDeviceName, getBridge } from '../lib/bridge'
+import { fetchConnect } from '../lib/connect-grant'
 import { connectBaseUrl, grantTarget } from '../lib/connect-url'
 import {
   connectTo,
-  InvalidCodeError,
+  pairingErrorMessage,
   pairWithDaemon,
   probeDaemon,
   targetOrigin,
-  UnauthorizedError
+  unwrapPairingReply,
+  verifyBrowserCookie
 } from '../lib/connection'
+import { deviceKey, deviceProof } from '../lib/dpop'
 import { formatAddress, parseAddress, parsePairLink } from '../lib/pair-link'
+import { useConnection } from '../stores/connection'
 
 export const Route = createFileRoute('/connect')({ component: ConnectPage })
 
@@ -29,28 +34,15 @@ export function parseConnectCallback(input: string): { session: string; state: s
   return state && session ? { session, state } : null
 }
 
-async function fetchConnect(
-  path: string,
-  token: string,
-  body?: Record<string, unknown>
-): Promise<unknown> {
-  const response = await fetch(`${connectBaseUrl()}${path}`, {
-    body: body ? JSON.stringify(body) : undefined,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(body ? { 'Content-Type': 'application/json' } : {})
-    },
-    method: body ? 'POST' : 'GET'
-  })
-
-  if (!response.ok) {throw new Error(`Hex Connect request failed (${response.status})`)}
-
-  return response.json()
-}
-
 function ConnectPage() {
   const navigate = useNavigate()
-  const [address, setAddress] = useState('127.0.0.1:9119')
+  const savedTarget = useConnection(state => state.target)
+  const proofError = useConnection(state => state.proofError)
+
+  const [address, setAddress] = useState(() =>
+    savedTarget?.kind === 'remote' ? formatAddress(savedTarget) : '127.0.0.1:9119'
+  )
+
   const [code, setCode] = useState('')
   const [deviceName, setDeviceName] = useState(defaultDeviceName)
   const [daemonName, setDaemonName] = useState<string | null>(null)
@@ -93,7 +85,7 @@ function ConnectPage() {
       .then(result =>
         setDaemons((result as { daemons?: typeof daemons }).daemons ?? (result as typeof daemons))
       )
-      .catch(reason => setError(String(reason)))
+      .catch(reason => setError(pairingErrorMessage(reason)))
   }, [clientSession])
 
   // Reopening keeps the same state, so the link already open in the browser
@@ -113,23 +105,30 @@ function ConnectPage() {
     setBusy(true)
 
     try {
+      const key = await deviceKey()
+
       const granted = (await fetchConnect(
         `/api/daemons/${encodeURIComponent(daemon.id)}/grant`,
         clientSession,
-        { device_name: deviceName }
+        { device_name: deviceName, ...(key ? { jkt: key.jkt } : {}) }
       )) as { grant: string; daemon?: { host?: string; port?: number; tls?: boolean } }
 
       const { host, port, tls } = grantTarget(granted, daemon.tunnel_hostname)
       const origin = targetOrigin({ deviceToken: '', host, kind: 'remote', port, tls })
       const bridge = getBridge()
 
+      const proof = key
+        ? await deviceProof(key, 'POST', `${origin}/auth/password-login`, `cg_${granted.grant}`)
+        : undefined
+
       if (bridge?.pairWithGrant) {
-        const result = await bridge.pairWithGrant({
+        const result = unwrapPairingReply(await bridge.pairWithGrant({
           deviceName,
           grant: granted.grant,
+          proof,
           host: origin.replace(/^https?:\/\//, ''),
           tls
-        })
+        }))
 
         await connectTo({ deviceToken: result.device_token, host, kind: 'remote', port, tls })
       } else {
@@ -140,17 +139,27 @@ function ConnectPage() {
             username: deviceName
           }),
           credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...(proof ? { DPoP: proof } : {}) },
           method: 'POST'
         })
 
-        if (!response.ok) {throw new Error(`Connect login failed (${response.status})`)}
-        await connectTo({ deviceToken: '', host, kind: 'remote', port, tls })
+        const failure = await readDeviceProofError(response)
+
+        if (failure) {throw failure}
+
+        if (!response.ok) {throw new Error('Connect login failed')}
+        const login = await response.json() as { device_token?: string }
+
+        if (!login.device_token) {
+          await verifyBrowserCookie(origin, daemon.name ?? daemon.daemon_name ?? host)
+        }
+
+        await connectTo({ deviceToken: login.device_token ?? '', host, kind: 'remote', port, tls })
       }
 
       await navigate({ to: '/' })
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      setError(pairingErrorMessage(reason))
     } finally {
       setBusy(false)
     }
@@ -202,13 +211,7 @@ function ConnectPage() {
       await connectTo({ kind: 'remote', ...parts, deviceToken: paired.deviceToken, tls: false })
       await navigate({ to: '/' })
     } catch (reason) {
-      setError(
-        reason instanceof InvalidCodeError
-          ? 'The pairing code is invalid or expired.'
-          : reason instanceof UnauthorizedError
-            ? 'This device was revoked. Pair it again.'
-            : 'The daemon could not be reached.'
-      )
+      setError(pairingErrorMessage(reason))
     } finally {
       setBusy(false)
     }
@@ -323,9 +326,9 @@ function ConnectPage() {
             Connect
           </Button>
         </div>
-        {error ? (
+        {error || proofError ? (
           <p className="text-secondary text-danger" role="alert">
-            {error}
+            {error || proofError?.message}
           </p>
         ) : null}
       </form>

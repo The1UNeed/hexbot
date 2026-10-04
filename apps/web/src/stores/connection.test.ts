@@ -1,4 +1,6 @@
-import { readStoredTarget } from './connection'
+import { DeviceProofError } from '@hermes/shared'
+
+import { readStoredTarget, useConnection } from './connection'
 
 describe('initial connection target', () => {
   beforeEach(() => {
@@ -47,4 +49,12 @@ describe('initial connection target', () => {
     expect(readStoredTarget()).toEqual({ kind: 'local', origin: 'http://127.0.0.1:43123' })
     expect(localStorage.getItem('hexbot.target')).toBeNull()
   })
+})
+
+
+it('clears typed proof errors when the connection changes state', () => {
+  useConnection.getState().setStatus('offline', { proofError: new DeviceProofError('dpop_cache_full') })
+  expect(useConnection.getState().proofError).not.toBeNull()
+  useConnection.getState().setStatus('reconnecting')
+  expect(useConnection.getState().proofError).toBeNull()
 })

@@ -4,6 +4,8 @@
  * control hides itself behind `isElectron()`.
  */
 
+import type { PairingReply } from '@hermes/shared'
+
 export interface DaemonProgress {
   message: string
   /** 0..100 within the stage, sent only while it downloads something. */
@@ -53,8 +55,9 @@ export interface HexbotBridge {
     grant: string
     deviceName: string
     tls?: boolean
-  }): Promise<PairResult>
-  pair(host: string, port: number, code: string, deviceName: string): Promise<PairResult>
+    proof?: string
+  }): Promise<PairingReply<PairResult>>
+  pair(host: string, port: number, code: string, deviceName: string, proof?: string): Promise<PairingReply<PairResult>>
   httpFetch(
     url: string,
     init?: { method?: string; headers?: Record<string, string>; body?: string }

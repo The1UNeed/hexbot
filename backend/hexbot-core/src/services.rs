@@ -1016,6 +1016,7 @@ pub async fn redeem_grant(
     grant: &str,
     _device_name: &str,
     platform: &str,
+    proof_jkt: Option<&str>,
 ) -> Result<Value> {
     let check = async {
         use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::Jwk};
@@ -1077,16 +1078,38 @@ pub async fn redeem_grant(
         if name.is_empty() {
             return Err(invalid());
         }
+        if let Some(cnf) = claims.get("cnf") {
+            let jkt = cnf["jkt"]
+                .as_str()
+                .filter(|jkt| !jkt.is_empty())
+                .ok_or_else(invalid)?;
+            if proof_jkt.is_none() {
+                return Err(Error::new(crate::dpop::REQUIRED, "device proof required"));
+            }
+            if proof_jkt != Some(jkt) {
+                return Err(Error::new(
+                    crate::dpop::KEY_MISMATCH,
+                    "device proof key does not match",
+                ));
+            }
+        }
         crate::auth::redeem_verified_grant(
             home,
             &name,
             platform,
             jti,
             claims["exp"].as_f64().ok_or_else(invalid)?,
+            proof_jkt,
         )
     }
     .await;
-    check.map_err(|_| Error::new(4231, "invalid Hex Connect grant"))
+    check.map_err(|error| {
+        if crate::dpop::error_code(error.code).is_some() {
+            error
+        } else {
+            Error::new(4231, "invalid Hex Connect grant")
+        }
+    })
 }
 
 pub async fn exchange_browser_grant(

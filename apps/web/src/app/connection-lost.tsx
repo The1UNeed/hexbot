@@ -37,6 +37,7 @@ export function ConnectionLost() {
   const navigate = useNavigate()
   const status = useConnection(state => state.status)
   const attempt = useConnection(state => state.attempt)
+  const proofError = useConnection(state => state.proofError)
   const daemon = useConnection(state => state.daemon)
   const target = useConnection(state => state.target)
   const [busy, setBusy] = useState(false)
@@ -85,13 +86,13 @@ export function ConnectionLost() {
             Connection lost
           </h1>
           <p className="mt-1 text-secondary text-muted">
-            {status === 'reconnecting'
+            {proofError?.message || (status === 'reconnecting'
               ? `Hexbot lost its connection to ${name}.`
-              : `Hexbot cannot reach ${name}.`}
+              : `Hexbot cannot reach ${name}.`)}
           </p>
         </div>
-        <p className="hex-pulse text-secondary text-muted" role="status">
-          Reconnecting{attempt > 0 ? `, attempt ${attempt}` : ''}…
+        <p className="text-secondary text-muted" role="status">
+          {attempt > 0 ? `Reconnecting, attempt ${attempt}…` : 'Retry when ready.'}
         </p>
         <div className="flex flex-wrap justify-center gap-2">
           <Button busy={busy} onClick={() => void reconnect()} variant="primary">

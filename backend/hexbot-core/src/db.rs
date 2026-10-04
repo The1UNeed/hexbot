@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
 use crate::{Error, Result};
 
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// Native scheduler tables live in hexbot-runtime.db, separate from the legacy schema.
 pub(crate) fn migrate_runtime(conn: &Connection) -> Result<()> {
@@ -84,6 +84,7 @@ CREATE INDEX IF NOT EXISTS idx_bot_incidents_bot_open ON bot_incidents(bot,resol
 ";
 
 const COLUMNS: &[(&str, &str, &str)] = &[
+    ("devices", "jkt", "TEXT"),
     ("sections", "title_dirty", "INTEGER NOT NULL DEFAULT 0"),
     ("bots", "dream_enabled", "INTEGER NOT NULL DEFAULT 1"),
     ("bots", "tools_json", "TEXT NOT NULL DEFAULT '[]'"),

@@ -17,7 +17,7 @@ use std::{
 };
 
 const DEVICE_COLUMNS: &str =
-    "d.id,d.name,d.platform,d.owner_id,d.created_at,d.last_seen_at,d.revoked_at";
+    "d.id,d.name,d.platform,d.owner_id,d.created_at,d.last_seen_at,d.revoked_at,d.jkt";
 const CODE_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 type Attempts = HashMap<(PathBuf, String), VecDeque<f64>>;
 static FAILURES: OnceLock<Mutex<Attempts>> = OnceLock::new();
@@ -93,15 +93,21 @@ fn code(home: &Path, owner: &str, replace: bool) -> Result<Value> {
     tx.commit()?;
     Ok(code)
 }
-fn mint(conn: &Connection, name: &str, platform: &str, owner: &str) -> Result<Value> {
+fn mint(
+    conn: &Connection,
+    name: &str,
+    platform: &str,
+    owner: &str,
+    jkt: Option<&str>,
+) -> Result<Value> {
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     let token = format!("hxb_{}", URL_SAFE_NO_PAD.encode(bytes));
     let id = uuid::Uuid::new_v4().to_string();
     let time = now();
     conn.execute(
-        "INSERT INTO devices(id,name,platform,token_hash,owner_id,created_at,last_seen_at) VALUES (?,?,?,?,?,?,?)",
-        params![id, name, platform, digest(&token), owner, time, time],
+        "INSERT INTO devices(id,name,platform,token_hash,owner_id,created_at,last_seen_at,jkt) VALUES (?,?,?,?,?,?,?,?)",
+        params![id, name, platform, digest(&token), owner, time, time, jkt],
     )?;
     Ok(
         json!({"device_token": token, "device_id": id, "owner_id":owner, "daemon_name":daemon_name()}),
@@ -131,6 +137,7 @@ pub fn redeem_verified_grant(
     platform: &str,
     jti: &str,
     exp: f64,
+    jkt: Option<&str>,
 ) -> Result<Value> {
     let mut conn = db::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -151,7 +158,7 @@ pub fn redeem_verified_grant(
         params![jti, exp],
     )
     .map_err(|_| Error::new(4231, "Hex Connect grant already used"))?;
-    let device = mint(&tx, name, platform, "local")?;
+    let device = mint(&tx, name, platform, "local", jkt)?;
     tx.commit()?;
     Ok(device)
 }
@@ -161,6 +168,7 @@ pub fn redeem_code_from(
     device_name: &str,
     platform: &str,
     client: &str,
+    jkt: Option<&str>,
 ) -> Result<Value> {
     check_attempt(home, client)?;
     let mut conn = db::open(home)?;
@@ -182,7 +190,7 @@ pub fn redeem_code_from(
     {
         return Err(invalid_code());
     }
-    let device = mint(&tx, device_name, platform, &owner)?;
+    let device = mint(&tx, device_name, platform, &owner, jkt)?;
     tx.commit()?;
     Ok(device)
 }
@@ -194,12 +202,22 @@ pub fn verify_token(home: &Path, token: &str) -> Result<Option<Value>> {
     verify_token_with(&conn, token)
 }
 pub fn verify_token_with(conn: &Connection, token: &str) -> Result<Option<Value>> {
+    let Some(mut device) = lookup_token_with(conn, token)? else {
+        return Ok(None);
+    };
+    touch_device(conn, &mut device)?;
+    Ok(Some(device))
+}
+pub(crate) fn lookup_token_with(conn: &Connection, token: &str) -> Result<Option<Value>> {
     let sql = format!(
         "SELECT {DEVICE_COLUMNS} FROM devices d JOIN users u ON u.id=d.owner_id WHERE d.token_hash=? AND d.revoked_at IS NULL AND u.disabled_at IS NULL"
     );
-    let Some(mut device) = rows(conn, &sql, &[&digest(token)])?.into_iter().next() else {
+    let Some(device) = rows(conn, &sql, &[&digest(token)])?.into_iter().next() else {
         return Ok(None);
     };
+    Ok(Some(device))
+}
+pub(crate) fn touch_device(conn: &Connection, device: &mut Value) -> Result<()> {
     let time = now();
     if time - device["last_seen_at"].as_f64().unwrap_or(0.) >= 60. {
         conn.execute(
@@ -208,7 +226,7 @@ pub fn verify_token_with(conn: &Connection, token: &str) -> Result<Option<Value>
         )?;
         device["last_seen_at"] = json!(time);
     }
-    Ok(Some(device))
+    Ok(())
 }
 /// Recover or atomically replace the local credential while serializing other creators.
 pub fn local_token(home: &Path) -> Result<String> {
@@ -251,7 +269,7 @@ pub fn local_token(home: &Path) -> Result<String> {
         "UPDATE devices SET revoked_at=? WHERE owner_id='local' AND name='This computer' AND platform='local' AND revoked_at IS NULL",
         [now()],
     )?;
-    let device = mint(&tx, "This computer", "local", "local")?;
+    let device = mint(&tx, "This computer", "local", "local", None)?;
     let token = device["device_token"].as_str().expect("mint token");
     common::atomic_write(&path, format!("{token}\n").as_bytes())?;
     #[cfg(unix)]

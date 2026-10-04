@@ -469,11 +469,53 @@ kind, connector, text, created_at, resolved_at}}` followed by
 
 - `POST /hexbot/pair {code, device_name, platform}` → `{device_token,
   device_id, daemon_name}`; the code is single-use and expires in 10 minutes.
-- Device token is sent as `Authorization: Bearer <token>` on HTTP and as the
-  `?token=` query on `/api/ws` (see `docs/auth.md` once the dashboard-auth
-  integration is settled).
+- Device tokens use `Authorization: Bearer <token>`. Prefer `POST
+  /api/auth/ws-ticket` then `/api/ws?ticket=<single-use ticket>`; tickets expire
+  after 30 seconds. The legacy `/api/ws?token=<device token>` and direct bearer
+  or cookie upgrade remain accepted, but keep long-lived tokens out of URLs.
+- `DPoP: <signed JWT>` optionally binds a new device at `/hexbot/pair` or
+  `/auth/password-login`. Password-login responses include `device_token`
+  and `device_id` only when proof is attached. Without proof, browsers retain
+  only the HttpOnly cookie; `return_token` does not enable token disclosure.
+  Bound tokens require this header at `/api/auth/ws-ticket`, `/hexbot/session`,
+  and direct `/api/ws` authentication, including tokens carried in cookies.
+  Proof failures never fall back to bearer; see error codes below.
+  A WebSocket ticket carries the proof-authenticated device forward, so its
+  upgrade needs no further proof. Unbound devices keep the old behavior.
+- Proof header: `typ: dpop+jwt`, `alg: ES256`, public P-256 `jwk`. Claims:
+  `htm` is the HTTP method, `htu` is the HTTP(S) request URL without query or
+  fragment, `iat` is integer seconds within ±60 of daemon time, `jti` is unique
+  per key, and `ath` is base64url SHA-256 of a presented token. At Connect login,
+  hash the entire `cg_<jwt>` password. The daemon compares Host, port, and path,
+  normalizing case, IPv6 brackets, and default ports using the proof URL's
+  scheme. Transport scheme and forwarded headers do not widen trust.
+  See `docs/auth.md` for replay limits.
+- Connect `POST /api/daemons/{id}/grant` accepts optional `jkt`, a base64url
+  SHA-256 JWK thumbprint, and signs it as `cnf: {jkt}`. Such a grant requires a
+  matching proof at daemon login. No proof on an ordinary pairing request or
+  a grant without `cnf` creates an unbound device.
 - `POST /hexbot/session` with the bearer token sets the browser cookie session
   for the web bundle.
+
+Proof failures at these HTTP endpoints carry
+`WWW-Authenticate: DPoP error="invalid_dpop_proof"` and JSON
+`{error: "invalid_dpop_proof", code, message}`:
+
+| `code` | HTTP | Meaning |
+| --- | --- | --- |
+| `invalid_dpop_proof` | 401 | Invalid claims, signature, request binding, token hash, or replayed `jti` |
+| `dpop_proof_required` | 401 | A bound token or grant was presented without proof |
+| `dpop_key_mismatch` | 401 | The proof key differs from the token or grant binding |
+| `dpop_clock_skew` | 401 | Proof time differs by more than 60 seconds; response also includes `server_time` and `proof_time` (Unix seconds) |
+| `dpop_cache_full` | 503 | Replay cache limit reached; retry later (`Retry-After: 1`) |
+
+Clients must distinguish these responses from a revoked credential: show the
+error, retain the target, and retry with fresh proofs using reconnect backoff
+and any `Retry-After` minimum delay. A key mismatch requires pairing again. An ordinary credential 401 has no DPoP code
+or challenge. Database failures remain HTTP 500. The cache counts only
+authenticated bound-token uses (1,024 per key, 65,536 total); login proofs rely
+on the pairing code or grant's single-use protection instead. CORS exposes
+`WWW-Authenticate` and `Retry-After` to remote browser clients.
 
 ## CLI
 

@@ -21,7 +21,7 @@ import { resolveWebDevUrl } from './dev-url'
 import { edition, hasRuntime, requireRuntime } from './edition'
 import { parseDeepLink } from './deep-link'
 import { notify } from './notify'
-import { pair, pairWithGrant, type GrantPairOptions, type PairOptions } from './pair'
+import { pair, pairingReply, pairWithGrant, type GrantPairOptions, type PairOptions } from './pair'
 import { installService, serviceStatus, uninstallService } from './service'
 import { createTray } from './tray'
 import { setCrashReports, startCrashReports } from './crash-reports'
@@ -68,6 +68,7 @@ function validatePair(value: unknown): PairOptions {
     host,
     port: Number(item.port),
     code: validString(item.code, 'code', 64),
+    proof: item.proof === undefined ? undefined : validString(item.proof, 'device proof', 8192),
     deviceName: validString(item.deviceName, 'device name', 128)
   }
 }
@@ -81,6 +82,7 @@ function validateGrantPair(value: unknown): GrantPairOptions {
   return {
     host,
     grant: validString(item.grant, 'grant', 4_096),
+    proof: item.proof === undefined ? undefined : validString(item.proof, 'device proof', 8192),
     deviceName: validString(item.deviceName, 'device name', 128),
     tls: item.tls as boolean | undefined
   }
@@ -229,9 +231,9 @@ function registerIpc(): void {
       return null
     }
   })
-  ipcMain.handle('hexbot:pair', (_event, value: unknown) => pair(validatePair(value)))
+  ipcMain.handle('hexbot:pair', (_event, value: unknown) => pairingReply(() => pair(validatePair(value))))
   ipcMain.handle('hexbot:pair-with-grant', (_event, value: unknown) =>
-    pairWithGrant(validateGrantPair(value))
+    pairingReply(() => pairWithGrant(validateGrantPair(value)))
   )
   ipcMain.handle('hexbot:notify', (_event, value: unknown) => {
     if (!value || typeof value !== 'object') throw new TypeError('Invalid notification')

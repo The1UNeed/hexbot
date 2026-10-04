@@ -11,7 +11,7 @@ export const generateSlug = () => randomBytes(8).toString("hex");
 /** Grants name this issuer; the daemon pins it at registration. */
 export const connectIssuer = () => process.env.CONNECT_BASE_URL ?? "https://connect.hexbot.app";
 
-export interface GrantClaims { sub: string; daemon_id: string; device_name: string }
+export interface GrantClaims { sub: string; daemon_id: string; device_name: string; cnf?: { jkt: string } }
 interface SigningState { privateKey: CryptoKey; publicJwk: JWK; kid: string; tunnelKey: Buffer }
 // HKDF-SHA256: raw private scalar, empty salt, UTF-8 info, 32-byte output.
 const tunnelKey = (d: string | undefined) => {
@@ -39,7 +39,7 @@ const state = () => signing.__hexConnectSigning ??= loadSigningState();
 export async function tunnelSecret(name: string): Promise<Buffer> { return createHmac("sha256", (await state()).tunnelKey).update(name, "utf8").digest(); }
 export const resetSigningKeyForTests = () => { signing.__hexConnectSigning = undefined; };
 /** A short-lived login grant for one daemon (`aud`) and its owner (`sub`). `jti` lets the daemon refuse a replayed grant. */
-export async function issueGrant(claims: GrantClaims, expiresInSeconds = 300) { const s = await state(); return new SignJWT({ daemon_id: claims.daemon_id, device_name: claims.device_name }).setProtectedHeader({ alg: "ES256", kid: s.kid, typ: "hexbot-grant+jwt" }).setIssuer(connectIssuer()).setAudience(claims.daemon_id).setSubject(claims.sub).setJti(randomBytes(16).toString("base64url")).setIssuedAt().setExpirationTime(Math.floor(Date.now() / 1000) + expiresInSeconds).sign(s.privateKey); }
+export async function issueGrant(claims: GrantClaims, expiresInSeconds = 300) { const s = await state(); return new SignJWT({ daemon_id: claims.daemon_id, device_name: claims.device_name, ...(claims.cnf ? { cnf: claims.cnf } : {}) }).setProtectedHeader({ alg: "ES256", kid: s.kid, typ: "hexbot-grant+jwt" }).setIssuer(connectIssuer()).setAudience(claims.daemon_id).setSubject(claims.sub).setJti(randomBytes(16).toString("base64url")).setIssuedAt().setExpirationTime(Math.floor(Date.now() / 1000) + expiresInSeconds).sign(s.privateKey); }
 /** CONNECT_JWKS_EXTRA publishes public keys beside the signing key: the next key before a rotation. Dropping a key revokes it on daemons within ten minutes. */
 export async function getJwks() { const s = await state(); return { keys: [s.publicJwk, ...JSON.parse(process.env.CONNECT_JWKS_EXTRA || "[]") as JWK[]] }; }
 export async function verifyGrant(token: string, expectedDaemonId?: string, suppliedJwks?: Awaited<ReturnType<typeof getJwks>>): Promise<GrantClaims & { jti: string }> {

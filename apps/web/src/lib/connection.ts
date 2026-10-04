@@ -13,7 +13,7 @@
  * is cleared and the connect screen takes over.
  */
 
-import { buildHermesWebSocketUrl } from '@hermes/shared'
+import { buildHermesWebSocketUrl, DeviceProofError, isDeviceProofCode, type PairingReply, readDeviceProofError } from '@hermes/shared'
 
 import { botsActions } from '../stores/bots'
 import { connectionActions } from '../stores/connection'
@@ -24,6 +24,7 @@ import { uiActions } from '../stores/ui'
 import { useUsers } from '../stores/users'
 
 import { getBridge, type HexbotBridge } from './bridge'
+import { proofHeaders } from './dpop'
 import { attachEventRouting } from './events'
 import { DEFAULT_DAEMON_PORT } from './pair-link'
 import { HexbotRpcClient, setActiveRpc } from './rpc'
@@ -170,22 +171,42 @@ async function bearerToken(target: ConnectionTarget, deps: ConnectionDeps): Prom
   return token
 }
 
-async function mintTicket(origin: string, bearer: string, deps: ConnectionDeps): Promise<string> {
+async function mintTicket(
+  origin: string,
+  bearer: string,
+  remote: boolean,
+  deps: ConnectionDeps
+): Promise<string> {
   const doFetch = deps.fetch ?? defaultFetch(deps)
+  const url = `${origin}/api/auth/ws-ticket`
+  const crossOrigin = origin !== window.location.origin
+
   let response: Response
 
   try {
-    response = await doFetch(`${origin}/api/auth/ws-ticket`, {
+    response = await doFetch(url, {
       ...(bearer
-        ? { headers: { Authorization: `Bearer ${bearer}` } }
-        : { credentials: 'same-origin' as const }),
+        ? {
+            headers: {
+              Authorization: `Bearer ${bearer}`,
+              ...(remote ? await proofHeaders('POST', url, bearer) : {})
+            }
+          }
+        : // Remote browsers without a proof key retain their HttpOnly cookie.
+          { credentials: crossOrigin ? ('include' as const) : ('same-origin' as const) }),
       method: 'POST'
     })
   } catch (error) {
     throw new UnreachableError(error instanceof Error ? error.message : String(error))
   }
 
-  if (response.status === 401 || response.status === 403) {
+  const proofError = await readDeviceProofError(response)
+
+  if (proofError) {
+    throw proofError
+  }
+
+  if (response.status === 401) {
     throw new UnauthorizedError()
   }
 
@@ -210,7 +231,13 @@ export async function resolveWsUrl(
   const origin = targetOrigin(target)
   const url = new URL(origin)
   const base = { host: url.host, path: '/api/ws', protocol: url.protocol }
-  const ticket = await mintTicket(origin, await bearerToken(target, deps), deps)
+
+  const ticket = await mintTicket(
+    origin,
+    await bearerToken(target, deps),
+    target.kind === 'remote',
+    deps
+  )
 
   return buildHermesWebSocketUrl({ ...base, authParam: ['ticket', ticket] })
 }
@@ -230,7 +257,8 @@ export async function pairWithDaemon(
   const bridge = (deps.bridge ?? getBridge)()
 
   if (bridge) {
-    const result = await bridge.pair(host, port, code, deviceName)
+    const proof = await proofHeaders('POST', `http://${host}:${port}/auth/password-login`)
+    const result = unwrapPairingReply(await bridge.pair(host, port, code, deviceName, proof.DPoP))
 
     return {
       daemonName: result.daemon_name,
@@ -240,10 +268,13 @@ export async function pairWithDaemon(
   }
 
   const doFetch = deps.fetch ?? defaultFetch(deps)
+  const origin = `http://${host}:${port}`
+  const crossOrigin = new URL(origin).origin !== window.location.origin
+  const proof = crossOrigin ? await proofHeaders('POST', `${origin}/auth/password-login`) : {}
   let response: Response
 
   try {
-    response = await doFetch(`http://${host}:${port}/auth/password-login`, {
+    response = await doFetch(`${origin}/auth/password-login`, {
       body: JSON.stringify({
         password: code,
         provider: 'hexbot',
@@ -251,7 +282,10 @@ export async function pairWithDaemon(
         device_name: deviceName,
         platform: typeof navigator === 'undefined' ? 'web' : navigator.platform
       }),
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...proof
+      },
       method: 'POST',
       credentials: 'include'
     })
@@ -259,12 +293,18 @@ export async function pairWithDaemon(
     throw new UnreachableError(error instanceof Error ? error.message : String(error))
   }
 
+  const proofError = await readDeviceProofError(response)
+
+  if (proofError) {
+    throw proofError
+  }
+
   if (response.status === 400 || response.status === 404) {
     throw new InvalidCodeError()
   }
 
-  if (response.status === 401 || response.status === 403) {
-    throw new UnauthorizedError()
+  if (response.status === 401) {
+    throw new InvalidCodeError()
   }
 
   if (!response.ok) {
@@ -277,11 +317,14 @@ export async function pairWithDaemon(
     device_token?: string
   }
 
+  if (!body.device_token) {
+    await verifyBrowserCookie(origin, body.daemon_name ?? host, deps)
+  }
+
   return {
     daemonName: body.daemon_name ?? host,
     deviceId: body.device_id ?? '',
-    // Browser auth lives in an HttpOnly cookie. Electron receives and stores
-    // the long-lived token in the main process instead.
+    // Same-origin browsers keep their cookie session. Remote proof clients receive a token.
     deviceToken: body.device_token ?? ''
   }
 }
@@ -386,13 +429,24 @@ export class ConnectionSupervisor {
         return
       }
 
+      if (error instanceof DeviceProofError) {
+        // A changed key needs pairing; temporary proof failures keep reconnecting.
+        if (error.code === 'dpop_key_mismatch') {
+          store.setStatus('unauthorized', { attempt: 0, proofError: error })
+        } else {
+          this.scheduleRetry(error)
+        }
+
+        return
+      }
+
       if (error instanceof UnauthorizedError) {
         this.handleUnauthorized(error.message)
 
         return
       }
 
-      this.scheduleRetry(error instanceof Error ? error.message : String(error))
+      this.scheduleRetry()
     }
   }
 
@@ -521,7 +575,7 @@ export class ConnectionSupervisor {
       this.attempt = 0
     }
 
-    this.scheduleRetry('The connection to the daemon dropped.')
+    this.scheduleRetry()
   }
 
   private handleUnauthorized(message: string): void {
@@ -530,14 +584,15 @@ export class ConnectionSupervisor {
     connectionActions().setStatus('unauthorized', { attempt: 0, error: message })
   }
 
-  private scheduleRetry(error: string): void {
+  private scheduleRetry(proofError: DeviceProofError | null = null): void {
     this.attempt += 1
 
-    const delay = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** (this.attempt - 1))
+    const delay = Math.max(proofError?.retryAfterMs ?? 0, Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** (this.attempt - 1)))
 
     connectionActions().setStatus(this.connectedAt ? 'reconnecting' : 'offline', {
       attempt: this.attempt,
-      error
+      error: null,
+      proofError
     })
 
     this.retryTimer = setTimeout(() => {
@@ -564,4 +619,43 @@ export function connectTo(target: ConnectionTarget): Promise<void> {
 
 export function disconnect(): void {
   getSupervisor().stop()
+}
+
+
+export function unwrapPairingReply<T>(reply: PairingReply<T>): T {
+  if (reply.ok) {return reply.value}
+  const { code, serverTime, proofTime, retryAfterMs } = reply.error
+
+  if (isDeviceProofCode(code)) {throw new DeviceProofError(code, serverTime, proofTime, retryAfterMs)}
+
+  if (code === 'invalid_code') {throw new InvalidCodeError()}
+  throw new UnreachableError()
+}
+
+export class BrowserCookieError extends Error {
+  constructor(name: string, origin: string) {
+    super(`This browser can't keep a key or a sign-in cookie for ${name} from this page. Open ${origin} directly to connect to ${name}.`)
+    this.name = 'BrowserCookieError'
+  }
+}
+
+/** Check cookie acceptance before persisting a keyless browser target. */
+export async function verifyBrowserCookie(origin: string, name: string, deps: ConnectionDeps = {}): Promise<void> {
+  try {
+    await mintTicket(origin, '', false, deps)
+  } catch (error) {
+    if (error instanceof UnauthorizedError) {throw new BrowserCookieError(name, origin)}
+    throw error
+  }
+}
+
+/** Never display a fetch or Electron IPC exception verbatim. */
+export function pairingErrorMessage(reason: unknown): string {
+  if (reason instanceof DeviceProofError || reason instanceof BrowserCookieError) {return reason.message}
+
+  if (reason instanceof InvalidCodeError) {return 'The pairing code is invalid or expired.'}
+
+  if (reason instanceof UnauthorizedError) {return 'This device was revoked. Pair it again.'}
+
+  return 'The daemon could not be reached.'
 }

@@ -3,6 +3,7 @@
  * writes here; components only read.
  */
 
+import type { DeviceProofError } from '@hermes/shared'
 import { create } from 'zustand'
 
 import type { ConnectionStatus, ConnectionTarget, DaemonInfo } from '../lib/types'
@@ -14,13 +15,14 @@ export interface ConnectionState {
   clearTarget: () => void
   daemon: DaemonInfo | null
   error: null | string
+  proofError: DeviceProofError | null
   /** `replay_epoch` from the last `gateway.ready`. */
   epoch: null | string
   setDaemon: (daemon: DaemonInfo | null) => void
   setEpoch: (epoch: null | string) => void
   setStatus: (
     status: ConnectionStatus,
-    options?: { attempt?: number; error?: null | string }
+    options?: { attempt?: number; error?: null | string; proofError?: DeviceProofError | null }
   ) => void
   setTarget: (target: ConnectionTarget | null) => void
   status: ConnectionStatus
@@ -116,6 +118,7 @@ export const useConnection = create<ConnectionState>(set => ({
   daemon: null,
   epoch: null,
   error: null,
+  proofError: null,
   status: 'idle',
   target: readStoredTarget(),
 
@@ -124,6 +127,7 @@ export const useConnection = create<ConnectionState>(set => ({
       attempt: options.attempt ?? state.attempt,
       error:
         options.error === undefined ? (status === 'connected' ? null : state.error) : options.error,
+      proofError: options.proofError ?? null,
       status
     }))
   },

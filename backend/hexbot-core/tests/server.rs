@@ -1636,3 +1636,359 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
     }
     app.shutdown().await;
 }
+
+#[path = "fixtures/dpop.rs"]
+mod dpop_fixture;
+
+#[tokio::test]
+async fn bound_devices_require_proofs_on_every_token_entry_point() {
+    use dpop_fixture::{claims, proof};
+    let f = Fixture::new(true).await;
+    let client = reqwest::Client::new();
+    for route in ["/hexbot/pair", "/auth/password-login"] {
+        let code = auth::new_code(&f.home, "local").unwrap();
+        let url = format!("{}{route}", f.base);
+        let body = if route == "/hexbot/pair" {
+            json!({"code":code["code"],"device_name":"proof app","platform":"app"})
+        } else {
+            json!({"password":code["code"],"username":"proof app"})
+        };
+        let response = client
+            .post(&url)
+            .header("DPoP", proof(&claims("POST", &url, None)))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let device: Value = response.json().await.unwrap();
+        let token = device["device_token"].as_str().unwrap();
+        let stored = auth::verify_token(&f.home, token).unwrap().unwrap();
+        assert_eq!(
+            stored["jkt"],
+            hexbot_core::dpop::token_hash(&dpop_fixture::jwk().to_string())
+        );
+        for path in ["/api/auth/ws-ticket", "/hexbot/session"] {
+            let url = format!("{}{path}", f.base);
+            for cookie in [false, true] {
+                let request = client.post(&url);
+                let request = if cookie {
+                    request.header("Cookie", format!("hermes_session_at={token}"))
+                } else {
+                    request.bearer_auth(token)
+                };
+                assert_eq!(request.send().await.unwrap().status(), 401);
+            }
+            let signed = proof(&claims("POST", &url, Some(token)));
+            assert_eq!(
+                client
+                    .post(&url)
+                    .bearer_auth(token)
+                    .header("DPoP", &signed)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                200
+            );
+            assert_eq!(
+                client
+                    .post(&url)
+                    .bearer_auth(token)
+                    .header("DPoP", &signed)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                401
+            );
+            // A forwarded host cannot validate a proof for a different authority.
+            let wrong = proof(&claims(
+                "POST",
+                &format!("https://evil.test{path}"),
+                Some(token),
+            ));
+            assert_eq!(
+                client
+                    .post(&url)
+                    .bearer_auth(token)
+                    .header("DPoP", wrong)
+                    .header("X-Forwarded-Host", "evil.test")
+                    .header("Forwarded", "host=evil.test;proto=https")
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                401
+            );
+        }
+        for mode in ["query", "bearer", "cookie"] {
+            let ws_url = if mode == "query" {
+                format!("{}?token={token}", f.ws())
+            } else {
+                f.ws()
+            };
+            let mut request = ws_url.into_client_request().unwrap();
+            if mode == "bearer" {
+                request
+                    .headers_mut()
+                    .insert("authorization", format!("Bearer {token}").parse().unwrap());
+            }
+            if mode == "cookie" {
+                request.headers_mut().insert(
+                    "cookie",
+                    format!("hermes_session_at={token}").parse().unwrap(),
+                );
+            }
+            assert!(connect_async(request.clone()).await.is_err());
+            request.headers_mut().insert(
+                "dpop",
+                proof(&claims("GET", &format!("{}/api/ws", f.base), Some(token)))
+                    .parse()
+                    .unwrap(),
+            );
+            let (mut socket, _) = connect_async(request).await.unwrap();
+            assert!(socket.next().await.unwrap().is_ok());
+            socket.close(None).await.unwrap();
+        }
+        let url = format!("{}/api/auth/ws-ticket", f.base);
+        let ticket: Value = client
+            .post(&url)
+            .bearer_auth(token)
+            .header("DPoP", proof(&claims("POST", &url, Some(token))))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let ws = format!("{}?ticket={}", f.ws(), ticket["ticket"].as_str().unwrap());
+        let (mut socket, _) = connect_async(&ws).await.unwrap();
+        assert!(socket.next().await.unwrap().is_ok());
+        assert!(connect_async(&ws).await.is_err());
+        socket.close(None).await.unwrap();
+    }
+    // Old/local tokens still use bearer or cookie authentication without a proof.
+    for path in ["/api/auth/ws-ticket", "/hexbot/session"] {
+        assert_eq!(
+            client
+                .post(format!("{}{path}", f.base))
+                .bearer_auth(&f.token)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+    }
+}
+
+#[path = "fixtures/connect_mock.rs"]
+#[allow(dead_code)]
+mod connect_mock;
+use hexbot_core::common;
+
+#[tokio::test]
+async fn connect_login_requires_the_grants_key_and_token_hash() {
+    use dpop_fixture::{claims, proof};
+    let f = Fixture::new(true).await;
+    let mock = connect_mock::Mock::new().await;
+    mock.persist_registration(&f.home);
+    let jkt = hexbot_core::dpop::token_hash(&dpop_fixture::jwk().to_string());
+    let grant = dpop_fixture::grant(
+        &json!({"sub":"cloud-user","iss":"https://connect.hexbot.app","aud":"daemon-1","jti":"bound-grant","daemon_id":"daemon-1","device_name":"proof app","iat":common::now() as i64,"exp":common::now() as i64+300,"cnf":{"jkt":jkt}}),
+    );
+    let token = format!("cg_{grant}");
+    let url = format!("{}/auth/password-login", f.base);
+    let body = json!({"provider":"hexbot","username":"proof app","password":token});
+    let client = reqwest::Client::new();
+    assert_eq!(
+        client.post(&url).json(&body).send().await.unwrap().status(),
+        401
+    );
+    assert_eq!(
+        client
+            .post(&url)
+            .json(&body)
+            .header("DPoP", proof(&claims("POST", &url, None)))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(
+        client
+            .post(&url)
+            .json(&body)
+            .header("DPoP", proof(&claims("POST", &url, Some(&grant))))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    let response = client
+        .post(&url)
+        .json(&body)
+        .header("DPoP", proof(&claims("POST", &url, Some(&token))))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let device: Value = response.json().await.unwrap();
+    assert_eq!(
+        auth::verify_token(&f.home, device["device_token"].as_str().unwrap())
+            .unwrap()
+            .unwrap()["jkt"],
+        jkt
+    );
+}
+
+#[tokio::test]
+async fn remote_browser_without_key_storage_keeps_a_cookie_only_session() {
+    let f = Fixture::new(true).await;
+    let code = auth::new_code(&f.home, "local").unwrap();
+    let client = reqwest::Client::new();
+    let response = client.post(format!("{}/auth/password-login", f.base))
+        .json(&json!({"username":"remote browser","password":code["code"],"return_token":true,"next":"/settings"}))
+        .send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let cookie = response.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let body: Value = response.json().await.unwrap();
+    assert!(body.get("device_token").is_none());
+    assert_eq!(body["next"], "/settings");
+    assert_eq!(
+        client
+            .post(format!("{}/api/auth/ws-ticket", f.base))
+            .header("Cookie", cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+}
+
+#[tokio::test]
+async fn proof_errors_are_distinct_and_do_not_touch_last_seen() {
+    use dpop_fixture::{claims, proof};
+    let f = Fixture::new(true).await;
+    let client = reqwest::Client::new();
+    let code = auth::new_code(&f.home, "local").unwrap();
+    let login = format!("{}/auth/password-login", f.base);
+    let response = client
+        .post(&login)
+        .json(&json!({"password":code["code"],"next":"/settings"}))
+        .header("DPoP", proof(&claims("POST", &login, None)))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["next"], "/settings");
+    let token = body["device_token"].as_str().unwrap();
+    let conn = db::open(&f.home).unwrap();
+    conn.execute(
+        "UPDATE devices SET last_seen_at=0 WHERE id=?",
+        [body["device_id"].as_str().unwrap()],
+    )
+    .unwrap();
+    let ticket = format!("{}/api/auth/ws-ticket", f.base);
+    let mut stale = claims("POST", &ticket, Some(token));
+    stale["iat"] = json!(common::now() as i64 - 600);
+    for (proof_value, expected) in [
+        (None, "dpop_proof_required"),
+        (Some(proof(&stale)), "dpop_clock_skew"),
+    ] {
+        let mut request = client.post(&ticket).bearer_auth(token);
+        if let Some(proof_value) = proof_value {
+            request = request.header("DPoP", proof_value);
+        }
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status(), 401);
+        assert_eq!(
+            response.headers()["www-authenticate"],
+            "DPoP error=\"invalid_dpop_proof\""
+        );
+        let error: Value = response.json().await.unwrap();
+        assert_eq!(error["code"], expected);
+        if expected == "dpop_clock_skew" {
+            assert!(
+                error["server_time"].as_i64().unwrap() - error["proof_time"].as_i64().unwrap()
+                    >= 600
+            );
+        }
+        assert_eq!(
+            conn.query_row(
+                "SELECT last_seen_at FROM devices WHERE id=?",
+                [body["device_id"].as_str().unwrap()],
+                |r| r.get::<_, f64>(0)
+            )
+            .unwrap(),
+            0.
+        );
+    }
+    for _ in 0..1024 {
+        assert_eq!(
+            client
+                .post(&ticket)
+                .bearer_auth(token)
+                .header("DPoP", proof(&claims("POST", &ticket, Some(token))))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+    }
+    let full = client
+        .post(&ticket)
+        .bearer_auth(token)
+        .header("DPoP", proof(&claims("POST", &ticket, Some(token))))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(full.status(), 503);
+    assert_eq!(full.headers()["retry-after"], "1");
+    assert_eq!(
+        full.json::<Value>().await.unwrap()["code"],
+        "dpop_cache_full"
+    );
+    // A full proof cache cannot block a new login with a single-use code.
+    let code = auth::new_code(&f.home, "local").unwrap();
+    assert_eq!(
+        client
+            .post(&login)
+            .json(&json!({"password":code["code"]}))
+            .header("DPoP", proof(&claims("POST", &login, None)))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+}
+
+#[tokio::test]
+async fn device_storage_failure_is_not_revocation() {
+    let f = Fixture::new(true).await;
+    let conn = db::open(&f.home).unwrap();
+    conn.execute("ALTER TABLE devices RENAME TO unavailable_devices", [])
+        .unwrap();
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/auth/ws-ticket", f.base))
+        .bearer_auth(&f.token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 500);
+    assert!(response.headers().get("www-authenticate").is_none());
+    conn.execute("ALTER TABLE unavailable_devices RENAME TO devices", [])
+        .unwrap();
+}
