@@ -155,7 +155,14 @@ it('keeps warnings before a section opens and clears them when dismissed or disc
       message: 'Connected tool is unavailable.'
     }
   } as GatewayEvent)
-  expect(useTranscripts.getState().warnings['room:room-1']).toBe('Connected tool is unavailable.')
+  expect(useTranscripts.getState().warnings['room:room-1:bot-section']).toBe(
+    'Connected tool is unavailable.'
+  )
+  routeEvent({
+    type: 'warning',
+    payload: { section_id: 'other-bot', room_id: 'room-1', message: 'Other bot: disconnected.' }
+  } as GatewayEvent)
+  expect(Object.keys(useTranscripts.getState().warnings)).toHaveLength(2)
   useTranscripts.getState().dropAll()
   expect(useTranscripts.getState().warnings).toEqual({})
 })

@@ -132,4 +132,7 @@ and legacy sections, probe counts, SSE compatibility, and warning events.
 
 `node scripts/dev/mcp-smoke.mjs` runs `pnpm dev` with disposable state, configures
 a bot and connected servers by RPC, and exercises the browser with a local model
-fixture. It saves warning and approval screenshots to `/tmp/hexbot-pr2-screens/`.
+fixture. Set `HEXBOT_SMOKE_ARTIFACTS` to choose where its screenshots and proof
+files go. It checks daemon-owned cwd, revocation after removal and disable,
+credential changes in an open section, Manual approval for read-only tools, and
+nested steps before and after reload in light and dark themes.

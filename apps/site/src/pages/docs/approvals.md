@@ -33,19 +33,29 @@ Bypass is plain Pi, the agent runtime: no prompts, no sandbox, no credential che
 
 ## Connected tools
 
-In new sections, bots call connected tools through Pi's codemode. Manual and Auto
-ask before every call unless the server marks the tool read-only. Reading a
+In new sections, bots call connected tools through Pi's code tool. Manual asks
+for every connected-tool call. Auto runs tools marked read-only freely and asks
+for all others. Reading a
 resource needs no approval. Allow in this section covers that server while the
 section's agent process runs. Bypass never asks. Shell and file calls inside a
 codemode script still follow their usual approval rules.
 
 Connected servers are trusted code configured by the admin. They run outside
-the shell sandbox, in the bot workspace. A server receives its explicit
+the shell sandbox, in a daemon-owned directory. Each section starts its own
+process per connected server. A server receives its explicit
 environment settings and the runtime's allowed environment variables, rather
 than every connector key. Add references for any keys it needs. New servers
 must use stdio or streamable HTTP; existing SSE servers work only in saved
 sections that already used them. Connection problems appear under the
-conversation header.
+conversation header. The last 2 KB of server stderr may reach the bot in a
+connection error.
+
+Removing or disabling a connected server stops further calls in open sections,
+even in Bypass. Changing its configuration or credentials blocks the old
+connection and reconnects at the next message. The section's prompt and tool
+declarations stay fixed. A background section with no visible chat or room
+cannot wait for approval; the bot must ask you to run that action in a visible
+section.
 
 Codemode scripts cannot use Node, files, or the network directly. Their model
 helpers can call provider APIs with the section's credentials and incur costs.

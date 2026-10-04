@@ -79,6 +79,7 @@ export interface MessageCompletePayload {
 }
 
 export interface ToolStartPayload {
+  parent_tool_call_id?: string
   args?: unknown
   args_text?: string
   context?: string
@@ -87,6 +88,7 @@ export interface ToolStartPayload {
 }
 
 export interface ToolCompletePayload {
+  parent_tool_call_id?: string
   args?: unknown
   duration_s?: number
   name?: string
@@ -468,16 +470,27 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         result: null,
         startedAt: Date.now(),
         status: 'running',
+        ...(payload.parent_tool_call_id && { parentToolCallId: payload.parent_tool_call_id }),
         summary: payload.context,
         toolId: String(payload.tool_id ?? nextMessageId('t'))
       }
 
-      update(sessionId, transcript =>
-        withCurrentAssistant(transcript, message => ({
+      update(sessionId, transcript => {
+        const parent =
+          payload.parent_tool_call_id &&
+          transcript.messages.find(message =>
+            message.toolCalls.some(tool => tool.toolId === payload.parent_tool_call_id)
+          )
+
+        const append = (message: TranscriptMessage) => ({
           ...closePart(message),
           toolCalls: [...message.toolCalls, call]
-        }))
-      )
+        })
+
+        return parent
+          ? replaceMessage(transcript, parent.id, append)
+          : withCurrentAssistant(transcript, append)
+      })
     },
 
     toolComplete(sessionId, payload) {

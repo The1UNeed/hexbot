@@ -309,7 +309,7 @@ offers the search and media connectors before the first bot is created
 Connector shape: `{id, name, description, group, icon, scope, state, state_text,
 providers | null, provider | null, fields: [{key, provider, label, help, url,
 secret, advanced, set, hint}], enabled_for_bot | null, enabled_bots: [string],
-last_error | null, mcp?: {transport, tool_count, running}}`. `state` is
+last_error | null, mcp?: {name, transport, tool_count, test_failed, running}}`. `state` is
 `not_set_up`, `ready`, or `error`; `icon` is a Simple Icons slug or `glyph:*`.
 `fields` carries every provider's fields, each tagged with its `provider`
 (`null` = common to all), so a client can show the right ones before a choice
@@ -343,19 +343,40 @@ or a clear.
 New sections freeze connected server names and reach tools through Pi's codemode.
 Saved sections keep their frozen Rust bridge tools, including SSE. New sections
 skip existing SSE entries and emit an owner-scoped `warning` with `{section_id,
-room_id, message}`. Pi warning/error notifications use the same event. Clients
+room_id, message}`, once per bot/server for each daemon run. Room notices name
+the bot. Pi warning/error notifications use the same event. Clients
 show a dismissible notice under the conversation header.
 
-Manual and Auto run tools with `readOnlyHint: true` freely and ask before every
-other connected tool call. Resource tools are read-only. Allow in this section
-covers one server for the running Pi session. Bypass never asks. Each nested
+Manual asks for every connected-tool call, including tools marked read-only.
+Auto runs tools with `readOnlyHint: true` freely and asks for all others. Resource
+tools are read-only. Allow in this section covers one server for the running Pi session. Bypass never asks. Each nested
 codemode call uses the approval gate, including shell and file tools.
 
-Stdio servers run as Pi children in the bot workspace, outside the shell sandbox.
+Stdio servers run as Pi children in a daemon-owned directory,
+`<home>/runtime/mcp/<bot>` with mode 0700, outside the shell sandbox. Configured
+working directories are ignored. Each section starts its own process per server.
 They inherit Pi's allowlisted environment plus their explicit `env`, not every
 connector credential. Put required `${KEY}` references in the server's `env`.
 Expanded values reach Pi through the private in-memory bridge, not the saved
 session configuration or Pi environment. Workspace `.pi/mcp.json` is ignored.
+Connectors Test uses the same environment policy and daemon-owned directory,
+using `<home>/runtime/mcp/probe` when no bot is given. Failed probes set
+`test_failed: true`, `state: "error"` and `state_text: "Test failed"`. Adding,
+replacing or removing an entry clears its saved probe and tool count.
+
+Every direct or nested connected-tool call checks current configuration before
+approval, including in Bypass. Removal and disable revoke access immediately.
+Config or credential edits block stale clients; the next prompt re-registers the
+changed server and closes its old connection. The frozen prompt and declarations
+stay unchanged. Reconnection clears any permission for that server. Calls that
+need approval in a section with no visible chat or room entry fail immediately
+and tell the bot to use a visible section. Server stderr, up to the last 2 KB,
+may reach the model in tool errors.
+
+Live `tool.start` and `tool.complete` include `parent_tool_call_id` for nested
+calls. Stored parent tool rows include Pi's `nested_calls` record. Clients show
+nested steps below the code step both live and after reload. Pi retains nested
+arguments and status, not full nested result bodies; its record is bounded.
 
 ### Providers and models
 

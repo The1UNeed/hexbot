@@ -6,6 +6,7 @@ import { ConnectorIcon } from '../../components/ui/connector-icon'
 import { Input } from '../../components/ui/input'
 import { SkeletonLines } from '../../components/ui/skeleton'
 import { Switch } from '../../components/ui/switch'
+import { connectorsTest } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import type { Bot, Connector, ConnectorGroup } from '../../lib/types'
 import { useConnectors, useConnectorsForBot } from '../../stores/connectors'
@@ -18,7 +19,7 @@ const GROUPS: { id: ConnectorGroup; title: string }[] = [
   { id: 'media', title: 'Images and voice' },
   { id: 'work', title: 'Notes and work' },
   { id: 'social_home', title: 'Social and home' },
-  { id: 'mcp', title: 'MCP servers' }
+  { id: 'mcp', title: 'Connected tools' }
 ]
 
 type Filter = 'all' | 'needs_setup' | 'on'
@@ -149,6 +150,7 @@ export function ConnectorsTab({ bot, initialConnector }: { bot: Bot; initialConn
                       : undefined
                   }
                   onSetup={() => setSheet(item.id)}
+                  onTest={() => connectorsTest(item.id, bot.name).then(() => refresh(bot.name))}
                   onToggle={enabled => act(setForBot(bot.name, item.id, enabled))}
                 />
               ))}
@@ -187,7 +189,8 @@ function ConnectorRow({
   onExpand,
   onRemove,
   onSetup,
-  onToggle
+  onToggle,
+  onTest
 }: {
   bot: Bot
   connector: Connector
@@ -196,14 +199,18 @@ function ConnectorRow({
   onExpand: () => void
   onRemove?: () => void
   onSetup: () => void
+  onTest: () => Promise<void>
   onToggle: (enabled: boolean) => void
 }) {
+  const [testing, setTesting] = useState(false)
+  const [testError, setTestError] = useState<string | null>(null)
+
   const control =
-    connector.state === 'error' ? (
+    !connector.mcp && connector.state === 'error' ? (
       <Button onClick={onSetup} size="sm" variant="primary">
         Fix
       </Button>
-    ) : connector.state === 'not_set_up' ? (
+    ) : !connector.mcp && connector.state === 'not_set_up' ? (
       <Button onClick={onSetup} size="sm">
         Set up
       </Button>
@@ -265,9 +272,11 @@ function ConnectorRow({
           ) : null}
           {connector.mcp ? (
             <p className="text-muted">
-              {connector.mcp.tool_count === null
-                ? 'Not tested'
-                : `${connector.mcp.tool_count} tools`}{' '}
+              {connector.mcp.test_failed
+                ? 'Test failed'
+                : connector.mcp.tool_count === null
+                  ? 'Not tested'
+                  : `${connector.mcp.tool_count} tools`}{' '}
               · {connector.mcp.transport} · {connector.mcp.running ? 'running' : 'not running'}
             </p>
           ) : null}
@@ -277,7 +286,23 @@ function ConnectorRow({
               <span className="text-muted"> · {formatTimestamp(connector.last_error.at)}</span>
             </p>
           ) : null}
+          {testError ? <p className="text-danger">{testError}</p> : null}
           <div className="flex gap-2">
+            {connector.mcp ? (
+              <Button
+                disabled={testing}
+                onClick={() => {
+                  setTesting(true)
+                  setTestError(null)
+                  void onTest()
+                    .catch(cause => setTestError(errorText(cause)))
+                    .finally(() => setTesting(false))
+                }}
+                size="sm"
+              >
+                {testing ? 'Testing…' : 'Test'}
+              </Button>
+            ) : null}
             {connector.fields.length ? (
               <Button onClick={onSetup} size="sm">
                 {connector.state === 'not_set_up' ? 'Set up' : 'Edit'}
@@ -291,7 +316,9 @@ function ConnectorRow({
             {onRemove ? (
               <Button
                 onClick={() => {
-                  if (window.confirm(`Remove the ${connector.name} MCP server for every bot?`)) {
+                  if (
+                    window.confirm(`Remove ${connector.name} from connected tools for every bot?`)
+                  ) {
                     onRemove()
                   }
                 }}

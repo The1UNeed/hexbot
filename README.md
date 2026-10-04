@@ -56,6 +56,16 @@ The app follows the track it was installed from; switch in Settings, Updates.
 Docs live at [hexbot.app/docs](https://hexbot.app/docs/) and are built from
 `apps/site/`.
 
+### Connected tools
+
+Each section starts its own process per connected stdio server in a daemon-owned
+directory. Servers receive only the runtime's allowed environment and their
+explicit settings. Manual asks for every connected-tool call. Auto runs tools
+marked read-only freely and asks for others; Bypass never asks. Removing or
+disabling a server revokes it in open sections. Config or credential edits block
+old connections and reconnect at the next message. Server stderr, up to the
+last 2 KB, may reach the bot in connection errors.
+
 ## Develop
 
 Hexbot's daemon is Rust in `backend/hexbot-core/`; agents run on pinned Pi

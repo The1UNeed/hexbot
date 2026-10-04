@@ -189,9 +189,10 @@ export interface Connector {
   id: string
   last_error: null | { at: number; text: string }
   mcp?: {
-    /** The server name in its tools' names (`mcp_<name>_<tool>`); may contain underscores. */
+    /** The server name in its tools' names (`mcp__<name>__<tool>`); may contain underscores. */
     name?: string
     running: boolean
+    test_failed?: boolean
     tool_count: number | null
     transport: 'http' | 'sse' | 'stdio'
   }
@@ -488,6 +489,7 @@ export interface StatusLine {
 }
 
 export interface ToolCall {
+  parentToolCallId?: string
   args: unknown
   durationS: number | null
   name: string

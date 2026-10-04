@@ -63,7 +63,14 @@ import { WaitingBanner } from './waiting-banner'
 import { LiveStatus, WorkSummary } from './work-status'
 
 export function ConnectedToolsNotice({ sectionId }: { sectionId: string }) {
-  const warning = useTranscripts(state => state.warnings[sectionId])
+  const warnings = useTranscripts(state => state.warnings)
+
+  const entries = Object.entries(warnings).filter(
+    ([key]) =>
+      key === sectionId || (sectionId.startsWith('room:') && key.startsWith(`${sectionId}:`))
+  )
+
+  const warning = entries.map(([, text]) => text).join('\n')
 
   if (!warning) {
     return null
@@ -74,11 +81,13 @@ export function ConnectedToolsNotice({ sectionId }: { sectionId: string }) {
       className="hex-glass hex-fade pointer-events-auto mx-auto flex w-fit max-w-full shrink-0 items-center gap-2 rounded-full py-1.5 pr-2 pl-3.5 text-[length:var(--text-secondary)] text-warning"
       role="status"
     >
-      <span className="truncate">{warning}</span>
+      <span className="truncate" title={warning}>
+        {entries.map(([, text]) => text.split('\n')[0]).join(' · ')}
+      </span>
       <button
         aria-label="Dismiss notice"
         className="grid size-5 shrink-0 place-items-center rounded-full text-muted hover:text-foreground"
-        onClick={() => transcriptActions().setWarning(sectionId, null)}
+        onClick={() => entries.forEach(([key]) => transcriptActions().setWarning(key, null))}
         type="button"
       >
         <X size={13} />
@@ -455,7 +464,7 @@ export function MessageRow({
         )}
         data-testid={assistant ? 'bot-message' : 'user-message'}
       >
-        {assistant && showFace ? (
+        {assistant && showFace && (bubbles.length > 0 || message.streaming) ? (
           <Avatar
             className={cn('mt-1', message.streaming && 'hex-think')}
             image={avatarData(bot)}
