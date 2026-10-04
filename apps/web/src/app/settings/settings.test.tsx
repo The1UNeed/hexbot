@@ -19,6 +19,7 @@ import { useUpdates } from '../../stores/updates'
 import { useUsers } from '../../stores/users'
 
 import {
+  AboutSettings,
   AppearanceSettings,
   ApprovalsSettings,
   ConnectSettings,
@@ -551,6 +552,20 @@ describe('settings', () => {
     render(<UsersSettings />)
     expect(screen.getByText('Only administrators can manage users.')).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Invite' })).not.toBeInTheDocument()
+  })
+
+  it('lists open source licenses with GitHub links and returns to About', async () => {
+    render(<AboutSettings />)
+    await act(async () => {})
+    fireEvent.click(screen.getByRole('button', { name: 'Licenses' }))
+    expect(screen.getByRole('heading', { name: 'Licenses' })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Pi, MIT' })).toHaveAttribute(
+      'href',
+      'https://github.com/earendil-works/pi'
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'About' }))
+    expect(screen.getByRole('heading', { name: 'About' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Website' })).toBeVisible()
   })
 })
 
