@@ -1,0 +1,16 @@
+[Unit]
+Description=Hexbot daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart="/home/me/.hexbot/runtime/native-executable" serve
+Environment=HEXBOT_HOME="/home/me/.hexbot"
+Environment=HEXBOT_SUPERVISOR=service
+Environment=PATH="/home/me/.hexbot/bin:/usr/bin"
+Restart=always
+StandardOutput=append:/home/me/.hexbot/logs/service.log
+StandardError=append:/home/me/.hexbot/logs/service-error.log
+
+[Install]
+WantedBy=default.target

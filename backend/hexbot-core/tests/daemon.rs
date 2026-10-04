@@ -47,6 +47,26 @@ async fn listener_restart_single_owner_and_graceful_shutdown() {
     let mut child = start(home.path());
     let mut output = BufReader::new(child.stdout.take().unwrap());
     let port = ready(&mut output).await;
+    let service_root = tempfile::tempdir().unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_hexbot"))
+        .args(["status", "--json"])
+        .env("HEXBOT_HOME", home.path())
+        .env("HEXBOT_SERVICE_ROOT", service_root.path())
+        .env("HEXBOT_SERVICE_NO_LOAD", "1")
+        .env_remove("HEXBOT_PORT")
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["running"], true);
+    assert_eq!(status["version"], hexbot_core::version());
+    assert_eq!(status["port"], port);
+    assert_eq!(status["service"]["installed"], false);
     let token = auth::local_token(home.path()).unwrap();
     let (mut socket, _) = connect_async(format!("ws://127.0.0.1:{port}/api/ws?token={token}"))
         .await

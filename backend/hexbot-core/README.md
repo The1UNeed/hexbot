@@ -45,6 +45,33 @@ PDF attachments use Poppler's `pdftoppm`, as in the former daemon, to render
 selected pages for the model. Install Poppler on standalone daemon hosts.
 The native CLI implements Hexbot commands. Legacy core administration commands are not part of the native CLI.
 
+## Standalone installation
+
+From an extracted native runtime, run `./hexbot setup --activate` to verify and
+copy the bundle into `$HEXBOT_HOME/runtime/native`, select it, install managed
+Python 3.11 and voice tools, and write `~/.local/bin/hexbot`. The wrapper preserves
+the selected home and follows native updates. `--no-code-tools` skips Python and
+voice provisioning. `--json` emits one progress object per line, including errors.
+The shared tool pins and voice requirements live in `assets/`; the app uses the
+same files and receipts. An existing installation can run `hexbot setup` to repair
+its code tools and CLI wrapper without replacing the daemon bundle.
+
+`hexbot service install` installs and starts a per-user launchd or systemd service.
+Use `uninstall`, `start`, `stop`, or `restart` to manage it, `status --json` to inspect
+it, and `logs [-f]` to read its logs. Linux installation also tries to enable
+lingering so the daemon can stay up after logout. `HEXBOT_SERVICE_ROOT` replaces
+`HOME` for service file locations; `HEXBOT_SERVICE_NO_LOAD=1` skips service-manager
+commands. Tests use both with temporary directories.
+
+`hexbot status [--json]` reports the daemon, LAN addresses, Tailscale IPv4, Hex
+Connect hostname, service, and sandbox. It works before the first daemon start.
+Pairing remains available through `hexbot pair`. `hexbot lan on|off` turns LAN
+access on or off with or without a running daemon; the Headless installer turns it
+on for a first install or a change into Headless. Repair keeps the LAN setting.
+LAN and Tailscale pairing addresses are shown only when LAN is enabled.
+On macOS the service uses the `gui` launchd domain and falls back to `user`, so
+it also installs over SSH when nobody is signed in at the screen.
+
 ## Storage and compatibility
 
 - `hexbot.db` keeps schema v12, IDs, ownership, rooms, sections, and settings.

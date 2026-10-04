@@ -297,7 +297,8 @@ fn ipv4_interfaces(interfaces: Vec<if_addrs::Interface>) -> BTreeSet<String> {
 }
 
 pub fn network(home: &Path) -> Result<Value> {
-    let enabled = get(home)?["lan_enabled"].as_bool().unwrap_or(false);
+    let enabled =
+        home.join("hexbot.db").is_file() && get(home)?["lan_enabled"].as_bool().unwrap_or(false);
     let state: Value = fs::read(home.join("serve-state.json"))
         .ok()
         .and_then(|s| serde_json::from_slice(&s).ok())

@@ -37,37 +37,62 @@ export async function installService(): Promise<void> {
   } else throw new Error(`Services are unsupported on ${process.platform}`)
 }
 
-export async function uninstallService(): Promise<void> {
-  const file = servicePath()
-  if (process.platform === 'darwin') {
-    try {
-      await exec('launchctl', ['bootout', `gui/${process.getuid!()}`, file])
-    } catch {
+const launchdDomains = (): string[] => [`gui/${process.getuid!()}`, `user/${process.getuid!()}`]
+
+export async function uninstallService(
+  file = servicePath(), targetPlatform = process.platform,
+  run: (command: string, args: string[]) => Promise<unknown> = exec
+): Promise<void> {
+  if (targetPlatform === 'darwin') {
+    let stopped = false
+    for (const domain of launchdDomains()) {
       try {
-        await exec('launchctl', ['unload', '-w', file])
+        await run('launchctl', ['bootout', domain, file])
+        stopped = true
       } catch {}
     }
-  } else if (process.platform === 'linux') {
+    if (!stopped) {
+      try { await run('launchctl', ['unload', '-w', file]) } catch {}
+    }
+  } else if (targetPlatform === 'linux') {
     try {
-      await exec('systemctl', ['--user', 'disable', '--now', 'hexbot'])
+      await run('systemctl', ['--user', 'disable', '--now', 'hexbot'])
     } catch {}
-    await exec('systemctl', ['--user', 'daemon-reload'])
+    await run('systemctl', ['--user', 'daemon-reload'])
   }
   await rm(file, { force: true })
 }
 
-export async function serviceStatus(): Promise<{ installed: boolean; running: boolean }> {
-  try {
-    if (process.platform === 'darwin')
-      await exec('launchctl', ['print', `gui/${process.getuid!()}/app.hexbot.daemon`])
-    else if (process.platform === 'linux')
-      await exec('systemctl', ['--user', 'is-active', 'hexbot'])
-    else return { installed: false, running: false }
-    return { installed: true, running: true }
-  } catch {
-    const { existsSync } = await import('node:fs')
-    return { installed: existsSync(servicePath()), running: false }
-  }
+export async function serviceStatus(
+  file = servicePath(), targetPlatform = process.platform,
+  run: (command: string, args: string[]) => Promise<unknown> = exec
+): Promise<{ installed: boolean; running: boolean }> {
+  if (targetPlatform === 'darwin') {
+    const content = await readFile(file, 'utf8').catch(() => '')
+    const homes = [...content.matchAll(/<key>HEXBOT_HOME<\/key>\s*<string>([^<]*)<\/string>/g)]
+    const owner = homes[0]?.[1]?.replaceAll('&quot;', '"').replaceAll('&apos;', "'")
+      .replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&')
+    if (homes.length !== 1 || owner !== hexbotHome()) return { installed: false, running: false }
+    for (const domain of launchdDomains()) {
+      try {
+        const output = await run('launchctl', ['print', `${domain}/app.hexbot.daemon`]) as { stdout?: string }
+        if (output?.stdout?.split('\n').some(line => line.trim() === 'state = running'))
+          return { installed: true, running: true }
+      } catch {}
+    }
+  } else if (targetPlatform === 'linux') {
+    const content = await readFile(file, 'utf8').catch(() => '')
+    const homes = [...content.matchAll(/^Environment=HEXBOT_HOME=(.*)$/gm)]
+    const value = homes[0]?.[1]?.match(/^"((?:[^"\\%\r\n]|\\[\\"]|%%)*)"$/)?.[1]
+    const owner = value?.replace(/\\([\\"])|%%/g, (_match, escaped: string | undefined) => escaped ?? '%')
+    if (homes.length !== 1 || owner !== hexbotHome()) return { installed: false, running: false }
+    try {
+      await run('systemctl', ['--user', 'is-active', 'hexbot'])
+      return { installed: true, running: true }
+    } catch {}
+  } else return { installed: false, running: false }
+  const { existsSync } = await import('node:fs')
+  return { installed: existsSync(file), running: false }
 }
 
 // The Python runtime from earlier versions is unused once no service points at

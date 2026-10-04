@@ -1,3 +1,6 @@
+import percentFixture from '../../../../backend/hexbot-core/tests/fixtures/daemon-percent.service?raw'
+import plistFixture from '../../../../backend/hexbot-core/tests/fixtures/daemon.plist?raw'
+import unitFixture from '../../../../backend/hexbot-core/tests/fixtures/daemon.service?raw'
 import { describe, expect, it } from 'vitest'
 import { launchdPlist, systemdUnit } from './service-files'
 
@@ -8,6 +11,14 @@ const options = {
   logDir: '/home/me/.hexbot/logs'
 }
 describe('service files', () => {
+  it('matches the daemon fixtures byte for byte', () => {
+    expect(launchdPlist(options)).toBe(plistFixture)
+    expect(systemdUnit(options)).toBe(unitFixture)
+  })
+  it('escapes systemd specifiers in every path', () => {
+    const percent = Object.fromEntries(Object.entries(options).map(([key, value]) => [key, value.replaceAll('/home/me/', '/home/me%n/')])) as typeof options
+    expect(systemdUnit(percent)).toBe(percentFixture)
+  })
   it('renders launchd configuration', () => {
     expect(launchdPlist(options)).toMatchInlineSnapshot(`
 "<?xml version="1.0" encoding="UTF-8"?>

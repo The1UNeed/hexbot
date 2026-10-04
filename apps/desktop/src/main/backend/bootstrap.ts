@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process'
 import { app } from 'electron'
 
 import { migrateLegacyService } from '../service'
-import voiceRequirements from './edge-tts.requirements.txt?raw'
+import voiceRequirements from '../../../../../backend/hexbot-core/assets/edge-tts.requirements.txt?raw'
 import { lockedDaemonPid } from './manager'
 import { downloadTool, installTool } from './tools'
 

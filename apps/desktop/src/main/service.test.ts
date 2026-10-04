@@ -2,7 +2,8 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
+import { hexbotHome } from './backend/paths'
 import { migrateLegacyService } from './service'
 import { launchdPlist, systemdUnit } from './service-files'
 
@@ -65,4 +66,99 @@ it('a failed service restart restores the old definition', async () => {
     })).rejects.toThrow('start failed')
     expect(await readFile(file, 'utf8')).toBe(old)
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it('finds an SSH-installed launchd service in the user domain', async () => {
+  const { serviceStatus } = await import('./service')
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-launchd-status-'))
+  const file = join(root, 'daemon.plist')
+  const calls: string[][] = []
+  try {
+    await writeFile(file, launchdPlist({ home: hexbotHome(), executable: '/fixture/hexbot', path: '/usr/bin', logDir: '/fixture/logs' }))
+    const status = await serviceStatus(file, 'darwin', async (command, args) => {
+      calls.push([command, ...args])
+      if (args[1]?.startsWith('gui/')) throw new Error('No GUI session')
+      return { stdout: '\tstate = running\n' }
+    })
+    expect(status).toEqual({ installed: true, running: true })
+    expect(calls).toEqual([
+      ['launchctl', 'print', `gui/${process.getuid!()}/app.hexbot.daemon`],
+      ['launchctl', 'print', `user/${process.getuid!()}/app.hexbot.daemon`]
+    ])
+    expect(await serviceStatus(file, 'darwin', async () => { throw new Error('Stopped') }))
+      .toEqual({ installed: true, running: false })
+    for (const stdout of ['state = waiting', 'state = not running', 'last state = running', '']) {
+      expect(await serviceStatus(file, 'darwin', async () => ({ stdout })))
+        .toEqual({ installed: true, running: false })
+    }
+    await rm(file)
+    expect(await serviceStatus(file, 'darwin', async () => { throw new Error('Missing') }))
+      .toEqual({ installed: false, running: false })
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it('unloads both launchd domains before removing the service file', async () => {
+  const { uninstallService } = await import('./service')
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-launchd-uninstall-'))
+  const file = join(root, 'daemon.plist')
+  try {
+    for (const loaded of ['gui', 'user', 'neither']) {
+      await writeFile(file, 'service')
+      const calls: string[][] = []
+      await uninstallService(file, 'darwin', async (command, args) => {
+        expect(existsSync(file)).toBe(true)
+        calls.push([command, ...args])
+        if (args[0] === 'bootout' && !args[1]?.startsWith(`${loaded}/`)) throw new Error('Not loaded')
+      })
+      expect(calls.slice(0, 2)).toEqual([
+        ['launchctl', 'bootout', `gui/${process.getuid!()}`, file],
+        ['launchctl', 'bootout', `user/${process.getuid!()}`, file]
+      ])
+      expect(calls).toHaveLength(loaded === 'neither' ? 3 : 2)
+      if (loaded === 'neither') expect(calls[2]).toEqual(['launchctl', 'unload', '-w', file])
+      expect(existsSync(file)).toBe(false)
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it.each(['gui', 'user'])('ignores a loaded %s service belonging to another home', async domain => {
+  const { serviceStatus } = await import('./service')
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-foreign-service-'))
+  const file = join(root, 'daemon.plist')
+  try {
+    await writeFile(file, launchdPlist({ home: root, executable: join(root, 'hexbot'), path: '/usr/bin', logDir: root }))
+    expect(await serviceStatus(file, 'darwin', async (_command, args) => {
+      if (!args[1]?.startsWith(`${domain}/`)) throw new Error('not loaded')
+    })).toEqual({ installed: false, running: false })
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it('only reports the Linux service for this home, decoding systemd escapes', async () => {
+  const { serviceStatus } = await import('./service')
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-systemd-status-'))
+  const file = join(root, 'hexbot.service')
+  const home = join(root, 'home %n "quoted" \\ path')
+  const run = vi.fn(async () => undefined)
+  vi.stubEnv('HEXBOT_HOME', home)
+  const unit = systemdUnit({ home, executable: join(home, 'hexbot'), path: '/usr/bin', logDir: home })
+  try {
+    for (const content of ['', unit.replace('HEXBOT_HOME=', 'OTHER_HOME='),
+      systemdUnit({ home: root, executable: '/other/hexbot', path: '/usr/bin', logDir: root }),
+      unit + `Environment=HEXBOT_HOME="${root}"\n`,
+      unit + `Environment=HEXBOT_HOME=${root}\n`]) {
+      await writeFile(file, content)
+      expect(await serviceStatus(file, 'linux', run)).toEqual({ installed: false, running: false })
+    }
+    await rm(file)
+    expect(await serviceStatus(file, 'linux', run)).toEqual({ installed: false, running: false })
+    expect(run).not.toHaveBeenCalled()
+    await writeFile(file, unit)
+    expect(await serviceStatus(file, 'linux', run)).toEqual({ installed: true, running: true })
+    expect(run).toHaveBeenCalledWith('systemctl', ['--user', 'is-active', 'hexbot'])
+    expect(await serviceStatus(file, 'linux', async () => { throw new Error('Stopped') }))
+      .toEqual({ installed: true, running: false })
+  } finally {
+    vi.unstubAllEnvs()
+    await rm(root, { recursive: true, force: true })
+  }
 })
