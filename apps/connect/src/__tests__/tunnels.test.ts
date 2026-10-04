@@ -68,7 +68,27 @@ describe("Cloudflare tunnel API", () => {
     expect(calls.some(call => call.includes("DELETE") && call.includes("/cfd_tunnel/"))).toBe(false);
   });
   it("does not swallow a failure while the tunnel is still live", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => init.method === "DELETE" ? Response.json({ success: false }, { status: 502 }) : ok({ name: "live", created_at: "2026-09-01", deleted_at: null })));
-    await expect(provider().delete("tunnel", "slug.tunnels.test")).rejects.toThrow();
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      if (url.includes("/dns_records")) return init.method === "GET" ? ok([]) : ok({});
+      return init.method === "DELETE" ? Response.json({ success: false }, { status: 502 }) : ok({ name: "live", created_at: "2026-09-01", deleted_at: null });
+    }));
+    await expect(provider().delete("tunnel", "slug.tunnels.test")).rejects.toThrow("Cloudflare request failed (502)");
+  });
+  it("removes a live tunnel's hostname first, then its connections, then the tunnel", async () => {
+    // Cloudflare refuses to delete a tunnel that still has connections.
+    const calls: string[] = [];
+    let connected = true, deleted = false;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      const path = new URL(url).pathname.replace(/^.*\/client\/v4/, "");
+      calls.push(`${init.method} ${path}`);
+      if (path.includes("/dns_records")) return init.method === "GET" ? ok([{ id: "record" }]) : ok({});
+      if (path.endsWith("/connections")) { connected = false; return ok(null); }
+      if (init.method === "DELETE") { if (connected) return Response.json({ success: false, errors: [{ message: "tunnel has active connections" }] }, { status: 400 }); deleted = true; return ok(null); }
+      return ok({ name: "live", created_at: "2026-09-01", deleted_at: deleted ? "2026-10-04" : null });
+    }));
+    await provider().delete("tunnel", "slug.tunnels.test");
+    const deletes = calls.filter(call => call.startsWith("DELETE"));
+    expect(deletes).toEqual(["DELETE /zones/zone/dns_records/record", "DELETE /accounts/account/cfd_tunnel/tunnel/connections", "DELETE /accounts/account/cfd_tunnel/tunnel"]);
+    expect(deleted).toBe(true);
   });
 });

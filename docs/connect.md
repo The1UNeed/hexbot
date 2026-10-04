@@ -225,8 +225,10 @@ public URL is cleared, and the login button disappears at once. The daemon
 also tells Connect with `DELETE /api/daemons/{id}`.
 
 Revoke on the dashboard is the reverse direction. Connect marks the row
-revoked first, blocking repairs and grants, then deletes its tunnel and the
-hostname's DNS records. It clears `tunnel_id` only after both succeed, with a
+revoked first, blocking repairs and grants, then deletes the hostname's DNS
+records, so the address stops answering at once, then the tunnel's
+connections and the tunnel (Cloudflare refuses to delete a tunnel that still
+has connections). It clears `tunnel_id` only after both succeed, with a
 compare-and-set, and repeats if the ID changed. A cleanup failure returns 502
 and leaves the revoked row with its tunnel ID. The dashboard shows "Removing…"
 and a Retry action; the app's daemon list excludes it. Both the owner and the

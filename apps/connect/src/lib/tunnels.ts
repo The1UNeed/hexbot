@@ -67,10 +67,11 @@ export class CloudflareTunnelProvider implements TunnelProvider {
   /** Fetched when the daemon collects its registration, so no tunnel token is stored here. */
   connectorToken(tunnelId: string) { return this.request<string>(`/accounts/${this.accountId}/cfd_tunnel/${tunnelId}/token`, { method: "GET" }); }
   async delete(tunnelId: string, hostname?: string) {
-    await this.deleteTunnel(tunnelId);
+    // DNS first: the hostname stops answering even if the tunnel delete fails and needs a retry.
     const target = `${tunnelId}.cfargotunnel.com`;
     const records = await this.request<Array<{ id: string }>>(`/zones/${this.zoneId}/dns_records?type=CNAME&${hostname ? `name=${encodeURIComponent(hostname)}` : `content=${encodeURIComponent(target)}`}`, { method: "GET" });
     for (const record of records) await this.deleteRecord(record.id);
+    await this.deleteTunnel(tunnelId);
   }
   async inspect(tunnelId: string) {
     try {
@@ -97,6 +98,9 @@ export class CloudflareTunnelProvider implements TunnelProvider {
   async deleteTunnel(tunnelId: string) {
     const tunnel = await this.inspect(tunnelId);
     if (!tunnel || tunnel.deletedAt) return;
+    // Cloudflare refuses to delete a tunnel with active connections, so drop them first.
+    try { await this.request(`/accounts/${this.accountId}/cfd_tunnel/${tunnelId}/connections`, { method: "DELETE" }); }
+    catch (error) { if (!(error instanceof CloudflareError && error.status === 404)) throw error; }
     try { await this.request(`/accounts/${this.accountId}/cfd_tunnel/${tunnelId}`, { method: "DELETE" }); }
     catch (error) {
       // Another cleanup may have deleted it after our read. Do not swallow a live-tunnel failure.

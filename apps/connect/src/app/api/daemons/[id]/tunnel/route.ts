@@ -43,7 +43,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (target !== previous) await tunnels.deleteTunnel(previous).catch(() => undefined);
     const after = await store.getDaemon(id);
     if (!after || after.revokedAt) {
-      await tunnels.delete(target, hostname);
+      // The daemon must learn it was revoked even if this cleanup fails; revoke's own retry covers the rest.
+      await tunnels.delete(target, hostname).catch(() => undefined);
       return revoked();
     }
     if (after.tunnelId !== target) {
