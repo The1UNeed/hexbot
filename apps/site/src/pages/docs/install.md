@@ -10,7 +10,9 @@ Hexbot has two parts: the **daemon**, which runs your bots, rooms, and memory, a
 - **Client** (`Hexbot Client`): the app alone. Install it on any other computer and connect it to a daemon over LAN pairing, Tailscale, or Hex Connect. It never installs Python or a daemon.
 - **Headless**: the daemon alone, as a background service, with the `hexbot` command. Install it on a server or any computer you reach over SSH, and use it from another computer with Client or Full. See [Headless](#headless).
 
-Full and Client install side by side and update independently.
+Full and Client install side by side and update independently. One daemon is enough for every device that shares the same bots, and a phone or tablet can use the daemon's browser UI without installing anything.
+
+Options and tracks are separate choices: Full, Client, and Headless describe what is installed; Stable and Nightly describe which builds you receive. Stable and Nightly share the same `~/.hexbot` data, so back it up before trying a nightly.
 
 Hexbot runs on macOS 12 or later (Apple Silicon or Intel) and on x86-64 Linux with glibc 2.35 or later, such as Ubuntu 22.04 or Debian 12. If the daemon cannot run on your system, the installer or first launch says so.
 
@@ -75,16 +77,22 @@ The Full and Client packages are still on the [download page](/download/#all) un
 - AppImage for a portable Linux app
 - deb for Debian, Ubuntu, and related distributions
 
+Windows and Linux ARM packages are not provided.
+
 ## First launch
 
 Full asks where Hexbot should run:
 
-1. **Run on this machine.** Hexbot installs its daemon under `~/.hexbot`. You can let it start at login and continue running after the desktop window closes. The app includes the daemon, the agent runtime, and the search tools bots use. First launch downloads Python 3.11 for code tools and the voice tools, each checked against a pinned checksum. Hexbot keeps all of these inside `~/.hexbot`; it does not replace system copies.
-2. **Connect to a daemon.** Use a pairing link or enter the daemon address and one-time code.
+1. **Run on this machine.** Hexbot installs its daemon under `~/.hexbot`. The full package includes the native Rust daemon, Node, the Pi agent runtime, the web UI, bundled skills, and search tools. First launch provisions Python 3.11 for code tools and voice dependencies through pinned, checksum-verified downloads. You do not need to install Rust or Node yourself, and Hexbot does not replace system copies.
+2. **Connect to a daemon.** Use a pairing link, enter the daemon address and one-time code, or sign in with Hex Connect to choose a registered daemon.
 
 Client opens straight on the connect screen.
 
-Setup then asks for a model provider, your default models, and the tools that need their own account: web search, cloud browser, image and video generation, and premium voice. Pick a provider for a tool and paste its key, or skip it. A bot cannot use a tool that is not set up; add it later under a bot's Connectors.
+Setup then asks about you (your name, your work, and how bots should speak to you), then for a model provider, your default models, and the tools that need their own account: web search, cloud browser, image and video generation, and premium voice. Pick a provider for a tool and paste its key, or skip it. A bot cannot use a tool that is not set up; add it later under a bot's Connectors.
+
+Setup finishes by creating your first bot and opening its first section. [Quick start](/docs/quick-start/) walks through each step. Model providers and optional tool services bill your own accounts.
+
+The daemon must keep running and the computer must stay awake for remote devices and scheduled work. Quitting the app stops an app-owned daemon unless "Start the daemon at login" is on in Settings, Network. For a daemon without the app, install [Headless](#headless). For a second device, turn on **Allow other devices** in Settings, Network and follow [Pairing and LAN](/docs/pairing-and-lan/).
 
 ## Headless
 
@@ -150,14 +158,14 @@ The Hexbot Installer and the direct downloads are .dmg files. Open the installer
 The installer installs the AppImage for you. To run a downloaded AppImage yourself, make it executable first:
 
 ```sh
-chmod +x Hexbot-0.1.5-alpha.1-linux-x86_64.AppImage
-./Hexbot-0.1.5-alpha.1-linux-x86_64.AppImage
+chmod +x "./Hexbot-<version>-linux-x86_64.AppImage"
+"./Hexbot-<version>-linux-x86_64.AppImage"
 ```
 
 Install a deb package with your usual package manager:
 
 ```sh
-sudo apt install ./Hexbot-0.1.5-alpha.1-linux-amd64.deb
+sudo apt install "./Hexbot-<version>-linux-amd64.deb"
 ```
 
 The deb package depends on `bubblewrap`; with the AppImage or Headless, install it yourself (`sudo apt install bubblewrap`). Hexbot uses it to keep shell commands, Python code, and scheduled scripts inside the workspace and away from your credentials. Without it, Manual and Auto ask before every shell command and code run, scheduled scripts run only in Bypass, and Settings, Approvals shows a notice. Restart the daemon after installing it (`hexbot service restart` on Headless). See [Approvals](/docs/approvals/).
@@ -183,13 +191,23 @@ Run the `bwrap` command above again; it should print nothing and exit 0. Then re
 
 ## Data and updates
 
-Hexbot stores configuration, bots, memory, and its managed runtime in `~/.hexbot`. Back up that directory before moving a daemon to another machine. Client keeps only window state and pairing tokens there. Uninstalling keeps it unless you ask the installer to delete it.
+Hexbot stores configuration, bots, conversations, memory, and its managed runtime in `~/.hexbot`. Client keeps only window state and pairing tokens there. Uninstalling keeps it unless you ask the installer to delete it. The default workspace for bot file work is `~/Hexbot`, outside the daemon's private data directory; choose another project folder in Bot settings, Tools.
 
-The desktop app checks `updates.hexbot.app` for signed updates. The update server does not receive your conversations, provider keys, or pairing codes.
+Stop the daemon before copying its whole data directory for a backup or move. Back up project files separately. Client-only installs keep window state and pairing tokens locally; the connected daemon holds the bots and history.
+
+The app checks `updates.hexbot.app` for updates and waits for your confirmation before downloading and installing one. See [Updates](/docs/updates/) for tracks and remote daemon updates.
+
+## If setup fails
+
+- Check that the computer meets the requirements above and can download the managed dependencies.
+- On Linux, check the sandbox notice in Settings, Approvals after installing bubblewrap.
+- If a provider cannot connect, check its error and credentials in Settings, Providers. Tool connectors have their own setup and test actions.
+- If another device cannot connect, confirm the daemon is running, "Allow other devices" is on, and the pairing code has not expired.
+- If Hexbot says another daemon owns the home directory, stop that daemon before starting a replacement. Two daemons cannot use one data directory at once.
 
 ## Development app
 
 From a source checkout, run `pnpm dev --desktop` to launch
 `Hexbot (dev)` with its blue Dev icon. On macOS it has its own app identity in
 the Dock and app switcher, so you can distinguish it from Stable and Nightly.
-The source app keeps its data in the checkout's `.hexbot` directory.
+The source app keeps its data in the checkout's `.hexbot` directory. [Run from source](/docs/development/) has the prerequisites and commands.

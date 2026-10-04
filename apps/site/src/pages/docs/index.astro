@@ -1,29 +1,26 @@
 ---
 import Base from '../../layouts/Base.astro'
-
-const docs = [
-  ['Install', 'Install Full, Client, or Headless, from the installer or a terminal.', '/docs/install/'],
-  ['Pairing and LAN', 'Connect another computer on your local network.', '/docs/pairing-and-lan/'],
-  ['Tailscale', 'Reach your daemon away from home without opening a public port.', '/docs/tailscale/'],
-  ['Providers and billing', 'Add model credentials and understand who charges you.', '/docs/providers/'],
-  ['Approvals', 'Choose when Hexbot asks before a bot acts.', '/docs/approvals/'],
-  ['Memory', 'Each bot’s soul and memory, and the About you text they share.', '/docs/memory/'],
-  ['Rooms', 'Talk with several bots and people in one place.', '/docs/rooms/'],
-  ['Dreaming', 'Turn recent conversations into useful bot memory.', '/docs/dreaming/'],
-  ['Hex Connect', 'Reach your daemon outside its local network.', '/docs/connect/'],
-  ['Multi-user', 'Share one daemon while keeping users and budgets separate.', '/docs/multi-user/'],
-  ['Updates', 'Choose a release channel and control crash reports.', '/docs/updates/'],
-  ['CLI', 'Run and manage Hexbot from a terminal.', '/docs/cli/'],
-]
+import { docGroups } from '../../lib/docs'
 ---
-<Base title="Documentation" description="Install, pair, and run Hexbot.">
+<Base title="Documentation" description="Install Hexbot, create bots, connect tools, and run a self-hosted daemon.">
   <section class="mx-auto max-w-[1120px] px-5 py-10 sm:px-8 lg:py-16">
     <h1 class="display text-[clamp(2.75rem,7vw,4.25rem)]">Documentation</h1>
-    <p class="lede mt-4">Start with Install, then pair a second device. Everything else is here when you need it.</p>
-    <ul class="mt-10 grid gap-x-8 border-t border-line sm:grid-cols-2 lg:grid-cols-3">
-      {docs.map(([title, summary, href]) => (
-        <li><a class="group flex h-full flex-col gap-1.5 border-b border-line py-5 pr-4" href={href}><span class="text-[1.15rem] font-semibold group-hover:text-accent">{title}</span><span class="text-mute">{summary}</span></a></li>
-      ))}
-    </ul>
+    <p class="lede mt-4">Run bots on your own computer, give each one a model and memory, and bring them together in rooms.</p>
+    <p class="mt-4 max-w-2xl text-mute">Start with <a href="/docs/install/">Install</a> and <a href="/docs/quick-start/">Quick start</a>. These guides follow the current repository. If a control is missing in your build, check <a href="/docs/updates/">Updates</a>.</p>
+    <div class="mt-8 max-w-3xl rounded-[20px] bg-wash p-5 sm:p-6">
+      <h2 class="font-semibold">Recent changes</h2>
+      <p class="mt-2">The full package now includes a native Rust daemon with persistent Pi conversations. Bots can <a href="/docs/rooms/#bots-working-together">ask teammates for help privately</a>, name their sections, and work inside the <a href="/docs/approvals/">Auto sandbox</a>. <a href="/docs/connect/">Hex Connect</a> signs in apps and browsers, and <a href="/docs/updates/">app updates</a> wait for your confirmation before downloading.</p>
+    </div>
+    {docGroups.map(group => (
+      <section class="mt-10" aria-label={group.title}>
+        <h2 class="display-sm text-2xl">{group.title}</h2>
+        <ul class="mt-4 grid gap-x-8 border-t border-line sm:grid-cols-2 lg:grid-cols-3">
+          {group.pages.map(({ title, summary, href }) => (
+            <li><a class="group flex h-full flex-col gap-1.5 border-b border-line py-5 pr-4" href={href}><span class="text-[1.15rem] font-semibold group-hover:text-accent">{title}</span><span class="text-mute">{summary}</span></a></li>
+          ))}
+        </ul>
+      </section>
+    ))}
+    <p class="mt-10 text-mute">Contributing? Read <a href="/docs/development/">Run from source</a> and the <a href="https://github.com/The1UNeed/hexbot/tree/main/docs">repository guides</a> for the API, testing, and deployment details.</p>
   </section>
 </Base>

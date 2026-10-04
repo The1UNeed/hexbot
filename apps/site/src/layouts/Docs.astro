@@ -1,21 +1,9 @@
 ---
 import Base from './Base.astro'
+import { docGroups } from '../lib/docs'
 
 const { frontmatter } = Astro.props
-const docs = [
-  ['Install', '/docs/install/'],
-  ['Pairing and LAN', '/docs/pairing-and-lan/'],
-  ['Tailscale', '/docs/tailscale/'],
-  ['Providers and billing', '/docs/providers/'],
-  ['Approvals', '/docs/approvals/'],
-  ['Memory', '/docs/memory/'],
-  ['Rooms', '/docs/rooms/'],
-  ['Dreaming', '/docs/dreaming/'],
-  ['Hex Connect', '/docs/connect/'],
-  ['Multi-user', '/docs/multi-user/'],
-  ['Updates', '/docs/updates/'],
-  ['CLI', '/docs/cli/'],
-]
+const docs = docGroups.flatMap(group => group.pages)
 const current = Astro.url.pathname
 ---
 <Base title={frontmatter.title} description={frontmatter.description}>
@@ -23,8 +11,8 @@ const current = Astro.url.pathname
     <aside class="min-w-0">
       <a class="text-[15px] font-semibold" href="/docs/">Documentation</a>
       <nav aria-label="Documentation" class="-mx-5 mt-3 flex gap-4 overflow-x-auto px-5 pb-2 text-[15px] whitespace-nowrap sm:-mx-8 sm:px-8 lg:mx-0 lg:mt-4 lg:flex-col lg:gap-2 lg:overflow-visible lg:px-0 lg:pb-0 lg:whitespace-normal">
-        {docs.map(([label, href]) => (
-          <a class:list={['py-0.5 hover:text-accent', current === href ? 'font-semibold' : 'text-mute']} aria-current={current === href ? 'page' : undefined} href={href}>{label}</a>
+        {docs.map(({ title, href }) => (
+          <a class:list={['py-0.5 hover:text-accent', current === href ? 'font-semibold' : 'text-mute']} aria-current={current === href ? 'page' : undefined} href={href}>{title}</a>
         ))}
       </nav>
     </aside>
