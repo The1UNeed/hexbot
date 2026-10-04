@@ -12,15 +12,27 @@ page is the procedure and the one-time setup. Modelled on T3 Code's
   `apps/desktop/package.json` (a manual stable run takes the version from
   that file and refuses one that is already tagged), computes the nightly
   version, and stops a scheduled nightly when `main` has not moved.
-- `check` runs `ci.yml`: Rust/Pi, service handoff, web, desktop, site, Connect, and the
-  desktop script tests. Nothing is built until it passes.
+- `check` runs `ci.yml`: Rust/Pi, Rust installer tests and clippy on macOS and
+  Linux, POSIX bootstrap syntax and ShellCheck, service handoff, web, desktop,
+  site, Connect, and the desktop script tests. Windowed installer typecheck
+  and tests run when its package exists. Nothing is built until CI passes.
 - `build` makes six packages in parallel: full and client for macOS arm64,
   macOS x64, and Linux x64, signed and notarized when the Apple secrets are
   present.
+- `installer` builds `hexbot-install` for the same three targets. When
+  `apps/installer/package.json` exists it also builds Hexbot Installer with
+  Tauri as a DMG or AppImage. macOS terminal binaries use the same Developer
+  ID certificate as the app and are notarized when the Apple API secrets
+  exist. Tauri uses the same secrets; builds without a certificate are ad-hoc
+  signed. Linux installs WebKitGTK 4.1 and the other Tauri build dependencies.
 - `publish` builds the update feed, uploads it to `updates.hexbot.app` when
   the R2 secrets are present, reads the feed back through the public URL to
   confirm it announces the new version, then creates the GitHub release with
-  every DMG, ZIP, AppImage, deb, and blockmap. Stable notes come from
+  every DMG, ZIP, AppImage, deb, blockmap and installer. It also builds
+  `install/<channel>.json` and `.txt` from the collected update tree, verifies
+  the payloads, publishes versioned installers under `install/<version>/`,
+  and rewrites the channel files with `no-cache`. The public install JSON
+  must announce the release version too. Stable notes come from
   `docs/releases/<version>.md`, or GitHub generates them from the commits
   since the previous stable release. A nightly also prepends itself to
   `nightlies.json` in the bucket, which hexbot.app lists as earlier builds;
@@ -163,9 +175,11 @@ node scripts/desktop/dist.mjs --mac --dir
      `v0.x.y-alpha.N` tag on the commit it built.
    - Or tag and push: `git tag v0.x.y-alpha.N && git push origin v0.x.y-alpha.N`.
 
-7. Watch the run: preflight, check, six builds, publish, finalize. Confirm
-   the GitHub release lists 6 DMGs, 4 ZIPs, 2 AppImages, 2 debs, and that
-   `finalize` pushed a commit to `main`.
+7. Watch the run: preflight, check, six package builds, three installer builds,
+   publish, finalize. Confirm the GitHub release lists 4 package DMGs, 4 ZIPs,
+   2 AppImages and 2 debs. It also lists three terminal installers and, once
+   the Tauri app exists, two installer DMGs and one installer AppImage.
+   Confirm `finalize` pushed a commit to `main`.
 8. The site rebuilds on its own from the `finalize` commit (`docs/deploy.md`).
    Publish the updated casks through the Homebrew tap.
 9. Smoke test (below).
@@ -199,8 +213,9 @@ such as `v0.0.0-test.1` would be a real stable release.
 
 Until these exist the `publish` job skips the upload and the release is only
 on GitHub; installed apps then find no update. The bucket layout is in
-`docs/channels.md`. Nothing in the bucket is ever rewritten except the
-`.yml` feed files, so a bad release is fixed by cutting the next one.
+`docs/channels.md`. Versioned packages are immutable. The `.yml` feeds,
+`nightlies.json`, and `install/<track>.json` and `.txt` are rewritten, so a
+bad release is fixed by cutting the next one.
 
 ### Apple signing and notarization
 
@@ -222,6 +237,14 @@ gh secret set APPLE_API_ISSUER
 ```
 
 Linux packages are not signed.
+
+The installers need no additional secrets or one-time setup. The installer
+job imports `CSC_LINK` into a temporary keychain and derives the Developer ID
+identity from it. It signs the CLI binary and submits it to notarization in
+a ZIP when all Apple API secrets are present. The raw CLI binary cannot have
+a stapled ticket. Tauri receives the same certificate and password, the
+derived signing identity, and the API key ID, issuer and `.p8` path through
+its environment variables. See [Tauri's macOS signing documentation](https://v2.tauri.app/distribute/sign/macos/).
 
 ### Optional
 

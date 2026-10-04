@@ -9,7 +9,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { nativeBuildEnvironment } from './native-build.mjs'
-import { productName } from './release-version.mjs'
+import { appId, productName } from './release-version.mjs'
 import { iconOptions, parseBuildArgs } from './build-config.mjs'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -26,14 +26,13 @@ if (channel === 'nightly' && !version.includes('-nightly.'))
   throw new Error(
     `A nightly build needs a nightly version, got ${version} (scripts/desktop/set-version.mjs)`
   )
-const appId = client ? 'app.hexbot.client' : 'app.hexbot.desktop'
 const name = productName(channel, version, client)
 const channelArgs = [
   `-c.productName=${name}`,
   // Also written into the packaged package.json so app.name (the About item,
   // the tray menu, notifications) shows the product name, not @hexbot/desktop.
   `-c.extraMetadata.productName=${name}`,
-  ...(channel === 'stable' ? [] : [`-c.appId=${appId}.${channel}`])
+  ...(channel === 'stable' ? [] : [`-c.appId=${appId(channel, client)}`])
 ]
 if (!builderArgs.some(arg => arg === '--mac' || arg === '--linux'))
   throw new Error(

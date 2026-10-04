@@ -60,6 +60,12 @@ export function productName(channel, version, client = false) {
   return version.startsWith('0.') ? `${base} [alpha]` : base
 }
 
+export function appId(channel, client = false) {
+  if (!['stable', 'nightly', 'dev'].includes(channel)) throw new Error(`Unknown channel "${channel}"`)
+  const base = client ? 'app.hexbot.client' : 'app.hexbot.desktop'
+  return channel === 'stable' ? base : `${base}.${channel}`
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2)
   const option = name => {

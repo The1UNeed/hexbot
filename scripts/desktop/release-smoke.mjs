@@ -6,7 +6,8 @@
 //
 // Covers: release-version.mjs for both channels, set-version.mjs, the
 // make-update-feed.mjs CLI for both editions and both channels sharing one
-// feed root, and finalize-release.mjs (website manifest and casks). Everything
+// feed root, make-install-manifest.mjs, and finalize-release.mjs (website
+// manifest and casks). Everything
 // happens in a temporary directory; the repository is not modified.
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
@@ -17,6 +18,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { finalizeRelease } from './finalize-release.mjs'
+import { MIN_INSTALLER } from './make-install-manifest.mjs'
 import { setVersion } from './set-version.mjs'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -156,6 +158,34 @@ try {
   await readFile(join(feedRoot, 'full/mac/arm64/latest-mac.yml'))
   await readFile(join(feedRoot, 'full/mac/arm64/nightly-mac.yml'))
   console.log('make-update-feed: full and client, stable and nightly, one tree')
+
+  for (const [channel, version] of [['stable', stable.version], ['nightly', nightly.version]]) {
+    for (const [target, app] of [
+      ['macos-aarch64', 'mac-arm64.dmg'], ['macos-x86_64', 'mac-x64.dmg'], ['linux-x86_64', 'linux-x86_64.AppImage']
+    ]) {
+      const native = join(feedRoot, 'daemon/native', version, target)
+      const install = join(feedRoot, 'install', version)
+      await mkdir(native, { recursive: true })
+      await mkdir(install, { recursive: true })
+      const name = `hexbot-native-${version}-${target}.tar.gz`
+      await writeFile(join(native, name), target)
+      await writeFile(join(native, 'manifest.json'), JSON.stringify({
+        version, target, format: 'tar.gz', size: target.length,
+        sha256: createHash('sha256').update(target).digest('hex'),
+        url: `https://updates.hexbot.app/daemon/native/${version}/${target}/${name}`
+      }))
+      await writeFile(join(install, `hexbot-install-${version}-${target}`), target)
+      await writeFile(join(install, `HexbotInstaller-${version}-${app}`), target)
+    }
+    await run(process.execPath, [join(scripts, 'make-install-manifest.mjs'), '--channel', channel, '--version', version, feedRoot])
+    const manifest = JSON.parse(await readFile(join(feedRoot, 'install', `${channel}.json`), 'utf8'))
+    assert.equal(manifest.version, version)
+    assert.equal(manifest.minInstaller, MIN_INSTALLER)
+    assert.equal(Object.keys(manifest.targets).length, 3)
+    for (const entry of Object.values(manifest.targets)) assert.equal(Object.keys(entry).length, 5)
+    assert.equal((await readFile(join(feedRoot, 'install', `${channel}.txt`), 'utf8')).trim().split('\n').length, 3)
+  }
+  console.log('make-install-manifest: every target and option, stable and nightly')
 
   // finalize: website manifest and casks (on a copy)
   const site = join(work, 'site')

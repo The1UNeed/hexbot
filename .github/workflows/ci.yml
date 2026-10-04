@@ -69,6 +69,33 @@ jobs:
           HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test runtime -- --ignored
           HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test runtime_recovery -- --ignored
 
+  rust-installer:
+    name: Rust installer (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: backend/hexbot-installer
+      - run: cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml
+      - run: cargo clippy --locked --manifest-path backend/hexbot-installer/Cargo.toml --all-targets -- -D warnings
+
+  install-shell:
+    name: POSIX installer bootstrap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
+      - run: shellcheck --shell=sh apps/site/public/install.sh
+      - run: sh -n apps/site/public/install.sh
+
   native-ui:
     name: Browser and Electron against Rust and Pi
     # xvfb and Playwright's system packages are Linux only.
@@ -131,6 +158,9 @@ jobs:
       - run: pnpm --filter ./apps/web run build
       - run: pnpm --filter ./apps/desktop run typecheck
       - run: pnpm --filter ./apps/desktop run test --run
+      - name: Windowed installer checks
+        if: hashFiles('apps/installer/package.json') != ''
+        run: pnpm --filter ./apps/installer run typecheck && pnpm --filter ./apps/installer run test --run
       - name: Prepare the native desktop compiler
         run: |
           rustup show active-toolchain
