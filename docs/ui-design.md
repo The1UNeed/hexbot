@@ -109,8 +109,7 @@ the roster slides in as a drawer.
 - Header: nothing but floating glass over the transcript, which scrolls
   under it. In the centre, a pill with the bot's face (status dot on it,
   bobbing while it works), its name, and the section title in muted text;
-  clicking it opens or closes the side panel, double-clicking renames the
-  section. Top right, round glass buttons for section actions (Rename,
+  clicking it opens or closes the side panel. Top right, round glass buttons for section actions (Rename,
   Archive, Delete) and, while the panel is closed, the panel toggle. The
   model is chosen in Bot settings, Model, not in the chat.
 - Transcript: a centred column capped at 52rem. Bot messages left-aligned

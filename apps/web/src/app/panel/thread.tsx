@@ -57,6 +57,11 @@ function ThreadMessage({ bot, message, name }: { bot?: Bot; message: Message; na
 
   const reply = message.role === 'assistant'
 
+  // Each message of the turn is its own bubble; the reply in progress streams in.
+  const bubbles = [...(reply ? (message.parts ?? []) : []), message.text].filter(text =>
+    text.trim()
+  )
+
   return (
     <>
       <article
@@ -87,17 +92,24 @@ function ThreadMessage({ bot, message, name }: { bot?: Bot; message: Message; na
           {reply && (message.toolCalls.length || !message.streaming) ? (
             <WorkStatus message={message} name={name} />
           ) : null}
-          {message.text ? (
+          {bubbles.length ? (
             <div
-              className={cn(
-                bubbleClass,
-                'text-[length:var(--text-secondary)]',
-                reply && 'bg-surface-3'
-              )}
+              className={cn('flex max-w-full flex-col gap-1', reply ? 'items-end' : 'items-start')}
             >
-              <div className="hex-prose">
-                <Markdown text={message.text} />
-              </div>
+              {bubbles.map((text, index) => (
+                <div
+                  className={cn(
+                    bubbleClass,
+                    'text-[length:var(--text-secondary)]',
+                    reply && 'bg-surface-3'
+                  )}
+                  key={index}
+                >
+                  <div className="hex-prose">
+                    <Markdown text={text} />
+                  </div>
+                </div>
+              ))}
             </div>
           ) : null}
           {reply ? <MemoryMarks message={message} /> : null}
@@ -233,7 +245,7 @@ export function ThreadPanel({ thread }: { thread: ThreadRef }): React.JSX.Elemen
   )
 
   return (
-    <div className="flex h-screen min-h-0 flex-col" data-testid="thread-panel">
+    <div className="flex h-full min-h-0 flex-col" data-testid="thread-panel">
       <header className="hex-drag flex h-11 shrink-0 items-center gap-2 px-3">
         <span className="flex shrink-0 items-center gap-1">
           <Avatar

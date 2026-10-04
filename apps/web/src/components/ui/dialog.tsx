@@ -40,7 +40,7 @@ export function Dialog({
         <BaseDialog.Popup
           aria-label={title ? undefined : label}
           className={cn(
-            'hex-dialog-in fixed top-1/2 left-1/2 z-50 flex max-h-[85vh] w-[min(36rem,92vw)] flex-col text-foreground outline-none',
+            'hex-dialog-in fixed top-1/2 left-1/2 z-50 -translate-x-1/2 -translate-y-1/2 flex max-h-[85vh] w-[min(36rem,92vw)] flex-col text-foreground outline-none',
             className
           )}
           // A keyboard user lands on the first control; a click or a route

@@ -92,6 +92,25 @@ describe('ThreadPanel', () => {
     expect(useSections.getState().byId.th1).toBeUndefined()
   })
 
+  it('shows each message of a reply that spoke before and after a tool', async () => {
+    rpc({
+      'hexbot.sections.open': () => ({
+        messages: [
+          history[0],
+          { role: 'assistant', row_id: 'a1', text: 'Let me look.' },
+          { name: 'web_search', role: 'tool', row_id: 't1', text: 'ok' },
+          { role: 'assistant', row_id: 'a2', text: 'Here is the intro.' }
+        ],
+        section: thread
+      }),
+      'hexbot.sections.thread': () => ({ section: thread })
+    })
+
+    render(<ThreadPanel thread={{ bot: 'writer', peer: 'scout' }} />)
+    expect(await screen.findByText('Here is the intro.')).toBeVisible()
+    expect(screen.getByText('Let me look.')).toBeVisible()
+  })
+
   it('opens the known section straight away and streams the reply in progress', async () => {
     const call = rpc({ 'hexbot.sections.open': () => ({ messages: history, section: thread }) })
 
