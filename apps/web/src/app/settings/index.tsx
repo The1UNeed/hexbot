@@ -367,7 +367,9 @@ export function ConnectSettings() {
           />
         </Group>
       )}
-      {error ? <ErrorLine>{error}</ErrorLine> : null}
+      {error || (status?.registered && status.last_error) ? (
+        <ErrorLine>{error ?? status?.last_error}</ErrorLine>
+      ) : null}
     </>
   )
 }

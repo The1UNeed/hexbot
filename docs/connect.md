@@ -69,19 +69,38 @@ below. Publishing an extra public key does not preserve the old tunnel-secret
 derivation.
 
 Each daemon also has an Ed25519 identity key. Its private key stays in
-`connect.json`, written atomically with mode 0600; Connect stores only the raw
-32-byte public key as unpadded base64url. Registration sends it with the device
-code poll. Existing registrations generate a key on daemon startup and enroll
-it with both the daemon token and the same tunnel-credential proof used by
-repair. Enrollment accepts the first key, accepts that same key again, and
-refuses a different key with 409. Rotate it by registering again. The daemon
-tries enrollment once per registration per process start; a failed attempt
-waits for the next start and does not prevent tunnel startup. An older Connect
-returning 404 is silently skipped.
+`connect-identity.key`, written atomically with mode 0600; Connect stores only
+the raw 32-byte public key as unpadded base64url. A key from the initial
+`connect.json` format is copied to this file before use. Older daemons may
+rewrite `connect.json` during tunnel repair, but cannot erase the separate key.
+Disconnect and revocation remove both files. The daemon caches the parsed key
+for the current registration and invalidates it when the registration changes.
+
+Registration sends the public key with the device code poll. Startup prepares
+the local key under the lifecycle lock, then enrolls it in a background task
+using both the daemon token and the tunnel-credential proof used by repair.
+The local UI and tunnel do not wait for this request. Enrollment runs at most
+once per registration per process start, and is skipped after a registration
+poll already sent the key. A failed attempt waits for the next process start;
+an older Connect returning 404 is silently skipped. A `410 daemon_revoked`
+uses the normal removal path.
+
+Enrollment accepts the first key and that same key again. A different key
+returns 409, leaves the local key intact, and shows "Hex Connect has a different
+key for this daemon. Disconnect and connect again." in Settings. Heartbeat and
+tunnel success do not clear this error. An unreadable key logs an error and
+leaves the tunnel running; fix file access and restart. For an unparsable key,
+the daemon generates an in-memory candidate and saves it only after Connect
+accepts the first-key enrollment. An existing key in Connect produces the same
+409 conflict instead. Until recovery, the identity endpoint returns 503 and
+sign-in checks fail. No key error stops the tunnel. Rotate a key by disconnecting
+and registering again.
 
 Connect's online probe and current apps check a fresh signature bound to the
-daemon ID, request Host, and nonce. This detects misrouting and impostors that
-cannot reach the real daemon. Cloudflare terminates TLS, so an on-path party,
+daemon ID, request Host, and nonce. Host is client-chosen: anyone who can reach
+the daemon can obtain a signature for any Host. The host binding only catches
+misrouting. The signature check detects impostors that cannot reach the real
+daemon. Cloudflare terminates TLS, so an on-path party,
 including Cloudflare or whoever controls the Connect Cloudflare account or API
 token, can relay the real daemon's signature. This does not detect an active
 relay and does not add end-to-end encryption. The app's compatibility fallbacks
@@ -141,8 +160,8 @@ forward to, so the whole flow runs on one machine.
    A new daemon retries without `public_key` if older Connect rejects the new
    field with `400 invalid_request`.
 4. The daemon stores the tokens, the owner, the issuer, the pinned signing keys,
-   and its own private identity key in
-   `~/.hexbot/connect.json` (0600). On every `hexbot serve` the daemon
+   in `~/.hexbot/connect.json` (0600), and its private identity key in
+   `~/.hexbot/connect-identity.key` (0600). On every `hexbot serve` the daemon
    downloads the pinned `cloudflared` into `~/.hexbot/bin/cloudflared-<version>`
    if missing, refusing a file whose SHA-256 differs from the pin, and runs
    it with a config file of its own (`~/.hexbot/cloudflared.yml`) whose only
@@ -207,9 +226,12 @@ app's daemon list enable a daemon only while it is online.
    device_name, jti, exp: +5 min}` plus the daemon's address.
 4. Before handing the grant to the daemon, the app fetches a fresh identity
    signature without credentials and verifies it with WebCrypto Ed25519. An
-   invalid reply stops sign-in with "This address is not answering as your
-   daemon." For compatibility, an unknown key, a daemon returning 404, or a
-   browser without Ed25519 support proceeds as before and logs the reason once.
+   invalid reply, including 404 with a known key, stops sign-in with
+   "<name> did not prove it is your daemon, so sign-in stopped." Network errors,
+   timeouts, and 5xx responses show "<name> could not be reached." Only an
+   unknown key or a browser without Ed25519 support proceeds as before, logging
+   the reason once. The public identity endpoint allows cross-origin GETs without
+   credentials, including the localhost renderer used by `pnpm dev --desktop`.
    This check covers both the Electron and browser grant paths.
    The app then logs in with the password-login route:
    `POST https://<host>/auth/password-login {provider: "hexbot", username:
@@ -261,7 +283,7 @@ with sixty seconds of clock leeway.
 
 Disconnect in Settings and `hexbot connect disconnect` both run
 `hexbot.connect.disconnect` inside the running daemon (the CLI talks to it over
-its socket when one is up), so the tunnel stops, `connect.json` goes, the
+its socket when one is up), so the tunnel stops, `connect.json` and `connect-identity.key` go, the
 public URL is cleared, and the login button disappears at once. The daemon
 also tells Connect with `DELETE /api/daemons/{id}`.
 
@@ -416,7 +438,8 @@ signing key.
   compatibility, and the public nonce-signing endpoint.
 - Client: the `hexbot://connect` handler, the `tls` connection path, the
   prefixed cookie names, identity verification before grants, malformed or
-  replayed signatures, and missing-key, 404, and unsupported-Ed25519 fallbacks.
+  replayed signatures, refusal of 404 with a known key, and missing-key and
+  unsupported-Ed25519 fallbacks.
 
 Browser sign-in started on LAN, Tailscale, or localhost redirects to the registered
 tunnel hostname before creating PKCE state or setting its cookie. Pending sign-ins

@@ -19,6 +19,7 @@ pub(super) struct StateData {
     observed: mpsc::UnboundedSender<(String, Value, String)>,
     pub(super) bad: Mutex<bool>,
     pub(super) legacy_poll: Mutex<bool>,
+    pub(super) identity_gate: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub(super) binary: Mutex<Vec<u8>>,
     pub(super) manifest: Mutex<Value>,
     /// Per-path replies `(status, body)`, for routes the daemon must handle by status.
@@ -55,6 +56,11 @@ async fn handler(
         && body.get("public_key").is_some()
         && *state.legacy_poll.lock().await;
     let _ = state.observed.send((path.clone(), body, auth));
+    if path.ends_with("/identity")
+        && let Some(gate) = state.identity_gate.lock().await.clone()
+    {
+        gate.notified().await;
+    }
     if reject_key {
         return (
             StatusCode::BAD_REQUEST,
@@ -89,6 +95,7 @@ impl Mock {
             observed: sender,
             bad: Mutex::new(false),
             legacy_poll: Mutex::new(false),
+            identity_gate: Mutex::default(),
             binary: Mutex::new(vec![]),
             manifest: Mutex::new(Value::Null),
             overrides: Mutex::default(),

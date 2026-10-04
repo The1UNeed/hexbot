@@ -56,7 +56,8 @@ pub struct ConnectConfig {
     pub issuer: String,
     #[serde(default)]
     pub keys: Vec<Value>,
-    #[serde(default)]
+    // Read the initial implementation for migration, but never write the key here again.
+    #[serde(default, skip_serializing)]
     pub identity_private_key: String,
 }
 impl ConnectConfig {
@@ -101,38 +102,77 @@ fn new_identity_key() -> Result<String> {
         .map_err(|_| Error::new(5241, "could not generate daemon identity key"))?;
     Ok(URL_SAFE_NO_PAD.encode(key.as_ref()))
 }
-impl ConnectConfig {
-    fn identity_key(&self) -> Result<Ed25519KeyPair> {
-        let bytes = URL_SAFE_NO_PAD
-            .decode(&self.identity_private_key)
-            .map_err(|_| Error::new(5241, "invalid daemon identity key"))?;
-        Ed25519KeyPair::from_pkcs8(&bytes)
-            .map_err(|_| Error::new(5241, "invalid daemon identity key"))
-    }
-    pub fn identity_public_key(&self) -> Result<String> {
-        Ok(URL_SAFE_NO_PAD.encode(self.identity_key()?.public_key().as_ref()))
-    }
-    pub fn sign_identity(&self, host: &str, nonce: &str) -> Result<Value> {
-        let message = format!("hexbot-identity-v1\n{}\n{host}\n{nonce}", self.daemon_id);
-        let key = self.identity_key()?;
-        Ok(json!({"daemon_id": self.daemon_id,
-            "public_key": URL_SAFE_NO_PAD.encode(key.public_key().as_ref()),
-            "signature": URL_SAFE_NO_PAD.encode(key.sign(message.as_bytes()).as_ref())}))
+const IDENTITY_FILE: &str = "connect-identity.key";
+const IDENTITY_CONFLICT: &str =
+    "Hex Connect has a different key for this daemon. Disconnect and connect again.";
+const IDENTITY_UNAVAILABLE: &str =
+    "The daemon identity key could not be read or saved. Check the daemon's files and restart.";
+
+struct CachedIdentity {
+    daemon_id: String,
+    key: Option<Arc<Ed25519KeyPair>>,
+}
+fn parse_identity_key(encoded: &[u8]) -> Result<Arc<Ed25519KeyPair>> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| Error::new(5241, "invalid daemon identity key"))?;
+    Ed25519KeyPair::from_pkcs8(&bytes)
+        .map(Arc::new)
+        .map_err(|_| Error::new(5241, "invalid daemon identity key"))
+}
+fn read_identity_key(home: &Path, config: &ConnectConfig) -> Result<Vec<u8>> {
+    match fs::read(home.join(IDENTITY_FILE)) {
+        Ok(bytes) => Ok(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let encoded = if config.identity_private_key.is_empty() {
+                new_identity_key()?
+            } else {
+                config.identity_private_key.clone()
+            };
+            // Validate before migrating a legacy key.
+            parse_identity_key(encoded.as_bytes())?;
+            common::atomic_write(&home.join(IDENTITY_FILE), encoded.as_bytes())?;
+            Ok(encoded.into_bytes())
+        }
+        Err(error) => Err(error.into()),
     }
 }
-
-/// Best effort, once per registration per process. Old Connect and an unmigrated
-/// database must not stop the tunnel. Conflicts retain the local key for diagnosis.
-async fn enroll_identity(
-    home: &Path,
-    service: &Arc<Service>,
-    config: &mut ConnectConfig,
-) -> Result<()> {
-    if config.identity_private_key.is_empty() {
-        config.identity_private_key = new_identity_key()?;
-        config.save(home)?;
+async fn identity_error(service: &Service, message: Option<String>) {
+    let mut data = service.data.lock().await;
+    if message.is_some() || data.error == data.identity_error {
+        data.error = message.clone();
     }
-    let public_key = config.identity_public_key()?;
+    data.identity_error = message;
+    drop(data);
+    bump(service);
+}
+
+/// Local preparation runs under lifecycle; network enrollment never blocks startup.
+async fn start_identity(home: &Path, service: &Arc<Service>, config: &ConnectConfig) {
+    let prepared = read_identity_key(home, config).and_then(|encoded| parse_identity_key(&encoded));
+    let (key, replacement) = match prepared {
+        Ok(key) => (Some(key), None),
+        Err(error) => {
+            eprintln!("Connect identity: {error}");
+            identity_error(service, Some(IDENTITY_UNAVAILABLE.into())).await;
+            // Only malformed keys may be replaced. I/O failures need operator repair.
+            // Keep a candidate in memory until Connect's TOFU write accepts it.
+            let replacement = if error.code == 5241 {
+                new_identity_key().ok().and_then(|encoded| {
+                    parse_identity_key(encoded.as_bytes())
+                        .ok()
+                        .map(|key| (encoded, key))
+                })
+            } else {
+                None
+            };
+            (None, replacement)
+        }
+    };
+    *service.identity.lock().await = Some(CachedIdentity {
+        daemon_id: config.daemon_id.clone(),
+        key: key.clone(),
+    });
     if !service
         .data
         .lock()
@@ -140,32 +180,114 @@ async fn enroll_identity(
         .identity_attempted
         .insert(config.daemon_id.clone())
     {
-        return Ok(());
+        return;
     }
-    if let Err(error) = object(
-        Method::POST,
-        &format!(
-            "{}/api/daemons/{}/identity",
-            config.api_base, config.daemon_id
-        ),
-        Some(&config.daemon_token),
-        Some(json!({"public_key": public_key, "tunnel_token": config.tunnel_token})),
-    )
-    .await
-    {
-        if revoked_by_connect(&error) {
-            forget_later(home, service, &config.daemon_id);
-            return Err(error);
-        }
-        if !error
-            .data
-            .as_ref()
-            .is_some_and(|data| data["status"] == 404)
+    let Some(enrollment_key) = key.or_else(|| replacement.as_ref().map(|(_, key)| key.clone()))
+    else {
+        return;
+    };
+    let home = home.to_owned();
+    let config = config.clone();
+    let worker_service = service.clone();
+    let task =
+        tokio::spawn(async move {
+            let result = object(Method::POST,
+            &format!("{}/api/daemons/{}/identity", config.api_base, config.daemon_id),
+            Some(&config.daemon_token),
+            Some(json!({"public_key": URL_SAFE_NO_PAD.encode(enrollment_key.public_key().as_ref()),
+                "tunnel_token": config.tunnel_token}))).await;
+            if result.as_ref().is_err_and(revoked_by_connect) {
+                forget_later(&home, &worker_service, &config.daemon_id);
+                return;
+            }
+            let _operation = worker_service.lifecycle.lock().await;
+            // A response from an old registration must never change a newer one.
+            if worker_service
+                .identity
+                .lock()
+                .await
+                .as_ref()
+                .is_none_or(|c| c.daemon_id != config.daemon_id)
+            {
+                return;
+            }
+            match result {
+                Ok(_) => {
+                    if let Some((encoded, key)) = replacement {
+                        if let Err(error) =
+                            common::atomic_write(&home.join(IDENTITY_FILE), encoded.as_bytes())
+                        {
+                            eprintln!("Connect identity: {error}");
+                            identity_error(&worker_service, Some(IDENTITY_UNAVAILABLE.into()))
+                                .await;
+                            return;
+                        }
+                        *worker_service.identity.lock().await = Some(CachedIdentity {
+                            daemon_id: config.daemon_id,
+                            key: Some(key),
+                        });
+                    }
+                    identity_error(&worker_service, None).await;
+                }
+                Err(error) => {
+                    if error
+                        .data
+                        .as_ref()
+                        .is_some_and(|data| data["status"] == 409)
+                    {
+                        identity_error(&worker_service, Some(IDENTITY_CONFLICT.into())).await;
+                    }
+                    if !error
+                        .data
+                        .as_ref()
+                        .is_some_and(|data| data["status"] == 404)
+                    {
+                        eprintln!("Connect identity enrollment: {error}");
+                    }
+                    bump(&worker_service);
+                }
+            }
+        });
+    *service.identity_task.lock().await = Some(task);
+}
+
+/// Parsed once per registration, invalidated by registration, disconnect and revoke.
+/// The lazy load supports a CLI registration made before this process starts serving.
+pub async fn identity_response(home: &Path, host: &str, nonce: &str) -> Result<Option<Value>> {
+    let service = service(home).await?;
+    let _operation = service.lifecycle.lock().await;
+    let mut cached = service.identity.lock().await;
+    if cached.is_none() {
+        let Some(config) = ConnectConfig::load(home)?.filter(|c| !c.daemon_id.is_empty()) else {
+            return Ok(None);
+        };
+        let key = match read_identity_key(home, &config)
+            .and_then(|encoded| parse_identity_key(&encoded))
         {
-            eprintln!("Connect identity enrollment: {error}");
-        }
+            Ok(key) => Some(key),
+            Err(error) => {
+                eprintln!("Connect identity: {error}");
+                identity_error(&service, Some(IDENTITY_UNAVAILABLE.into())).await;
+                None
+            }
+        };
+        *cached = Some(CachedIdentity {
+            daemon_id: config.daemon_id,
+            key,
+        });
     }
-    Ok(())
+    let identity = cached.as_ref().expect("initialized identity");
+    let key = identity
+        .key
+        .as_ref()
+        .ok_or_else(|| Error::new(5241, IDENTITY_UNAVAILABLE))?;
+    let message = format!(
+        "hexbot-identity-v1\n{}\n{host}\n{nonce}",
+        identity.daemon_id
+    );
+    Ok(Some(json!({"daemon_id": identity.daemon_id,
+        "public_key": URL_SAFE_NO_PAD.encode(key.public_key().as_ref()),
+        "signature": URL_SAFE_NO_PAD.encode(key.sign(message.as_bytes()).as_ref())})))
 }
 
 struct Workers {
@@ -175,6 +297,7 @@ struct Workers {
 struct Data {
     running: bool,
     identity_attempted: std::collections::HashSet<String>,
+    identity_error: Option<String>,
     heartbeat: Option<f64>,
     error: Option<String>,
     port: u16,
@@ -187,6 +310,7 @@ impl Default for Data {
         Self {
             running: false,
             identity_attempted: Default::default(),
+            identity_error: None,
             heartbeat: None,
             error: None,
             port: 9119,
@@ -201,6 +325,8 @@ struct Service {
     workers: Mutex<Option<Workers>>,
     lifecycle: Mutex<()>,
     jwks: Mutex<JwksCache>,
+    identity: Mutex<Option<CachedIdentity>>,
+    identity_task: Mutex<Option<JoinHandle<()>>>,
     /// Bumped after every heartbeat outcome and after a registration is dropped, so
     /// in-crate tests can wait for the worker instead of sleeping.
     changed: watch::Sender<u64>,
@@ -212,6 +338,8 @@ impl Default for Service {
             workers: Mutex::default(),
             lifecycle: Mutex::default(),
             jwks: Mutex::default(),
+            identity: Mutex::default(),
+            identity_task: Mutex::default(),
             changed: watch::channel(0).0,
         }
     }
@@ -270,6 +398,12 @@ async fn drop_registration(
     {
         return Ok(false);
     }
+    *service.identity.lock().await = None;
+    match fs::remove_file(home.join(IDENTITY_FILE)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
     match fs::remove_file(home.join("connect.json")) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -279,6 +413,7 @@ async fn drop_registration(
     {
         let mut data = service.data.lock().await;
         data.heartbeat = None;
+        data.identity_error = None;
         data.error = reason.map(str::to_owned);
     }
     bump(service);
@@ -746,6 +881,10 @@ async fn terminate(child: &mut Child) {
     }
 }
 async fn stop_workers(service: &Service) {
+    if let Some(task) = service.identity_task.lock().await.take() {
+        task.abort();
+        let _ = task.await;
+    }
     if let Some(workers) = service.workers.lock().await.take() {
         workers.stop.send_replace(true);
         for task in workers.tasks {
@@ -761,14 +900,14 @@ pub async fn start_daemon(home: &Path, port: u16) -> Result<bool> {
     let _operation = service.lifecycle.lock().await;
     stop_workers(&service).await;
     service.data.lock().await.port = port;
-    let Some(mut config) = ConnectConfig::load(home)?.filter(|c| !c.daemon_id.is_empty()) else {
+    let Some(config) = ConnectConfig::load(home)?.filter(|c| !c.daemon_id.is_empty()) else {
         return Ok(false);
     };
     common::identifier(&config.daemon_id)?;
     if config.daemon_token.is_empty() || config.tunnel_token.is_empty() {
         return Err(Error::new(5241, "incomplete Hex Connect registration"));
     }
-    enroll_identity(home, &service, &mut config).await?;
+    start_identity(home, &service, &config).await;
     apply_public_url(home, Some(&config.tunnel_hostname))?;
     let binary = ensure_cloudflared(home).await?;
     run_tunnel(
@@ -901,7 +1040,7 @@ async fn run_tunnel(
                         let mut data = tunnel_service.data.lock().await;
                         let changed = data.running != ready;
                         data.running = ready;
-                        if ready { data.error = None; }
+                        if ready { data.error = data.identity_error.clone(); }
                         drop(data);
                         if changed { bump(&tunnel_service); }
                         if !ready && last_ok.elapsed() >= timing.ready_timeout {
@@ -1009,7 +1148,7 @@ async fn run_tunnel(
                         match result {
                             Ok(_) => {
                                 data.heartbeat = Some(common::now());
-                                data.error = None;
+                                data.error = data.identity_error.clone();
                             }
                             Err(error) => data.error = Some(error.message),
                         }
@@ -1054,7 +1193,7 @@ async fn connect_status(home: &Path) -> Result<Value> {
         "tunnel_hostname": config.as_ref().map(|c| &c.tunnel_hostname),
         "tunnel_running": data.running,
         "last_heartbeat_at": data.heartbeat,
-        "last_error": data.error
+        "last_error": data.identity_error.as_ref().or(data.error.as_ref())
     }))
 }
 
@@ -1689,7 +1828,7 @@ pub async fn register_poll(home: &Path, code: &str, start_tunnel: bool) -> Resul
     result["status"] = json!(status);
     if status == "approved" {
         let config = ConnectConfig {
-            identity_private_key,
+            identity_private_key: String::new(),
             owner_id: common::required(&result, "owner_id")?.into(),
             issuer: common::required(&result, "issuer")?.into(),
             keys: result["keys"]
@@ -1715,7 +1854,24 @@ pub async fn register_poll(home: &Path, code: &str, start_tunnel: bool) -> Resul
             let service = service(home).await?;
             let _operation = service.lifecycle.lock().await;
             apply_public_url(home, Some(&config.tunnel_hostname))?;
+            // Old daemons may rewrite connect.json during tunnel repair. The key
+            // lives separately so a rollback cannot erase it.
+            common::atomic_write(&home.join(IDENTITY_FILE), identity_private_key.as_bytes())?;
             config.save(home)?;
+            if let Some(task) = service.identity_task.lock().await.take() {
+                task.abort();
+            }
+            *service.identity.lock().await = Some(CachedIdentity {
+                daemon_id: config.daemon_id.clone(),
+                key: Some(Arc::new(key)),
+            });
+            service
+                .data
+                .lock()
+                .await
+                .identity_attempted
+                .insert(config.daemon_id.clone());
+            identity_error(&service, None).await;
         }
         if start_tunnel {
             let port = service(home).await?.data.lock().await.port;

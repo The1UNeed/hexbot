@@ -14,6 +14,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const store = getStore();
   try {
     if (!await verifyTunnelProof(getTunnels(), body.tunnel_token, daemon)) return jsonError("forbidden", "Tunnel credentials are required", 403);
+  } catch {
+    console.warn("Connect: could not verify tunnel credentials for identity enrollment", id);
+    return jsonError("identity_proof_unavailable", "Tunnel credentials could not be checked; try again later", 502);
+  }
+  try {
     const saved = await store.enrollDaemonIdentity(id, body.public_key);
     const current = await store.getDaemon(id);
     if (!current || current.revokedAt) return jsonError("daemon_revoked", "This daemon was revoked in Hex Connect", 410);

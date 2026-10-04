@@ -44,8 +44,15 @@ the daemon as online, and the app checks it before sending a login grant.
 This detects misrouting and impostors that cannot reach your daemon. Cloudflare
 terminates TLS, so Cloudflare or whoever controls the Connect Cloudflare account
 or API token can relay a real daemon's signature. The check cannot detect that
-active relay. Apps proceed without verification when no key is known, the
-daemon is older, or the browser does not support Ed25519.
+active relay. Apps proceed without verification when no key is known or the
+browser does not support Ed25519. With a known key, a missing or invalid proof
+stops sign-in, including when the endpoint returns 404.
+
+The daemon keeps its identity key in `connect-identity.key`, separately from
+`connect.json`, so an older daemon rewriting its tunnel settings cannot erase
+it. If Settings reports a different key in Hex Connect, disconnect and register
+again. A key error leaves the daemon and tunnel running, but sign-in checks
+remain blocked until the key is recovered.
 
 ## What Connect holds
 

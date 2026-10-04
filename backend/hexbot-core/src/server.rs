@@ -1073,6 +1073,28 @@ async fn origin_guard(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
+    // Identity is public and never consumes credentials. A dev desktop renderer
+    // and a daemon-served browser bundle may both check a different daemon.
+    if request.uri().path() == "/api/connect/identity"
+        && matches!(
+            *request.method(),
+            axum::http::Method::GET | axum::http::Method::OPTIONS
+        )
+    {
+        let mut response = if request.method() == axum::http::Method::OPTIONS {
+            StatusCode::NO_CONTENT.into_response()
+        } else {
+            next.run(request).await
+        };
+        response
+            .headers_mut()
+            .insert("access-control-allow-origin", HeaderValue::from_static("*"));
+        response.headers_mut().insert(
+            "access-control-allow-methods",
+            HeaderValue::from_static("GET, OPTIONS"),
+        );
+        return response;
+    }
     if !valid_origin(&app, request.headers()) {
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -1167,11 +1189,6 @@ async fn connect_identity(
     headers: HeaderMap,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
-    let config = match services::ConnectConfig::load(&app.home) {
-        Ok(Some(config)) if !config.daemon_id.is_empty() => config,
-        Ok(_) => return StatusCode::NOT_FOUND.into_response(),
-        Err(error) => return http_error(error),
-    };
     let Some(nonce) = query.get("nonce").filter(|nonce| {
         (22..=86).contains(&nonce.len())
             && URL_SAFE_NO_PAD
@@ -1191,9 +1208,14 @@ async fn connect_identity(
     if let Some(port) = host.port_u16().filter(|p| !matches!(p, 80 | 443)) {
         normalized.push_str(&format!(":{port}"));
     }
-    match config.sign_identity(&normalized, nonce) {
-        Ok(value) => ([("cache-control", "no-store")], Json(value)).into_response(),
-        Err(error) => http_error(error),
+    match services::identity_response(&app.home, &normalized, nonce).await {
+        Ok(Some(value)) => ([("cache-control", "no-store")], Json(value)).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":"Daemon identity is unavailable"})),
+        )
+            .into_response(),
     }
 }
 

@@ -335,6 +335,23 @@ describe('settings', () => {
     expect(await screen.findByText('home.connect.hexbot.app')).toBeVisible()
   })
 
+  it('shows an identity conflict even while the registered tunnel is running', async () => {
+    const conflict = 'Hex Connect has a different key for this daemon. Disconnect and connect again.'
+    vi.mocked(connectStatus).mockResolvedValue({
+      registered: true,
+      daemon_id: 'd1',
+      slug: 'home',
+      tunnel_hostname: 'home.connect.hexbot.app',
+      tunnel_running: true,
+      last_heartbeat_at: 1,
+      last_error: conflict
+    })
+    render(<ConnectSettings />)
+    expect(await screen.findByText(conflict)).toBeVisible()
+    expect(screen.getByText('Running')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeVisible()
+  })
+
   it('says why Connect is not connected after the daemon was revoked', async () => {
     vi.mocked(connectStatus).mockResolvedValue({
       registered: false,
