@@ -1,3 +1,4 @@
+import { readDeviceProofError } from '@hermes/shared'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 
@@ -18,11 +19,14 @@ import {
 } from '../lib/connection'
 import { deviceKey, deviceProof } from '../lib/dpop'
 import { formatAddress, parseAddress, parsePairLink } from '../lib/pair-link'
+import { useConnection } from '../stores/connection'
 
 export const Route = createFileRoute('/connect')({ component: ConnectPage })
 
 export function parseConnectCallback(input: string): { session: string; state: string } | null {
-  if (!input.startsWith('hexbot://connect')) {return null}
+  if (!input.startsWith('hexbot://connect')) {
+    return null
+  }
   const [beforeHash, hash = ''] = input.split('#')
   const url = new URL(beforeHash ?? input)
   const state = url.searchParams.get('state')
@@ -33,7 +37,11 @@ export function parseConnectCallback(input: string): { session: string; state: s
 
 function ConnectPage() {
   const navigate = useNavigate()
-  const [address, setAddress] = useState('127.0.0.1:9119')
+  const savedTarget = useConnection(state => state.target)
+  const connectionError = useConnection(state => state.error)
+  const [address, setAddress] = useState(() =>
+    savedTarget?.kind === 'remote' ? formatAddress(savedTarget) : '127.0.0.1:9119'
+  )
   const [code, setCode] = useState('')
   const [deviceName, setDeviceName] = useState(defaultDeviceName)
   const [daemonName, setDaemonName] = useState<string | null>(null)
@@ -60,18 +68,24 @@ function ConnectPage() {
   useEffect(() => {
     const bridge = getBridge()
 
-    if (!bridge?.onNavigate) {return}
+    if (!bridge?.onNavigate) {
+      return
+    }
 
     return bridge.onNavigate(url => {
       const parsed = parseConnectCallback(url)
 
-      if (!parsed || parsed.state !== connectState) {return}
+      if (!parsed || parsed.state !== connectState) {
+        return
+      }
       localStorage.setItem('hexbot.connect.session', parsed.session)
       setClientSession(parsed.session)
     })
   }, [connectState])
   useEffect(() => {
-    if (!clientSession) {return}
+    if (!clientSession) {
+      return
+    }
     void fetchConnect('/api/daemons', clientSession)
       .then(result =>
         setDaemons((result as { daemons?: typeof daemons }).daemons ?? (result as typeof daemons))
@@ -87,12 +101,17 @@ function ConnectPage() {
     const url = `${connectBaseUrl()}/connect/authorize?state=${encodeURIComponent(state)}&device=${encodeURIComponent(deviceName)}`
     const bridge = getBridge()
 
-    if (bridge) {void bridge.openExternal(url)}
-    else {window.location.assign(url)}
+    if (bridge) {
+      void bridge.openExternal(url)
+    } else {
+      window.location.assign(url)
+    }
   }
 
   const pickDaemon = async (daemon: (typeof daemons)[number]) => {
-    if (!clientSession) {return}
+    if (!clientSession) {
+      return
+    }
     setBusy(true)
 
     try {
@@ -126,7 +145,6 @@ function ConnectPage() {
         const response = await fetch(`${origin}/auth/password-login`, {
           body: JSON.stringify({
             password: `cg_${granted.grant}`,
-            return_token: true,
             provider: 'hexbot',
             username: deviceName
           }),
@@ -135,8 +153,16 @@ function ConnectPage() {
           method: 'POST'
         })
 
-        if (!response.ok) {throw new Error(`Connect login failed (${response.status})`)}
-        const login = await response.json() as { device_token?: string }
+        const proofError = await readDeviceProofError(response)
+
+        if (proofError) {
+          throw proofError
+        }
+
+        if (!response.ok) {
+          throw new Error(`Connect login failed (${response.status})`)
+        }
+        const login = (await response.json()) as { device_token?: string }
         await connectTo({ deviceToken: login.device_token ?? '', host, kind: 'remote', port, tls })
       }
 
@@ -199,7 +225,9 @@ function ConnectPage() {
           ? 'The pairing code is invalid or expired.'
           : reason instanceof UnauthorizedError
             ? 'This device was revoked. Pair it again.'
-            : 'The daemon could not be reached.'
+            : reason instanceof Error
+              ? reason.message
+              : 'The daemon could not be reached.'
       )
     } finally {
       setBusy(false)
@@ -238,11 +266,7 @@ function ConnectPage() {
             <span aria-hidden className="text-muted">
               ·
             </span>
-            <button
-              className="hover:underline"
-              onClick={() => setConnectState(null)}
-              type="button"
-            >
+            <button className="hover:underline" onClick={() => setConnectState(null)} type="button">
               Cancel
             </button>
           </div>
@@ -315,9 +339,9 @@ function ConnectPage() {
             Connect
           </Button>
         </div>
-        {error ? (
+        {error || connectionError ? (
           <p className="text-secondary text-danger" role="alert">
-            {error}
+            {error || connectionError}
           </p>
         ) : null}
       </form>

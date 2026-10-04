@@ -35,5 +35,6 @@ pub fn mint_device(
         name,
         platform,
         "fixture",
+        None,
     )
 }

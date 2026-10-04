@@ -119,7 +119,7 @@ async fn connect_grants_verify_signature_claims_and_mint_revocable_devices() {
     header.typ = Some("hexbot-grant+jwt".into());
     let claims = json!({"sub":"cloud-user","iss":"https://connect.hexbot.app","aud":"daemon-1","jti":"test-grant","daemon_id":"daemon-1","device_name":"Alice laptop","iat":common::now() as u64,"exp":common::now() as u64+300});
     let grant = encode(&header, &claims, &key).unwrap();
-    let device = services::redeem_grant(home.path(), &grant, "untrusted-name", "connect")
+    let device = services::redeem_grant(home.path(), &grant, "untrusted-name", "connect", None)
         .await
         .unwrap();
     let token = device["device_token"].as_str().unwrap();
@@ -147,7 +147,8 @@ async fn connect_grants_verify_signature_claims_and_mint_revocable_devices() {
                 home.path(),
                 &encode(&header, &bad, &key).unwrap(),
                 "",
-                "connect"
+                "connect",
+                None
             )
             .await
             .unwrap_err()
@@ -161,13 +162,14 @@ async fn connect_grants_verify_signature_claims_and_mint_revocable_devices() {
             home.path(),
             &encode(&header, &claims, &key).unwrap(),
             "",
-            "connect"
+            "connect",
+            None
         )
         .await
         .is_err()
     );
     assert!(
-        services::redeem_grant(home.path(), "not-a-token", "", "connect")
+        services::redeem_grant(home.path(), "not-a-token", "", "connect", None)
             .await
             .is_err()
     );
@@ -567,7 +569,8 @@ async fn current_connect_grant_is_accepted() {
     pinned_registration(&mock, home.path());
     let mut claims = grant_claims();
     claims["aud"] = json!("daemon-1");
-    let result = services::redeem_grant(home.path(), &signed_grant(&claims), "", "connect").await;
+    let result =
+        services::redeem_grant(home.path(), &signed_grant(&claims), "", "connect", None).await;
     assert!(
         result.is_ok(),
         "Current Connect grants must work: {result:?}"
@@ -581,7 +584,8 @@ async fn wrong_pinned_owner_is_rejected() {
     pinned_registration(&mock, home.path());
     let mut claims = grant_claims();
     claims["sub"] = json!("different-owner");
-    let result = services::redeem_grant(home.path(), &signed_grant(&claims), "", "connect").await;
+    let result =
+        services::redeem_grant(home.path(), &signed_grant(&claims), "", "connect", None).await;
     assert!(
         result.is_err(),
         "Grant for another owner minted a local credential"
@@ -597,8 +601,14 @@ async fn unpinned_signing_key_is_rejected() {
     let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     config["keys"][0]["kid"] = json!("different-pinned-key");
     fs::write(path, config.to_string()).unwrap();
-    let result =
-        services::redeem_grant(home.path(), &signed_grant(&grant_claims()), "", "connect").await;
+    let result = services::redeem_grant(
+        home.path(),
+        &signed_grant(&grant_claims()),
+        "",
+        "connect",
+        None,
+    )
+    .await;
     assert!(
         result.is_err(),
         "Unpinned signing key minted a local credential"
@@ -611,7 +621,7 @@ async fn redeemed_grant_cannot_restore_revoked_access() {
     let home = home();
     pinned_registration(&mock, home.path());
     let grant = signed_grant(&grant_claims());
-    let first = services::redeem_grant(home.path(), &grant, "", "connect")
+    let first = services::redeem_grant(home.path(), &grant, "", "connect", None)
         .await
         .unwrap();
     db::open(home.path())
@@ -621,7 +631,7 @@ async fn redeemed_grant_cannot_restore_revoked_access() {
             [first["device_id"].as_str().unwrap()],
         )
         .unwrap();
-    let second = services::redeem_grant(home.path(), &grant, "", "connect").await;
+    let second = services::redeem_grant(home.path(), &grant, "", "connect", None).await;
     assert!(second.is_err(), "A spent grant restored revoked access");
 }
 
@@ -676,7 +686,7 @@ async fn grants_require_pinned_claims_header_and_published_key_material() {
         let mut claims = grant_claims();
         claims[field] = value;
         assert!(
-            services::redeem_grant(home.path(), &signed_grant(&claims), "", "connect")
+            services::redeem_grant(home.path(), &signed_grant(&claims), "", "connect", None)
                 .await
                 .is_err(),
             "accepted {claims}"
@@ -692,7 +702,7 @@ async fn grants_require_pinned_claims_header_and_published_key_material() {
     )
     .unwrap();
     assert!(
-        services::redeem_grant(home.path(), &grant, "", "connect")
+        services::redeem_grant(home.path(), &grant, "", "connect", None)
             .await
             .is_err()
     );
@@ -701,9 +711,15 @@ async fn grants_require_pinned_claims_header_and_published_key_material() {
     config["keys"][0]["x"] = json!("different-material");
     fs::write(&path, config.to_string()).unwrap();
     assert!(
-        services::redeem_grant(home.path(), &signed_grant(&grant_claims()), "", "connect")
-            .await
-            .is_err()
+        services::redeem_grant(
+            home.path(),
+            &signed_grant(&grant_claims()),
+            "",
+            "connect",
+            None
+        )
+        .await
+        .is_err()
     );
 }
 
@@ -714,9 +730,15 @@ async fn revoked_published_key_and_missing_registration_pins_fail_closed() {
     pinned_registration(&mock, home.path());
     *mock.data.keys.lock().await = json!({"keys":[]});
     assert!(
-        services::redeem_grant(home.path(), &signed_grant(&grant_claims()), "", "connect")
-            .await
-            .is_err()
+        services::redeem_grant(
+            home.path(),
+            &signed_grant(&grant_claims()),
+            "",
+            "connect",
+            None
+        )
+        .await
+        .is_err()
     );
     let path = home.path().join("connect.json");
     let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -737,8 +759,8 @@ async fn parallel_grant_redemption_and_jwks_cache() {
     pinned_registration(&mock, home.path());
     let grant = signed_grant(&grant_claims());
     let (a, b) = tokio::join!(
-        services::redeem_grant(home.path(), &grant, "", "connect"),
-        services::redeem_grant(home.path(), &grant, "", "connect")
+        services::redeem_grant(home.path(), &grant, "", "connect", None),
+        services::redeem_grant(home.path(), &grant, "", "connect", None)
     );
     assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
     mock.event("/.well-known/jwks.json").await;
@@ -750,14 +772,14 @@ async fn parallel_grant_redemption_and_jwks_cache() {
     let mut claims = grant_claims();
     claims["jti"] = json!("cached-key");
     assert!(
-        services::redeem_grant(home.path(), &signed_grant(&claims), "", "connect")
+        services::redeem_grant(home.path(), &signed_grant(&claims), "", "connect", None)
             .await
             .is_ok()
     );
     assert!(mock.events.try_recv().is_err());
     // A fresh verification call still consults the durable spent-grant table.
     assert!(
-        services::redeem_grant(home.path(), &grant, "", "connect")
+        services::redeem_grant(home.path(), &grant, "", "connect", None)
             .await
             .is_err()
     );
@@ -773,12 +795,12 @@ async fn grant_confirmation_requires_matching_verified_proof_before_spending() {
     let grant = signed_grant(&claims);
     for key in [None, Some("wrong-key")] {
         assert!(
-            services::redeem_grant_bound(home.path(), &grant, "", "connect", key)
+            services::redeem_grant(home.path(), &grant, "", "connect", key)
                 .await
                 .is_err()
         );
     }
-    let device = services::redeem_grant_bound(
+    let device = services::redeem_grant(
         home.path(),
         &grant,
         "",
@@ -794,7 +816,7 @@ async fn grant_confirmation_requires_matching_verified_proof_before_spending() {
         "client-thumbprint"
     );
     assert!(
-        services::redeem_grant_bound(
+        services::redeem_grant(
             home.path(),
             &grant,
             "",

@@ -183,8 +183,9 @@ app's daemon list enable a daemon only while it is online.
    `hexbot-grant+jwt`, `{iss, aud: daemon id, sub: user id, daemon_id,
    device_name, jti, exp: +5 min}` plus the daemon's address. When `jkt` is
    supplied, the signed grant also carries `cnf: {jkt}`. The old route ignores
-   the request body; the app also retries without `jkt` on HTTP 400 for older
-   deployments that reject unknown fields. No Postgres migration is needed.
+   the request body, so new apps can send `jkt` without a compatibility retry.
+   A rejected grant request never retries without binding. No Postgres
+   migration is needed.
 4. The app logs in to the daemon with the password-login route:
    `POST https://<host>/auth/password-login {provider: "hexbot", username:
    <device name>, password: "cg_<jwt>"}`. The `hexbot` provider treats a
@@ -197,7 +198,10 @@ app's daemon list enable a daemon only while it is online.
 5. From here it is a normal remote target: `{host, port: 443, tls: true,
    deviceToken}`. Ticket requests carry a new proof with the device token hash.
    The key persists in IndexedDB beside the profile's saved targets. If crypto
-   or storage is unavailable, login proceeds without requesting binding.
+   or storage is unavailable, login proceeds without requesting binding;
+   browsers keep only the HttpOnly cookie. Proof errors retain the target,
+   retry once, and explain clock or storage problems. A lost key requires
+   sign-in again; see `docs/auth.md` for the error codes.
    New apps work with old daemons, which ignore `cnf` and `DPoP`; old apps
    work with new daemons, which mint unbound devices when no proof is sent.
 

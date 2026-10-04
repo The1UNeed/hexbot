@@ -1,3 +1,5 @@
+import { readDeviceProofError } from '../../../shared/src/device-proof-error'
+
 export class PairingError extends Error {
   constructor(public readonly code: 'invalid_code' | 'missing_token' | 'verification_failed') {
     super(code)
@@ -12,12 +14,16 @@ export function cookieValue(
   // Over HTTPS (the Connect tunnel) the daemon prefixes its cookie names; over
   // plain HTTP it appends its port.
   const names = new RegExp(`^(?:__Host-|__Secure-)?${name}(?:_\\d+)?$`)
+
   for (const cookie of headers.getSetCookie()) {
     const first = cookie.split(';', 1)[0]!
     const separator = first.indexOf('=')
-    if (separator > 0 && names.test(first.slice(0, separator).trim()))
+
+    if (separator > 0 && names.test(first.slice(0, separator).trim())) {
       return first.slice(separator + 1).trim()
+    }
   }
+
   return undefined
 }
 
@@ -45,6 +51,7 @@ export async function pairWithGrant({
   tls = true
 }: GrantPairOptions): Promise<string> {
   const base = `${tls ? 'https' : 'http'}://${host}`
+
   const response = await fetch(`${base}/auth/password-login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...(proof ? { DPoP: proof } : {}) },
@@ -55,19 +62,40 @@ export async function pairWithGrant({
     }),
     signal: AbortSignal.timeout(30_000)
   })
-  if (response.status === 401) throw new PairingError('invalid_code')
-  if (!response.ok) throw new PairingError('verification_failed')
+
+  const proofError = await readDeviceProofError(response)
+
+  if (proofError) {
+    throw proofError
+  }
+
+  if (response.status === 401) {
+    throw new PairingError('invalid_code')
+  }
+
+  if (!response.ok) {
+    throw new PairingError('verification_failed')
+  }
+
   const deviceToken = cookieValue(response.headers, 'hermes_session_at')
-  if (!deviceToken) throw new PairingError('missing_token')
+
+  if (!deviceToken) {
+    throw new PairingError('missing_token')
+  }
+
   // The renderer owns the key and verifies bound tokens when connecting.
   if (!proof) {
     const verify = await fetch(`${base}/api/auth/ws-ticket`, {
       method: 'POST',
       headers: { authorization: `Bearer ${deviceToken}` },
       signal: AbortSignal.timeout(30_000)
-  })
-  if (!verify.ok) throw new PairingError('verification_failed')
+    })
+
+    if (!verify.ok) {
+      throw new PairingError('verification_failed')
+    }
   }
+
   return deviceToken
 }
 
@@ -79,25 +107,47 @@ export async function pair({
   proof
 }: PairOptions): Promise<{ deviceToken: string; daemonName: string }> {
   const base = `http://${host}:${port}`
+
   const response = await fetch(`${base}/auth/password-login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...(proof ? { DPoP: proof } : {}) },
     body: JSON.stringify({ provider: 'hexbot', username: deviceName, password: code }),
     signal: AbortSignal.timeout(30_000)
   })
-  if (response.status === 401) throw new PairingError('invalid_code')
-  if (!response.ok) throw new PairingError('verification_failed')
+
+  const proofError = await readDeviceProofError(response)
+
+  if (proofError) {
+    throw proofError
+  }
+
+  if (response.status === 401) {
+    throw new PairingError('invalid_code')
+  }
+
+  if (!response.ok) {
+    throw new PairingError('verification_failed')
+  }
+
   const result = (await response.json()) as { daemon_name?: string }
   const deviceToken = cookieValue(response.headers, 'hermes_session_at')
-  if (!deviceToken) throw new PairingError('missing_token')
+
+  if (!deviceToken) {
+    throw new PairingError('missing_token')
+  }
+
   // The renderer owns the key and verifies bound tokens when connecting.
   if (!proof) {
     const verify = await fetch(`${base}/api/auth/ws-ticket`, {
       method: 'POST',
       headers: { authorization: `Bearer ${deviceToken}` },
       signal: AbortSignal.timeout(30_000)
-  })
-  if (!verify.ok) throw new PairingError('verification_failed')
+    })
+
+    if (!verify.ok) {
+      throw new PairingError('verification_failed')
+    }
   }
+
   return { deviceToken, daemonName: result.daemon_name ?? host }
 }

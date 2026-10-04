@@ -1014,14 +1014,6 @@ async fn published_keys(home: &Path, config: &ConnectConfig, kid: &str) -> Resul
 pub async fn redeem_grant(
     home: &Path,
     grant: &str,
-    device_name: &str,
-    platform: &str,
-) -> Result<Value> {
-    redeem_grant_bound(home, grant, device_name, platform, None).await
-}
-pub async fn redeem_grant_bound(
-    home: &Path,
-    grant: &str,
     _device_name: &str,
     platform: &str,
     proof_jkt: Option<&str>,
@@ -1091,11 +1083,17 @@ pub async fn redeem_grant_bound(
                 .as_str()
                 .filter(|jkt| !jkt.is_empty())
                 .ok_or_else(invalid)?;
+            if proof_jkt.is_none() {
+                return Err(Error::new(crate::dpop::REQUIRED, "device proof required"));
+            }
             if proof_jkt != Some(jkt) {
-                return Err(invalid());
+                return Err(Error::new(
+                    crate::dpop::KEY_MISMATCH,
+                    "device proof key does not match",
+                ));
             }
         }
-        crate::auth::redeem_verified_grant_bound(
+        crate::auth::redeem_verified_grant(
             home,
             &name,
             platform,
@@ -1105,7 +1103,13 @@ pub async fn redeem_grant_bound(
         )
     }
     .await;
-    check.map_err(|_| Error::new(4231, "invalid Hex Connect grant"))
+    check.map_err(|error| {
+        if crate::dpop::error_code(error.code).is_some() {
+            error
+        } else {
+            Error::new(4231, "invalid Hex Connect grant")
+        }
+    })
 }
 
 pub async fn exchange_browser_grant(

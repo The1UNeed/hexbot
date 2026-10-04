@@ -73,3 +73,53 @@ describe('device proofs', () => {
     }
   )
 })
+
+describe('IndexedDB device keys', () => {
+  beforeEach(async () => {
+    vi.resetModules()
+    const { IDBFactory } = await import('fake-indexeddb')
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    vi.stubGlobal('crypto', webcrypto)
+  })
+  it('persists and reuses a non-extractable key after the module reloads', async () => {
+    const first = await import('./dpop')
+    const key = await first.deviceKey()
+    expect(key).not.toBeNull()
+    expect(await first.deviceKey()).toBe(key)
+    vi.resetModules()
+    const reloaded = await import('./dpop')
+    const restored = await reloaded.deviceKey()
+    expect(restored?.jkt).toBe(key?.jkt)
+    expect(restored?.privateKey.extractable).toBe(false)
+    await expect(crypto.subtle.exportKey('jwk', restored!.privateKey)).rejects.toThrow()
+    expect(await reloaded.proofHeaders('POST', 'https://daemon.test/hexbot/pair')).toHaveProperty(
+      'DPoP'
+    )
+  })
+  it('converges on one key across concurrent first-use callers and tabs', async () => {
+    const first = await import('./dpop')
+    vi.resetModules()
+    const second = await import('./dpop')
+    const a = first.deviceKey()
+    expect(first.deviceKey()).toBe(a)
+    const [one, two] = await Promise.all([a, second.deviceKey()])
+    expect(one).not.toBeNull()
+    expect(one?.jkt).toBe(two?.jkt)
+  })
+  it('retries after an IndexedDB failure and logs failures only once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const open = vi.spyOn(indexedDB, 'open')
+    open.mockImplementationOnce(() => {
+      throw new DOMException('temporarily blocked', 'SecurityError')
+    })
+    open.mockImplementationOnce(() => {
+      throw new DOMException('temporarily blocked', 'SecurityError')
+    })
+    const module = await import('./dpop')
+    expect(await module.deviceKey()).toBeNull()
+    expect(await module.deviceKey()).toBeNull()
+    expect(await module.deviceKey()).not.toBeNull()
+    expect(open).toHaveBeenCalledTimes(3)
+    expect(warn).toHaveBeenCalledTimes(1)
+  })
+})

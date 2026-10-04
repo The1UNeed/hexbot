@@ -1,3 +1,4 @@
+export { DeviceProofError, readDeviceProofError } from './device-proof-error'
 export {
   type ConnectionState,
   type GatewayClientOptions,

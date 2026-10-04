@@ -73,6 +73,8 @@ async function storedKey(): Promise<DeviceKey> {
 /** Storage/crypto failure permits an unbound login. It never changes a token's server binding. */
 export function deviceKey(): Promise<DeviceKey | null> {
   pending ??= storedKey().catch(() => {
+    pending = undefined
+
     if (!warned) {
       console.warn('Device proof keys are unavailable; new logins will use unbound tokens.')
       warned = true

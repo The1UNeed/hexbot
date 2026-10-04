@@ -1,7 +1,7 @@
 #[path = "fixtures/dpop.rs"]
 mod fixture;
 use fixture::{claims, proof};
-use hexbot_core::dpop::{Proofs, token_hash};
+use hexbot_core::dpop::{self, ProofRequest, Proofs, token_hash};
 use serde_json::json;
 
 #[test]
@@ -16,11 +16,13 @@ fn signature_request_key_token_time_and_replay_are_checked() {
     let verify = |p: &str, host: &str, expected: &str| {
         proofs.verify(
             p,
-            "POST",
-            host,
-            "/api/auth/ws-ticket",
-            Some("device"),
-            Some(expected),
+            &ProofRequest {
+                method: "POST",
+                host,
+                path: "/api/auth/ws-ticket",
+                token: Some("device"),
+                expected_key: Some(expected),
+            },
         )
     };
     assert!(verify(&proof(&good), "daemon.test", "another-key").is_err());
@@ -86,13 +88,94 @@ process.stdout.write(JSON.stringify({proof:`${header}.${claims}.${signature}`,jk
         Proofs::default()
             .verify(
                 result["proof"].as_str().unwrap(),
-                "POST",
-                "daemon.test",
-                "/api/auth/ws-ticket",
-                Some("device"),
-                Some(jkt)
+                &ProofRequest {
+                    method: "POST",
+                    host: "daemon.test",
+                    path: "/api/auth/ws-ticket",
+                    token: Some("device"),
+                    expected_key: Some(jkt)
+                }
             )
             .unwrap(),
         jkt
+    );
+}
+
+#[test]
+fn normalizes_request_authorities_without_trusting_forwarded_headers() {
+    for (url, host) in [
+        (
+            "https://daemon.test:443/api/auth/ws-ticket",
+            "Daemon.Test:443",
+        ),
+        ("https://DAEMON.TEST/api/auth/ws-ticket", "daemon.test"),
+        ("http://daemon.test:80/api/auth/ws-ticket", "DAEMON.test:80"),
+        (
+            "https://[::1]:443/api/auth/ws-ticket",
+            "[0:0:0:0:0:0:0:1]:443",
+        ),
+        (
+            "http://[2001:DB8::1]:80/api/auth/ws-ticket",
+            "[2001:db8::1]",
+        ),
+    ] {
+        let signed = proof(&claims("POST", url, Some("device")));
+        let jkt = token_hash(&fixture::jwk().to_string());
+        let request = ProofRequest {
+            method: "POST",
+            host,
+            path: "/api/auth/ws-ticket",
+            token: Some("device"),
+            expected_key: Some(&jkt),
+        };
+        assert!(
+            Proofs::default().verify(&signed, &request).is_ok(),
+            "{host} {url}"
+        );
+        let wrong = ProofRequest {
+            host: "daemon.test:444",
+            ..request
+        };
+        assert!(Proofs::default().verify(&signed, &wrong).is_err());
+    }
+}
+
+#[test]
+fn clock_errors_report_server_time_and_login_proofs_do_not_use_replay_space() {
+    let proofs = Proofs::default();
+    let mut data = claims("POST", "https://daemon.test/auth/password-login", None);
+    data["iat"] = json!(1000);
+    let signed = proof(&data);
+    let request = ProofRequest {
+        method: "POST",
+        host: "daemon.test",
+        path: "/auth/password-login",
+        token: None,
+        expected_key: None,
+    };
+    for now in [939, 1061] {
+        let error = proofs.verify_at(&signed, &request, now).unwrap_err();
+        assert_eq!(error.code, dpop::CLOCK_SKEW);
+        assert_eq!(
+            error.data.unwrap(),
+            json!({"server_time":now,"proof_time":1000})
+        );
+    }
+    for now in [940, 1000, 1060] {
+        // The login credential, not the proof, enforces single use.
+        proofs.verify_at(&signed, &request, now).unwrap();
+    }
+    let jkt = token_hash(&fixture::jwk().to_string());
+    let authenticated = ProofRequest {
+        expected_key: Some(&jkt),
+        ..request
+    };
+    proofs.verify_at(&signed, &authenticated, 1000).unwrap();
+    assert_eq!(
+        proofs
+            .verify_at(&signed, &authenticated, 1060)
+            .unwrap_err()
+            .code,
+        dpop::INVALID
     );
 }

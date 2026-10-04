@@ -13,7 +13,7 @@
  * is cleared and the connect screen takes over.
  */
 
-import { buildHermesWebSocketUrl } from '@hermes/shared'
+import { buildHermesWebSocketUrl, DeviceProofError, readDeviceProofError } from '@hermes/shared'
 
 import { botsActions } from '../stores/bots'
 import { connectionActions } from '../stores/connection'
@@ -171,39 +171,62 @@ async function bearerToken(target: ConnectionTarget, deps: ConnectionDeps): Prom
   return token
 }
 
-async function mintTicket(origin: string, bearer: string, deps: ConnectionDeps): Promise<string> {
+async function mintTicket(
+  origin: string,
+  bearer: string,
+  remote: boolean,
+  deps: ConnectionDeps
+): Promise<string> {
   const doFetch = deps.fetch ?? defaultFetch(deps)
-  let response: Response
+  const url = `${origin}/api/auth/ws-ticket`
+  const crossOrigin = origin !== window.location.origin
 
-  try {
-    response = await doFetch(`${origin}/api/auth/ws-ticket`, {
-      ...(bearer
-        ? { headers: {
-            Authorization: `Bearer ${bearer}`,
-            ...await proofHeaders('POST', `${origin}/api/auth/ws-ticket`, bearer)
-          } }
-        : { credentials: origin === window.location.origin ? 'same-origin' as const : 'include' as const }),
-      method: 'POST'
-    })
-  } catch (error) {
-    throw new UnreachableError(error instanceof Error ? error.message : String(error))
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let response: Response
+
+    try {
+      response = await doFetch(url, {
+        ...(bearer
+          ? {
+              headers: {
+                Authorization: `Bearer ${bearer}`,
+                ...(remote ? await proofHeaders('POST', url, bearer) : {})
+              }
+            }
+          : // Remote browsers without a proof key retain their HttpOnly cookie.
+            { credentials: crossOrigin ? ('include' as const) : ('same-origin' as const) }),
+        method: 'POST'
+      })
+    } catch (error) {
+      throw new UnreachableError(error instanceof Error ? error.message : String(error))
+    }
+
+    const proofError = await readDeviceProofError(response)
+
+    if (proofError) {
+      if (attempt === 0) {
+        continue
+      }
+      throw proofError
+    }
+
+    if (response.status === 401) {
+      throw new UnauthorizedError()
+    }
+
+    if (!response.ok) {
+      throw new UnreachableError(`The daemon refused a WebSocket ticket (HTTP ${response.status}).`)
+    }
+    const body = (await response.json()) as { ticket?: string }
+
+    if (!body.ticket) {
+      throw new UnreachableError('The daemon returned an empty WebSocket ticket.')
+    }
+
+    return body.ticket
   }
 
-  if (response.status === 401 || response.status === 403) {
-    throw new UnauthorizedError()
-  }
-
-  if (!response.ok) {
-    throw new UnreachableError(`The daemon refused a WebSocket ticket (HTTP ${response.status}).`)
-  }
-
-  const body = (await response.json()) as { ticket?: string }
-
-  if (!body.ticket) {
-    throw new UnreachableError('The daemon returned an empty WebSocket ticket.')
-  }
-
-  return body.ticket
+  throw new UnreachableError('The daemon refused a WebSocket ticket.')
 }
 
 /** The `/api/ws` URL with a single-use ticket from the device credential. */
@@ -214,7 +237,12 @@ export async function resolveWsUrl(
   const origin = targetOrigin(target)
   const url = new URL(origin)
   const base = { host: url.host, path: '/api/ws', protocol: url.protocol }
-  const ticket = await mintTicket(origin, await bearerToken(target, deps), deps)
+  const ticket = await mintTicket(
+    origin,
+    await bearerToken(target, deps),
+    target.kind === 'remote',
+    deps
+  )
 
   return buildHermesWebSocketUrl({ ...base, authParam: ['ticket', ticket] })
 }
@@ -245,13 +273,15 @@ export async function pairWithDaemon(
   }
 
   const doFetch = deps.fetch ?? defaultFetch(deps)
+  const origin = `http://${host}:${port}`
+  const crossOrigin = new URL(origin).origin !== window.location.origin
+  const proof = crossOrigin ? await proofHeaders('POST', `${origin}/auth/password-login`) : {}
   let response: Response
 
   try {
-    response = await doFetch(`http://${host}:${port}/auth/password-login`, {
+    response = await doFetch(`${origin}/auth/password-login`, {
       body: JSON.stringify({
         password: code,
-        return_token: new URL(`http://${host}:${port}`).origin !== window.location.origin,
         provider: 'hexbot',
         username: deviceName,
         device_name: deviceName,
@@ -259,9 +289,7 @@ export async function pairWithDaemon(
       }),
       headers: {
         'Content-Type': 'application/json',
-        ...(new URL(`http://${host}:${port}`).origin === window.location.origin
-          ? {}
-          : await proofHeaders('POST', `http://${host}:${port}/auth/password-login`))
+        ...proof
       },
       method: 'POST',
       credentials: 'include'
@@ -270,12 +298,18 @@ export async function pairWithDaemon(
     throw new UnreachableError(error instanceof Error ? error.message : String(error))
   }
 
+  const proofError = await readDeviceProofError(response)
+
+  if (proofError) {
+    throw proofError
+  }
+
   if (response.status === 400 || response.status === 404) {
     throw new InvalidCodeError()
   }
 
-  if (response.status === 401 || response.status === 403) {
-    throw new UnauthorizedError()
+  if (response.status === 401) {
+    throw new InvalidCodeError()
   }
 
   if (!response.ok) {
@@ -393,6 +427,16 @@ export class ConnectionSupervisor {
       await this.open(target, generation)
     } catch (error) {
       if (generation !== this.generation || this.stopped) {
+        return
+      }
+
+      if (error instanceof DeviceProofError) {
+        // Retain the target and token. Only a new login or real revocation replaces them.
+        store.setStatus(error.code === 'dpop_key_mismatch' ? 'unauthorized' : 'offline', {
+          attempt: 0,
+          error: error.message
+        })
+
         return
       }
 

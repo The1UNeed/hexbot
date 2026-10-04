@@ -128,9 +128,9 @@ in `devices.jkt`, added by the daemon's local SQLite migration. Missing proof
 creates an unbound device for compatibility; supplied invalid proof fails.
 A grant carrying `cnf.jkt` requires a matching proof even at login. A proof
 on a `cg_<jwt>` login hashes that entire password string in `ath`.
-Password-login responses with proof or explicit `return_token: true` include
-`device_token` and `device_id` for remote browser clients. The explicit flag
-also lets a client without key storage receive an unbound token. Ordinary
+Password-login responses include `device_token` and `device_id` only when a
+proof is attached. A browser without key storage keeps only the HttpOnly
+cookie; it does not save an unbound token in localStorage. Ordinary
 daemon-served cookie login is unchanged.
 
 Proofs follow the JWT shape in [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.html),
@@ -139,7 +139,9 @@ claims `htm`, `htu`, integer `iat`, unique `jti`, and `ath` whenever a token
 is presented. `ath` is base64url SHA-256 of the exact token string. The
 thumbprint follows [RFC 7638](https://www.rfc-editor.org/rfc/rfc7638.html).
 `htu` has no query or fragment. The daemon checks method, path, and authority
-including the port against the request's Host. It ignores scheme because
+including the port against the request's Host. Both authorities normalize
+case, IPv6 brackets, and the proof URL scheme's default port. A different
+non-default port is rejected. It ignores the transport scheme because
 cloudflared forwards HTTPS as HTTP. Forwarded headers cannot change this
 comparison. Clients sign HTTP(S) URLs even for a WebSocket upgrade.
 
@@ -157,16 +159,37 @@ The daemon accepts `iat` within 60 seconds either side of its clock. It stores
 used `(jkt, jti)` pairs in memory until `iat + 60`, including the full lifetime
 of a proof accepted ahead of the daemon's clock. Restarting the daemon clears
 this cache, so a captured proof can be replayed after restart while its
-clock window remains open. The cache holds at most 65,536 entries; when full,
-new proofs fail closed until entries expire. Grant replay protection remains
-persistent in SQLite.
+clock window remains open. Only authenticated, bound-token requests use the
+cache, with at most 1,024 entries per key and 65,536 total. Login proofs are
+not recorded: pairing codes and grants already have single-use protection,
+persistent in SQLite. When a cache limit is reached, new authenticated
+proofs receive retryable HTTP 503 until entries expire. Login remains available.
 
 If WebCrypto or IndexedDB is unavailable, the client logs once and creates
-an unbound login. It cannot downgrade a token already bound by the daemon.
+an unbound login (cookie-only in browsers). Storage failures are retried on
+the next request. The full edition's local unbound token does not need proofs.
+A client cannot downgrade a token already bound by the daemon.
 Plain HTTP browser origins outside localhost commonly lack WebCrypto; use
 HTTPS for proof-capable remote browser clients. Old daemons ignore the header,
 and their minted tokens remain unbound. Compatibility support means this is
 opportunistic binding, not a mandatory deployment-wide policy.
+
+Proof errors return `WWW-Authenticate: DPoP error="invalid_dpop_proof"` and
+JSON `{error: "invalid_dpop_proof", code, message}`. HTTP 401 uses these codes:
+
+- `invalid_dpop_proof`: malformed, invalid, or replayed proof.
+- `dpop_proof_required`: a bound token or grant needs a proof.
+- `dpop_key_mismatch`: the signing key does not match the binding.
+- `dpop_clock_skew`: `iat` is outside ±60 seconds; `server_time` and
+  `proof_time` give daemon and proof Unix timestamps in seconds.
+
+`dpop_cache_full` uses HTTP 503 and `Retry-After: 1`. The app retries a proof
+error once with a fresh proof, then explains the problem without deleting the
+saved target. Clock errors show the difference between the two clocks; check
+both devices, since either clock may be wrong. A lost or changed key sends the
+app to sign-in with the saved address and an explanation. Ordinary credential
+401 responses still clear a revoked target. Storage errors remain HTTP 500
+and do not look like revocation. See `docs/api.md` for the response contract.
 
 DPoP protects against reuse of a stolen device token without its private key.
 It does not hide traffic from Cloudflare, protect a compromised client that

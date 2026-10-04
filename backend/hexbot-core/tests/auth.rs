@@ -28,6 +28,7 @@ fn invitations_permissions_disable_and_reenable() {
         "Guest phone",
         "browser",
         "local",
+        None,
     )
     .unwrap();
     let token = device["device_token"].as_str().unwrap();
@@ -93,7 +94,8 @@ fn invitations_permissions_disable_and_reenable() {
             pending["code"].as_str().unwrap(),
             "Disabled",
             "browser",
-            "local"
+            "local",
+            None
         )
         .unwrap_err()
         .code,
@@ -147,7 +149,7 @@ fn concurrent_pairing_has_exactly_one_winner() {
             let b = barrier.clone();
             std::thread::spawn(move || {
                 b.wait();
-                auth::redeem_code_from(&h, &c, "Phone", "browser", "local")
+                auth::redeem_code_from(&h, &c, "Phone", "browser", "local", None)
             })
         })
         .collect();
@@ -179,7 +181,8 @@ fn replacement_expiry_hashes_and_rate_limits() {
             first["code"].as_str().unwrap(),
             "Phone",
             "browser",
-            "local"
+            "local",
+            None
         )
         .unwrap_err()
         .code,
@@ -191,6 +194,7 @@ fn replacement_expiry_hashes_and_rate_limits() {
         "Phone",
         "browser",
         "local",
+        None,
     )
     .unwrap();
     let token = device["device_token"].as_str().unwrap();
@@ -213,7 +217,8 @@ fn replacement_expiry_hashes_and_rate_limits() {
             expired["code"].as_str().unwrap(),
             "Phone",
             "browser",
-            "local"
+            "local",
+            None
         )
         .unwrap_err()
         .code,
@@ -221,14 +226,14 @@ fn replacement_expiry_hashes_and_rate_limits() {
     );
     for _ in 0..7 {
         assert_eq!(
-            auth::redeem_code_from(h, "invalid", "Phone", "browser", "local")
+            auth::redeem_code_from(h, "invalid", "Phone", "browser", "local", None)
                 .unwrap_err()
                 .code,
             4231
         );
     }
     assert_eq!(
-        auth::redeem_code_from(h, "invalid", "Phone", "browser", "local")
+        auth::redeem_code_from(h, "invalid", "Phone", "browser", "local", None)
             .unwrap_err()
             .code,
         4232
@@ -350,9 +355,16 @@ fn exhausted_client_cannot_redeem_valid_code_but_another_client_can() {
     let code = auth::new_code(home.path(), "local").unwrap();
     for _ in 0..10 {
         assert_eq!(
-            auth::redeem_code_from(home.path(), "wrong", "Phone", "browser", "192.168.1.2")
-                .unwrap_err()
-                .code,
+            auth::redeem_code_from(
+                home.path(),
+                "wrong",
+                "Phone",
+                "browser",
+                "192.168.1.2",
+                None
+            )
+            .unwrap_err()
+            .code,
             4231
         );
     }
@@ -362,7 +374,8 @@ fn exhausted_client_cannot_redeem_valid_code_but_another_client_can() {
             code["code"].as_str().unwrap(),
             "Phone",
             "browser",
-            "192.168.1.2"
+            "192.168.1.2",
+            None
         )
         .unwrap_err()
         .code,
@@ -374,7 +387,8 @@ fn exhausted_client_cannot_redeem_valid_code_but_another_client_can() {
             code["code"].as_str().unwrap(),
             "Laptop",
             "browser",
-            "192.168.1.3"
+            "192.168.1.3",
+            None
         )
         .is_ok()
     );
@@ -397,6 +411,7 @@ fn concurrent_grants_spend_once_and_disabled_owner_rolls_back() {
                     "connect",
                     "one-grant",
                     hexbot_core::common::now() + 300.,
+                    None,
                 )
             })
         })
@@ -422,7 +437,8 @@ fn concurrent_grants_spend_once_and_disabled_owner_rolls_back() {
             "Browser",
             "connect",
             "disabled",
-            hexbot_core::common::now() + 300.
+            hexbot_core::common::now() + 300.,
+            None
         )
         .is_err()
     );
@@ -576,7 +592,8 @@ fn startup_sign_in_code_preserves_outstanding_pairing_codes() {
                 code["code"].as_str().unwrap(),
                 "Browser",
                 "browser",
-                "local"
+                "local",
+                None
             )
             .is_ok()
         );
@@ -586,7 +603,8 @@ fn startup_sign_in_code_preserves_outstanding_pairing_codes() {
                 code["code"].as_str().unwrap(),
                 "Browser",
                 "browser",
-                "local"
+                "local",
+                None
             )
             .unwrap_err()
             .code,

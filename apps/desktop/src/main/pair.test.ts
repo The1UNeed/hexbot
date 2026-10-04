@@ -1,15 +1,22 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cookieValue, pairWithGrant } from './pair'
+
+import { cookieValue, pair, pairWithGrant } from './pair'
 
 afterEach(() => vi.unstubAllGlobals())
 
 describe('pair cookie parsing', () => {
   it('accepts port, HTTPS and legacy cookie names', () => {
-    for (const name of ['hermes_session_at', 'hermes_session_at_9119', '__Host-hermes_session_at', '__Secure-hermes_session_at_9119']) {
+    for (const name of [
+      'hermes_session_at',
+      'hermes_session_at_9119',
+      '__Host-hermes_session_at',
+      '__Secure-hermes_session_at_9119'
+    ]) {
       const headers = new Headers()
       headers.append('set-cookie', `${name}=fixture; Path=/`)
       expect(cookieValue(headers, 'hermes_session_at')).toBe('fixture')
     }
+
     const headers = new Headers()
     headers.append('set-cookie', 'hermes_session_at_other=fixture; Path=/')
     expect(cookieValue(headers, 'hermes_session_at')).toBeUndefined()
@@ -24,10 +31,12 @@ describe('pair cookie parsing', () => {
   it('redeems a Connect grant and verifies the returned cookie token', async () => {
     const loginHeaders = new Headers()
     loginHeaders.append('set-cookie', 'hermes_session_at=hxb_device; HttpOnly; Path=/')
+
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response('{}', { status: 200, headers: loginHeaders }))
       .mockResolvedValueOnce(new Response('{"ticket":"once"}', { status: 200 }))
+
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(
@@ -58,10 +67,12 @@ describe('pair cookie parsing', () => {
       'set-cookie',
       '__Host-hermes_session_at=hxb_secure; Secure; HttpOnly; Path=/'
     )
+
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response('{}', { status: 200, headers: loginHeaders }))
       .mockResolvedValueOnce(new Response('{"ticket":"once"}', { status: 200 }))
+
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(
@@ -79,7 +90,40 @@ it('forwards a renderer proof to old and new daemons and lets the renderer verif
   const headers = new Headers({ 'set-cookie': 'hermes_session_at=hxb_device; HttpOnly; Path=/' })
   const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { headers }))
   vi.stubGlobal('fetch', fetchMock)
-  await expect(pairWithGrant({ host: 'daemon.test', grant: 'grant', deviceName: 'app', proof: 'signed-proof' })).resolves.toBe('hxb_device')
+  await expect(
+    pairWithGrant({ host: 'daemon.test', grant: 'grant', deviceName: 'app', proof: 'signed-proof' })
+  ).resolves.toBe('hxb_device')
   expect(fetchMock).toHaveBeenCalledTimes(1)
-  expect(fetchMock).toHaveBeenCalledWith('https://daemon.test/auth/password-login', expect.objectContaining({ headers: { 'content-type': 'application/json', DPoP: 'signed-proof' } }))
+  expect(fetchMock).toHaveBeenCalledWith(
+    'https://daemon.test/auth/password-login',
+    expect.objectContaining({
+      headers: { 'content-type': 'application/json', DPoP: 'signed-proof' }
+    })
+  )
+})
+
+it('explains clock skew at both pairing entry points', async () => {
+  const fetchMock = vi
+    .fn<typeof fetch>()
+    .mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({ code: 'dpop_clock_skew', server_time: 1000, proof_time: 1600 }),
+          { status: 401 }
+        )
+    )
+
+  vi.stubGlobal('fetch', fetchMock)
+  await expect(
+    pairWithGrant({ host: 'daemon.test', grant: 'grant', deviceName: 'app', proof: 'proof' })
+  ).rejects.toThrow(/clock differs.*10 minutes/)
+  await expect(
+    pair({
+      host: 'daemon.test',
+      port: 443,
+      code: 'code',
+      deviceName: 'app',
+      proof: 'proof'
+    })
+  ).rejects.toThrow(/clock differs.*10 minutes/)
 })

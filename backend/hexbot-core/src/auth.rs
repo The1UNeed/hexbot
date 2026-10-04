@@ -137,15 +137,6 @@ pub fn redeem_verified_grant(
     platform: &str,
     jti: &str,
     exp: f64,
-) -> Result<Value> {
-    redeem_verified_grant_bound(home, name, platform, jti, exp, None)
-}
-pub fn redeem_verified_grant_bound(
-    home: &Path,
-    name: &str,
-    platform: &str,
-    jti: &str,
-    exp: f64,
     jkt: Option<&str>,
 ) -> Result<Value> {
     let mut conn = db::open(home)?;
@@ -177,18 +168,9 @@ pub fn redeem_code_from(
     device_name: &str,
     platform: &str,
     client: &str,
-) -> Result<Value> {
-    check_attempt(home, client)?;
-    redeem_code_bound(home, code, device_name, platform, None)
-}
-/// HTTP callers rate-limit before validating or caching an unauthenticated proof.
-pub(crate) fn redeem_code_bound(
-    home: &Path,
-    code: &str,
-    device_name: &str,
-    platform: &str,
     jkt: Option<&str>,
 ) -> Result<Value> {
+    check_attempt(home, client)?;
     let mut conn = db::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let hash = digest(&normalize_code(code));
@@ -220,12 +202,22 @@ pub fn verify_token(home: &Path, token: &str) -> Result<Option<Value>> {
     verify_token_with(&conn, token)
 }
 pub fn verify_token_with(conn: &Connection, token: &str) -> Result<Option<Value>> {
+    let Some(mut device) = lookup_token_with(conn, token)? else {
+        return Ok(None);
+    };
+    touch_device(conn, &mut device)?;
+    Ok(Some(device))
+}
+pub(crate) fn lookup_token_with(conn: &Connection, token: &str) -> Result<Option<Value>> {
     let sql = format!(
         "SELECT {DEVICE_COLUMNS} FROM devices d JOIN users u ON u.id=d.owner_id WHERE d.token_hash=? AND d.revoked_at IS NULL AND u.disabled_at IS NULL"
     );
-    let Some(mut device) = rows(conn, &sql, &[&digest(token)])?.into_iter().next() else {
+    let Some(device) = rows(conn, &sql, &[&digest(token)])?.into_iter().next() else {
         return Ok(None);
     };
+    Ok(Some(device))
+}
+pub(crate) fn touch_device(conn: &Connection, device: &mut Value) -> Result<()> {
     let time = now();
     if time - device["last_seen_at"].as_f64().unwrap_or(0.) >= 60. {
         conn.execute(
@@ -234,7 +226,7 @@ pub fn verify_token_with(conn: &Connection, token: &str) -> Result<Option<Value>
         )?;
         device["last_seen_at"] = json!(time);
     }
-    Ok(Some(device))
+    Ok(())
 }
 /// Recover or atomically replace the local credential while serializing other creators.
 pub fn local_token(home: &Path) -> Result<String> {

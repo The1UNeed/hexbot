@@ -36,6 +36,7 @@ describe('ConnectionLost', () => {
     useConnection.setState({
       attempt: 0,
       daemon: null,
+      error: null,
       status: 'connected',
       target: { kind: 'local' }
     })
@@ -93,6 +94,22 @@ describe('ConnectionLost', () => {
     render(<Harness />)
 
     expect(screen.getByText('app')).toBeInTheDocument()
+  })
+
+  it('shows proof errors and offers an explicit retry without claiming to reconnect', () => {
+    useConnection.setState({
+      status: 'offline',
+      error:
+        "This device's clock differs from the daemon by 10 minutes. Check both clocks, then retry."
+    })
+    render(<Harness />)
+
+    expect(screen.getByRole('alertdialog')).toHaveTextContent(
+      'clock differs from the daemon by 10 minutes'
+    )
+    expect(screen.getByRole('status')).toHaveTextContent('Retry when ready.')
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect now' }))
+    expect(retryNow).toHaveBeenCalledOnce()
   })
 
   it('retries now and offers another daemon', () => {
