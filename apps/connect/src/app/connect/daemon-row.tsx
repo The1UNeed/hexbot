@@ -45,12 +45,13 @@ export function DaemonRow({ daemon }: { daemon: DaemonView }) {
           </div>
         )}
         <span className="hostname">{daemon.hostname}</span>
+        {daemon.status === "online" ? null : <p className="meta">{openHint(daemon)}</p>}
         {error ? <p className="small danger" role="alert">{error}</p> : null}
       </div>
       <div className="actions">
         {daemon.status === "online"
           ? <a className="button button-sm" href={daemon.openUrl} onClick={() => track("connect_daemon_opened", { how: "browser" })}>Open in browser</a>
-          : <button className="button button-sm" disabled title={openHint(daemon)} type="button">Open in browser</button>}
+          : <button className="button button-sm" disabled type="button">Open in browser</button>}
         <button className="button button-sm button-quiet" disabled={pending || editing} onClick={() => setEditing(true)} type="button">Rename</button>
         <button className="button button-sm button-danger" disabled={pending} onClick={revoke} type="button">Revoke</button>
       </div>
