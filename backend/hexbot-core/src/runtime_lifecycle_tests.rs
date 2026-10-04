@@ -1583,6 +1583,24 @@ async fn a_section_with_a_provider_but_no_model_starts() {
 }
 
 #[tokio::test]
+async fn a_section_starts_at_the_bots_reasoning_level() {
+    let (home, runtime, _) = setup();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\n  reasoning_effort: high\ntools:\n  enabled_toolsets: []\n",
+    )
+    .unwrap();
+    open(&runtime).await;
+    let args = processes(home.path())[0]["args"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let at = args.iter().position(|a| a == "--thinking").unwrap();
+    assert_eq!(args[at + 1], "high");
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn provider_without_model_leaves_the_choice_to_pi() {
     let (home, runtime, _) = setup();
     team_pi(home.path());

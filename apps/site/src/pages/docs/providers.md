@@ -25,6 +25,8 @@ Treat provider keys like passwords. Do not paste them into a chat, a bot persona
 
 Each bot has a provider and model. The picker combines a short curated list with models reported by configured providers. A section can also carry a temporary model override.
 
+Each bot also has a reasoning level, from Off to Max, in its Model settings. Higher levels think longer before answering and use more tokens. The default is Medium. A model uses the closest level it supports, and models without reasoning ignore it. A new level applies to new sections; open sections keep the level they started with.
+
 LM Studio lists the models available at its local `/v1/models` endpoint when you open its model picker. Start LM Studio's server before choosing a model. If discovery fails, the daemon's current configured model stays in the list.
 
 Model names, prices, context limits, and availability can change. Check the provider's own pricing page before using an unfamiliar model or enabling long unattended tasks.

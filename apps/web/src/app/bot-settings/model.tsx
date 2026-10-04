@@ -2,10 +2,20 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Select } from '../../components/ui/select'
 import { modelsList } from '../../lib/api'
-import type { Bot, ModelOption } from '../../lib/types'
+import type { Bot, ModelOption, ReasoningEffort } from '../../lib/types'
 import { useSettings } from '../../stores/settings'
 
 import { errorText, Group, Heading, Row, type SaveBot } from './shared'
+
+const REASONING: { label: string; value: ReasoningEffort }[] = [
+  { label: 'Off', value: 'off' },
+  { label: 'Minimal', value: 'minimal' },
+  { label: 'Low', value: 'low' },
+  { label: 'Medium', value: 'medium' },
+  { label: 'High', value: 'high' },
+  { label: 'Extra high', value: 'xhigh' },
+  { label: 'Max', value: 'max' }
+]
 
 export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const [models, setModels] = useState<{ all: ModelOption[]; curated: ModelOption[] }>({
@@ -49,7 +59,7 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
 
   return (
     <div>
-      <Heading description="Which provider and model this bot thinks with. Keys live in Settings, Providers.">
+      <Heading description="Which provider and model this bot thinks with, and how hard. Keys live in Settings, Providers.">
         Model
       </Heading>
       <div className="space-y-8">
@@ -94,6 +104,23 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
               </div>
             }
             title="Model"
+          />
+        </Group>
+        <Group footer="Higher levels think longer and use more tokens. Each model uses the closest level it supports. Applies to new sections.">
+          <Row
+            control={
+              <div className="w-[min(280px,42vw)]">
+                <Select
+                  label="Reasoning"
+                  onValueChange={value =>
+                    void onSave({ reasoning_effort: value as ReasoningEffort })
+                  }
+                  options={REASONING}
+                  value={bot.reasoning_effort ?? 'medium'}
+                />
+              </div>
+            }
+            title="Reasoning"
           />
         </Group>
         {current && (current.input_cost || current.output_cost || current.context) ? (

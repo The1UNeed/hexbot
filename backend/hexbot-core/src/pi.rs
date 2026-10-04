@@ -23,6 +23,9 @@ use tokio::{
     sync::{Semaphore, mpsc, oneshot, watch},
 };
 
+/// The levels Pi's `--thinking` accepts; Pi clamps each to what the model supports.
+pub const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PiError {
     #[error("invalid bot transport configuration: {0}")]

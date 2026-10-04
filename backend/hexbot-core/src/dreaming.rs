@@ -1584,7 +1584,7 @@ fn validate_job(home: &Path, job: &Value) -> Result<()> {
         common::check_workdir(home, cwd)?;
     }
     if let Some(level) = job["reasoning_effort"].as_str().filter(|s| !s.is_empty())
-        && !["off", "minimal", "low", "medium", "high", "xhigh"].contains(&level)
+        && !crate::pi::THINKING_LEVELS.contains(&level)
     {
         return Err(Error::new(4202, "invalid scheduled reasoning effort"));
     }

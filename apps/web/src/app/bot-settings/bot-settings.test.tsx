@@ -7,6 +7,7 @@ import { useConnectors } from '../../stores/connectors'
 
 import { ConnectorsTab } from './connectors'
 import { DreamingBlock, MemoryEditor } from './memory'
+import { ModelTab } from './model'
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
@@ -164,6 +165,25 @@ describe('dreaming block', () => {
     confirm.mockRestore()
     expect(call).toHaveBeenCalledWith('hexbot.dreaming.restore', { id: 'd1' })
     setActiveRpc(null)
+  })
+})
+
+describe('model tab', () => {
+  it('shows the default reasoning level and saves a new one', async () => {
+    fakeRpc({
+      'hexbot.models.list': () => ({ all: [], curated: [] }),
+      'hexbot.providers.list': () => ({ providers: [] })
+    })
+    const save = vi.fn()
+    render(<ModelTab bot={bot} onSave={save} />)
+    const reasoning = screen.getByRole('combobox', { name: 'Reasoning' })
+    expect(reasoning).toHaveTextContent('Medium')
+    fireEvent.click(reasoning)
+    const high = await screen.findByRole('option', { name: 'High' })
+    // Base UI commits only a highlighted item, as a pointer over it would be.
+    fireEvent.mouseMove(high)
+    fireEvent.click(high)
+    expect(save).toHaveBeenCalledWith({ reasoning_effort: 'high' })
   })
 })
 

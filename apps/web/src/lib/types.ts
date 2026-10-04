@@ -105,6 +105,8 @@ export interface Bot {
   owner_id: string
   persona: string
   provider: null | string
+  /** How hard the model thinks in new sections; null means Pi's default, medium. */
+  reasoning_effort?: null | ReasoningEffort
   sections_recent: Section[]
   sections_total: number
   skills: string[]
@@ -116,6 +118,9 @@ export interface Bot {
   /** Per-bot working directory; null means the deployment workspace. */
   workdir?: null | string
 }
+
+/** Pi's thinking levels; Pi clamps each to what the model supports. */
+export type ReasoningEffort = 'high' | 'low' | 'max' | 'medium' | 'minimal' | 'off' | 'xhigh'
 
 /** Keys of `Bot.tools`; each maps to one Hexbot toolset on the daemon. */
 export type BotTool =
@@ -148,6 +153,7 @@ export type BotUpdatePatch = Partial<Omit<BotCreateInput, 'avatar' | 'name'>> & 
   avatar?: null | string
   dream_enabled?: boolean
   notify?: boolean
+  reasoning_effort?: null | ReasoningEffort
   shareable?: boolean
   workdir?: null | string
 }

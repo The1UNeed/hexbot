@@ -511,10 +511,12 @@ impl Runtime {
                 "restricted": restricted,
                 "skills": skills,
                 "cwd": cwd,
+                // A scheduled job's level wins over the bot's.
                 "reasoning_effort": overrides
-                    .and_then(|p| p.get("reasoning_effort"))
-                    .cloned()
-                    .unwrap_or(Value::Null)
+                    .and_then(|p| p["reasoning_effort"].as_str())
+                    .filter(|s| !s.is_empty())
+                    .or(config["model"]["reasoning_effort"].as_str())
+                    .map_or(Value::Null, Value::from)
             });
             if opts["model"].as_str().unwrap_or("").is_empty() {
                 opts["model"] = config["model"].clone();

@@ -101,6 +101,34 @@ fn lifecycle_preserves_memory_and_reopens_archived_sections() {
     assert_eq!(updated["bot"]["tools"], json!(["files"]));
     assert_eq!(updated["bot"]["workdir"], "/tmp/work");
     assert_eq!(updated["bot"]["dream_enabled"], false);
+    assert_eq!(updated["bot"]["reasoning_effort"], Value::Null);
+    let updated = call(
+        h,
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"research-owl","reasoning_effort":"high"}),
+    );
+    assert_eq!(updated["bot"]["reasoning_effort"], "high");
+    assert_eq!(updated["bot"]["model"], "model-b");
+    assert_eq!(
+        catalog::call(
+            h,
+            "alice",
+            "hexbot.bots.update",
+            &json!({"name":"research-owl","reasoning_effort":"loud"})
+        )
+        .unwrap()
+        .unwrap_err()
+        .code,
+        4202
+    );
+    let updated = call(
+        h,
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"research-owl","reasoning_effort":null}),
+    );
+    assert_eq!(updated["bot"]["reasoning_effort"], Value::Null);
     call(
         h,
         "alice",
