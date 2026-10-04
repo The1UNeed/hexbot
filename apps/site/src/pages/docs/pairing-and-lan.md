@@ -8,14 +8,15 @@ A fresh daemon listens only on its own computer. Turn on "Allow other devices" b
 
 ## On the daemon computer
 
-Open network settings and enable LAN access, or run:
+Open Settings, Network and enable **Allow other devices**. If you start a standalone daemon from a terminal, use `hexbot serve --lan`.
+
+Then create a pairing code in Network settings or run:
 
 ```sh
 hexbot pair
 ```
 
-Hexbot shows the daemon's local addresses, a short code, and a QR or pairing link. The code expires after ten minutes and works once. The address list includes every active IPv4 interface, so choose the LAN address
-when a VPN or Tailscale address also appears.
+Network settings shows the daemon's local addresses, a short code, and a QR or pairing link. The CLI prints a reachable address and terminal QR code. The code expires after ten minutes and works once. Creating a code does not enable LAN access. Choose the LAN address when a VPN or Tailscale address also appears.
 
 Enabling LAN access makes the daemon listen on all network interfaces. Your router still decides whether devices can reach one another. Guest Wi-Fi networks often block local device traffic.
 
@@ -29,7 +30,7 @@ The app exchanges the one-time code for a device token. It stores that token loc
 
 ## Revoke a device
 
-The daemon owner can view paired devices in settings and revoke any device. Revocation invalidates its token. Pair that device again if you want to restore access.
+The daemon owner can view paired devices in settings and revoke any device. Revocation invalidates its token, closes its connection, and returns the app to the connect screen. Pair that device again if you want to restore access.
 
 ## Troubleshooting
 

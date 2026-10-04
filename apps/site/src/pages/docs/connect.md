@@ -18,7 +18,13 @@ On the machine that runs your bots, run:
 hexbot connect
 ```
 
-It prints an address and an eight-character code. Open the address, sign in, and approve the code. The daemon stores its Connect credentials in `~/.hexbot/connect.json`, starts its tunnel whenever `hexbot serve` runs, and reports in every five minutes. Your daemons page shows a daemon as online only when its address answers; a daemon that reports in but whose tunnel is down shows as running but not reachable, and one that has not reported in for ten minutes shows as offline. If the tunnel disappears on Cloudflare's side, the daemon proves its tunnel credentials to Connect, repairs it, and keeps the same address. Tunnels registered before credential proofs were introduced, or before the service signing key was rotated, need `hexbot connect` again if repair fails. Give the daemon a different name with `hexbot connect --name "Studio Mac"`. A daemon registered before owner pinning ignores its old registration and asks you to run `hexbot connect` again.
+It prints an address and an eight-character code. Open the address, sign in, and approve the code. The daemon stores its Connect credentials in `~/.hexbot/connect.json`, starts its tunnel whenever `hexbot serve` runs, and reports in every five minutes. Give the daemon a different name with `hexbot connect --name "Studio Mac"`.
+
+The native daemon downloads a pinned, checksum-verified `cloudflared` binary for its tunnel. Standalone installations still need Node for the Pi agent runtime; see [Run from source](/docs/development/).
+
+Your daemons page shows a daemon as online only when its address answers. A daemon that reports in but whose tunnel is down shows as running but not reachable, and one that has not reported in for ten minutes shows as offline.
+
+If the tunnel disappears on Cloudflare's side, the daemon proves its tunnel credentials to Connect, repairs it, and keeps the same address. Tunnels registered before credential proofs were introduced, or before the service signing key was rotated, need `hexbot connect` again if repair fails. A daemon registered before owner pinning ignores its old registration and asks you to run `hexbot connect` again.
 
 You can also register from the app: open Settings, choose Connect, and press **Sign in and register**. The app shows the same code and starts the tunnel as soon as you approve it.
 
@@ -50,4 +56,4 @@ The Connect service is AGPL software in `apps/connect`. Running your own instanc
 
 Point a daemon at your instance with the `HEXBOT_CONNECT_URL` environment variable before running `hexbot connect` and `hexbot serve`. Point the app at it by setting `hexbot.connect.url` in the web bundle's local storage, or `VITE_HEXBOT_CONNECT_URL` when building the bundle. Self-hosting the daemon alone does not require any of these services.
 
-See `apps/connect/README.md` in the repository for the deployment checklist.
+See [apps/connect/README.md](https://github.com/The1UNeed/hexbot/blob/main/apps/connect/README.md) in the repository for the deployment checklist.
