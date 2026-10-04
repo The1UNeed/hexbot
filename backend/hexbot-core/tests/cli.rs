@@ -347,6 +347,65 @@ async fn offline_connect_registration_saves_without_spawning_tunnel() {
     server.abort();
 }
 
+/// `hexbot connect disconnect` against a running daemon goes through its socket, so the
+/// daemon itself drops the registration: the Hex Connect login button goes at once.
+#[tokio::test]
+async fn online_connect_disconnect_takes_effect_in_the_running_daemon() {
+    let connect = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let connect_address = connect.local_addr().unwrap();
+    let connect_server = tokio::spawn(async move {
+        axum::serve(
+            connect,
+            axum::Router::new().fallback(axum::routing::any(|| async {
+                axum::Json(json!({"ok":true}))
+            })),
+        )
+        .await
+        .unwrap()
+    });
+    let h = home();
+    fs::write(
+        h.path().join("connect.json"),
+        json!({"api_base":format!("http://{connect_address}"),"daemon_id":"daemon-1","daemon_token":"daemon-secret","slug":"kitchen","tunnel_hostname":"kitchen.connect.example","tunnel_token":"tunnel-secret","owner_id":"cloud-user","issuer":"https://connect.hexbot.app","keys":[{"kid":"fixture"}]}).to_string(),
+    )
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = App::new(h.path().to_owned(), address, fake_pi(h.path()), None).unwrap();
+    common::atomic_write(
+        &h.path().join("serve-state.json"),
+        json!({"host":"127.0.0.1","port":address.port()})
+            .to_string()
+            .as_bytes(),
+    )
+    .unwrap();
+    let router = server::router(app.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let offers_connect = || async {
+        client
+            .get(format!("http://{address}/api/auth/providers"))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|provider| provider["name"] == "connect")
+    };
+    assert!(offers_connect().await);
+    let result = run(h.path(), &["connect", "disconnect"]).await;
+    assert_eq!(result["registered"], false);
+    assert!(!h.path().join("connect.json").exists());
+    assert!(!offers_connect().await);
+    app.shutdown().await;
+    server.abort();
+    connect_server.abort();
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn disconnected_one_shot_request_closes_session_and_reaps_owned_pi() {

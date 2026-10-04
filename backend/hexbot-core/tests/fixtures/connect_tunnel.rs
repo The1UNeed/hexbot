@@ -1,6 +1,6 @@
 use crate::{common, db, services};
 use serde_json::{Value, json};
-use std::fs;
+use std::{fs, time::Duration};
 #[path = "connect_mock.rs"]
 mod connect_mock;
 use connect_mock::{Mock, jwks};
@@ -102,6 +102,147 @@ async fn approved_registration_starts_tunnel_heartbeats_and_disconnect_reaps() {
             .get("dashboard")
             .is_none()
     );
+    services::shutdown(home.path()).await.unwrap();
+}
+
+/// A cloudflared stand-in: reports its start (pid and token) to the mock, then runs
+/// `after_start` (JavaScript), and otherwise waits for SIGTERM.
+#[cfg(unix)]
+fn stand_in_cloudflared(
+    home: &std::path::Path,
+    base: &str,
+    after_start: &str,
+) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let binary = home.join("bin/cloudflared");
+    fs::create_dir_all(binary.parent().unwrap()).unwrap();
+    fs::write(
+        &binary,
+        format!(
+            "#!/usr/bin/env node\nprocess.on('SIGTERM',()=>process.exit(0));\nsetTimeout(()=>process.exit(0),20000);\nfetch({}+'/tunnel_started',{{method:'POST',body:JSON.stringify({{pid:process.pid,token:process.env.TUNNEL_TOKEN}})}}).then(()=>{{{after_start}}});\n",
+            serde_json::to_string(base).unwrap()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    binary
+}
+
+/// Waits, without sleeping, until the service reports `error`.
+async fn wait_for_error(
+    service: &super::Service,
+    changes: &mut tokio::sync::watch::Receiver<u64>,
+    error: &str,
+) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if service.data.lock().await.error.as_deref() == Some(error) {
+                return;
+            }
+            changes.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("service never reported {error:?}"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn revoked_in_connect_drops_the_registration_and_stops_the_tunnel() {
+    let mut mock = Mock::new().await;
+    let home = home();
+    mock.persist_registration(home.path());
+    services::apply_public_url(home.path(), Some("kitchen.connect.example")).unwrap();
+    mock.data.overrides.lock().await.insert(
+        "/api/daemons/daemon-1/heartbeat".into(),
+        (410, json!({"error":"daemon_revoked","message":"revoked"})),
+    );
+    let binary = stand_in_cloudflared(home.path(), &mock.base, "");
+    let service = super::service(home.path()).await.unwrap();
+    let mut changes = service.changed.subscribe();
+    super::run_tunnel(
+        home.path(),
+        9119,
+        service.clone(),
+        services::ConnectConfig::load(home.path()).unwrap().unwrap(),
+        binary,
+    )
+    .await
+    .unwrap();
+    // The first heartbeat goes out at once, before the stand-in has even started, so the
+    // tunnel is checked through the workers it belongs to (the disconnect test checks the pid).
+    let (_, authorization) = mock.event("/api/daemons/daemon-1/heartbeat").await;
+    assert_eq!(authorization, "Bearer daemon-secret");
+    wait_for_error(&service, &mut changes, super::REVOKED_REASON).await;
+    assert!(!home.path().join("connect.json").exists());
+    assert!(service.workers.lock().await.is_none());
+    assert!(
+        common::read_config(home.path())
+            .unwrap()
+            .get("dashboard")
+            .is_none()
+    );
+    let state = services::call(home.path(), "local", "hexbot.connect.status", &json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state["registered"], false);
+    assert_eq!(state["tunnel_running"], false);
+    assert_eq!(state["last_heartbeat_at"], Value::Null);
+    assert_eq!(state["last_error"], "Removed in Hex Connect");
+    // Dropping after a revoke never calls DELETE: Connect already forgot the daemon.
+    while let Ok((path, _, _)) = mock.events.try_recv() {
+        assert_ne!(path, "/api/daemons/daemon-1");
+    }
+    services::shutdown(home.path()).await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn connect_errors_other_than_revoked_keep_the_registration() {
+    let mut mock = Mock::new().await;
+    let home = home();
+    mock.persist_registration(home.path());
+    let binary = stand_in_cloudflared(home.path(), &mock.base, "");
+    let service = super::service(home.path()).await.unwrap();
+    for (status, body) in [
+        (401, json!({"error":"unauthorized"})),
+        (500, json!({"error":"daemon_revoked"})),
+        (410, json!({"error":"expired"})),
+        (410, json!("not an object")),
+    ] {
+        mock.data
+            .overrides
+            .lock()
+            .await
+            .insert("/api/daemons/daemon-1/heartbeat".into(), (status, body));
+        let mut changes = service.changed.subscribe();
+        super::run_tunnel(
+            home.path(),
+            9119,
+            service.clone(),
+            services::ConnectConfig::load(home.path()).unwrap().unwrap(),
+            binary.clone(),
+        )
+        .await
+        .unwrap();
+        mock.event("/tunnel_started").await;
+        mock.event("/api/daemons/daemon-1/heartbeat").await;
+        wait_for_error(
+            &service,
+            &mut changes,
+            &format!("Hex Connect service returned HTTP {status}"),
+        )
+        .await;
+        assert!(home.path().join("connect.json").exists());
+        let state = services::call(home.path(), "local", "hexbot.connect.status", &json!({}))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state["registered"], true);
+        assert_eq!(state["tunnel_running"], true);
+        super::stop_workers(&service).await;
+    }
     services::shutdown(home.path()).await.unwrap();
 }
 

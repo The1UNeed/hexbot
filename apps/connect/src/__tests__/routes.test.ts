@@ -105,6 +105,23 @@ describe("client authorization", () => {
   });
 });
 
+describe("revoked daemon", () => {
+  it("answers 410 daemon_revoked to the revoked daemon's own token, and 401 to an unknown one", async () => {
+    const { started, approved } = await registration();
+    const token = (await (await poll(request("/api/register/poll", { device_code: started.device_code }))).json()).daemon_token;
+    const params = { params: Promise.resolve({ id: approved.daemon_id }) };
+    expect((await heartbeat(request(`/api/daemons/${approved.daemon_id}/heartbeat`, { port: 9119 }, token), params)).status).toBe(200);
+    await store.revokeDaemon(approved.daemon_id, new Date());
+    const revoked = await heartbeat(request(`/api/daemons/${approved.daemon_id}/heartbeat`, { port: 9119 }, token), params);
+    expect(revoked.status).toBe(410);
+    expect((await revoked.json()).error).toBe("daemon_revoked");
+    expect((await remove(request(`/api/daemons/${approved.daemon_id}`, undefined, token, "DELETE"), params)).status).toBe(410);
+    const unknown = await heartbeat(request(`/api/daemons/${approved.daemon_id}/heartbeat`, { port: 9119 }, "hxd_unknown"), params);
+    expect(unknown.status).toBe(401);
+    expect((await unknown.json()).error).toBe("unauthorized");
+  });
+});
+
 describe("daemon self-revocation", () => {
   it("lets a daemon revoke itself with its own token, but not another daemon", async () => {
     const first = await registration(); const second = await registration();

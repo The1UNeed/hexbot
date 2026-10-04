@@ -25,7 +25,7 @@ export function DaemonRow({ daemon }: { daemon: DaemonView }) {
     if (result.ok) { setEditing(false); track("connect_daemon_renamed"); }
   });
   const revoke = () => {
-    if (!window.confirm(`Revoke ${daemon.name}? Its tunnel closes and apps signed in through Connect lose the way in. The daemon keeps working on its own network.`)) return;
+    if (!window.confirm(`Revoke ${daemon.name}? Its tunnel closes and apps signed in through Connect lose the way in. Hexbot on the current version disconnects within a few minutes; older versions stop working but keep the setting until you disconnect them. The daemon keeps working on its own network.`)) return;
     start(async () => { const result = await revokeDaemon(daemon.id); setError(result.error ?? null); if (result.ok) track("connect_daemon_revoked"); });
   };
 
