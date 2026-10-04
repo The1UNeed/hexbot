@@ -50,7 +50,7 @@ test('case cannot disguise credential or host configuration paths on case-insens
   const f = fixture(t, 'manual', ['file']);
   mkdirSync(join(f.home, 'profiles/owl'), {recursive:true});
   writeFileSync(join(f.home, 'profiles/owl/auth.json'), 'secret');
-  for (const path of ['profiles/owl/AUTH.JSON', 'PROFILES/OWL/auth.json', '.ENV', 'Connect.JSON', 'profiles/owl/.Env']) {
+  for (const path of ['profiles/owl/AUTH.JSON', 'PROFILES/OWL/auth.json', '.ENV', 'CONNECT-IDENTITY.KEY', 'Connect.JSON', 'profiles/owl/.Env']) {
     assert.equal(credentialPath(join(f.home, path), f.home), true, path);
     assert.equal((await f.gate('read', {path:join(f.home, path)}))?.block, true, path);
     await assert.rejects(f.swap('read', {path:join(f.home, 'safe.txt')}, {path:join(f.home, path)}), /Credential/, path);
@@ -474,4 +474,17 @@ test('execution refuses a call whose mode or file changed after the gate allowed
   rmSync(join(work, 'link')); symlinkSync(outside, join(work, 'link'));
   await assert.rejects(f.tools.write.execute('swap', {path:'link/note.txt', content:'x'}, undefined, undefined, f.ctx), /file changed/);
   assert.equal(f.choices.length, 0);
+});
+
+for (const mode of ['manual', 'smart']) test(`identity keys are blocked by both file guard stages in ${mode}`, async t => {
+  const f = fixture(t, mode, ['file']);
+  mkdirSync(join(f.home, 'nested'));
+  for (const name of ['connect-identity.key', 'nested/connect-identity.key']) {
+    const path = join(f.home, name);
+    writeFileSync(path, 'private key');
+    assert.equal(credentialPath(path, f.home), true);
+    assert.equal((await f.gate('read', {path}))?.block, true);
+    await assert.rejects(f.swap('read', {path:join(f.home, 'safe.txt')}, {path}), /Credential/);
+  }
+  assert.equal(credentialPath(join(f.home, '../connect-identity.key'), f.home), false);
 });

@@ -19,7 +19,7 @@ test('sandbox protects newly created secrets and home writes but permits output 
   for (const dir of [work, join(home,'profiles/owl'), join(home,'bin'), join(home,'hooks'), join(home,'skills'), join(home,'profiles/owl/artifacts'), join(home,'runtime/sessions/one/attachments')]) mkdirSync(dir,{recursive:true});
   writeFileSync(join(base,'auth.json'),'outside');
   writeFileSync(join(base,'.env'),'outside');
-  const script = `echo ready; read -r go; cat '${home}/profiles/owl/.env' >/dev/null 2>&1 && exit 10; cat '${home}/profiles/owl/auth.json' >/dev/null 2>&1 && exit 13; cat '${base}/auth.json' || exit 11; cat '${base}/.env' || exit 14; for p in config.yaml bin/script hooks/script skills/script profiles/owl/config.yaml workspace/result; do (echo bad > '${home}'/"$p") 2>/dev/null && exit 12; done; echo ok > '${home}/profiles/owl/artifacts/result'; echo ok > '${home}/runtime/sessions/one/attachments/result'; echo ok > '${base}/normal-workspace'; echo done`;
+  const script = `echo ready; read -r go; cat '${home}/profiles/owl/.env' >/dev/null 2>&1 && exit 10; cat '${home}/profiles/owl/auth.json' >/dev/null 2>&1 && exit 13; cat '${home}/connect-identity.key' >/dev/null 2>&1 && exit 19; cat '${home}/profiles/owl/connect-identity.key' >/dev/null 2>&1 && exit 20; cat '${base}/auth.json' || exit 11; cat '${base}/.env' || exit 14; for p in config.yaml bin/script hooks/script skills/script profiles/owl/config.yaml workspace/result; do (echo bad > '${home}'/"$p") 2>/dev/null && exit 12; done; echo ok > '${home}/profiles/owl/artifacts/result'; echo ok > '${home}/runtime/sessions/one/attachments/result'; echo ok > '${base}/normal-workspace'; echo done`;
   // The cwd is the in-home workspace; it stays read-only like the rest of the home.
   const child = spawn('/bin/bash', ['-c',isolatedCommand(script,home,[join(home,'profiles/owl/artifacts'),join(home,'runtime/sessions/one/attachments')])], {cwd:work, stdio:['pipe','pipe','pipe']});
   t.after(() => {if(child.exitCode === null) child.kill();});
@@ -27,7 +27,7 @@ test('sandbox protects newly created secrets and home writes but permits output 
   const exited = new Promise(resolve => child.on('close',resolve));
   const lines = createInterface({input:child.stdout});
   for await (const line of lines) {
-    if (line === 'ready') {writeFileSync(join(home,'profiles/owl/.env'),'secret'); writeFileSync(join(home,'profiles/owl/auth.json'),'secret'); child.stdin.end('go\n');}
+    if (line === 'ready') {writeFileSync(join(home,'profiles/owl/.env'),'secret'); writeFileSync(join(home,'profiles/owl/auth.json'),'secret'); writeFileSync(join(home,'connect-identity.key'),'secret'); writeFileSync(join(home,'profiles/owl/connect-identity.key'),'secret'); child.stdin.end('go\n');}
   }
   assert.equal(await exited,0,stderr);
 });
@@ -79,10 +79,10 @@ test('bubblewrap masks secrets, keeps the home read-only and reopens output fold
   t.after(() => rmSync(base, {recursive:true, force:true}));
   const home = join(base, 'home'), work = join(home, 'workspace');
   for (const dir of [work, join(home,'profiles/owl'), join(home,'bin'), join(home,'hooks'), join(home,'skills'), join(home,'profiles/owl/artifacts'), join(home,'runtime/sessions/one/attachments'), join(home,'desktop-data')]) mkdirSync(dir,{recursive:true});
-  for (const file of ['profiles/owl/.env', 'profiles/owl/auth.json', 'desktop-data/token']) writeFileSync(join(home, file), 'secret');
+  for (const file of ['connect-identity.key', 'profiles/owl/connect-identity.key', 'profiles/owl/.env', 'profiles/owl/auth.json', 'desktop-data/token']) writeFileSync(join(home, file), 'secret');
   writeFileSync(join(base,'auth.json'),'outside');
   writeFileSync(join(base,'.env'),'outside');
-  const script = `cat '${home}/profiles/owl/.env' >/dev/null 2>&1 && exit 10; cat '${home}/profiles/owl/auth.json' >/dev/null 2>&1 && exit 13; [ -z "$(ls -A '${home}/desktop-data')" ] || exit 15; cat '${base}/auth.json' || exit 11; cat '${base}/.env' || exit 14; for p in config.yaml bin/script hooks/script skills/script profiles/owl/config.yaml workspace/result; do (echo bad > '${home}'/"$p") 2>/dev/null && exit 12; done; echo ok > '${home}/profiles/owl/artifacts/result' || exit 16; echo ok > '${home}/runtime/sessions/one/attachments/result' || exit 17; echo ok > '${base}/normal-workspace' || exit 18; echo done`;
+  const script = `cat '${home}/profiles/owl/.env' >/dev/null 2>&1 && exit 10; cat '${home}/profiles/owl/auth.json' >/dev/null 2>&1 && exit 13; cat '${home}/connect-identity.key' >/dev/null 2>&1 && exit 19; cat '${home}/profiles/owl/connect-identity.key' >/dev/null 2>&1 && exit 20; [ -z "$(ls -A '${home}/desktop-data')" ] || exit 15; cat '${base}/auth.json' || exit 11; cat '${base}/.env' || exit 14; for p in config.yaml bin/script hooks/script skills/script profiles/owl/config.yaml workspace/result; do (echo bad > '${home}'/"$p") 2>/dev/null && exit 12; done; echo ok > '${home}/profiles/owl/artifacts/result' || exit 16; echo ok > '${home}/runtime/sessions/one/attachments/result' || exit 17; echo ok > '${base}/normal-workspace' || exit 18; echo done`;
   const result = spawnSync('/bin/bash', ['-c', isolatedCommand(script, home, [join(home,'profiles/owl/artifacts'), join(home,'runtime/sessions/one/attachments')])], {cwd:work, encoding:'utf8'});
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'outsideoutsidedone\n');
@@ -159,6 +159,7 @@ test('bubblewrap binds the home read-only and only reopens the requested output 
   t.after(()=>rmSync(home,{recursive:true,force:true}));
   const workspace=join(home,'workspace'), outputs=join(home,'profiles/owl/artifacts');
   for (const dir of [workspace,outputs,join(home,'desktop-data')]) mkdirSync(dir,{recursive:true});
+  for (const name of ['connect-identity.key', 'profiles/owl/connect-identity.key']) writeFileSync(join(home,name),'secret');
   const executable=join(home,'bwrap'); writeFileSync(executable,'#!/bin/sh\ncase "$*" in *"/usr/bin/env true") exit 0;; *) exit 1;; esac\n'); chmodSync(executable,0o755);
   const user=join(home,'user'); mkdirSync(join(user,'.ssh/nested'),{recursive:true});
   const policy = JSON.parse(readFileSync(new URL('./credential-policy.json', import.meta.url), 'utf8'));
@@ -168,6 +169,7 @@ test('bubblewrap binds the home read-only and only reopens the requested output 
   const script=`Object.defineProperty(process,'platform',{value:'linux'}); const {isolatedCommand}=await import(${JSON.stringify(moduleUrl)}); console.log(isolatedCommand('true',${JSON.stringify(home)},[${JSON.stringify(outputs)}]));`;
   const command=execFileSync(process.execPath,['--input-type=module','-e',script],{env:{...process.env,HOME:user,PATH:home},encoding:'utf8'});
   assert.ok(command.includes(`'--ro-bind' '${home}' '${home}'`));
+  for (const name of ['connect-identity.key', 'profiles/owl/connect-identity.key']) assert.ok(command.includes(`'--ro-bind' '/dev/null' '${join(home,name)}'`), name);
   for (const local of policy.write.deny) assert.ok(command.includes(`'--ro-bind' '${join(user,local)}' '${join(user,local)}'`), local);
   assert.ok(command.includes(`'--bind' '${realpathSync(outputs)}' '${realpathSync(outputs)}'`));
   assert.ok(!command.includes(`'--bind' '${realpathSync(workspace)}'`), 'an in-home workspace is never bound writable');
