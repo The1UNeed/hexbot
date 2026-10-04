@@ -548,13 +548,13 @@ async fn mcp_sections_open_without_discovery_and_forward_pi_warnings() {
         .get("first")
         .unwrap()
         .clone();
-    runtime.event(&session, json!({"type":"extension_ui_request","method":"notify","notifyType":"warning","message":"MCP servers need attention: missing. Run /mcp to fix."})).unwrap();
+    runtime.event(&session, json!({"type":"extension_ui_request","method":"notify","notifyType":"warning","message":"MCP servers need attention:\n  missing: failed: spawn /missing/hexbot-tool ENOENT\nRun /mcp to fix."})).unwrap();
     let mut warning = false;
     while let Ok(event) = events.try_recv() {
         if event.frame["params"]["type"] == "warning" {
             assert_eq!(
                 event.frame["params"]["payload"]["message"],
-                "Connected tools need attention: missing. Check connected tools in bot settings."
+                "owl can't reach missing. Check it in bot settings.\nmissing: failed: spawn /missing/hexbot-tool ENOENT"
             );
             assert_eq!(event.frame["params"]["payload"]["section_id"], "first");
             warning = true;
@@ -607,14 +607,20 @@ async fn mcp_names_and_prompt_are_frozen_without_credentials_or_discovery() {
     }
     assert!(!args.contains(&json!("--tools")));
     assert!(!args.contains(&json!("builtin:tool-search")));
+    let excluded = args[args
+        .iter()
+        .position(|arg| arg == "--exclude-tools")
+        .unwrap()
+        + 1]
+    .as_str()
+    .unwrap();
+    assert!(excluded.split(',').any(|tool| tool == "powershell"));
     let mut warned = false;
     while let Ok(event) = events.try_recv() {
         if event.frame["params"]["type"] == "warning" {
-            assert!(
-                event.frame["params"]["payload"]["message"]
-                    .as_str()
-                    .unwrap()
-                    .contains("legacy")
+            assert_eq!(
+                event.frame["params"]["payload"]["message"],
+                "owl can't use legacy. Its server uses an old connection type; switch it to the server's HTTP address in bot settings."
             );
             warned = true;
         }
@@ -2158,4 +2164,51 @@ async fn connected_approvals_require_a_visible_section_and_nested_calls_survive_
     let history = store::history(home.path(), "first").unwrap();
     assert_eq!(history.last().unwrap()["nested_calls"], nested);
     runtime.shutdown().await;
+}
+
+#[test]
+fn connected_tool_notices_name_the_bot_in_plain_words() {
+    use super::connected_tools_notice as notice;
+    assert_eq!(
+        notice("Fox", "MCP servers need attention:\n  github: needs sign-in\n  linear: failed: timeout\nRun /mcp to fix.", false).unwrap(),
+        "Fox can't reach github, linear. Ask an admin to check them.\ngithub: needs sign-in\nlinear: failed: timeout"
+    );
+    assert_eq!(
+        notice("Fox", "MCP tools are only reachable from the codemode or tool_search tool, but neither is active; they cannot be called.", true).unwrap(),
+        "Fox can't use connected tools in this section. Start a new section to use them."
+    );
+    assert_eq!(
+        notice(
+            "Fox",
+            "Connected tool github has invalid settings. Ask an admin to check it.",
+            true
+        )
+        .unwrap(),
+        "Fox can't use github. Its settings are invalid. Check it in bot settings."
+    );
+    assert_eq!(
+        notice("Fox", "Connected tool github: bad config", false).unwrap(),
+        "Fox can't use github. Ask an admin to check it.\nbad config"
+    );
+    assert_eq!(
+        notice(
+            "Fox",
+            "Connected tools are unavailable: Daemon request interrupted",
+            true
+        )
+        .unwrap(),
+        "Fox can't use connected tools right now. Try again in the next message.\nDaemon request interrupted"
+    );
+    assert_eq!(
+        notice("Fox", "MCP failed to load: boom", true).unwrap(),
+        "Fox can't load connected tools. Check them in bot settings.\nboom"
+    );
+    assert!(notice("Fox", "Something else", true).is_none());
+    for raw in [
+        "MCP servers need attention:\n  a: failed\nRun /mcp to fix.",
+        "MCP failed to load: x",
+    ] {
+        let text = notice("Fox", raw, true).unwrap();
+        assert!(!text.contains("MCP") && !text.contains("/mcp"), "{text}");
+    }
 }

@@ -245,7 +245,7 @@ pub fn pi_mcp_servers(home: &Path, bot: &str, names: &[Value]) -> Result<Vec<Val
         let description = entry.get("description").cloned();
         let entry = expand_config(entry, &env);
         if validate_mcp_security(&entry).is_err() {
-            result.push(json!({"name":name,"error":format!("Connected tool {name} has an invalid configuration. Ask an admin to check it.")}));
+            result.push(json!({"name":name,"error":format!("Connected tool {name} has invalid settings. Ask an admin to check it.")}));
             continue;
         }
         let keys: &[&str] = if entry["url"].is_string() {

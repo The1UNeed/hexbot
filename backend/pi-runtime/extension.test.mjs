@@ -619,3 +619,19 @@ test('an interrupted first registration retries on the next prompt', async t => 
   await f.handlers.before_agent_start({}, f.ctx);
   assert.equal(f.registrations.length, 1);
 });
+
+test('resource reads stop when their server is revoked or changed, without asking', async t => {
+  const f = fixture(t, 'manual', [], {mcpServers:['demo','other']});
+  await f.handlers.before_agent_start({}, f.ctx);
+  const read = {toolName:'read_mcp_resource',toolCallId:'code/1',parentToolCallId:'code',input:{server:'demo',uri:'demo://a'}};
+  const list = {toolName:'list_mcp_resources',toolCallId:'code/2',parentToolCallId:'code',input:{}};
+  assert.equal(await f.handlers.tool_call(read, f.ctx), undefined);
+  assert.equal(await f.handlers.tool_call(list, f.ctx), undefined);
+  assert.equal(f.choices.length, 0);
+  f.settings.mcpState.demo = {revision:'changed'};
+  assert.match((await f.handlers.tool_call(read, f.ctx)).reason, /changed/);
+  assert.match((await f.handlers.tool_call(list, f.ctx)).reason, /changed/);
+  assert.equal(await f.handlers.tool_call({...read,input:{server:'other',uri:'other://a'}}, f.ctx), undefined);
+  delete f.settings.mcpState.demo;
+  assert.match((await f.handlers.tool_call(read, f.ctx)).reason, /removed or disabled/);
+});

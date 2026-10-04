@@ -116,8 +116,8 @@ export default function hexbot(pi: any) {
     await new Promise(resolve => setImmediate(resolve));
   };
   const mcpServer = (tool: string) => config.mcpServers?.filter((name: string) => tool.startsWith(`mcp__${name.replace(/-/g, '_')}__`)).sort((a: string, b: string) => b.length - a.length)[0];
-  const mcpDenial = (tool: string) => {
-    const server = mcpServer(tool);
+  const mcpDenial = (tool: string) => serverDenial(mcpServer(tool));
+  const serverDenial = (server: string) => {
     const current = live.mcpState?.[server];
     if (!current) return 'This connected tool was removed or disabled.';
     if (current.error) return current.error;
@@ -151,9 +151,17 @@ export default function hexbot(pi: any) {
   const check = async (event: any, ctx: any, checked: (path: string) => void = () => {}) => {
     const browser = event.toolName === 'browser_console' && typeof event.input.expression === 'string';
     const mcp = event.toolName.startsWith('mcp__');
-    if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp) return;
+    const resource = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'].includes(event.toolName);
+    if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp && !resource) return;
     try {
       await refresh(ctx);
+      if (resource) {
+        // Resources need no approval, but a revoked or changed server's open
+        // client must not answer before the next prompt reconnects it.
+        const named = typeof event.input?.server === 'string' ? [event.input.server] : [...mcpRevisions.keys()];
+        const reason = named.filter(server => mcpRevisions.has(server)).map(serverDenial).find(Boolean);
+        return reason ? {block: true, reason} : undefined;
+      }
       if (mcp) {
         const reason = mcpDenial(event.toolName);
         if (reason) return {block: true, reason};
