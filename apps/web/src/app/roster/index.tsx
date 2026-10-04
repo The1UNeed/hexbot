@@ -440,10 +440,12 @@ export function RosterColumn() {
     void useSettings.getState().refreshProviders()
     void useSettings.getState().refresh()
     const [provider, ...rest] = (settings?.default_model ?? '').split('/')
+    // Each new bot starts at the default level, which the collapsed summary implies.
     setNewBot(value => ({
       ...value,
       model: value.model || rest.join('/'),
-      provider: value.provider || provider || ''
+      provider: value.provider || provider || '',
+      reasoning: null
     }))
   }, [botDialog, settings?.default_model])
   useEffect(() => {
