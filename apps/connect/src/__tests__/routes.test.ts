@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryStore } from "@/lib/store";
-import { FakeTunnelProvider } from "@/lib/tunnels";
+import { FakeTunnelProvider, tunnelName } from "@/lib/tunnels";
 import { setRuntimeForTests } from "@/lib/runtime";
 import { hashToken, randomToken } from "@/lib/tokens";
 import { POST as start } from "@/app/api/register/start/route";
@@ -10,6 +10,7 @@ import { POST as grant } from "@/app/api/daemons/[id]/grant/route";
 import { POST as heartbeat } from "@/app/api/daemons/[id]/heartbeat/route";
 import { DELETE as remove } from "@/app/api/daemons/[id]/route";
 import { GET as listDaemons } from "@/app/api/daemons/route";
+import { POST as tunnelRepair } from "@/app/api/daemons/[id]/tunnel/route";
 import { Reachability } from "@/lib/reachability";
 import AuthorizePage from "@/app/connect/authorize/page";
 import { authorizeClient } from "@/app/connect/authorize/actions";
@@ -25,7 +26,7 @@ async function registration() {
 }
 
 describe("registration lifecycle", () => {
-  it("starts, approves, returns credentials once, then reports consumption", async () => { const { started } = await registration(); const firstResponse = await poll(request("/api/register/poll", { device_code: started.device_code })); expect(firstResponse.status).toBe(200); const first = await firstResponse.json(); expect(first).toMatchObject({ status: "approved", slug: expect.any(String), daemon_token: expect.stringMatching(/^hxd_/), tunnel_token: expect.stringMatching(/^fake-tunnel-token-/) }); expect(first).toMatchObject({ owner_id: store.users[0].id, issuer: "https://connect.hexbot.app", keys: [expect.objectContaining({ kty: "EC", crv: "P-256" })] }); expect(store.daemons[0].tokenHash).toBe(hashToken(first.daemon_token)); expect(JSON.stringify(store)).not.toContain(first.daemon_token); expect(JSON.stringify(store)).not.toContain(first.tunnel_token); const second = await poll(request("/api/register/poll", { device_code: started.device_code })); expect(second.status).toBe(410); expect((await second.json()).error).toBe("consumed"); });
+  it("starts, approves, returns credentials once, then reports consumption", async () => { const { started } = await registration(); const firstResponse = await poll(request("/api/register/poll", { device_code: started.device_code })); expect(firstResponse.status).toBe(200); const first = await firstResponse.json(); expect(first).toMatchObject({ status: "approved", slug: expect.any(String), daemon_token: expect.stringMatching(/^hxd_/), tunnel_token: expect.any(String) }); expect(first).toMatchObject({ owner_id: store.users[0].id, issuer: "https://connect.hexbot.app", keys: [expect.objectContaining({ kty: "EC", crv: "P-256" })] }); expect(store.daemons[0].tokenHash).toBe(hashToken(first.daemon_token)); expect(JSON.stringify(store)).not.toContain(first.daemon_token); expect(JSON.stringify(store)).not.toContain(first.tunnel_token); const second = await poll(request("/api/register/poll", { device_code: started.device_code })); expect(second.status).toBe(410); expect((await second.json()).error).toBe("consumed"); });
 });
 
 describe("registration of a daemon revoked before it polls", () => {
@@ -35,7 +36,7 @@ describe("registration of a daemon revoked before it polls", () => {
 describe("authenticated daemon routes", () => {
   it("requires a client session before issuing a grant", async () => { const { approved } = await registration(); const denied = await grant(request(`/api/daemons/${approved.daemon_id}/grant`), { params: Promise.resolve({ id: approved.daemon_id }) }); expect(denied.status).toBe(401); const user = store.users[0]; const clientToken = randomToken("hxc_"); await store.createClientSession({ userId: user.id, tokenHash: hashToken(clientToken), deviceName: "Laptop" }); const allowed = await grant(request(`/api/daemons/${approved.daemon_id}/grant`, undefined, clientToken), { params: Promise.resolve({ id: approved.daemon_id }) }); expect(allowed.status).toBe(200); const body = await allowed.json(); expect(body.grant.split(".")).toHaveLength(3); expect(body.daemon).toMatchObject({ host: "127.0.0.1", port: 9119, tls: false }); });
   it("updates last_seen_at on heartbeat", async () => { const { started, approved } = await registration(); const polled = await poll(request("/api/register/poll", { device_code: started.device_code })); const credentials = await polled.json(); const response = await heartbeat(request(`/api/daemons/${approved.daemon_id}/heartbeat`, { port: 8000 }, credentials.daemon_token), { params: Promise.resolve({ id: approved.daemon_id }) }); expect(response.status).toBe(200); expect(store.daemons[0].lastSeenAt).toBeInstanceOf(Date); });
-  it("revokes the daemon and deletes its tunnel", async () => { const { approved } = await registration(); const user = store.users[0]; const clientToken = randomToken("hxc_"); await store.createClientSession({ userId: user.id, tokenHash: hashToken(clientToken), deviceName: "Laptop" }); const response = await remove(request(`/api/daemons/${approved.daemon_id}`, undefined, clientToken, "DELETE"), { params: Promise.resolve({ id: approved.daemon_id }) }); expect(response.status).toBe(200); expect(store.daemons[0].revokedAt).toBeInstanceOf(Date); expect(tunnels.deleted).toEqual([store.daemons[0].tunnelId]); });
+  it("revokes the daemon and deletes its tunnel", async () => { const { approved } = await registration(); const user = store.users[0]; const clientToken = randomToken("hxc_"); await store.createClientSession({ userId: user.id, tokenHash: hashToken(clientToken), deviceName: "Laptop" }); const response = await remove(request(`/api/daemons/${approved.daemon_id}`, undefined, clientToken, "DELETE"), { params: Promise.resolve({ id: approved.daemon_id }) }); expect(response.status).toBe(200); expect(store.daemons[0].revokedAt).toBeInstanceOf(Date); expect(tunnels.deleted).toHaveLength(1); expect(store.daemons[0].tunnelId).toBe(""); });
 });
 
 describe("daemon list online state", () => {
@@ -115,10 +116,187 @@ describe("revoked daemon", () => {
     const revoked = await heartbeat(request(`/api/daemons/${approved.daemon_id}/heartbeat`, { port: 9119 }, token), params);
     expect(revoked.status).toBe(410);
     expect((await revoked.json()).error).toBe("daemon_revoked");
-    expect((await remove(request(`/api/daemons/${approved.daemon_id}`, undefined, token, "DELETE"), params)).status).toBe(410);
+    expect((await remove(request(`/api/daemons/${approved.daemon_id}`, undefined, token, "DELETE"), params)).status).toBe(200);
     const unknown = await heartbeat(request(`/api/daemons/${approved.daemon_id}/heartbeat`, { port: 9119 }, "hxd_unknown"), params);
     expect(unknown.status).toBe(401);
     expect((await unknown.json()).error).toBe("unauthorized");
+  });
+});
+
+describe("tunnel repair", () => {
+  const proofs = new Map<string, string>();
+  async function registeredDaemon() {
+    const { started, approved } = await registration();
+    const token = (await (await poll(request("/api/register/poll", { device_code: started.device_code }))).json()).daemon_token as string;
+    const daemon = store.daemons.find(d => d.id === approved.daemon_id)!;
+    proofs.set(daemon.id, await tunnels.connectorToken(daemon.tunnelId));
+    return { daemon, token, params: { params: Promise.resolve({ id: daemon.id }) } };
+  }
+  const repair = (id: string, token: string, body: unknown = { tunnel_token: proofs.get(id) }) => tunnelRepair(request(`/api/daemons/${id}/tunnel`, body, token), { params: Promise.resolve({ id }) });
+  const revokeViaApi = async (id: string) => {
+    const clientToken = randomToken("hxc_"); await store.createClientSession({ userId: store.users[0].id, tokenHash: hashToken(clientToken), deviceName: "Laptop" });
+    expect((await remove(request(`/api/daemons/${id}`, undefined, clientToken, "DELETE"), { params: Promise.resolve({ id }) })).status).toBe(200);
+  };
+  const nothingLive = (hostname: string) => {
+    expect([...tunnels.tunnels.values()].every(tunnel => tunnel.deletedAt)).toBe(true);
+    expect(tunnels.hostnames.get(hostname)).toBeUndefined();
+  };
+
+  it("re-points the hostname at a tunnel that still exists and hands out no token, ignoring ingress in the body", async () => {
+    const { daemon, token } = await registeredDaemon();
+    const before = daemon.tunnelId;
+    tunnels.hostnames.set(daemon.tunnelHostname, "somewhere-else");
+    const response = await repair(daemon.id, token, { tunnel_token: proofs.get(daemon.id), ingress: "https://evil.test" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ tunnel_hostname: daemon.tunnelHostname, replaced: false });
+    expect(daemon.tunnelId).toBe(before);
+    expect(tunnels.hostnames.get(daemon.tunnelHostname)).toBe(before);
+    expect(tunnels.tunnels.size).toBe(1);
+    expect(tunnels.deleted).toEqual([]);
+  });
+  it("replaces a deleted tunnel under the same hostname, returns its token, and drops the old one", async () => {
+    const { daemon, token } = await registeredDaemon();
+    const old = daemon.tunnelId; tunnels.tunnels.get(old)!.deletedAt = new Date();
+    const response = await repair(daemon.id, token);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.tunnel_hostname).toBe(daemon.tunnelHostname);
+    expect(body.replaced).toBe(true);
+    expect(daemon.tunnelId).not.toBe(old);
+    expect(body.tunnel_token).toBe(await tunnels.connectorToken(daemon.tunnelId));
+    expect(tunnels.hostnames.get(daemon.tunnelHostname)).toBe(daemon.tunnelId);
+    expect(tunnels.deleted).toEqual([old]);
+  });
+  it("refuses proof when Cloudflare no longer has its tunnel name", async () => {
+    const { daemon, token } = await registeredDaemon();
+    const old = daemon.tunnelId; tunnels.tunnels.delete(old);
+    expect((await repair(daemon.id, token)).status).toBe(403);
+    expect(daemon.tunnelId).toBe(old);
+    expect(tunnels.hostnames.get(daemon.tunnelHostname)).toBe(daemon.tunnelId);
+  });
+  it.each([false, true])("recovers a lost response with a stale credential, deleted=%s", async deleted => {
+    const { daemon, token } = await registeredDaemon();
+    const old = daemon.tunnelId;
+    if (deleted) tunnels.tunnels.get(old)!.deletedAt = new Date();
+    const fresh = await tunnels.createTunnel(tunnelName(daemon.slug));
+    await store.swapDaemonTunnel(daemon.id, old, fresh.tunnelId);
+    const response = await repair(daemon.id, token);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ replaced: true, tunnel_hostname: daemon.tunnelHostname, tunnel_token: await tunnels.connectorToken(fresh.tunnelId) });
+    expect(tunnels.hostnames.get(daemon.tunnelHostname)).toBe(fresh.tunnelId);
+    expect(tunnels.tunnels.size).toBe(2);
+  });
+  it.each(["missing", "malformed", "forged", "other", "legacy"])("refuses %s proof before any Cloudflare write", async kind => {
+    const { daemon, token } = await registeredDaemon();
+    let proof = proofs.get(daemon.id)!;
+    if (kind === "other") { const other = await registeredDaemon(); proof = proofs.get(other.daemon.id)!; }
+    if (kind === "forged" || kind === "legacy") {
+      const decoded = JSON.parse(Buffer.from(proof, "base64").toString());
+      decoded.s = Buffer.alloc(32, 7).toString("base64");
+      if (kind === "legacy") tunnels.tunnels.get(daemon.tunnelId)!.secret = decoded.s;
+      proof = Buffer.from(JSON.stringify(decoded)).toString("base64");
+    }
+    const create = vi.spyOn(tunnels, "createTunnel"); const point = vi.spyOn(tunnels, "pointHostname"); const remove = vi.spyOn(tunnels, "deleteTunnel");
+    const response = await repair(daemon.id, token, kind === "missing" ? null : { tunnel_token: kind === "malformed" ? "garbage" : proof });
+    expect(response.status).toBe(403);
+    expect(create).not.toHaveBeenCalled(); expect(point).not.toHaveBeenCalled(); expect(remove).not.toHaveBeenCalled();
+  });
+  it("deletes its replacement after a DNS failure and keeps the old proof usable", async () => {
+    const { daemon, token } = await registeredDaemon();
+    tunnels.tunnels.get(daemon.tunnelId)!.deletedAt = new Date();
+    tunnels.pointHostname = async () => { throw new Error("DNS down"); };
+    expect((await repair(daemon.id, token)).status).toBe(502);
+    expect(tunnels.tunnels.get(daemon.tunnelId)!.deletedAt).toBeInstanceOf(Date);
+  });
+  it("allows one repair per two minutes per daemon, claimed before any tunnel work", async () => {
+    const { daemon, token } = await registeredDaemon();
+    expect((await repair(daemon.id, token)).status).toBe(200);
+    tunnels.tunnels.get(daemon.tunnelId)!.deletedAt = new Date();
+    const response = await repair(daemon.id, token);
+    expect(response.status).toBe(429);
+    expect((await response.json()).error).toBe("tunnel_recent");
+    expect(tunnels.tunnels.size).toBe(1);
+  });
+  it("lets the first of two concurrent repairs win, and the loser points the hostname at the winner's tunnel before handing it out", async () => {
+    const { daemon, token } = await registeredDaemon();
+    const old = daemon.tunnelId; tunnels.tunnels.get(old)!.deletedAt = new Date();
+    const create = tunnels.createTunnel.bind(tunnels);
+    let mine = ""; let rival = "";
+    tunnels.createTunnel = async name => { const created = await create(name); mine = created.tunnelId; rival = (await create(tunnelName(daemon.slug))).tunnelId; expect(await store.swapDaemonTunnel(daemon.id, old, rival)).toBe(true); return created; };
+    const response = await repair(daemon.id, token);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ tunnel_token: await tunnels.connectorToken(rival), tunnel_hostname: daemon.tunnelHostname, replaced: true });
+    expect(daemon.tunnelId).toBe(rival);
+    expect(tunnels.deleted).toEqual([mine, old]);
+    expect(tunnels.hostnames.get(daemon.tunnelHostname)).toBe(rival);
+  });
+  it("answers 410 to a revoked daemon and 403 to another daemon's token", async () => {
+    const first = await registeredDaemon(); const second = await registeredDaemon();
+    expect((await repair(second.daemon.id, first.token)).status).toBe(403);
+    await store.revokeDaemon(first.daemon.id, new Date());
+    expect((await repair(first.daemon.id, first.token)).status).toBe(410);
+    expect(await store.swapDaemonTunnel(first.daemon.id, first.daemon.tunnelId, "anything")).toBe(false);
+  });
+  it("lets a revoke that lands after the repair passed auth win: nothing of the repair survives", async () => {
+    const { daemon, token } = await registeredDaemon();
+    const hostname = daemon.tunnelHostname;
+    const inspect = tunnels.inspect.bind(tunnels);
+    tunnels.inspect = async id => { await revokeViaApi(daemon.id); return inspect(id); };
+    const response = await repair(daemon.id, token);
+    expect(response.status).toBe(410);
+    expect((await response.json()).error).toBe("daemon_revoked");
+    expect(daemon.revokedAt).toBeInstanceOf(Date);
+    expect(daemon.tunnelId).toBe("");
+    nothingLive(hostname);
+  });
+  it("deletes a just-created tunnel when revocation blocks its swap", async () => {
+    const { daemon, token } = await registeredDaemon();
+    const hostname = daemon.tunnelHostname;
+    tunnels.tunnels.get(daemon.tunnelId)!.deletedAt = new Date();
+    const create = tunnels.createTunnel.bind(tunnels);
+    tunnels.createTunnel = async name => { const fresh = await create(name); await revokeViaApi(daemon.id); return fresh; };
+    expect((await repair(daemon.id, token)).status).toBe(410);
+    nothingLive(hostname);
+  });
+  it("removes a CNAME written after revoke already completed", async () => {
+    const { daemon, token } = await registeredDaemon();
+    const hostname = daemon.tunnelHostname;
+    tunnels.tunnels.get(daemon.tunnelId)!.deletedAt = new Date();
+    const point = tunnels.pointHostname.bind(tunnels);
+    tunnels.pointHostname = async (host, id) => { await revokeViaApi(daemon.id); await point(host, id); };
+    expect((await repair(daemon.id, token)).status).toBe(410);
+    nothingLive(hostname);
+  });
+  it("checks revocation after old-tunnel cleanup, before delivering credentials", async () => {
+    const { daemon, token } = await registeredDaemon();
+    const hostname = daemon.tunnelHostname; const old = daemon.tunnelId;
+    tunnels.tunnels.get(old)!.deletedAt = new Date();
+    const cleanup = tunnels.deleteTunnel.bind(tunnels);
+    tunnels.deleteTunnel = async id => { if (id === old) await revokeViaApi(daemon.id); await cleanup(id); };
+    const response = await repair(daemon.id, token);
+    expect(response.status).toBe(410);
+    expect(await response.json()).not.toHaveProperty("tunnel_token");
+    nothingLive(hostname);
+  });
+  it("lets a revoke that lands after the swap win too", async () => {
+    const { daemon, token } = await registeredDaemon();
+    const hostname = daemon.tunnelHostname;
+    tunnels.tunnels.get(daemon.tunnelId)!.deletedAt = new Date();
+    const point = tunnels.pointHostname.bind(tunnels);
+    let revoked = false;
+    tunnels.pointHostname = async (host, id) => { await point(host, id); if (!revoked) { revoked = true; await revokeViaApi(daemon.id); } };
+    const response = await repair(daemon.id, token);
+    expect(response.status).toBe(410);
+    expect(daemon.revokedAt).toBeInstanceOf(Date);
+    nothingLive(hostname);
+  });
+  it("re-points a surviving hostname when a revoke lands after an existing tunnel was re-pointed", async () => {
+    const { daemon, token } = await registeredDaemon();
+    const hostname = daemon.tunnelHostname;
+    const point = tunnels.pointHostname.bind(tunnels);
+    tunnels.pointHostname = async (host, id) => { await point(host, id); await revokeViaApi(daemon.id); };
+    expect((await repair(daemon.id, token)).status).toBe(410);
+    nothingLive(hostname);
   });
 });
 
@@ -132,5 +310,69 @@ describe("daemon self-revocation", () => {
     expect(own.status).toBe(200);
     expect(store.daemons.find(d => d.id === first.approved.daemon_id)?.revokedAt).toBeInstanceOf(Date);
     expect((await remove(request(`/api/daemons/${first.approved.daemon_id}`, undefined, "bogus", "DELETE"), { params: Promise.resolve({ id: first.approved.daemon_id }) })).status).toBe(401);
+  });
+});
+
+
+describe("durable tunnel removal", () => {
+  it.each(["owner", "daemon"])("lets the %s retry a revoked daemon, hidden from app lists", async caller => {
+    const { started, approved } = await registration();
+    const daemonToken = (await (await poll(request("/api/register/poll", { device_code: started.device_code }))).json()).daemon_token;
+    const clientToken = randomToken("hxc_");
+    await store.createClientSession({ userId: store.users[0].id, tokenHash: hashToken(clientToken), deviceName: "Laptop" });
+    const token = caller === "owner" ? clientToken : daemonToken;
+    const daemon = store.daemons[0]; const id = daemon.tunnelId;
+    const removeTunnel = tunnels.delete.bind(tunnels);
+    tunnels.delete = async () => { expect(daemon.revokedAt).toBeInstanceOf(Date); throw new Error("Cloudflare down"); };
+    const revoke = () => remove(request(`/api/daemons/${approved.daemon_id}`, undefined, token, "DELETE"), { params: Promise.resolve({ id: daemon.id }) });
+    expect((await revoke()).status).toBe(502);
+    expect(daemon.tunnelId).toBe(id);
+    expect(await store.listDaemons(daemon.userId, true)).toHaveLength(1);
+    expect((await (await listDaemons(request("/api/daemons", undefined, clientToken, "GET"))).json()).daemons).toEqual([]);
+    expect(await store.swapDaemonTunnel(daemon.id, id, "other")).toBe(false);
+    expect(await store.claimTunnelRepair(daemon.id, new Date(), 0)).toBe(false);
+    tunnels.delete = removeTunnel;
+    expect((await revoke()).status).toBe(200);
+    expect(daemon.tunnelId).toBe("");
+    expect(await store.listDaemons(daemon.userId, true)).toEqual([]);
+    expect((await revoke()).status).toBe(200);
+  });
+  it("keeps a swapped-in tunnel recorded when deleting it fails", async () => {
+    const { started } = await registration();
+    const token = (await (await poll(request("/api/register/poll", { device_code: started.device_code }))).json()).daemon_token;
+    const daemon = store.daemons[0]; const old = daemon.tunnelId;
+    const fresh = await tunnels.createTunnel(tunnelName(daemon.slug));
+    const cleanup = tunnels.delete.bind(tunnels);
+    tunnels.delete = async (id, hostname) => {
+      if (id === fresh.tunnelId) throw new Error("delete failed");
+      await cleanup(id, hostname);
+      // Model a writer that had already passed its guard before revocation.
+      daemon.tunnelId = fresh.tunnelId;
+      await tunnels.pointHostname(daemon.tunnelHostname, fresh.tunnelId);
+    };
+    const revoke = () => remove(request(`/api/daemons/${daemon.id}`, undefined, token, "DELETE"), { params: Promise.resolve({ id: daemon.id }) });
+    expect((await revoke()).status).toBe(502);
+    expect(tunnels.deleted).toEqual([old]);
+    expect(daemon.tunnelId).toBe(fresh.tunnelId);
+    expect(tunnels.tunnels.get(fresh.tunnelId)!.deletedAt).toBeNull();
+    tunnels.delete = cleanup;
+    expect((await revoke()).status).toBe(200);
+    expect(tunnels.tunnels.get(fresh.tunnelId)!.deletedAt).toBeInstanceOf(Date);
+    expect(tunnels.hostnames.has(daemon.tunnelHostname)).toBe(false);
+  });
+  it("retains the cleanup obligation when DNS deletion fails after the tunnel was deleted", async () => {
+    const { started } = await registration();
+    const token = (await (await poll(request("/api/register/poll", { device_code: started.device_code }))).json()).daemon_token;
+    const daemon = store.daemons[0]; const id = daemon.tunnelId;
+    const cleanup = tunnels.delete.bind(tunnels);
+    tunnels.delete = async id => { await tunnels.deleteTunnel(id); throw new Error("DNS failed"); };
+    const revoke = () => remove(request(`/api/daemons/${daemon.id}`, undefined, token, "DELETE"), { params: Promise.resolve({ id: daemon.id }) });
+    expect((await revoke()).status).toBe(502);
+    expect(daemon.tunnelId).toBe(id);
+    tunnels.hostnames.set(daemon.tunnelHostname, "stale-target");
+    tunnels.delete = cleanup;
+    expect((await revoke()).status).toBe(200);
+    expect(tunnels.hostnames.has(daemon.tunnelHostname)).toBe(false);
+    expect(daemon.tunnelId).toBe("");
   });
 });

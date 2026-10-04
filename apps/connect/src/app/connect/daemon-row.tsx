@@ -4,10 +4,10 @@ import { track } from "@/lib/analytics";
 import type { DaemonStatus } from "@/lib/reachability";
 import { renameDaemon, revokeDaemon } from "./actions";
 
-export interface DaemonView { id: string; name: string; hostname: string; status: DaemonStatus; lastSeen: string; openUrl: string }
+export interface DaemonView { removing?: boolean; id: string; name: string; hostname: string; status: DaemonStatus; lastSeen: string; openUrl: string }
 
 const statusLabel = (daemon: DaemonView) =>
-  daemon.status === "online" ? "Online" : daemon.status === "unreachable" ? "Running, but not reachable" : `Offline, last seen ${daemon.lastSeen}`;
+  daemon.removing ? "Removing…" : daemon.status === "online" ? "Online" : daemon.status === "unreachable" ? "Running, but not reachable" : `Offline, last seen ${daemon.lastSeen}`;
 const openHint = (daemon: DaemonView) =>
   daemon.status === "unreachable"
     ? "The daemon is running but its tunnel is not answering. Hexbot retries on its own; check the machine's network if this lasts."
@@ -25,7 +25,7 @@ export function DaemonRow({ daemon }: { daemon: DaemonView }) {
     if (result.ok) { setEditing(false); track("connect_daemon_renamed"); }
   });
   const revoke = () => {
-    if (!window.confirm(`Revoke ${daemon.name}? Its tunnel closes and apps signed in through Connect lose the way in. Hexbot on the current version disconnects within a few minutes; older versions stop working but keep the setting until you disconnect them. The daemon keeps working on its own network.`)) return;
+    if (!daemon.removing && !window.confirm(`Revoke ${daemon.name}? Its tunnel closes and apps signed in through Connect lose the way in. Hexbot on the current version disconnects within a few minutes; older versions stop working but keep the setting until you disconnect them. The daemon keeps working on its own network.`)) return;
     start(async () => { const result = await revokeDaemon(daemon.id); setError(result.error ?? null); if (result.ok) track("connect_daemon_revoked"); });
   };
 
@@ -45,15 +45,17 @@ export function DaemonRow({ daemon }: { daemon: DaemonView }) {
           </div>
         )}
         <span className="hostname">{daemon.hostname}</span>
-        {daemon.status === "online" ? null : <p className="meta">{openHint(daemon)}</p>}
+        {daemon.removing
+          ? <p className="meta">Revoked, but its tunnel is not removed yet. Retry to finish.</p>
+          : daemon.status === "online" ? null : <p className="meta">{openHint(daemon)}</p>}
         {error ? <p className="small danger" role="alert">{error}</p> : null}
       </div>
       <div className="actions">
-        {daemon.status === "online"
+        {!daemon.removing && (daemon.status === "online"
           ? <a className="button button-sm" href={daemon.openUrl} onClick={() => track("connect_daemon_opened", { how: "browser" })}>Open in browser</a>
-          : <button className="button button-sm" disabled type="button">Open in browser</button>}
-        <button className="button button-sm button-quiet" disabled={pending || editing} onClick={() => setEditing(true)} type="button">Rename</button>
-        <button className="button button-sm button-danger" disabled={pending} onClick={revoke} type="button">Revoke</button>
+          : <button className="button button-sm" disabled type="button">Open in browser</button>)}
+        {!daemon.removing && <button className="button button-sm button-quiet" disabled={pending || editing} onClick={() => setEditing(true)} type="button">Rename</button>}
+        <button className="button button-sm button-danger" disabled={pending} onClick={revoke} type="button">{daemon.removing ? "Retry" : "Revoke"}</button>
       </div>
     </li>
   );

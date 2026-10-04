@@ -226,6 +226,81 @@ fn forget_later(home: &Path, service: &Arc<Service>, daemon_id: &str) {
         }
     });
 }
+/// How the tunnel supervisor judges `cloudflared`. A tunnel that is gone on Cloudflare's
+/// side does not make `cloudflared` exit quickly: it retries for most of a minute, and an
+/// `Unauthorized` answer keeps it retrying for ever, so readiness (an edge connection,
+/// `/ready` on its metrics port) is what counts. Tests shorten these.
+#[derive(Clone, Copy)]
+struct TunnelTiming {
+    /// How often `/ready` is polled.
+    poll: Duration,
+    /// Not ready for this long, since start or since it was last ready, is a failure.
+    ready_timeout: Duration,
+    /// An exit this soon after start is a failure.
+    exit_window: Duration,
+    /// Wait between repairs; longer than Connect's own two-minute cooldown so the first
+    /// retry is not a guaranteed 429. Doubled while repairs keep not helping.
+    repair_interval: Duration,
+    repair_interval_max: Duration,
+    /// This many failures in a row mean the tunnel itself may be broken.
+    failures_before_repair: u32,
+}
+impl Default for TunnelTiming {
+    fn default() -> Self {
+        Self {
+            poll: Duration::from_secs(5),
+            ready_timeout: Duration::from_secs(180),
+            exit_window: Duration::from_secs(300),
+            repair_interval: Duration::from_secs(150),
+            repair_interval_max: Duration::from_secs(1800),
+            failures_before_repair: 3,
+        }
+    }
+}
+/// Ask Connect for a tunnel that works. Connect re-points the hostname at the tunnel it
+/// already has and answers `replaced: false`, or, when that tunnel is gone, creates a
+/// replacement under the same hostname and answers its token with `replaced: true`. Only
+/// then is `connect.json` rewritten; `Some` carries the new configuration. `None` when
+/// nothing changed, Connect predates repair (404), or it refused for now (429).
+async fn repair_tunnel(home: &Path, config: &ConnectConfig) -> Result<Option<ConnectConfig>> {
+    let result = daemon_request(
+        home,
+        config,
+        Method::POST,
+        &format!("/api/daemons/{}/tunnel", config.daemon_id),
+        Some(json!({"tunnel_token": config.tunnel_token})),
+    )
+    .await;
+    let value = match result {
+        Ok(value) => value,
+        Err(error)
+            if error
+                .data
+                .as_ref()
+                .is_some_and(|data| data["status"] == 404 || data["status"] == 429) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    if value["replaced"] != true {
+        return Ok(None);
+    }
+    let token = common::required(&value, "tunnel_token")?.to_owned();
+    let mut updated = ConnectConfig::load(home)?
+        .filter(|current| current.daemon_id == config.daemon_id)
+        .ok_or_else(|| Error::new(5241, "Hex Connect registration changed"))?;
+    updated.tunnel_token = token;
+    if let Some(host) = value["tunnel_hostname"]
+        .as_str()
+        .filter(|host| !host.is_empty() && *host != updated.tunnel_hostname)
+    {
+        apply_public_url(home, Some(host))?;
+        updated.tunnel_hostname = host.to_owned();
+    }
+    updated.save(home)?;
+    Ok(Some(updated))
+}
 /// A Connect call with the daemon token. On `410 daemon_revoked` the registration is dropped.
 async fn daemon_request(
     home: &Path,
@@ -617,13 +692,39 @@ pub async fn start_daemon(home: &Path, port: u16) -> Result<bool> {
     }
     apply_public_url(home, Some(&config.tunnel_hostname))?;
     let binary = ensure_cloudflared(home).await?;
-    run_tunnel(home, port, service.clone(), config, binary).await
+    run_tunnel(
+        home,
+        port,
+        service.clone(),
+        config,
+        binary,
+        TunnelTiming::default(),
+    )
+    .await
+}
+/// A loopback port for cloudflared's metrics endpoint, where `/ready` lives.
+fn free_port() -> Result<u16> {
+    Ok(std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port())
+}
+/// True while cloudflared reports at least one registered edge connection.
+async fn tunnel_ready(client: Option<&Client>, url: &str) -> bool {
+    match client {
+        Some(client) => client
+            .get(url)
+            .send()
+            .await
+            .is_ok_and(|response| response.status() == reqwest::StatusCode::OK),
+        None => false,
+    }
 }
 fn spawn_cloudflared(
     binary: &Path,
     settings: &Path,
     logs: &Path,
     port: u16,
+    metrics: u16,
     token: &str,
 ) -> Result<Child> {
     common::atomic_write(
@@ -639,7 +740,12 @@ fn spawn_cloudflared(
         .arg("tunnel")
         .arg("--config")
         .arg(settings)
-        .args(["--no-autoupdate", "run"])
+        .args([
+            "--no-autoupdate",
+            "--metrics",
+            &format!("127.0.0.1:{metrics}"),
+            "run",
+        ])
         .env("TUNNEL_TOKEN", token)
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
@@ -648,54 +754,149 @@ fn spawn_cloudflared(
         .spawn()
         .map_err(Into::into)
 }
+/// Why one cloudflared lifetime ended.
+enum Outcome {
+    Exited(std::io::Result<std::process::ExitStatus>),
+    NotReady,
+}
 async fn run_tunnel(
     home: &Path,
     port: u16,
     service: Arc<Service>,
     config: ConnectConfig,
     binary: PathBuf,
+    timing: TunnelTiming,
 ) -> Result<bool> {
     let tunnel_settings = home.join("cloudflared.yml");
     fs::create_dir_all(home.join("logs"))?;
     let logs = home.join("logs/cloudflared.log");
-    let child = spawn_cloudflared(&binary, &tunnel_settings, &logs, port, &config.tunnel_token)?;
-    service.data.lock().await.running = true;
+    let metrics = free_port()?;
+    let child = spawn_cloudflared(
+        &binary,
+        &tunnel_settings,
+        &logs,
+        port,
+        metrics,
+        &config.tunnel_token,
+    )?;
+    // `running` means ready: an edge connection, not merely a live process.
+    service.data.lock().await.running = false;
     let (stop, mut stopped) = watch::channel(false);
     let mut heartbeat_stop = stopped.clone();
     let tunnel_service = service.clone();
-    let tunnel_config = config.clone();
+    let tunnel_home = home.to_owned();
+    let mut tunnel_config = config.clone();
     let tunnel = tokio::spawn(async move {
+        let mut ready_url = format!("http://127.0.0.1:{metrics}/ready");
+        let probe = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .ok();
         let mut child = child;
         let mut backoff = 1;
-        loop {
-            tokio::select! {
-                _ = stopped.changed() => {
-                    terminate(&mut child).await;
-                    break;
+        let mut failures = 0;
+        let mut repair_interval = timing.repair_interval;
+        let mut last_repair: Option<std::time::Instant> = None;
+        'supervise: loop {
+            let started = std::time::Instant::now();
+            let mut last_ok = started;
+            let outcome = loop {
+                let watch = async {
+                    tokio::time::sleep(timing.poll).await;
+                    tunnel_ready(probe.as_ref(), &ready_url).await
+                };
+                tokio::select! {
+                    _ = stopped.changed() => {
+                        terminate(&mut child).await;
+                        break 'supervise;
+                    }
+                    result = child.wait() => break Outcome::Exited(result),
+                    ready = watch => {
+                        if ready {
+                            last_ok = std::time::Instant::now();
+                            failures = 0;
+                            backoff = 1;
+                        }
+                        let mut data = tunnel_service.data.lock().await;
+                        let changed = data.running != ready;
+                        data.running = ready;
+                        if ready { data.error = None; }
+                        drop(data);
+                        if changed { bump(&tunnel_service); }
+                        if !ready && last_ok.elapsed() >= timing.ready_timeout {
+                            terminate(&mut child).await;
+                            break Outcome::NotReady;
+                        }
+                    },
                 }
-                result = child.wait() => {
-                    let mut data = tunnel_service.data.lock().await;
-                    data.running = false;
-                    data.error = Some(match result {
-                        Ok(status) => format!("cloudflared exited: {status}"),
-                        Err(_) => "cloudflared process failed".into(),
-                    });
+            };
+            {
+                let mut data = tunnel_service.data.lock().await;
+                data.running = false;
+                data.error = Some(match outcome {
+                    Outcome::Exited(Ok(status)) => format!("cloudflared exited: {status}"),
+                    Outcome::Exited(Err(_)) => "cloudflared process failed".into(),
+                    Outcome::NotReady => "cloudflared has no connection to Cloudflare".into(),
+                });
+            }
+            let failed = match outcome {
+                Outcome::Exited(_) => started.elapsed() < timing.exit_window,
+                Outcome::NotReady => true,
+            };
+            failures = if failed { failures + 1 } else { 0 };
+            bump(&tunnel_service);
+            // cloudflared that cannot connect usually means the tunnel is gone on
+            // Cloudflare's side. Ask Connect to repair it rather than restarting forever.
+            if failures >= timing.failures_before_repair
+                && last_repair.is_none_or(|at| at.elapsed() >= repair_interval)
+            {
+                last_repair = Some(std::time::Instant::now());
+                let repair = repair_tunnel(&tunnel_home, &tunnel_config);
+                let result = tokio::select! {
+                    _ = stopped.changed() => break 'supervise,
+                    result = repair => result,
+                };
+                match result {
+                    Ok(Some(updated)) => {
+                        tunnel_config = updated;
+                        backoff = 1;
+                        failures = 0;
+                        repair_interval = timing.repair_interval;
+                    }
+                    Err(error) if revoked_by_connect(&error) => {
+                        // The registration is being dropped; it stops these workers.
+                        break 'supervise;
+                    }
+                    other => {
+                        if let Err(error) = other {
+                            tunnel_service.data.lock().await.error =
+                                Some(format!("tunnel repair failed: {}", error.message));
+                        }
+                        // Not helping: ask less often.
+                        repair_interval = (repair_interval * 2).min(timing.repair_interval_max);
+                    }
                 }
             }
             loop {
-                tokio::select! { _=stopped.changed()=>return, _=tokio::time::sleep(Duration::from_secs(backoff))=>{} }
+                tokio::select! { _=stopped.changed()=>break 'supervise, _=tokio::time::sleep(Duration::from_secs(backoff))=>{} }
                 backoff = (backoff * 2).min(16);
-                let restarted = spawn_cloudflared(
-                    &binary,
-                    &tunnel_settings,
-                    &logs,
-                    port,
-                    &tunnel_config.tunnel_token,
-                );
+                let restarted = free_port().and_then(|metrics| {
+                    let child = spawn_cloudflared(
+                        &binary,
+                        &tunnel_settings,
+                        &logs,
+                        port,
+                        metrics,
+                        &tunnel_config.tunnel_token,
+                    )?;
+                    ready_url = format!("http://127.0.0.1:{metrics}/ready");
+                    Ok(child)
+                });
                 match restarted {
                     Ok(new_child) => {
                         child = new_child;
-                        tunnel_service.data.lock().await.running = true;
                         break;
                     }
                     Err(_) => {

@@ -1,15 +1,16 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { currentUser } from "@/lib/auth";
-import { getStore, getTunnels } from "@/lib/runtime";
+import { revokeDaemonWithTunnel } from "@/lib/revoke";
+import { getStore } from "@/lib/runtime";
 
 export interface ActionResult { error?: string; ok?: boolean }
 
-async function ownedDaemon(id: string) {
+async function ownedDaemon(id: string, allowRevoked = false) {
   const user = await currentUser();
   if (!user) return { error: "Sign in first." } as const;
   const daemon = await getStore().getDaemon(id);
-  if (!daemon || daemon.userId !== user.id || daemon.revokedAt) return { error: "That daemon is not on your account." } as const;
+  if (!daemon || daemon.userId !== user.id || (daemon.revokedAt && !allowRevoked)) return { error: "That daemon is not on your account." } as const;
   return { daemon, user } as const;
 }
 
@@ -23,14 +24,13 @@ export async function renameDaemon(id: string, name: string): Promise<ActionResu
   return { ok: true };
 }
 
-/** Revoking forgets the daemon's token and tears down its tunnel; the daemon keeps working on its own network. */
+/** Revoking invalidates the daemon token and tears down its tunnel; failed cleanup can be retried. */
 export async function revokeDaemon(id: string): Promise<ActionResult> {
-  const found = await ownedDaemon(id);
+  const found = await ownedDaemon(id, true);
   if ("error" in found) return found;
-  // Tunnel first: a daemon that stays listed can be retried, a hostname left reachable cannot.
-  try { await getTunnels().delete(found.daemon.tunnelId); } catch { return { error: "The daemon's tunnel could not be deleted. Try again in a moment." }; }
-  await getStore().revokeDaemon(found.daemon.id, new Date());
+  const result = await revokeDaemonWithTunnel(found.daemon);
   revalidatePath("/connect");
+  if (result !== "ok") return { error: "The daemon's tunnel could not be deleted. Try again in a moment." };
   return { ok: true };
 }
 

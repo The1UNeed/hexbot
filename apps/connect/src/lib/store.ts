@@ -19,10 +19,15 @@ export interface Store {
   consumeRegistration(id: string): Promise<boolean>;
   createDaemon(input: Omit<Daemon, "id" | "createdAt" | "lastSeenAt" | "revokedAt">): Promise<Daemon>;
   getDaemon(id: string): Promise<Daemon | null>;
-  listDaemons(userId: string): Promise<Daemon[]>;
+  listDaemons(userId: string, includeRemoving?: boolean): Promise<Daemon[]>;
   findDaemonByTokenHash(hash: string): Promise<Daemon | null>;
   setDaemonTokenHash(id: string, tokenHash: string): Promise<void>;
   updateDaemonHeartbeat(id: string, at: Date, ingressPort: number): Promise<void>;
+  /** Compare-and-set: true only if the row still pointed at `from` and is not revoked, so two repairs cannot both win and a revoke always does. */
+  swapDaemonTunnel(id: string, from: string, to: string): Promise<boolean>;
+  /** Claims the daemon's single repair slot: true at most once per `cooldownMs`, never for a revoked row. Only the repair route uses the column behind this. */
+  claimTunnelRepair(id: string, at: Date, cooldownMs: number): Promise<boolean>;
+  clearDaemonTunnel(id: string, deleted: string): Promise<boolean>;
   renameDaemon(id: string, name: string): Promise<void>;
   revokeDaemon(id: string, at: Date): Promise<void>;
   createClientSession(input: Omit<ClientSession, "id" | "createdAt" | "lastSeenAt" | "revokedAt">): Promise<ClientSession>;
@@ -45,12 +50,16 @@ export class MemoryStore implements Store {
   async consumeRegistration(id: string) { const row = this.registrations.find(x => x.id === id); if (!row || row.consumedAt) return false; row.consumedAt = new Date(); return true; }
   async createDaemon(input: Omit<Daemon, "id" | "createdAt" | "lastSeenAt" | "revokedAt">) { const row = { ...input, id: randomUUID(), createdAt: new Date(), lastSeenAt: null, revokedAt: null }; this.daemons.push(row); return row; }
   async getDaemon(id: string) { return this.daemons.find(x => x.id === id) ?? null; }
-  async listDaemons(userId: string) { return this.daemons.filter(x => x.userId === userId && !x.revokedAt); }
+  async listDaemons(userId: string, includeRemoving = false) { return this.daemons.filter(x => x.userId === userId && (!x.revokedAt || (includeRemoving && x.tunnelId !== ""))); }
   async findDaemonByTokenHash(hash: string) { return this.daemons.find(x => x.tokenHash === hash) ?? null; }
   async setDaemonTokenHash(id: string, tokenHash: string) { const row = await this.getDaemon(id); if (row) row.tokenHash = tokenHash; }
   async updateDaemonHeartbeat(id: string, at: Date, ingressPort: number) { const row = await this.getDaemon(id); if (row) { row.lastSeenAt = at; row.ingressPort = ingressPort; } }
+  private repairs = new Map<string, Date>();
+  async swapDaemonTunnel(id: string, from: string, to: string) { const row = await this.getDaemon(id); if (!row || row.revokedAt || row.tunnelId !== from) return false; row.tunnelId = to; return true; }
+  async claimTunnelRepair(id: string, at: Date, cooldownMs: number) { const row = await this.getDaemon(id); if (!row || row.revokedAt) return false; const last = this.repairs.get(id); if (last && at.getTime() - last.getTime() < cooldownMs) return false; this.repairs.set(id, at); return true; }
+  async clearDaemonTunnel(id: string, deleted: string) { const row = await this.getDaemon(id); if (!row || !row.revokedAt || row.tunnelId !== deleted) return false; row.tunnelId = ""; return true; }
   async renameDaemon(id: string, name: string) { const row = await this.getDaemon(id); if (row) row.name = name; }
-  async revokeDaemon(id: string, at: Date) { const row = await this.getDaemon(id); if (row) row.revokedAt = at; }
+  async revokeDaemon(id: string, at: Date) { const row = await this.getDaemon(id); if (row) row.revokedAt ??= at; }
   async createClientSession(input: Omit<ClientSession, "id" | "createdAt" | "lastSeenAt" | "revokedAt">) { const row = { ...input, id: randomUUID(), createdAt: new Date(), lastSeenAt: null, revokedAt: null }; this.clientSessions.push(row); return row; }
   async findClientSessionByTokenHash(hash: string) { return this.clientSessions.find(x => x.tokenHash === hash) ?? null; }
   async listClientSessions(userId: string) { return this.clientSessions.filter(x => x.userId === userId && !x.revokedAt); }
@@ -79,12 +88,15 @@ export class NeonStore implements Store {
   async consumeRegistration(id: string) { const rows = await this.sql`UPDATE registrations SET consumed_at=now() WHERE id=${id} AND consumed_at IS NULL RETURNING id`; return rows.length === 1; }
   async createDaemon(i: Omit<Daemon, "id" | "createdAt" | "lastSeenAt" | "revokedAt">) { const rows = await this.sql`INSERT INTO daemons (user_id,name,slug,tunnel_id,tunnel_hostname,ingress_port,token_hash) VALUES (${i.userId},${i.name},${i.slug},${i.tunnelId},${i.tunnelHostname},${i.ingressPort},${i.tokenHash}) RETURNING *`; return daemonRow(rows[0] as DbRow); }
   async getDaemon(id: string) { const rows = await this.sql`SELECT * FROM daemons WHERE id=${id} LIMIT 1`; return rows[0] ? daemonRow(rows[0] as DbRow) : null; }
-  async listDaemons(uid: string) { return (await this.sql`SELECT * FROM daemons WHERE user_id=${uid} AND revoked_at IS NULL ORDER BY created_at`).map(r => daemonRow(r as DbRow)); }
+  async listDaemons(uid: string, includeRemoving = false) { return (await this.sql`SELECT * FROM daemons WHERE user_id=${uid} AND (revoked_at IS NULL OR (${includeRemoving} AND tunnel_id <> '')) ORDER BY created_at`).map(r => daemonRow(r as DbRow)); }
   async findDaemonByTokenHash(h: string) { const rows = await this.sql`SELECT * FROM daemons WHERE token_hash=${h} LIMIT 1`; return rows[0] ? daemonRow(rows[0] as DbRow) : null; }
   async setDaemonTokenHash(id: string, h: string) { await this.sql`UPDATE daemons SET token_hash=${h} WHERE id=${id}`; }
   async updateDaemonHeartbeat(id: string, at: Date, ingressPort: number) { await this.sql`UPDATE daemons SET last_seen_at=${at.toISOString()}, ingress_port=${ingressPort} WHERE id=${id}`; }
+  async swapDaemonTunnel(id: string, from: string, to: string) { const rows = await this.sql`UPDATE daemons SET tunnel_id=${to} WHERE id=${id} AND tunnel_id=${from} AND revoked_at IS NULL RETURNING id`; return rows.length === 1; }
+  async claimTunnelRepair(id: string, at: Date, cooldownMs: number) { const rows = await this.sql`UPDATE daemons SET tunnel_repair_at=${at.toISOString()} WHERE id=${id} AND revoked_at IS NULL AND (tunnel_repair_at IS NULL OR tunnel_repair_at < ${new Date(at.getTime() - cooldownMs).toISOString()}) RETURNING id`; return rows.length === 1; }
+  async clearDaemonTunnel(id: string, deleted: string) { const rows = await this.sql`UPDATE daemons SET tunnel_id='' WHERE id=${id} AND tunnel_id=${deleted} AND revoked_at IS NOT NULL RETURNING id`; return rows.length === 1; }
   async renameDaemon(id: string, name: string) { await this.sql`UPDATE daemons SET name=${name} WHERE id=${id}`; }
-  async revokeDaemon(id: string, at: Date) { await this.sql`UPDATE daemons SET revoked_at=${at.toISOString()} WHERE id=${id}`; }
+  async revokeDaemon(id: string, at: Date) { await this.sql`UPDATE daemons SET revoked_at=COALESCE(revoked_at, ${at.toISOString()}) WHERE id=${id}`; }
   async createClientSession(i: Omit<ClientSession, "id" | "createdAt" | "lastSeenAt" | "revokedAt">) { const rows = await this.sql`INSERT INTO client_sessions (user_id,token_hash,device_name) VALUES (${i.userId},${i.tokenHash},${i.deviceName}) RETURNING *`; return sessionRow(rows[0] as DbRow); }
   async findClientSessionByTokenHash(h: string) { const rows = await this.sql`SELECT * FROM client_sessions WHERE token_hash=${h} LIMIT 1`; return rows[0] ? sessionRow(rows[0] as DbRow) : null; }
   async listClientSessions(uid: string) { return (await this.sql`SELECT * FROM client_sessions WHERE user_id=${uid} AND revoked_at IS NULL ORDER BY created_at`).map(r => sessionRow(r as DbRow)); }

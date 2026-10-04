@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, hkdfSync, randomBytes } from "node:crypto";
 import { calculateJwkThumbprint, exportJWK, generateKeyPair, importJWK, jwtVerify, SignJWT, type JWK } from "jose";
 
 export const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -12,7 +12,12 @@ export const generateSlug = () => randomBytes(8).toString("hex");
 export const connectIssuer = () => process.env.CONNECT_BASE_URL ?? "https://connect.hexbot.app";
 
 export interface GrantClaims { sub: string; daemon_id: string; device_name: string }
-interface SigningState { privateKey: CryptoKey; publicJwk: JWK; kid: string }
+interface SigningState { privateKey: CryptoKey; publicJwk: JWK; kid: string; tunnelKey: Buffer }
+// HKDF-SHA256: raw private scalar, empty salt, UTF-8 info, 32-byte output.
+const tunnelKey = (d: string | undefined) => {
+  if (!d) throw new Error("Connect signing key must contain private key material");
+  return Buffer.from(hkdfSync("sha256", Buffer.from(d, "base64url"), Buffer.alloc(0), "hexbot tunnel secret v1", 32));
+};
 const signing = globalThis as typeof globalThis & { __hexConnectSigning?: Promise<SigningState> };
 
 async function loadSigningState(): Promise<SigningState> {
@@ -22,15 +27,16 @@ async function loadSigningState(): Promise<SigningState> {
     const privateKey = await importJWK(jwk, "ES256") as CryptoKey;
     const publicJwk = { ...jwk }; delete publicJwk.d;
     const kid = jwk.kid ?? await calculateJwkThumbprint(publicJwk);
-    return { privateKey, publicJwk: { ...publicJwk, kid, use: "sig", alg: "ES256" }, kid };
+    return { privateKey, tunnelKey: tunnelKey(jwk.d), publicJwk: { ...publicJwk, kid, use: "sig", alg: "ES256" }, kid };
   }
   console.warn("CONNECT_SIGNING_KEY_JWK is unset; using an in-memory development signing key.");
   const pair = await generateKeyPair("ES256", { extractable: true });
   const publicJwk = await exportJWK(pair.publicKey);
   const kid = await calculateJwkThumbprint(publicJwk);
-  return { privateKey: pair.privateKey, publicJwk: { ...publicJwk, kid, use: "sig", alg: "ES256" }, kid };
+  return { privateKey: pair.privateKey, tunnelKey: tunnelKey((await exportJWK(pair.privateKey)).d), publicJwk: { ...publicJwk, kid, use: "sig", alg: "ES256" }, kid };
 }
 const state = () => signing.__hexConnectSigning ??= loadSigningState();
+export async function tunnelSecret(name: string): Promise<Buffer> { return createHmac("sha256", (await state()).tunnelKey).update(name, "utf8").digest(); }
 export const resetSigningKeyForTests = () => { signing.__hexConnectSigning = undefined; };
 /** A short-lived login grant for one daemon (`aud`) and its owner (`sub`). `jti` lets the daemon refuse a replayed grant. */
 export async function issueGrant(claims: GrantClaims, expiresInSeconds = 300) { const s = await state(); return new SignJWT({ daemon_id: claims.daemon_id, device_name: claims.device_name }).setProtectedHeader({ alg: "ES256", kid: s.kid, typ: "hexbot-grant+jwt" }).setIssuer(connectIssuer()).setAudience(claims.daemon_id).setSubject(claims.sub).setJti(randomBytes(16).toString("base64url")).setIssuedAt().setExpirationTime(Math.floor(Date.now() / 1000) + expiresInSeconds).sign(s.privateKey); }

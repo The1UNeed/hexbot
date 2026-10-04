@@ -16,10 +16,10 @@ export default async function ConnectPage() {
   const store = getStore();
   const fake = fakeTunnels();
   const now = Date.now();
-  const rows = await store.listDaemons(user.id);
-  const statuses = await getReachability().statuses(rows, fake, now);
+  const rows = await store.listDaemons(user.id, true);
+  const statuses = await getReachability().statuses(rows.filter(row => !row.revokedAt), fake, now);
   const daemons = rows.map(daemon => ({
-    id: daemon.id, name: daemon.name, hostname: daemon.tunnelHostname, status: statuses.get(daemon.id) ?? "offline",
+    removing: !!daemon.revokedAt, id: daemon.id, name: daemon.name, hostname: daemon.tunnelHostname, status: statuses.get(daemon.id) ?? "offline",
     lastSeen: relativeTime(daemon.lastSeenAt, now), openUrl: browserSignInUrl(daemonOrigin(daemon, fake)),
   }));
   const devices = (await store.listClientSessions(user.id)).map(session => ({
