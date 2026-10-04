@@ -1,13 +1,13 @@
 import { CircleHelp } from 'lucide-react'
 
 /**
- * Pinned under the header, above the transcript, while a bot waits on the
- * user. Names the bot in a room, where more than one could be asking.
+ * A small glass pill pinned under the header while a bot waits on the user.
+ * Names the bot in a room, where more than one could be asking.
  */
 export function WaitingBanner({ name }: { name?: string }) {
   return (
     <div
-      className="hex-fade flex shrink-0 items-center gap-2 border-b border-accent/20 bg-accent/10 px-4 py-2 text-[length:var(--text-secondary)] text-accent"
+      className="hex-glass hex-fade pointer-events-auto mx-auto flex w-fit max-w-full shrink-0 items-center gap-2 rounded-full px-3.5 py-1.5 text-[length:var(--text-secondary)] font-medium text-accent"
       data-testid="waiting-banner"
       role="status"
     >

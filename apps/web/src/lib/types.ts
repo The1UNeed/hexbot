@@ -188,7 +188,13 @@ export interface Connector {
   icon: string
   id: string
   last_error: null | { at: number; text: string }
-  mcp?: { running: boolean; tool_count: number; transport: 'http' | 'sse' | 'stdio' }
+  mcp?: {
+    /** The server name in its tools' names (`mcp_<name>_<tool>`); may contain underscores. */
+    name?: string
+    running: boolean
+    tool_count: number
+    transport: 'http' | 'sse' | 'stdio'
+  }
   name: string
   provider?: null | string
   providers?: ConnectorProviderOption[]
@@ -273,6 +279,12 @@ export interface Message {
   /** Inline error row attached to this message (`error` event). */
   error?: string
   id: string
+  /**
+   * What the bot said earlier in the same turn, one entry per message it
+   * finished before calling a tool. Each is its own bubble; `text` is the
+   * message after the last of them.
+   */
+  parts?: string[]
   role: MessageRole
   /** Set once `message.complete` arrives with a non-ok status. */
   status?: string

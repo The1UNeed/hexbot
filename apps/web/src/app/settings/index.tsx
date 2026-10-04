@@ -1,4 +1,4 @@
-import { Copy, ExternalLink, Plus, Trash2 } from 'lucide-react'
+import { ChevronDown, Copy, ExternalLink, Plus, Search } from 'lucide-react'
 import QRCode from 'qrcode'
 import { useEffect, useRef, useState } from 'react'
 
@@ -7,7 +7,9 @@ import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
 import { Input } from '../../components/ui/input'
 import { Select } from '../../components/ui/select'
+import { settingsPageClass } from '../../components/ui/settings-shell'
 import { SkeletonLines } from '../../components/ui/skeleton'
+import { Switch } from '../../components/ui/switch'
 import {
   connectDisconnect,
   connectRegisterPoll,
@@ -47,6 +49,7 @@ import {
 } from '../../stores/updates'
 import { useUsers } from '../../stores/users'
 import { MemoryEditor } from '../bot-settings/memory'
+import { ChoiceRow, dividerClass, Group, Heading, Row, rowFieldClass } from '../bot-settings/shared'
 import { ConfirmUpdate, updateNow, updateTarget } from '../confirm-update'
 
 export const SETTINGS_TABS = [
@@ -61,12 +64,46 @@ export const SETTINGS_TABS = [
   'updates',
   'about'
 ] as const
+
+export type SettingsTab = (typeof SETTINGS_TABS)[number]
+
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
-/** Complete settings body; the file route owns the surrounding dialog and navigation. */
+/** A short notice under a heading: a warning, or progress the user should know about. */
+function Notice({
+  children,
+  role,
+  tone = 'warning'
+}: {
+  children: React.ReactNode
+  role?: 'alert' | 'status'
+  tone?: 'danger' | 'warning'
+}) {
+  return (
+    <p
+      className={cn(
+        'mb-5 rounded-[12px] px-4 py-3 text-[length:var(--text-secondary)]',
+        tone === 'danger' ? 'bg-danger/10 text-danger' : 'bg-warning/10 text-warning'
+      )}
+      role={role}
+    >
+      {children}
+    </p>
+  )
+}
+
+function ErrorLine({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="mt-3 text-[length:var(--text-secondary)] text-danger" role="alert">
+      {children}
+    </p>
+  )
+}
+
+/** Complete settings body; the file route owns the surrounding window and navigation. */
 export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
   return (
-    <section aria-label={`${tab} settings`} className="min-w-0 max-w-3xl p-8">
+    <section aria-label={`${tab} settings`} className={settingsPageClass}>
       {tab === 'providers' && <ProvidersSettings />}
       {tab === 'network' && <NetworkSettings />}
       {tab === 'connect' && <ConnectSettings />}
@@ -99,46 +136,58 @@ export function MemorySettings() {
       <Heading description="About you goes to every bot you own. Each bot keeps its own memory in its settings.">
         Memory
       </Heading>
-      <h3 className="mb-1 font-semibold">About you</h3>
-      <p className="mb-3 text-muted">
-        Your name, what you do, and how you like to be spoken to. Only you write this.
-      </p>
-      {aboutError ? (
-        <p className="text-danger" role="alert">
-          {aboutError}
-        </p>
-      ) : about ? (
-        <MemoryEditor
-          cap={about.cap}
-          label="About you"
-          onSave={async text => setAbout(await userMemorySet(text))}
-          value={about.text}
-        />
-      ) : (
-        <SkeletonLines label="Loading memory" />
-      )}
-      <h3 className="mt-8 mb-1 font-semibold">Dreaming</h3>
-      <label className="flex items-center justify-between border-b border-border py-3">
-        <span>
-          <strong className="block">Dreaming</strong>
-          <span className="text-muted">Run scheduled memory reviews for enabled bots.</span>
-        </span>
-        <input
-          aria-label="Enable dreaming globally"
-          checked={settings?.dream_enabled ?? false}
-          onChange={event => void patch({ dream_enabled: event.target.checked })}
-          type="checkbox"
-        />
-      </label>
-      <label className="mt-4 block">
-        <span className="mb-2 block font-medium">Daily dream time</span>
-        <Input
-          aria-label="Daily dream time"
-          defaultValue={settings?.dream_time ?? '03:00'}
-          onBlur={event => void patch({ dream_time: event.target.value })}
-          type="time"
-        />
-      </label>
+      <div className="space-y-8">
+        <div>
+          <p className="mb-2 px-1 text-[length:var(--text-meta)] font-medium text-muted">
+            About you
+          </p>
+          {aboutError ? (
+            <p className="text-danger" role="alert">
+              {aboutError}
+            </p>
+          ) : about ? (
+            <MemoryEditor
+              cap={about.cap}
+              label="About you"
+              onSave={async text => setAbout(await userMemorySet(text))}
+              placeholder="Your name, what you do, and how you like to be spoken to."
+
+              value={about.text}
+            />
+          ) : (
+            <SkeletonLines label="Loading memory" />
+          )}
+          <p className="mt-2 px-1 text-[length:var(--text-meta)] text-muted">
+            Your name, what you do, and how you like to be spoken to. Only you write this.
+          </p>
+        </div>
+        <Group title="Dreaming">
+          <Row
+            control={
+              <Switch
+                aria-label="Enable dreaming globally"
+                checked={settings?.dream_enabled ?? false}
+                onCheckedChange={checked => void patch({ dream_enabled: checked })}
+              />
+            }
+            description="Each day, every bot with dreaming on folds its conversations into its memory."
+            title="Dreaming"
+          />
+          <Row
+            control={
+              <Input
+                aria-label="Daily dream time"
+                className="w-32"
+                defaultValue={settings?.dream_time ?? '03:00'}
+                onBlur={event => void patch({ dream_time: event.target.value })}
+                type="time"
+              />
+            }
+            description="When the daily pass runs, in the daemon's time zone."
+            title="Dream time"
+          />
+        </Group>
+      </div>
     </>
   )
 }
@@ -198,100 +247,120 @@ export function ConnectSettings() {
   }, [registration])
   const open = (url: string) => (getBridge() ? getBridge()?.openExternal(url) : undefined)
 
+  const external = (url: string, text: string) => (
+    <a
+      className="text-accent hover:underline"
+      href={url}
+      onClick={event => {
+        if (getBridge()) {
+          event.preventDefault()
+          void open(url)
+        }
+      }}
+      rel="noreferrer"
+      target="_blank"
+    >
+      {text}
+    </a>
+  )
+
   return (
     <>
-      <Heading description="Reach this daemon securely when you are away from your local network.">
+      <Heading description="Reach this daemon from outside your network. Chat traffic never passes through Connect.">
         Hex Connect
       </Heading>
       {status?.registered ? (
-        <div>
-          <dl className="grid grid-cols-[auto_1fr] gap-2">
-            <dt className="text-muted">Address</dt>
-            <dd>
-              <a
-                className="text-accent hover:underline"
-                href={`https://${status.tunnel_hostname}`}
-                onClick={event => {
-                  if (getBridge()) {
-                    event.preventDefault()
-                    void open(`https://${status.tunnel_hostname}`)
-                  }
-                }}
-                rel="noreferrer"
-                target="_blank"
-              >
-                {status.tunnel_hostname}
-              </a>
-            </dd>
-            <dt className="text-muted">Tunnel</dt>
-            <dd>{status.tunnel_running ? 'Running' : 'Stopped'}</dd>
-          </dl>
-          <p className="mt-3 text-secondary text-muted">
-            Open the address in any browser and sign in with Hex Connect, or manage this daemon and
-            your signed-in apps at{' '}
-            <a
-              className="text-accent hover:underline"
-              href={`${connectBaseUrl()}/connect`}
-              onClick={event => {
-                if (getBridge()) {
-                  event.preventDefault()
-                  void open(`${connectBaseUrl()}/connect`)
-                }
-              }}
-              rel="noreferrer"
-              target="_blank"
-            >
-              {connectBaseUrl().replace(/^https?:\/\//, '')}
-            </a>
-            .
-          </p>
-          <Button
-            className="mt-5"
-            onClick={() =>
-              void connectDisconnect().then(() => setStatus({ ...status, registered: false }))
-            }
-            variant="danger"
-          >
-            Disconnect
-          </Button>
-        </div>
-      ) : registration ? (
-        <div>
-          <p>Open this page and enter the code:</p>
-          {getBridge() ? (
-            <Button className="mt-3" onClick={() => void open(registration.verify_url)}>
-              Open verification page
-            </Button>
-          ) : (
-            <a className="mt-3 block text-accent underline" href={registration.verify_url}>
-              {registration.verify_url}
-            </a>
-          )}
-          <p className="mt-4 font-mono text-2xl tracking-[0.2em]">{registration.user_code}</p>
-          <p className="mt-2 text-muted">Waiting for approval…</p>
-        </div>
-      ) : (
-        <Button
-          busy={busy}
-          onClick={() => {
-            setBusy(true)
-            void connectRegisterStart()
-              .then(setRegistration)
-              .catch(cause => {
-                setError(errorText(cause))
-                setBusy(false)
-              })
-          }}
-          variant="primary"
+        <Group
+          footer={
+            <>
+              Open the address in any browser and sign in with Hex Connect. Manage this daemon and
+              your signed-in apps at{' '}
+              {external(
+                `${connectBaseUrl()}/connect`,
+                connectBaseUrl().replace(/^https?:\/\//, '')
+              )}
+              .
+            </>
+          }
+          title="This daemon"
         >
-          Sign in and register
-        </Button>
+          <Row
+            control={external(`https://${status.tunnel_hostname}`, status.tunnel_hostname ?? '')}
+            title="Address"
+          />
+          <Row
+            control={
+              <span className="text-[length:var(--text-secondary)] text-muted">
+                {status.tunnel_running ? 'Running' : 'Stopped'}
+              </span>
+            }
+            title="Tunnel"
+          />
+          <Row
+            control={
+              <Button
+                onClick={() =>
+                  void connectDisconnect().then(() => setStatus({ ...status, registered: false }))
+                }
+                size="sm"
+                variant="danger"
+              >
+                Disconnect
+              </Button>
+            }
+            description="Removes this daemon from your Hex Connect account."
+            title="Disconnect"
+          />
+        </Group>
+      ) : registration ? (
+        <Group title="Sign in">
+          <div className="px-4 py-5 text-center">
+            <p className="text-[length:var(--text-secondary)] text-muted">
+              Open the verification page and enter this code.
+            </p>
+            <p className="mt-3 font-mono text-[28px] tracking-[0.2em]">{registration.user_code}</p>
+            <div className="mt-4">
+              {getBridge() ? (
+                <Button onClick={() => void open(registration.verify_url)} variant="primary">
+                  Open verification page
+                </Button>
+              ) : (
+                <a className="text-accent underline" href={registration.verify_url}>
+                  {registration.verify_url}
+                </a>
+              )}
+            </div>
+            <p className="mt-4 text-[length:var(--text-secondary)] text-muted">
+              Waiting for approval…
+            </p>
+          </div>
+        </Group>
+      ) : (
+        <Group>
+          <Row
+            control={
+              <Button
+                busy={busy}
+                onClick={() => {
+                  setBusy(true)
+                  void connectRegisterStart()
+                    .then(setRegistration)
+                    .catch(cause => {
+                      setError(errorText(cause))
+                      setBusy(false)
+                    })
+                }}
+                variant="primary"
+              >
+                Sign in and register
+              </Button>
+            }
+            description="Sign in to get an address for this daemon."
+            title="Not connected"
+          />
+        </Group>
       )}
-      {error ? (
-        <p className="mt-3 text-danger" role="alert">
-          {error}
-        </p>
-      ) : null}
+      {error ? <ErrorLine>{error}</ErrorLine> : null}
     </>
   )
 }
@@ -314,84 +383,95 @@ export function UsersSettings() {
 
   return (
     <>
-      <Heading description="Invite household members and set their daily token budgets.">
+      <Heading description="Invite the people in your household and set their daily token budgets.">
         Users
       </Heading>
-      <form
-        className="flex gap-2"
-        onSubmit={event => {
-          event.preventDefault()
-          void usersInvite(name).then(result => {
-            setInvite(result)
-            setName('')
-            void refresh()
-          })
-        }}
-      >
-        <Input
-          aria-label="New user name"
-          onChange={event => setName(event.target.value)}
-          placeholder="Display name"
-          value={name}
-        />
-        <Button disabled={!name.trim()} type="submit">
-          Invite
-        </Button>
-      </form>
-      {invite ? (
-        <div className="mt-3 bg-surface-2 p-3">
-          <p>Pairing code</p>
-          <p className="font-mono text-xl">{invite.code}</p>
-          <p className="text-muted">Use this code on the new user's device.</p>
-          {network?.addresses[0] ? (
-            <a
-              className="mt-2 block break-all text-accent underline"
-              href={`hexbot://pair?host=${encodeURIComponent(network.addresses[0])}&port=${network.port}#code=${encodeURIComponent(invite.code)}`}
-            >
-              Open pairing link
-            </a>
-          ) : null}
-        </div>
-      ) : null}
-      <ul className="mt-5 divide-y divide-border">
-        {users.map(user => (
-          <li className="grid grid-cols-[1fr_120px_auto] items-center gap-2 py-3" key={user.id}>
+      <div className="space-y-8">
+        <Group title="Invite">
+          <form
+            className="flex items-center gap-2 px-4 py-2.5"
+            onSubmit={event => {
+              event.preventDefault()
+              void usersInvite(name).then(result => {
+                setInvite(result)
+                setName('')
+                void refresh()
+              })
+            }}
+          >
             <Input
-              aria-label={`Name for ${user.display_name}`}
-              defaultValue={user.display_name}
-              onBlur={event =>
-                event.target.value !== user.display_name &&
-                void usersUpdate(user.id, { display_name: event.target.value }).then(() =>
-                  refresh()
-                )
-              }
+              aria-label="New user name"
+              className={rowFieldClass}
+              onChange={event => setName(event.target.value)}
+              placeholder="Display name"
+              value={name}
             />
-            <Input
-              aria-label={`Daily token budget for ${user.display_name}`}
-              defaultValue={user.limits?.daily_tokens ?? ''}
-              min="0"
-              onBlur={event =>
-                void usersUpdate(user.id, {
-                  limits: { daily_tokens: event.target.value ? Number(event.target.value) : null }
-                }).then(() => refresh())
-              }
-              placeholder="No limit"
-              type="number"
-            />
-            <Button
-              onClick={() =>
-                void usersUpdate(user.id, {
-                  disabled: !(user.disabled_at ?? user.disabled)
-                }).then(() => refresh())
-              }
-              size="sm"
-              variant="ghost"
-            >
-              {user.disabled_at || user.disabled ? 'Enable' : 'Disable'}
+            <Button disabled={!name.trim()} size="sm" type="submit" variant="primary">
+              Invite
             </Button>
-          </li>
-        ))}
-      </ul>
+          </form>
+          {invite ? (
+            <div className="px-4 py-4 text-center">
+              <p className="text-[length:var(--text-secondary)] text-muted">
+                Pairing code for the new user's device
+              </p>
+              <p className="mt-2 font-mono text-[28px] tracking-[0.2em]">{invite.code}</p>
+              {network?.addresses[0] ? (
+                <a
+                  className="mt-2 inline-block break-all text-[length:var(--text-secondary)] text-accent hover:underline"
+                  href={`hexbot://pair?host=${encodeURIComponent(network.addresses[0])}&port=${network.port}#code=${encodeURIComponent(invite.code)}`}
+                >
+                  Open pairing link
+                </a>
+              ) : null}
+            </div>
+          ) : null}
+        </Group>
+        <Group footer="A budget is tokens per day. Leave it empty for no limit." title="People">
+          {users.map(user => (
+            <div
+              className="grid min-h-[52px] grid-cols-[1fr_120px_auto] items-center gap-3 px-4 py-2"
+              key={user.id}
+            >
+              <Input
+                aria-label={`Name for ${user.display_name}`}
+                className={rowFieldClass}
+                defaultValue={user.display_name}
+                onBlur={event =>
+                  event.target.value !== user.display_name &&
+                  void usersUpdate(user.id, { display_name: event.target.value }).then(() =>
+                    refresh()
+                  )
+                }
+              />
+              <Input
+                aria-label={`Daily token budget for ${user.display_name}`}
+                className="h-[32px] text-[length:var(--text-secondary)]"
+                defaultValue={user.limits?.daily_tokens ?? ''}
+                min="0"
+                onBlur={event =>
+                  void usersUpdate(user.id, {
+                    limits: { daily_tokens: event.target.value ? Number(event.target.value) : null }
+                  }).then(() => refresh())
+                }
+                placeholder="No limit"
+                type="number"
+              />
+              <Button
+                onClick={() =>
+                  void usersUpdate(user.id, {
+                    disabled: !(user.disabled_at ?? user.disabled)
+                  }).then(() => refresh())
+                }
+                size="sm"
+                variant="ghost"
+              >
+                {user.disabled_at || user.disabled ? 'Enable' : 'Disable'}
+              </Button>
+            </div>
+          ))}
+        </Group>
+      </div>
     </>
   )
 }
@@ -410,49 +490,50 @@ export function UsageSettings() {
       : Object.entries(summary.by_bot).map(([bot, value]) => ({ bot, ...value }))
     : []
 
+  const number = (value: number) => (
+    <span className="font-mono text-[length:var(--text-secondary)] tabular-nums">
+      {value.toLocaleString()}
+    </span>
+  )
+
   return (
     <>
       <Heading description="Token use reported by this daemon.">Usage</Heading>
       {summary ? (
-        <>
-          <p>
-            {summary.input_tokens.toLocaleString()} input · {summary.output_tokens.toLocaleString()}{' '}
-            output · ${summary.estimated_cost_usd.toFixed(2)}
-          </p>
-          <table className="mt-5 w-full text-left">
-            <thead>
-              <tr className="border-b border-border">
-                <th className="py-2">Bot</th>
-                <th>Input</th>
-                <th>Output</th>
-                <th>Cost</th>
-              </tr>
-            </thead>
-            <tbody>
+        <div className="space-y-8">
+          <Group title="This daemon">
+            <Row control={number(summary.input_tokens)} title="Input tokens" />
+            <Row control={number(summary.output_tokens)} title="Output tokens" />
+            <Row
+              control={
+                <span className="font-mono text-[length:var(--text-secondary)] tabular-nums">
+                  ${summary.estimated_cost_usd.toFixed(2)}
+                </span>
+              }
+              title="Estimated cost"
+            />
+          </Group>
+          {rows.length ? (
+            <Group title="By bot">
               {rows.map(row => (
-                <tr className="border-b border-border" key={row.bot}>
-                  <td className="py-2">{bots[row.bot]?.display_name ?? row.bot}</td>
-                  <td>{row.input_tokens.toLocaleString()}</td>
-                  <td>{row.output_tokens.toLocaleString()}</td>
-                  <td>${(row.estimated_cost_usd ?? 0).toFixed(2)}</td>
-                </tr>
+                <Row
+                  control={
+                    <span className="font-mono text-[length:var(--text-secondary)] tabular-nums">
+                      ${(row.estimated_cost_usd ?? 0).toFixed(2)}
+                    </span>
+                  }
+                  description={`${row.input_tokens.toLocaleString()} in · ${row.output_tokens.toLocaleString()} out`}
+                  key={row.bot}
+                  title={bots[row.bot]?.display_name ?? row.bot}
+                />
               ))}
-            </tbody>
-          </table>
-        </>
+            </Group>
+          ) : null}
+        </div>
       ) : (
         <SkeletonLines label="Loading usage" />
       )}
     </>
-  )
-}
-
-function Heading({ children, description }: { children: React.ReactNode; description: string }) {
-  return (
-    <header className="mb-6">
-      <h2 className="text-[length:var(--text-title)] font-semibold">{children}</h2>
-      <p className="mt-1 text-muted">{description}</p>
-    </header>
   )
 }
 
@@ -466,46 +547,119 @@ export function ProvidersSettings(): React.JSX.Element {
     void refresh()
   }, [refresh])
 
+  const needle = query.trim().toLowerCase()
+
+  const visible = providers.filter(
+    provider => !needle || `${provider.label} ${provider.id}`.toLowerCase().includes(needle)
+  )
+
+  // The groups are fixed when the page opens: a row that gets its first key
+  // stays where it is, so its open editor and test result are not remounted.
+  const [connectedIds, setConnectedIds] = useState<null | Set<string>>(null)
+  useEffect(() => {
+    if (!connectedIds && providers.length) {
+      setConnectedIds(
+        new Set(providers.filter(item => item.configured === true).map(item => item.id))
+      )
+    }
+  }, [connectedIds, providers])
+
+  const isConnected = (provider: Provider) =>
+    connectedIds ? connectedIds.has(provider.id) : provider.configured === true
+
+  const connected = visible.filter(isConnected)
+  const rest = visible.filter(provider => !isConnected(provider))
+
+  const row = (provider: Provider) =>
+    isSubscription(provider) ? (
+      <SubscriptionRow
+        clearKey={clearKey}
+        key={provider.id}
+        provider={provider}
+        refresh={refresh}
+      />
+    ) : (
+      <ProviderRow clearKey={clearKey} key={provider.id} provider={provider} setKey={setKey} />
+    )
+
   return (
     <>
-      <Heading description="Connect the model providers your bots can use.">Providers</Heading>
-      <Input
-        aria-label="Search providers"
-        className="mb-3"
-        onChange={event => setQuery(event.target.value)}
-        placeholder="Search providers"
-        value={query}
-      />
-      <div className="divide-y divide-border">
-        {providers
-          .filter(provider => {
-            const needle = query.trim().toLowerCase()
-
-            return !needle || `${provider.label} ${provider.id}`.toLowerCase().includes(needle)
-          })
-          .map(provider =>
-            isSubscription(provider) ? (
-              <SubscriptionRow
-                clearKey={clearKey}
-                key={provider.id}
-                provider={provider}
-                refresh={refresh}
-              />
-            ) : (
-              <ProviderRow
-                clearKey={clearKey}
-                key={provider.id}
-                provider={provider}
-                setKey={setKey}
-              />
-            )
-          )}
+      <Heading description="The model providers your bots can use. Usage is billed by them; Hexbot includes no credits.">
+        Providers
+      </Heading>
+      <div className="space-y-8">
+        <label className="relative block">
+          <Search
+            className="pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 text-muted"
+            size={15}
+          />
+          <Input
+            aria-label="Search providers"
+            className="rounded-full pl-9"
+            onChange={event => setQuery(event.target.value)}
+            placeholder="Search providers"
+            value={query}
+          />
+        </label>
+        {connected.length ? <Group title="Connected">{connected.map(row)}</Group> : null}
+        {rest.length ? (
+          <Group title={connected.length ? 'More providers' : 'All providers'}>
+            {rest.map(row)}
+          </Group>
+        ) : null}
+        {!visible.length ? (
+          <p className="px-1 text-[length:var(--text-secondary)] text-muted">
+            No provider matches that.
+          </p>
+        ) : null}
+        <DefaultModels />
       </div>
-      <p className="mt-6 text-[length:var(--text-secondary)] text-muted">
-        Hexbot does not include any model credits. Usage is billed by your providers.
-      </p>
-      <DefaultModels />
     </>
+  )
+}
+
+/** One provider in the list: the name and state, a control, and details on click. */
+function ExpandableRow({
+  children,
+  control,
+  description,
+  expanded,
+  onToggle,
+  title
+}: {
+  children: React.ReactNode
+  control?: React.ReactNode
+  description: React.ReactNode
+  expanded: boolean
+  onToggle: () => void
+  title: string
+}) {
+  return (
+    <div>
+      <div className="flex min-h-[52px] items-center gap-4 px-4 py-2.5">
+        <button
+          aria-expanded={expanded}
+          className="min-w-0 flex-1 text-left outline-none"
+          onClick={onToggle}
+          type="button"
+        >
+          <span className="block text-[length:var(--text-body)]">{title}</span>
+          <span className="mt-0.5 block text-[length:var(--text-secondary)] text-muted">
+            {description}
+          </span>
+        </button>
+        {control}
+        <ChevronDown
+          aria-hidden
+          className={cn(
+            'shrink-0 text-muted transition-transform duration-[var(--hex-motion-fast)]',
+            expanded && 'rotate-180'
+          )}
+          size={15}
+        />
+      </div>
+      {expanded ? <div className="hex-fade px-4 pt-1 pb-4">{children}</div> : null}
+    </div>
   )
 }
 
@@ -518,31 +672,39 @@ function SubscriptionRow({
   provider: Provider
   refresh: () => Promise<void>
 }) {
+  const [open, setOpen] = useState(false)
+
   return (
-    <div className="py-4">
-      <div className="flex items-center gap-3">
-        <div className="min-w-0 flex-1">
-          <h3 className="font-medium">{provider.label}</h3>
-          <Chip className="mt-1" tone={provider.configured ? 'success' : 'accent'}>
-            {provider.configured ? 'Signed in' : 'Subscription'}
-          </Chip>
-        </div>
-        {provider.configured && (
-          <Button
-            aria-label={`Sign out of ${provider.label}`}
-            icon={<Trash2 size={14} />}
-            onClick={() => void clearKey(provider.id)}
-            size="sm"
-            variant="ghost"
-          >
-            Sign out
+    <ExpandableRow
+      control={
+        provider.configured ? (
+          <Chip tone="success">Signed in</Chip>
+        ) : (
+          <Button onClick={() => setOpen(true)} size="sm">
+            Sign in
           </Button>
-        )}
-      </div>
-      <div className="mt-3">
+        )
+      }
+      description={
+        provider.configured ? 'Subscription' : 'Subscription, sign in through your browser'
+      }
+      expanded={open}
+      onToggle={() => setOpen(value => !value)}
+      title={provider.label}
+    >
+      {provider.configured ? (
+        <Button
+          aria-label={`Sign out of ${provider.label}`}
+          onClick={() => void clearKey(provider.id)}
+          size="sm"
+          variant="ghost"
+        >
+          Sign out
+        </Button>
+      ) : (
         <ProviderPanel onConfigured={refresh} provider={provider} />
-      </div>
-    </div>
+      )}
+    </ExpandableRow>
   )
 }
 
@@ -573,38 +735,44 @@ function DefaultModels() {
   }, [providers])
 
   return (
-    <div className="mt-8 space-y-4">
-      <Heading description="The model new bots start with, and where a bot goes when its own provider fails.">
-        Defaults
-      </Heading>
-      <label className="block space-y-2">
-        <span className="font-medium">Default model</span>
-        <Select
-          label="Default model"
-          onValueChange={value => void patch({ default_model: value })}
-          options={choices}
-          placeholder="Choose a model"
-          value={settings?.default_model ?? undefined}
-        />
-      </label>
-      <label className="block space-y-2">
-        <span className="font-medium">
-          Fallback <span className="text-muted">(optional)</span>
-        </span>
-        <Select
-          label="Fallback model"
-          onValueChange={value =>
-            void patch({ fallback_model: value === '__none__' ? null : value })
-          }
-          options={[
-            { label: 'None', value: '__none__' },
-            ...choices.filter(item => item.value !== settings?.default_model)
-          ]}
-          placeholder="None"
-          value={settings?.fallback_model ?? '__none__'}
-        />
-      </label>
-    </div>
+    <Group
+      footer="New bots start on the default model. A bot falls back when its own provider fails."
+      title="Defaults"
+    >
+      <Row
+        control={
+          <div className="w-[min(260px,42vw)]">
+            <Select
+              label="Default model"
+              onValueChange={value => void patch({ default_model: value })}
+              options={choices}
+              placeholder="Choose a model"
+              value={settings?.default_model ?? undefined}
+            />
+          </div>
+        }
+        title="Default model"
+      />
+      <Row
+        control={
+          <div className="w-[min(260px,42vw)]">
+            <Select
+              label="Fallback model"
+              onValueChange={value =>
+                void patch({ fallback_model: value === '__none__' ? null : value })
+              }
+              options={[
+                { label: 'None', value: '__none__' },
+                ...choices.filter(item => item.value !== settings?.default_model)
+              ]}
+              placeholder="None"
+              value={settings?.fallback_model ?? '__none__'}
+            />
+          </div>
+        }
+        title="Fallback"
+      />
+    </Group>
   )
 }
 
@@ -617,6 +785,7 @@ function ProviderRow({
   provider: Provider
   setKey: (provider: string, key: string) => Promise<void>
 }) {
+  const [open, setOpen] = useState(false)
   const [key, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<string | null>(null)
@@ -657,58 +826,76 @@ function ProviderRow({
 
   if (!supportsApiKey(provider)) {
     return (
-      <div className="py-4">
-        <h3 className="font-medium">{provider.label}</h3>
-        <div className="mt-2">
-          <ProviderPanel onConfigured={() => Promise.resolve()} provider={provider} />
-        </div>
-      </div>
+      <ExpandableRow
+        description="Configured on the daemon"
+        expanded={open}
+        onToggle={() => setOpen(value => !value)}
+        title={provider.label}
+      >
+        <ProviderPanel onConfigured={() => Promise.resolve()} provider={provider} />
+      </ExpandableRow>
     )
   }
 
   return (
-    <div className="py-4">
-      <div className="flex items-center gap-3">
-        <div className="min-w-0 flex-1">
-          <h3 className="font-medium">{provider.label}</h3>
-          <Chip className="mt-1" tone={provider.configured ? 'success' : 'neutral'}>
-            {provider.configured ? 'Configured' : 'Not configured'}
-          </Chip>
-        </div>
-        {provider.configured && (
-          <Button
-            aria-label={`Remove ${provider.label} key`}
-            icon={<Trash2 size={14} />}
-            onClick={() => void clearKey(provider.id)}
-            size="sm"
-            variant="ghost"
-          >
-            Remove
+    <ExpandableRow
+      control={
+        provider.configured ? (
+          <Chip tone="success">Connected</Chip>
+        ) : (
+          <Button onClick={() => setOpen(true)} size="sm">
+            Add key
           </Button>
-        )}
-      </div>
-      <div className="mt-3 flex flex-wrap gap-2">
+        )
+      }
+      description={provider.configured ? 'API key saved' : 'Needs an API key'}
+      expanded={open}
+      onToggle={() => setOpen(value => !value)}
+      title={provider.label}
+    >
+      <form
+        className="flex flex-wrap gap-2"
+        onSubmit={event => {
+          event.preventDefault()
+          void save()
+        }}
+      >
         <Input
           aria-label={`${provider.label} API key`}
-          className="min-w-56 flex-1"
+          autoFocus
+          className="min-w-56 flex-1 font-mono text-[length:var(--text-secondary)]"
           onChange={event => setDraft(event.target.value)}
-          placeholder="API key"
+          placeholder={provider.configured ? 'Replace the saved key' : 'API key'}
           type="password"
           value={key}
         />
-        <Button busy={busy} disabled={!key} onClick={() => void save()}>
+        <Button busy={busy} disabled={!key} type="submit" variant="primary">
           Save
         </Button>
         <Button busy={busy} onClick={() => void test()}>
           Test
         </Button>
+      </form>
+      <div className="mt-2 flex min-h-5 items-center justify-between gap-3">
+        {result ? (
+          <p className="text-[length:var(--text-secondary)] text-muted" role="status">
+            {result}
+          </p>
+        ) : (
+          <span />
+        )}
+        {provider.configured ? (
+          <Button
+            aria-label={`Remove ${provider.label} key`}
+            onClick={() => void clearKey(provider.id)}
+            size="sm"
+            variant="ghost"
+          >
+            Remove key
+          </Button>
+        ) : null}
       </div>
-      {result && (
-        <p className="mt-2 text-[length:var(--text-secondary)] text-muted" role="status">
-          {result}
-        </p>
-      )}
-    </div>
+    </ExpandableRow>
   )
 }
 
@@ -834,131 +1021,136 @@ export function NetworkSettings(): React.JSX.Element {
 
   return (
     <>
-      <Heading description="Pair devices directly with this daemon on your local network.">
+      <Heading description="Pair devices with this daemon over your local network.">
         Network
       </Heading>
-      <label className="flex items-center justify-between gap-4 border-b border-border pb-4">
-        <span>
-          <strong className="block">Allow other devices on this network</strong>
-          <span className="text-[length:var(--text-secondary)] text-muted">
-            Makes this daemon reachable from your LAN.
-          </span>
-        </span>
-        <input
-          aria-label="Allow other devices on this network"
-          checked={network?.lan_enabled ?? false}
-          className="size-5 accent-accent"
-          disabled={reconnecting}
-          onChange={event => void toggle(event.target.checked)}
-          type="checkbox"
-        />
-      </label>
-      {reconnecting && (
-        <p className="mt-4 rounded-control bg-warning/12 p-3 text-warning" role="status">
+      {reconnecting ? (
+        <Notice role="status">
           Reconnecting to the daemon at its new address. Running bot turns continue.
-        </p>
-      )}
-      {error && (
-        <p className="mt-4 text-danger" role="alert">
+        </Notice>
+      ) : null}
+      {error ? (
+        <Notice role="alert" tone="danger">
           {error}
-        </p>
-      )}
-      {network?.lan_enabled && (
-        <div className="mt-5 space-y-6">
-          <div>
-            <h3 className="font-medium">Addresses</h3>
-            <ul className="mt-2 font-mono text-[length:var(--text-secondary)]">
-              {network.addresses.map(address => (
-                <li key={address}>
-                  {address}:{network.port}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      )}
-      <div className="mt-6">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <h3 className="text-[length:var(--text-secondary)] text-muted">Authorized clients</h3>
-          <div className="flex gap-2">
-            <Button
-              className="border border-border text-danger"
-              disabled={revoking || !devices.some(device => !device.current)}
-              onClick={() =>
-                void revokeClients(
-                  devices.filter(device => !device.current).map(device => device.id)
+        </Notice>
+      ) : null}
+      <div className="space-y-8">
+        <Group>
+          <Row
+            control={
+              <Switch
+                aria-label="Allow other devices on this network"
+                checked={network?.lan_enabled ?? false}
+                disabled={reconnecting}
+                onCheckedChange={checked => void toggle(checked)}
+              />
+            }
+            description="Makes this daemon reachable from your LAN."
+            title="Allow other devices on this network"
+          />
+          {network?.lan_enabled ? (
+            <Row
+              control={
+                <ul className="text-right font-mono text-[length:var(--text-secondary)] text-muted">
+                  {network.addresses.map(address => (
+                    <li key={address}>
+                      {address}:{network.port}
+                    </li>
+                  ))}
+                </ul>
+              }
+              title="Addresses"
+            />
+          ) : null}
+        </Group>
+        <Group
+          action={
+            <div className="flex gap-1.5">
+              <Button
+                className="text-danger hover:text-danger"
+                disabled={revoking || !devices.some(device => !device.current)}
+                onClick={() =>
+                  void revokeClients(
+                    devices.filter(device => !device.current).map(device => device.id)
+                  )
+                }
+                size="sm"
+                variant="ghost"
+              >
+                Revoke others
+              </Button>
+              <Button
+                busy={creating}
+                disabled={!network?.lan_enabled || reconnecting || connectionStatus !== 'connected'}
+                icon={<Plus size={14} />}
+                onClick={() => void createLink()}
+                size="sm"
+                variant="primary"
+              >
+                Create link
+              </Button>
+            </div>
+          }
+          footer={
+            network?.lan_enabled
+              ? undefined
+              : 'Turn on network access above to create a link for another device.'
+          }
+          title="Paired devices"
+        >
+          {devices.map(device => (
+            <Row
+              control={
+                device.current ? (
+                  <Chip>This device</Chip>
+                ) : (
+                  <Button
+                    disabled={revoking}
+                    onClick={() => void revokeClients([device.id])}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    Revoke
+                  </Button>
                 )
               }
-              size="sm"
-              variant="ghost"
-            >
-              Revoke others
-            </Button>
-            <Button
-              busy={creating}
-              className="bg-blue-600 text-white hover:bg-blue-500"
-              disabled={!network?.lan_enabled || reconnecting || connectionStatus !== 'connected'}
-              icon={<Plus size={14} />}
-              onClick={() => void createLink()}
-              size="sm"
-            >
-              Create link
-            </Button>
-          </div>
-        </div>
-        {!network?.lan_enabled && (
-          <p className="mb-3 text-[length:var(--text-secondary)] text-muted">
-            Enable network access above to create a link for another device.
-          </p>
-        )}
-        <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface/30">
-          {devices.map(device => (
-            <li className="flex items-center gap-3 px-4 py-3" key={device.id}>
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
+              description={`${device.platform} · Last seen ${formatDate(device.last_seen_at)}`}
+              key={device.id}
+              title={
+                <span className="flex items-center gap-2">
                   <span
                     aria-hidden="true"
-                    className={`size-2 shrink-0 rounded-full ${device.current ? 'bg-emerald-500' : 'bg-muted/50'}`}
+                    className={cn(
+                      'size-2 shrink-0 rounded-full',
+                      device.current ? 'bg-success' : 'bg-foreground/20'
+                    )}
                   />
                   <span className="break-words">{device.name}</span>
-                  {device.current && <Chip>This device</Chip>}
-                </div>
-                <p className="mt-1 text-[length:var(--text-meta)] text-muted">
-                  {device.platform} · Last seen {formatDate(device.last_seen_at)}
-                </p>
-              </div>
-              {!device.current && (
-                <Button
-                  disabled={revoking}
-                  onClick={() => void revokeClients([device.id])}
-                  size="sm"
-                  variant="ghost"
-                >
-                  Revoke
-                </Button>
-              )}
-            </li>
+                </span>
+              }
+            />
           ))}
-          {devices.length === 0 && <li className="px-4 py-4 text-muted">No paired clients yet.</li>}
-        </ul>
-        {code && network?.lan_enabled && !reconnecting && (
-          <div className="mt-4 rounded-xl border border-border p-4">
-            <div className="flex flex-wrap items-center justify-between gap-4">
+          {devices.length === 0 ? (
+            <Row title={<span className="text-muted">No paired devices yet.</span>} />
+          ) : null}
+        </Group>
+        {code && network?.lan_enabled && !reconnecting ? (
+          <Group title="Pair another device">
+            <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-4">
               <div>
-                <h3 className="font-medium">Pair another device</h3>
-                <p className="mt-1 font-mono text-2xl tracking-[0.2em]">{code.code}</p>
+                <p className="font-mono text-[28px] tracking-[0.2em]">{code.code}</p>
                 <p className="mt-1 text-[length:var(--text-secondary)] text-muted" role="status">
                   {seconds > 0
                     ? `Single-use link. Expires in ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
                     : 'This link has expired. Create a new link to pair a device.'}
                 </p>
               </div>
-              {seconds > 0 && <PairingQr link={code.link} />}
+              {seconds > 0 ? <PairingQr link={code.link} /> : null}
             </div>
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2 px-4 py-3">
               <Input
                 aria-label="Pairing link"
-                className="min-w-0 flex-1 font-mono"
+                className="min-w-0 flex-1 font-mono text-[length:var(--text-secondary)]"
                 onFocus={event => event.target.select()}
                 readOnly
                 value={code.link}
@@ -967,13 +1159,12 @@ export function NetworkSettings(): React.JSX.Element {
                 disabled={seconds === 0}
                 icon={<Copy size={14} />}
                 onClick={() => void copyLink()}
-                size="sm"
               >
                 {copied ? 'Copied' : 'Copy link'}
               </Button>
             </div>
-          </div>
-        )}
+          </Group>
+        ) : null}
       </div>
     </>
   )
@@ -987,7 +1178,7 @@ function PairingQr({ link }: { link: string }) {
     }
   }, [link])
 
-  return <canvas aria-label="Pairing QR code" ref={canvas} />
+  return <canvas aria-label="Pairing QR code" className="rounded-[10px]" ref={canvas} />
 }
 
 function formatDate(value: null | number): string {
@@ -1013,39 +1204,32 @@ export function ApprovalsSettings(): React.JSX.Element {
       <Heading description="Choose when Hexbot asks before a bot acts. Bots and rooms can override it.">
         Approvals
       </Heading>
-      {info && info.approvals !== 'sandbox' && (
-        <p className="mb-5 rounded-control bg-warning/12 p-3 text-warning" role="status">
+      {info && info.approvals !== 'sandbox' ? (
+        <Notice role="status">
           This daemon is older than the app and still uses its previous approval rules. Update the
           daemon to get the sandbox these modes describe.
-        </p>
-      )}
-      {info?.approvals === 'sandbox' && info.sandbox === null && (
-        <p className="mb-5 rounded-control bg-warning/12 p-3 text-warning" role="status">
+        </Notice>
+      ) : null}
+      {info?.approvals === 'sandbox' && info.sandbox === null ? (
+        <Notice role="status">
           No OS sandbox is available, so Manual and Auto ask before every shell command and code
           run. Install bubblewrap on the computer running the daemon, then restart the daemon to
           restore isolation.
-        </p>
-      )}
-      <fieldset className="space-y-1">
-        <legend className="sr-only">Approval mode</legend>
-        {modes.map(mode => (
-          <label className="flex cursor-pointer gap-3 border-b border-border py-3" key={mode.value}>
-            <input
+        </Notice>
+      ) : null}
+      <Group title="Mode">
+        <div aria-label="Approval mode" className={dividerClass} role="radiogroup">
+          {modes.map(mode => (
+            <ChoiceRow
               checked={settings?.approval_mode === mode.value}
-              name="approval-mode"
-              onChange={() => void patch({ approval_mode: mode.value })}
-              type="radio"
-              value={mode.value}
+              description={mode.description}
+              key={mode.value}
+              onSelect={() => void patch({ approval_mode: mode.value })}
+              title={mode.label}
             />
-            <span>
-              <strong className="block">{mode.label}</strong>
-              <span className="text-[length:var(--text-secondary)] text-muted">
-                {mode.description}
-              </span>
-            </span>
-          </label>
-        ))}
-      </fieldset>
+          ))}
+        </div>
+      </Group>
     </>
   )
 }
@@ -1056,30 +1240,38 @@ export function AppearanceSettings(): React.JSX.Element {
 
   return (
     <>
-      <Heading description="Set the colour theme for this window.">Appearance</Heading>
-      <div
-        aria-label="Theme"
-        className="inline-flex gap-0.5 rounded-full bg-surface-2 p-0.5"
-        role="radiogroup"
-      >
-        {(['system', 'light', 'dark'] as ThemePreference[]).map(item => (
-          <button
-            aria-checked={theme === item}
-            className={cn(
-              'h-8 min-w-24 rounded-full px-4 capitalize outline-none transition-colors focus-visible:ring-2 focus-visible:ring-foreground/40',
-              theme === item
-                ? 'bg-background text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.08)]'
-                : 'text-muted hover:text-foreground'
-            )}
-            key={item}
-            onClick={() => setTheme(item)}
-            role="radio"
-            type="button"
-          >
-            {item}
-          </button>
-        ))}
-      </div>
+      <Heading description="How this window looks.">Appearance</Heading>
+      <Group>
+        <Row
+          control={
+            <div
+              aria-label="Theme"
+              className="inline-flex gap-0.5 rounded-full bg-foreground/[0.06] p-0.5"
+              role="radiogroup"
+            >
+              {(['system', 'light', 'dark'] as ThemePreference[]).map(item => (
+                <button
+                  aria-checked={theme === item}
+                  className={cn(
+                    'h-7 min-w-[72px] rounded-full px-3 text-[length:var(--text-secondary)] capitalize outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/50',
+                    theme === item
+                      ? 'bg-background text-foreground shadow-card'
+                      : 'text-muted hover:text-foreground'
+                  )}
+                  key={item}
+                  onClick={() => setTheme(item)}
+                  role="radio"
+                  type="button"
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+          }
+          description="System follows the computer's setting."
+          title="Theme"
+        />
+      </Group>
     </>
   )
 }
@@ -1162,59 +1354,78 @@ function DaemonUpdates({ appVersion }: { appVersion: null | string }): React.JSX
   const update = useUpdates(state => state.daemon)
 
   if (!daemon) {
-    return <p className="text-muted">Not connected to a daemon.</p>
+    return (
+      <Group title="Daemon">
+        <Row title={<span className="text-muted">Not connected to a daemon.</span>} />
+      </Group>
+    )
   }
 
   const behind = daemonBehind(appVersion, daemon.version)
   const canUpdate = Boolean(daemon.update_capability)
 
-  return (
+  const title = (
     <>
-      <p>
-        {daemon.daemon_name} runs <strong>{daemon.version}</strong>.
-      </p>
-      {update ? (
-        <>
-          <p className="mt-2 text-muted" role="status">
-            {daemonUpdateLabel(update)}
-          </p>
-          {update.status === 'failed' ? (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {canUpdate && appVersion ? (
-                <Button onClick={() => void updateDaemon(appVersion)} variant="primary">
-                  Try again
+      {daemon.daemon_name} runs <strong className="font-semibold">{daemon.version}</strong>
+    </>
+  )
+
+  if (update) {
+    return (
+      <Group title="Daemon">
+        <Row
+          control={
+            update.status === 'failed' ? (
+              <>
+                {canUpdate && appVersion ? (
+                  <Button onClick={() => void updateDaemon(appVersion)} size="sm" variant="primary">
+                    Try again
+                  </Button>
+                ) : null}
+                <Button onClick={dismissDaemonUpdate} size="sm">
+                  Dismiss
                 </Button>
-              ) : null}
-              <Button onClick={dismissDaemonUpdate}>Dismiss</Button>
-            </div>
-          ) : null}
-        </>
-      ) : !appVersion ? (
-        <p className="mt-2 text-muted">Updates are handled by the app running this browser.</p>
-      ) : !behind ? (
-        <p className="mt-2 text-muted">The daemon is up to date with this app.</p>
-      ) : canUpdate ? (
-        <>
-          <p className="mt-2 text-muted">
-            This app is {appVersion}. The daemon can update itself to match
-            {daemon.update_capability === 'desktop'
-              ? `: the Hexbot app on ${daemon.daemon_name} downloads the update, then closes and reopens on the new version.`
-              : `: it downloads the new version, installs it, and restarts.`}{' '}
-            Bots stop while it restarts.
-          </p>
-          <div className="mt-3">
-            <Button onClick={() => void updateDaemon(appVersion)} variant="primary">
+              </>
+            ) : undefined
+          }
+          description={<span role="status">{daemonUpdateLabel(update)}</span>}
+          title={title}
+        />
+      </Group>
+    )
+  }
+
+  return (
+    <Group
+      footer={
+        appVersion && behind && canUpdate
+          ? daemon.update_capability === 'desktop'
+            ? `The Hexbot app on ${daemon.daemon_name} downloads the update, then closes and reopens on the new version. Bots stop while it restarts.`
+            : 'The daemon downloads the new version, installs it, and restarts. Bots stop while it restarts.'
+          : undefined
+      }
+      title="Daemon"
+    >
+      <Row
+        control={
+          appVersion && behind && canUpdate ? (
+            <Button onClick={() => void updateDaemon(appVersion)} size="sm" variant="primary">
               Update daemon
             </Button>
-          </div>
-        </>
-      ) : (
-        <p className="mt-2 text-muted">
-          This app is {appVersion}. This daemon cannot update itself; update Hexbot on{' '}
-          {daemon.daemon_name} by hand.
-        </p>
-      )}
-    </>
+          ) : undefined
+        }
+        description={
+          !appVersion
+            ? 'Updates are handled by the app running this browser.'
+            : !behind
+              ? 'The daemon is up to date with this app.'
+              : canUpdate
+                ? `This app is ${appVersion}. The daemon can update itself to match.`
+                : `This app is ${appVersion}. This daemon cannot update itself; update Hexbot on ${daemon.daemon_name} by hand.`
+        }
+        title={title}
+      />
+    </Group>
   )
 }
 
@@ -1236,62 +1447,75 @@ export function UpdatesSettings(): React.JSX.Element {
   return (
     <>
       <Heading description="Version and release status for Hexbot.">Updates</Heading>
-      {bridge ? (
-        <div>
-          <p>
-            App version: <strong>{bridge.version}</strong>
-            {app ? ` · ${app.channel === 'nightly' ? 'Nightly' : 'Stable'} track` : ''}
-          </p>
-          <p className="mt-2 text-muted" role="status">
-            {updateLabel(app)}
-          </p>
-          {app?.status !== 'disabled' ? (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {action === 'download' || action === 'install' ? (
-                <Button disabled={busy} onClick={() => setConfirming(true)} variant="primary">
-                  {action === 'install'
-                    ? 'Restart and install'
-                    : app?.errorContext === 'download'
-                      ? 'Retry update'
-                      : 'Update'}
-                </Button>
-              ) : null}
-              <Button
-                busy={app?.status === 'checking'}
-                disabled={busy}
-                onClick={() => run(() => bridge.updater.check())}
-              >
-                Check now
-              </Button>
-            </div>
-          ) : null}
-          <label className="mt-6 block max-w-xs space-y-2">
-            <span className="font-medium">Update track</span>
-            <Select
-              disabled={busy || !app || app.status === 'disabled'}
-              label="Update track"
-              onValueChange={value =>
-                run(() => bridge.updater.setChannel(value === 'nightly' ? 'nightly' : 'stable'))
+      <div className="space-y-8">
+        {bridge ? (
+          <Group
+            footer="Stable is tagged releases. Nightly is built from main every day and may break; switching tracks replaces the app at the next update."
+            title="App"
+          >
+            <Row
+              control={
+                app?.status !== 'disabled' ? (
+                  <>
+                    {action === 'download' || action === 'install' ? (
+                      <Button
+                        disabled={busy}
+                        onClick={() => setConfirming(true)}
+                        size="sm"
+                        variant="primary"
+                      >
+                        {action === 'install'
+                          ? 'Restart and install'
+                          : app?.errorContext === 'download'
+                            ? 'Retry update'
+                            : 'Update'}
+                      </Button>
+                    ) : null}
+                    <Button
+                      busy={app?.status === 'checking'}
+                      disabled={busy}
+                      onClick={() => run(() => bridge.updater.check())}
+                      size="sm"
+                    >
+                      Check now
+                    </Button>
+                  </>
+                ) : undefined
               }
-              options={UPDATE_CHANNELS}
-              value={app?.channel}
+              description={<span role="status">{updateLabel(app)}</span>}
+              title={
+                <>
+                  Hexbot <strong className="font-semibold">{bridge.version}</strong>
+                </>
+              }
             />
-            <span className="block text-muted">
-              Stable is tagged releases. Nightly is built from main every day and may break;
-              switching tracks replaces the app at the next update.
-            </span>
-          </label>
-        </div>
-      ) : null}
-      {bridge ? (
-        <ConfirmUpdate
-          onClose={() => setConfirming(false)}
-          onConfirm={() => run(() => updateNow(bridge))}
-          version={confirming ? updateTarget(app) : null}
-        />
-      ) : null}
-      <h3 className={cn('font-medium', bridge ? 'mt-8' : '')}>Daemon</h3>
-      <div className="mt-2">
+            <Row
+              control={
+                <div className="w-[160px]">
+                  <Select
+                    disabled={busy || !app || app.status === 'disabled'}
+                    label="Update track"
+                    onValueChange={value =>
+                      run(() =>
+                        bridge.updater.setChannel(value === 'nightly' ? 'nightly' : 'stable')
+                      )
+                    }
+                    options={UPDATE_CHANNELS}
+                    value={app?.channel}
+                  />
+                </div>
+              }
+              title="Update track"
+            />
+          </Group>
+        ) : null}
+        {bridge ? (
+          <ConfirmUpdate
+            onClose={() => setConfirming(false)}
+            onConfirm={() => run(() => updateNow(bridge))}
+            version={confirming ? updateTarget(app) : null}
+          />
+        ) : null}
         <DaemonUpdates appVersion={bridge?.version ?? null} />
       </div>
     </>
@@ -1308,33 +1532,36 @@ export function AboutSettings(): React.JSX.Element {
   const open = (url: string) =>
     bridge ? bridge.openExternal(url) : window.open(url, '_blank', 'noopener,noreferrer')
 
+  const value = (text: string) => (
+    <span className="text-[length:var(--text-secondary)] text-muted">{text}</span>
+  )
+
   return (
     <>
       <Heading description="Hexbot is a self-hosted multi-agent app.">About</Heading>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-2">
-        <dt className="text-muted">Hexbot</dt>
-        <dd>{bridge?.version ?? info?.version ?? '—'}</dd>
-        {bridge ? (
-          <>
-            <dt className="text-muted">Package</dt>
-            <dd>{bridge.edition === 'client' ? 'Client only' : 'Full'}</dd>
-          </>
-        ) : null}
-        <dt className="text-muted">Agent core</dt>
-        <dd>{info?.hermes_version ?? '—'}</dd>
-        <dt className="text-muted">License</dt>
-        <dd>AGPL-3.0</dd>
-      </dl>
-      <div className="mt-6 flex gap-2">
-        <Button
-          icon={<ExternalLink size={14} />}
-          onClick={() => void open('https://github.com/NousResearch/hermes-agent')}
-        >
-          Source
-        </Button>
-        <Button icon={<ExternalLink size={14} />} onClick={() => void open('https://hexbot.app')}>
-          Website
-        </Button>
+      <div className="space-y-8">
+        <Group>
+          <Row control={value(bridge?.version ?? info?.version ?? '—')} title="Hexbot" />
+          {bridge ? (
+            <Row
+              control={value(bridge.edition === 'client' ? 'Client only' : 'Full')}
+              title="Package"
+            />
+          ) : null}
+          <Row control={value(info?.hermes_version ?? '—')} title="Agent core" />
+          <Row control={value('AGPL-3.0')} title="License" />
+        </Group>
+        <div className="flex gap-2">
+          <Button
+            icon={<ExternalLink size={14} />}
+            onClick={() => void open('https://github.com/NousResearch/hermes-agent')}
+          >
+            Source
+          </Button>
+          <Button icon={<ExternalLink size={14} />} onClick={() => void open('https://hexbot.app')}>
+            Website
+          </Button>
+        </div>
       </div>
     </>
   )

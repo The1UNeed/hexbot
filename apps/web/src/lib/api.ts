@@ -723,7 +723,8 @@ export function messagesFromHistory(
         durationS: null,
         name: String(row.name ?? 'tool'),
         result: row.text ?? null,
-        startedAt: Date.now(),
+        // History keeps no timestamps; 0 is "unknown", so no time is shown.
+        startedAt: 0,
         status: 'ok' as const,
         summary: typeof row.context === 'string' ? row.context : undefined,
         toolId: String(row.row_id ?? nextMessageId('t'))
@@ -754,9 +755,13 @@ export function messagesFromHistory(
     const previous = messages.at(-1)
 
     // Hexbot stores one turn as assistant(tool calls) → tool rows → assistant(text).
-    // Live streaming shows that as one bubble, so history must too.
+    // That is one turn with one work line; each message is its own bubble.
     if (role === 'assistant' && previous?.role === 'assistant' && previous.toolCalls.length) {
-      previous.text = previous.text ? `${previous.text}\n\n${text}` : text
+      if (previous.text.trim()) {
+        previous.parts = [...(previous.parts ?? []), previous.text]
+      }
+
+      previous.text = text
 
       continue
     }

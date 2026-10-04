@@ -39,7 +39,9 @@ export function StatusDot({
       aria-label={tone.label}
       className={cn(
         'absolute rounded-full border-surface',
-        size === 'sm' ? '-right-px -bottom-px size-2.5 border' : '-right-0.5 -bottom-0.5 size-3 border-2',
+        size === 'sm'
+          ? '-right-px -bottom-px size-2.5 border'
+          : '-right-0.5 -bottom-0.5 size-3 border-2',
         tone.dot,
         status === 'working' && 'hex-pulse',
         className

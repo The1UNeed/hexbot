@@ -1,25 +1,47 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { X } from 'lucide-react'
+import {
+  Brain,
+  Download,
+  Gauge,
+  Globe,
+  Info,
+  KeyRound,
+  ShieldCheck,
+  SunMoon,
+  Users,
+  Wifi
+} from 'lucide-react'
 
-import { SettingsPanel } from '../app/settings'
-import { Button } from '../components/ui/button'
-import { Dialog } from '../components/ui/dialog'
+import { AppShell } from '../app/app-shell'
+import { SettingsPanel, type SettingsTab } from '../app/settings'
+import {
+  SettingsShell,
+  type SettingsTabGroup,
+  type SettingsTabItem
+} from '../components/ui/settings-shell'
 import { useUsers } from '../stores/users'
 
-const tabs = [
-  'providers',
-  'network',
-  'connect',
-  'memory',
-  'users',
-  'usage',
-  'approvals',
-  'appearance',
-  'updates',
-  'about'
-] as const
-
 export const Route = createFileRoute('/settings/$tab')({ component: SettingsDialog })
+
+const ITEMS: Record<SettingsTab, SettingsTabItem<SettingsTab>> = {
+  about: { icon: Info, id: 'about', label: 'About' },
+  appearance: { icon: SunMoon, id: 'appearance', label: 'Appearance' },
+  approvals: { icon: ShieldCheck, id: 'approvals', label: 'Approvals' },
+  connect: { icon: Globe, id: 'connect', label: 'Hex Connect' },
+  memory: { icon: Brain, id: 'memory', label: 'Memory' },
+  network: { icon: Wifi, id: 'network', label: 'Network' },
+  providers: { icon: KeyRound, id: 'providers', label: 'Providers' },
+  updates: { icon: Download, id: 'updates', label: 'Updates' },
+  usage: { icon: Gauge, id: 'usage', label: 'Usage' },
+  users: { icon: Users, id: 'users', label: 'Users' }
+}
+
+const GROUPS: { ids: SettingsTab[]; label: string }[] = [
+  { ids: ['providers', 'usage'], label: 'Models' },
+  { ids: ['network', 'connect', 'users'], label: 'Devices' },
+  { ids: ['memory', 'approvals', 'appearance'], label: 'You' },
+  { ids: ['updates', 'about'], label: 'App' }
+]
 
 function SettingsDialog() {
   const { tab } = Route.useParams()
@@ -28,56 +50,32 @@ function SettingsDialog() {
   const current = useUsers(state => state.current)
   const usageSupported = useUsers(state => state.usageSupported)
 
-  const visibleTabs = tabs.filter(item =>
+  const visible = (item: SettingsTab) =>
     item === 'users'
       ? Boolean(supported && current?.role === 'admin')
       : item === 'usage'
         ? Boolean(usageSupported)
         : true
-  )
+
+  const tabs: SettingsTabGroup<SettingsTab>[] = GROUPS.map(group => ({
+    items: group.ids.filter(visible).map(id => ITEMS[id]),
+    label: group.label
+  }))
 
   return (
-    <Dialog
-      className="h-[min(56rem,92vh)] max-h-[92vh] w-[min(76rem,94vw)]"
-      onOpenChange={open => {
-        if (!open) {
-          void navigate({ to: '/' })
-        }
-      }}
-      open
-      title="Settings"
-      toolbar={
-        <Button
-          aria-label="Close settings"
-          icon={<X size={16} />}
-          onClick={() => void navigate({ to: '/' })}
-          size="sm"
-          variant="ghost"
-        />
-      }
-    >
-      <div className="grid h-full grid-rows-[auto_1fr] sm:grid-cols-[208px_1fr] sm:grid-rows-1">
-        <nav
-          aria-label="Settings tabs"
-          className="flex gap-1 overflow-x-auto border-b border-border p-2 sm:block sm:border-r sm:border-b-0 sm:p-3"
-        >
-          {visibleTabs.map(item => (
-            <Button
-              aria-current={tab === item ? 'page' : undefined}
-              className="shrink-0 justify-start sm:mb-1 sm:w-full"
-              key={item}
-              onClick={() => void navigate({ to: '/settings/$tab', params: { tab: item } })}
-              variant={tab === item ? 'secondary' : 'ghost'}
-            >
-              {item[0]?.toUpperCase()}
-              {item.slice(1)}
-            </Button>
-          ))}
-        </nav>
-        <section aria-label={`${tab} settings`} className="min-h-0 overflow-y-auto">
-          <SettingsPanel tab={tab} />
-        </section>
-      </div>
-    </Dialog>
+    <>
+      <AppShell />
+      <SettingsShell
+        closeLabel="Close settings"
+        current={tab as SettingsTab}
+        label="Settings"
+        navLabel="Settings tabs"
+        onClose={() => void navigate({ to: '/' })}
+        onSelect={item => void navigate({ to: '/settings/$tab', params: { tab: item } })}
+        tabs={tabs}
+      >
+        <SettingsPanel tab={tab} />
+      </SettingsShell>
+    </>
   )
 }

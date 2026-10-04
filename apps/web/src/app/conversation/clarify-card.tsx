@@ -58,7 +58,7 @@ function Question({
     return (
       <div className="grid gap-2">
         <div className="font-medium">{question.question}</div>
-        <div className="flex min-w-0 items-center gap-3 rounded-control bg-surface-3/50 px-3 py-2 text-muted">
+        <div className="flex min-w-0 items-center gap-3 rounded-[12px] bg-surface-3/50 px-3 py-2 text-muted">
           <span className="min-w-0 flex-1 truncate" title={shown}>
             {shown}
           </span>
@@ -93,7 +93,7 @@ function Question({
       <div className="font-medium">{question.question}</div>
       {question.choices.length ? (
         <div
-          className="divide-y divide-border overflow-hidden rounded-control bg-background/70"
+          className="divide-y divide-border overflow-hidden rounded-[12px] bg-background/80"
           role={question.multiSelect ? 'group' : 'listbox'}
         >
           {question.choices.map((choice, index) => {
@@ -131,7 +131,7 @@ function Question({
       >
         <input
           aria-label="Your own answer"
-          className="h-9 min-w-0 flex-1 rounded-control border border-border bg-background px-3 text-[length:var(--text-body)] outline-none placeholder:text-muted focus-visible:border-foreground/40 disabled:opacity-50"
+          className="h-9 min-w-0 flex-1 rounded-[12px] border border-border bg-background px-3 text-[length:var(--text-body)] outline-none placeholder:text-muted focus-visible:border-foreground/40 disabled:opacity-50"
           disabled={frozen}
           onChange={event => setTyped(event.target.value)}
           placeholder={question.choices.length ? 'Type your own answer' : 'Type your answer'}
@@ -181,7 +181,7 @@ export function ClarifyCard({ clarify }: { clarify: ClarifyRequest }) {
 
   return (
     <div
-      className="hex-bubble grid min-w-0 max-w-[80%] flex-1 gap-4 rounded-bubble bg-surface-2 px-3.5 py-2.5"
+      className="hex-bubble grid min-w-0 max-w-[min(85%,40rem)] flex-1 gap-4 rounded-[20px] bg-bubble px-4 py-3"
       data-testid="clarify-card"
     >
       {clarify.questions.map(question => (

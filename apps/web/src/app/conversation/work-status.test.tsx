@@ -49,14 +49,16 @@ describe('WorkStatus', () => {
     const current = () => useTranscripts.getState().bySession.s!.messages[0]!
     expect(current().streaming).toBe(false)
     const { rerender } = render(<WorkStatus message={current()} name="Scout" />)
-    expect(screen.getByRole('button', { name: 'Running rm -rf ./approval-probe' })).toBeVisible()
-    expect(screen.queryByText('Ran rm -rf ./approval-probe')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Scout is running a command' })).toBeVisible()
+    // The command itself waits behind a click.
+    expect(screen.queryByText(/rm -rf/)).not.toBeInTheDocument()
     actions.resolveApproval('s', 'a', 'once')
     rerender(<WorkStatus message={current()} name="Scout" />)
-    expect(screen.getByRole('button', { name: 'Running rm -rf ./approval-probe' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Scout is running a command' })).toBeVisible()
     actions.toolComplete('s', { result: 'ok', tool_id: 't' })
     rerender(<WorkStatus message={current()} name="Scout" />)
-    expect(screen.getByRole('button', { name: /Ran rm -rf \.\/approval-probe/ })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: /^Worked for/ }))
+    expect(screen.getByText('Ran rm -rf ./approval-probe')).toBeVisible()
   })
   it('shows the running step while streaming', () => {
     render(
@@ -65,7 +67,8 @@ describe('WorkStatus', () => {
         name="Scout"
       />
     )
-    expect(screen.getByRole('status', { name: 'Scout: Searching the web for apple' })).toBeVisible()
+    expect(screen.getByRole('status', { name: 'Scout is searching the web' })).toBeVisible()
+    expect(screen.queryByText(/apple/)).toBeNull()
     expect(screen.queryByTestId('work-status')).toBeNull()
   })
 
@@ -83,7 +86,7 @@ describe('WorkStatus', () => {
     expect(screen.queryByRole('status')).toBeNull()
   })
 
-  it('opens a live panel with the trace and the running step once the turn has run a while', () => {
+  it('opens the trace and the running step when the live status is clicked', () => {
     render(
       <WorkStatus
         message={message({
@@ -96,24 +99,25 @@ describe('WorkStatus', () => {
       />
     )
 
-    // The headline and the step row both name the running tool; both are open.
-    for (const button of screen.getAllByRole('button', { name: /Searching the web for apple/ })) {
-      expect(button).toHaveAttribute('aria-expanded', 'true')
-    }
+    // Closed until asked: the status is the plain-words line alone.
+    expect(screen.queryByTestId('thinking-trace')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Scout is searching the web' }))
 
     expect(screen.getByTestId('thinking-trace')).toHaveTextContent('The user wants apples.')
-    // The running step shows its arguments live.
+    // The step is listed, its arguments one more click away.
+    expect(screen.queryByText(/"q": "apple"/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Searching the web for apple' }))
     expect(screen.getByText(/"q": "apple"/)).toBeVisible()
   })
 
-  it('keeps the trace hidden while the turn is still young', () => {
+  it('says what the bot is doing and keeps the trace closed until clicked', () => {
     render(
       <WorkStatus
         message={message({ createdAt: Date.now(), streaming: true, thinking: 'Hmm.' })}
         name="Scout"
       />
     )
-    expect(screen.getByRole('status', { name: 'Scout is working' })).toBeVisible()
+    expect(screen.getByRole('status', { name: 'Scout is thinking' })).toBeVisible()
     expect(screen.queryByTestId('thinking-trace')).toBeNull()
   })
 
@@ -131,9 +135,7 @@ describe('WorkStatus', () => {
       />
     )
     expect(screen.queryByTestId('thinking-trace')).toBeNull()
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Thought for 12s · Searched the web for apple' })
-    )
+    fireEvent.click(screen.getByRole('button', { name: 'Thought for 12s' }))
     expect(screen.getByTestId('thinking-trace')).toHaveTextContent('The user wants apples.')
   })
 
@@ -164,7 +166,7 @@ describe('WorkStatus', () => {
     )
     expect(screen.queryByTestId('thinking')).toBeNull()
     expect(screen.queryByText('Ran date')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /2 steps · 2s/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Worked for 2s' }))
     expect(screen.getByText('Searched the web for apple')).toBeVisible()
     expect(screen.getByText('Ran date')).toBeVisible()
   })

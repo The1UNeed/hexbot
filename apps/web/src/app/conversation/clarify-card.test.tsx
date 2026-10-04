@@ -45,7 +45,11 @@ describe('clarify events', () => {
     } as GatewayEvent)
 
     const card = useTranscripts.getState().bySession['live-1']!.clarifies[0]!
-    expect(card.questions[0]).toEqual({ choices: ['A', 'B'], multiSelect: false, question: 'Which?' })
+    expect(card.questions[0]).toEqual({
+      choices: ['A', 'B'],
+      multiSelect: false,
+      question: 'Which?'
+    })
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Needs you' }))
 
     routeEvent({

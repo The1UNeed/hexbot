@@ -9,11 +9,10 @@ import { Button } from '../../components/ui/button'
 import { ConnectorIcon } from '../../components/ui/connector-icon'
 import { Dialog } from '../../components/ui/dialog'
 import { Switch } from '../../components/ui/switch'
-import { cn } from '../../lib/cn'
 import type { Bot, Connector, ConnectorTest } from '../../lib/types'
 import { useConnectors } from '../../stores/connectors'
 
-import { cardClass, errorText } from './shared'
+import { errorText, Group, Row } from './shared'
 
 /**
  * The set-up sheet: fields from the catalog entry, saved once for the daemon
@@ -49,6 +48,7 @@ export function ConnectorSetupSheet({
   const changed = forProvider.some(field => values[field.key]?.trim())
   const alreadySet = forProvider.some(field => field.set)
   const providerChanged = Boolean(provider && provider !== connector.provider)
+  const others = connector.enabled_bots.filter(name => name !== bot.name)
 
   const submit = async () => {
     setBusy(true)
@@ -87,57 +87,51 @@ export function ConnectorSetupSheet({
       onOpenChange={open => !open && onClose()}
       open
       title={
-        <span className="flex items-center gap-2">
+        <span className="flex items-center gap-2.5">
           <ConnectorIcon icon={connector.icon} />
           {connector.state === 'error' ? 'Fix' : 'Set up'} {connector.name}
         </span>
       }
     >
       <form
-        className="grid gap-4 p-5"
+        className="grid gap-5 px-6 pt-4 pb-6"
         onSubmit={event => {
           event.preventDefault()
           void submit()
         }}
       >
-        <ConnectorFields
-          connector={connector}
-          invalid={Boolean(failed)}
-          onProviderChange={setProvider}
-          onValuesChange={setValues}
-          provider={provider}
-          values={values}
-        />
-        <div className={cn(cardClass, 'divide-y divide-border')}>
-          <div className="flex items-center gap-3 px-3 py-2.5">
-            <span className="min-w-0 flex-1">
-              <span className="block font-medium">Turn on for {bot.display_name}</span>
-              {connector.enabled_bots.filter(name => name !== bot.name).length ? (
-                <span className="block text-[length:var(--text-secondary)] text-muted">
-                  Also on for {connector.enabled_bots.filter(name => name !== bot.name).join(', ')}.
-                </span>
-              ) : null}
-            </span>
-            <Switch
-              aria-label={`Turn on for ${bot.display_name}`}
-              checked={enable}
-              onCheckedChange={setEnable}
-            />
-          </div>
-          {connector.scope === 'daemon' ? (
-            <div className="flex items-center gap-3 px-3 py-2.5">
-              <span className="min-w-0 flex-1">
-                <span className="block font-medium">
-                  Use a different value for {bot.display_name} only
-                </span>
-                <span className="block text-[length:var(--text-secondary)] text-muted">
-                  For a second account. Other bots keep the shared one.
-                </span>
-              </span>
-              <Switch aria-label="Bot only" checked={botOnly} onCheckedChange={setBotOnly} />
-            </div>
-          ) : null}
+        <div className="grid gap-4">
+          <ConnectorFields
+            connector={connector}
+            invalid={Boolean(failed)}
+            onProviderChange={setProvider}
+            onValuesChange={setValues}
+            provider={provider}
+            values={values}
+          />
         </div>
+        <Group>
+          <Row
+            control={
+              <Switch
+                aria-label={`Turn on for ${bot.display_name}`}
+                checked={enable}
+                onCheckedChange={setEnable}
+              />
+            }
+            description={others.length ? `Also on for ${others.join(', ')}.` : undefined}
+            title={`Turn on for ${bot.display_name}`}
+          />
+          {connector.scope === 'daemon' ? (
+            <Row
+              control={
+                <Switch aria-label="Bot only" checked={botOnly} onCheckedChange={setBotOnly} />
+              }
+              description="For a second account. Other bots keep the shared one."
+              title={`Use a different value for ${bot.display_name} only`}
+            />
+          ) : null}
+        </Group>
         {failed ? (
           <p className="text-[length:var(--text-secondary)] text-danger" role="alert">
             {result.message}
@@ -148,7 +142,7 @@ export function ConnectorSetupSheet({
             {error}
           </p>
         ) : null}
-        <div className="flex justify-end gap-2 pt-1">
+        <div className="flex justify-end gap-2">
           <Button onClick={onClose} variant="ghost">
             Cancel
           </Button>

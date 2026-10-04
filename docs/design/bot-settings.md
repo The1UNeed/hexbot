@@ -71,7 +71,7 @@ fourth alone:
 | State | Where it shows | Actions |
 | --- | --- | --- |
 | Idle | Nowhere in the chat. The roster row shows the last-active time. | |
-| Working | The existing status line above the reply. | Stop |
+| Working | The existing status line at the foot of the turn. | Stop |
 | Needs you | The existing approval card, the "Waiting on you" room banner. | Approve, Allow in this section, Deny |
 | Stopped | A new inline card at the point of failure: red dot, "<bot> stopped", why, which task did not finish. | Fix <connector>, Retry |
 

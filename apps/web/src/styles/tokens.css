@@ -35,10 +35,31 @@
 
   --hex-shadow-popup: 0 12px 32px -8px rgb(0 0 0 / 0.2), 0 0 0 1px rgb(0 0 0 / 0.04);
 
+  --hex-canvas: #f3f3f5;
+  --hex-bubble: #f0f0f2;
+  --hex-glass-bg: rgb(255 255 255 / 0.6);
+  --hex-glass-strong: rgb(252 252 253 / 0.82);
+  --hex-glass-rim-hi: rgb(255 255 255 / 0.95);
+  --hex-glass-rim-lo: rgb(255 255 255 / 0.4);
+  --hex-glass-sheen: rgb(255 255 255 / 0.55);
+  --hex-glass-shadow:
+    0 0 0 0.5px rgb(0 0 0 / 0.07), 0 1px 2px rgb(0 0 0 / 0.04), 0 8px 24px -12px rgb(0 0 0 / 0.14),
+    inset 0 1px 1px rgb(255 255 255 / 0.8);
+  --hex-card-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.06), 0 1px 3px rgb(0 0 0 / 0.04);
+
+  /*
+   * Motion: one short scale. `fast` for hover and press, `rise` for a bubble
+   * or line arriving, `panel` for the side panel and anything that unfolds,
+   * `enter` for a whole screen. `ease-out` settles; `ease-spring` overshoots
+   * a touch, for small things that pop into place.
+   */
   --hex-motion-fast: 120ms;
-  --hex-motion-panel: 200ms;
+  --hex-motion-rise: 180ms;
+  --hex-motion-panel: 240ms;
   --hex-motion-enter: 320ms;
   --hex-ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --hex-ease-spring: cubic-bezier(0.3, 1.25, 0.5, 1);
+  --hex-ease-in-out: cubic-bezier(0.45, 0, 0.2, 1);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -58,6 +79,18 @@
     --hex-warning: #f7b24a;
 
     --hex-shadow-popup: 0 16px 40px -8px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.06);
+
+    --hex-canvas: #09090a;
+    --hex-bubble: #232326;
+    --hex-glass-bg: rgb(40 40 44 / 0.55);
+    --hex-glass-strong: rgb(26 26 29 / 0.82);
+    --hex-glass-rim-hi: rgb(255 255 255 / 0.24);
+    --hex-glass-rim-lo: rgb(255 255 255 / 0.06);
+    --hex-glass-sheen: rgb(255 255 255 / 0.07);
+    --hex-glass-shadow:
+      0 0 0 0.5px rgb(255 255 255 / 0.09), 0 1px 2px rgb(0 0 0 / 0.4),
+      0 12px 34px -10px rgb(0 0 0 / 0.65), inset 0 1px 0 rgb(255 255 255 / 0.08);
+    --hex-card-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.07), 0 1px 3px rgb(0 0 0 / 0.5);
   }
 }
 
@@ -79,6 +112,18 @@
   --hex-warning: #b54708;
 
   --hex-shadow-popup: 0 12px 32px -8px rgb(0 0 0 / 0.2), 0 0 0 1px rgb(0 0 0 / 0.04);
+
+  --hex-canvas: #f3f3f5;
+  --hex-bubble: #f0f0f2;
+  --hex-glass-bg: rgb(255 255 255 / 0.6);
+  --hex-glass-strong: rgb(252 252 253 / 0.82);
+  --hex-glass-rim-hi: rgb(255 255 255 / 0.95);
+  --hex-glass-rim-lo: rgb(255 255 255 / 0.4);
+  --hex-glass-sheen: rgb(255 255 255 / 0.55);
+  --hex-glass-shadow:
+    0 0 0 0.5px rgb(0 0 0 / 0.07), 0 1px 2px rgb(0 0 0 / 0.04), 0 8px 24px -12px rgb(0 0 0 / 0.14),
+    inset 0 1px 1px rgb(255 255 255 / 0.8);
+  --hex-card-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.06), 0 1px 3px rgb(0 0 0 / 0.04);
 }
 
 [data-theme='dark'] {
@@ -99,6 +144,18 @@
   --hex-warning: #f7b24a;
 
   --hex-shadow-popup: 0 16px 40px -8px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.06);
+
+  --hex-canvas: #09090a;
+  --hex-bubble: #232326;
+  --hex-glass-bg: rgb(40 40 44 / 0.55);
+  --hex-glass-strong: rgb(26 26 29 / 0.82);
+  --hex-glass-rim-hi: rgb(255 255 255 / 0.24);
+  --hex-glass-rim-lo: rgb(255 255 255 / 0.06);
+  --hex-glass-sheen: rgb(255 255 255 / 0.07);
+  --hex-glass-shadow:
+    0 0 0 0.5px rgb(255 255 255 / 0.09), 0 1px 2px rgb(0 0 0 / 0.4),
+    0 12px 34px -10px rgb(0 0 0 / 0.65), inset 0 1px 0 rgb(255 255 255 / 0.08);
+  --hex-card-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.07), 0 1px 3px rgb(0 0 0 / 0.5);
 }
 
 @theme inline {
@@ -106,6 +163,8 @@
   --color-surface: var(--hex-surface);
   --color-surface-2: var(--hex-surface-2);
   --color-surface-3: var(--hex-surface-3);
+  --color-canvas: var(--hex-canvas);
+  --color-bubble: var(--hex-bubble);
   --color-foreground: var(--hex-text);
   --color-muted: var(--hex-muted-text);
   --color-border: var(--hex-border);
@@ -131,6 +190,8 @@
   --text-title: 20px;
 
   --shadow-popup: var(--hex-shadow-popup);
+  --shadow-glass: var(--hex-glass-shadow);
+  --shadow-card: var(--hex-card-shadow);
 }
 
 html,
@@ -162,6 +223,85 @@ body {
 }
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/*
+ * Liquid glass, faked in CSS: a translucent fill that blurs and saturates
+ * what scrolls under it, a specular rim brighter at the top left, and a soft
+ * sheen across the top. Only floating chrome uses it (the header pill, the
+ * composer, panels and dialogs), never content. `hex-glass-strong` is the
+ * denser fill for large surfaces that carry text.
+ */
+/* In the components layer, so Tailwind utilities (absolute, fixed, bg-*) win over it. */
+@layer components {
+  .hex-glass,
+  .hex-glass-strong {
+    position: relative;
+    isolation: isolate;
+    background: var(--hex-glass-bg);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    backdrop-filter: blur(20px) saturate(180%);
+    box-shadow: var(--hex-glass-shadow);
+  }
+  .hex-glass-strong {
+    background: var(--hex-glass-strong);
+    -webkit-backdrop-filter: blur(32px) saturate(170%);
+    backdrop-filter: blur(32px) saturate(170%);
+  }
+  /* Chromium (the app, Chrome, Edge) bends the backdrop through #hex-liquid in index.html. */
+  @supports (-webkit-app-region: drag) {
+    .hex-glass {
+      backdrop-filter: url(#hex-liquid) blur(16px) saturate(180%);
+    }
+  }
+  .hex-glass::before,
+  .hex-glass-strong::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    padding: 1px;
+    border-radius: inherit;
+    background: linear-gradient(
+      150deg,
+      var(--hex-glass-rim-hi) 0%,
+      transparent 34%,
+      transparent 66%,
+      var(--hex-glass-rim-lo) 100%
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+  .hex-glass::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: linear-gradient(180deg, var(--hex-glass-sheen) 0%, transparent 55%);
+    pointer-events: none;
+  }
+  /* Pressing glass dips it a little, like a soft button. */
+  .hex-glass-press {
+    transition:
+      transform var(--hex-motion-fast) var(--hex-ease-out),
+      background-color var(--hex-motion-fast) var(--hex-ease-out);
+  }
+  .hex-glass-press:active {
+    transform: scale(0.96);
+  }
+  /* Keyboard focus: the accent ring, outside the shape, on every rounded control. */
+  .hex-focus {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+  }
+  .hex-focus:focus-visible {
+    outline-color: color-mix(in srgb, var(--hex-accent) 55%, transparent);
+  }
 }
 
 /* The window title bar is hidden on macOS; this strip is the drag handle. */
@@ -228,6 +368,10 @@ body {
 }
 .hex-prose strong {
   font-weight: 600;
+}
+/* Inline code wraps with the sentence; a long path never pushes past the bubble. */
+.hex-prose code {
+  overflow-wrap: anywhere;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -474,14 +618,103 @@ body {
   }
 }
 
+/* A bubble or line arriving: a 4px lift and a fade, no scale, so it reads as placed, not popped. */
 @keyframes hex-pop {
   from {
     opacity: 0;
-    transform: translateY(6px) scale(0.97);
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* A chat message arriving whole, like a text: it springs up from its tail corner. */
+@keyframes hex-message-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.86);
+  }
+  45% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* A menu or popover opening from its trigger. */
+@keyframes hex-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.98);
   }
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+/* A dialog settling into the centre. */
+/* Only the settle; the popup centres itself, so reduced motion keeps it centred. */
+@keyframes hex-dialog-in {
+  from {
+    opacity: 0;
+    scale: 0.975;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+/*
+ * Content unfolding into the column (a work card, the line above a reply) and
+ * folding away (the live status when the turn ends): the row's height
+ * animates, so what sits below slides instead of jumping.
+ */
+@keyframes hex-unfold {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+  to {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+}
+@keyframes hex-fold {
+  from {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+  to {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+
+/* The side panel arriving over the chat on a narrow window, and leaving. */
+@keyframes hex-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@keyframes hex-slide-out {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(24px);
   }
 }
 
@@ -681,10 +914,59 @@ body {
   fill: var(--hex-background);
 }
 .hex-bubble {
-  animation: hex-pop var(--hex-motion-panel) ease-out;
+  animation: hex-pop var(--hex-motion-rise) var(--hex-ease-out) both;
 }
 .hex-fade {
-  animation: hex-fade var(--hex-motion-panel) ease-out;
+  animation: hex-fade var(--hex-motion-rise) var(--hex-ease-out) both;
+}
+.hex-message {
+  animation: hex-message-in var(--hex-motion-enter) var(--hex-ease-spring) both;
+  transform-origin: 0 100%;
+}
+.hex-message-mine {
+  transform-origin: 100% 100%;
+}
+.hex-menu-in {
+  animation: hex-menu-in var(--hex-motion-fast) var(--hex-ease-out) both;
+  transform-origin: top center;
+}
+.hex-dialog-in {
+  animation: hex-dialog-in var(--hex-motion-panel) var(--hex-ease-out) both;
+}
+.hex-unfold,
+.hex-fold {
+  display: grid;
+}
+.hex-unfold > *,
+.hex-fold > * {
+  min-height: 0;
+}
+/* Clipped only while the height animates, so focus rings are whole afterwards. */
+@keyframes hex-clip {
+  from,
+  to {
+    overflow: hidden;
+  }
+}
+.hex-unfold {
+  animation: hex-unfold var(--hex-motion-panel) var(--hex-ease-out) backwards;
+}
+.hex-unfold > * {
+  animation: hex-clip var(--hex-motion-panel) backwards;
+}
+.hex-fold {
+  animation: hex-fold var(--hex-motion-panel) var(--hex-ease-in-out) both;
+  pointer-events: none;
+}
+.hex-fold > * {
+  overflow: hidden;
+}
+.hex-slide-in {
+  animation: hex-slide-in var(--hex-motion-panel) var(--hex-ease-out) both;
+}
+.hex-slide-out {
+  animation: hex-slide-out var(--hex-motion-panel) var(--hex-ease-in-out) both;
+  pointer-events: none;
 }
 .hex-dot {
   animation: hex-dot 1.2s ease-in-out infinite;
@@ -723,14 +1005,49 @@ body {
   .hex-jump,
   .hex-a,
   .hex-bubble,
+  .hex-message,
   .hex-fade,
   .hex-rise,
   .hex-pop-in,
+  .hex-menu-in,
+  .hex-dialog-in,
+  .hex-unfold,
+  .hex-slide-in,
   .hex-skeleton {
     animation: none;
+  }
+  .hex-fold,
+  .hex-slide-out {
+    display: none;
   }
   .hex-dot,
   .hex-pulse {
     animation-duration: 2.4s;
+  }
+}
+
+/* Settings */
+/*
+ * Grouped lists in the settings windows: one white card (a faint white film
+ * in dark) over the glass, with hairline dividers between rows.
+ */
+:root {
+  --hex-card: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --hex-card: rgb(255 255 255 / 0.055);
+  }
+}
+[data-theme='light'] {
+  --hex-card: #ffffff;
+}
+[data-theme='dark'] {
+  --hex-card: rgb(255 255 255 / 0.055);
+}
+@layer components {
+  .hex-card {
+    background: var(--hex-card);
+    box-shadow: var(--hex-card-shadow);
   }
 }

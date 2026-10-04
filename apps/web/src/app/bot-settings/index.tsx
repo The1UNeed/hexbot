@@ -1,6 +1,7 @@
 import { useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
 
+import { settingsPageClass } from '../../components/ui/settings-shell'
 import type { Bot } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 
@@ -100,7 +101,7 @@ export function BotSettingsPanel({
   }
 
   return (
-    <section aria-label={`${TAB_LABELS[tab]} bot settings`} className="min-w-0 max-w-3xl p-8">
+    <section aria-label={`${TAB_LABELS[tab]} bot settings`} className={settingsPageClass}>
       {tab === 'profile' && <ProfileTab bot={bot} onSave={save} />}
       {tab === 'persona' && <PersonaTab bot={bot} onSave={save} />}
       {tab === 'model' && <ModelTab bot={bot} onSave={save} />}
@@ -112,7 +113,7 @@ export function BotSettingsPanel({
       {tab === 'sections' && <SectionsTab botName={bot.name} />}
       {tab === 'advanced' && <AdvancedTab bot={bot} onDelete={remove} />}
       {error ? (
-        <p className="mt-4 text-[length:var(--text-secondary)] text-danger" role="alert">
+        <p className="mt-6 text-[length:var(--text-secondary)] text-danger" role="alert">
           {error}
         </p>
       ) : null}

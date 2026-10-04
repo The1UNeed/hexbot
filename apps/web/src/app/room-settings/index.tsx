@@ -8,6 +8,7 @@ import { Input } from '../../components/ui/input'
 import { Menu } from '../../components/ui/menu'
 import { activeBots, RoomCluster } from '../../components/ui/room-cluster'
 import { Select } from '../../components/ui/select'
+import { settingsPageClass } from '../../components/ui/settings-shell'
 import { roomsPeople } from '../../lib/api'
 import { useApprovalModes } from '../../lib/approval-modes'
 import { avatarSrc } from '../../lib/avatar-builder'
@@ -16,7 +17,7 @@ import type { Bot, BotApprovalMode, Room, User } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useRooms } from '../../stores/rooms'
 import { useUsers } from '../../stores/users'
-import { cardClass, errorText, Group, Heading, Row } from '../bot-settings/shared'
+import { errorText, Group, Heading, Row, rowFieldClass } from '../bot-settings/shared'
 
 const errorOf = (cause: unknown) => errorText(cause)
 
@@ -70,12 +71,12 @@ function MemberRow({
   }
 
   return (
-    <div className="px-3 py-2.5" data-testid="room-member">
-      <div className="flex items-center gap-3">
+    <div className="px-4 py-2.5" data-testid="room-member">
+      <div className="flex min-h-[32px] items-center gap-3">
         <Avatar image={avatarSrc(bot?.avatar)} name={label} size="sm" />
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-1.5">
-            <span className="truncate font-medium">{label}</span>
+            <span className="truncate">{label}</span>
             {isMain ? (
               <Crown aria-label="Main bot" className="fill-warning text-warning" size={12} />
             ) : null}
@@ -105,7 +106,7 @@ function MemberRow({
         )}
       </div>
       {confirming ? (
-        <div className="mt-2 rounded-control bg-background/60 p-3" role="alertdialog">
+        <div className="hex-fade mt-2 rounded-[12px] bg-foreground/[0.04] p-3" role="alertdialog">
           <p className="text-[length:var(--text-secondary)]">
             {kind === 'person'
               ? `Remove ${label} from this room? They can no longer read or post in it.`
@@ -145,37 +146,43 @@ function LeaveRoom({ onLeave }: { onLeave: () => Promise<void> }) {
   }
 
   return (
-    <div className={cn(cardClass, 'space-y-3 px-3 py-2.5')}>
-      <div className="flex items-center justify-between gap-3">
-        <span>
-          <span className="block font-medium">Leave room</span>
-          <span className="block text-[length:var(--text-secondary)] text-muted">
-            {confirming
-              ? 'Leave this room? You can no longer read or post in it.'
-              : 'Takes the room off your list. Its bots and the other people stay.'}
-          </span>
-        </span>
-        {confirming ? (
-          <span className="flex shrink-0 gap-2">
-            <Button busy={busy} onClick={() => void leave()} size="sm" variant="danger">
-              Leave room
+    <Group title="Leave">
+      <Row
+        control={
+          confirming ? (
+            <>
+              <Button busy={busy} onClick={() => void leave()} size="sm" variant="danger">
+                Leave room
+              </Button>
+              <Button
+                disabled={busy}
+                onClick={() => setConfirming(false)}
+                size="sm"
+                variant="ghost"
+              >
+                Cancel
+              </Button>
+            </>
+          ) : (
+            <Button onClick={() => setConfirming(true)} size="sm" variant="danger">
+              Leave
             </Button>
-            <Button disabled={busy} onClick={() => setConfirming(false)} size="sm" variant="ghost">
-              Cancel
-            </Button>
-          </span>
-        ) : (
-          <Button onClick={() => setConfirming(true)} size="sm" variant="danger">
-            Leave
-          </Button>
-        )}
-      </div>
-      {error ? (
-        <p className="text-[length:var(--text-secondary)] text-danger" role="alert">
-          {error}
-        </p>
-      ) : null}
-    </div>
+          )
+        }
+        description={
+          confirming
+            ? 'Leave this room? You can no longer read or post in it.'
+            : 'Takes the room off your list. Its bots and the other people stay.'
+        }
+        title="Leave room"
+      >
+        {error ? (
+          <p className="mt-1 text-[length:var(--text-secondary)] text-danger" role="alert">
+            {error}
+          </p>
+        ) : null}
+      </Row>
+    </Group>
   )
 }
 
@@ -184,56 +191,56 @@ function DeleteRoom({ onDelete, room }: { onDelete: () => Promise<void>; room: R
   const [typed, setTyped] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  if (!confirming) {
-    return (
-      <div className={cn(cardClass, 'flex items-center justify-between gap-3 px-3 py-2.5')}>
-        <span>
-          <span className="block font-medium">Delete room</span>
-          <span className="block text-[length:var(--text-secondary)] text-muted">
-            Removes the room, its transcript and the memory made from it. The bots are kept.
-          </span>
-        </span>
-        <Button onClick={() => setConfirming(true)} size="sm" variant="danger">
-          Delete
-        </Button>
-      </div>
-    )
-  }
-
   return (
-    <div className={cn(cardClass, 'space-y-3 p-3')}>
-      <p className="text-[length:var(--text-secondary)]">
-        Type <strong>{room.name}</strong> to delete this room.
-      </p>
-      <Input
-        aria-label="Confirm room name"
-        onChange={e => setTyped(e.target.value)}
-        value={typed}
+    <Group title="Danger zone">
+      <Row
+        control={
+          confirming ? undefined : (
+            <Button onClick={() => setConfirming(true)} size="sm" variant="danger">
+              Delete
+            </Button>
+          )
+        }
+        description="Removes the room, its transcript and the memory made from it. The bots are kept."
+        title="Delete room"
       />
-      <div className="flex gap-2">
-        <Button
-          disabled={typed !== room.name}
-          onClick={() => void onDelete().catch(cause => setError(errorOf(cause)))}
-          variant="danger"
-        >
-          Delete permanently
-        </Button>
-        <Button
-          onClick={() => {
-            setConfirming(false)
-            setTyped('')
-          }}
-          variant="ghost"
-        >
-          Cancel
-        </Button>
-      </div>
-      {error ? (
-        <p className="text-[length:var(--text-secondary)] text-danger" role="alert">
-          {error}
-        </p>
+      {confirming ? (
+        <div className="hex-fade space-y-3 px-4 py-4">
+          <p className="text-[length:var(--text-secondary)]">
+            Type <strong className="font-semibold">{room.name}</strong> to delete this room.
+          </p>
+          <Input
+            aria-label="Confirm room name"
+            autoFocus
+            onChange={e => setTyped(e.target.value)}
+            value={typed}
+          />
+          <div className="flex gap-2">
+            <Button
+              disabled={typed !== room.name}
+              onClick={() => void onDelete().catch(cause => setError(errorOf(cause)))}
+              variant="danger"
+            >
+              Delete permanently
+            </Button>
+            <Button
+              onClick={() => {
+                setConfirming(false)
+                setTyped('')
+              }}
+              variant="ghost"
+            >
+              Cancel
+            </Button>
+          </div>
+          {error ? (
+            <p className="text-[length:var(--text-secondary)] text-danger" role="alert">
+              {error}
+            </p>
+          ) : null}
+        </div>
       ) : null}
-    </div>
+    </Group>
   )
 }
 
@@ -344,10 +351,12 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
   }
 
   return (
-    <section aria-label="Room settings" className="min-w-0 max-w-3xl space-y-6 p-8">
-      <div className="flex flex-col items-center gap-2">
+    <section aria-label="Room settings" className={cn(settingsPageClass, 'space-y-8')}>
+      <div className="flex flex-col items-center text-center [&_header]:mb-0">
         <RoomCluster bots={bots} room={room} size="xl" />
-        <Heading description={roomSummary(members.length, people.length)}>{room.name}</Heading>
+        <div className="mt-3">
+          <Heading description={roomSummary(members.length, people.length)}>{room.name}</Heading>
+        </div>
       </div>
       {owner !== false ? null : (
         <p className="text-center text-[length:var(--text-secondary)] text-muted" role="note">
@@ -355,10 +364,12 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
         </p>
       )}
       {owner ? (
-        <Group title="Name">
-          <div className="p-3">
+        <Group title="Room">
+          <label className="grid min-h-[52px] grid-cols-[112px_1fr] items-center gap-4 px-4 py-2">
+            <span className="text-muted">Name</span>
             <Input
               aria-label="Room name"
+              className={rowFieldClass}
               onBlur={() =>
                 name.trim() && name.trim() !== room.name && void save({ name: name.trim() })
               }
@@ -366,7 +377,7 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
               onKeyDown={event => event.key === 'Enter' && event.currentTarget.blur()}
               value={name}
             />
-          </div>
+          </label>
         </Group>
       ) : null}
       <Group title="Bots">
@@ -383,7 +394,7 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
             readOnly={!owner}
           />
         ))}
-        <div className="flex items-center justify-between gap-3 px-3 py-2">
+        <div className="flex min-h-[48px] items-center justify-between gap-3 px-4 py-2">
           <span className="text-[length:var(--text-secondary)] text-muted">
             {room.main_bot
               ? 'The main bot answers when nobody is mentioned.'
@@ -430,7 +441,7 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
             />
           ))}
           {owner ? (
-            <div className="flex justify-end px-3 py-2">
+            <div className="flex min-h-[48px] items-center justify-end px-4 py-2">
               <Menu
                 items={
                   addablePeople.length
@@ -457,7 +468,7 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
         <Group title="Turns">
           <Row
             control={
-              <div className="w-36 shrink-0">
+              <div className="w-40">
                 <Select
                   label="Room approval mode"
                   onValueChange={value => void save({ approval_mode: value as BotApprovalMode })}
@@ -476,7 +487,7 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
             control={
               <Input
                 aria-label="Bot turns per human turn"
-                className="w-24 shrink-0"
+                className="w-24 text-right"
                 min="1"
                 onBlur={() => void saveLimits()}
                 onChange={event => setTurns(event.target.value)}
@@ -491,7 +502,7 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
             control={
               <Input
                 aria-label="Token budget per human turn"
-                className="w-32 shrink-0"
+                className="w-32 text-right"
                 min="1"
                 onBlur={() => void saveLimits()}
                 onChange={event => setBudget(event.target.value)}

@@ -8,11 +8,16 @@ import { useUsers } from '../../stores/users'
 import { ComposerShell } from './composer'
 import { RoomEventRow } from './room'
 
-
 describe('composer status', () => {
   it('draws the notice and colours the pill to match the bot dot', () => {
     const { rerender } = render(
-      <ComposerShell canSend notice="Network down" onSend={vi.fn()} status="stopped" streaming={false}>
+      <ComposerShell
+        canSend
+        notice="Network down"
+        onSend={vi.fn()}
+        status="stopped"
+        streaming={false}
+      >
         <textarea />
       </ComposerShell>
     )
@@ -22,7 +27,13 @@ describe('composer status', () => {
     expect(document.querySelector('[data-status="stopped"]')).toHaveClass('border-danger/70')
 
     rerender(
-      <ComposerShell canSend notice="Waiting on you" onSend={vi.fn()} status="needs_you" streaming={false}>
+      <ComposerShell
+        canSend
+        notice="Waiting on you"
+        onSend={vi.fn()}
+        status="needs_you"
+        streaming={false}
+      >
         <textarea />
       </ComposerShell>
     )

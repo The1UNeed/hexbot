@@ -1,7 +1,7 @@
 import { useApprovalModes } from '../../lib/approval-modes'
 import type { Bot } from '../../lib/types'
 
-import { Heading, type SaveBot } from './shared'
+import { ChoiceRow, dividerClass, Group, Heading, type SaveBot } from './shared'
 
 export function ApprovalsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const current = bot.approval_mode ?? 'inherit'
@@ -20,26 +20,19 @@ export function ApprovalsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
       <Heading description="When Hexbot asks before this bot acts. Rooms can override it.">
         Approvals
       </Heading>
-      <fieldset className="space-y-1">
-        <legend className="sr-only">Approval mode</legend>
-        {modes.map(mode => (
-          <label className="flex cursor-pointer gap-3 border-b border-border py-3" key={mode.value}>
-            <input
+      <Group title="Mode">
+        <div aria-label="Approval mode" className={dividerClass} role="radiogroup">
+          {modes.map(mode => (
+            <ChoiceRow
               checked={current === mode.value}
-              name="bot-approval-mode"
-              onChange={() => void onSave({ approval_mode: mode.value })}
-              type="radio"
-              value={mode.value}
+              description={mode.description}
+              key={mode.value}
+              onSelect={() => void onSave({ approval_mode: mode.value })}
+              title={mode.label}
             />
-            <span>
-              <strong className="block">{mode.label}</strong>
-              <span className="text-[length:var(--text-secondary)] text-muted">
-                {mode.description}
-              </span>
-            </span>
-          </label>
-        ))}
-      </fieldset>
+          ))}
+        </div>
+      </Group>
     </div>
   )
 }

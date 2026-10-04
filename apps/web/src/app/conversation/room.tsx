@@ -14,6 +14,7 @@ import { useRoomOrLeave } from '../../lib/room-or-leave'
 import { toMillis } from '../../lib/time'
 import type { Bot, RoomEvent, RoomMember, RoomTurn } from '../../lib/types'
 import { useBots } from '../../stores/bots'
+import { connectorsActions } from '../../stores/connectors'
 import { roomFailure, roomStatus, useRooms } from '../../stores/rooms'
 import { useTranscripts } from '../../stores/transcripts'
 import { useUsers } from '../../stores/users'
@@ -42,7 +43,7 @@ const NO_TURNS: Record<string, RoomTurn> = {}
 
 const avatarData = (bot?: Bot) => avatarSrc(bot?.avatar)
 
-export function RoomEventRow({ event }: { event: RoomEvent }) {
+export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh?: boolean }) {
   const bot = useBots(state => (event.actor_id ? state.byName[event.actor_id] : undefined))
   const text = typeof event.payload.text === 'string' ? event.payload.text : ''
 
@@ -152,7 +153,14 @@ export function RoomEventRow({ event }: { event: RoomEvent }) {
           <Avatar className="mt-1" image={avatarData(bot)} name={name ?? 'Bot'} size="sm" />
         )}
         <div className="flex min-w-0 max-w-[80%] flex-col items-start">
-          <div className={cn(mine ? userBubbleClass : bubbleClass, 'max-w-full')}>
+          <div
+            className={cn(
+              mine ? userBubbleClass : bubbleClass,
+              'max-w-full',
+              fresh && 'hex-message',
+              fresh && mine && 'hex-message-mine'
+            )}
+          >
             {!mine ? (
               <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
                 {name}
@@ -255,6 +263,14 @@ export function RoomConversation() {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const bottom = useRef<HTMLDivElement>(null)
+  // Messages that arrive after the room opened spring in; history is drawn still.
+  const opened = useRef({ at: Date.now(), id: roomId })
+
+  if (opened.current.id !== roomId) {
+    opened.current = { at: Date.now(), id: roomId }
+  }
+
+  const openedAt = opened.current.at
 
   // Presence, not the room object: every read mark stores a fresh room.
   const present = Boolean(room)
@@ -273,6 +289,13 @@ export function RoomConversation() {
     () => room?.members.filter(member => member.member_kind === 'bot' && !member.left_at) ?? [],
     [room?.members]
   )
+
+  // Connector tools are named from each bot's catalog ("Connecting to Project tools").
+  useEffect(() => {
+    for (const member of members) {
+      void connectorsActions().load(member.member_id)
+    }
+  }, [members])
 
   const mention = /(?:^|\s)@([\w-]*)$/.exec(text)?.[1]
   const streaming = Object.keys(turns).length > 0
@@ -296,27 +319,27 @@ export function RoomConversation() {
 
   if (!room) {
     return (
-      <div className="grid h-screen place-content-center">
+      <div className="grid h-full place-content-center">
         <SkeletonLines className="w-64" label="Loading room" />
       </div>
     )
   }
 
   return (
-    <div className="flex h-screen min-h-0 flex-col bg-background">
-      <header className="hex-drag flex h-11 shrink-0 items-center gap-2 px-4 max-[700px]:pl-12">
-        <RoomCluster bots={bots} room={room} size="sm" status={status} />
-        <div className="hex-no-drag flex min-w-0 flex-1 items-baseline gap-2">
+    <div className="flex h-full min-h-0 flex-col bg-background">
+      <header className="hex-drag relative flex h-14 shrink-0 items-center justify-center px-14">
+        <div className="hex-glass hex-no-drag flex h-9 min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5">
+          <RoomCluster bots={bots} room={room} size="sm" status={status} />
           <h2 className="truncate text-[length:var(--text-secondary)] font-semibold">
             {room.name}
           </h2>
-          <span className="shrink-0 text-[length:var(--text-meta)] text-muted">
+          <span className="shrink-0 text-[length:var(--text-secondary)] text-muted">
             {members.length} bot{members.length === 1 ? '' : 's'}
           </span>
         </div>
         <button
           aria-label="Room settings"
-          className="hex-no-drag grid size-7 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
+          className="hex-glass hex-glass-press hex-focus hex-no-drag absolute top-2.5 right-3 grid size-9 place-items-center rounded-full text-foreground/70 transition-colors duration-[var(--hex-motion-fast)] hover:text-foreground"
           onClick={() => void navigate({ params: { room: roomId }, to: '/r/$room/settings' })}
           type="button"
         >
@@ -324,7 +347,9 @@ export function RoomConversation() {
         </button>
       </header>
       {status === 'needs_you' ? (
-        <WaitingBanner name={waitingBot(events, bots, room.members)} />
+        <div className="shrink-0 pb-1">
+          <WaitingBanner name={waitingBot(events, bots, room.members)} />
+        </div>
       ) : null}
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className={transcriptClass}>
@@ -337,7 +362,7 @@ export function RoomConversation() {
             return (
               <div key={event.seq}>
                 {separator ? <DaySeparator time={event.created_at} /> : null}
-                <RoomEventRow event={event} />
+                <RoomEventRow event={event} fresh={toMillis(event.created_at) > openedAt} />
               </div>
             )
           })}
@@ -379,11 +404,6 @@ export function RoomConversation() {
                     <StatusDot size="sm" status="working" />
                   </span>
                   <div className="flex min-w-0 max-w-[80%] flex-col">
-                    {message ? (
-                      <WorkStatus message={message} name={name} />
-                    ) : (
-                      <Thinking name={name} />
-                    )}
                     {waiting ? (
                       <p
                         className="py-1 text-[length:var(--text-secondary)] text-muted"
@@ -392,15 +412,14 @@ export function RoomConversation() {
                         {waiting}
                       </p>
                     ) : null}
-                    {message?.text ? (
-                      <div className={bubbleClass}>
-                        <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
-                          {name}
-                        </div>
-                        <p className="whitespace-pre-wrap">{message.text}</p>
-                      </div>
-                    ) : null}
+                    {/* The bot's words arrive whole, as its room message when the turn ends. */}
                     {message ? <MemoryMarks message={message} /> : null}
+                    {/* The live status sits at the foot of the turn until it is done. */}
+                    {message ? (
+                      <WorkStatus message={message} name={name} />
+                    ) : (
+                      <Thinking name={name} />
+                    )}
                   </div>
                 </article>
                 {message ? <AskingRow message={message} sender={turn.bot} /> : null}

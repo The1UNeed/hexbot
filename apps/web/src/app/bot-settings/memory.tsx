@@ -19,19 +19,30 @@ import type { Bot } from '../../lib/types'
 import { sectionsActions, useSectionsForBot } from '../../stores/sections'
 import { Markdown } from '../conversation'
 
-import { cardClass, errorText, formatTimestamp, Heading, type SaveBot } from './shared'
+import {
+  cardClass,
+  dividerClass,
+  errorText,
+  formatTimestamp,
+  Group,
+  Heading,
+  Row,
+  type SaveBot
+} from './shared'
 
 /** One capped memory text with a counter. Used for About you and a bot's memory. */
 export function MemoryEditor({
   cap,
   label,
   onSave,
+  placeholder,
   rows = 6,
   value
 }: {
   cap: number
   label: string
   onSave: (value: string) => Promise<void>
+  placeholder?: string
   rows?: number
   value: string
 }) {
@@ -51,29 +62,35 @@ export function MemoryEditor({
 
   return (
     <div>
-      <span className="mb-1.5 flex justify-end text-[length:var(--text-secondary)]">
-        <span className={tooLong ? 'text-danger' : 'text-muted'}>
+      <div className={cn(cardClass, 'overflow-hidden')}>
+        <Textarea
+          aria-label={label}
+          className="rounded-none bg-transparent px-4 py-3 hover:bg-transparent focus-visible:bg-transparent"
+          onChange={event => {
+            setDraft(event.target.value)
+            setError(null)
+          }}
+          placeholder={placeholder}
+          rows={rows}
+          value={draft}
+        />
+      </div>
+      <div className="mt-2 flex min-h-[30px] items-center justify-between gap-3 px-1">
+        <span
+          className={cn('text-[length:var(--text-meta)]', tooLong ? 'text-danger' : 'text-muted')}
+        >
           {draft.length} / {cap}
         </span>
-      </span>
-      <Textarea
-        aria-label={label}
-        onChange={event => {
-          setDraft(event.target.value)
-          setError(null)
-        }}
-        rows={rows}
-        value={draft}
-      />
+        {dirty ? (
+          <Button onClick={save} size="sm" variant="primary">
+            Save
+          </Button>
+        ) : null}
+      </div>
       {error ? (
-        <span className="mt-1 block text-[length:var(--text-meta)] text-danger" role="alert">
+        <span className="block px-1 text-[length:var(--text-meta)] text-danger" role="alert">
           {error}
         </span>
-      ) : null}
-      {dirty ? (
-        <Button className="mt-3" onClick={save} variant="primary">
-          Save
-        </Button>
       ) : null}
     </div>
   )
@@ -90,42 +107,53 @@ export function MemoryTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   }, [botName])
 
   return (
-    <div className="space-y-6">
+    <div>
       <Heading description="What this bot has learned. It writes here on its own; dreaming tidies it up each day.">
         Memory
       </Heading>
-      {error ? (
-        <p className="text-danger" role="alert">
-          {error}
-        </p>
-      ) : memory ? (
-        <MemoryEditor
-          cap={memory.cap}
-          label="Bot memory"
-          onSave={async value => setMemory(await botMemorySet(botName, value))}
-          value={memory.memory_md}
+      <div className="space-y-8">
+        <div>
+          <p className="mb-2 px-1 text-[length:var(--text-meta)] font-medium text-muted">
+            This bot's memory
+          </p>
+          {error ? (
+            <p className="text-danger" role="alert">
+              {error}
+            </p>
+          ) : memory ? (
+            <MemoryEditor
+              cap={memory.cap}
+              label="Bot memory"
+              onSave={async value => setMemory(await botMemorySet(botName, value))}
+              placeholder="Nothing yet. The bot writes here as it learns."
+
+              value={memory.memory_md}
+            />
+          ) : (
+            <SkeletonLines label="Loading memory" />
+          )}
+        </div>
+        <Group>
+          <Row
+            control={
+              <Link params={{ tab: 'memory' }} to="/settings/$tab">
+                <Button size="sm" variant="secondary">
+                  Open in Settings
+                </Button>
+              </Link>
+            }
+            description="Written by you and read by every bot you own."
+            title="About you"
+          />
+        </Group>
+        <DreamingBlock
+          bot={bot}
+          onRestored={memoryMd =>
+            setMemory(current => current && { ...current, memory_md: memoryMd })
+          }
+          onSave={onSave}
         />
-      ) : (
-        <SkeletonLines label="Loading memory" />
-      )}
-      <div className={cn(cardClass, 'flex items-center justify-between gap-3 px-3 py-2.5')}>
-        <span>
-          <span className="block font-medium">About you</span>
-          <span className="block text-[length:var(--text-secondary)] text-muted">
-            Written by you and read by all of your bots.
-          </span>
-        </span>
-        <Link params={{ tab: 'memory' }} to="/settings/$tab">
-          <Button size="sm" variant="secondary">
-            Open in Settings
-          </Button>
-        </Link>
       </div>
-      <DreamingBlock
-        bot={bot}
-        onRestored={memoryMd => setMemory(current => current && { ...current, memory_md: memoryMd })}
-        onSave={onSave}
-      />
     </div>
   )
 }
@@ -152,7 +180,7 @@ function DreamEntry({
 
   const summary = (
     <>
-      <div className="line-clamp-2">
+      <div className="line-clamp-2 text-[length:var(--text-secondary)]">
         <Markdown text={dream.summary || dream.status} />
       </div>
       <time className="text-[length:var(--text-meta)] text-muted">
@@ -162,7 +190,7 @@ function DreamEntry({
   )
 
   return (
-    <li className="py-2">
+    <li className="px-4 py-3">
       {sectionId ? (
         <Link
           className="block hover:text-accent"
@@ -188,8 +216,10 @@ function DreamEntry({
             <div className="mt-2 grid gap-2 sm:grid-cols-2">
               {(['Before', 'After'] as const).map(label => (
                 <div key={label}>
-                  <span className="mb-1 block text-[length:var(--text-meta)] text-muted">{label}</span>
-                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-control bg-surface-2 p-2 font-mono text-[length:var(--text-meta)]">
+                  <span className="mb-1 block text-[length:var(--text-meta)] text-muted">
+                    {label}
+                  </span>
+                  <pre className="max-h-48 overflow-auto rounded-[10px] bg-foreground/[0.05] p-2.5 font-mono text-[length:var(--text-meta)] whitespace-pre-wrap">
                     {(label === 'Before' ? dream.memory_before : dream.memory_after) || '(empty)'}
                   </pre>
                 </div>
@@ -283,44 +313,49 @@ export function DreamingBlock({
 
   const dreamsSection = useSectionsForBot(bot.name).find(section => section.title === 'Dreams')
 
+  const when = (text: string) => (
+    <span className="text-[length:var(--text-secondary)] text-muted">{text}</span>
+  )
+
   return (
-    <div className="border-t border-border pt-4">
-      <h3 className="font-semibold">Dreaming</h3>
-      <p className="mt-1 text-[length:var(--text-secondary)] text-muted">
-        Each day, this bot reads its recent conversations and tidies its memory: merging,
-        sharpening, dropping what is stale. Every dream keeps the memory it started from.
-      </p>
-      <div className={cn(cardClass, 'mt-4 flex items-center justify-between gap-3 px-3 py-2.5')}>
-        <span>Enabled for this bot</span>
-        <Switch
-          aria-label="Enable dreaming"
-          checked={bot.dream_enabled ?? true}
-          onCheckedChange={checked => void onSave({ dream_enabled: checked })}
-        />
-      </div>
-      <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[length:var(--text-secondary)]">
-        <dt className="text-muted">Last run</dt>
-        <dd>{formatTimestamp(status?.last_run_at)}</dd>
-        <dt className="text-muted">Next run</dt>
-        <dd>{formatTimestamp(status?.next_run_at)}</dd>
-      </dl>
-      <Button
-        busy={running}
-        className="mt-4"
-        disabled={!status?.enabled}
-        onClick={() => void run()}
+    <>
+      <Group
+        footer="Each day the bot reads its recent conversations and tidies its memory. Every dream keeps the memory it started from."
+        title="Dreaming"
       >
-        Dream now
-      </Button>
+        <Row
+          control={
+            <Switch
+              aria-label="Enable dreaming"
+              checked={bot.dream_enabled ?? true}
+              onCheckedChange={checked => void onSave({ dream_enabled: checked })}
+            />
+          }
+          title="Dream daily"
+        />
+        <Row control={when(formatTimestamp(status?.last_run_at))} title="Last run" />
+        <Row control={when(formatTimestamp(status?.next_run_at))} title="Next run" />
+        <Row
+          control={
+            <Button busy={running} disabled={!status?.enabled} onClick={() => void run()} size="sm">
+              Dream now
+            </Button>
+          }
+          description="Reads the latest conversations without waiting for tonight."
+          title="Run a pass now"
+        />
+      </Group>
       {error ? (
-        <p className="mt-2 text-danger" role="alert">
+        <p className="text-[length:var(--text-secondary)] text-danger" role="alert">
           {error}
         </p>
       ) : null}
       {dreams.length ? (
-        <div className="mt-5">
-          <h4 className="font-medium">Dream log</h4>
-          <ul className="mt-2 divide-y divide-border">
+        <div>
+          <p className="mb-2 px-1 text-[length:var(--text-meta)] font-medium text-muted">
+            Dream log
+          </p>
+          <ul className={cn(cardClass, dividerClass)}>
             {dreams.map(dream => (
               <DreamEntry
                 bot={bot.name}
@@ -336,6 +371,6 @@ export function DreamingBlock({
           </ul>
         </div>
       ) : null}
-    </div>
+    </>
   )
 }

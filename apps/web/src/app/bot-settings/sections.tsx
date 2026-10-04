@@ -7,7 +7,7 @@ import type { Section } from '../../lib/types'
 import { useSections, useSectionsForBot } from '../../stores/sections'
 import { relativeTime } from '../roster'
 
-import { cardClass, Heading } from './shared'
+import { cardClass, dividerClass, Heading } from './shared'
 
 export function SectionsTab({ botName }: { botName: string }) {
   const sections = useSectionsForBot(botName)
@@ -19,7 +19,7 @@ export function SectionsTab({ botName }: { botName: string }) {
   const archived = sections.filter(section => section.archived_at)
 
   const row = (section: Section) => (
-    <li className="flex items-center gap-2 py-2 pr-2 pl-3" key={section.id}>
+    <li className="flex min-h-[48px] items-center gap-2 py-1.5 pr-2 pl-4" key={section.id}>
       <span className="min-w-0 flex-1 truncate">{section.title}</span>
       <span className="text-[length:var(--text-meta)] text-muted">
         {relativeTime(section.updated_at)}
@@ -29,7 +29,7 @@ export function SectionsTab({ botName }: { botName: string }) {
           aria-label={`Unarchive ${section.title}`}
           icon={<Undo2 size={14} />}
           onClick={() => void unarchive(section.id)}
-          size="sm"
+          size="icon"
           variant="ghost"
         />
       ) : (
@@ -37,7 +37,7 @@ export function SectionsTab({ botName }: { botName: string }) {
           aria-label={`Archive ${section.title}`}
           icon={<Archive size={14} />}
           onClick={() => void archive(section.id)}
-          size="sm"
+          size="icon"
           variant="ghost"
         />
       )}
@@ -49,7 +49,7 @@ export function SectionsTab({ botName }: { botName: string }) {
             void remove(section.id)
           }
         }}
-        size="sm"
+        size="icon"
         variant="ghost"
       />
     </li>
@@ -60,17 +60,24 @@ export function SectionsTab({ botName }: { botName: string }) {
       <Heading description="Every conversation with this bot. Archiving keeps its history; deleting removes it.">
         Sections
       </Heading>
-      {active.length ? (
-        <ul className={cn(cardClass, 'divide-y divide-border')}>{active.map(row)}</ul>
-      ) : (
-        <p className="text-muted">No open sections.</p>
-      )}
-      {archived.length ? (
-        <div className="mt-5">
-          <p className="mb-2 pl-0.5 text-[length:var(--text-secondary)] text-muted">Archived</p>
-          <ul className={cn(cardClass, 'divide-y divide-border')}>{archived.map(row)}</ul>
+      <div className="space-y-8">
+        <div>
+          <p className="mb-2 px-1 text-[length:var(--text-meta)] font-medium text-muted">Open</p>
+          {active.length ? (
+            <ul className={cn(cardClass, dividerClass)}>{active.map(row)}</ul>
+          ) : (
+            <p className="px-1 text-[length:var(--text-secondary)] text-muted">No open sections.</p>
+          )}
         </div>
-      ) : null}
+        {archived.length ? (
+          <div>
+            <p className="mb-2 px-1 text-[length:var(--text-meta)] font-medium text-muted">
+              Archived
+            </p>
+            <ul className={cn(cardClass, dividerClass)}>{archived.map(row)}</ul>
+          </div>
+        ) : null}
+      </div>
     </div>
   )
 }
