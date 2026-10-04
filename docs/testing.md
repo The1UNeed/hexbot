@@ -24,6 +24,23 @@
 - Site: `pnpm --filter ./apps/site run check`.
 - Connect: `pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run && pnpm --filter ./apps/connect run lint`.
 
+## Installer
+
+Run `cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml`
+and `cargo clippy --locked --manifest-path backend/hexbot-installer/Cargo.toml --all-targets -- -D warnings`.
+The engine tests use temporary homes and `HEXBOT_SERVICE_NO_LOAD=1`. They cover
+foreign service ownership, runtime files without a Headless install, LAN
+preservation on repair, macOS app recovery, and status failures after setup.
+The bootstrap suite exercises curl and wget track selection. Only a Stable
+manifest 404 permits a Nightly fallback.
+
+For the windowed installer, run
+`cargo test --locked --manifest-path apps/installer/src-tauri/Cargo.toml`
+and `cargo clippy --locked --manifest-path apps/installer/src-tauri/Cargo.toml --all-targets -- -D warnings`, then
+`pnpm --filter ./apps/installer run typecheck && pnpm --filter ./apps/installer run test --run && pnpm --filter ./apps/installer run lint && pnpm --filter ./apps/installer run build`.
+These cover the busy guard, daemon files opening on Welcome, service removal
+before download, and the deliberate retry action after a failed uninstall.
+
 ## Service handoff
 
 `backend/python-handoff/` is the service handoff for installed

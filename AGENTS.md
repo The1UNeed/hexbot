@@ -24,8 +24,11 @@ Three facts shape most decisions:
   toolsets, or rebuild the system prompt mid-conversation.
 - **One product, two packages, three channels.** Full package (app plus
   daemon) and client-only package (app alone) are build-time editions
-  (`HEXBOT_EDITION`). Stable, Nightly, and Dev are release channels
-  (`--channel` in `scripts/desktop/dist.mjs`). Never mix the two ideas.
+  (`HEXBOT_EDITION`). The installer offers them as Full and Client, plus
+  Headless: the daemon alone from its native archive, which is an install
+  option and not an edition. Stable, Nightly, and Dev are release channels
+  (`--channel` in `scripts/desktop/dist.mjs`). Never mix editions or install
+  options with channels.
 
 ## Glossary
 
@@ -34,10 +37,12 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Hexbot**: the product. Not "Hexybot". Package and CLI name `hexbot`, home directory `~/.hexbot`.
 - **Daemon**: the Hexbot server process (`hexbot serve`) that runs bots, rooms, memory, tools, and serves the WebSocket API and the web UI.
 - **App**: the Electron desktop shell in `apps/desktop/` hosting the React bundle from `apps/web/`. The same bundle is served by the daemon to LAN browsers.
-- **Full package**: the app with a local daemon. **Client-only**: the same app connected to a daemon elsewhere. Together, the two **editions**.
+- **Full package**: the app with a local daemon. **Client-only**: the same app connected to a daemon elsewhere. Together, the two **editions**. The installer and its UI call them **Full** and **Client**.
+- **Headless**: the install option for the daemon alone, without the app: the native runtime in `~/.hexbot/runtime`, a launchd or systemd user service (`hexbot service`), and the `hexbot` CLI in `~/.local/bin`. Used from another computer with Client or Full. Not an edition. Internal id `headless`.
+- **Installer**: the one installer for Headless, Client, and Full, with two ways in: the terminal installer (`curl -fsSL https://hexbot.app/install.sh | sh`, which runs `hexbot-install`) and the windowed **Hexbot Installer** (.dmg, AppImage). Both use the engine in `backend/hexbot-installer/`, read `install/<track>.json` on the update server, download only the chosen option, and on a second run offer Update or repair, Change, and Uninstall. `~/.hexbot` is kept unless the user asks to delete it.
 - **Channel**: how a build is named and published. **Stable** (tagged `v<version>`, updatable; named `Hexbot [alpha]` while the version is `0.x`), **Nightly** (`Hexbot Nightly`, daily from `main`, updatable on its own track), **Dev** (the source tree). See `docs/channels.md`.
 - **Track**: the channel an installed app takes updates from, Stable or Nightly. Defaults to the channel the build came from; the user switches it in Settings, Updates.
-- **Update server**: `updates.hexbot.app`, a Cloudflare R2 bucket holding every package and the electron-updater feed files. Written only by `release.yml`.
+- **Update server**: `updates.hexbot.app`, a Cloudflare R2 bucket holding every package, the electron-updater feed files, the native daemon archives, and the installers with their `install/<track>.json` manifests. Written only by `release.yml`.
 - **Bot**: a named agent with its own soul, model, skills, and memory. One bot profile with independent Pi conversations managed by the daemon.
 - **Section** = **conversation** = **thread**: one persistent chat with a bot or inside a room. A section lives until the user archives or deletes it. Each section is its own Pi session with its own context window.
 - **Room**: a group chat with one or more humans and any number of bots. May have a **main bot** that responds when nobody is @-mentioned.
@@ -58,10 +63,12 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 | `backend/hexbot-core/` | Rust daemon, CLI, storage, rooms, tools, scheduling, providers, Connect | all |
 | `backend/pi-runtime/` | Pinned Pi runtime and private Hexbot extension | all |
 | `backend/python-handoff/` | Minimal service handoff to the native daemon | all |
+| `backend/hexbot-installer/` | Installer engine (standalone crate) and the terminal installer `hexbot-install` | stable, nightly |
 | `apps/web/` | React bundle (Vite, Tailwind). Used by the app and served to browsers | all |
 | `apps/desktop/` | Electron shell, updater, runtime bootstrap, three electron-builder configs: base, full, client | all |
+| `apps/installer/` | Hexbot Installer, the windowed installer (Tauri) on the installer engine | stable, nightly |
 | `apps/shared/` | `@hermes/shared`. `apps/web` imports its gateway client and event types | all |
-| `apps/site/` | Astro site at hexbot.app: landing page, docs, pairing page | stable |
+| `apps/site/` | Astro site at hexbot.app: landing page, docs, pairing page, `install.sh` | stable |
 | `apps/connect/` | Next.js Connect service at connect.hexbot.app | all |
 | `scripts/desktop/` | Version, build, icon, update feed, and cask scripts, each with tests | stable, nightly |
 | `scripts/dev/` | `run.mjs` (`pnpm dev`) and the live smoke scripts | dev |
@@ -135,11 +142,16 @@ Run the suite that covers what you touched, not everything:
 ```sh
 cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml
 cargo clippy --locked --manifest-path backend/hexbot-core/Cargo.toml --all-targets -- -D warnings
+cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml
+cargo clippy --locked --manifest-path backend/hexbot-installer/Cargo.toml --all-targets -- -D warnings
 node --test backend/pi-runtime/*.test.mjs
 uv sync --project backend/python-handoff --extra dev --locked
 backend/python-handoff/.venv/bin/pytest backend/python-handoff/tests -q
 pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint
 pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run
+pnpm --filter ./apps/installer run typecheck && pnpm --filter ./apps/installer run test --run && pnpm --filter ./apps/installer run lint
+cargo test --locked --manifest-path apps/installer/src-tauri/Cargo.toml
+cargo clippy --locked --manifest-path apps/installer/src-tauri/Cargo.toml --all-targets -- -D warnings
 pnpm --filter ./apps/site run check
 pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run && pnpm --filter ./apps/connect run lint
 node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs
@@ -156,6 +168,9 @@ A change is done when it works in every place the feature appears:
 
 - **Editions**: full and client-only. Anything that needs the daemon runtime
   must go through `requireRuntime` in `apps/desktop/src/main/edition.ts`.
+- **Install options**: Full, Client, and Headless. A daemon feature that a
+  user sets up in the app must also be reachable from a paired app or the
+  `hexbot` CLI when no app runs on the daemon's computer.
 - **Clients**: the Electron app and the browser bundle served by the daemon.
 - **Connection modes**: LAN pairing, Tailscale, and Connect.
 - **Reverse states**: a toggle needs both directions; archive needs

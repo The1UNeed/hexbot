@@ -11,6 +11,7 @@ A fresh daemon listens only on its own computer. Turn on "Allow other devices" b
 Open network settings and enable LAN access, or run:
 
 ```sh
+hexbot lan on
 hexbot pair
 ```
 
@@ -20,6 +21,8 @@ when a VPN or Tailscale address also appears.
 Enabling LAN access makes the daemon listen on all network interfaces. Your router still decides whether devices can reach one another. Guest Wi-Fi networks often block local device traffic.
 
 Turning LAN access on or off moves the daemon to its new address without restarting it. Open apps and browsers reconnect, and running bot turns continue.
+
+A [Headless](/docs/install/#headless) daemon has no app on its computer. The installer turns LAN access on; run `hexbot pair` over SSH. `hexbot status` lists the addresses other devices can use.
 
 ## On the other computer
 

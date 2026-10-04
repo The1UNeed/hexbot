@@ -2,24 +2,47 @@
 import Base from '../layouts/Base.astro'
 import Logo from '../components/Logo.astro'
 import DownloadList from '../components/DownloadList.astro'
-import { loadDownloads, releasesUrl, targets } from '../lib/downloads'
+import { loadDownloads, releasesUrl } from '../lib/downloads'
+import { loadInstallers } from '../lib/installers'
+import { downloadChoices } from '../lib/downloadChoices'
 import { loadNightlies, nightlyRows } from '../lib/nightlies'
 
 const downloads = await loadDownloads()
+const installers = await loadInstallers()
 const nightlies = downloads?.channel === 'nightly' ? nightlyRows(await loadNightlies(), downloads) : []
-const first = downloads?.full[0]
-const macSteps = [
-  'Open the Hexbot .dmg file from your Downloads folder',
-  'Drag Hexbot into your Applications folder',
-  'Open Hexbot and choose "Run on this machine"',
-  'Add a model key, name your first bot, and say hello',
-]
-const linuxSteps = [
-  'Make the AppImage executable: right-click it, or run chmod +x on it',
-  'Open it. If you chose the deb, install it with your package manager instead',
-  'Choose "Run on this machine"',
-  'Add a model key, name your first bot, and say hello',
-]
+// The page offers the Hexbot Installer when the install manifest names one,
+// and the full package otherwise. downloadPage.ts swaps in the visitor's build.
+const choices = downloadChoices(downloads, installers)
+const first = choices[0]
+const firstFor = first?.kind ?? 'full'
+const firstOs = first?.key.startsWith('linux') ? 'linux' : 'mac'
+const command = 'curl -fsSL https://hexbot.app/install.sh | sh'
+const steps = [
+  ['installer', 'mac', [
+    'Open the .dmg from your Downloads folder, then open Hexbot Installer inside it',
+    'Choose Full, Client, or Headless',
+    'Full or Client: open Hexbot when it finishes',
+    'Full: choose "Run on this machine". Client: pair with your daemon',
+  ]],
+  ['installer', 'linux', [
+    'Make the AppImage executable: right-click it, or run chmod +x on it',
+    'Open it and choose Full, Client, or Headless',
+    'Full or Client: open Hexbot from your applications',
+    'Full: choose "Run on this machine". Client: pair with your daemon',
+  ]],
+  ['full', 'mac', [
+    'Open the Hexbot .dmg file from your Downloads folder',
+    'Drag Hexbot into your Applications folder',
+    'Open Hexbot and choose "Run on this machine"',
+    'Add a model key, name your first bot, and say hello',
+  ]],
+  ['full', 'linux', [
+    'Make the AppImage executable: right-click it, or run chmod +x on it',
+    'Open it. If you chose the deb, install it with your package manager instead',
+    'Choose "Run on this machine"',
+    'Add a model key, name your first bot, and say hello',
+  ]],
+] as const
 ---
 <Base title="Download" description="Download the Hexbot nightly for Mac or Linux. Nightly early access, free and open source.">
   <section class="mx-auto max-w-[720px] px-5 pt-14 text-center sm:px-8 lg:pt-20">
@@ -27,19 +50,34 @@ const linuxSteps = [
     <p class="mt-8"><span class="eyebrow"><span class="nightly-dot" aria-hidden="true"></span>Nightly early access</span></p>
     <h1 id="dl-title" class="display-sm mx-auto mt-5 text-[clamp(2rem,5.5vw,3rem)]">Download Hexbot</h1>
     <p id="dl-sub" class="lede mx-auto mt-3">For Mac and Linux. Free and open source.</p>
-    {downloads && first ? (
+    {first ? (
       <>
         <div class="mt-7 flex flex-wrap items-center justify-center gap-3">
-          <a id="dl-primary" class="button" href={first.url} download>
+          <a id="dl-primary" data-builds={JSON.stringify(choices)} class="button" href={first.url} download>
             <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8m0 0 3-3M8 10 5 7M3 13h10"/></svg>
-            <span id="dl-primary-label">Download for {targets[0].name}</span>
+            <span id="dl-primary-label">Download for {first.name}</span>
           </a>
-          <a class="button button-quiet" href="#all">See all downloads</a>
+          {downloads && <a class="button button-quiet" href="#all">See all downloads</a>}
         </div>
-        <p class="notice mx-auto mt-8">
-          <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.5v4M8 5v.5" stroke-linecap="round"/></svg>
-          <span>{downloads.channel === 'nightly' ? 'Hexbot is in nightly early access: nightly builds are the only ones for now, and things may break. Your copy updates itself each day the code changes.' : 'Hexbot is in alpha, so things may break.'} <a href="https://github.com/The1UNeed/hexbot/issues">Report what you find</a>.</span>
-        </p>
+        {installers && (
+          <>
+            <p id="dl-options" class="mx-auto mt-6 max-w-[34em] text-mute">The Hexbot Installer offers three ways to run it: <strong class="text-ink">Full</strong>, the app and your bots on this computer; <strong class="text-ink">Client</strong>, the app alone, for bots on another computer; and <strong class="text-ink">Headless</strong>, the daemon alone, for a server.</p>
+            <div id="dl-terminal" class="mx-auto mt-8 max-w-[34em] text-left">
+              <p class="text-center text-[15px] text-mute">Or from a terminal, on this computer or a server over SSH:</p>
+              <div class="mt-3 flex items-center gap-3 rounded-[14px] bg-ink py-2 pr-2 pl-4 text-paper">
+                <code class="min-w-0 flex-1 overflow-x-auto py-1.5 font-mono text-[15px] whitespace-nowrap">{command}</code>
+                <button type="button" class="shrink-0 rounded-full px-3 py-1.5 text-[14px] font-medium ring-1 ring-white/25 hover:bg-white/10" data-copy={command} hidden><span aria-live="polite">Copy</span></button>
+              </div>
+              <p class="mt-3 text-center text-[15px] text-mute"><a href="/docs/install/">What each option installs</a></p>
+            </div>
+          </>
+        )}
+        {downloads && (
+          <p class="notice mx-auto mt-8">
+            <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.5v4M8 5v.5" stroke-linecap="round"/></svg>
+            <span>{downloads.channel === 'nightly' ? 'Hexbot is in nightly early access: nightly builds are the only ones for now, and things may break. Your copy updates itself each day the code changes.' : 'Hexbot is in alpha, so things may break.'} <a href="https://github.com/The1UNeed/hexbot/issues">Report what you find</a>.</span>
+          </p>
+        )}
       </>
     ) : (
       <div class="mt-7 flex flex-wrap items-center justify-center gap-3">
@@ -48,20 +86,18 @@ const linuxSteps = [
     )}
   </section>
 
-  {downloads && (
+  {first && (
     <section class="mx-auto max-w-[720px] px-5 pt-20 sm:px-8">
       <h2 class="display-sm text-center text-[1.75rem]">A few more steps</h2>
-      <ol class="mt-8 grid gap-3 sm:grid-cols-2" data-os="mac">
-        {macSteps.map((step, i) => (
-          <li class="step"><span class="step-number">{i + 1}</span><span>{step}</span></li>
-        ))}
-      </ol>
-      <p class="mx-auto mt-4 max-w-[36em] text-center text-[15px] text-mute" data-os="mac">If macOS says it cannot check the app, open System Settings, Privacy and Security, and choose Open Anyway.</p>
-      <ol class="mt-8 grid gap-3 sm:grid-cols-2" data-os="linux" hidden>
-        {linuxSteps.map((step, i) => (
-          <li class="step"><span class="step-number">{i + 1}</span><span>{step}</span></li>
-        ))}
-      </ol>
+      {steps.filter(([kind]) => kind === 'full' || installers).map(([kind, os, list]) => (
+        <ol class="mt-8 grid gap-3 sm:grid-cols-2" data-for={kind} data-os={os} hidden={kind !== firstFor || os !== firstOs}>
+          {list.map((step, i) => (
+            <li class="step"><span class="step-number">{i + 1}</span><span>{step}</span></li>
+          ))}
+        </ol>
+      ))}
+      <p class="mx-auto mt-4 max-w-[36em] text-center text-[15px] text-mute" data-os="mac" hidden={firstOs !== 'mac'}>If macOS says it cannot check the app, open System Settings, Privacy and Security, and choose Open Anyway.</p>
+      {installers && <p class="mx-auto mt-4 max-w-[36em] text-center text-[15px] text-mute" data-for="installer" hidden={firstFor !== 'installer'}>Headless: run <code>hexbot pair</code> on that computer and pair the Hexbot app on another one. See <a href="/docs/install/#headless">Headless</a>.</p>}
     </section>
   )}
 
@@ -69,7 +105,7 @@ const linuxSteps = [
     <section id="all" class="mx-auto max-w-[720px] scroll-mt-8 px-5 pt-20 sm:px-8">
       <h2 class="display-sm text-center text-[1.75rem]">All downloads</h2>
       <p class="mt-2 text-center text-mute">{downloads.built}.</p>
-      <div class="mt-8"><DownloadList downloads={downloads} /></div>
+      <div class="mt-8"><DownloadList downloads={downloads} installers={installers} /></div>
     </section>
   )}
 

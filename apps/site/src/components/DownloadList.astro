@@ -1,10 +1,11 @@
 ---
-/** Every build, grouped the way people think about them: their Mac, their Linux box, a second computer. */
+/** Every build, grouped the way people think about them: the installer, their Mac, their Linux box, a second computer. */
 import type { Downloads } from '../lib/downloads'
 import { releasesUrl, targets } from '../lib/downloads'
+import type { Installers } from '../lib/installers'
 
-interface Props { downloads: Downloads }
-const { downloads } = Astro.props
+interface Props { downloads: Downloads; installers?: Installers | null }
+const { downloads, installers } = Astro.props
 const rows = (edition: 'full' | 'client', os?: 'mac' | 'linux') =>
   downloads[edition].map((build, i) => ({ build, target: targets[i], edition })).filter(r => !os || r.target.os === os)
 const groups = [
@@ -14,13 +15,27 @@ const groups = [
 ] as const
 ---
 <div class="flex flex-col gap-4">
+  {installers && (
+    <div class="rounded-[20px] bg-wash p-6">
+      <h3 class="text-[1.15rem] font-semibold">Hexbot Installer</h3>
+      <p class="mt-1 text-mute">Installs Headless, Client, or Full, and downloads only the one you choose. Run it again to update, change, or uninstall.</p>
+      <div class="mt-4 flex flex-wrap gap-2">
+        {installers.builds.map(build => (
+          <a class="pill" href={build.url} download data-artifact="installer" data-target={build.key} data-name={build.name}>
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8m0 0 3-3M8 10 5 7M3 13h10"/></svg>
+            {build.pill}
+          </a>
+        ))}
+      </div>
+    </div>
+  )}
   {groups.map(([title, blurb, list]) => (
     <div class="rounded-[20px] bg-wash p-6">
       <h3 class="text-[1.15rem] font-semibold">{title}</h3>
       <p class="mt-1 text-mute">{blurb}</p>
       <div class="mt-4 flex flex-wrap gap-2">
         {list.map(({ build, target, edition }) => (
-          <a class="pill" href={build.url} download data-edition={edition} data-target={target.key} data-name={target.name}>
+          <a class="pill" href={build.url} download data-artifact="package" data-edition={edition} data-target={target.key} data-name={target.name}>
             <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8m0 0 3-3M8 10 5 7M3 13h10"/></svg>
             {edition === 'client' ? `${target.os === 'mac' ? 'Mac, ' : 'Linux, '}${target.pill}` : target.pill}
           </a>

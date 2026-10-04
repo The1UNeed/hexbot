@@ -13,7 +13,7 @@ Hexbot does not download an update during the check. When one is available, a pi
 The app and the daemon it talks to can be on different computers. When the daemon runs an older Hexbot than the app, the pill says "Update daemon" and Settings, Updates offers to update it. What happens depends on how the daemon runs on its computer:
 
 - **The Hexbot app runs the daemon.** That app downloads the update on its own track, then closes and reopens on the new version. The daemon comes back with it.
-- **The daemon runs at login** (Settings, Network, "Start the daemon at login"). The daemon downloads the new version, installs it, and restarts itself.
+- **The daemon runs as a service**, because it was installed as [Headless](/docs/install/#headless) or with Settings, Network, "Start the daemon at login". The daemon downloads the new version, installs it, and restarts itself.
 - **Started by hand** or from a source checkout. Update Hexbot on that computer yourself.
 
 Bots stop while the daemon restarts; sections and memory stay. The client waits for the daemon to come back and reports a failure if it does not. Only an administrator can start a daemon update. A daemon only moves to a build made from newer source, on either track, so switching between Stable and Nightly never takes it back to an older daemon. An older or equally old build is refused.
@@ -39,6 +39,8 @@ Hexbot is in nightly early access, so for now only the nightly track has builds.
 A stable install follows the stable track and a nightly install follows the nightly track. You can switch in Settings, Updates. Switching affects the next update check: a stable app on the nightly track is replaced by the next nightly, and a nightly app on the stable track by the next stable release, even when that release has a lower version number. The installed app is not changed until an update is installed.
 
 Dev builds run from a source checkout and do not check for updates.
+
+The [installer](/docs/install/#run-it-again) installs from a track too. A new install uses Stable once it is published and Nightly until then; `--stable` or `--nightly` chooses. Update or repair keeps the installed track.
 
 ## What an update check sends
 
