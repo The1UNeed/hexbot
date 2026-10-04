@@ -1,5 +1,9 @@
 //! Connector credentials, per-bot selection, skill discovery and MCP transport.
-use crate::{Error, Result, common::*, db};
+use crate::{
+    Error, Result,
+    common::{self, *},
+    db,
+};
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -128,9 +132,10 @@ fn config_set(config: &mut Value, section: &str, key: &str, value: Value) {
 }
 fn write_all(home: &Path, section: &str, key: &str, value: Value) -> Result<()> {
     for path in targets(home)? {
-        let mut config = read_config(&path)?;
-        config_set(&mut config, section, key, value.clone());
-        write_config(&path, &config)?;
+        common::update_config(&path, |config| {
+            config_set(config, section, key, value.clone());
+            Ok(())
+        })?;
     }
     Ok(())
 }
@@ -272,76 +277,15 @@ pub fn pi_mcp_servers(home: &Path, bot: &str, names: &[Value]) -> Result<Vec<Val
     Ok(result)
 }
 
-fn skill_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = vec![];
-    if !root.exists() {
-        return Ok(files);
-    }
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        if ty.is_dir() {
-            files.extend(skill_files(&entry.path())?)
-        } else if ty.is_file() && entry.file_name() == "SKILL.md" {
-            files.push(entry.path())
-        }
-    }
-    files.sort();
-    Ok(files)
-}
-fn list_skills(home: &Path, bot: &str) -> Result<Value> {
-    let path = profile(home, bot)?;
-    let config = read_config(&path)?;
-    let disabled = strings(&config["skills"]["disabled"])
-        .into_iter()
-        .map(|s| s.to_lowercase())
-        .collect::<BTreeSet<_>>();
-    let root = path.join("skills");
-    let mut seen = BTreeSet::new();
-    let mut result = vec![];
-    for file in skill_files(&root)? {
-        let parent = file.parent().unwrap();
-        let name = parent.file_name().unwrap().to_string_lossy().to_string();
-        if !seen.insert(name.clone()) {
-            continue;
-        }
-        let text = fs::read_to_string(&file)?;
-        let meta = text
-            .strip_prefix("---")
-            .and_then(|s| s.split_once("\n---"))
-            .and_then(|(s, _)| serde_yaml::from_str::<Value>(s).ok())
-            .unwrap_or(Value::Null);
-        let category = if parent.parent() == Some(root.as_path()) {
-            String::new()
-        } else {
-            parent
-                .parent()
-                .and_then(Path::file_name)
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string()
-        };
-        result.push(json!({"name":name,"description":meta["description"].as_str().unwrap_or(""),"category":category,"enabled":!disabled.contains(&name.to_lowercase())}));
-    }
-    result.sort_by_key(|s| {
-        (
-            s["category"].as_str().unwrap_or("").to_string(),
-            s["name"].as_str().unwrap_or("").to_string(),
-        )
-    });
-    Ok(json!({"skills":result}))
-}
 fn enabled(home: &Path, bot: &str, id: &str) -> Result<bool> {
     if let Some(server) = id.strip_prefix("mcp:") {
         return Ok(mcp_servers(home, bot)?.get(server).is_some());
     }
     let s = spec(id)?;
     if let Some(skill) = s["skill"].as_str() {
-        return Ok(list_skills(home, bot)?["skills"]
-            .as_array()
-            .unwrap()
+        return Ok(crate::skills::resolve(home, Some(bot))?
             .iter()
-            .any(|s| s["name"] == skill && s["enabled"] == true));
+            .any(|s| s.name == skill && s.enabled));
     }
     let tools = toolsets(home, bot)?;
     if id == "web_search" {
@@ -352,82 +296,34 @@ fn enabled(home: &Path, bot: &str, id: &str) -> Result<bool> {
     }
     Ok(strings(&s["toolsets"]).iter().all(|t| tools.contains(t)))
 }
-fn copy_dir(from: &Path, to: &Path) -> Result<()> {
-    fs::create_dir_all(to)?;
-    for entry in fs::read_dir(from)? {
-        let e = entry?;
-        if e.file_type()?.is_dir() {
-            copy_dir(&e.path(), &to.join(e.file_name()))?
-        } else if e.file_type()?.is_file() {
-            atomic_write(&to.join(e.file_name()), &fs::read(e.path())?)?
-        }
-    }
-    Ok(())
-}
 fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<()> {
-    let path = profile(home, bot)?;
-    let mut config = read_config(&path)?;
-    if let Some(server) = id.strip_prefix("mcp:") {
-        let root = read_config(home)?;
-        let entry = root["mcp_servers"]
-            .get(server)
-            .filter(|v| v.is_object())
-            .ok_or_else(|| Error::new(4213, format!("unknown MCP server: {server}")))?;
-        let mut entry = entry.clone();
-        entry["disabled"] = json!(!on);
-        config_set(&mut config, "mcp_servers", server, entry);
-    } else {
+    if !id.starts_with("mcp:") {
         let s = spec(id)?;
         if let Some(skill) = s["skill"].as_str() {
-            if on
-                && !skill_files(&path.join("skills"))?.iter().any(|f| {
-                    f.parent()
-                        .and_then(Path::file_name)
-                        .is_some_and(|n| n == skill)
-                })
-            {
-                let roots = [
-                    home.join("skills"),
-                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../skills"),
-                ];
-                let source = roots
-                    .iter()
-                    .flat_map(|r| skill_files(r).unwrap_or_default())
-                    .find(|f| {
-                        f.parent()
-                            .and_then(Path::file_name)
-                            .is_some_and(|n| n == skill)
-                    })
-                    .ok_or_else(|| Error::new(4212, format!("bundled skill not found: {skill}")))?;
-                let source = source.parent().unwrap();
-                copy_dir(
-                    source,
-                    &path
-                        .join("skills")
-                        .join(
-                            source
-                                .parent()
-                                .and_then(Path::file_name)
-                                .unwrap_or_default(),
-                        )
-                        .join(skill),
-                )?;
-            }
-            let mut disabled = strings(&config["skills"]["disabled"])
-                .into_iter()
-                .collect::<BTreeSet<_>>();
-            if on {
-                disabled.retain(|s| !s.eq_ignore_ascii_case(skill))
-            } else {
-                disabled.insert(skill.to_string());
-            }
-            config_set(&mut config, "skills", "disabled", json!(disabled));
-        } else if id == "cloud_browser" {
+            let _guard = crate::skills::read_lock()?;
+            crate::skills::find_unlocked(home, Some(bot), skill)?;
+            return crate::skills::set_enabled(home, Some(bot), skill, on);
+        }
+        if id == "cloud_browser" {
             if !on {
                 write_all(home, "browser", "cloud_provider", Value::Null)?;
             }
             return Ok(());
+        }
+    }
+    let path = profile(home, bot)?;
+    common::update_config(&path, |config| {
+        if let Some(server) = id.strip_prefix("mcp:") {
+            let root = read_config(home)?;
+            let entry = root["mcp_servers"]
+                .get(server)
+                .filter(|v| v.is_object())
+                .ok_or_else(|| Error::new(4213, format!("unknown MCP server: {server}")))?;
+            let mut entry = entry.clone();
+            entry["disabled"] = json!(!on);
+            config_set(config, "mcp_servers", server, entry);
         } else {
+            let s = spec(id)?;
             let mut tools = toolsets(home, bot)?.into_iter().collect::<BTreeSet<_>>();
             for t in strings(&s["toolsets"]) {
                 if on {
@@ -439,17 +335,12 @@ fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<()> {
                     }
                 }
             }
-            config_set(&mut config, "tools", "enabled_toolsets", json!(tools));
-            config_set(&mut config, "platform_toolsets", "cli", json!(tools));
-            config_set(
-                &mut config,
-                "known_plugin_toolsets",
-                "cli",
-                json!(["hexbot"]),
-            );
+            config_set(config, "tools", "enabled_toolsets", json!(tools));
+            config_set(config, "platform_toolsets", "cli", json!(tools));
+            config_set(config, "known_plugin_toolsets", "cli", json!(["hexbot"]));
         }
-    }
-    write_config(&path, &config)
+        Ok(())
+    })
 }
 fn last_test(home: &Path, id: &str) -> Result<Option<Value>> {
     let raw: Option<String> = db::open(home)?
@@ -895,7 +786,6 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
     let bot_only = p["bot_only"] == true;
     match method {
         "hexbot.connectors.list" => list(home, bot),
-        "skills.list" | "hexbot.skills.list" => list_skills(home, required(p, "bot")?),
         "hexbot.connectors.test" => probe(home, required(p, "id")?, bot).await,
         "hexbot.connectors.set_for_bot" => {
             let bot = required(p, "bot")?;
@@ -1055,9 +945,10 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
     }
 }
 pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result<Value>> {
-    if !method.starts_with("hexbot.connectors.")
-        && !matches!(method, "hexbot.skills.list" | "skills.list")
-    {
+    if method.starts_with("hexbot.skills.") || method == "skills.list" {
+        return Some(crate::skills::call(home, caller, method, p));
+    }
+    if !method.starts_with("hexbot.connectors.") {
         return None;
     }
     Some(dispatch(home, caller, method, p).await)

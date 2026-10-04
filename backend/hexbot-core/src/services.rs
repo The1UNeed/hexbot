@@ -652,6 +652,7 @@ pub fn apply_public_url(home: &Path, hostname: Option<&str>) -> Result<()> {
         }
     }
     for target in targets {
+        let writer = common::config_writer()?;
         let Ok(mut config) = common::read_config(&target) else {
             continue;
         };
@@ -669,7 +670,7 @@ pub fn apply_public_url(home: &Path, hostname: Option<&str>) -> Result<()> {
                 config.as_object_mut().unwrap().remove("dashboard");
             }
         }
-        common::write_config(&target, &config)?;
+        writer.write(&target, &config)?;
     }
     Ok(())
 }

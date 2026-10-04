@@ -27,7 +27,7 @@ act/
 .pip-cache/
 .uv-cache/
 compose.hermes.local.yml
-export*
+/export*
 __pycache__/model_tools.cpython-310.pyc
 __pycache__/web_tools.cpython-310.pyc
 logs/

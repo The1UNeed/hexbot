@@ -106,7 +106,14 @@ async fn todo_bounds_and_access_are_enforced() {
         &json!({"tools":{"enabled_toolsets":[]}}),
     )
     .unwrap();
-    assert!(product::descriptors(home.path(), "owl").unwrap().is_empty());
+    assert_eq!(
+        product::descriptors(home.path(), "owl")
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["skills_list", "skill_view"]
+    );
     assert_eq!(
         call(home.path(), "todo_list", json!({}))
             .await
@@ -235,7 +242,13 @@ async fn skills_create_view_patch_supporting_files_and_delete() {
     assert_eq!(create["success"], true);
     assert_eq!(create["operations_applied"], 2);
     let listed = call(home.path(), "skills_list", json!({})).await.unwrap();
-    assert_eq!(listed["skills"][0]["name"], "plan");
+    assert!(
+        listed["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["name"] == "plan")
+    );
     let view = call(home.path(), "skill_view", json!({"name":"plan"}))
         .await
         .unwrap();
@@ -271,9 +284,12 @@ async fn skills_create_view_patch_supporting_files_and_delete() {
     )
     .await
     .unwrap();
-    assert_eq!(
-        call(home.path(), "skills_list", json!({})).await.unwrap()["count"],
-        0
+    assert!(
+        !call(home.path(), "skills_list", json!({})).await.unwrap()["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["name"] == "plan")
     );
 }
 #[tokio::test]

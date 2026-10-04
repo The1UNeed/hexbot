@@ -90,8 +90,8 @@ it also installs over SSH when nobody is signed in at the screen.
 - Settled Pi processes retire after 15 idle minutes. Session IDs remain valid;
   a later RPC resumes the durable session. Staged files and pending questions
   prevent retirement. Replay retention is bounded by session count and bytes.
-- A conversation keeps its system prompt, selected skills, tool definitions,
-  across turns and daemon restarts. Runtime settings outside the prompt may
+- A conversation keeps its system prompt, skill catalog and tool definitions
+  across turns and daemon restarts. Skill bodies and grants resolve live. Runtime settings outside the prompt may
   resolve live.
   Native live session IDs remain distinct from stored section IDs.
 - HTTP cookies, pairing, device revocation, JSON-RPC names, error objects,
@@ -113,6 +113,72 @@ it also installs over SSH when nobody is signed in at the screen.
 | `providers`, `provider_acp`, `connectors` | Models, credentials, OAuth, ACP, connector setup/probes, MCP |
 | `native_tools`, `native_external_tools`, `native_product_tools` | Code, browser, computer, media, web, HA, X, skills and history tools |
 | `services` | Connect registration, grants, tunnel lifecycle, native updates |
+
+## Skills
+
+One resolver in `skills.rs` supplies prompts, tools, RPCs, scheduled jobs and
+skill-backed connectors. Skills resolve by directory name, with a bot's private
+copy taking precedence over `<home>/skills`, then bundled `skills/` selected by
+`HEXBOT_BUNDLED_SKILLS`. New bots do not copy bundled skills. Bot authoring writes
+only private skills; editing an inherited skill creates a private override.
+People can move a private skill into the library using the share RPC.
+
+New library skills are on for every bot. The bot's `config.yaml` `skills.disabled`
+is the per-bot deny-list, and the root config's `skills.disabled` disables a
+library name globally, including private overrides. `bots.skills_json` remains
+for storage compatibility but is not read for grants or the bot's skills list.
+Library writes and global disables pass one admin-only helper. Owners can edit
+private skills and grants for their bots. Admins must own the source bot to
+share a skill and every bot listed in a library save's `bots_disabled`. All
+ownership checks finish before that save writes anything. RPC contracts are
+in `docs/api.md`.
+
+`enabled_for_bot` reports the bot's own grant; `enabled` also applies the global
+deny-list. Legacy bot selection updates leave globally disabled skills at
+their current per-bot grant. Every daemon config mutation uses the synchronous
+config writer in `common.rs`, locking read-modify-write across skills,
+connectors, bot configuration, settings mirroring, provider cleanup and Connect.
+Acquire the skills lock before the config lock when both are needed; neither
+lock may cross an await. Skill discovery and body reads hold a shared lock;
+saves, sharing, deletion and `skill_manage` commits hold the exclusive side.
+Skill destinations cannot contain or be contained in another skill, including
+destinations staged together in a batch.
+
+Under the startup migration lock, a one-time pass removes private skill
+directories whose fingerprint matches the current bundled copy or any shipped
+version of the same name recorded in `skills/.history.json`. The manifest maps
+skill names to sorted, unique arrays of lowercase SHA-256 hashes. Fingerprints
+cover sorted relative paths, the executable bit and file bytes. Dotfiles and
+dot directories, empty directories and other permission bits are ignored,
+matching the old seeding rules. Modified bodies, scripts, extra non-dot files
+and non-dot symlinks keep a copy private. Empty category directories and those
+containing only an unchanged bundled `DESCRIPTION.md` are also removed.
+
+Run `node scripts/desktop/skill-history.mjs` after changing bundled skills.
+It reads every commit from `git log -- skills` plus the current tree and needs
+full Git history. For each file, the hash input is its relative POSIX path,
+NUL, executable flag `0` or `1`, NUL, decimal byte length, NUL, then file bytes.
+Files sort by UTF-8 path bytes. Node and Rust tests share a fingerprint vector;
+CI checks every current bundled skill against the manifest. Discovery and old
+seeding skip the dotfile. Runtime packaging copies the entire skills tree,
+including the manifest.
+
+Deny-lists and native sessions are untouched. A completion marker in `settings` makes later starts skip the pass; interruption is safe to retry.
+A missing bundled directory defers migration until it is available.
+
+New prompts contain only skill names and descriptions, with an instruction to
+load bodies through `skill_view`. Read-only `skill_view` and `skills_list` are
+available without the authoring toolset and enforce current grants on every
+call. `skill_manage` still requires the skills toolset. Skill body edits are
+live. Existing sections retain their exact prompt and options, including old
+inline skill bodies. The existing About you privacy repair is unchanged.
+
+Pi starts with `--no-skills` and receives no `--skill` paths. Pi 1.0.1 accepts
+explicit skill paths even with `--no-skills`; its `/skill:name` commands load
+bodies directly, bypassing daemon grants. Its generated skill prompt is also
+replaced by the private extension's `before_agent_start` handler. Scheduled
+jobs resolve their explicitly requested skills through the same live grants.
+Notion and Airtable connectors toggle grants without making private copies.
 
 ## Verification
 

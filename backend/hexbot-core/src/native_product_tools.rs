@@ -1,11 +1,14 @@
 //! Session plans, history recall, and bot-owned skill files.
+use crate::skills::{
+    copy_tree, frontmatter, relative, safe_path, valid_skill_content, valid_skill_name, walk_files,
+};
 use crate::{Error, Result, catalog, common, connectors, db, runtime_store};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::Mutex,
 };
 
@@ -59,19 +62,19 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
             &[],
         ));
     }
+    tools.push(descriptor(
+        "skills_list",
+        "List available skill names and descriptions. Use skill_view to load a skill.",
+        json!({"category":{"type":"string"}}),
+        &[],
+    ));
+    tools.push(descriptor(
+        "skill_view",
+        "Read a skill or a file inside it. Omit file_path to read SKILL.md and list supporting files.",
+        json!({ "name": { "type": "string" }, "file_path": { "type": "string" } }),
+        &["name"],
+    ));
     if enabled.iter().any(|s| s == "skills") {
-        tools.push(descriptor(
-            "skills_list",
-            "List available skill names and descriptions. Use skill_view to load a skill.",
-            json!({"category":{"type":"string"}}),
-            &[],
-        ));
-        tools.push(descriptor(
-            "skill_view",
-            "Read a skill or a file inside it. Omit file_path to read SKILL.md and list supporting files.",
-            json!({ "name": { "type": "string" }, "file_path": { "type": "string" } }),
-            &["name"],
-        ));
         tools.push(descriptor(
             "skill_manage",
             "Create, patch, or delete bot skills. Operations apply as one batch. Inherited skills are copied into this bot before editing.",
@@ -314,78 +317,13 @@ pub fn todo_context(home: &Path, session: &str) -> Result<Option<String>> {
     Ok(Some(output))
 }
 
-fn relative(value: &str) -> Result<PathBuf> {
-    let path = Path::new(value);
-    if value.is_empty()
-        || path.is_absolute()
-        || path
-            .components()
-            .any(|c| !matches!(c, Component::Normal(_)))
-        || value.contains('\\')
-    {
-        return Err(Error::new(
-            4202,
-            "path must stay inside the skill directory",
-        ));
-    }
-    Ok(path.to_path_buf())
-}
-fn safe_path(root: &Path, path: &Path) -> Result<()> {
-    let relative = path
-        .strip_prefix(root)
-        .map_err(|_| Error::new(4202, "path is outside the bot directory"))?;
-    let mut cursor = root.to_path_buf();
-    for part in relative.components() {
-        if !matches!(part, Component::Normal(_)) {
-            return Err(Error::new(4202, "invalid skill path"));
-        }
-        cursor.push(part);
-        if fs::symlink_metadata(&cursor).is_ok_and(|m| m.file_type().is_symlink()) {
-            return Err(Error::new(4202, "skill paths must not contain symlinks"));
-        }
-    }
-    Ok(())
-}
-fn frontmatter(content: &str) -> (Value, String) {
-    let source = content.trim_start_matches('\u{feff}');
-    if let Some(rest) = source.strip_prefix("---\n")
-        && let Some((yaml, body)) = rest.split_once("\n---")
-    {
-        return (
-            serde_yaml::from_str(yaml).unwrap_or_else(|_| json!({})),
-            body.trim_start().to_owned(),
-        );
-    }
-    (json!({}), source.to_owned())
-}
 fn skill_rows(home: &Path, bot: &str) -> Result<Vec<Value>> {
-    let mut rows = vec![];
-    for row in catalog::enabled_skills(home, bot)? {
-        let (meta, body) = frontmatter(text(&row, "content"));
-        let name = meta["name"].as_str().unwrap_or(text(&row, "name"));
-        let description = meta["description"]
-            .as_str()
-            .or_else(|| {
-                body.lines()
-                    .find(|s| !s.trim().is_empty() && !s.trim_start().starts_with('#'))
-            })
-            .unwrap_or("");
-        let path = PathBuf::from(text(&row, "path"));
-        let category = path
-            .parent()
-            .and_then(Path::parent)
-            .and_then(Path::file_name)
-            .and_then(|s| s.to_str())
-            .filter(|s| *s != "skills");
-        rows.push(json!({"name":name,"description":description.chars().take(1000).collect::<String>(),"category":category,"path":path,"content":row["content"],"frontmatter":meta}));
-    }
-    Ok(rows)
+    catalog::enabled_skills(home, bot)
 }
 fn find_skill(home: &Path, bot: &str, name: &str) -> Result<Value> {
-    skill_rows(home, bot)?
-        .into_iter()
-        .find(|s| s["name"] == name)
-        .ok_or_else(|| Error::new(4205, format!("skill not found: {name}")))
+    Ok(json!(crate::skills::find_enabled_unlocked(
+        home, bot, name
+    )?))
 }
 fn list_skills(home: &Path, bot: &str, p: &Value) -> Result<Value> {
     let category = text(p, "category");
@@ -394,8 +332,6 @@ fn list_skills(home: &Path, bot: &str, p: &Value) -> Result<Value> {
         .filter(|s| category.is_empty() || s["category"] == category)
         .map(|mut s| {
             let object = s.as_object_mut().unwrap();
-            object.remove("content");
-            object.remove("frontmatter");
             object.remove("path");
             s
         })
@@ -409,29 +345,8 @@ fn list_skills(home: &Path, bot: &str, p: &Value) -> Result<Value> {
         json!({"success":true,"skills":skills,"categories":categories,"count":skills.len(),"hint":"Use skill_view(name) to see full content and linked files."}),
     )
 }
-fn walk_files(root: &Path, path: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    safe_path(root, path)?;
-    if !path.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        if kind.is_symlink() {
-            return Err(Error::new(4202, "skill paths must not contain symlinks"));
-        }
-        if kind.is_dir() {
-            walk_files(root, &entry.path(), out)?
-        } else if kind.is_file() {
-            out.push(entry.path());
-            if out.len() > 2000 {
-                return Err(Error::new(4202, "skill contains too many files"));
-            }
-        }
-    }
-    Ok(())
-}
 fn view_skill(home: &Path, bot: &str, p: &Value) -> Result<Value> {
+    let _guard = crate::skills::read_lock()?;
     let row = find_skill(home, bot, common::required(p, "name")?)?;
     let main = PathBuf::from(text(&row, "path"));
     let dir = main
@@ -443,7 +358,7 @@ fn view_skill(home: &Path, bot: &str, p: &Value) -> Result<Value> {
     } else {
         dir.join(relative(requested)?)
     };
-    safe_path(home, &path)?;
+    safe_path(dir, &path)?;
     let metadata = fs::metadata(&path)?;
     if !metadata.is_file() {
         return Err(Error::new(4202, "skill path is not a regular file"));
@@ -451,14 +366,14 @@ fn view_skill(home: &Path, bot: &str, p: &Value) -> Result<Value> {
     if metadata.len() > 2 * 1024 * 1024 {
         return Err(Error::new(4202, "skill file exceeds 2 MiB"));
     }
-    let content = common::read_regular_text(&path, 1024 * 1024)?;
+    let content = common::read_regular_text(&path, 2 * 1024 * 1024)?;
     if !requested.is_empty() {
         return Ok(
             json!({"success":true,"name":row["name"],"file_path":requested,"content":content,"path":path}),
         );
     }
     let mut files = vec![];
-    walk_files(home, dir, &mut files)?;
+    walk_files(dir, dir, &mut files)?;
     let mut linked = json!({});
     for file in files {
         let rel = file
@@ -475,7 +390,7 @@ fn view_skill(home: &Path, bot: &str, p: &Value) -> Result<Value> {
         }
         linked[category].as_array_mut().unwrap().push(json!(rel));
     }
-    let meta = &row["frontmatter"];
+    let (meta, _) = frontmatter(&content);
     let mut required = BTreeSet::new();
     for list in [
         &meta["required_environment_variables"],
@@ -521,52 +436,9 @@ fn view_skill(home: &Path, bot: &str, p: &Value) -> Result<Value> {
         }
     }))
 }
-fn copy_tree(home: &Path, source: &Path, dest: &Path) -> Result<()> {
-    let mut files = vec![];
-    walk_files(home, source, &mut files)?;
-    fs::create_dir_all(dest)?;
-    for path in files {
-        if fs::metadata(&path)?.len() > 8 * 1024 * 1024 {
-            return Err(Error::new(4202, "skill file exceeds 8 MiB"));
-        }
-        let target = dest.join(path.strip_prefix(source).unwrap());
-        fs::create_dir_all(target.parent().unwrap())?;
-        fs::copy(path, target)?;
-    }
-    Ok(())
-}
-fn valid_skill_name(name: &str) -> Result<()> {
-    if name.is_empty()
-        || name.len() > 64
-        || !name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-    {
-        return Err(Error::new(
-            4202,
-            "skill name must use lowercase letters, digits, hyphens or underscores, up to 64 characters",
-        ));
-    }
-    Ok(())
-}
-fn valid_skill_content(content: &str) -> Result<()> {
-    if content.len() > 2 * 1024 * 1024 {
-        return Err(Error::new(4202, "skill content exceeds 2 MiB"));
-    }
-    let normalized = content.replace("\r\n", "\n");
-    let (meta, body) = frontmatter(&normalized);
-    if text(&meta, "description").trim().is_empty() || body.trim().is_empty() {
-        return Err(Error::new(
-            4200,
-            "SKILL.md needs YAML frontmatter with a description and a Markdown body",
-        ));
-    }
-    Ok(())
-}
 fn manage_skills(home: &Path, bot: &str, p: &Value) -> Result<Value> {
-    static LOCK: Mutex<()> = Mutex::new(());
-    let _guard = LOCK
-        .lock()
+    let _guard = crate::skills::LOCK
+        .write()
         .map_err(|_| Error::new(5200, "skills lock unavailable"))?;
     let ops = if let Some(ops) = p["operations"].as_array() {
         ops.clone()
@@ -581,36 +453,53 @@ fn manage_skills(home: &Path, bot: &str, p: &Value) -> Result<Value> {
     if ops.len() > 1 && ops.iter().any(|op| op["action"] == "delete") {
         return Err(Error::new(4200, "delete must be the only operation"));
     }
+    if ops.len() == 1 && ops[0]["action"] == "delete" {
+        let name = common::required(&ops[0], "name")?;
+        let skill = crate::skills::find_enabled_unlocked(home, bot, name)?;
+        if skill.source != "bot" {
+            crate::skills::set_enabled(home, Some(bot), name, false)?;
+            return Ok(json!({"success":true,"operations_applied":1,
+                "results":[{"name":name,"action":"delete","file_path":null,"success":true}]}));
+        }
+    }
     let profile = catalog::profile(home, bot)?;
     fs::create_dir_all(&profile)?;
     let stage = tempfile::tempdir_in(&profile)?;
     let mut touched: BTreeMap<String, (PathBuf, PathBuf, bool)> = BTreeMap::new();
     let mut results = vec![];
-    let mut cfg = common::read_config(&profile)?;
-    let old_cfg = cfg.clone();
     for (index, op) in ops.iter().enumerate() {
         let name = common::required(op, "name")?;
         valid_skill_name(name)?;
         let action = common::required(op, "action")?;
         if !touched.contains_key(name) {
-            let existing = find_skill(home, bot, name).ok();
+            let existing = crate::skills::resolve_unlocked(home, Some(bot))?
+                .into_iter()
+                .find(|s| s.name == name);
+            if existing.as_ref().is_some_and(|s| !s.enabled) {
+                return Err(Error::new(4302, format!("skill is disabled: {name}")));
+            }
+            let existing = existing.map(|s| json!(s));
             let destination = if let Some(row) = &existing {
                 let path = PathBuf::from(text(row, "path"));
                 if path.starts_with(profile.join("skills")) {
                     path.parent().unwrap().to_path_buf()
                 } else {
-                    profile.join("skills").join(name)
+                    crate::skills::destination(
+                        &profile.join("skills"),
+                        name,
+                        row["category"].as_str(),
+                    )?
                 }
             } else {
-                let category = text(op, "category");
-                let root = if category.is_empty() {
-                    profile.join("skills")
-                } else {
-                    profile.join("skills").join(relative(category)?)
-                };
-                root.join(name)
+                crate::skills::destination(&profile.join("skills"), name, op["category"].as_str())?
             };
             safe_path(home, &destination)?;
+            crate::skills::validate_destination(&profile.join("skills"), &destination)?;
+            if touched.values().any(|(other, _, _)| {
+                destination.starts_with(other) || other.starts_with(&destination)
+            }) {
+                return Err(Error::new(4202, "skills must not contain other skills"));
+            }
             if action == "create" && existing.is_some() {
                 return Err(Error::new(
                     4200,
@@ -625,7 +514,7 @@ fn manage_skills(home: &Path, bot: &str, p: &Value) -> Result<Value> {
             }
             let work = stage.path().join(format!("work-{name}"));
             if let Some(row) = existing {
-                copy_tree(home, Path::new(text(&row, "path")).parent().unwrap(), &work)?
+                copy_tree(Path::new(text(&row, "path")).parent().unwrap(), &work)?
             } else {
                 fs::create_dir_all(&work)?;
             }
@@ -652,7 +541,7 @@ fn manage_skills(home: &Path, bot: &str, p: &Value) -> Result<Value> {
                         relative(text(op, "file_path"))?
                     };
                     let path = work.join(file);
-                    let current = common::read_regular_text(&path, 1024 * 1024)?;
+                    let current = common::read_regular_text(&path, 2 * 1024 * 1024)?;
                     let content = if let Some(full) = op["content"].as_str() {
                         full.to_owned()
                     } else {
@@ -713,26 +602,7 @@ fn manage_skills(home: &Path, bot: &str, p: &Value) -> Result<Value> {
                         fs::remove_file(path)?;
                     }
                 }
-                "delete" => {
-                    *deleted = true;
-                    if !cfg["skills"].is_object() {
-                        cfg["skills"] = json!({})
-                    }
-                    if !cfg["skills"]["disabled"].is_array() {
-                        cfg["skills"]["disabled"] = json!([])
-                    }
-                    if !cfg["skills"]["disabled"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .any(|v| v == name)
-                    {
-                        cfg["skills"]["disabled"]
-                            .as_array_mut()
-                            .unwrap()
-                            .push(json!(name));
-                    }
-                }
+                "delete" => *deleted = true,
                 _ => return Err(Error::new(4200, "unknown skill operation")),
             }
             Ok(())
@@ -744,6 +614,12 @@ fn manage_skills(home: &Path, bot: &str, p: &Value) -> Result<Value> {
         }
         results
             .push(json!({"name":name,"action":action,"file_path":op["file_path"],"success":true}));
+    }
+    // Supporting-file edits must not smuggle another SKILL.md into a skill.
+    for (_, work, deleted) in touched.values() {
+        if !deleted {
+            crate::skills::validate_destination(stage.path(), work)?;
+        }
     }
     let mut committed: Vec<(PathBuf, Option<PathBuf>)> = vec![];
     let result = (|| -> Result<()> {
@@ -761,9 +637,6 @@ fn manage_skills(home: &Path, bot: &str, p: &Value) -> Result<Value> {
             if !deleted {
                 fs::rename(work, destination)?;
             }
-        }
-        if cfg != old_cfg {
-            common::write_config(&profile, &cfg)?;
         }
         Ok(())
     })();
@@ -1173,7 +1046,9 @@ pub async fn call(
                 &args,
             );
             ensure_session(home, owner, bot, session)?;
-            if !connectors::toolsets(home, bot)?.iter().any(|s| s == family) {
+            if !matches!(name, "skills_list" | "skill_view")
+                && !connectors::toolsets(home, bot)?.iter().any(|s| s == family)
+            {
                 return Err(Error::new(4302, format!("tool is disabled: {name}")));
             }
             match name {

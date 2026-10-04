@@ -344,7 +344,73 @@ or a clear.
   `mcp:<name>` connectors. New entries accept stdio or streamable HTTP. SSE
   returns 4202, "SSE is not supported. Use the server's streamable HTTP URL."
   Environment values starting with `!` are rejected.
-- `hexbot.skills.list {bot}` → `{skills: [{name, description, category, enabled}]}`.
+- `hexbot.skills.list {bot?}` → `{skills: [Skill]}`. The `skills.list` alias
+  accepts the same arguments. Omitting `bot` lists the library. With `bot`,
+  its private overrides are included.
+- `hexbot.skills.get {name, bot?}` → `{name, source, category, content,
+  files: [string]}`. `files` contains sorted paths relative to the skill
+  directory, including `SKILL.md`. Disabled skills remain readable by people.
+- `hexbot.skills.save {name, content, category?, bot?, bots_disabled?}` →
+  `{skill: Skill}`. With `bot`, creates or edits a private skill. Otherwise
+  writes to the library; editing a bundled skill creates a library override.
+  Supporting files survive edits and overrides. `category` is a relative
+  directory path; an empty string puts the skill at the root. Omit it to keep
+  the current category. `bots_disabled: [string]` is accepted only for library
+  saves and disables the skill for those bots; other grants stay unchanged.
+  The caller must own every listed bot. Validation rejects the whole request
+  before writing any skill or grant if one bot is not owned by the caller.
+- `hexbot.skills.delete {name, bot?}` → `{deleted: true}`. With `bot`, removes
+  only a private skill, revealing any inherited copy. Without `bot`, removes
+  the library copy, reverting to bundled if present. Bundled-only deletion
+  returns 4202, "Bundled skills can be turned off, not deleted."
+- `hexbot.skills.share {bot, name, replace?}` → `{skill: Skill}`. Moves a private
+  skill, including supporting files, to the library. An existing library or
+  bundled name returns 4208 unless `replace: true`. Grants are preserved.
+- `hexbot.skills.set_global {name, enabled}` → `{skill: Skill}`. Updates the
+  root `config.yaml` skill deny-list. Global disable wins over every bot grant,
+  including private overrides of that library skill.
+- `hexbot.skills.set_for_bot {name, bot, enabled}` → `{skill: Skill}`. Updates
+  that bot's deny-list. Enabling does not override a global disable.
+
+`Skill` is `{name, description, category: string | null,
+source: "bundled" | "library" | "bot", path: string, enabled_for_bot: boolean,
+disabled_globally: boolean, enabled: boolean}`. `path` points to `SKILL.md`.
+`enabled_for_bot` is the bot's own grant, independent of global disables.
+`enabled` is the effective value: `enabled_for_bot && !disabled_globally`.
+Without a bot, `enabled_for_bot` is true and `enabled` reflects the global deny-list. Names are directory
+names matching `[a-z0-9_-]{1,64}`. Saves require YAML frontmatter with a
+nonempty description and a Markdown body, capped at 2 MiB. Paths cannot escape
+skill directories or traverse symlinks. Categories cannot be hidden or nested
+inside another skill. A skill cannot contain another skill, including in a
+`skill_manage` batch. Skill reads hold a shared lock through discovery and body
+reads; saves and tool commits hold the exclusive side through replacement.
+
+Library reads require a signed-in user. All library writes, sharing and global
+changes require an admin, checked through one library-write permission helper.
+Private reads, writes and per-bot grants require the bot's owner, including
+when the caller is an admin. Sharing requires both library-write permission
+and ownership of the source bot. `bots_disabled` requires ownership of every
+listed bot.
+New library skills are enabled for all bots unless denied. Resolution is by
+name: private skill, then user library, then bundled skill. `hexbot.bots.update
+{skills}` still sets per-bot selection; returned bot skills are derived from
+current config rather than `bots.skills_json`. When a skill is globally
+disabled, legacy selection updates preserve its existing per-bot grant,
+whether it appears in the selection or not. Config read-modify-write operations
+share one process-wide synchronous lock, including connector toggles and
+settings mirroring.
+
+Successful skill mutations emit `hexbot.skills.changed` and `hexbot.bots.changed`.
+Library changes reach all users with `{name}`; private changes reach the caller
+and bot owner with `{name, bot}`. Legacy bot selection and connector toggles
+also emit a skills refresh, with `name: null` when several grants changed.
+Bot authoring emits a refresh with `{bot}`.
+New sections list skill descriptions and load bodies through `skill_view`.
+`skill_view` and `skills_list` check live grants without requiring the authoring
+toolset. `skill_manage` still requires that toolset and writes only private
+skills; deleting an inherited skill disables it for that bot. Existing sections
+keep their stored prompts and tool definitions. The existing repair of leaked
+About you text in unversioned shared sections remains in place.
 
 New sections freeze connected server names and reach tools through Pi's codemode.
 Saved sections keep their frozen Rust bridge tools, including SSE. New sections

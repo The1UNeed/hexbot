@@ -128,7 +128,8 @@ fn managed_config(home: &Path, profile: &Path, settings: &Value) -> Result<Value
 }
 
 pub fn mirror(home: &Path, profile: &Path) -> Result<()> {
-    common::write_config(profile, &managed_config(home, profile, &get(home)?)?)
+    let writer = common::config_writer()?;
+    writer.write(profile, &managed_config(home, profile, &get(home)?)?)
 }
 
 pub fn update(home: &Path, caller: &str, patch: &Value) -> Result<Value> {
@@ -137,6 +138,7 @@ pub fn update(home: &Path, caller: &str, patch: &Value) -> Result<Value> {
     if let Some(dir) = patch["workspace_dir"].as_str() {
         common::check_workdir(home, dir)?;
     }
+    let writer = common::config_writer()?;
     let mut settings = get(home)?;
     for (key, value) in patch.as_object().unwrap() {
         if key != "auto_approver_model" {
@@ -172,7 +174,7 @@ pub fn update(home: &Path, caller: &str, patch: &Value) -> Result<Value> {
         )?;
     }
     for (profile, config) in profiles.iter().zip(configs.iter()) {
-        common::write_config(profile, config)?;
+        writer.write(profile, config)?;
     }
     tx.commit()?;
     Ok(settings)

@@ -1250,22 +1250,9 @@ impl Dreaming {
                 let skill = skill
                     .as_str()
                     .ok_or_else(|| Error::new(4202, "skills must contain names"))?;
-                common::identifier(skill)?;
-                let path = [
-                    self.home
-                        .join("profiles")
-                        .join(bot)
-                        .join("skills")
-                        .join(skill)
-                        .join("SKILL.md"),
-                    self.home.join("skills").join(skill).join("SKILL.md"),
-                ]
-                .into_iter()
-                .find(|p| p.is_file())
-                .ok_or_else(|| Error::new(4204, format!("skill not found: {skill}")))?;
                 prompt.push_str(&format!(
                     "\n\nSkill {skill}:\n{}",
-                    fs::read_to_string(path)?
+                    crate::skills::read_body(&self.home, bot, skill)?
                 ));
             }
         }
