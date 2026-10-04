@@ -39,7 +39,7 @@ it('rejects a bad download checksum before extraction or execution', async () =>
 
 it('pins every voice dependency with hashes for managed Python', async () => {
   const { readFile } = await import('node:fs/promises')
-  const requirements = await readFile(new URL('./edge-tts.requirements.txt', import.meta.url), 'utf8')
+  const requirements = await readFile(new URL('../../../../../backend/hexbot-core/assets/edge-tts.requirements.txt', import.meta.url), 'utf8')
   const entries = requirements.split('\n').filter(line => line && !line.startsWith('#'))
   const pins = entries.filter(line => !line.startsWith(' '))
   expect(pins).toContain('edge-tts==7.2.7 \\')

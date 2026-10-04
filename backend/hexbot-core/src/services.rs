@@ -674,7 +674,7 @@ pub fn apply_public_url(home: &Path, hostname: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-async fn download(url: &str, path: &Path, max_bytes: u64, github: bool) -> Result<()> {
+pub(crate) async fn download(url: &str, path: &Path, max_bytes: u64, github: bool) -> Result<()> {
     let mut current = service_url(url)?;
     let http =
         crate::http::client(180, 0).map_err(|_| Error::new(5242, "download client unavailable"))?;
@@ -1416,7 +1416,7 @@ async fn update_state(
         data.update["version"] = json!(version);
     }
 }
-fn native_directory(home: &Path) -> Result<PathBuf> {
+pub(crate) fn native_directory(home: &Path) -> Result<PathBuf> {
     let mut directory = home.canonicalize()?;
     for part in ["runtime", "native"] {
         directory.push(part);
@@ -1471,6 +1471,10 @@ fn prune_native(
 /// its bundle. Called only after this process holds the home lock.
 pub fn prune_current_native(home: &Path) -> Result<()> {
     let runtime = home.join("runtime");
+    if !runtime.is_dir() {
+        return Ok(());
+    }
+    let _lock = activation_lock(&runtime)?;
     let metadata = match fs::read(runtime.join("native-current.json")) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -1488,7 +1492,99 @@ pub fn prune_current_native(home: &Path) -> Result<()> {
     prune_native(&native, &active, previous, running.as_deref())
 }
 
+// Unknown running state defers cleanup. Setup can run from a different bundle
+// than the daemon which still owns this home's lock.
+fn recorded_native_runtime(native: &Path) -> Result<Option<PathBuf>> {
+    use std::os::fd::AsRawFd;
+    let runtime = native
+        .parent()
+        .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?;
+    let home = runtime
+        .parent()
+        .ok_or_else(|| Error::new(5243, "Missing home"))?;
+    let locked = match fs::File::open(home.join("native-daemon.lock")) {
+        Ok(file) => unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) != 0 },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => return Err(e.into()),
+    };
+    let bytes = match fs::read(runtime.join("native-running.json")) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !locked => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let record: Value =
+        serde_json::from_slice(&bytes).map_err(|e| Error::new(5243, e.to_string()))?;
+    let pid = record["pid"]
+        .as_i64()
+        .filter(|pid| *pid > 0 && *pid <= i32::MAX as i64)
+        .ok_or_else(|| Error::new(5243, "Invalid running daemon PID"))? as i32;
+    let alive = unsafe { libc::kill(pid, 0) } == 0
+        || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH);
+    if !alive && !locked {
+        return Ok(None);
+    }
+    if !alive {
+        return Err(Error::new(5243, "Daemon lock owner is unknown"));
+    }
+    let executable = Path::new(
+        record["executable"]
+            .as_str()
+            .ok_or_else(|| Error::new(5243, "Missing running daemon executable"))?,
+    )
+    .canonicalize()?;
+    if !executable.starts_with(native) {
+        return Err(Error::new(
+            5243,
+            "Running daemon is outside the native runtime directory",
+        ));
+    }
+    Ok(Some(executable))
+}
+
+pub(crate) fn activation_lock(runtime: &Path) -> Result<fs::File> {
+    use std::os::fd::AsRawFd;
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(runtime.join("activate.lock"))?;
+    loop {
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            return Ok(file);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error.into());
+        }
+    }
+}
+
+// Staging directories remain hidden from pruning until the activation lock is held.
+pub(crate) fn publish_native(
+    native: &Path,
+    version: &str,
+    staging: &Path,
+    entrypoint: &str,
+) -> Result<PathBuf> {
+    let _lock = activation_lock(
+        native
+            .parent()
+            .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?,
+    )?;
+    let directory = native.join(format!("{version}-{}", common::id()));
+    fs::rename(staging, &directory)?;
+    let executable = directory.join(entrypoint);
+    activate_native_locked(native, version, &executable)?;
+    Ok(executable)
+}
+
+#[cfg(test)]
 fn activate_native(native: &Path, version: &str, executable: &Path) -> Result<()> {
+    let _lock = activation_lock(native.parent().unwrap())?;
+    activate_native_locked(native, version, executable)
+}
+
+fn activate_native_locked(native: &Path, version: &str, executable: &Path) -> Result<()> {
     let runtime = native
         .parent()
         .ok_or_else(|| Error::new(5243, "invalid native runtime directory"))?;
@@ -1528,7 +1624,13 @@ fn activate_native(native: &Path, version: &str, executable: &Path) -> Result<()
         fs::rename(staged_link.path().join("launcher"), stable)?;
         fs::File::open(runtime)?.sync_all()?;
     }
-    let running = std::env::current_exe().ok();
+    let running = match recorded_native_runtime(native) {
+        Ok(recorded) => recorded.or_else(|| std::env::current_exe().ok()),
+        Err(error) => {
+            eprintln!("Runtime cleanup deferred: {error}");
+            return Ok(());
+        }
+    };
     // Activation has committed. Cleanup failure must not turn it into a failed update.
     if let Err(error) = prune_native(native, &executable, previous.as_deref(), running.as_deref()) {
         eprintln!("Runtime cleanup: {error}");
@@ -1540,6 +1642,54 @@ fn activate_native(native: &Path, version: &str, executable: &Path) -> Result<()
 mod activation_tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn concurrent_publications_keep_selection_and_metadata_together() {
+        use std::{
+            os::fd::AsRawFd,
+            sync::{Arc, Barrier},
+            thread,
+        };
+        let home = tempfile::tempdir().unwrap();
+        let native = native_directory(home.path()).unwrap();
+        let runtime = native.parent().unwrap();
+        let lock = activation_lock(runtime).unwrap();
+        let contender = fs::File::open(runtime.join("activate.lock")).unwrap();
+        assert_ne!(
+            unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        drop(lock);
+        assert_eq!(
+            unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        drop(contender);
+        let barrier = Arc::new(Barrier::new(8));
+        thread::scope(|scope| {
+            for version in 0..8 {
+                let native = &native;
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    let staging = tempfile::tempdir_in(native).unwrap();
+                    fs::write(staging.path().join("hexbot"), version.to_string()).unwrap();
+                    barrier.wait();
+                    publish_native(native, &version.to_string(), staging.path(), "hexbot").unwrap();
+                });
+            }
+        });
+        let metadata: Value =
+            serde_json::from_slice(&fs::read(runtime.join("native-current.json")).unwrap())
+                .unwrap();
+        let active = runtime.join("native-executable").canonicalize().unwrap();
+        assert_eq!(active.to_str(), metadata["executable"].as_str());
+        assert_eq!(
+            fs::read_to_string(&active).unwrap(),
+            metadata["version"].as_str().unwrap()
+        );
+        assert!(Path::new(metadata["previous"].as_str().unwrap()).is_file());
+        assert_eq!(fs::read_dir(&native).unwrap().count(), 2);
+    }
 
     #[test]
     fn service_pointer_follows_consecutive_updates_and_keeps_one_predecessor() {
@@ -1620,6 +1770,57 @@ mod activation_tests {
     }
 
     #[test]
+    fn setup_activation_preserves_recorded_live_daemon_across_updates() {
+        let home = tempfile::tempdir().unwrap();
+        let native = native_directory(home.path()).unwrap();
+        let runtime = native.parent().unwrap();
+        for version in ["1", "2", "3", "4"] {
+            let dir = native.join(version);
+            fs::create_dir(&dir).unwrap();
+            fs::write(dir.join("hexbot"), "runtime").unwrap();
+            activate_native(&native, version, &dir.join("hexbot")).unwrap();
+            if version == "1" {
+                fs::write(
+                    runtime.join("native-running.json"),
+                    json!({"pid":std::process::id(),"executable":dir.join("hexbot")}).to_string(),
+                )
+                .unwrap();
+            }
+        }
+        assert!(native.join("1/hexbot").exists());
+        assert!(!native.join("2").exists());
+        assert!(native.join("3/hexbot").exists());
+        assert!(native.join("4/hexbot").exists());
+        fs::write(runtime.join("native-running.json"), "invalid").unwrap();
+        let dir = native.join("5");
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("hexbot"), "runtime").unwrap();
+        activate_native(&native, "5", &dir.join("hexbot")).unwrap();
+        assert!(native.join("1/hexbot").exists());
+        assert!(native.join("3/hexbot").exists());
+    }
+
+    #[test]
+    fn pruning_defers_when_lock_is_held_without_a_running_record() {
+        use std::os::fd::AsRawFd;
+        let home = tempfile::tempdir().unwrap();
+        let native = native_directory(home.path()).unwrap();
+        let lock = fs::File::create(home.path().join("native-daemon.lock")).unwrap();
+        assert_eq!(
+            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        for version in ["1", "2", "3"] {
+            let dir = native.join(version);
+            fs::create_dir(&dir).unwrap();
+            fs::write(dir.join("hexbot"), "runtime").unwrap();
+            activate_native(&native, version, &dir.join("hexbot")).unwrap();
+        }
+        assert!(native.join("1/hexbot").exists());
+        assert!(native.join("2/hexbot").exists());
+    }
+
+    #[test]
     fn activation_refuses_escaped_directories_and_invalid_pointers() {
         let home = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
@@ -1638,6 +1839,51 @@ mod activation_tests {
         assert!(!runtime.join("native-current.json").exists());
         assert_eq!(fs::read_to_string(escaped).unwrap(), "keep me");
     }
+}
+
+pub(crate) fn file_sha256(path: &Path) -> Result<String> {
+    let mut hash = Sha256::new();
+    let mut source = fs::File::open(path)?;
+    let mut chunk = [0; 65536];
+    loop {
+        let n = source.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&chunk[..n]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+pub(crate) fn extract_archive(source: &Path, destination: &Path, limit: u64) -> Result<()> {
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(fs::File::open(source)?));
+    let mut size = 0u64;
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        if path.components().any(|part| {
+            !matches!(
+                part,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        }) || (!entry.header().entry_type().is_file() && !entry.header().entry_type().is_dir())
+        {
+            return Err(Error::new(5243, "unsafe entry in native update archive"));
+        }
+        size = size
+            .checked_add(entry.size())
+            .ok_or_else(|| Error::new(5243, "native update archive exceeds byte limit"))?;
+        if size > limit {
+            return Err(Error::new(5243, "native update archive exceeds byte limit"));
+        }
+        if !entry.unpack_in(destination)? {
+            return Err(Error::new(
+                5243,
+                "native update archive escaped destination",
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn native_update(home: &Path, version: &str, service: &Service) -> Result<PathBuf> {
@@ -1682,17 +1928,7 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
     let tmp = tempfile::NamedTempFile::new_in(&native)?;
     update_state(service, "downloading", None, None).await;
     download(url, tmp.path(), 1024 * 1024 * 1024, false).await?;
-    let mut hash = Sha256::new();
-    let mut source = fs::File::open(tmp.path())?;
-    let mut chunk = [0; 65536];
-    loop {
-        let n = source.read(&mut chunk)?;
-        if n == 0 {
-            break;
-        }
-        hash.update(&chunk[..n]);
-    }
-    if format!("{:x}", hash.finalize()) != digest.to_ascii_lowercase() {
+    if file_sha256(tmp.path())? != digest.to_ascii_lowercase() {
         return Err(Error::new(5243, "native update checksum mismatch"));
     }
     update_state(service, "installing", None, None).await;
@@ -1702,35 +1938,7 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
         .unwrap_or("hexbot");
     common::identifier(entrypoint)?;
     if manifest["format"] == "tar.gz" {
-        let mut archive =
-            tar::Archive::new(flate2::read::GzDecoder::new(fs::File::open(tmp.path())?));
-        let mut size = 0u64;
-        for entry in archive.entries()? {
-            let mut entry = entry?;
-            let path = entry.path()?.into_owned();
-            if path.components().any(|part| {
-                !matches!(
-                    part,
-                    std::path::Component::Normal(_) | std::path::Component::CurDir
-                )
-            }) || (!entry.header().entry_type().is_file()
-                && !entry.header().entry_type().is_dir())
-            {
-                return Err(Error::new(5243, "unsafe entry in native update archive"));
-            }
-            size = size
-                .checked_add(entry.size())
-                .ok_or_else(|| Error::new(5243, "native update archive exceeds byte limit"))?;
-            if size > 4 * 1024 * 1024 * 1024 {
-                return Err(Error::new(5243, "native update archive exceeds byte limit"));
-            }
-            if !entry.unpack_in(staging.path())? {
-                return Err(Error::new(
-                    5243,
-                    "native update archive escaped destination",
-                ));
-            }
-        }
+        extract_archive(tmp.path(), staging.path(), 4 * 1024 * 1024 * 1024)?;
     } else if manifest["format"].is_null() || manifest["format"] == "binary" {
         fs::copy(tmp.path(), staging.path().join(entrypoint))?;
     } else {
@@ -1786,11 +1994,7 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
             "updated daemon version does not match request",
         ));
     }
-    let directory = native.join(format!("{version}-{}", common::id()));
-    fs::rename(staging.path(), &directory)?;
-    let executable = directory.join(entrypoint);
-    activate_native(&native, version, &executable)?;
-    Ok(executable)
+    publish_native(&native, version, staging.path(), entrypoint)
 }
 
 /// CLI registration persists credentials without starting a tunnel outside the daemon.

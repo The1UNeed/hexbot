@@ -9,11 +9,13 @@ pub mod cli;
 pub mod common;
 pub mod connectors;
 pub mod credentials;
+pub mod daemon_status;
 pub mod db;
 pub mod dpop;
 pub mod dreaming;
 pub mod events;
 pub mod http;
+mod install_ownership;
 pub mod memory;
 pub mod native_external_tools;
 pub mod native_product_tools;
@@ -28,6 +30,8 @@ pub mod runtime_store;
 pub mod server;
 pub mod services;
 pub mod settings;
+pub mod setup;
+pub mod system_service;
 pub mod team;
 
 pub fn version() -> String {

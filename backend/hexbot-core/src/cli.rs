@@ -1,6 +1,7 @@
 //! Native command line operations. A running daemon remains the sole runtime owner.
 use crate::{
     Error, Result, auth, catalog, common, db, events::EventHub, runtime::Runtime, services,
+    settings,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -16,11 +17,15 @@ type Socket =
 
 pub const USAGE: &str = concat!(
     "hexbot serve [--host IP] [--port N] [--lan | --no-lan]\n",
+    "hexbot setup [--activate] [--no-code-tools] [--json]\n",
+    "hexbot service install | uninstall | start | stop | restart | status [--json] | logs [-f]\n",
+    "hexbot status [--json]\n",
     "hexbot pair\n",
     "hexbot bots list | create NAME [--title TEXT] [--description TEXT] [--persona TEXT] [--provider NAME] [--model NAME] [--reasoning-effort LEVEL] | delete NAME\n",
     "hexbot rooms list\n",
     "hexbot devices list | revoke ID\n",
     "hexbot connect [--name TEXT | status | disconnect]\n",
+    "hexbot lan on | off\n",
     "hexbot send BOT TEXT"
 );
 
@@ -34,6 +39,8 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
         ["connect", "--name", name] => Ok(("register", json!({"name":name}))),
         ["connect", "status"] => Ok(("hexbot.connect.status", json!({}))),
         ["connect", "disconnect"] => Ok(("hexbot.connect.disconnect", json!({}))),
+        ["lan", "on"] => Ok(("hexbot.network.set", json!({"lan_enabled":true}))),
+        ["lan", "off"] => Ok(("hexbot.network.set", json!({"lan_enabled":false}))),
         ["devices", "list"] => Ok(("hexbot.devices.list", json!({}))),
         ["devices", "revoke", id] => Ok(("hexbot.devices.revoke", json!({"id":id}))),
         ["bots", "delete", name] => Ok(("hexbot.bots.delete", json!({"name":name}))),
@@ -147,6 +154,20 @@ async fn socket(home: &Path) -> Result<Option<Socket>> {
         )),
     }
 }
+pub(crate) async fn daemon_info(home: &Path) -> Result<Option<Value>> {
+    let Some(mut socket) = socket(home).await? else {
+        return Ok(None);
+    };
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        remote(&mut socket, "hexbot.info", json!({})),
+    )
+    .await
+    .map_err(|_| Error::new(5200, "Daemon status request timed out"))??;
+    let _ = socket.close(None).await;
+    Ok(Some(result))
+}
+
 async fn answers(event: &Value) -> Result<Vec<(&'static str, Value)>> {
     let kind = event["type"].as_str().unwrap_or("");
     if kind != "approval.request" && kind != "clarify.request" {
@@ -400,8 +421,9 @@ async fn invoke(home: &Path, socket: &mut Option<Socket>, method: &str, p: Value
     if method == "hexbot.connect.register_poll" {
         return services::register_poll(home, common::required(&p, "device_code")?, false).await;
     }
-    if let Some(result) =
-        auth::call(home, "local", method, &p).or_else(|| catalog::call(home, "local", method, &p))
+    if let Some(result) = auth::call(home, "local", method, &p)
+        .or_else(|| catalog::call(home, "local", method, &p))
+        .or_else(|| settings::call(home, "local", method, &p))
     {
         return result;
     }
@@ -500,14 +522,23 @@ pub async fn execute(home: &Path, args: &[String]) -> Result<Value> {
 pub async fn dispatch(home: &Path, args: &[String]) -> Option<Result<()>> {
     let recognized = matches!(
         args.first().map(String::as_str),
-        Some("connect" | "devices" | "send" | "hermes")
+        Some("connect" | "devices" | "lan" | "send" | "hermes")
     ) || (args.first().map(String::as_str) == Some("bots")
         && args.get(1).map(String::as_str) != Some("list"));
     if !recognized {
         return None;
     }
     Some(execute(home, args).await.map(|v| {
-        if let Some(text) = v["text"].as_str() {
+        if args.first().map(String::as_str) == Some("lan") {
+            println!(
+                "LAN access is {}.",
+                if v["lan_enabled"] == true {
+                    "on"
+                } else {
+                    "off"
+                }
+            );
+        } else if let Some(text) = v["text"].as_str() {
             println!("{text}");
         } else if let Some(url) = v["connected"].as_str() {
             println!("Connected: {url}");

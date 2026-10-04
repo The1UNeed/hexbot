@@ -181,6 +181,13 @@ async fn run() -> Result<()> {
         return result;
     }
 
+    match command.as_str() {
+        "setup" => return hexbot_core::setup::run(&home, &arguments[1..]).await,
+        "service" => return hexbot_core::system_service::run(&home, &arguments[1..]).await,
+        "status" => return hexbot_core::daemon_status::run(&home, &arguments[1..]).await,
+        _ => {}
+    }
+
     if command == "pair" {
         let sign_in = match (args.next().as_deref(), args.next()) {
             (None, None) => false,
@@ -463,7 +470,16 @@ fn shutdown_signal() -> impl std::future::Future<Output = ()> {
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
-        eprintln!("{error}");
+        if std::env::args().nth(1).as_deref() == Some("setup")
+            && std::env::args().any(|arg| arg == "--json")
+        {
+            println!(
+                "{}",
+                serde_json::json!({"stage":"error","message":error.to_string()})
+            );
+        } else {
+            eprintln!("{error}");
+        }
         std::process::exit(1)
     }
 }

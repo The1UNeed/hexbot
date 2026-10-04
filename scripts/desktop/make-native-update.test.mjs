@@ -38,6 +38,8 @@ test('release archives the signed app runtime on both macOS targets and the stag
     }
     await mkdir(join(root, 'apps/desktop/src/main/backend'), { recursive: true })
     await cp(new URL('../../apps/desktop/src/main/backend/tools.ts', import.meta.url), join(root, 'apps/desktop/src/main/backend/tools.ts'))
+    await mkdir(join(root, 'backend/hexbot-core/assets'), { recursive: true })
+    await cp(new URL('../../backend/hexbot-core/assets/code-tools.json', import.meta.url), join(root, 'backend/hexbot-core/assets/code-tools.json'))
     const staged = join(root, 'apps/desktop/resources/hexbot-native')
     const packaged = join(root, 'apps/desktop/release/mac-arm64/Hexbot [alpha].app/Contents/Resources/hexbot-native')
     for (const [target, runner, expected] of [

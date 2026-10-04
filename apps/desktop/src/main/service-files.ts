@@ -30,6 +30,6 @@ export function launchdPlist(options: ServiceFileOptions): string {
 
 export function systemdUnit(options: ServiceFileOptions): string {
   const quote = (value: string): string =>
-    `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`
-  return `[Unit]\nDescription=Hexbot daemon\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=${quote(options.executable)} serve\nEnvironment=HEXBOT_HOME=${quote(options.home)}\nEnvironment=HEXBOT_SUPERVISOR=service\nEnvironment=PATH=${quote(options.path)}\nRestart=always\nStandardOutput=append:${options.logDir}/service.log\nStandardError=append:${options.logDir}/service-error.log\n\n[Install]\nWantedBy=default.target\n`
+    `"${value.replaceAll('%', '%%').replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`
+  return `[Unit]\nDescription=Hexbot daemon\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=${quote(options.executable)} serve\nEnvironment=HEXBOT_HOME=${quote(options.home)}\nEnvironment=HEXBOT_SUPERVISOR=service\nEnvironment=PATH=${quote(options.path)}\nRestart=always\nStandardOutput=append:${options.logDir.replaceAll('%', '%%')}/service.log\nStandardError=append:${options.logDir.replaceAll('%', '%%')}/service-error.log\n\n[Install]\nWantedBy=default.target\n`
 }
