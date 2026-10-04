@@ -203,7 +203,7 @@ it.skipIf(!process.env.HEXBOT_NATIVE_TEST_BUNDLE)('boots a real packaged native 
     const result = await promisify(execFile)(launcher, ['version'])
     expect(result.stdout.trim()).toBe(metadata.version)
     const pi = await promisify(execFile)(join(root, 'runtime/native', metadata.version, 'pi/hexbot-pi'), ['--version'])
-    expect(pi.stdout).toContain('0.87.1')
+    expect(pi.stdout).toContain('1.0.1')
     const daemon = spawn(launcher, ['serve', '--port', '0', '--host', '127.0.0.1'], {
       env: { ...process.env, HEXBOT_HOME: root }, stdio: ['ignore', 'pipe', 'pipe']
     })

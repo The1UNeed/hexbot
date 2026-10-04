@@ -635,10 +635,15 @@ impl Runtime {
             "--extension".into(),
             extension.to_string_lossy().into_owned(),
         ];
-        if let Some(model) = options["model"].as_str().filter(|s| !s.is_empty()) {
+        let model = options["model"].as_str().filter(|s| !s.is_empty());
+        if let Some(model) = model {
             pi.args.extend(["--model".into(), model.into()]);
         }
-        if let Some(provider) = options["provider"].as_str().filter(|s| !s.is_empty()) {
+        // Pi refuses --provider without --model; alone it means Pi's default model.
+        if let Some(provider) = options["provider"]
+            .as_str()
+            .filter(|s| !s.is_empty() && model.is_some())
+        {
             pi.args
                 .extend(["--provider".into(), crate::providers::pi_provider(provider)]);
         }
@@ -1977,8 +1982,12 @@ impl Runtime {
         ]
         .map(str::to_owned)
         .to_vec();
-        let (provider, model) = (saved["provider"].as_str(), saved["model"].as_str());
-        if let Some(provider) = provider {
+        let (provider, model) = (
+            saved["provider"].as_str(),
+            saved["model"].as_str().filter(|s| !s.is_empty()),
+        );
+        // Pi refuses --provider without --model; alone it means Pi's default model.
+        if let (Some(provider), Some(_)) = (provider, model) {
             options
                 .args
                 .extend(["--provider".into(), crate::providers::pi_provider(provider)]);
