@@ -496,6 +496,16 @@ impl Runtime {
                 botrow["owner_id"].as_str().unwrap_or(""),
                 owner,
             )?;
+            // A delegate keeps its parent section's level, even the default;
+            // a scheduled job's own level wins over the bot's.
+            let requested = overrides
+                .and_then(|p| p["reasoning_effort"].as_str())
+                .filter(|s| !s.is_empty());
+            let reasoning = if overrides.is_some_and(|p| !p["parent_session"].is_null()) {
+                requested
+            } else {
+                requested.or(config["model"]["reasoning_effort"].as_str())
+            };
             let mut opts = json!({
                 "prompt": prompt,
                 "prompt_version": PROMPT_VERSION,
@@ -511,12 +521,7 @@ impl Runtime {
                 "restricted": restricted,
                 "skills": skills,
                 "cwd": cwd,
-                // A scheduled job's level wins over the bot's.
-                "reasoning_effort": overrides
-                    .and_then(|p| p["reasoning_effort"].as_str())
-                    .filter(|s| !s.is_empty())
-                    .or(config["model"]["reasoning_effort"].as_str())
-                    .map_or(Value::Null, Value::from)
+                "reasoning_effort": reasoning.map_or(Value::Null, Value::from)
             });
             if opts["model"].as_str().unwrap_or("").is_empty() {
                 opts["model"] = config["model"].clone();

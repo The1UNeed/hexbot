@@ -445,6 +445,8 @@ async fn actual_pi_delegates_and_returns_child_results() {
     let runtime = Runtime::new(home.path().into(), hub, executable).unwrap();
     let opened = open(&runtime, "alice").await;
     let live = &opened["section"]["live_session_id"];
+    // Raising the bot's level now must not reach the open section's delegates.
+    fs::write(home.path().join("profiles/owl/config.yaml"),format!("model:\n  provider: lmstudio\n  default: test-model\n  api_key: test-key\n  base_url: http://{address}/v1\n  reasoning_effort: high\ntools:\n  enabled_toolsets: [delegation]\n")).unwrap();
     runtime
         .call(
             "alice",
@@ -473,6 +475,16 @@ async fn actual_pi_delegates_and_returns_child_results() {
             .any(|m| m["text"].as_str().unwrap_or("").contains("Child result."))
     );
     assert!(requests.lock().unwrap().len() >= 4);
+    let child: String = runtime_store::open(home.path())
+        .unwrap()
+        .query_row(
+            "SELECT options FROM native_sessions WHERE json_extract(options,'$.parent_session')='section-a'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let child: Value = serde_json::from_str(&child).unwrap();
+    assert_eq!(child["reasoning_effort"], Value::Null);
     runtime.shutdown().await;
     server.abort();
 }
