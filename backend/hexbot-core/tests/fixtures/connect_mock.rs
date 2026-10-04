@@ -55,11 +55,7 @@ async fn handler(
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     if let Some((status, body)) = state.overrides.lock().await.get(&path) {
-        return (
-            StatusCode::from_u16(*status).unwrap(),
-            Json(body.clone()),
-        )
-            .into_response();
+        return (StatusCode::from_u16(*status).unwrap(), Json(body.clone())).into_response();
     }
     let value = match path.as_str() {
         "/api/register/start" => {

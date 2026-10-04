@@ -108,7 +108,11 @@ async fn approved_registration_starts_tunnel_heartbeats_and_disconnect_reaps() {
 /// A cloudflared stand-in: reports its start (pid and token) to the mock, then runs
 /// `after_start` (JavaScript), and otherwise waits for SIGTERM.
 #[cfg(unix)]
-fn stand_in_cloudflared(home: &std::path::Path, base: &str, after_start: &str) -> std::path::PathBuf {
+fn stand_in_cloudflared(
+    home: &std::path::Path,
+    base: &str,
+    after_start: &str,
+) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let binary = home.join("bin/cloudflared");
     fs::create_dir_all(binary.parent().unwrap()).unwrap();

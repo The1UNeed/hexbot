@@ -182,6 +182,16 @@ async fn drop_registration(
         )
         .await;
     }
+    // Still under the lock, but re-read right before removing anything: the registration
+    // on disk is what gets removed, and it must be the one this call was asked to drop.
+    if let Some(expected) = only
+        && ConnectConfig::load(home)
+            .ok()
+            .flatten()
+            .is_none_or(|c| c.daemon_id != expected)
+    {
+        return Ok(false);
+    }
     match fs::remove_file(home.join("connect.json")) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -203,9 +213,14 @@ fn forget_later(home: &Path, service: &Arc<Service>, daemon_id: &str) {
     let service = service.clone();
     let daemon_id = daemon_id.to_owned();
     tokio::spawn(async move {
-        if let Err(error) =
-            drop_registration(&home, &service, Some(&daemon_id), Some(REVOKED_REASON), false)
-                .await
+        if let Err(error) = drop_registration(
+            &home,
+            &service,
+            Some(&daemon_id),
+            Some(REVOKED_REASON),
+            false,
+        )
+        .await
         {
             eprintln!("Connect: {error}");
         }
@@ -1390,8 +1405,14 @@ pub async fn register_poll(home: &Path, code: &str, start_tunnel: bool) -> Resul
             jwks_url: format!("{base}/.well-known/jwks.json"),
         };
         common::identifier(&config.daemon_id)?;
-        apply_public_url(home, Some(&config.tunnel_hostname))?;
-        config.save(home)?;
+        {
+            // Under the lifecycle lock, so a registration being dropped (revoked, or
+            // disconnected) cannot interleave with this one being written.
+            let service = service(home).await?;
+            let _operation = service.lifecycle.lock().await;
+            apply_public_url(home, Some(&config.tunnel_hostname))?;
+            config.save(home)?;
+        }
         if start_tunnel {
             let port = service(home).await?.data.lock().await.port;
             if let Err(error) = start_daemon(home, port).await {
