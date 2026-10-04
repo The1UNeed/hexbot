@@ -152,9 +152,17 @@ export default function hexbot(pi: any) {
     const browser = event.toolName === 'browser_console' && typeof event.input.expression === 'string';
     const mcp = event.toolName.startsWith('mcp__');
     const resource = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'].includes(event.toolName);
-    if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp && !resource) return;
+    const script = event.toolName === 'codemode' && typeof event.input?.code === 'string' && config.mcpServers?.length;
+    if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp && !resource && !script) return;
     try {
       await refresh(ctx);
+      if (script) {
+        // A revoked server's tools are gone once the next prompt unregisters it,
+        // so a script naming them would fail inside the VM with a bare TypeError.
+        const named = config.mcpServers.filter((name: string) => event.input.code.includes(`mcp__${name.replace(/-/g, '_')}__`));
+        const reason = named.map(serverDenial).find(Boolean);
+        return reason ? {block: true, reason} : undefined;
+      }
       if (resource) {
         // Resources need no approval, but a revoked or changed server's open
         // client must not answer before the next prompt reconnects it.

@@ -33,12 +33,12 @@ Bypass is plain Pi, the agent runtime: no prompts, no sandbox, no credential che
 
 ## Connected tools
 
-In new sections, bots call connected tools through Pi's code tool. Manual asks
-for every connected-tool call. Auto runs tools marked read-only freely and asks
-for all others. Reading a
-resource needs no approval. Allow in this section covers that server while the
-section's agent process runs. Bypass never asks. Shell and file calls inside a
-codemode script still follow their usual approval rules.
+In new sections, bots call connected tools from short scripts they run. Manual
+asks for every connected-tool call. Auto runs tools marked read-only freely and
+asks for all others. Bypass never asks. Reading a resource needs no approval.
+Allow in this section covers that server while the section's agent process runs.
+Shell and file calls inside a script still follow their usual approval rules.
+Removing or turning off a server stops its tools at once, even in open sections.
 
 Connected servers are trusted code configured by the admin. They run outside
 the shell sandbox, in a daemon-owned directory. Each section starts its own

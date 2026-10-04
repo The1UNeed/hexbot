@@ -609,6 +609,15 @@ test('connected approvals recheck mode and revocation after the answer, and hidd
   assert.match((await f.gate('mcp__demo__read', {})).reason, /visible section/);
 });
 
+test('a script naming a revoked server is blocked with a plain reason', async t => {
+  const f = fixture(t, 'off', [], {mcpServers:['demo-x']});
+  await f.handlers.before_agent_start({}, f.ctx);
+  assert.equal(await f.gate('codemode', {code:'await tools.mcp__demo_x__read({})'}), undefined);
+  delete f.settings.mcpState['demo-x'];
+  assert.match((await f.gate('codemode', {code:'await tools.mcp__demo_x__read({})'})).reason, /removed or disabled/);
+  assert.equal(await f.gate('codemode', {code:'text(1)'}), undefined);
+});
+
 test('an interrupted first registration retries on the next prompt', async t => {
   const f = fixture(t, 'smart', [], {mcpServers:['demo']});
   const input = f.ctx.ui.input;

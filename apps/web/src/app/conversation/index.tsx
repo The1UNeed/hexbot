@@ -78,10 +78,10 @@ export function ConnectedToolsNotice({ sectionId }: { sectionId: string }) {
 
   return (
     <div
-      className="hex-glass hex-fade pointer-events-auto mx-auto flex w-fit max-w-full shrink-0 items-center gap-2 rounded-full py-1.5 pr-2 pl-3.5 text-[length:var(--text-secondary)] text-warning"
+      className="hex-glass hex-fade pointer-events-auto mx-auto flex w-fit max-w-full shrink-0 items-center gap-2 rounded-[15px] py-1.5 pr-2 pl-3.5 text-[length:var(--text-secondary)] text-warning"
       role="status"
     >
-      <span className="truncate" title={warning}>
+      <span className="line-clamp-2 min-w-0" title={warning}>
         {entries.map(([, text]) => text.split('\n')[0]).join(' · ')}
       </span>
       <button
