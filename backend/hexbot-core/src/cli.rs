@@ -17,7 +17,7 @@ type Socket =
 pub const USAGE: &str = concat!(
     "hexbot serve [--host IP] [--port N] [--lan | --no-lan]\n",
     "hexbot pair\n",
-    "hexbot bots list | create NAME [--title TEXT] [--description TEXT] [--persona TEXT] [--provider NAME] [--model NAME] | delete NAME\n",
+    "hexbot bots list | create NAME [--title TEXT] [--description TEXT] [--persona TEXT] [--provider NAME] [--model NAME] [--reasoning-effort LEVEL] | delete NAME\n",
     "hexbot rooms list\n",
     "hexbot devices list | revoke ID\n",
     "hexbot connect [--name TEXT | status | disconnect]\n",
@@ -51,10 +51,19 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
                     (*flag, *flags.next().ok_or_else(invalid)?)
                 };
                 let key = key.strip_prefix("--").ok_or_else(invalid)?;
-                if !["title", "description", "persona", "provider", "model"].contains(&key) {
+                if ![
+                    "title",
+                    "description",
+                    "persona",
+                    "provider",
+                    "model",
+                    "reasoning-effort",
+                ]
+                .contains(&key)
+                {
                     return Err(invalid());
                 }
-                p[key] = json!(value);
+                p[key.replace('-', "_")] = json!(value);
             }
             Ok(("hexbot.bots.create", p))
         }
