@@ -2,20 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Select } from '../../components/ui/select'
 import { modelsList } from '../../lib/api'
+import { REASONING_LEVELS } from '../../lib/reasoning'
 import type { Bot, ModelOption, ReasoningEffort } from '../../lib/types'
 import { useSettings } from '../../stores/settings'
 
 import { errorText, Group, Heading, Row, type SaveBot } from './shared'
-
-const REASONING: { label: string; value: ReasoningEffort }[] = [
-  { label: 'Off', value: 'off' },
-  { label: 'Minimal', value: 'minimal' },
-  { label: 'Low', value: 'low' },
-  { label: 'Medium', value: 'medium' },
-  { label: 'High', value: 'high' },
-  { label: 'Extra high', value: 'xhigh' },
-  { label: 'Max', value: 'max' }
-]
 
 export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const [models, setModels] = useState<{ all: ModelOption[]; curated: ModelOption[] }>({
@@ -115,7 +106,7 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
                   onValueChange={value =>
                     void onSave({ reasoning_effort: value as ReasoningEffort })
                   }
-                  options={REASONING}
+                  options={REASONING_LEVELS}
                   value={bot.reasoning_effort ?? 'medium'}
                 />
               </div>

@@ -19,6 +19,17 @@ fn create(home: &Path) -> Value {
     )
 }
 #[test]
+fn a_bot_can_be_created_with_a_reasoning_level() {
+    let home = setup();
+    let created = call(
+        home.path(),
+        "alice",
+        "hexbot.bots.create",
+        json!({"name":"owl","model":"model-a","provider":"openai","reasoning_effort":"low"}),
+    );
+    assert_eq!(created["bot"]["reasoning_effort"], "low");
+}
+#[test]
 fn lifecycle_preserves_memory_and_reopens_archived_sections() {
     let home = setup();
     let h = home.path();

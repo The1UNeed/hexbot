@@ -143,6 +143,7 @@ export interface BotCreateInput {
   name: string
   persona?: string
   provider: string
+  reasoning_effort?: null | ReasoningEffort
   skills?: string[]
   title?: string
   tools?: string[]
@@ -153,7 +154,6 @@ export type BotUpdatePatch = Partial<Omit<BotCreateInput, 'avatar' | 'name'>> & 
   avatar?: null | string
   dream_enabled?: boolean
   notify?: boolean
-  reasoning_effort?: null | ReasoningEffort
   shareable?: boolean
   workdir?: null | string
 }
