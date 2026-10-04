@@ -188,7 +188,13 @@ export interface Connector {
   icon: string
   id: string
   last_error: null | { at: number; text: string }
-  mcp?: { running: boolean; tool_count: number; transport: 'http' | 'sse' | 'stdio' }
+  mcp?: {
+    /** The server name in its tools' names (`mcp_<name>_<tool>`); may contain underscores. */
+    name?: string
+    running: boolean
+    tool_count: number
+    transport: 'http' | 'sse' | 'stdio'
+  }
   name: string
   provider?: null | string
   providers?: ConnectorProviderOption[]

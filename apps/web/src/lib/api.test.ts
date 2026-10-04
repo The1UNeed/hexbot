@@ -44,5 +44,7 @@ describe('history projection', () => {
 
     expect(message).toMatchObject({ parts: ['I will check.'], text: 'Done.' })
     expect(message?.toolCalls).toHaveLength(1)
+    // History keeps no timestamps: no start time rather than the time it was reopened.
+    expect(message?.toolCalls[0]?.startedAt).toBe(0)
   })
 })

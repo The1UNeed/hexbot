@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import type { Message, ToolCall } from '../../lib/types'
+import type { Connector, Message, ToolCall } from '../../lib/types'
+import { useConnectors } from '../../stores/connectors'
 
 import {
   activityLabel,
@@ -111,6 +112,14 @@ describe('activityLabel', () => {
     expect(activityLabel(call({ name: 'mcp_linear_list_issues' }), 'Scout')).toBe(
       'Connecting to Linear'
     )
+    // A loaded server whose name has an underscore is read whole.
+    useConnectors.setState({
+      byBot: { scout: [{ mcp: { name: 'project_tools' }, name: 'project_tools' } as Connector] }
+    })
+    expect(activityLabel(call({ name: 'mcp_project_tools_search' }), 'Scout')).toBe(
+      'Connecting to Project tools'
+    )
+    useConnectors.setState({ byBot: {} })
     expect(activityLabel(call({ name: 'weather_lookup' }), 'Scout')).toBe(
       'Scout is using weather lookup'
     )

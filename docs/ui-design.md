@@ -222,7 +222,7 @@ notice. Working and idle draw the plain pill.
   - Computer: every tool call in the section, housekeeping included, newest
     first, each with its glyph, time and result mark, closed until clicked
     open to its arguments and output. A plain-words line on top says what
-    the bot is doing while a tool runs, and the tab shows a pulsing dot.
+    the bot is doing while a tool runs, and the tab shows a still blue dot.
 - Opening and closing is one 240 ms move: the panel's column widens or
   narrows while the chat column follows, and the card slides in from the
   right edge. The panel remembers open or closed, and its tab, per window.

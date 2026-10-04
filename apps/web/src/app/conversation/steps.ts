@@ -1,4 +1,5 @@
 import type { Message, ToolCall, ToolCallStatus } from '../../lib/types'
+import { useConnectors } from '../../stores/connectors'
 
 /** Present and past phrasing per built-in tool; unknown tools fall back to their name. */
 const VERBS: Record<string, [live: string, done: string]> = {
@@ -370,17 +371,42 @@ const SERVICES: Record<string, string> = {
 }
 
 /**
+ * The connector behind an `mcp_<server>_<tool>` call. A server name may hold
+ * underscores, so a server the app has loaded is matched by its full name
+ * first (longest wins), "project_tools" reading as "Project tools";
+ * otherwise the first segment stands in.
+ */
+function connectorName(tool: string): null | string {
+  if (!tool.startsWith('mcp_')) {
+    return null
+  }
+
+  const known = Object.values(useConnectors.getState().byBot)
+    .flat()
+    .flatMap(connector => connector.mcp?.name ?? [])
+    .filter(server => tool.startsWith(`mcp_${server}_`))
+    .sort((a, b) => b.length - a.length)[0]
+
+  const server = known ?? /^mcp_([^_]+)_/.exec(tool)?.[1]
+
+  if (!server) {
+    return null
+  }
+
+  const words = humanize(server)
+
+  return SERVICES[server.toLowerCase()] ?? words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+/**
  * The running step for the live status, in plain words: "Scout is searching
  * the web", "Scout is running a command", or "Connecting to GitHub" for a
  * connector's tool (`mcp_<server>_<tool>`). The step itself stays behind a click.
  */
 export function activityLabel(call: ToolCall, name: string): string {
-  const server = /^mcp_([^_]+)_/.exec(call.name)?.[1]
+  const service = connectorName(call.name)
 
-  if (server) {
-    const service =
-      SERVICES[server.toLowerCase()] ?? server.charAt(0).toUpperCase() + server.slice(1)
-
+  if (service) {
     return `Connecting to ${service}`
   }
 

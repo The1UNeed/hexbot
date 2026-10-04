@@ -217,7 +217,7 @@ function ComputerTab({ messages, name }: { messages: TranscriptMessage[]; name: 
     <div className="grid gap-3">
       {running ? (
         <div className="hex-fade flex items-center gap-2 px-1 text-[length:var(--text-secondary)]">
-          <span className="hex-pulse size-1.5 shrink-0 rounded-full bg-info" />
+          <span className="size-1.5 shrink-0 rounded-full bg-info" />
           <span className="truncate">{activityLabel(running, name)}</span>
         </div>
       ) : null}
@@ -307,7 +307,7 @@ export function ProfilePanel(): React.JSX.Element {
               onClick={() => setTab('computer')}
               type="button"
             >
-              <span className="hex-pulse size-1.5 shrink-0 rounded-full bg-current" />
+              <span className="size-1.5 shrink-0 rounded-full bg-current" />
               <span className="truncate">{status}</span>
             </button>
           ) : null}
@@ -357,7 +357,7 @@ export function ProfilePanel(): React.JSX.Element {
             >
               {item.label}
               {item.id === 'computer' && running ? (
-                <span aria-hidden className="hex-pulse size-1.5 rounded-full bg-info" />
+                <span aria-hidden className="size-1.5 rounded-full bg-info" />
               ) : null}
             </button>
           ))}

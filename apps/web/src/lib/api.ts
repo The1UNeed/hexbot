@@ -723,7 +723,8 @@ export function messagesFromHistory(
         durationS: null,
         name: String(row.name ?? 'tool'),
         result: row.text ?? null,
-        startedAt: Date.now(),
+        // History keeps no timestamps; 0 is "unknown", so no time is shown.
+        startedAt: 0,
         status: 'ok' as const,
         summary: typeof row.context === 'string' ? row.context : undefined,
         toolId: String(row.row_id ?? nextMessageId('t'))

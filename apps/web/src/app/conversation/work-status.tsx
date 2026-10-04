@@ -67,7 +67,7 @@ export function toolIcon(name: string): LucideIcon {
 /** A finished step's mark: a check, or a red alert when it failed. */
 function StepMark({ call }: { call: ToolCall }) {
   if (call.status === 'running') {
-    return <span className="hex-pulse size-1.5 shrink-0 rounded-full bg-info" />
+    return <span className="size-1.5 shrink-0 rounded-full bg-info" />
   }
 
   return call.status === 'error' ? (

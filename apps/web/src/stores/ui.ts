@@ -122,8 +122,9 @@ export const useUi = create<UiState>()(
     }),
     {
       name: 'hexbot.ui',
-      partialize: ({ lastSection, rightPanelOpen, sidebarWidth, theme }) => ({
+      partialize: ({ lastSection, panelTab, rightPanelOpen, sidebarWidth, theme }) => ({
         lastSection,
+        panelTab,
         rightPanelOpen,
         sidebarWidth,
         theme
