@@ -20,7 +20,7 @@ export interface TunnelProvider {
   /** The tunnel only; DNS records stay, they may point elsewhere by now. */
   deleteTunnel(tunnelId: string): Promise<void>;
 }
-/** A daemon may not replace a tunnel younger than this: cloudflared failing that soon is not the tunnel's fault. */
+/** One repair per daemon per this long, claimed in the database before any Cloudflare call. */
 export const TUNNEL_REPAIR_COOLDOWN_MS = 2 * 60_000;
 
 interface CloudflareResult<T> { success: boolean; errors?: Array<{ message: string }>; result: T }

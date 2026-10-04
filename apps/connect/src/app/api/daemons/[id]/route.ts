@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { jsonError, requireClient, requireDaemon } from "@/lib/http";
-import { getStore, getTunnels } from "@/lib/runtime";
+import { revokeDaemonWithTunnel } from "@/lib/revoke";
+import { getStore } from "@/lib/runtime";
 
 /** Revoke a daemon. Accepts the owner's client session, or the daemon's own token (used by `hexbot connect disconnect`). */
 export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -11,8 +12,6 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
   if (!(session instanceof NextResponse)) allowed = daemon?.userId === session.userId;
   else { const self = await requireDaemon(request); if (self instanceof NextResponse) return self.status === 410 ? self : session; allowed = self.id === daemon?.id; }
   if (!daemon || daemon.revokedAt || !allowed) return jsonError("not_found", "Daemon not found", 404);
-  // Tunnel first, so a failure leaves the daemon listed and revocation can be retried.
-  try { await getTunnels().delete(daemon.tunnelId); } catch { return jsonError("tunnel_delete_failed", "The daemon's tunnel could not be deleted; it stays registered", 502); }
-  await getStore().revokeDaemon(id, new Date());
+  if (await revokeDaemonWithTunnel(daemon) !== "ok") return jsonError("tunnel_delete_failed", "The daemon's tunnel could not be deleted; it stays registered", 502);
   return NextResponse.json({ ok: true });
 }

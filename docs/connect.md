@@ -46,6 +46,17 @@ cannot log in, and a key dropped from the JWKS stops working within ten
 minutes. Tunnels are locally managed: the daemon sets ingress to the
 daemon's own loopback port, and Connect never sends an ingress config.
 
+The daemon token alone must not open the daemon either. Connect therefore
+hands out tunnel credentials only once, when the daemon collects its
+registration, and never for a tunnel that is live: tunnel repair (below)
+re-points the hostname at an existing tunnel without returning its token, so
+a stolen daemon token cannot put a second connector on the trusted hostname
+and harvest sign-in grants. What remains is narrow: a holder of the daemon
+token who asks for a repair in the two-minute window after the real tunnel
+is gone, before the daemon itself does, gets the replacement's token. The
+daemon-key change that follows closes it by requiring a daemon signature on
+repair.
+
 ## Data model (Postgres)
 
 - `users(id, clerk_user_id unique, created_at)`
@@ -103,7 +114,8 @@ forward to, so the whole flow runs on one machine.
    failed download or a crashed `cloudflared` with backoff, and repairs a
    tunnel that `cloudflared` cannot start at all (see "Tunnel repair"). The
    daemon stops its tunnel child during shutdown. Settings shows the tunnel as running
-   only while `cloudflared` itself is up. The tunnel supervisor and grant
+   only while `cloudflared` reports an edge connection on its `/ready`
+   endpoint (see "Tunnel repair"). The tunnel supervisor and grant
    verification are native and require no separate Node sidecar. The
    daemon's login page offers "Sign in with Hex Connect". A
    `connect.json` from before owner pinning is ignored with a warning; run
@@ -216,28 +228,63 @@ disconnect daemons.
 
 A tunnel deleted or rejected on Cloudflare's side used to leave the daemon
 restarting `cloudflared` forever; only registering again helped, with a new
-hostname and every saved target broken. Now, after three `cloudflared` starts
-in a row that each end within thirty seconds, the daemon calls
-`POST /api/daemons/{id}/tunnel` with its token, at most once every two
-minutes. Connect looks the daemon's current tunnel up in the Cloudflare API:
+hostname and every saved target broken.
 
-- If it exists and is not deleted, Connect re-asserts the hostname's DNS
-  record and returns a fresh connector token; no tunnel is created.
-- If it is deleted or unknown, Connect creates a replacement, swaps
-  `tunnel_id` with a compare-and-set (`UPDATE … WHERE id = $1 AND
-  tunnel_id = $old`), points the existing DNS record for the same hostname
-  at the new tunnel, deletes the old tunnel best-effort, and returns the new
-  token. A second concurrent repair loses the compare-and-set, deletes the
-  tunnel it made (never the DNS record), and gets the winner's token.
-- If the current tunnel is younger than two minutes it answers `429
-  tunnel_recent`; a failing `cloudflared` that soon is not the tunnel's fault.
+**Detection.** A gone tunnel does not make `cloudflared` exit quickly: it
+retries for most of a minute before giving up, and an `Unauthorized` answer
+keeps it retrying for ever. So the daemon runs `cloudflared` with
+`--metrics 127.0.0.1:<free port>` and polls its `/ready` endpoint every five
+seconds; 200 means at least one registered edge connection. Settings'
+"Running" means ready, not merely a live process. A failure is either no
+readiness for three minutes (since start, or since it was last ready; the
+daemon stops that `cloudflared` itself) or an exit within five minutes of
+start. A ready tunnel resets the count. Three failures in a row trigger a
+repair.
 
-The answer is `{tunnel_token, tunnel_hostname, replaced}`; the hostname never
-changes, so saved targets keep working. The request body is ignored: ingress
-is set on the daemon, never from here. The daemon writes the new token to
-`connect.json` (atomically, still 0600) before restarting `cloudflared` with
-it. A `404` (a Connect that predates repair) or a `429` keeps the normal
-backoff; a `410 daemon_revoked` drops the registration as described above.
+**The call.** `POST /api/daemons/{id}/tunnel` with the daemon token, raced
+against shutdown so disconnect never waits on Connect. The first repair waits
+150 seconds (longer than Connect's own cooldown, so the first retry is not a
+guaranteed 429); while repairs keep not helping the wait doubles, up to
+thirty minutes. Connect:
+
+1. Claims the daemon's repair slot atomically before touching Cloudflare:
+   `UPDATE daemons SET tunnel_repair_at = now() WHERE id = $1 AND revoked_at
+   IS NULL AND (tunnel_repair_at IS NULL OR tunnel_repair_at < now() -
+   interval '2 minutes') RETURNING id`, else `429 tunnel_recent`. Only this
+   route references `tunnel_repair_at` (an additive, nullable column in
+   `migrations.sql`), so every other route keeps working on a database that
+   has not been migrated; until it is, repair answers 500 and the daemon
+   simply keeps backing off.
+2. Re-reads the row (410 if revoked) and looks its tunnel up in the
+   Cloudflare API.
+3. If the tunnel exists and is not deleted: re-points the hostname's DNS
+   record at it (idempotent; this also heals a replacement whose DNS update
+   failed half-way) and answers `{tunnel_hostname, replaced: false}`. No
+   token: the daemon keeps the one it has (see Trust).
+4. If the tunnel is deleted or unknown: creates a replacement, swaps
+   `tunnel_id` with a compare-and-set that also requires `revoked_at IS
+   NULL`, points the existing DNS record for the same hostname at the new
+   tunnel, deletes the old tunnel best-effort, and answers `{tunnel_token,
+   tunnel_hostname, replaced: true}`. A request that loses the
+   compare-and-set deletes the tunnel it made (never the DNS record),
+   re-reads the row, points DNS at the tunnel the row holds now, and answers
+   that tunnel's token.
+5. After every DNS change it re-reads the row once more: if a revoke landed
+   meanwhile, it deletes the tunnel and DNS record it just set up and answers
+   `410 daemon_revoked`. Revoke, for its part, re-reads the row after marking
+   it revoked and deletes a tunnel that a repair swapped in. Revocation wins
+   every interleaving: once it reports success, no replacement tunnel or
+   CNAME from an in-flight repair stays live.
+
+The hostname never changes, so saved targets keep working. The request body
+is ignored: ingress is set on the daemon, never from here. On `replaced:
+true` the daemon writes the new token to `connect.json` (atomically, still
+0600), restarts `cloudflared` with it, and resets its backoff and failure
+count. On `replaced: false` nothing is rewritten and nothing is reset. A
+`404` (a Connect that predates repair) or a `429` keeps the normal backoff; a
+`410 daemon_revoked` drops the registration as described above.
+
+## Connect API routes
 
 - `POST /api/register/start`, `POST /api/register/poll`, `GET
   /connect/approve` (page), `POST /api/register/approve {user_code}`.
@@ -289,16 +336,19 @@ signing key.
   (expired, wrong daemon, unknown key id, `jti`), device-code lifecycle, slug
   generation, the browser sign-in decision table and code exchange, daemon
   addresses and device labels, online state with an injected probe, tunnel
-  repair with the fake provider (existing tunnel, deleted tunnel keeps its
-  hostname, cooldown, compare-and-set race), consent parsing, CORS.
+  repair with the fake provider (existing tunnel re-pointed without a token,
+  deleted tunnel replaced under its hostname, one repair per two minutes,
+  compare-and-set race, revoke landing before and after the swap), consent
+  parsing, CORS.
 - Daemon (`backend/hexbot-core/tests/services.rs`, `server.rs`): registration
   with a local fake API, pinned owner/audience/issuer/keys, malformed and
   expired grants, single-use grants, PKCE exchange, tunnel lifecycle using a
   stand-in `cloudflared`, a `410 daemon_revoked` heartbeat dropping the
-  registration while 401 and 5xx keep it, tunnel repair with a stand-in that
-  exits at once (new token saved and used, 404 keeps the backoff, 410 drops
-  the registration), and CLI disconnect against a running daemon
-  (`tests/cli.rs`).
+  registration while 401 and 5xx keep it, tunnel repair with a stand-in
+  `cloudflared` that serves `/ready` (a replacement's token saved and used,
+  `replaced: false` rewriting nothing, a never-ready tunnel stopped and
+  counted as failed, 404 keeps the backoff, 410 drops the registration),
+  and CLI disconnect against a running daemon (`tests/cli.rs`).
 - Client: the `hexbot://connect` handler, the `tls` connection path, the
   prefixed cookie names.
 

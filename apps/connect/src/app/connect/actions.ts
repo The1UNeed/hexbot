@@ -1,7 +1,8 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { currentUser } from "@/lib/auth";
-import { getStore, getTunnels } from "@/lib/runtime";
+import { revokeDaemonWithTunnel } from "@/lib/revoke";
+import { getStore } from "@/lib/runtime";
 
 export interface ActionResult { error?: string; ok?: boolean }
 
@@ -27,9 +28,7 @@ export async function renameDaemon(id: string, name: string): Promise<ActionResu
 export async function revokeDaemon(id: string): Promise<ActionResult> {
   const found = await ownedDaemon(id);
   if ("error" in found) return found;
-  // Tunnel first: a daemon that stays listed can be retried, a hostname left reachable cannot.
-  try { await getTunnels().delete(found.daemon.tunnelId); } catch { return { error: "The daemon's tunnel could not be deleted. Try again in a moment." }; }
-  await getStore().revokeDaemon(found.daemon.id, new Date());
+  if (await revokeDaemonWithTunnel(found.daemon) !== "ok") return { error: "The daemon's tunnel could not be deleted. Try again in a moment." };
   revalidatePath("/connect");
   return { ok: true };
 }

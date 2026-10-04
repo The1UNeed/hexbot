@@ -102,7 +102,9 @@ impl Mock {
             let (_, body, auth) = self.pending.remove(index);
             return (body, auth);
         }
-        tokio::time::timeout(Duration::from_secs(10), async {
+        // Generous: a loaded machine starts node stand-ins slowly, and a wait here only
+        // delays a failure, never a success.
+        tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let (seen, body, auth) = self.events.recv().await.unwrap();
                 if seen == path {

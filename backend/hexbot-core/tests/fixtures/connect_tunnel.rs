@@ -11,6 +11,47 @@ fn home() -> tempfile::TempDir {
     home
 }
 
+/// Timings that make the supervisor act within a test, not within minutes.
+fn fast() -> super::TunnelTiming {
+    super::TunnelTiming {
+        poll: Duration::from_millis(50),
+        // Exits drive these tests; readiness must never run out first, however slowly a
+        // loaded machine starts the node stand-in (the not-ready test sets its own).
+        ready_timeout: Duration::from_secs(60),
+        exit_window: Duration::from_secs(300),
+        repair_interval: Duration::from_secs(1),
+        repair_interval_max: Duration::from_secs(4),
+        failures_before_repair: 3,
+    }
+}
+
+/// JavaScript for a stand-in: the metrics server cloudflared would run, answering `/ready`
+/// with 200 (an edge connection) or 503 (none).
+fn ready_server(ready: bool) -> String {
+    format!(
+        "const m=process.argv[process.argv.indexOf('--metrics')+1];require('http').createServer((q,s)=>{{s.statusCode=(q.url==='/ready'&&{ready})?200:503;s.end();}}).listen(Number(m.split(':')[1]),'127.0.0.1');\n"
+    )
+}
+
+/// Waits, without sleeping, until the service's data satisfies `done`.
+async fn wait_until(
+    service: &super::Service,
+    changes: &mut tokio::sync::watch::Receiver<u64>,
+    what: &str,
+    done: impl Fn(&super::Data) -> bool,
+) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if done(&*service.data.lock().await) {
+                return;
+            }
+            changes.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("service never reached: {what}"));
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn approved_registration_starts_tunnel_heartbeats_and_disconnect_reaps() {
@@ -20,19 +61,22 @@ async fn approved_registration_starts_tunnel_heartbeats_and_disconnect_reaps() {
     mock.configure(home.path());
     let binary = home.path().join("bin/cloudflared");
     fs::create_dir_all(binary.parent().unwrap()).unwrap();
-    fs::write(&binary,format!("#!/usr/bin/env node\nconst fs=require('fs');const marker=__filename+'.count';const count=fs.existsSync(marker)?2:1;fs.writeFileSync(marker,'1');\nprocess.on('SIGTERM',()=>process.exit(0));\nsetTimeout(()=>process.exit(0),20000);\nfetch({}+'/tunnel_started',{{method:'POST',body:JSON.stringify({{pid:process.pid,count,token:process.env.TUNNEL_TOKEN,args:process.argv.slice(2)}})}}).then(()=>{{if(count===1){{fs.writeFileSync(process.argv[4],JSON.stringify({{ingress:[{{service:'https://evil.test'}}]}}));process.exit(17);}}}});\n",serde_json::to_string(&mock.base).unwrap())).unwrap();
+    fs::write(&binary,format!("#!/usr/bin/env node\n{}const fs=require('fs');const marker=__filename+'.count';const count=fs.existsSync(marker)?2:1;fs.writeFileSync(marker,'1');\nprocess.on('SIGTERM',()=>process.exit(0));\nsetTimeout(()=>process.exit(0),20000);\nfetch({}+'/tunnel_started',{{method:'POST',body:JSON.stringify({{pid:process.pid,count,token:process.env.TUNNEL_TOKEN,args:process.argv.slice(2)}})}}).then(()=>{{if(count===1){{fs.writeFileSync(process.argv[4],JSON.stringify({{ingress:[{{service:'https://evil.test'}}]}}));process.exit(17);}}}});\n",ready_server(true),serde_json::to_string(&mock.base).unwrap())).unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
     *mock.data.response.lock().await = json!({"status":"approved","daemon_id":"daemon-1","daemon_token":"daemon-secret","slug":"kitchen","tunnel_hostname":"kitchen.connect.example","tunnel_token":"tunnel-secret","owner_id":"cloud-user","issuer":"https://connect.hexbot.app","keys":jwks()["keys"]});
     let reply = services::register_poll(home.path(), "code", false)
         .await
         .unwrap();
     assert_eq!(reply, json!({"status":"approved"}));
+    let service = super::service(home.path()).await.unwrap();
+    let mut changes = service.changed.subscribe();
     super::run_tunnel(
         home.path(),
         9119,
-        super::service(home.path()).await.unwrap(),
+        service.clone(),
         services::ConnectConfig::load(home.path()).unwrap().unwrap(),
         binary,
+        fast(),
     )
     .await
     .unwrap();
@@ -42,16 +86,20 @@ async fn approved_registration_starts_tunnel_heartbeats_and_disconnect_reaps() {
     let (tunnel, _) = mock.event("/tunnel_started").await;
     assert_eq!(tunnel["count"], 1);
     assert_eq!(tunnel["token"], "tunnel-secret");
+    let args = tunnel["args"].as_array().unwrap();
     assert_eq!(
-        tunnel["args"],
-        json!([
-            "tunnel",
-            "--config",
-            home.path().join("cloudflared.yml"),
-            "--no-autoupdate",
-            "run"
-        ])
+        args[..4],
+        [
+            json!("tunnel"),
+            json!("--config"),
+            json!(home.path().join("cloudflared.yml")),
+            json!("--no-autoupdate")
+        ]
     );
+    assert_eq!(args[4], "--metrics");
+    assert!(args[5].as_str().unwrap().starts_with("127.0.0.1:"));
+    assert_eq!(args[6], "run");
+    assert_eq!(args.len(), 7);
     let (restarted, _) = mock.event("/tunnel_started").await;
     assert_eq!(restarted["count"], 2);
     assert_eq!(restarted["args"], tunnel["args"]);
@@ -77,11 +125,14 @@ async fn approved_registration_starts_tunnel_heartbeats_and_disconnect_reaps() {
             & 0o777,
         0o600
     );
+    // Running means ready: the stand-in answers /ready once it is up.
+    wait_until(&service, &mut changes, "tunnel ready", |data| data.running).await;
     let state = services::call(home.path(), "local", "hexbot.connect.status", &json!({}))
         .await
         .unwrap()
         .unwrap();
     assert_eq!(state["tunnel_running"], true);
+    assert_eq!(state["last_error"], Value::Null);
     assert!(!state.to_string().contains("secret"));
     let disconnected = services::call(
         home.path(),
@@ -105,12 +156,14 @@ async fn approved_registration_starts_tunnel_heartbeats_and_disconnect_reaps() {
     services::shutdown(home.path()).await.unwrap();
 }
 
-/// A cloudflared stand-in: reports its start (pid and token) to the mock, then runs
+/// A cloudflared stand-in: serves `/ready` as a tunnel with (`ready`) or without an edge
+/// connection would, reports its start (pid and token) to the mock, then runs
 /// `after_start` (JavaScript), and otherwise waits for SIGTERM.
 #[cfg(unix)]
 fn stand_in_cloudflared(
     home: &std::path::Path,
     base: &str,
+    ready: bool,
     after_start: &str,
 ) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -119,7 +172,8 @@ fn stand_in_cloudflared(
     fs::write(
         &binary,
         format!(
-            "#!/usr/bin/env node\nprocess.on('SIGTERM',()=>process.exit(0));\nsetTimeout(()=>process.exit(0),20000);\nfetch({}+'/tunnel_started',{{method:'POST',body:JSON.stringify({{pid:process.pid,token:process.env.TUNNEL_TOKEN}})}}).then(()=>{{{after_start}}});\n",
+            "#!/usr/bin/env node\n{}process.on('SIGTERM',()=>process.exit(0));\nsetTimeout(()=>process.exit(0),20000);\nfetch({}+'/tunnel_started',{{method:'POST',body:JSON.stringify({{pid:process.pid,token:process.env.TUNNEL_TOKEN}})}}).then(()=>{{{after_start}}});\n",
+            ready_server(ready),
             serde_json::to_string(base).unwrap()
         ),
     )
@@ -134,16 +188,10 @@ async fn wait_for_error(
     changes: &mut tokio::sync::watch::Receiver<u64>,
     error: &str,
 ) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if service.data.lock().await.error.as_deref() == Some(error) {
-                return;
-            }
-            changes.changed().await.unwrap();
-        }
+    wait_until(service, changes, error, |data| {
+        data.error.as_deref() == Some(error)
     })
-    .await
-    .unwrap_or_else(|_| panic!("service never reported {error:?}"));
+    .await;
 }
 
 #[cfg(unix)]
@@ -157,7 +205,7 @@ async fn revoked_in_connect_drops_the_registration_and_stops_the_tunnel() {
         "/api/daemons/daemon-1/heartbeat".into(),
         (410, json!({"error":"daemon_revoked","message":"revoked"})),
     );
-    let binary = stand_in_cloudflared(home.path(), &mock.base, "");
+    let binary = stand_in_cloudflared(home.path(), &mock.base, true, "");
     let service = super::service(home.path()).await.unwrap();
     let mut changes = service.changed.subscribe();
     super::run_tunnel(
@@ -166,6 +214,7 @@ async fn revoked_in_connect_drops_the_registration_and_stops_the_tunnel() {
         service.clone(),
         services::ConnectConfig::load(home.path()).unwrap().unwrap(),
         binary,
+        super::TunnelTiming::default(),
     )
     .await
     .unwrap();
@@ -203,7 +252,8 @@ async fn connect_errors_other_than_revoked_keep_the_registration() {
     let mut mock = Mock::new().await;
     let home = home();
     mock.persist_registration(home.path());
-    let binary = stand_in_cloudflared(home.path(), &mock.base, "");
+    // Never ready, so a ready transition cannot clear the error these cases wait for.
+    let binary = stand_in_cloudflared(home.path(), &mock.base, false, "");
     let service = super::service(home.path()).await.unwrap();
     for (status, body) in [
         (401, json!({"error":"unauthorized"})),
@@ -223,6 +273,7 @@ async fn connect_errors_other_than_revoked_keep_the_registration() {
             service.clone(),
             services::ConnectConfig::load(home.path()).unwrap().unwrap(),
             binary.clone(),
+            super::TunnelTiming::default(),
         )
         .await
         .unwrap();
@@ -240,7 +291,7 @@ async fn connect_errors_other_than_revoked_keep_the_registration() {
             .unwrap()
             .unwrap();
         assert_eq!(state["registered"], true);
-        assert_eq!(state["tunnel_running"], true);
+        assert!(service.workers.lock().await.is_some());
         super::stop_workers(&service).await;
     }
     services::shutdown(home.path()).await.unwrap();
@@ -248,8 +299,11 @@ async fn connect_errors_other_than_revoked_keep_the_registration() {
 
 /// Three starts with the registered token, then the repair call, with the stand-in exiting at once.
 #[cfg(unix)]
-async fn failing_tunnel_until_repair(mock: &mut Mock, home: &std::path::Path) -> std::sync::Arc<super::Service> {
-    let binary = stand_in_cloudflared(home, &mock.base, "process.exit(1)");
+async fn failing_tunnel_until_repair(
+    mock: &mut Mock,
+    home: &std::path::Path,
+) -> std::sync::Arc<super::Service> {
+    let binary = stand_in_cloudflared(home, &mock.base, false, "process.exit(1)");
     let service = super::service(home).await.unwrap();
     super::run_tunnel(
         home,
@@ -257,6 +311,7 @@ async fn failing_tunnel_until_repair(mock: &mut Mock, home: &std::path::Path) ->
         service.clone(),
         services::ConnectConfig::load(home).unwrap().unwrap(),
         binary,
+        fast(),
     )
     .await
     .unwrap();
@@ -347,6 +402,83 @@ async fn revoked_answer_to_repair_drops_the_registration() {
     wait_for_error(&service, &mut changes, super::REVOKED_REASON).await;
     assert!(!home.path().join("connect.json").exists());
     assert!(service.workers.lock().await.is_none());
+    services::shutdown(home.path()).await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unchanged_tunnel_rewrites_nothing_and_keeps_counting_failures() {
+    let mut mock = Mock::new().await;
+    let home = home();
+    mock.persist_registration(home.path());
+    let before = fs::read(home.path().join("connect.json")).unwrap();
+    mock.data.overrides.lock().await.insert(
+        "/api/daemons/daemon-1/tunnel".into(),
+        (
+            200,
+            json!({"tunnel_hostname":"kitchen.connect.example","replaced":false}),
+        ),
+    );
+    let service = failing_tunnel_until_repair(&mut mock, home.path()).await;
+    let (restarted, _) = mock.event("/tunnel_started").await;
+    assert_eq!(restarted["token"], "tunnel-secret");
+    assert_eq!(fs::read(home.path().join("connect.json")).unwrap(), before);
+    assert!(service.workers.lock().await.is_some());
+    services::shutdown(home.path()).await.unwrap();
+}
+
+/// A tunnel that is gone does not make cloudflared exit; it just never gets an edge connection.
+#[cfg(unix)]
+#[tokio::test]
+async fn cloudflared_without_an_edge_connection_counts_as_failed() {
+    let mut mock = Mock::new().await;
+    let home = home();
+    mock.persist_registration(home.path());
+    mock.data.overrides.lock().await.insert(
+        "/api/daemons/daemon-1/tunnel".into(),
+        (200, json!({"tunnel_token":"repaired-secret","tunnel_hostname":"kitchen.connect.example","replaced":true})),
+    );
+    let binary = stand_in_cloudflared(home.path(), &mock.base, false, "");
+    let service = super::service(home.path()).await.unwrap();
+    let mut changes = service.changed.subscribe();
+    // One failure is enough here; the readiness window is long enough for the stand-in to
+    // start and report in even on a loaded machine, so the failure is a verdict, not a kill
+    // during startup.
+    let timing = super::TunnelTiming {
+        ready_timeout: Duration::from_secs(6),
+        failures_before_repair: 1,
+        ..fast()
+    };
+    super::run_tunnel(
+        home.path(),
+        9119,
+        service.clone(),
+        services::ConnectConfig::load(home.path()).unwrap().unwrap(),
+        binary,
+        timing,
+    )
+    .await
+    .unwrap();
+    let (started, _) = mock.event("/tunnel_started").await;
+    assert_eq!(started["token"], "tunnel-secret");
+    let pid = started["pid"].as_i64().unwrap() as i32;
+    let (_, authorization) = mock.event("/api/daemons/daemon-1/tunnel").await;
+    assert_eq!(authorization, "Bearer daemon-secret");
+    let (restarted, _) = mock.event("/tunnel_started").await;
+    assert_eq!(restarted["token"], "repaired-secret");
+    // The stand-in that never became ready was stopped by the supervisor, not by itself.
+    wait_until(
+        &service,
+        &mut changes,
+        "stale stand-in reaped",
+        |_| unsafe { libc::kill(pid, 0) == -1 },
+    )
+    .await;
+    let state = services::call(home.path(), "local", "hexbot.connect.status", &json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state["tunnel_running"], false);
     services::shutdown(home.path()).await.unwrap();
 }
 

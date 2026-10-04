@@ -131,21 +131,30 @@ describe("tunnel repair", () => {
     return { daemon, token, params: { params: Promise.resolve({ id: daemon.id }) } };
   }
   const repair = (id: string, token: string, body?: unknown) => tunnelRepair(request(`/api/daemons/${id}/tunnel`, body, token), { params: Promise.resolve({ id }) });
-  const age = (tunnelId: string) => { tunnels.tunnels.get(tunnelId)!.createdAt = new Date(Date.now() - 3 * 60_000); };
+  const revokeViaApi = async (id: string) => {
+    const clientToken = randomToken("hxc_"); await store.createClientSession({ userId: store.users[0].id, tokenHash: hashToken(clientToken), deviceName: "Laptop" });
+    expect((await remove(request(`/api/daemons/${id}`, undefined, clientToken, "DELETE"), { params: Promise.resolve({ id }) })).status).toBe(200);
+  };
+  const nothingLive = (hostname: string) => {
+    expect([...tunnels.tunnels.values()].every(tunnel => tunnel.deletedAt)).toBe(true);
+    expect(tunnels.hostnames.get(hostname)).toBeUndefined();
+  };
 
-  it("hands out a fresh token for a tunnel that still exists, without creating one, and ignores any body", async () => {
+  it("re-points the hostname at a tunnel that still exists and hands out no token, ignoring any body", async () => {
     const { daemon, token } = await registeredDaemon();
-    const before = daemon.tunnelId; age(before);
+    const before = daemon.tunnelId;
+    tunnels.hostnames.set(daemon.tunnelHostname, "somewhere-else");
     const response = await repair(daemon.id, token, { ingress: "https://evil.test" });
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ tunnel_token: `fake-tunnel-token-${before}`, tunnel_hostname: daemon.tunnelHostname, replaced: false });
+    expect(await response.json()).toEqual({ tunnel_hostname: daemon.tunnelHostname, replaced: false });
     expect(daemon.tunnelId).toBe(before);
+    expect(tunnels.hostnames.get(daemon.tunnelHostname)).toBe(before);
     expect(tunnels.tunnels.size).toBe(1);
     expect(tunnels.deleted).toEqual([]);
   });
-  it("replaces a deleted tunnel under the same hostname and drops the old one", async () => {
+  it("replaces a deleted tunnel under the same hostname, returns its token, and drops the old one", async () => {
     const { daemon, token } = await registeredDaemon();
-    const old = daemon.tunnelId; age(old); tunnels.tunnels.get(old)!.deletedAt = new Date();
+    const old = daemon.tunnelId; tunnels.tunnels.get(old)!.deletedAt = new Date();
     const response = await repair(daemon.id, token);
     expect(response.status).toBe(200);
     const body = await response.json();
@@ -163,20 +172,21 @@ describe("tunnel repair", () => {
     expect(daemon.tunnelId).not.toBe(old);
     expect(tunnels.hostnames.get(daemon.tunnelHostname)).toBe(daemon.tunnelId);
   });
-  it("refuses while the current tunnel is younger than two minutes", async () => {
+  it("allows one repair per two minutes per daemon, claimed before any tunnel work", async () => {
     const { daemon, token } = await registeredDaemon();
+    expect((await repair(daemon.id, token)).status).toBe(200);
     tunnels.tunnels.get(daemon.tunnelId)!.deletedAt = new Date();
     const response = await repair(daemon.id, token);
     expect(response.status).toBe(429);
     expect((await response.json()).error).toBe("tunnel_recent");
     expect(tunnels.tunnels.size).toBe(1);
   });
-  it("lets the first of two concurrent repairs win and hands the loser the winner's tunnel", async () => {
+  it("lets the first of two concurrent repairs win, and the loser points the hostname at the winner's tunnel before handing it out", async () => {
     const { daemon, token } = await registeredDaemon();
-    const old = daemon.tunnelId; age(old); tunnels.tunnels.get(old)!.deletedAt = new Date();
+    const old = daemon.tunnelId; tunnels.tunnels.get(old)!.deletedAt = new Date();
     const create = tunnels.createTunnel.bind(tunnels);
     let mine = ""; let rival = "";
-    tunnels.createTunnel = async name => { const created = await create(name); mine = created.tunnelId; rival = (await create("rival")).tunnelId; await tunnels.pointHostname(daemon.tunnelHostname, rival); expect(await store.swapDaemonTunnel(daemon.id, old, rival)).toBe(true); return created; };
+    tunnels.createTunnel = async name => { const created = await create(name); mine = created.tunnelId; rival = (await create("rival")).tunnelId; expect(await store.swapDaemonTunnel(daemon.id, old, rival)).toBe(true); return created; };
     const response = await repair(daemon.id, token);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ tunnel_token: `fake-tunnel-token-${rival}`, tunnel_hostname: daemon.tunnelHostname, replaced: true });
@@ -189,6 +199,39 @@ describe("tunnel repair", () => {
     expect((await repair(second.daemon.id, first.token)).status).toBe(403);
     await store.revokeDaemon(first.daemon.id, new Date());
     expect((await repair(first.daemon.id, first.token)).status).toBe(410);
+    expect(await store.swapDaemonTunnel(first.daemon.id, first.daemon.tunnelId, "anything")).toBe(false);
+  });
+  it("lets a revoke that lands after the repair passed auth win: nothing of the repair survives", async () => {
+    const { daemon, token } = await registeredDaemon();
+    const hostname = daemon.tunnelHostname; const old = daemon.tunnelId;
+    const inspect = tunnels.inspect.bind(tunnels);
+    tunnels.inspect = async id => { await revokeViaApi(daemon.id); return inspect(id); };
+    const response = await repair(daemon.id, token);
+    expect(response.status).toBe(410);
+    expect((await response.json()).error).toBe("daemon_revoked");
+    expect(daemon.revokedAt).toBeInstanceOf(Date);
+    expect(daemon.tunnelId).toBe(old);
+    nothingLive(hostname);
+  });
+  it("lets a revoke that lands after the swap win too", async () => {
+    const { daemon, token } = await registeredDaemon();
+    const hostname = daemon.tunnelHostname;
+    tunnels.tunnels.get(daemon.tunnelId)!.deletedAt = new Date();
+    const point = tunnels.pointHostname.bind(tunnels);
+    let revoked = false;
+    tunnels.pointHostname = async (host, id) => { await point(host, id); if (!revoked) { revoked = true; await revokeViaApi(daemon.id); } };
+    const response = await repair(daemon.id, token);
+    expect(response.status).toBe(410);
+    expect(daemon.revokedAt).toBeInstanceOf(Date);
+    nothingLive(hostname);
+  });
+  it("re-points a surviving hostname when a revoke lands after an existing tunnel was re-pointed", async () => {
+    const { daemon, token } = await registeredDaemon();
+    const hostname = daemon.tunnelHostname;
+    const point = tunnels.pointHostname.bind(tunnels);
+    tunnels.pointHostname = async (host, id) => { await point(host, id); await revokeViaApi(daemon.id); };
+    expect((await repair(daemon.id, token)).status).toBe(410);
+    nothingLive(hostname);
   });
 });
 

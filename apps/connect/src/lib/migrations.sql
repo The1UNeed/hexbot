@@ -9,3 +9,5 @@ CREATE TABLE IF NOT EXISTS grant_codes (id uuid PRIMARY KEY DEFAULT gen_random_u
 -- Registrations point at their daemon and hold no secrets; tokens are minted when the daemon collects them.
 ALTER TABLE registrations ADD COLUMN IF NOT EXISTS daemon_id uuid REFERENCES daemons(id);
 ALTER TABLE registrations DROP COLUMN IF EXISTS credentials;
+-- When a daemon last claimed a tunnel repair; only the repair route reads or writes it.
+ALTER TABLE daemons ADD COLUMN IF NOT EXISTS tunnel_repair_at timestamptz;
