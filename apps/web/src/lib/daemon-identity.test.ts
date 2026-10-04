@@ -1,9 +1,19 @@
 import { generateKeyPairSync, sign, webcrypto } from 'node:crypto'
 
-import { verifyDaemonIdentity } from './daemon-identity'
+import {
+  DaemonIdentityError,
+  DaemonUnreachableError,
+  verifyDaemonIdentity
+} from './daemon-identity'
 
 const { publicKey, privateKey } = generateKeyPairSync('ed25519')
-const daemon = { id: 'daemon-1', identity_key: publicKey.export({ format: 'jwk' }).x! }
+
+const daemon = {
+  id: 'daemon-1',
+  name: 'Studio Mac',
+  identity_key: publicKey.export({ format: 'jwk' }).x!
+}
+
 const origin = 'https://owl.example'
 
 beforeEach(() => {
@@ -51,7 +61,7 @@ it.each(['invalid', 'wrong daemon', 'wrong host', 'replayed nonce'])(
   async mode => {
     answer(mode)
     await expect(verifyDaemonIdentity(origin, daemon)).rejects.toThrow(
-      'This address is not answering as your daemon.'
+      'Studio Mac did not prove it is your daemon, so sign-in stopped.'
     )
   }
 )
@@ -62,12 +72,16 @@ it('proceeds without a known key and does not probe', async () => {
   expect(fetcher).not.toHaveBeenCalled()
 })
 
-it('proceeds when an older daemon returns 404', async () => {
+it('blocks a known-key impostor returning 404 before sending a grant', async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn(async () => new Response(null, { status: 404 }))
   )
-  await expect(verifyDaemonIdentity(origin, daemon)).resolves.toBeUndefined()
+  const sendGrant = vi.fn()
+  await expect(verifyDaemonIdentity(origin, daemon).then(sendGrant)).rejects.toBeInstanceOf(
+    DaemonIdentityError
+  )
+  expect(sendGrant).not.toHaveBeenCalled()
 })
 
 it('proceeds when WebCrypto does not implement Ed25519', async () => {
@@ -81,16 +95,51 @@ it('proceeds when WebCrypto does not implement Ed25519', async () => {
 it('refuses malformed keys, oversized bodies and failed requests', async () => {
   answer()
   await expect(verifyDaemonIdentity(origin, { ...daemon, identity_key: 'bad' })).rejects.toThrow(
-    'not answering'
+    'did not prove'
   )
   vi.stubGlobal(
     'fetch',
     vi.fn(async () => new Response('x'.repeat(65537)))
   )
-  await expect(verifyDaemonIdentity(origin, daemon)).rejects.toThrow('not answering')
+  await expect(verifyDaemonIdentity(origin, daemon)).rejects.toThrow('did not prove')
   vi.stubGlobal(
     'fetch',
     vi.fn(async () => new Response(null, { status: 503 }))
   )
-  await expect(verifyDaemonIdentity(origin, daemon)).rejects.toThrow('not answering')
+  await expect(verifyDaemonIdentity(origin, daemon)).rejects.toThrow(
+    'Studio Mac could not be reached.'
+  )
+})
+
+it.each(['network', 'timeout', 'body timeout'])(
+  'reports %s separately from an identity mismatch',
+  async mode => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        if (mode === 'body timeout') {
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.error(new DOMException('timeout', 'TimeoutError'))
+              }
+            })
+          )
+        }
+
+        throw mode === 'timeout'
+          ? new DOMException('timeout', 'TimeoutError')
+          : new TypeError('fetch failed')
+      })
+    )
+    await expect(verifyDaemonIdentity(origin, daemon)).rejects.toBeInstanceOf(
+      DaemonUnreachableError
+    )
+  }
+)
+
+it('does not treat an empty supplied key as an older registration', async () => {
+  await expect(
+    verifyDaemonIdentity(origin, { ...daemon, identity_key: '' })
+  ).rejects.toBeInstanceOf(DaemonIdentityError)
 })
