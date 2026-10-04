@@ -2018,6 +2018,7 @@ async fn connect_identity_is_public_host_bound_and_validates_nonces() {
         let response = client
             .get(&url)
             .header("Host", host)
+            .header("Origin", "http://localhost:5173")
             .header("Accept", "text/html")
             .header("X-Forwarded-Host", "evil.example")
             .send()
@@ -2025,6 +2026,12 @@ async fn connect_identity_is_public_host_bound_and_validates_nonces() {
             .unwrap();
         assert_eq!(response.status(), 200);
         assert_eq!(response.headers()["cache-control"], "no-store");
+        assert_eq!(response.headers()["access-control-allow-origin"], "*");
+        assert!(
+            !response
+                .headers()
+                .contains_key("access-control-allow-credentials")
+        );
         let body: Value = response.json().await.unwrap();
         assert_eq!(body["daemon_id"], "daemon-1");
         assert_eq!(
@@ -2048,6 +2055,42 @@ async fn connect_identity_is_public_host_bound_and_validates_nonces() {
                     &signature
                 )
                 .is_err()
+        );
+    }
+    for origin in ["http://localhost:5173", "https://other-daemon.example"] {
+        let preflight = client
+            .request(reqwest::Method::OPTIONS, &url)
+            .header("Origin", origin)
+            .header("Access-Control-Request-Method", "GET")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(preflight.status(), 204);
+        assert_eq!(preflight.headers()["access-control-allow-origin"], "*");
+        assert!(
+            !preflight
+                .headers()
+                .contains_key("access-control-allow-credentials")
+        );
+        assert_eq!(
+            client
+                .get(format!("{}/api/auth/providers", fixture.base))
+                .header("Origin", origin)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            403
+        );
+        assert_eq!(
+            client
+                .post(&url)
+                .header("Origin", origin)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            403
         );
     }
     for nonce in [

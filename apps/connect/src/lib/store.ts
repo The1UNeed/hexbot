@@ -2,7 +2,7 @@ import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 import { randomUUID } from "node:crypto";
 
 export interface User { id: string; clerkUserId: string; createdAt: Date }
-export interface Daemon { identityKey?: string | null; id: string; userId: string; name: string; slug: string; tunnelId: string; tunnelHostname: string; ingressPort: number; tokenHash: string; createdAt: Date; lastSeenAt: Date | null; revokedAt: Date | null }
+export interface Daemon { id: string; userId: string; name: string; slug: string; tunnelId: string; tunnelHostname: string; ingressPort: number; tokenHash: string; identityKey: string | null; createdAt: Date; lastSeenAt: Date | null; revokedAt: Date | null }
 export interface Registration { id: string; userCode: string; deviceCodeHash: string; daemonName: string; platform: string; ingressPort: number; userId: string | null; expiresAt: Date; approvedAt: Date | null; consumedAt: Date | null; daemonId: string | null }
 export interface ClientSession { id: string; userId: string; tokenHash: string; deviceName: string; createdAt: Date; lastSeenAt: Date | null; revokedAt: Date | null }
 /** Spent and expired codes and registrations are cleared a day after they expire, as the privacy policy says. */
@@ -17,7 +17,7 @@ export interface Store {
   findRegistrationByUserCode(code: string): Promise<Registration | null>;
   approveRegistration(id: string, userId: string, daemonId: string): Promise<Registration>;
   consumeRegistration(id: string): Promise<boolean>;
-  createDaemon(input: Omit<Daemon, "id" | "createdAt" | "lastSeenAt" | "revokedAt">): Promise<Daemon>;
+  createDaemon(input: Omit<Daemon, "id" | "identityKey" | "createdAt" | "lastSeenAt" | "revokedAt">): Promise<Daemon>;
   getDaemon(id: string): Promise<Daemon | null>;
   listDaemons(userId: string, includeRemoving?: boolean): Promise<Daemon[]>;
   findDaemonByTokenHash(hash: string): Promise<Daemon | null>;
@@ -49,7 +49,7 @@ export class MemoryStore implements Store {
   async findRegistrationByUserCode(code: string) { return this.registrations.find(x => x.userCode === code) ?? null; }
   async approveRegistration(id: string, userId: string, daemonId: string) { const row = this.registrations.find(x => x.id === id); if (!row) throw new Error("registration not found"); Object.assign(row, { userId, daemonId, approvedAt: new Date() }); return row; }
   async consumeRegistration(id: string) { const row = this.registrations.find(x => x.id === id); if (!row || row.consumedAt) return false; row.consumedAt = new Date(); return true; }
-  async createDaemon(input: Omit<Daemon, "id" | "createdAt" | "lastSeenAt" | "revokedAt">) { const row = { ...input, id: randomUUID(), createdAt: new Date(), lastSeenAt: null, revokedAt: null }; this.daemons.push(row); return row; }
+  async createDaemon(input: Omit<Daemon, "id" | "identityKey" | "createdAt" | "lastSeenAt" | "revokedAt">) { const row = { ...input, id: randomUUID(), identityKey: null, createdAt: new Date(), lastSeenAt: null, revokedAt: null }; this.daemons.push(row); return row; }
   async getDaemon(id: string) { return this.daemons.find(x => x.id === id) ?? null; }
   async listDaemons(userId: string, includeRemoving = false) { return this.daemons.filter(x => x.userId === userId && (!x.revokedAt || (includeRemoving && x.tunnelId !== ""))); }
   async findDaemonByTokenHash(hash: string) { return this.daemons.find(x => x.tokenHash === hash) ?? null; }
@@ -74,7 +74,7 @@ export class MemoryStore implements Store {
 
 type DbRow = Record<string, unknown>;
 const date = (value: unknown): Date | null => value ? new Date(String(value)) : null;
-const daemonRow = (r: DbRow): Daemon => ({ identityKey: r.identity_key == null ? null : String(r.identity_key), id: String(r.id), userId: String(r.user_id), name: String(r.name), slug: String(r.slug), tunnelId: String(r.tunnel_id), tunnelHostname: String(r.tunnel_hostname), ingressPort: Number(r.ingress_port ?? 9119), tokenHash: String(r.token_hash), createdAt: new Date(String(r.created_at)), lastSeenAt: date(r.last_seen_at), revokedAt: date(r.revoked_at) });
+const daemonRow = (r: DbRow): Daemon => ({ id: String(r.id), userId: String(r.user_id), name: String(r.name), slug: String(r.slug), tunnelId: String(r.tunnel_id), tunnelHostname: String(r.tunnel_hostname), ingressPort: Number(r.ingress_port ?? 9119), tokenHash: String(r.token_hash), identityKey: r.identity_key == null ? null : String(r.identity_key), createdAt: new Date(String(r.created_at)), lastSeenAt: date(r.last_seen_at), revokedAt: date(r.revoked_at) });
 const sessionRow = (r: DbRow): ClientSession => ({ id: String(r.id), userId: String(r.user_id), tokenHash: String(r.token_hash), deviceName: String(r.device_name), createdAt: new Date(String(r.created_at)), lastSeenAt: date(r.last_seen_at), revokedAt: date(r.revoked_at) });
 const grantCodeRow = (r: DbRow): GrantCode => ({ id: String(r.id), codeHash: String(r.code_hash), daemonId: String(r.daemon_id), userId: String(r.user_id), deviceName: String(r.device_name), challenge: String(r.challenge), redirectUri: String(r.redirect_uri), createdAt: new Date(String(r.created_at)), expiresAt: new Date(String(r.expires_at)), consumedAt: date(r.consumed_at) });
 const registrationRow = (r: DbRow): Registration => ({ id: String(r.id), userCode: String(r.user_code), deviceCodeHash: String(r.device_code_hash), daemonName: String(r.daemon_name), platform: String(r.platform), ingressPort: Number(r.ingress_port), userId: r.user_id ? String(r.user_id) : null, expiresAt: new Date(String(r.expires_at)), approvedAt: date(r.approved_at), consumedAt: date(r.consumed_at), daemonId: r.daemon_id ? String(r.daemon_id) : null });
@@ -88,7 +88,7 @@ export class NeonStore implements Store {
   async findRegistrationByUserCode(c: string) { const rows = await this.sql`SELECT * FROM registrations WHERE user_code=${c} ORDER BY expires_at DESC LIMIT 1`; return rows[0] ? registrationRow(rows[0] as DbRow) : null; }
   async approveRegistration(id: string, userId: string, daemonId: string) { const rows = await this.sql`UPDATE registrations SET user_id=${userId}, approved_at=now(), daemon_id=${daemonId} WHERE id=${id} RETURNING *`; return registrationRow(rows[0] as DbRow); }
   async consumeRegistration(id: string) { const rows = await this.sql`UPDATE registrations SET consumed_at=now() WHERE id=${id} AND consumed_at IS NULL RETURNING id`; return rows.length === 1; }
-  async createDaemon(i: Omit<Daemon, "id" | "createdAt" | "lastSeenAt" | "revokedAt">) { const rows = await this.sql`INSERT INTO daemons (user_id,name,slug,tunnel_id,tunnel_hostname,ingress_port,token_hash) VALUES (${i.userId},${i.name},${i.slug},${i.tunnelId},${i.tunnelHostname},${i.ingressPort},${i.tokenHash}) RETURNING *`; return daemonRow(rows[0] as DbRow); }
+  async createDaemon(i: Omit<Daemon, "id" | "identityKey" | "createdAt" | "lastSeenAt" | "revokedAt">) { const rows = await this.sql`INSERT INTO daemons (user_id,name,slug,tunnel_id,tunnel_hostname,ingress_port,token_hash) VALUES (${i.userId},${i.name},${i.slug},${i.tunnelId},${i.tunnelHostname},${i.ingressPort},${i.tokenHash}) RETURNING *`; return daemonRow(rows[0] as DbRow); }
   async getDaemon(id: string) { const rows = await this.sql`SELECT * FROM daemons WHERE id=${id} LIMIT 1`; return rows[0] ? daemonRow(rows[0] as DbRow) : null; }
   async listDaemons(uid: string, includeRemoving = false) { return (await this.sql`SELECT * FROM daemons WHERE user_id=${uid} AND (revoked_at IS NULL OR (${includeRemoving} AND tunnel_id <> '')) ORDER BY created_at`).map(r => daemonRow(r as DbRow)); }
   async findDaemonByTokenHash(h: string) { const rows = await this.sql`SELECT * FROM daemons WHERE token_hash=${h} LIMIT 1`; return rows[0] ? daemonRow(rows[0] as DbRow) : null; }

@@ -531,13 +531,24 @@ async fn registration_persists_pins_and_returns_only_status() {
     let (body, _) = mock.event("/api/register/poll").await;
     assert_eq!(body["device_code"], "device-code");
     let config = services::ConnectConfig::load(home.path()).unwrap().unwrap();
-    assert_eq!(body["public_key"], config.identity_public_key().unwrap());
-    assert!(!config.identity_private_key.is_empty());
+    assert_eq!(
+        body["public_key"],
+        services::identity_response(home.path(), "host", "nonce")
+            .await
+            .unwrap()
+            .unwrap()["public_key"]
+    );
+    assert!(config.identity_private_key.is_empty());
+    assert!(
+        !fs::read(home.path().join("connect-identity.key"))
+            .unwrap()
+            .is_empty()
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(
-            fs::metadata(home.path().join("connect.json"))
+            fs::metadata(home.path().join("connect-identity.key"))
                 .unwrap()
                 .permissions()
                 .mode()
@@ -858,7 +869,12 @@ async fn registration_with_old_connect_retries_its_strict_poll_schema() {
     let (first, _) = mock.event("/api/register/poll").await;
     let (second, _) = mock.event("/api/register/poll").await;
     assert_eq!(second, json!({"device_code":"device-code"}));
-    let config = services::ConnectConfig::load(home.path()).unwrap().unwrap();
-    assert_eq!(first["public_key"], config.identity_public_key().unwrap());
+    assert_eq!(
+        first["public_key"],
+        services::identity_response(home.path(), "host", "nonce")
+            .await
+            .unwrap()
+            .unwrap()["public_key"]
+    );
     services::shutdown(home.path()).await.unwrap();
 }

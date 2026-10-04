@@ -24,9 +24,9 @@ describe("online state", () => {
   const now = Date.now();
   const fresh = new Date(now - 60_000);
   const rows = [
-    { id: "answers", tunnelHostname: "answers.hexbot.test", ingressPort: 9200, lastSeenAt: fresh },
-    { id: "silent", tunnelHostname: "silent.hexbot.test", ingressPort: 9201, lastSeenAt: fresh },
-    { id: "gone", tunnelHostname: "gone.hexbot.test", ingressPort: 9202, lastSeenAt: new Date(now - 11 * 60_000) },
+    { identityKey: null, id: "answers", tunnelHostname: "answers.hexbot.test", ingressPort: 9200, lastSeenAt: fresh },
+    { identityKey: null, id: "silent", tunnelHostname: "silent.hexbot.test", ingressPort: 9201, lastSeenAt: fresh },
+    { identityKey: null, id: "gone", tunnelHostname: "gone.hexbot.test", ingressPort: 9202, lastSeenAt: new Date(now - 11 * 60_000) },
   ];
   it("is online only when the address answers, unreachable when the daemon heartbeats but the tunnel is down, and skips probing offline daemons", async () => {
     const probed: string[] = [];

@@ -40,7 +40,7 @@ describe("identity enrollment", () => {
     expect((await enroll(request(body), context)).status).toBe(401);
     expect((await enroll(request({ ...body, tunnel_token: "forged" }, c.daemon_token), context)).status).toBe(403);
     expect((await enroll(request(body, c.daemon_token), { params: Promise.resolve({ id: "other" }) })).status).toBe(403);
-    expect(daemon.identityKey).toBeUndefined();
+    expect(daemon.identityKey).toBeNull();
     expect((await enroll(request(body, c.daemon_token), context)).status).toBe(200);
     expect(daemon.identityKey).toBe(key);
     expect((await enroll(request(body, c.daemon_token), context)).status).toBe(200);
@@ -56,6 +56,14 @@ describe("identity enrollment", () => {
     const inspect = tunnels.inspect.bind(tunnels);
     vi.spyOn(tunnels, "inspect").mockImplementation(async id => { await store.revokeDaemon(daemon.id, new Date()); return inspect(id); });
     expect((await enroll(request({ public_key: key, tunnel_token: c.tunnel_token }, c.daemon_token), context)).status).toBe(410);
+  });
+  it("distinguishes Cloudflare proof failures from identity storage failures", async () => {
+    const { credentials: c, context } = await registered();
+    vi.spyOn(tunnels, "inspect").mockRejectedValue(new Error("Cloudflare unavailable"));
+    const response = await enroll(request({ public_key: key, tunnel_token: c.tunnel_token }, c.daemon_token), context);
+    expect(response.status).toBe(502);
+    expect((await response.json()).error).toBe("identity_proof_unavailable");
+    expect(store.daemons[0].identityKey).toBeNull();
   });
   it("stores the poll key and returns it in the daemon list", async () => {
     const device_code = await registration();
@@ -113,7 +121,7 @@ describe("signed reachability", () => {
   });
   it("uses providers without a key and never falls back after an identity failure", async () => {
     const fetcher = vi.fn(async () => Response.json({ providers: [] })); vi.stubGlobal("fetch", fetcher);
-    expect(await probeOrigin("https://owl.example", { id: daemon.id })).toBe(true);
+    expect(await probeOrigin("https://owl.example", { id: daemon.id, identityKey: null })).toBe(true);
     expect(await probeOrigin("https://owl.example", daemon)).toBe(false);
     expect(fetcher).toHaveBeenCalledTimes(2);
   });

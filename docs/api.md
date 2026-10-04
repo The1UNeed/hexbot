@@ -389,7 +389,10 @@ external service daemon through the app leaves its status as running.
 `GET /api/connect/identity?nonce=<base64url>` is public, including through the
 tunnel and with an HTML Accept header. It returns 404 when unregistered and
 400 for a missing or invalid nonce. The nonce must be canonical unpadded
-base64url encoding 16–64 bytes. Responses carry `Cache-Control: no-store`.
+base64url encoding 16–64 bytes. An unavailable identity key returns 503 while
+the daemon keeps serving. Successful responses carry `Cache-Control: no-store`.
+Cross-origin GETs are public with `Access-Control-Allow-Origin: *`, without
+credential permission. This exemption does not apply to other daemon routes.
 
 The JSON response is `{daemon_id, public_key, signature}`. The public key is
 32 raw Ed25519 bytes and the signature is 64 bytes, both unpadded base64url.
@@ -402,7 +405,8 @@ hexbot-identity-v1\n<daemon_id>\n<normalised Host>\n<nonce>
 Host comes from the request's `Host` header, never a forwarded header. It is
 lower-case, without a trailing DNS dot or port 80/443; other ports remain,
 and IPv6 literals keep their brackets. The nonce is the encoded string,
-not its decoded bytes. Verify against the key obtained from Connect's daemon
+not its decoded bytes. Host is client-chosen; anyone who can reach the daemon
+can request a signature for any Host. Verify against the key obtained from Connect's daemon
 list, not a key supplied by the answering address. This detects a wrong
 address but cannot detect an on-path party relaying the real daemon's reply.
 See [Connect trust](connect.md#trust) for the TLS and compatibility limits.
