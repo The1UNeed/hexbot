@@ -35,11 +35,14 @@ lives in a small set of files:
 | File | Channel | Role |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | all | Tests and builds on every push and pull request. Publishes nothing. Also called by `release.yml`. Ends with `release-smoke.mjs` |
-| `.github/workflows/release.yml` | stable, nightly | One workflow for both channels: `preflight` picks the channel and version, `check` runs CI, `build` makes six packages, `publish` uploads the feed, creates the GitHub release, and after a nightly redeploys the site, `finalize` (stable only) commits the website manifest and casks |
+| `.github/workflows/release.yml` | stable, nightly | One workflow for both channels: `preflight` picks the channel and version, `check` runs CI, `build` makes six packages, `installer` builds terminal and windowed installers, `publish` uploads the feeds and installers, creates the GitHub release, and after a nightly redeploys the site, `finalize` (stable only) commits the website manifest and casks |
 | `scripts/desktop/release-version.mjs` | stable, nightly | Channel and version rules: tag must match `package.json`, nightly version format, product names. Tested in `packaging.test.mjs` |
 | `scripts/desktop/set-version.mjs` | all | Writes one version into `apps/desktop/package.json`, which Rust reads at build time |
 | `scripts/desktop/dist.mjs` | all | `--channel stable\|nightly\|dev` sets the product name and app id passed to electron-builder |
 | `scripts/desktop/make-update-feed.mjs` | stable, nightly | Builds the `updates.hexbot.app` directory tree from a build output: artifacts plus `latest-*.yml` or `nightly-*.yml` |
+| `scripts/desktop/make-install-manifest.mjs` | stable, nightly | Reads the update tree and writes `install/<track>.json` for Headless, Client and Full, plus `install/<track>.txt` with terminal installer URLs and SHA-256 checksums |
+| `install/<track>.json`, `install/<track>.txt` on the update server | stable, nightly | Current installer manifest and POSIX bootstrap index, rewritten with `no-cache` |
+| `install/<version>/` on the update server | stable, nightly | Immutable terminal installer binaries and Hexbot Installer DMG/AppImage files for each target |
 | `scripts/desktop/finalize-release.mjs` | stable | Rewrites `apps/site/public/downloads/manifest.json` and both Homebrew casks for a version |
 | `scripts/desktop/release-smoke.mjs` | stable, nightly | Runs the scripts above the way `release.yml` does, against synthetic packages. CI runs it on every push |
 | `scripts/dev/run.mjs` | dev | `pnpm dev`: daemon and web bundle (or Electron) from the checkout with a per-checkout home and ports |
@@ -133,12 +136,18 @@ client/...                          the same for HexbotClient-*
 daemon/native/<v>/<target>/manifest.json   native archive URL, version, target and SHA-256
 daemon/native/<v>/<target>/hexbot-native-<v>-<target>.tar.gz
 daemon/hexbot-src-<v>.tar.gz               handoff for existing Python services
+install/stable.json, install/nightly.json   install options, URLs, sizes and checksums
+install/stable.txt, install/nightly.txt     <target> <sha256> <url> for the CLI installer only
+install/<v>/hexbot-install-<v>-<target>     terminal installer, one per native target
+install/<v>/HexbotInstaller-<v>-mac-arm64.dmg|mac-x64.dmg|linux-x86_64.AppImage
 ```
 
-Artifacts are immutable (their names carry the version); the `.yml` files are
-served with `no-cache` and rewritten each release. After uploading,
-`release.yml` reads every feed file back through `updates.hexbot.app` and
-fails if one does not announce the new version. The download page and the
+Artifacts are immutable (their names carry the version); the `.yml` files and
+`install/<track>.json` and `.txt` are served with `no-cache` and rewritten each
+release. The install JSON uses `application/json`; the text index uses
+`text/plain`. After uploading, `release.yml` reads every app feed and the install
+JSON back through `updates.hexbot.app` and fails if one does not announce the
+new version. The download page and the
 Homebrew casks link to the same files. The feed files are not attached to
 the GitHub release; the packages are.
 

@@ -6,7 +6,7 @@
 
 | Script | Role |
 | --- | --- |
-| `release-version.mjs` | Resolves channel and version (tag must match `package.json`; nightly is `<next>-nightly.<date>.<run>`) and the product name per channel. Prints GitHub Actions outputs. |
+| `release-version.mjs` | Resolves channel and version (tag must match `package.json`; nightly is `<next>-nightly.<date>.<run>`) and the product name and app id per channel. Prints GitHub Actions outputs. |
 | `set-version.mjs <version>` | Writes `apps/desktop/package.json`, also read by Rust at build time. |
 | `dist.mjs --mac\|--linux [--client] [--channel stable\|nightly\|dev]` | Builds one package. The channel sets the product name (`Hexbot [alpha]`, `Hexbot Nightly`, `Hexbot (dev)`) and app id. |
 | `stage-runtime.mjs`, `native-runtime.mjs`, `native-build.mjs` | Build Rust for the target, bundle Node and locked agent dependencies, prune unused files and verify the result. |
@@ -15,8 +15,9 @@
 | `mac-sign.cjs` | Keeps the bundled Node entitlement separate from Electron during Developer ID signing. |
 | `after-pack.cjs` | Ad-hoc signs macOS builds when no Developer ID is configured, so they launch on Apple Silicon. |
 | `make-update-feed.mjs --channel stable\|nightly [--version v] [--client] <builder-output> [feed-root]` | Builds the `updates.hexbot.app` tree: artifacts plus `latest-*.yml` or `nightly-*.yml`. |
+| `make-install-manifest.mjs --channel stable\|nightly --version V <updates-root> [--base-url URL] [--allow-missing]` | Reads app feeds, native manifests and installer artifacts, verifies payloads, and writes `install/<channel>.json` and `.txt`. |
 | `finalize-release.mjs <version> <full-dir> <client-dir>` | Rewrites the website downloads manifest and both Homebrew casks after a stable release. |
-| `release-smoke.mjs` | Runs `release-version`, `set-version`, `make-update-feed`, and `finalize-release` the way `release.yml` does, against synthetic packages in a temporary directory. CI runs it on every push. |
+| `release-smoke.mjs` | Runs `release-version`, `set-version`, `make-update-feed`, `make-install-manifest`, and `finalize-release` the way `release.yml` does, against synthetic packages in a temporary directory. CI runs it on every push. |
 | `update-cask.mjs [--client] <release-dir> [version]` | The cask part of finalize, on its own. |
 | `make-channel-icons.mjs [dev\|nightly]` | Compiles `build/icon-dev.icon` and `build/icon-nightly.icon` into their ICNS and PNG fallbacks using Xcode 26. |
 | `make-icons.py` | Renders `build/icon.png`, `build/icon.icns`, and the tray images from `apps/desktop/build/Hexbot.icon`. |
@@ -35,6 +36,33 @@ Each is built for macOS arm64, macOS x64, and Linux x64.
 ## Update feed
 
 `make-update-feed.mjs` generates `latest-mac.yml` (or `nightly-mac.yml`) per architecture from the artifacts (sha512 and size) because electron-builder writes a single `latest-mac.yml` that the second architecture overwrites. Linux reuses electron-builder's manifest after checking that every referenced file exists. The output layout mirrors the publish URLs in the electron-builder configs: `full/<os>/<arch>` and `client/<os>/<arch>`.
+
+## Install manifests
+
+Run `make-install-manifest.mjs` after app feeds, native archives and installers
+have been collected into the update tree:
+
+```sh
+node scripts/desktop/make-install-manifest.mjs --channel stable --version 0.1.5-alpha.1 dist/updates
+```
+
+The JSON has schema version 1 and entries for `macos-aarch64`, `macos-x86_64`
+and `linux-x86_64`. Full and Client use the macOS ZIP or Linux AppImage from
+the app feed, including its SHA-512, size, product name and app id. Headless
+uses the native archive's SHA-256 manifest. Terminal and windowed installer
+artifacts are read from `install/<version>/` and hashed with SHA-256.
+`minInstaller` is the release version. The default base URL is
+`https://updates.hexbot.app`; `--base-url` selects another origin or prefix.
+
+Missing options fail by default. `--allow-missing` omits absent options or
+targets, but a feed or native manifest that references a missing file still
+fails, as do stale versions, sizes or checksums. The release workflow uses
+this flag only until `apps/installer/package.json` exists, and separately
+requires Full, Client, Headless and the terminal installer for every target.
+
+`install/<channel>.txt` contains only terminal installers, one line per target:
+`<target> <sha256> <url>`. The POSIX bootstrap reads it without jq.
+Both channel files use `no-cache`; versioned artifacts are immutable.
 
 ## Icons
 
@@ -67,6 +95,13 @@ when Electron or the icon changes and leaves the installed dependency intact.
 ## Signing
 
 Release signing uses electron-builder's standard environment variables. Set `CSC_LINK` to the Developer ID certificate and `CSC_KEY_PASSWORD` to its password. macOS notarization runs only when `APPLE_API_KEY` (a path to the `.p8` file), `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER` are all set; `release.yml` writes the key secret to a file first. Local unsigned builds disable certificate auto-discovery when neither `CSC_LINK` nor `CSC_NAME` is present.
+
+The installer job imports the same certificate to sign the terminal binary,
+then submits a ZIP to Apple's notary service when the API secrets are set.
+For Tauri it maps those secrets to `APPLE_CERTIFICATE`,
+`APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_API_KEY` as the
+key ID, `APPLE_API_ISSUER` and `APPLE_API_KEY_PATH`.
+Without a certificate, macOS installers use an ad-hoc signature.
 
 ## Crash reports
 
