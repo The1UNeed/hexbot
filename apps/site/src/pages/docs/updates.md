@@ -4,7 +4,7 @@ title: Updates
 description: Choose a Hexbot update track and control crash reports.
 ---
 
-The packaged desktop app checks `updates.hexbot.app` for signed updates 15 seconds after it starts and every 4 minutes while it runs. Development builds do not check. You can also choose "Check for Updates" from the application menu on macOS, or open Settings, Updates.
+The packaged desktop app checks `updates.hexbot.app` for updates 15 seconds after it starts and every 4 minutes while it runs. Development builds do not check. You can also choose "Check for Updates" from the application menu on macOS, or open Settings, Updates.
 
 Hexbot does not download an update during the check. When one is available, a pill at the bottom of the roster says "Update". Clicking it asks "Are you sure you want to update to version X?"; Yes downloads the update, then Hexbot quits, installs it, and reopens. No leaves everything as it was. Settings, Updates shows the same state, the time of the last check, and any error. The app does not install an update on its own when you quit. On Linux only the AppImage updates itself.
 
@@ -13,7 +13,7 @@ Hexbot does not download an update during the check. When one is available, a pi
 The app and the daemon it talks to can be on different computers. When the daemon runs an older Hexbot than the app, the pill says "Update daemon" and Settings, Updates offers to update it. What happens depends on how the daemon runs on its computer:
 
 - **The Hexbot app runs the daemon.** That app downloads the update on its own track, then closes and reopens on the new version. The daemon comes back with it.
-- **The daemon runs at login** (Settings, Network, "Start the daemon at login"). The daemon downloads the new version, installs it, and restarts itself.
+- **The daemon runs as an installed background service.** The daemon downloads the new version, installs it, and restarts itself.
 - **Started by hand** or from a source checkout. Update Hexbot on that computer yourself.
 
 Bots stop while the daemon restarts; sections and memory stay. The client waits for the daemon to come back and reports a failure if it does not. Only an administrator can start a daemon update. A daemon only moves to a build made from newer source, on either track, so switching between Stable and Nightly never takes it back to an older daemon. An older or equally old build is refused.
