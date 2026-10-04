@@ -32,15 +32,19 @@ describe("daemons page actions", () => {
     expect(store.daemons.find(d => d.id === mine)?.name).toBe("Studio Mac");
     expect(store.daemons.find(d => d.id === theirs)?.name).toBe("bob's Mac");
   });
-  it("revokes the tunnel before the record, and keeps the daemon listed when the tunnel refuses", async () => {
+  it("marks revoked first and keeps failed cleanup listed for retry", async () => {
     const mine = await ownedBy("alice");
     const tunnelId = store.daemons[0].tunnelId;
     tunnels.delete = async () => { throw new Error("cloudflare down"); };
     expect(await revokeDaemon(mine)).toEqual({ error: "The daemon's tunnel could not be deleted. Try again in a moment." });
-    expect(store.daemons[0].revokedAt).toBeNull();
+    expect(store.daemons[0].revokedAt).toBeInstanceOf(Date);
+    expect(await store.listDaemons(store.users[0].id, true)).toHaveLength(1);
+    expect(await store.listDaemons(store.users[0].id)).toEqual([]);
     tunnels.delete = async id => { tunnels.deleted.push(id); };
     expect(await revokeDaemon(mine)).toEqual({ ok: true });
     expect(tunnels.deleted).toEqual([tunnelId]);
+    expect(store.daemons[0].tunnelId).toBe("");
+    expect(await store.listDaemons(store.users[0].id, true)).toEqual([]);
     expect(store.daemons[0].revokedAt).toBeInstanceOf(Date);
   });
   it("signs out only the caller's own apps", async () => {

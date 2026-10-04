@@ -102,7 +102,15 @@ async fn approved_registration_starts_tunnel_heartbeats_and_disconnect_reaps() {
     assert_eq!(args.len(), 7);
     let (restarted, _) = mock.event("/tunnel_started").await;
     assert_eq!(restarted["count"], 2);
-    assert_eq!(restarted["args"], tunnel["args"]);
+    let restarted_args = restarted["args"].as_array().unwrap();
+    assert_eq!(restarted_args[..5], args[..5]);
+    assert!(
+        restarted_args[5]
+            .as_str()
+            .unwrap()
+            .starts_with("127.0.0.1:")
+    );
+    assert_eq!(restarted_args[6..], args[6..]);
     assert_eq!(
         serde_json::from_slice::<Value>(&fs::read(home.path().join("cloudflared.yml")).unwrap())
             .unwrap(),
@@ -266,6 +274,7 @@ async fn connect_errors_other_than_revoked_keep_the_registration() {
             .lock()
             .await
             .insert("/api/daemons/daemon-1/heartbeat".into(), (status, body));
+        service.data.lock().await.error = None;
         let mut changes = service.changed.subscribe();
         super::run_tunnel(
             home.path(),
@@ -319,7 +328,8 @@ async fn failing_tunnel_until_repair(
         let (started, _) = mock.event("/tunnel_started").await;
         assert_eq!(started["token"], "tunnel-secret");
     }
-    let (_, authorization) = mock.event("/api/daemons/daemon-1/tunnel").await;
+    let (proof, authorization) = mock.event("/api/daemons/daemon-1/tunnel").await;
+    assert_eq!(proof, json!({"tunnel_token": "tunnel-secret"}));
     assert_eq!(authorization, "Bearer daemon-secret");
     service
 }
@@ -427,6 +437,64 @@ async fn an_unchanged_tunnel_rewrites_nothing_and_keeps_counting_failures() {
     services::shutdown(home.path()).await.unwrap();
 }
 
+/// Readiness loss is visible on the next probe, before the restart deadline. The same
+/// process can recover, then a restart must use a new metrics port if the old one is busy.
+#[cfg(unix)]
+#[tokio::test]
+async fn readiness_loss_is_published_and_restart_chooses_a_free_metrics_port() {
+    let mut mock = Mock::new().await;
+    let home = home();
+    mock.persist_registration(home.path());
+    let binary = stand_in_cloudflared(home.path(), &mock.base, true, "");
+    let script = fs::read_to_string(&binary)
+        .unwrap()
+        .replace(
+            "q.url==='/ready'&&true",
+            "q.url==='/ready'&&!require('fs').existsSync(__filename+'.unready')",
+        )
+        .replace(
+            "{pid:process.pid,token:",
+            "{metrics:m,pid:process.pid,token:",
+        );
+    fs::write(&binary, script).unwrap();
+    let service = super::service(home.path()).await.unwrap();
+    let mut changes = service.changed.subscribe();
+    super::run_tunnel(
+        home.path(),
+        9119,
+        service.clone(),
+        services::ConnectConfig::load(home.path()).unwrap().unwrap(),
+        binary.clone(),
+        fast(),
+    )
+    .await
+    .unwrap();
+    let (started, _) = mock.event("/tunnel_started").await;
+    let pid = started["pid"].as_i64().unwrap() as i32;
+    wait_until(&service, &mut changes, "ready", |data| data.running).await;
+    let marker = binary.with_file_name("cloudflared.unready");
+    fs::write(&marker, "").unwrap();
+    wait_until(&service, &mut changes, "readiness lost", |data| {
+        !data.running
+    })
+    .await;
+    assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
+    fs::remove_file(marker).unwrap();
+    wait_until(&service, &mut changes, "ready again", |data| data.running).await;
+    // Only this test's child is killed. Wait for the supervisor's exit event, then reserve
+    // its old port during the backoff. Reusing it would make the next stand-in fail to bind.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+    wait_until(&service, &mut changes, "child exit", |data| !data.running).await;
+    let _occupied = std::net::TcpListener::bind(started["metrics"].as_str().unwrap()).unwrap();
+    let (restarted, _) = mock.event("/tunnel_started").await;
+    assert_ne!(restarted["metrics"], started["metrics"]);
+    wait_until(&service, &mut changes, "replacement ready", |data| {
+        data.running
+    })
+    .await;
+    services::shutdown(home.path()).await.unwrap();
+}
+
 /// A tunnel that is gone does not make cloudflared exit; it just never gets an edge connection.
 #[cfg(unix)]
 #[tokio::test]
@@ -462,7 +530,8 @@ async fn cloudflared_without_an_edge_connection_counts_as_failed() {
     let (started, _) = mock.event("/tunnel_started").await;
     assert_eq!(started["token"], "tunnel-secret");
     let pid = started["pid"].as_i64().unwrap() as i32;
-    let (_, authorization) = mock.event("/api/daemons/daemon-1/tunnel").await;
+    let (proof, authorization) = mock.event("/api/daemons/daemon-1/tunnel").await;
+    assert_eq!(proof, json!({"tunnel_token": "tunnel-secret"}));
     assert_eq!(authorization, "Bearer daemon-secret");
     let (restarted, _) = mock.event("/tunnel_started").await;
     assert_eq!(restarted["token"], "repaired-secret");

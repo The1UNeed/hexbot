@@ -226,7 +226,6 @@ fn forget_later(home: &Path, service: &Arc<Service>, daemon_id: &str) {
         }
     });
 }
-/// A cloudflared that lives shorter than this counts as a failed start.
 /// How the tunnel supervisor judges `cloudflared`. A tunnel that is gone on Cloudflare's
 /// side does not make `cloudflared` exit quickly: it retries for most of a minute, and an
 /// `Unauthorized` answer keeps it retrying for ever, so readiness (an edge connection,
@@ -269,7 +268,7 @@ async fn repair_tunnel(home: &Path, config: &ConnectConfig) -> Result<Option<Con
         config,
         Method::POST,
         &format!("/api/daemons/{}/tunnel", config.daemon_id),
-        None,
+        Some(json!({"tunnel_token": config.tunnel_token})),
     )
     .await;
     let value = match result {
@@ -788,8 +787,13 @@ async fn run_tunnel(
     let tunnel_home = home.to_owned();
     let mut tunnel_config = config.clone();
     let tunnel = tokio::spawn(async move {
-        let ready_url = format!("http://127.0.0.1:{metrics}/ready");
-        let probe = crate::http::client(2, 0).ok();
+        let mut ready_url = format!("http://127.0.0.1:{metrics}/ready");
+        let probe = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .ok();
         let mut child = child;
         let mut backoff = 1;
         let mut failures = 0;
@@ -797,26 +801,11 @@ async fn run_tunnel(
         let mut last_repair: Option<std::time::Instant> = None;
         'supervise: loop {
             let started = std::time::Instant::now();
-            let mut ready = false;
             let mut last_ok = started;
             let outcome = loop {
-                // Owns copies of the readiness state so the select arms can update the originals.
-                let watch = {
-                    let (probe, ready_url, ready, mut last_ok) =
-                        (probe.as_ref(), &ready_url, ready, last_ok);
-                    async move {
-                        loop {
-                            tokio::time::sleep(timing.poll).await;
-                            if tunnel_ready(probe, ready_url).await {
-                                last_ok = std::time::Instant::now();
-                                if !ready {
-                                    return None;
-                                }
-                            } else if last_ok.elapsed() >= timing.ready_timeout {
-                                return Some(Outcome::NotReady);
-                            }
-                        }
-                    }
+                let watch = async {
+                    tokio::time::sleep(timing.poll).await;
+                    tunnel_ready(probe.as_ref(), &ready_url).await
                 };
                 tokio::select! {
                     _ = stopped.changed() => {
@@ -824,22 +813,21 @@ async fn run_tunnel(
                         break 'supervise;
                     }
                     result = child.wait() => break Outcome::Exited(result),
-                    event = watch => match event {
-                        // A working tunnel settles every doubt.
-                        None => {
-                            ready = true;
+                    ready = watch => {
+                        if ready {
                             last_ok = std::time::Instant::now();
                             failures = 0;
-                            {
-                                let mut data = tunnel_service.data.lock().await;
-                                data.running = true;
-                                data.error = None;
-                            }
-                            bump(&tunnel_service);
+                            backoff = 1;
                         }
-                        Some(outcome) => {
+                        let mut data = tunnel_service.data.lock().await;
+                        let changed = data.running != ready;
+                        data.running = ready;
+                        if ready { data.error = None; }
+                        drop(data);
+                        if changed { bump(&tunnel_service); }
+                        if !ready && last_ok.elapsed() >= timing.ready_timeout {
                             terminate(&mut child).await;
-                            break outcome;
+                            break Outcome::NotReady;
                         }
                     },
                 }
@@ -894,14 +882,18 @@ async fn run_tunnel(
             loop {
                 tokio::select! { _=stopped.changed()=>break 'supervise, _=tokio::time::sleep(Duration::from_secs(backoff))=>{} }
                 backoff = (backoff * 2).min(16);
-                let restarted = spawn_cloudflared(
-                    &binary,
-                    &tunnel_settings,
-                    &logs,
-                    port,
-                    metrics,
-                    &tunnel_config.tunnel_token,
-                );
+                let restarted = free_port().and_then(|metrics| {
+                    let child = spawn_cloudflared(
+                        &binary,
+                        &tunnel_settings,
+                        &logs,
+                        port,
+                        metrics,
+                        &tunnel_config.tunnel_token,
+                    )?;
+                    ready_url = format!("http://127.0.0.1:{metrics}/ready");
+                    Ok(child)
+                });
                 match restarted {
                     Ok(new_child) => {
                         child = new_child;

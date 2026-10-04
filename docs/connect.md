@@ -46,16 +46,27 @@ cannot log in, and a key dropped from the JWKS stops working within ten
 minutes. Tunnels are locally managed: the daemon sets ingress to the
 daemon's own loopback port, and Connect never sends an ingress config.
 
-The daemon token alone must not open the daemon either. Connect therefore
-hands out tunnel credentials only once, when the daemon collects its
-registration, and never for a tunnel that is live: tunnel repair (below)
-re-points the hostname at an existing tunnel without returning its token, so
-a stolen daemon token cannot put a second connector on the trusted hostname
-and harvest sign-in grants. What remains is narrow: a holder of the daemon
-token who asks for a repair in the two-minute window after the real tunnel
-is gone, before the daemon itself does, gets the replacement's token. The
-daemon-key change that follows closes it by requiring a daemon signature on
-repair.
+The daemon token alone cannot obtain connector credentials. Every registration
+and replacement creates a unique `hexbot-<slug>-<random UUID>` tunnel name and
+sets `tunnel_secret` to HMAC-SHA256 of that name, encoded as base64. Its key
+comes from HKDF-SHA256 over the raw private scalar `d` of
+`CONNECT_SIGNING_KEY_JWK`, with empty salt, UTF-8 info `hexbot tunnel secret v1`,
+and 32-byte output. Development uses the same derivation from its ephemeral
+signing key. Tunnels remain locally managed.
+
+Repair requires both the daemon token and a connector token whose secret
+matches that derivation. The token must name the current tunnel or a tunnel
+whose name carries this daemon's slug. Cloudflare retains deleted tunnel
+names, so a daemon can prove its old credentials and recover a replacement
+whose response it missed. A token with an unknown tunnel ID cannot prove its
+name and is refused.
+
+Tunnels created before this change cannot be repaired. Their daemons need
+`hexbot connect` again. Production has none because it has no Cloudflare
+credentials yet. Rotating the signing key has the same effect on tunnel
+repair, consistent with the registration requirement for signing-key rotation
+below. Publishing an extra public key does not preserve the old tunnel-secret
+derivation.
 
 ## Data model (Postgres)
 
@@ -213,10 +224,15 @@ its socket when one is up), so the tunnel stops, `connect.json` goes, the
 public URL is cleared, and the login button disappears at once. The daemon
 also tells Connect with `DELETE /api/daemons/{id}`.
 
-Revoke on the dashboard is the reverse direction. Connect deletes the tunnel,
-marks the row revoked, and from then on answers every call made with that
-daemon's token with `410 {error: "daemon_revoked"}` (an unknown token stays
-401). The daemon treats that answer, and only that answer, as the owner's
+Revoke on the dashboard is the reverse direction. Connect marks the row
+revoked first, blocking repairs and grants, then deletes its tunnel and the
+hostname's DNS records. It clears `tunnel_id` only after both succeed, with a
+compare-and-set, and repeats if the ID changed. A cleanup failure returns 502
+and leaves the revoked row with its tunnel ID. The dashboard shows "Removing…"
+and a Retry action; the app's daemon list excludes it. Both the owner and the
+daemon may retry DELETE. Already-deleted tunnels and missing DNS records count
+as success. Other calls made with that daemon's token receive
+`410 {error: "daemon_revoked"}`. An unknown token stays 401. The daemon treats that answer, and only that answer, as the owner's
 decision: it drops the registration exactly as disconnect does, minus the
 DELETE, and Settings shows "Not connected. Removed in Hex Connect." The
 first heartbeat goes out when the tunnel starts and the rest every five
@@ -235,17 +251,17 @@ retries for most of a minute before giving up, and an `Unauthorized` answer
 keeps it retrying for ever. So the daemon runs `cloudflared` with
 `--metrics 127.0.0.1:<free port>` and polls its `/ready` endpoint every five
 seconds; 200 means at least one registered edge connection. Settings'
-"Running" means ready, not merely a live process. A failure is either no
-readiness for three minutes (since start, or since it was last ready; the
+"Running" reflects the last probe result, including loss of readiness before
+the restart deadline. Probes bypass HTTP proxies and each process gets a fresh
+free metrics port. A failure is either no readiness for three minutes (since start, or since it was last ready; the
 daemon stops that `cloudflared` itself) or an exit within five minutes of
-start. A ready tunnel resets the count. Three failures in a row trigger a
-repair.
+start. A ready tunnel resets the failure count and restart backoff to one
+second. Three failures in a row trigger a repair.
 
-**The call.** `POST /api/daemons/{id}/tunnel` with the daemon token, raced
-against shutdown so disconnect never waits on Connect. The first repair waits
-150 seconds (longer than Connect's own cooldown, so the first retry is not a
-guaranteed 429); while repairs keep not helping the wait doubles, up to
-thirty minutes. Connect:
+**The call.** `POST /api/daemons/{id}/tunnel` with the daemon token and body
+`{tunnel_token}`, raced against shutdown so disconnect never waits on Connect.
+Repairs use a 150-second base cooldown, longer than Connect's own cooldown.
+While repairs keep not helping, the wait doubles, up to thirty minutes. Connect:
 
 1. Claims the daemon's repair slot atomically before touching Cloudflare:
    `UPDATE daemons SET tunnel_repair_at = now() WHERE id = $1 AND revoked_at
@@ -255,30 +271,31 @@ thirty minutes. Connect:
    `migrations.sql`), so every other route keeps working on a database that
    has not been migrated; until it is, repair answers 500 and the daemon
    simply keeps backing off.
-2. Re-reads the row (410 if revoked) and looks its tunnel up in the
-   Cloudflare API.
-3. If the tunnel exists and is not deleted: re-points the hostname's DNS
-   record at it (idempotent; this also heals a replacement whose DNS update
-   failed half-way) and answers `{tunnel_hostname, replaced: false}`. No
-   token: the daemon keeps the one it has (see Trust).
-4. If the tunnel is deleted or unknown: creates a replacement, swaps
-   `tunnel_id` with a compare-and-set that also requires `revoked_at IS
-   NULL`, points the existing DNS record for the same hostname at the new
-   tunnel, deletes the old tunnel best-effort, and answers `{tunnel_token,
-   tunnel_hostname, replaced: true}`. A request that loses the
-   compare-and-set deletes the tunnel it made (never the DNS record),
-   re-reads the row, points DNS at the tunnel the row holds now, and answers
-   that tunnel's token.
-5. After every DNS change it re-reads the row once more: if a revoke landed
-   meanwhile, it deletes the tunnel and DNS record it just set up and answers
-   `410 daemon_revoked`. Revoke, for its part, re-reads the row after marking
-   it revoked and deletes a tunnel that a repair swapped in. Revocation wins
-   every interleaving: once it reports success, no replacement tunnel or
-   CNAME from an in-flight repair stays live.
+2. Re-reads the row, returning 410 if revoked, and verifies the connector
+   proof before any Cloudflare write. Missing, forged, foreign, or legacy
+   credentials return 403.
+3. If the current tunnel exists and is not deleted, re-points DNS at it.
+   A proof for that same tunnel gets `{tunnel_hostname, replaced: false}`
+   without a token. A stale proof gets the current token and `replaced: true`,
+   recovering a missed replacement response.
+4. If the current tunnel is deleted or unknown, creates a replacement with
+   a unique name and derived secret, swaps `tunnel_id` with a compare-and-set
+   requiring `revoked_at IS NULL`, then points DNS at it. A request that loses
+   the swap deletes its own tunnel and uses the row's current tunnel.
+5. After fetching any token and changing DNS, re-reads the row. If a revoke
+   landed, it deletes the tunnel and hostname records and returns 410. On a
+   failure it observes, it attempts to delete its own artifacts and returns
+   502. It never delivers a replacement token after observing revocation.
 
-The hostname never changes, so saved targets keep working. The request body
-is ignored: ingress is set on the daemon, never from here. On `replaced:
-true` the daemon writes the new token to `connect.json` (atomically, still
+This is not termination-safe. A repair invocation killed mid-flight after a
+revoke can leave an inert orphan: a tunnel with no DNS and no delivered token,
+or a CNAME pointing at a deleted tunnel. Failed cleanup is retried through
+revoked rows while their tunnel ID remains recorded; unrecorded orphans need
+operator cleanup. Ordering repair as claim, create, compare-and-set, DNS,
+re-read minimizes this gap but cannot close it without durable job tracking.
+
+The hostname never changes, so saved targets keep working. Only `tunnel_token`
+is read from the request body; ingress stays on the daemon. On `replaced: true` the daemon writes the new token to `connect.json` (atomically, still
 0600), restarts `cloudflared` with it, and resets its backoff and failure
 count. On `replaced: false` nothing is rewritten and nothing is reset. A
 `404` (a Connect that predates repair) or a `429` keeps the normal backoff; a
