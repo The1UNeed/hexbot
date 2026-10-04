@@ -119,11 +119,13 @@ which runs beside it and can be down while the daemon keeps checking in. So
 whenever Connect lists daemons (`GET /api/daemons` and the `/connect` page) it
 also probes each daemon's address: `GET https://<tunnel_hostname>/api/auth/providers`,
 public, unauthenticated, served by every daemon version. The probe follows no
-redirects, sends no credentials, times out after three seconds, runs for all
-daemons in parallel, and only ever targets hostnames from Connect's own rows.
-A 2xx JSON answer with a `providers` list means reachable. With the fake tunnel
-provider the probe goes to the daemon's loopback address instead. Answers are
-remembered for thirty seconds per address.
+redirects, sends no credentials, times out after three seconds, reads at most
+64 KiB of the body (a larger one is not a daemon), runs for all daemons in
+parallel, and only ever targets hostnames from Connect's own rows. A 2xx JSON
+answer with a `providers` list means reachable. With the fake tunnel provider
+the probe goes to the daemon's loopback address instead. A reachable answer
+is remembered for thirty seconds per address, an unreachable one for five, so
+a daemon that just came up is not shown down for long.
 
 Three states follow: **online** (heartbeat within ten minutes and the address
 answers), **unreachable** (heartbeat within ten minutes, address does not

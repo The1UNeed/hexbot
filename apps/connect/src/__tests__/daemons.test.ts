@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTunnelProvider } from "@/lib/tunnels";
 import { browserSignInUrl, daemonOrigin, daemonTarget, deviceNameFromUserAgent, relativeTime } from "@/lib/daemons";
-import { Reachability, heartbeatFresh } from "@/lib/reachability";
+import { PROBE_BODY_LIMIT, Reachability, heartbeatFresh, probeOrigin } from "@/lib/reachability";
 
 const daemon = { tunnelHostname: "amber-otter-1234.hexbot.app", ingressPort: 9200 };
 describe("daemon addresses", () => {
@@ -43,14 +43,41 @@ describe("online state", () => {
     expect((await reachability.statuses(rows.slice(0, 1), true, now)).get("answers")).toBe("unreachable");
     expect(probed).toEqual(["http://127.0.0.1:9200"]);
   });
-  it("remembers an answer briefly, then asks again", async () => {
+  it("remembers a reachable answer for thirty seconds and an unreachable one for five", async () => {
     let calls = 0;
-    const reachability = new Reachability(async () => { calls += 1; return true; }, 30_000);
+    const reachability = new Reachability(async () => { calls += 1; return true; }, 30_000, 5_000);
     await reachability.statuses(rows.slice(0, 1), false, now);
     await reachability.statuses(rows.slice(0, 1), false, now + 10_000);
     expect(calls).toBe(1);
     await reachability.statuses(rows.slice(0, 1), false, now + 31_000);
     expect(calls).toBe(2);
+    let down = 0;
+    const flaky = new Reachability(async () => { down += 1; return false; }, 30_000, 5_000);
+    await flaky.statuses(rows.slice(0, 1), false, now);
+    await flaky.statuses(rows.slice(0, 1), false, now + 4_000);
+    expect(down).toBe(1);
+    await flaky.statuses(rows.slice(0, 1), false, now + 6_000);
+    expect(down).toBe(2);
+  });
+});
+
+describe("probe", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const answer = (body: BodyInit | null, init?: ResponseInit) => vi.stubGlobal("fetch", vi.fn(async () => new Response(body, init)));
+  it("accepts a small providers list, follows no redirect, and refuses an oversized body", async () => {
+    answer(JSON.stringify({ providers: [{ name: "hexbot" }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    expect(await probeOrigin("https://answers.hexbot.test")).toBe(true);
+    const call = vi.mocked(fetch).mock.calls[0];
+    expect(call[0]).toBe("https://answers.hexbot.test/api/auth/providers");
+    expect(call[1]).toMatchObject({ redirect: "manual", credentials: "omit" });
+    answer(null, { status: 302, headers: { Location: "https://elsewhere.test/" } });
+    expect(await probeOrigin("https://moved.hexbot.test")).toBe(false);
+    answer(`{"providers":[],"padding":"${"x".repeat(PROBE_BODY_LIMIT)}"}`, { status: 200 });
+    expect(await probeOrigin("https://big.hexbot.test")).toBe(false);
+    answer("<html>not json</html>", { status: 200 });
+    expect(await probeOrigin("https://page.hexbot.test")).toBe(false);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("connection refused"); }));
+    expect(await probeOrigin("https://down.hexbot.test")).toBe(false);
   });
 });
 

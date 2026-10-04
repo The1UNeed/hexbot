@@ -10,7 +10,7 @@ const statusLabel = (daemon: DaemonView) =>
   daemon.status === "online" ? "Online" : daemon.status === "unreachable" ? "Running, but not reachable" : `Offline, last seen ${daemon.lastSeen}`;
 const openHint = (daemon: DaemonView) =>
   daemon.status === "unreachable"
-    ? "The daemon is running but its address does not answer. Its tunnel is down; restart hexbot serve on it."
+    ? "The daemon is running but its tunnel is not answering. Hexbot retries on its own; check the machine's network if this lasts."
     : "The daemon has not checked in for a while. Start hexbot serve on it.";
 
 export function DaemonRow({ daemon }: { daemon: DaemonView }) {
