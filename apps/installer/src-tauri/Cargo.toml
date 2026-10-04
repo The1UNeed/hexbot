@@ -1,0 +1,22 @@
+[package]
+name = "hexbot-installer-app"
+version = "0.1.0"
+description = "Hexbot Installer, the windowed front end for the hexbot-installer engine"
+edition = "2024"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+hexbot-installer = { path = "../../../backend/hexbot-installer" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+tauri = { version = "=2.11.6", features = [] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

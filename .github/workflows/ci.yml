@@ -82,9 +82,19 @@ jobs:
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          workspaces: backend/hexbot-installer
+          workspaces: |
+            backend/hexbot-installer
+            apps/installer/src-tauri
       - run: cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml
       - run: cargo clippy --locked --manifest-path backend/hexbot-installer/Cargo.toml --all-targets -- -D warnings
+      # The windowed installer (apps/installer) drives the same engine through Tauri.
+      - name: Install the windowed installer's Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - run: cargo test --locked --manifest-path apps/installer/src-tauri/Cargo.toml
+      - run: cargo clippy --locked --manifest-path apps/installer/src-tauri/Cargo.toml --all-targets -- -D warnings
 
   install-shell:
     name: POSIX installer bootstrap
@@ -160,7 +170,7 @@ jobs:
       - run: pnpm --filter ./apps/desktop run test --run
       - name: Windowed installer checks
         if: hashFiles('apps/installer/package.json') != ''
-        run: pnpm --filter ./apps/installer run typecheck && pnpm --filter ./apps/installer run test --run
+        run: pnpm --filter ./apps/installer run typecheck && pnpm --filter ./apps/installer run test --run && pnpm --filter ./apps/installer run lint && pnpm --filter ./apps/installer run build
       - name: Prepare the native desktop compiler
         run: |
           rustup show active-toolchain
