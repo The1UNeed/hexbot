@@ -46,7 +46,12 @@ import {
   useSection,
   useSections
 } from '../../stores/sections'
-import { transcriptActions, type TranscriptMessage, useTranscript } from '../../stores/transcripts'
+import {
+  transcriptActions,
+  type TranscriptMessage,
+  useTranscript,
+  useTranscripts
+} from '../../stores/transcripts'
 import { uiActions, useUi } from '../../stores/ui'
 
 import { AskingRow } from './asking-row'
@@ -56,6 +61,31 @@ import { MemoryMarks } from './memory-marks'
 import { RoomConversation } from './room'
 import { WaitingBanner } from './waiting-banner'
 import { LiveStatus, WorkSummary } from './work-status'
+
+export function ConnectedToolsNotice({ sectionId }: { sectionId: string }) {
+  const warning = useTranscripts(state => state.warnings[sectionId])
+
+  if (!warning) {
+    return null
+  }
+
+  return (
+    <div
+      className="hex-glass hex-fade pointer-events-auto mx-auto flex w-fit max-w-full shrink-0 items-center gap-2 rounded-full py-1.5 pr-2 pl-3.5 text-[length:var(--text-secondary)] text-warning"
+      role="status"
+    >
+      <span className="truncate">{warning}</span>
+      <button
+        aria-label="Dismiss notice"
+        className="grid size-5 shrink-0 place-items-center rounded-full text-muted hover:text-foreground"
+        onClick={() => transcriptActions().setWarning(sectionId, null)}
+        type="button"
+      >
+        <X size={13} />
+      </button>
+    </div>
+  )
+}
 
 const avatarData = (bot?: Bot) => avatarSrc(bot?.avatar)
 
@@ -1232,6 +1262,7 @@ function BotConversation() {
           </button>
         )}
         {status === 'needs_you' ? <WaitingBanner /> : null}
+        <ConnectedToolsNotice sectionId={params.section ?? ''} />
       </header>
       <div className="hex-no-drag absolute top-2.5 right-3 z-30 flex items-center gap-1.5">
         <Menu

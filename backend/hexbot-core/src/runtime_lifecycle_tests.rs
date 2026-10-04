@@ -532,7 +532,7 @@ async fn background_result_resolves_a_retired_parent_and_does_not_reopen_closed_
     runtime.shutdown().await;
 }
 #[tokio::test]
-async fn unavailable_mcp_warns_and_opens_with_no_discovered_tools() {
+async fn mcp_sections_open_without_discovery_and_forward_pi_warnings() {
     let (home, runtime, hub) = setup();
     common::write_config(
         home.path(),
@@ -541,9 +541,24 @@ async fn unavailable_mcp_warns_and_opens_with_no_discovered_tools() {
     .unwrap();
     let mut events = hub.subscribe();
     open(&runtime).await;
+    let session = runtime
+        .sessions
+        .lock()
+        .unwrap()
+        .get("first")
+        .unwrap()
+        .clone();
+    runtime.event(&session, json!({"type":"extension_ui_request","method":"notify","notifyType":"warning","message":"MCP servers need attention: missing. Run /mcp to fix."})).unwrap();
     let mut warning = false;
     while let Ok(event) = events.try_recv() {
-        warning |= event.frame["params"]["type"] == "warning";
+        if event.frame["params"]["type"] == "warning" {
+            assert_eq!(
+                event.frame["params"]["payload"]["message"],
+                "Connected tools need attention: missing."
+            );
+            assert_eq!(event.frame["params"]["payload"]["section_id"], "first");
+            warning = true;
+        }
     }
     assert!(warning);
     let saved = &processes(home.path())[0]["config"]["tools"];
@@ -555,6 +570,154 @@ async fn unavailable_mcp_warns_and_opens_with_no_discovered_tools() {
             .all(|t| t["server"].is_null())
     );
     runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_names_and_prompt_are_frozen_without_credentials_or_discovery() {
+    let (home, runtime, hub) = setup();
+    fs::write(home.path().join(".env"), "MCP_SECRET='hidden-value'\n").unwrap();
+    common::write_config(
+        home.path(),
+        &json!({"mcp_servers":{
+            "fixture-one":{"command":"node","env":{"TOKEN":"${MCP_SECRET}"}},
+            "legacy":{"url":"https://example.com/sse","transport":"sse"}
+        }}),
+    )
+    .unwrap();
+    let mut events = hub.subscribe();
+    open(&runtime).await;
+    let process = &processes(home.path())[0];
+    assert_eq!(process["config"]["mcpServers"], json!(["fixture-one"]));
+    assert!(
+        process["config"]["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("mcp__fixture_one")
+    );
+    assert!(!process.to_string().contains("hidden-value"));
+    let args = process["args"].as_array().unwrap();
+    for arg in [
+        "builtin:mcp",
+        "builtin:codemode",
+        "--no-approve",
+        "--no-builtin-tools",
+    ] {
+        assert!(args.contains(&json!(arg)));
+    }
+    assert!(!args.contains(&json!("--tools")));
+    assert!(!args.contains(&json!("builtin:tool-search")));
+    let mut warned = false;
+    while let Ok(event) = events.try_recv() {
+        if event.frame["params"]["type"] == "warning" {
+            assert!(
+                event.frame["params"]["payload"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("legacy")
+            );
+            warned = true;
+        }
+    }
+    assert!(warned);
+    let s = runtime
+        .sessions
+        .lock()
+        .unwrap()
+        .get("first")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        runtime
+            .tool(&s, "hexbot_mcp_servers", &json!({}))
+            .await
+            .unwrap()[0]["config"]["env"]["TOKEN"],
+        "hidden-value"
+    );
+    let prompt = process["config"]["prompt"].clone();
+    fs::write(
+        home.path().join("config.yaml"),
+        "mcp_servers:\n  new:\n    command: node\n",
+    )
+    .unwrap();
+    assert_eq!(
+        runtime
+            .tool(&s, "hexbot_mcp_servers", &json!({}))
+            .await
+            .unwrap(),
+        json!([])
+    );
+    age(&runtime);
+    runtime.retire_idle(common::now()).await.unwrap();
+    open(&runtime).await;
+    let resumed = &processes(home.path())[1];
+    assert_eq!(resumed["config"]["mcpServers"], json!(["fixture-one"]));
+    assert_eq!(resumed["config"]["prompt"], prompt);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn legacy_sections_keep_the_bridge_and_restricted_sections_get_no_mcp() {
+    let (home, runtime, _) = setup();
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../pi-runtime/fixtures/mcp-server.mjs");
+    common::write_config(
+        home.path(),
+        &json!({"mcp_servers":{"fixture":{"command":"node","args":[script]}}}),
+    )
+    .unwrap();
+    let tools = json!([{"name":"mcp_fixture_echo","server":"fixture","tool":"echo","description":"Echo","parameters":{"type":"object"}}]);
+    store::open(home.path()).unwrap().execute("INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES('first','alice','owl','frozen',?)", [json!({"prompt":"frozen","tools":tools,"enabledToolsets":[]}).to_string()]).unwrap();
+    open(&runtime).await;
+    let s = runtime
+        .sessions
+        .lock()
+        .unwrap()
+        .get("first")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        runtime
+            .tool(&s, "mcp_fixture_echo", &json!({"text":"legacy works"}))
+            .await
+            .unwrap()["content"][0]["text"],
+        "legacy works"
+    );
+    let process = &processes(home.path())[0];
+    assert!(process["config"]["mcpServers"].is_null());
+    assert!(
+        !process["args"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("builtin:mcp"))
+    );
+    assert_eq!(
+        runtime
+            .tool(&s, "hexbot_mcp_servers", &json!({}))
+            .await
+            .unwrap(),
+        json!([])
+    );
+    let restricted = runtime
+        .open_session_with_tools("alice", "owl", "restricted", Some(&[]), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .tool(&restricted, "hexbot_mcp_servers", &json!({}))
+            .await
+            .unwrap(),
+        json!([])
+    );
+    let process = &processes(home.path())[1];
+    assert_eq!(process["config"]["mcpServers"], json!([]));
+    assert!(
+        !process["args"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("builtin:codemode"))
+    );
+    runtime.shutdown().await;
+    crate::connectors::close_bot(home.path(), "owl").await;
 }
 
 #[tokio::test]

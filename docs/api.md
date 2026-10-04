@@ -327,14 +327,35 @@ or a clear.
   backend choice where the core reads it, runs the check or probe, and, when
   it passes, turns the connector on for `bot` unless `enable_for_bot` is
   false. A failed probe leaves the connector off for the bot.
-- `hexbot.connectors.test {id, bot?}` → `{ok, message}`.
+- `hexbot.connectors.test {id, bot?}` → `{ok, message, tool_count?}`. A successful
+  connected-server probe counts all tool pages and saves `tool_count`. The connector
+  list reports the last probe count, or null when untested.
 - `hexbot.connectors.clear {id, bot?, bot_only?}` → `{connector}`. Admin only.
 - `hexbot.connectors.set_for_bot {id, bot, enabled}` → `{connector}`.
 - `hexbot.connectors.add_mcp {name, command?, args?, env?, url?, transport?}` →
   `{connector}`; `hexbot.connectors.remove_mcp {name}` → `{removed: true}`.
   Admin only. MCP servers live in the root `config.yaml` and appear as
-  `mcp:<name>` connectors.
+  `mcp:<name>` connectors. New entries accept stdio or streamable HTTP. SSE
+  returns 4202, "SSE is not supported. Use the server's streamable HTTP URL."
+  Environment values starting with `!` are rejected.
 - `hexbot.skills.list {bot}` → `{skills: [{name, description, category, enabled}]}`.
+
+New sections freeze connected server names and reach tools through Pi's codemode.
+Saved sections keep their frozen Rust bridge tools, including SSE. New sections
+skip existing SSE entries and emit an owner-scoped `warning` with `{section_id,
+room_id, message}`. Pi warning/error notifications use the same event. Clients
+show a dismissible notice under the conversation header.
+
+Manual and Auto run tools with `readOnlyHint: true` freely and ask before every
+other connected tool call. Resource tools are read-only. Allow in this section
+covers one server for the running Pi session. Bypass never asks. Each nested
+codemode call uses the approval gate, including shell and file tools.
+
+Stdio servers run as Pi children in the bot workspace, outside the shell sandbox.
+They inherit Pi's allowlisted environment plus their explicit `env`, not every
+connector credential. Put required `${KEY}` references in the server's `env`.
+Expanded values reach Pi through the private in-memory bridge, not the saved
+session configuration or Pi environment. Workspace `.pi/mcp.json` is ignored.
 
 ### Providers and models
 

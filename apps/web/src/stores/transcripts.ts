@@ -118,6 +118,8 @@ export interface TranscriptsState {
     options?: { notify?: boolean }
   ) => void
   appendUserMessage: (sessionId: string, text: string, attachments?: Attachment[]) => Message
+  warnings: Record<string, string>
+  setWarning: (sectionId: string, message: string | null) => void
   bySession: Record<string, Transcript>
   drop: (sessionId: string) => void
   dropAll: () => void
@@ -298,6 +300,20 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
   }
 
   return {
+    warnings: {},
+    setWarning(sectionId, message) {
+      set(state => {
+        const warnings = { ...state.warnings }
+
+        if (message) {
+          warnings[sectionId] = message
+        } else {
+          delete warnings[sectionId]
+        }
+
+        return { warnings }
+      })
+    },
     bySession: {},
 
     open(sessionId, sectionId, messages) {
@@ -344,7 +360,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     dropAll() {
-      set({ bySession: {} })
+      set({ bySession: {}, warnings: {} })
     },
 
     appendUserMessage(sessionId, text, attachments = []) {

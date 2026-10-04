@@ -222,6 +222,22 @@ impl Runtime {
         }
         self.events.emit(&s.owner, Some(&s.id), kind, payload);
     }
+    fn warning(&self, owner: &str, stored: &str, message: &str) {
+        let room = db::open(&self.home).ok().and_then(|db| {
+            db.query_row(
+                "SELECT room_id FROM room_sessions WHERE stored_session_id=?",
+                [stored],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+        });
+        self.events.emit(
+            owner,
+            None,
+            "warning",
+            json!({"section_id":stored,"room_id":room,"message":message}),
+        );
+    }
     /// The approval and the question a session waits on, as their events.
     fn pending_cards(s: &Live) -> (Option<Value>, Option<Value>) {
         let state = s.state.lock().unwrap();
@@ -319,27 +335,6 @@ impl Runtime {
                 .and_then(|p| p["parent_session"].as_str())
                 .unwrap_or(stored),
         )?;
-        // Discovery never holds a section lock and never changes frozen tools.
-        let saved: bool = store::open(&self.home)?.query_row(
-            "SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?)",
-            [stored],
-            |r| r.get(0),
-        )?;
-        let discovered = if saved {
-            vec![]
-        } else {
-            let (tools, failed) =
-                crate::connectors::mcp_tools_with_failures(&self.home, bot).await?;
-            if failed {
-                self.events.emit(
-                    owner,
-                    None,
-                    "warning",
-                    json!({"message":"Some connected tools are unavailable", "section_id":stored}),
-                );
-            }
-            tools
-        };
         let _parent_guard =
             if let Some(parent) = overrides.and_then(|p| p["parent_session"].as_str()) {
                 let guard = self.open_lock(parent).lock_owned().await;
@@ -358,7 +353,7 @@ impl Runtime {
             };
         let lock = self.open_lock(stored);
         let _guard = lock.lock().await;
-        self.open_session_locked(owner, bot, stored, restricted, overrides, discovered)
+        self.open_session_locked(owner, bot, stored, restricted, overrides)
             .await
     }
     async fn open_session_locked(
@@ -368,7 +363,6 @@ impl Runtime {
         stored: &str,
         restricted: Option<&[&str]>,
         overrides: Option<&Value>,
-        discovered: Vec<Value>,
     ) -> Result<Arc<Live>> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(Error::new(5201, "daemon is shutting down"));
@@ -446,7 +440,7 @@ impl Runtime {
             }
             options
         } else {
-            let (prompt, skills) = self.session_prompt(&botrow, owner, bot, &cwd)?;
+            let (mut prompt, skills) = self.session_prompt(&botrow, owner, bot, &cwd)?;
             let enabled = crate::connectors::toolsets(&self.home, bot)?;
             let mut tools = base_tools();
             tools.retain(|t| t["name"] != "message_bot" || enabled.iter().any(|v| v == "hexbot"));
@@ -460,7 +454,28 @@ impl Runtime {
                 tools.push(crate::dreaming::tool_descriptor());
             }
             tools.extend(crate::native_tools::descriptors(&self.home, bot)?);
-            tools.extend(discovered);
+            let servers = if restricted.is_none() {
+                crate::connectors::mcp_servers(&self.home, bot)?
+            } else {
+                json!({})
+            };
+            let mut mcp_names = vec![];
+            for (name, entry) in servers.as_object().unwrap() {
+                if entry["transport"] == "sse" {
+                    self.warning(owner, stored, &format!("Connected tools: {name} uses SSE and is unavailable in this section. Use its streamable HTTP URL."));
+                } else {
+                    mcp_names.push(json!(name));
+                }
+            }
+            if !mcp_names.is_empty() {
+                prompt.push_str("\n\n# Connected tools\nThese servers are reachable from codemode scripts. Use searchTools() or describeNamespace(\"mcp__<name>\") to find their tools:\n");
+                for name in &mcp_names {
+                    prompt.push_str(&format!(
+                        "- mcp__{}\n",
+                        name.as_str().unwrap().replace('-', "_")
+                    ));
+                }
+            }
             let mut config = common::read_config(&self.home)?;
             if let Ok(text) = fs::read_to_string(profile.join("config.yaml")) {
                 let local: Value =
@@ -499,6 +514,7 @@ impl Runtime {
             let mut opts = json!({
                 "prompt": prompt,
                 "prompt_version": PROMPT_VERSION,
+                "mcpServers": mcp_names,
                 "tools": tools,
                 "approvalMode": mode,
                 "home": self.home,
@@ -632,9 +648,27 @@ impl Runtime {
             "--no-extensions".into(),
             "--no-skills".into(),
             "--no-prompt-templates".into(),
+        ];
+        let has_mcp = options["restricted"].is_null()
+            && options["mcpServers"]
+                .as_array()
+                .is_some_and(|names| !names.is_empty());
+        if has_mcp {
+            pi.args.extend(
+                [
+                    "--extension",
+                    "builtin:mcp",
+                    "--extension",
+                    "builtin:codemode",
+                    "--no-approve",
+                ]
+                .map(str::to_owned),
+            );
+        }
+        pi.args.extend([
             "--extension".into(),
             extension.to_string_lossy().into_owned(),
-        ];
+        ]);
         let model = options["model"].as_str().filter(|s| !s.is_empty());
         if let Some(model) = model {
             pi.args.extend(["--model".into(), model.into()]);
@@ -671,7 +705,11 @@ impl Runtime {
                 }
             }
         }
-        if names.is_empty() {
+        if has_mcp {
+            // --tools is also a registration allowlist in Pi 1.0.1. The private
+            // extension selects frozen declarations once at session_start.
+            pi.args.push("--no-builtin-tools".into());
+        } else if names.is_empty() {
             pi.args.push("--no-tools".into());
         } else {
             pi.args.extend(["--tools".into(), names.join(",")]);
@@ -1738,9 +1776,9 @@ impl Runtime {
                     "The section was closed before its background result arrived",
                 ));
             }
-            // Existing sections have frozen tools, so no discovery is needed.
+            // Existing sections retain their frozen tools.
             let parent = self
-                .open_session_locked(owner, bot, stored, None, None, vec![])
+                .open_session_locked(owner, bot, stored, None, None)
                 .await?;
             drop(guard);
             self.submit(&parent, text, true, true, None).await
@@ -2463,6 +2501,25 @@ impl Runtime {
                 )
                 .await
             }
+            "hexbot_mcp_servers" => {
+                let raw: String = store::open(&self.home)?.query_row(
+                    "SELECT options FROM native_sessions WHERE stored_id=?",
+                    [&s.stored],
+                    |r| r.get(0),
+                )?;
+                let options: Value =
+                    serde_json::from_str(&raw).map_err(|e| Error::new(5200, e.to_string()))?;
+                if !options["restricted"].is_null() {
+                    return Ok(json!([]));
+                }
+                let names = options["mcpServers"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                Ok(json!(crate::connectors::pi_mcp_servers(
+                    &self.home, &s.bot, &names
+                )?))
+            }
             "hexbot_session_settings" => self.session_settings(s),
             "hexbot_rename_section" => {
                 let section = crate::catalog::rename_by_bot(
@@ -2887,6 +2944,18 @@ impl Runtime {
                     }
                 } else if event["method"] == "notify" || event["method"] == "setStatus" {
                     self.emit(s, "status.update", json!({"kind":"status","text":event["message"].as_str().or(event["statusText"].as_str()).unwrap_or("")}));
+                    if event["method"] == "notify"
+                        && matches!(event["notifyType"].as_str(), Some("warning" | "error"))
+                    {
+                        let message = event["message"]
+                            .as_str()
+                            .unwrap_or("")
+                            .replace("Run /mcp to fix.", "")
+                            .replace("MCP servers", "Connected tools")
+                            .replace("MCP server", "Connected tool")
+                            .replace("MCP", "Connected tools");
+                        self.warning(&s.owner, &s.stored, message.trim());
+                    }
                 }
             }
             "auto_retry_start" => {
@@ -3178,9 +3247,17 @@ fn tool_context(name: &str, args: &Value) -> String {
         "skill_view" | "skill_manage" => "name",
         "skills_list" => "category",
         "cronjob_manage" => "action",
-        "execute_code" => "code",
+        "execute_code" | "codemode" => "code",
         "delegate_task" => "goal",
         "message_bot" => "to",
+        name if name.starts_with("mcp__") => args
+            .as_object()
+            .and_then(|args| {
+                args.iter()
+                    .find(|(_, value)| value.is_string())
+                    .map(|(key, _)| key.as_str())
+            })
+            .unwrap_or(""),
         _ => return String::new(),
     };
     let value = &args[key];
@@ -3487,7 +3564,6 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
                 "child",
                 None,
                 Some(&json!({"parent_session":"first"})),
-                Vec::new(),
             )
             .await
             .unwrap();

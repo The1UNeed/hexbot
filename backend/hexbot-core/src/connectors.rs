@@ -215,6 +215,40 @@ pub fn mcp_servers(home: &Path, bot: &str) -> Result<Value> {
     servers.retain(|_, entry| entry.is_object() && entry["disabled"] != true);
     Ok(Value::Object(servers))
 }
+pub fn pi_mcp_servers(home: &Path, bot: &str, names: &[Value]) -> Result<Vec<Value>> {
+    let servers = mcp_servers(home, bot)?;
+    let env = credentials(home, bot)?;
+    let mut result = vec![];
+    for name in names.iter().filter_map(Value::as_str) {
+        let Some(entry) = servers.get(name) else {
+            continue;
+        };
+        if entry["transport"] == "sse" {
+            continue;
+        }
+        let description = entry.get("description").cloned();
+        let entry = expand_config(entry, &env);
+        validate_mcp_security(&entry)?;
+        let keys: &[&str] = if entry["url"].is_string() {
+            &["url", "headers", "description", "timeout"]
+        } else {
+            &["command", "args", "env", "description", "timeout"]
+        };
+        let mut config = json!({"exposure":"codemode"});
+        for key in keys {
+            if let Some(value) = entry.get(*key) {
+                config[*key] = value.clone();
+            }
+        }
+        // Descriptions are prompt metadata, never credential templates.
+        if let Some(description) = description {
+            config["description"] = description;
+        }
+        result.push(json!({"name":name,"config":config}));
+    }
+    Ok(result)
+}
+
 fn skill_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut files = vec![];
     if !root.exists() {
@@ -587,7 +621,7 @@ fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
                     } else {
                         "stdio"
                     },
-                    "tool_count": 0,
+                    "tool_count": last_test(home, &id)?.and_then(|v| v.get("tool_count").cloned()),
                     "running": !disabled
                 }
             }));
@@ -618,14 +652,36 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
         } else {
             read_env(home)?
         };
-        let result = match McpSession::connect(entry, &env).await {
-            Ok(mut session) => session.request("tools/list", json!({})).await.map(|_| ()),
-            Err(e) => Err(e),
-        };
-        return Ok(match result {
-            Ok(_) => json!({"ok":true,"message":"Connected."}),
+        let result = async {
+            let mut session = McpSession::connect(entry, &env).await?;
+            let mut count = 0;
+            let mut cursor = Value::Null;
+            let mut seen = BTreeSet::new();
+            loop {
+                let params = if cursor.is_null() {
+                    json!({})
+                } else {
+                    json!({"cursor":cursor})
+                };
+                let response = session.request("tools/list", params).await?;
+                count += response["tools"].as_array().map_or(0, Vec::len);
+                cursor = response["nextCursor"].clone();
+                if cursor.is_null() {
+                    break;
+                }
+                if seen.len() >= 1000 || !seen.insert(cursor.to_string()) {
+                    return Err(transport_error("server repeated tools cursor"));
+                }
+            }
+            Ok(count)
+        }
+        .await;
+        let result = match result {
+            Ok(count) => json!({"ok":true,"message":"Connected.","tool_count":count}),
             Err(e) => json!({"ok":false,"message":e.message}),
-        });
+        };
+        save_test(home, id, &result, true)?;
+        return Ok(result);
     }
     let s = spec(id)?;
     let keys = required_keys(home, &s)?;
@@ -729,6 +785,12 @@ fn validate_mcp(p: &Value) -> Result<(String, Value)> {
             "MCP server name must be letters, digits, - or _",
         ));
     }
+    if p["transport"] == "sse" {
+        return Err(Error::new(
+            4202,
+            "SSE is not supported. Use the server's streamable HTTP URL.",
+        ));
+    }
     let mut entry = json!({});
     if let Some(url) = p["url"].as_str().filter(|s| !s.is_empty()) {
         let parsed = url::Url::parse(url).map_err(|_| Error::new(4202, "invalid MCP URL"))?;
@@ -743,7 +805,7 @@ fn validate_mcp(p: &Value) -> Result<(String, Value)> {
             ));
         }
         let transport = p["transport"].as_str().unwrap_or("http");
-        if !matches!(transport, "http" | "streamable-http" | "sse") {
+        if !matches!(transport, "http" | "streamable-http") {
             return Err(Error::new(4202, "unknown MCP transport"));
         }
         entry["url"] = json!(url);
@@ -778,7 +840,8 @@ fn validate_mcp(p: &Value) -> Result<(String, Value)> {
             k.is_empty()
                 || k.contains(['=', '\0'])
                 || !v.is_string()
-                || v.as_str().is_some_and(|s| s.contains('\0'))
+                || v.as_str()
+                    .is_some_and(|s| s.contains('\0') || s.starts_with('!'))
         }) {
             return Err(Error::new(4202, "invalid MCP environment"));
         }
@@ -1441,117 +1504,6 @@ async fn configured_session(
     }
     cache.insert(key, (fingerprint, session.clone()));
     Ok(session)
-}
-#[cfg(test)]
-async fn mcp_tools(home: &Path, bot: &str) -> Result<Vec<Value>> {
-    Ok(mcp_tools_with_failures(home, bot).await?.0)
-}
-pub async fn mcp_tools_with_failures(home: &Path, bot: &str) -> Result<(Vec<Value>, bool)> {
-    use futures_util::{StreamExt, stream::FuturesUnordered};
-    static FAILURES: OnceLock<Mutex<HashMap<String, std::time::Instant>>> = OnceLock::new();
-    let failures = FAILURES.get_or_init(Default::default);
-    let servers = mcp_servers(home, bot)?;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(25);
-    let mut pending = FuturesUnordered::new();
-    for (server, config) in servers.as_object().unwrap() {
-        pending.push(async move {
-            let key = format!("{}\0{config}", session_key(home, bot, server));
-            {
-                let mut cache = failures.lock().await;
-                cache.retain(|_, at| at.elapsed() < std::time::Duration::from_secs(30));
-                if cache.contains_key(&key) {
-                    return None;
-                }
-            }
-            let result = tokio::time::timeout_at(deadline, async {
-                let session = configured_session(home, bot, server, config).await?;
-                discover_tools(home, bot, server, session).await
-            })
-            .await;
-            match result {
-                Ok(Ok(found)) => Some(found),
-                error => {
-                    failures.lock().await.insert(key, std::time::Instant::now());
-                    close_config(home, bot, server).await;
-                    eprintln!("MCP discovery failed for {server}: {error:?}");
-                    None
-                }
-            }
-        });
-    }
-    let mut failed = false;
-    let mut tools = vec![];
-    while let Some(result) = pending.next().await {
-        match result {
-            Some(found) => tools.extend(found),
-            None => failed = true,
-        }
-    }
-    tools.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
-    Ok((tools, failed))
-}
-
-#[cfg(test)]
-async fn mcp_tools_config(
-    home: &Path,
-    bot: &str,
-    server: &str,
-    config: &Value,
-) -> Result<Vec<Value>> {
-    let session = configured_session(home, bot, server, config).await?;
-    discover_tools(home, bot, server, session).await
-}
-async fn discover_tools(
-    home: &Path,
-    bot: &str,
-    server: &str,
-    session: Arc<Mutex<McpSession>>,
-) -> Result<Vec<Value>> {
-    let mut tools = vec![];
-    let mut session = session.lock().await;
-    let mut cursor = Value::Null;
-    let mut seen = BTreeSet::new();
-    loop {
-        let params = if cursor.is_null() {
-            json!({})
-        } else {
-            json!({"cursor":cursor})
-        };
-        let response = match session.request("tools/list", params).await {
-            Ok(response) => response,
-            Err(error) => {
-                close_config(home, bot, server).await;
-                return Err(error);
-            }
-        };
-        for tool in response["tools"].as_array().into_iter().flatten() {
-            let Some(name) = tool["name"].as_str() else {
-                continue;
-            };
-            tools.push(json!({
-                "name": format!("mcp_{server}_{name}"),
-                "server": server,
-                "tool": name,
-                "description": tool["description"].as_str().unwrap_or(""),
-                "inputSchema": tool.get("inputSchema").cloned().unwrap_or_else(|| {
-                    json!({
-                    "type":"object",
-                    "properties":{
-                    }
-                    }
-                    )
-                })
-            }));
-        }
-        cursor = response["nextCursor"].clone();
-        if cursor.is_null() {
-            break;
-        }
-        if seen.len() >= 1000 || !seen.insert(cursor.to_string()) {
-            return Err(transport_error("server repeated tools cursor"));
-        }
-    }
-    Ok(tools)
 }
 pub async fn mcp_call(
     home: &Path,

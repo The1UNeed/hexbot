@@ -193,7 +193,37 @@ never granted: permission requests are cancelled and no file bridge is
 offered, so Hexbot actions come back as `<tool_call>` text and run through
 the section's guarded tools.
 
-MCP discovery runs servers concurrently under a shared 25-second deadline, preserves successful results, and caches failures for 30 seconds. Hidden turns include prompt submission in their 30-minute deadline.
+New sections freeze connected server names and reach their tools through Pi's
+`builtin:mcp` and `builtin:codemode`. Configs with expanded credentials travel
+through the private bridge in memory on the first prompt, never through the
+session config, transcript, prompt, or Pi environment. The extension escapes
+Pi's config templates before registration. Existing sections retain their
+frozen Rust bridge tools, including legacy SSE servers. New SSE entries are
+rejected; new sections skip existing SSE entries with a warning.
+
+Manual and Auto ask for each connected tool call unless the server declares
+`readOnlyHint: true`. Resource tools are read-only. Allow in this section
+covers that server until the Pi process ends; Bypass never asks. Codemode
+itself needs no approval, but every nested tool call passes the same gates.
+Its QuickJS worker has no Node, filesystem, or network globals. Its `models`
+helpers can call provider APIs using session credentials and incur costs.
+
+Stdio servers are trusted admin-configured code, outside the shell sandbox.
+Pi starts them in the bot workspace with its allowlisted environment and only
+the server's explicit `env`, rather than all connector credentials. Reference
+needed keys explicitly in `env`. HTTP headers can reference credentials in
+`config.yaml`. OAuth sign-in UI is not yet available. `mcp-auth.json` is a
+protected credential file.
+
+Pi 1.0.1's `--tools` filters future deferred registrations too. MCP sections
+therefore use `--no-builtin-tools`; the extension selects the frozen tool names
+and codemode once at `session_start`. Deferred tools never enter the model's
+tool declarations. `--no-approve` keeps workspace `.pi/mcp.json` ignored even
+if Pi has a saved trust decision. Sections without connected servers load
+neither builtin. The daemon's frozen prompt lists server namespaces only;
+Pi's changing server section is hidden by the forced-prompt projection.
+
+Hidden turns include prompt submission in their 30-minute deadline.
 Recovery quarantines damaged data; transient I/O or SQLite failures leave the
 files in place for a later attempt. A quarantined section moves its
 `conversation.jsonl` aside as `conversation.quarantine-<id>.jsonl` and refuses

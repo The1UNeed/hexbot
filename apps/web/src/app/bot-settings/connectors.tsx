@@ -265,8 +265,10 @@ function ConnectorRow({
           ) : null}
           {connector.mcp ? (
             <p className="text-muted">
-              {connector.mcp.tool_count} tools · {connector.mcp.transport} ·{' '}
-              {connector.mcp.running ? 'running' : 'not running'}
+              {connector.mcp.tool_count === null
+                ? 'Not tested'
+                : `${connector.mcp.tool_count} tools`}{' '}
+              · {connector.mcp.transport} · {connector.mcp.running ? 'running' : 'not running'}
             </p>
           ) : null}
           {connector.last_error ? (

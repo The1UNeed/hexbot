@@ -114,6 +114,16 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
   const rooms = useRooms.getState()
 
   switch (event.type) {
+    case 'warning':
+      if (typeof payload.section_id === 'string' && typeof payload.message === 'string') {
+        transcripts.setWarning(
+          typeof payload.room_id === 'string' ? `room:${payload.room_id}` : payload.section_id,
+          payload.message
+        )
+      }
+
+      return
+
     case 'hexbot.bots.changed':
       effects.refreshBots()
 

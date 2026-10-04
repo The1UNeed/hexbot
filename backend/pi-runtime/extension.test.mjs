@@ -5,7 +5,7 @@ import {createServer} from 'node:net';
 import {once} from 'node:events';
 import {tmpdir, homedir} from 'node:os';
 import {join, dirname} from 'node:path';
-import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, sanitizeSearchResult, hostWriteTier} from './extension.ts';
+import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, sanitizeSearchResult, hostWriteTier, escapeMcpValues} from './extension.ts';
 
 // These gates assume the OS sandbox is in place, as it always is on macOS. On
 // Linux the probe looks for bwrap on PATH, so a stand-in that passes the probe
@@ -16,23 +16,25 @@ writeFileSync(join(shims, 'bwrap'), '#!/bin/sh\nwhile [ "$#" -gt 0 ] && [ "$1" !
 process.env.PATH = `${shims}:${process.env.PATH ?? ''}`;
 process.on('exit', () => rmSync(shims, {recursive:true, force:true}));
 
-function fixture(t, mode = 'manual', enabledToolsets = []) {
+function fixture(t, mode = 'manual', enabledToolsets = [], extra = {}) {
   const home = mkdtempSync(join(tmpdir(), 'hexbot-gates-'));
   t.after(() => rmSync(home, {recursive:true, force:true}));
-  const config = {home, cwd:home, prompt:'Frozen prompt', tools:[], enabledToolsets, provider:'test', model:'primary'};
+  const config = {home, cwd:home, prompt:'Frozen prompt', tools:[], enabledToolsets, provider:'test', model:'primary', ...extra};
   const path = join(home, 'config.json'); writeFileSync(path, JSON.stringify(config));
   process.env.HEXBOT_SESSION_CONFIG = path;
-  const handlers = {}, tools = {}, requests = [], choices = [], models = [];
+  const handlers = {}, tools = {}, requests = [], choices = [], models = [], registrations = [], notices = [], activeTools = [];
   const settings = {...config, approvalMode:mode};
   const ctx = {model:{provider:'test',id:'primary'}, modelRegistry:{find:(provider,id)=>({provider,id})}, ui:{
     async input(title) {
       const request = JSON.parse(title.slice('__HEXBOT_TOOL__'.length)); requests.push(request);
+      if (request.name === 'hexbot_mcp_servers') return JSON.stringify({result:ctx.servers ?? []});
       if (request.name === 'hexbot_session_settings') return JSON.stringify({result:settings});
       return JSON.stringify({result:{}});
     },
+    notify:(message, type)=>notices.push({message,type}),
     async select(title, options) {choices.push({...JSON.parse(title.slice('__HEXBOT_APPROVAL__'.length)), options}); return ctx.choice ?? 'deny';}
   }};
-  const pi = {on:(name,handler)=>handlers[name]=handler, registerTool:tool=>tools[tool.name]=tool, registerProvider(){}, async setModel(model){models.push(model);ctx.model=model;return true;}, sendMessage(){}, getThinkingLevel(){}};
+  const pi = {setActiveTools:names=>activeTools.push(names), getAllTools:()=>Object.values(tools), registerMcpServer:(name, config)=>registrations.push({name,config}), on:(name,handler)=>handlers[name]=handler, registerTool:tool=>tools[tool.name]=tool, registerProvider(){}, async setModel(model){models.push(model);ctx.model=model;return true;}, sendMessage(){}, getThinkingLevel(){}};
   hexbot(pi);
   let calls = 0;
   const gate = (toolName, input, toolCallId = `call-${++calls}`) => handlers.tool_call({toolName, input, toolCallId}, ctx);
@@ -43,7 +45,7 @@ function fixture(t, mode = 'manual', enabledToolsets = []) {
     assert.equal(await gate(toolName, checked, toolCallId), undefined);
     return tools[toolName].execute(toolCallId, input, undefined, undefined, ctx);
   };
-  return {home, handlers, tools, settings, ctx, requests, choices, models, gate, run, swap};
+  return {home, handlers, tools, settings, ctx, requests, choices, models, registrations, notices, activeTools, gate, run, swap};
 }
 
 test('case cannot disguise credential or host configuration paths on case-insensitive file systems', {skip: process.platform !== 'darwin'}, async t => {
@@ -455,6 +457,7 @@ test('a cwd inside the home opens nothing; output folders and an outside workspa
 test('SSH public files stay readable, private keys and auth stores do not, and children get no secrets', t => {
   const f = fixture(t);
   for (const name of ['known_hosts', 'config', 'id_ed25519.pub']) assert.equal(credentialPath(join(homedir(), '.ssh', name), f.home), false);
+  assert.equal(credentialPath(join(f.home, 'profiles/owl/pi/mcp-auth.json'), f.home), true);
   for (const name of ['id_ed25519', 'work.pem', 'deploy.key']) assert.equal(credentialPath(join(homedir(), '.ssh', name), f.home), true);
   assert.equal(credentialPath(join(f.home, 'desktop-data/Local Storage/token'), f.home), true);
   assert.equal(credentialPath(join(f.home, '../connect.json'), f.home), false);
@@ -509,4 +512,65 @@ for (const mode of ['manual', 'smart']) test(`identity keys are blocked by both 
     await assert.rejects(f.swap('read', {path:join(f.home, 'safe.txt')}, {path}), /Credential/);
   }
   assert.equal(credentialPath(join(f.home, '../connect-identity.key'), f.home), false);
+});
+
+test('connected servers register once in memory and never for legacy or restricted sections', async t => {
+  const f = fixture(t, 'smart', [], {mcpServers:['demo']});
+  await f.handlers.session_start({}, f.ctx);
+  assert.deepEqual(f.activeTools, [['codemode']]);
+  f.ctx.servers = [{name:'demo',config:{command:'node',env:{TOKEN:'!bad $HOME ${KEY} $$'},headers:{Authorization:'!secret'},exposure:'codemode'}}];
+  for (let n = 0; n < 2; n++) assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Frozen prompt'});
+  assert.equal(f.requests.filter(r => r.name === 'hexbot_mcp_servers').length, 1);
+  assert.equal(f.activeTools.length, 1);
+  assert.deepEqual(f.registrations, [{name:'demo',config:{...f.ctx.servers[0].config,env:{TOKEN:'$!bad $$HOME $${KEY} $$$$'},headers:{Authorization:'$!secret'}}}]);
+  for (const extra of [{}, {mcpServers:[]}, {mcpServers:['demo'],restricted:[]}]) {
+    const f = fixture(t, 'smart', [], extra);
+    await f.handlers.session_start({}, f.ctx);
+    assert.deepEqual(f.activeTools, []);
+    await f.handlers.before_agent_start({}, f.ctx);
+    assert.equal(f.requests.some(r => r.name === 'hexbot_mcp_servers'), false);
+  }
+});
+
+test('escaped server values survive Pi resolution without commands or substitutions', async () => {
+  const {resolveConfigValue} = await import('./node_modules/@earendil-works/pi-coding-agent/dist/core/resolve-config-value.js');
+  for (const value of ['!exit 99', '$HOME', '${HOME}', '$!literal', '$$HOME', '!echo $HOME', '', 'plain']) {
+    assert.equal(resolveConfigValue(escapeMcpValues({value}).value), value);
+  }
+});
+
+test('connected tool approvals follow annotations and allow a whole server only when chosen', async t => {
+  for (const mode of ['manual', 'smart', 'off']) {
+    const f = fixture(t, mode, [], {mcpServers:['a__long-name','b']});
+    const name = 'mcp__a__long_name__change';
+    f.tools[name] = {name,namespace:{name:'mcp__a__long_name'}};
+    assert.equal(await f.gate('codemode', {code:'anything'}), undefined);
+    for (const annotations of [undefined, {readOnlyHint:false}, {readOnlyHint:true}]) {
+      f.tools[name].annotations = annotations;
+      assert.equal((await f.gate(name, {}))?.block, mode === 'off' || annotations?.readOnlyHint === true ? undefined : true);
+    }
+    f.tools[name].annotations = undefined;
+    f.ctx.choice = 'once';
+    assert.equal(await f.gate(name, {}), undefined);
+    f.ctx.choice = 'deny';
+    assert.equal((await f.gate(name, {}))?.block, mode === 'off' ? undefined : true);
+    f.ctx.choice = 'session';
+    assert.equal(await f.gate(name, {}), undefined);
+    f.ctx.choice = 'deny';
+    assert.equal(await f.gate(name, {}), undefined);
+    assert.equal((await f.gate('mcp__b__change', {}))?.block, mode === 'off' ? undefined : true);
+    if (mode !== 'off') assert.match(f.choices[0].command, /^a__long-name\/change/);
+    assert.equal(await f.gate('read_mcp_resource', {}), undefined);
+  }
+});
+
+test('nested codemode calls use the same gate and execution id as direct calls', async t => {
+  const f = fixture(t, 'smart', ['terminal','file']);
+  const event = {toolName:'bash',toolCallId:'c1/1',parentToolCallId:'c1',input:{command:'echo nested',full_access:true}};
+  assert.equal((await f.handlers.tool_call(event, f.ctx)).block, true);
+  f.ctx.choice = 'once';
+  assert.equal(await f.handlers.tool_call(event, f.ctx), undefined);
+  assert.match(JSON.stringify(await f.tools.bash.execute('c1/1', event.input)), /nested/);
+  f.ctx.choice = 'deny';
+  assert.equal((await f.handlers.tool_call({...event,toolName:'write',toolCallId:'c1/2',input:{path:'/usr/local/hexbot-nested.txt',content:'x'}},f.ctx)).block, true);
 });

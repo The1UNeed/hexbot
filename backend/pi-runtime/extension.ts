@@ -12,7 +12,14 @@ export default function hexbot(pi: any) {
   probeIsolation();
   const config = JSON.parse(readFileSync(process.env.HEXBOT_SESSION_CONFIG!, 'utf8'));
   let currentContext: any;
-  pi.on('session_start', async (_event: any, ctx: any) => { currentContext = ctx; });
+  pi.on('session_start', async (_event: any, ctx: any) => {
+    currentContext = ctx;
+    // --tools also filters deferred registrations in Pi 1.0.1. Select the
+    // frozen declarations here so later MCP registrations remain callable.
+    if (!Array.isArray(config.restricted) && config.mcpServers?.length) {
+      pi.setActiveTools([...config.tools.map((tool: any) => tool.name), ...wrapped, 'codemode']);
+    }
+  });
   registerAcp(pi, config, async (name: string, args: any) => {
     if (!currentContext) throw new Error('Pi session context is unavailable');
     const raw = await currentContext.ui.input('__HEXBOT_TOOL__' + JSON.stringify({name, args}));
@@ -71,6 +78,23 @@ export default function hexbot(pi: any) {
   let live = config;
   let primary: any;
   const refresh = async (ctx: any) => { live = {...config, ...await bridge(ctx, 'hexbot_session_settings')}; };
+  // Resolve credentials in memory on the first prompt. RPC cannot answer a
+  // bridge request during session_start, before its stdin reader is attached.
+  let mcpRegistered = false;
+  const registerMcp = async (ctx: any) => {
+    if (mcpRegistered || Array.isArray(config.restricted) || !Array.isArray(config.mcpServers) || !config.mcpServers.length) return;
+    mcpRegistered = true;
+    let servers: any[] = [];
+    try { servers = await bridge(ctx, 'hexbot_mcp_servers'); }
+    catch (error: any) { ctx.ui.notify(`Connected tools are unavailable: ${error.message}`, 'warning'); }
+    for (const {name, config: entry} of servers) {
+      try { pi.registerMcpServer(name, {...entry, ...(entry.env && {env: escapeMcpValues(entry.env)}), ...(entry.headers && {headers: escapeMcpValues(entry.headers)})}); }
+      catch (error: any) { ctx.ui.notify(`Connected tool ${name}: ${error.message}`, 'warning'); }
+    }
+    // Pi starts connecting from a change event it emits asynchronously; yield so
+    // a script in this very turn finds the connection it has to wait for.
+    await new Promise(resolve => setImmediate(resolve));
+  };
   // Approval modes follow Codex. Auto ('smart'): commands run in a sandbox with
   // no network that writes only to the workspace, and the file tools write freely
   // inside it. Manual: the sandbox is read-only and every file change asks. Off
@@ -98,12 +122,24 @@ export default function hexbot(pi: any) {
   };
   const check = async (event: any, ctx: any, checked: (path: string) => void = () => {}) => {
     const browser = event.toolName === 'browser_console' && typeof event.input.expression === 'string';
-    if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser) return;
+    const mcp = event.toolName.startsWith('mcp__');
+    if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp) return;
     try {
       await refresh(ctx);
       if (live.approvalMode === 'off') return;
       const cwd = live.cwd ?? config.cwd;
       let ask: {key: string, command: string, reason: string} | undefined;
+      if (mcp) {
+        const tool = pi.getAllTools().find((candidate: any) => candidate.name === event.toolName);
+        if (tool?.annotations?.readOnlyHint !== true) {
+          const namespace = tool?.namespace?.name ?? event.toolName;
+          const server = config.mcpServers?.find((name: string) => `mcp__${name.replace(/-/g, '_')}` === namespace) ?? namespace;
+          const label = `${server}/${event.toolName.slice(namespace.length + 2) || event.toolName}`;
+          const args = JSON.stringify(event.input ?? {});
+          ask = {key: `mcp:${server}`, command: args === '{}' ? label : `${label} ${args.length > 300 ? args.slice(0, 300) + '…' : args}`,
+            reason: live.approvalMode === 'manual' ? 'Manual mode asks before a connected tool runs.' : 'Auto mode asks before a connected tool changes anything.'};
+        }
+      }
       if (['read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName)) {
         const input = event.input.path ?? '.';
         const path = canonicalPath(input, cwd);
@@ -235,6 +271,7 @@ export default function hexbot(pi: any) {
   });
   pi.on('before_agent_start', async (_event: any, ctx: any) => {
     await refresh(ctx);
+    await registerMcp(ctx);
     primary ??= ctx.model;
     const model = ctx.modelRegistry.find(live.provider, live.model) ?? primary;
     if (model && (ctx.model?.provider !== model.provider || ctx.model?.id !== model.id)) await pi.setModel(model);
@@ -385,4 +422,8 @@ export function shellEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   // daemon applies the same list from credential-policy.json to its children.
   const inherited = new Set((credentialPolicy.environment as string[]).map(name => name.toUpperCase()));
   return Object.fromEntries(Object.entries(env).filter(([name]) => inherited.has(name.toUpperCase()) || /^LC_/i.test(name)));
+}
+
+export function escapeMcpValues(values: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value.replace(/\$/g, '$$$$').replace(/^!/, '$!')]));
 }

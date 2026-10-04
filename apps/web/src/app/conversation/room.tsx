@@ -31,6 +31,7 @@ import {
   ApprovalCard,
   bubbleClass,
   CardRow,
+  ConnectedToolsNotice,
   DaySeparator,
   Markdown,
   transcriptClass,
@@ -346,6 +347,7 @@ export function RoomConversation() {
           <Info size={16} />
         </button>
       </header>
+      <ConnectedToolsNotice sectionId={`room:${roomId}`} />
       {status === 'needs_you' ? (
         <div className="shrink-0 pb-1">
           <WaitingBanner name={waitingBot(events, bots, room.members)} />

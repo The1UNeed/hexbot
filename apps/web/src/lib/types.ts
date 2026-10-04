@@ -192,7 +192,7 @@ export interface Connector {
     /** The server name in its tools' names (`mcp_<name>_<tool>`); may contain underscores. */
     name?: string
     running: boolean
-    tool_count: number
+    tool_count: number | null
     transport: 'http' | 'sse' | 'stdio'
   }
   name: string

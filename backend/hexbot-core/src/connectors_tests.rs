@@ -361,6 +361,9 @@ async fn mcp_validation_rejects_bad_names_urls_and_environment() {
         json!({"name":"demo","url":"https://secret:token@example.com"}),
         json!({"name":"demo","command":"node","args":"not an array"}),
         json!({"name":"demo","command":"node","env":{"BAD=KEY":"secret"}}),
+        json!({"name":"demo","command":"node","env":{"TOKEN":"!echo bad"}}),
+        json!({"name":"demo","command":"node","transport":"sse"}),
+        json!({"name":"demo","url":"https://example.com/mcp","transport":"sse"}),
     ] {
         assert_eq!(
             call(home.path(), "alice", "hexbot.connectors.add_mcp", p)
@@ -379,9 +382,14 @@ async fn stdio_mcp_initializes_discovers_executes_and_obeys_bot_disable() {
     let script = home.path().join("mcp.cjs");
     fs::write(&script,r#"const rl=require('node:readline').createInterface({input:process.stdin});let initialized=false;rl.on('line',line=>{let m=JSON.parse(line);if(m.method==='notifications/initialized'){initialized=true;return;}let result;if(m.method==='initialize') result={protocolVersion:'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}};else if(m.method==='tools/list'){if(!initialized)process.exit(9);result={tools:[{name:'echo',description:'Echo',inputSchema:{type:'object',properties:{text:{type:'string'}}}}]};}else result={content:[{type:'text',text:m.params.arguments.text+' '+process.env.CONNECTOR_FIXTURE}]};process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\n');});"#).unwrap();
     rpc(home.path(),"hexbot.connectors.add_mcp",json!({"name":"fixture","command":"node","args":[script],"env":{"CONNECTOR_FIXTURE":"okay"}})).await;
-    let tools = connectors::mcp_tools(home.path(), "owl").await.unwrap();
-    assert_eq!(tools[0]["name"], "mcp_fixture_echo");
-    assert_eq!(tools[0]["server"], "fixture");
+    let tested = connectors::probe(home.path(), "mcp:fixture", Some("owl"))
+        .await
+        .unwrap();
+    assert_eq!(tested["tool_count"], 1);
+    assert_eq!(
+        connectors::get(home.path(), None, "mcp:fixture").unwrap()["mcp"]["tool_count"],
+        1
+    );
     assert_eq!(
         connectors::mcp_call(
             home.path(),
@@ -401,8 +409,7 @@ async fn stdio_mcp_initializes_discovers_executes_and_obeys_bot_disable() {
     )
     .await;
     assert!(
-        connectors::mcp_tools(home.path(), "owl")
-            .await
+        connectors::pi_mcp_servers(home.path(), "owl", &[json!("fixture")])
             .unwrap()
             .is_empty()
     );
@@ -497,10 +504,6 @@ async fn http_mcp_keeps_session_headers_and_decodes_sse() {
     cfg["mcp_servers"]["broken"] = json!({"url":url.replace("/mcp", "/broken")});
     common::write_config(home.path(), &cfg).unwrap();
     assert_eq!(
-        connectors::mcp_tools(home.path(), "owl").await.unwrap()[0]["tool"],
-        "echo"
-    );
-    assert_eq!(
         connectors::mcp_call(
             home.path(),
             "owl",
@@ -514,12 +517,7 @@ async fn http_mcp_keeps_session_headers_and_decodes_sse() {
     );
     assert_eq!(
         *calls.lock().unwrap(),
-        [
-            "initialize",
-            "notifications/initialized",
-            "tools/list",
-            "tools/call"
-        ]
+        ["initialize", "notifications/initialized", "tools/call"]
     );
     rpc(
         home.path(),
@@ -588,15 +586,17 @@ async fn legacy_sse_mcp_discovers_paginated_tools_and_calls_unicode() {
         .route("/messages", post(legacy_post))
         .with_state(tx);
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    rpc(
+    common::write_config(
         home.path(),
-        "hexbot.connectors.add_mcp",
-        json!({"name":"legacy","url":url,"transport":"sse"}),
+        &json!({"mcp_servers":{"legacy":{"url":url,"transport":"sse"}}}),
     )
-    .await;
-    let tools = connectors::mcp_tools(home.path(), "owl").await.unwrap();
-    assert_eq!(tools.len(), 2);
-    assert_eq!(tools[1]["tool"], "second");
+    .unwrap();
+    assert_eq!(
+        connectors::probe(home.path(), "mcp:legacy", Some("owl"))
+            .await
+            .unwrap()["tool_count"],
+        2
+    );
     assert_eq!(
         connectors::mcp_call(
             home.path(),
@@ -635,11 +635,7 @@ async fn mcp_refuses_existing_and_new_malicious_shell_entries() {
         4202
     );
     common::write_config(home.path(), &json!({"mcp_servers":{"bad":entry}})).unwrap();
-    let (tools, failed) = connectors::mcp_tools_with_failures(home.path(), "owl")
-        .await
-        .unwrap();
-    assert!(tools.is_empty());
-    assert!(failed);
+    assert!(connectors::pi_mcp_servers(home.path(), "owl", &[json!("bad")]).is_err());
 }
 
 #[tokio::test]
@@ -703,12 +699,6 @@ async fn internal_mcp_config_isolates_credentials_and_resolves_explicit_env_refs
     let script = home.path().join("desktop.cjs");
     fs::write(&script,r#"const rl=require('node:readline').createInterface({input:process.stdin});rl.on('line',line=>{const m=JSON.parse(line);if(!m.id)return;let result=m.method==='initialize'?{protocolVersion:'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'desktop',version:'1'}}:m.method==='tools/list'?{tools:[{name:'inspect',inputSchema:{type:'object'}}]}:{content:[{type:'text',text:JSON.stringify({secret:process.env.NOTION_API_KEY??null,explicit:process.env.EXPLICIT,path:!!process.env.PATH})}]};process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\n');});"#).unwrap();
     let config = json!({"command":"node","args":[script],"isolated_env":true,"env":{"EXPLICIT":"${env:CONNECTOR_FIXTURE}"}});
-    assert_eq!(
-        connectors::mcp_tools_config(home.path(), "owl", "internal-desktop", &config)
-            .await
-            .unwrap()[0]["tool"],
-        "inspect"
-    );
     let result = connectors::mcp_call_config(
         home.path(),
         "owl",
@@ -741,7 +731,8 @@ async fn deleting_a_bot_stops_its_mcp_children() {
     let script = home.path().join("counted.cjs");
     fs::write(&script, format!(r#"require('node:fs').appendFileSync({starts:?},'start\n');const rl=require('node:readline').createInterface({{input:process.stdin}});rl.on('line',line=>{{const m=JSON.parse(line);if(!m.id)return;const result=m.method==='initialize'?{{protocolVersion:'2025-03-26',capabilities:{{tools:{{}}}},serverInfo:{{name:'counted',version:'1'}}}}:{{tools:[{{name:'count',inputSchema:{{type:'object'}}}}]}};process.stdout.write(JSON.stringify({{jsonrpc:'2.0',id:m.id,result}})+'\n');}});"#)).unwrap();
     let config = json!({"command":"node","args":[script]});
-    let discover = || connectors::mcp_tools_config(home.path(), "owl", "counted", &config);
+    let discover =
+        || connectors::mcp_call_config(home.path(), "owl", "counted", &config, "count", json!({}));
     let started = || fs::read_to_string(&starts).unwrap().lines().count();
     discover().await.unwrap();
     discover().await.unwrap();
@@ -769,60 +760,7 @@ async fn deleting_a_bot_stops_its_mcp_children() {
 }
 
 #[tokio::test]
-async fn discovery_runs_concurrently_and_caches_failed_servers() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let home = setup();
-    let attempts = Arc::new(AtomicUsize::new(0));
-    let app = Router::new().route("/stalled", post({
-        let attempts = attempts.clone();
-        move || { let attempts = attempts.clone(); async move {
-            attempts.fetch_add(1, Ordering::SeqCst);
-            std::future::pending::<StatusCode>().await
-        }}
-    })).route("/healthy", post(|axum::Json(message): axum::Json<Value>| async move {
-        axum::Json(json!({"jsonrpc":"2.0","id":message["id"],"result":match message["method"].as_str() {
-            Some("initialize") => json!({"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}),
-            _ => json!({"tools":[{"name":"echo","inputSchema":{"type":"object"}}]})
-        }}))
-    }));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    common::write_config(
-        home.path(),
-        &json!({"mcp_servers":{
-            "a":{"url":format!("{url}/stalled"),"transport":"http"},
-            "b":{"url":format!("{url}/stalled"),"transport":"http"},
-            "c":{"url":format!("{url}/healthy"),"transport":"http"}
-        }}),
-    )
-    .unwrap();
-    let (tools, failed) = tokio::time::timeout(
-        std::time::Duration::from_secs(28),
-        connectors::mcp_tools_with_failures(home.path(), "owl"),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert!(failed);
-    assert_eq!(tools.len(), 1);
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
-    let (tools, failed) = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        connectors::mcp_tools_with_failures(home.path(), "owl"),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert!(failed);
-    assert_eq!(tools.len(), 1);
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
-    connectors::close_bot(home.path(), "owl").await;
-    server.abort();
-}
-
-#[tokio::test]
-async fn failed_mcp_calls_and_discovery_evict_both_session_paths() {
+async fn failed_mcp_calls_evict_both_session_paths() {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let home = setup();
     let initialized = Arc::new(AtomicUsize::new(0));
@@ -862,7 +800,7 @@ async fn failed_mcp_calls_and_discovery_evict_both_session_paths() {
     let config = connectors::mcp_servers(home.path(), "owl").unwrap()["fixture"].clone();
     for internal in [false, true] {
         let name = if internal { "internal" } else { "fixture" };
-        connectors::mcp_tools_config(home.path(), "owl", name, &config)
+        connectors::mcp_call_config(home.path(), "owl", name, &config, "echo", json!({}))
             .await
             .unwrap();
         let before = initialized.load(Ordering::SeqCst);
@@ -880,15 +818,54 @@ async fn failed_mcp_calls_and_discovery_evict_both_session_paths() {
         assert_eq!(initialized.load(Ordering::SeqCst), before + 1);
         fail.store(true, Ordering::SeqCst);
         assert!(
-            connectors::mcp_tools_config(home.path(), "owl", name, &config)
+            connectors::mcp_call_config(home.path(), "owl", name, &config, "echo", json!({}))
                 .await
                 .is_err()
         );
-        connectors::mcp_tools_config(home.path(), "owl", name, &config)
+        connectors::mcp_call_config(home.path(), "owl", name, &config, "echo", json!({}))
             .await
             .unwrap();
         assert_eq!(initialized.load(Ordering::SeqCst), before + 2);
         connectors::close_config(home.path(), "owl", name).await;
     }
     server.abort();
+}
+
+#[test]
+fn pi_servers_resolve_only_explicit_credentials_and_keep_frozen_names() {
+    let home = setup();
+    fs::write(
+        home.path().join(".env"),
+        "KEY='secret-$HOME'\nUNRELATED='hidden'\n",
+    )
+    .unwrap();
+    common::write_config(home.path(), &json!({"mcp_servers":{
+        "stdio":{"command":"node","args":["server.js"],"env":{"TOKEN":"${KEY}"},"isolated_env":false,"description":"Uses ${KEY}"},
+        "http":{"url":"https://example.com/mcp","transport":"http","headers":{"Authorization":"Bearer ${KEY}"},"timeout":12},
+        "disabled":{"command":"node","disabled":true},
+        "legacy":{"url":"https://example.com/sse","transport":"sse"},
+        "new":{"command":"node"}
+    }})).unwrap();
+    let resolved = connectors::pi_mcp_servers(
+        home.path(),
+        "owl",
+        &[
+            json!("stdio"),
+            json!("http"),
+            json!("disabled"),
+            json!("legacy"),
+            json!("missing"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        resolved,
+        vec![
+            json!({"name":"stdio","config":{"command":"node","args":["server.js"],"env":{"TOKEN":"secret-$HOME"},"exposure":"codemode","description":"Uses ${KEY}"}}),
+            json!({"name":"http","config":{"url":"https://example.com/mcp","headers":{"Authorization":"Bearer secret-$HOME"},"timeout":12,"exposure":"codemode"}})
+        ]
+    );
+    assert!(
+        connectors::get(home.path(), None, "mcp:stdio").unwrap()["mcp"]["tool_count"].is_null()
+    );
 }

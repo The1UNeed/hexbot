@@ -108,6 +108,11 @@ more freedom and more capability than a hosted product can offer.
 - Without an OS sandbox (Linux where bubblewrap fails its startup probe)
   Hexbot warns, Settings shows a notice, Manual and Auto ask before every
   shell command and code run, and scheduled scripts run only in Bypass.
+- Connected tools in new sections use Pi's built-in MCP through codemode.
+  The section freezes server namespaces and tool declarations. Manual and Auto
+  ask unless the server marks a tool read-only; Allow in this section covers
+  that server, and Bypass never asks. Every nested codemode call uses the same
+  approval gate. Saved sections keep their existing Rust bridge tools.
 - Approvals render inline in the transcript with Approve, Allow in this
   section, and Deny. "Allow in this section" quiets the same kind of request
   for the rest of that section; nothing is saved across sections. Requests
