@@ -175,7 +175,9 @@ export default function hexbot(pi: any) {
       if (name === 'bash') {
         const level = allowed.level;
         try {
-          return await factory(cwd, options(level)).execute(id, {command: args.command, timeout: args.timeout}, signal, update);
+          const result = await factory(cwd, options(level)).execute(id, {command: args.command, timeout: args.timeout}, signal, update);
+          if (level === 'confined' && result.isError) result.content.push({type: 'text', text: sandboxNote()});
+          return result;
         } catch (error: any) {
           if (level !== 'confined' || !/Command exited with code/.test(error?.message ?? '')) throw error;
           throw new Error(error.message + '\n\n' + sandboxNote());

@@ -2,7 +2,7 @@
 
 The `hexbot` binary is the native daemon. Rust owns HTTP/WebSocket serving,
 authentication, storage, rooms, tool dispatch, providers, scheduling, Connect,
-and updates. A pinned **Pi 0.87.1** subprocess runs each agent conversation.
+and updates. A pinned **Pi 1.0.1** subprocess runs each agent conversation.
 Pi is the agent runtime at [earendil-works/pi](https://github.com/earendil-works/pi),
 not Raspberry Pi hardware. The private extension in `../pi-runtime/extension.ts`
 connects Pi tools, approvals, clarification, provider auth, and events to Rust.

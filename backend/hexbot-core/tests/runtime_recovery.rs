@@ -347,7 +347,7 @@ fn rejects_wrong_owner_and_broken_parent_graph_without_projection_changes() {
 }
 
 #[test]
-#[ignore = "requires HEXBOT_TEST_PI pointing to the pinned Pi 0.87.1 executable"]
+#[ignore = "requires HEXBOT_TEST_PI pointing to the pinned Pi 1.0.1 executable"]
 fn actual_pi_tree_and_compaction_fixture_reconciles_without_a_provider_call() {
     let executable =
         fs::canonicalize(std::env::var_os("HEXBOT_TEST_PI").expect("set HEXBOT_TEST_PI")).unwrap();
