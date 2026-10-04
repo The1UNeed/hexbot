@@ -1,9 +1,17 @@
 "use client";
 import { useState, useTransition } from "react";
 import { track } from "@/lib/analytics";
+import type { DaemonStatus } from "@/lib/reachability";
 import { renameDaemon, revokeDaemon } from "./actions";
 
-export interface DaemonView { id: string; name: string; hostname: string; online: boolean; lastSeen: string; openUrl: string }
+export interface DaemonView { id: string; name: string; hostname: string; status: DaemonStatus; lastSeen: string; openUrl: string }
+
+const statusLabel = (daemon: DaemonView) =>
+  daemon.status === "online" ? "Online" : daemon.status === "unreachable" ? "Running, but not reachable" : `Offline, last seen ${daemon.lastSeen}`;
+const openHint = (daemon: DaemonView) =>
+  daemon.status === "unreachable"
+    ? "The daemon is running but its tunnel is not answering. Hexbot retries on its own; check the machine's network if this lasts."
+    : "The daemon has not checked in for a while. Start hexbot serve on it.";
 
 export function DaemonRow({ daemon }: { daemon: DaemonView }) {
   const [editing, setEditing] = useState(false);
@@ -33,16 +41,17 @@ export function DaemonRow({ daemon }: { daemon: DaemonView }) {
         ) : (
           <div className="row" style={{ gap: ".75rem" }}>
             <span className="name">{daemon.name}</span>
-            <span className={`status${daemon.online ? " online" : ""}`}><span className={`dot${daemon.online ? " dot-online" : ""}`} aria-hidden="true"></span>{daemon.online ? "Online" : `Offline, last seen ${daemon.lastSeen}`}</span>
+            <span className={`status${daemon.status === "online" ? " online" : ""}`}><span className={`dot${daemon.status === "online" ? " dot-online" : ""}`} aria-hidden="true"></span>{statusLabel(daemon)}</span>
           </div>
         )}
         <span className="hostname">{daemon.hostname}</span>
+        {daemon.status === "online" ? null : <p className="meta">{openHint(daemon)}</p>}
         {error ? <p className="small danger" role="alert">{error}</p> : null}
       </div>
       <div className="actions">
-        {daemon.online
+        {daemon.status === "online"
           ? <a className="button button-sm" href={daemon.openUrl} onClick={() => track("connect_daemon_opened", { how: "browser" })}>Open in browser</a>
-          : <button className="button button-sm" disabled title="The daemon has not checked in for a while. Start hexbot serve on it." type="button">Open in browser</button>}
+          : <button className="button button-sm" disabled type="button">Open in browser</button>}
         <button className="button button-sm button-quiet" disabled={pending || editing} onClick={() => setEditing(true)} type="button">Rename</button>
         <button className="button button-sm button-danger" disabled={pending} onClick={revoke} type="button">Revoke</button>
       </div>

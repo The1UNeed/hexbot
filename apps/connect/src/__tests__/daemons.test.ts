@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTunnelProvider } from "@/lib/tunnels";
-import { browserSignInUrl, daemonOrigin, daemonTarget, deviceNameFromUserAgent, isOnline, relativeTime } from "@/lib/daemons";
+import { browserSignInUrl, daemonOrigin, daemonTarget, deviceNameFromUserAgent, relativeTime } from "@/lib/daemons";
+import { PROBE_BODY_LIMIT, Reachability, heartbeatFresh, probeOrigin } from "@/lib/reachability";
 
 const daemon = { tunnelHostname: "amber-otter-1234.hexbot.app", ingressPort: 9200 };
 describe("daemon addresses", () => {
@@ -11,11 +12,72 @@ describe("daemon addresses", () => {
     expect(daemonTarget(daemon, true)).toEqual({ host: "127.0.0.1", port: 9200, tls: false });
     expect(browserSignInUrl(daemonOrigin(daemon, false))).toBe("https://amber-otter-1234.hexbot.app/auth/login?provider=connect&next=%2F");
   });
-  it("treats a daemon as online for ten minutes after a heartbeat", () => {
+  it("counts a heartbeat as fresh for ten minutes", () => {
     const now = Date.now();
-    expect(isOnline({ lastSeenAt: new Date(now - 9 * 60_000) }, now)).toBe(true);
-    expect(isOnline({ lastSeenAt: new Date(now - 11 * 60_000) }, now)).toBe(false);
-    expect(isOnline({ lastSeenAt: null }, now)).toBe(false);
+    expect(heartbeatFresh({ lastSeenAt: new Date(now - 9 * 60_000) }, now)).toBe(true);
+    expect(heartbeatFresh({ lastSeenAt: new Date(now - 11 * 60_000) }, now)).toBe(false);
+    expect(heartbeatFresh({ lastSeenAt: null }, now)).toBe(false);
+  });
+});
+
+describe("online state", () => {
+  const now = Date.now();
+  const fresh = new Date(now - 60_000);
+  const rows = [
+    { id: "answers", tunnelHostname: "answers.hexbot.test", ingressPort: 9200, lastSeenAt: fresh },
+    { id: "silent", tunnelHostname: "silent.hexbot.test", ingressPort: 9201, lastSeenAt: fresh },
+    { id: "gone", tunnelHostname: "gone.hexbot.test", ingressPort: 9202, lastSeenAt: new Date(now - 11 * 60_000) },
+  ];
+  it("is online only when the address answers, unreachable when the daemon heartbeats but the tunnel is down, and skips probing offline daemons", async () => {
+    const probed: string[] = [];
+    const reachability = new Reachability(async origin => { probed.push(origin); return origin.startsWith("https://answers."); });
+    const statuses = await reachability.statuses(rows, false, now);
+    expect(statuses.get("answers")).toBe("online");
+    expect(statuses.get("silent")).toBe("unreachable");
+    expect(statuses.get("gone")).toBe("offline");
+    expect(probed.sort()).toEqual(["https://answers.hexbot.test", "https://silent.hexbot.test"]);
+  });
+  it("probes the loopback address with fake tunnels and treats a failing probe as not reachable", async () => {
+    const probed: string[] = [];
+    const reachability = new Reachability(async origin => { probed.push(origin); throw new Error("boom"); });
+    expect((await reachability.statuses(rows.slice(0, 1), true, now)).get("answers")).toBe("unreachable");
+    expect(probed).toEqual(["http://127.0.0.1:9200"]);
+  });
+  it("remembers a reachable answer for thirty seconds and an unreachable one for five", async () => {
+    let calls = 0;
+    const reachability = new Reachability(async () => { calls += 1; return true; }, 30_000, 5_000);
+    await reachability.statuses(rows.slice(0, 1), false, now);
+    await reachability.statuses(rows.slice(0, 1), false, now + 10_000);
+    expect(calls).toBe(1);
+    await reachability.statuses(rows.slice(0, 1), false, now + 31_000);
+    expect(calls).toBe(2);
+    let down = 0;
+    const flaky = new Reachability(async () => { down += 1; return false; }, 30_000, 5_000);
+    await flaky.statuses(rows.slice(0, 1), false, now);
+    await flaky.statuses(rows.slice(0, 1), false, now + 4_000);
+    expect(down).toBe(1);
+    await flaky.statuses(rows.slice(0, 1), false, now + 6_000);
+    expect(down).toBe(2);
+  });
+});
+
+describe("probe", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const answer = (body: BodyInit | null, init?: ResponseInit) => vi.stubGlobal("fetch", vi.fn(async () => new Response(body, init)));
+  it("accepts a small providers list, follows no redirect, and refuses an oversized body", async () => {
+    answer(JSON.stringify({ providers: [{ name: "hexbot" }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    expect(await probeOrigin("https://answers.hexbot.test")).toBe(true);
+    const call = vi.mocked(fetch).mock.calls[0];
+    expect(call[0]).toBe("https://answers.hexbot.test/api/auth/providers");
+    expect(call[1]).toMatchObject({ redirect: "manual", credentials: "omit" });
+    answer(null, { status: 302, headers: { Location: "https://elsewhere.test/" } });
+    expect(await probeOrigin("https://moved.hexbot.test")).toBe(false);
+    answer(`{"providers":[],"padding":"${"x".repeat(PROBE_BODY_LIMIT)}"}`, { status: 200 });
+    expect(await probeOrigin("https://big.hexbot.test")).toBe(false);
+    answer("<html>not json</html>", { status: 200 });
+    expect(await probeOrigin("https://page.hexbot.test")).toBe(false);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("connection refused"); }));
+    expect(await probeOrigin("https://down.hexbot.test")).toBe(false);
   });
 });
 

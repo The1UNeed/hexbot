@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { currentUser, signInPath } from "@/lib/auth";
-import { browserSignInUrl, daemonOrigin, isOnline, relativeTime } from "@/lib/daemons";
-import { fakeTunnels, getStore } from "@/lib/runtime";
+import { browserSignInUrl, daemonOrigin, relativeTime } from "@/lib/daemons";
+import { fakeTunnels, getReachability, getStore } from "@/lib/runtime";
 import { DaemonRow } from "./daemon-row";
 import { DeviceRow } from "./device-row";
 
@@ -16,8 +16,10 @@ export default async function ConnectPage() {
   const store = getStore();
   const fake = fakeTunnels();
   const now = Date.now();
-  const daemons = (await store.listDaemons(user.id)).map(daemon => ({
-    id: daemon.id, name: daemon.name, hostname: daemon.tunnelHostname, online: isOnline(daemon, now),
+  const rows = await store.listDaemons(user.id);
+  const statuses = await getReachability().statuses(rows, fake, now);
+  const daemons = rows.map(daemon => ({
+    id: daemon.id, name: daemon.name, hostname: daemon.tunnelHostname, status: statuses.get(daemon.id) ?? "offline",
     lastSeen: relativeTime(daemon.lastSeenAt, now), openUrl: browserSignInUrl(daemonOrigin(daemon, fake)),
   }));
   const devices = (await store.listClientSessions(user.id)).map(session => ({

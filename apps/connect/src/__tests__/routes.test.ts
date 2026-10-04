@@ -9,6 +9,8 @@ import { POST as poll } from "@/app/api/register/poll/route";
 import { POST as grant } from "@/app/api/daemons/[id]/grant/route";
 import { POST as heartbeat } from "@/app/api/daemons/[id]/heartbeat/route";
 import { DELETE as remove } from "@/app/api/daemons/[id]/route";
+import { GET as listDaemons } from "@/app/api/daemons/route";
+import { Reachability } from "@/lib/reachability";
 import AuthorizePage from "@/app/connect/authorize/page";
 import { authorizeClient } from "@/app/connect/authorize/actions";
 
@@ -34,6 +36,26 @@ describe("authenticated daemon routes", () => {
   it("requires a client session before issuing a grant", async () => { const { approved } = await registration(); const denied = await grant(request(`/api/daemons/${approved.daemon_id}/grant`), { params: Promise.resolve({ id: approved.daemon_id }) }); expect(denied.status).toBe(401); const user = store.users[0]; const clientToken = randomToken("hxc_"); await store.createClientSession({ userId: user.id, tokenHash: hashToken(clientToken), deviceName: "Laptop" }); const allowed = await grant(request(`/api/daemons/${approved.daemon_id}/grant`, undefined, clientToken), { params: Promise.resolve({ id: approved.daemon_id }) }); expect(allowed.status).toBe(200); const body = await allowed.json(); expect(body.grant.split(".")).toHaveLength(3); expect(body.daemon).toMatchObject({ host: "127.0.0.1", port: 9119, tls: false }); });
   it("updates last_seen_at on heartbeat", async () => { const { started, approved } = await registration(); const polled = await poll(request("/api/register/poll", { device_code: started.device_code })); const credentials = await polled.json(); const response = await heartbeat(request(`/api/daemons/${approved.daemon_id}/heartbeat`, { port: 8000 }, credentials.daemon_token), { params: Promise.resolve({ id: approved.daemon_id }) }); expect(response.status).toBe(200); expect(store.daemons[0].lastSeenAt).toBeInstanceOf(Date); });
   it("revokes the daemon and deletes its tunnel", async () => { const { approved } = await registration(); const user = store.users[0]; const clientToken = randomToken("hxc_"); await store.createClientSession({ userId: user.id, tokenHash: hashToken(clientToken), deviceName: "Laptop" }); const response = await remove(request(`/api/daemons/${approved.daemon_id}`, undefined, clientToken, "DELETE"), { params: Promise.resolve({ id: approved.daemon_id }) }); expect(response.status).toBe(200); expect(store.daemons[0].revokedAt).toBeInstanceOf(Date); expect(tunnels.deleted).toEqual([store.daemons[0].tunnelId]); });
+});
+
+describe("daemon list online state", () => {
+  it("reports online only when the address answers, keeps the boolean for older apps, and never probes an offline daemon", async () => {
+    const probed: string[] = [];
+    setRuntimeForTests({ store, tunnels, reachability: new Reachability(async origin => { probed.push(origin); return origin === "http://127.0.0.1:9200"; }) });
+    const answering = await registration(); const silent = await registration(); const offline = await registration();
+    for (const [entry, port] of [[answering, 9200], [silent, 9201]] as const) {
+      const token = (await (await poll(request("/api/register/poll", { device_code: entry.started.device_code }))).json()).daemon_token;
+      expect((await heartbeat(request(`/api/daemons/${entry.approved.daemon_id}/heartbeat`, { port }, token), { params: Promise.resolve({ id: entry.approved.daemon_id }) })).status).toBe(200);
+    }
+    const clientToken = randomToken("hxc_"); await store.createClientSession({ userId: store.users[0].id, tokenHash: hashToken(clientToken), deviceName: "Laptop" });
+    const response = await listDaemons(request("/api/daemons", undefined, clientToken, "GET"));
+    expect(response.status).toBe(200);
+    const byId = Object.fromEntries((await response.json()).daemons.map((d: { id: string }) => [d.id, d]));
+    expect(byId[answering.approved.daemon_id]).toMatchObject({ online: true, status: "online" });
+    expect(byId[silent.approved.daemon_id]).toMatchObject({ online: false, status: "unreachable" });
+    expect(byId[offline.approved.daemon_id]).toMatchObject({ online: false, status: "offline", last_seen_at: null });
+    expect(probed.sort()).toEqual(["http://127.0.0.1:9200", "http://127.0.0.1:9201"]);
+  });
 });
 
 describe("tunnel hostnames and ports", () => {

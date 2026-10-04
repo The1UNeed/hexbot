@@ -108,9 +108,31 @@ forward to, so the whole flow runs on one machine.
    `connect.json` from before owner pinning is ignored with a warning; run
    `hexbot connect` again.
 5. Heartbeat: `POST /api/daemons/{id}/heartbeat {port}` every five minutes
-   with the daemon token; Connect records `last_seen_at` and the port, which
-   only the loopback development address uses. Ten minutes without one
-   shows as offline.
+   with the daemon token, the first one as soon as the tunnel starts; Connect
+   records `last_seen_at` and the port, which only the loopback development
+   address uses.
+
+## Online state
+
+A heartbeat says the daemon process is up; it says nothing about the tunnel,
+which runs beside it and can be down while the daemon keeps checking in. So
+whenever Connect lists daemons (`GET /api/daemons` and the `/connect` page) it
+also probes each daemon's address: `GET https://<tunnel_hostname>/api/auth/providers`,
+public, unauthenticated, served by every daemon version. The probe follows no
+redirects, sends no credentials, times out after three seconds, reads at most
+64 KiB of the body (a larger one is not a daemon), runs for all daemons in
+parallel, and only ever targets hostnames from Connect's own rows. A 2xx JSON
+answer with a `providers` list means reachable. With the fake tunnel provider
+the probe goes to the daemon's loopback address instead. A reachable answer
+is remembered for thirty seconds per address, an unreachable one for five, so
+a daemon that just came up is not shown down for long.
+
+Three states follow: **online** (heartbeat within ten minutes and the address
+answers), **unreachable** (heartbeat within ten minutes, address does not
+answer: the daemon runs but its tunnel is down), and **offline** (no heartbeat
+for ten minutes; not probed). The API carries `status` plus the older
+`online` boolean, which is true only for `online`. "Open in browser" and the
+app's daemon list enable a daemon only while it is online.
 
 ## App sign-in
 
@@ -120,7 +142,7 @@ forward to, so the whole flow runs on one machine.
    `hexbot://connect?state=<same>#session=<client session token>`. The token
    stays in the fragment; the Electron protocol handler delivers it.
 2. `GET /api/daemons` with the client session token lists the user's daemons
-   with online state.
+   with online state (`status` and `online`, see "Online state").
 3. Picking one: `POST /api/daemons/{id}/grant` → an ES256 JWT, `typ`
    `hexbot-grant+jwt`, `{iss, aud: daemon id, sub: user id, daemon_id,
    device_name, jti, exp: +5 min}` plus the daemon's address.
@@ -224,7 +246,8 @@ signing key.
 - Unit (`apps/connect/src/__tests__`): token hashing, grant issue and verify
   (expired, wrong daemon, unknown key id, `jti`), device-code lifecycle, slug
   generation, the browser sign-in decision table and code exchange, daemon
-  addresses and device labels, consent parsing, CORS.
+  addresses and device labels, online state with an injected probe, consent
+  parsing, CORS.
 - Daemon (`backend/hexbot-core/tests/services.rs`, `server.rs`): registration
   with a local fake API, pinned owner/audience/issuer/keys, malformed and
   expired grants, single-use grants, PKCE exchange, and tunnel lifecycle
