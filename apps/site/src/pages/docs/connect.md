@@ -38,9 +38,18 @@ On a computer without a daemon, or in the client-only package, open Hexbot, choo
 
 Behind the scenes the app receives a short-lived, single-use login grant and exchanges it directly with the daemon for a normal revocable device token. The daemon owner can revoke that device as with a LAN-paired device.
 
+Current daemons keep an Ed25519 identity key, and Connect stores its public
+key. When that key is known, Connect checks a signed response before showing
+the daemon as online, and the app checks it before sending a login grant.
+This detects misrouting and impostors that cannot reach your daemon. Cloudflare
+terminates TLS, so Cloudflare or whoever controls the Connect Cloudflare account
+or API token can relay a real daemon's signature. The check cannot detect that
+active relay. Apps proceed without verification when no key is known, the
+daemon is older, or the browser does not support Ed25519.
+
 ## What Connect holds
 
-Connect stores your sign-in identity (through Clerk), the names and hostnames of your daemons, hashed service tokens, the device names of apps and browsers that signed in, and recent check-in times. It uses these records to list your daemons, issue login grants, and manage tunnels. The [privacy policy](/privacy/#connect) lists every record and how long it is kept.
+Connect stores your sign-in identity (through Clerk), the names, hostnames, and public identity keys of your daemons, hashed service tokens, the device names of apps and browsers that signed in, and recent check-in times. It uses these records to list your daemons, issue login grants, and manage tunnels. The [privacy policy](/privacy/#connect) lists every record and how long it is kept.
 
 Connect never receives your conversations, bot memory, provider keys, files, tool results, or long-lived device tokens. It is not in the path your chat takes. The [security policy](/security/) explains the design.
 

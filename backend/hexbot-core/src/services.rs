@@ -1,6 +1,8 @@
 //! Connect registration, tunnel lifecycle, grant verification and native updates.
 use crate::{Error, Result, common};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::{Client, Method};
+use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -54,6 +56,8 @@ pub struct ConnectConfig {
     pub issuer: String,
     #[serde(default)]
     pub keys: Vec<Value>,
+    #[serde(default)]
+    pub identity_private_key: String,
 }
 impl ConnectConfig {
     pub fn load(home: &Path) -> Result<Option<Self>> {
@@ -92,12 +96,85 @@ impl ConnectConfig {
     }
 }
 
+fn new_identity_key() -> Result<String> {
+    let key = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+        .map_err(|_| Error::new(5241, "could not generate daemon identity key"))?;
+    Ok(URL_SAFE_NO_PAD.encode(key.as_ref()))
+}
+impl ConnectConfig {
+    fn identity_key(&self) -> Result<Ed25519KeyPair> {
+        let bytes = URL_SAFE_NO_PAD
+            .decode(&self.identity_private_key)
+            .map_err(|_| Error::new(5241, "invalid daemon identity key"))?;
+        Ed25519KeyPair::from_pkcs8(&bytes)
+            .map_err(|_| Error::new(5241, "invalid daemon identity key"))
+    }
+    pub fn identity_public_key(&self) -> Result<String> {
+        Ok(URL_SAFE_NO_PAD.encode(self.identity_key()?.public_key().as_ref()))
+    }
+    pub fn sign_identity(&self, host: &str, nonce: &str) -> Result<Value> {
+        let message = format!("hexbot-identity-v1\n{}\n{host}\n{nonce}", self.daemon_id);
+        let key = self.identity_key()?;
+        Ok(json!({"daemon_id": self.daemon_id,
+            "public_key": URL_SAFE_NO_PAD.encode(key.public_key().as_ref()),
+            "signature": URL_SAFE_NO_PAD.encode(key.sign(message.as_bytes()).as_ref())}))
+    }
+}
+
+/// Best effort, once per registration per process. Old Connect and an unmigrated
+/// database must not stop the tunnel. Conflicts retain the local key for diagnosis.
+async fn enroll_identity(
+    home: &Path,
+    service: &Arc<Service>,
+    config: &mut ConnectConfig,
+) -> Result<()> {
+    if config.identity_private_key.is_empty() {
+        config.identity_private_key = new_identity_key()?;
+        config.save(home)?;
+    }
+    let public_key = config.identity_public_key()?;
+    if !service
+        .data
+        .lock()
+        .await
+        .identity_attempted
+        .insert(config.daemon_id.clone())
+    {
+        return Ok(());
+    }
+    if let Err(error) = object(
+        Method::POST,
+        &format!(
+            "{}/api/daemons/{}/identity",
+            config.api_base, config.daemon_id
+        ),
+        Some(&config.daemon_token),
+        Some(json!({"public_key": public_key, "tunnel_token": config.tunnel_token})),
+    )
+    .await
+    {
+        if revoked_by_connect(&error) {
+            forget_later(home, service, &config.daemon_id);
+            return Err(error);
+        }
+        if !error
+            .data
+            .as_ref()
+            .is_some_and(|data| data["status"] == 404)
+        {
+            eprintln!("Connect identity enrollment: {error}");
+        }
+    }
+    Ok(())
+}
+
 struct Workers {
     stop: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
 }
 struct Data {
     running: bool,
+    identity_attempted: std::collections::HashSet<String>,
     heartbeat: Option<f64>,
     error: Option<String>,
     port: u16,
@@ -109,6 +186,7 @@ impl Default for Data {
     fn default() -> Self {
         Self {
             running: false,
+            identity_attempted: Default::default(),
             heartbeat: None,
             error: None,
             port: 9119,
@@ -683,13 +761,14 @@ pub async fn start_daemon(home: &Path, port: u16) -> Result<bool> {
     let _operation = service.lifecycle.lock().await;
     stop_workers(&service).await;
     service.data.lock().await.port = port;
-    let Some(config) = ConnectConfig::load(home)?.filter(|c| !c.daemon_id.is_empty()) else {
+    let Some(mut config) = ConnectConfig::load(home)?.filter(|c| !c.daemon_id.is_empty()) else {
         return Ok(false);
     };
     common::identifier(&config.daemon_id)?;
     if config.daemon_token.is_empty() || config.tunnel_token.is_empty() {
         return Err(Error::new(5241, "incomplete Hex Connect registration"));
     }
+    enroll_identity(home, &service, &mut config).await?;
     apply_public_url(home, Some(&config.tunnel_hostname))?;
     let binary = ensure_cloudflared(home).await?;
     run_tunnel(
@@ -1569,13 +1648,36 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
 /// CLI registration persists credentials without starting a tunnel outside the daemon.
 pub async fn register_poll(home: &Path, code: &str, start_tunnel: bool) -> Result<Value> {
     let base = api_base(home)?;
-    let mut result = object(
+    let identity_private_key = new_identity_key()?;
+    let key_bytes = URL_SAFE_NO_PAD
+        .decode(&identity_private_key)
+        .expect("generated key");
+    let key = Ed25519KeyPair::from_pkcs8(&key_bytes).expect("generated key");
+    let public_key = URL_SAFE_NO_PAD.encode(key.public_key().as_ref());
+    let reply = object(
         Method::POST,
         &format!("{base}/api/register/poll"),
         None,
-        Some(json!({"device_code":code})),
+        Some(json!({"device_code":code,"public_key":public_key})),
     )
-    .await?;
+    .await;
+    // Older Connect uses a strict poll schema, rather than ignoring new fields.
+    let mut result = match reply {
+        Err(error)
+            if error.data.as_ref().is_some_and(|data| {
+                data["status"] == 400 && data["error"] == "invalid_request"
+            }) =>
+        {
+            object(
+                Method::POST,
+                &format!("{base}/api/register/poll"),
+                None,
+                Some(json!({"device_code":code})),
+            )
+            .await?
+        }
+        other => other?,
+    };
     let status = result["status"]
         .as_str()
         .unwrap_or(if result["daemon_token"].as_str().is_some() {
@@ -1587,6 +1689,7 @@ pub async fn register_poll(home: &Path, code: &str, start_tunnel: bool) -> Resul
     result["status"] = json!(status);
     if status == "approved" {
         let config = ConnectConfig {
+            identity_private_key,
             owner_id: common::required(&result, "owner_id")?.into(),
             issuer: common::required(&result, "issuer")?.into(),
             keys: result["keys"]

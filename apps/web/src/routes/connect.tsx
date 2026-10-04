@@ -15,6 +15,7 @@ import {
   targetOrigin,
   UnauthorizedError
 } from '../lib/connection'
+import { verifyDaemonIdentity } from '../lib/daemon-identity'
 import { formatAddress, parseAddress, parsePairLink } from '../lib/pair-link'
 
 export const Route = createFileRoute('/connect')({ component: ConnectPage })
@@ -64,6 +65,7 @@ function ConnectPage() {
       name?: string
       daemon_name?: string
       tunnel_hostname: string
+      identity_key?: string | null
       online?: boolean
       /** `unreachable` is a daemon that heartbeats but whose address does not answer. */
       status?: 'offline' | 'online' | 'unreachable'
@@ -121,6 +123,7 @@ function ConnectPage() {
 
       const { host, port, tls } = grantTarget(granted, daemon.tunnel_hostname)
       const origin = targetOrigin({ deviceToken: '', host, kind: 'remote', port, tls })
+      await verifyDaemonIdentity(origin, daemon)
       const bridge = getBridge()
 
       if (bridge?.pairWithGrant) {
