@@ -1,4 +1,5 @@
-import { ConnectionSupervisor, pairWithDaemon, probeDaemon, resolveWsUrl, setLocalDaemonPort, targetOrigin, UnauthorizedError } from './connection'
+import { ConnectionSupervisor, pairingErrorMessage, pairWithDaemon, probeDaemon, resolveWsUrl, setLocalDaemonPort, targetOrigin, UnauthorizedError } from './connection'
+import { DaemonIdentityError, DaemonIdentityUnavailableError, DaemonUnreachableError } from './daemon-identity'
 
 const response = (body: string, init: ResponseInit = {}) =>
   new Response(body, { status: 200, ...init })
@@ -127,4 +128,12 @@ describe('connection gate', () => {
       )
     ).rejects.toBeInstanceOf(UnauthorizedError)
   })
+})
+
+it.each([
+  new DaemonIdentityError('Studio Mac'),
+  new DaemonIdentityUnavailableError('Studio Mac'),
+  new DaemonUnreachableError('Studio Mac')
+])('preserves the typed identity failure through the pairing error formatter', error => {
+  expect(pairingErrorMessage(error)).toBe(error.message)
 })

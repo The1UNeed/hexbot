@@ -884,7 +884,20 @@ mod tests {
             home.path(),
             Path::new("/unrelated/auth.json")
         ));
+        let keys = ["connect-identity.key", "nested/connect-identity.key"];
+        std::fs::create_dir_all(home.path().join("nested")).unwrap();
+        for key in keys {
+            std::fs::write(home.path().join(key), "secret").unwrap();
+            assert!(credential_name(home.path(), &home.path().join(key)));
+        }
+        assert!(!credential_name(
+            home.path(),
+            Path::new("/unrelated/connect-identity.key")
+        ));
         let paths = secret_paths(home.path());
+        for key in keys {
+            assert!(paths.contains(&home.path().join(key)), "{key}");
+        }
         assert!(paths.contains(&home.path().join("desktop-data")));
         assert!(
             !paths
@@ -1075,6 +1088,7 @@ mod tests {
                 "AUTH.JSON",
                 "profiles/owl/.ENV",
                 "Connect.json",
+                "CONNECT-IDENTITY.KEY",
                 ".SSH/id_ed25519",
             ] {
                 let path = if path.starts_with(".SSH") {
@@ -1123,7 +1137,7 @@ mod tests {
         }
         std::fs::write(base.path().join("connect.json"), "outside").unwrap();
         let script = format!(
-            r#"echo ready; read -r go; secret='{}/profiles/owl'; cat "$secret/.env" >/dev/null 2>&1 && exit 10; cat "$secret/connect.json" >/dev/null 2>&1 && exit 13; cat '{}/connect.json' || exit 11; for p in config.yaml bin/script hooks/script skills/script profiles/owl/config.yaml; do (echo bad > '{}'/$p) 2>/dev/null && exit 12; done; echo ok > '{}/result'; echo ok > '{}/profiles/owl/artifacts/result'; echo ok > '{}/runtime/sessions/one/attachments/result'; echo ok > '{}/normal-workspace'"#,
+            r#"echo ready; read -r go; secret='{}/profiles/owl'; cat "$secret/.env" >/dev/null 2>&1 && exit 10; cat "$secret/connect.json" >/dev/null 2>&1 && exit 13; cat "$secret/connect-identity.key" >/dev/null 2>&1 && exit 14; cat '{}/connect.json' || exit 11; for p in config.yaml bin/script hooks/script skills/script profiles/owl/config.yaml; do (echo bad > '{}'/$p) 2>/dev/null && exit 12; done; echo ok > '{}/result'; echo ok > '{}/profiles/owl/artifacts/result'; echo ok > '{}/runtime/sessions/one/attachments/result'; echo ok > '{}/normal-workspace'"#,
             home.display(),
             base.path().display(),
             home.display(),
@@ -1156,6 +1170,7 @@ mod tests {
         assert_eq!(line.trim(), "ready", "sandbox did not start");
         std::fs::write(home.join("profiles/owl/.env"), "secret").unwrap();
         std::fs::write(home.join("profiles/owl/connect.json"), "secret").unwrap();
+        std::fs::write(home.join("profiles/owl/connect-identity.key"), "secret").unwrap();
         child
             .stdin
             .take()
@@ -1296,6 +1311,32 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+    #[tokio::test]
+    async fn identity_key_is_hidden_in_auto_and_manual_sandboxes() {
+        if !isolation_available() {
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let key = home.path().join("connect-identity.key");
+        std::fs::write(&key, "private key").unwrap();
+        for mode in [Confine::Workspace, Confine::ReadOnly] {
+            let result =
+                isolated_command(home.path(), "/bin/sh", &[workspace.path().to_owned()], mode)
+                    .unwrap()
+                    .args(["-c", "cat \"$1\" && exit 10; echo denied", "identity-test"])
+                    .arg(&key)
+                    .output()
+                    .await
+                    .unwrap();
+            assert!(
+                result.status.success(),
+                "{mode:?}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert_eq!(result.stdout, b"denied\n", "{mode:?}");
+        }
     }
     #[cfg(target_os = "macos")]
     #[tokio::test]

@@ -11,3 +11,6 @@ ALTER TABLE registrations ADD COLUMN IF NOT EXISTS daemon_id uuid REFERENCES dae
 ALTER TABLE registrations DROP COLUMN IF EXISTS credentials;
 -- When a daemon last claimed a tunnel repair; only the repair route reads or writes it.
 ALTER TABLE daemons ADD COLUMN IF NOT EXISTS tunnel_repair_at timestamptz;
+
+-- Identity enrollment is optional until this migration runs after deploy.
+ALTER TABLE daemons ADD COLUMN IF NOT EXISTS identity_key text;

@@ -630,6 +630,7 @@ dependencies = [
  "rand 0.8.8",
  "regex",
  "reqwest",
+ "ring",
  "rusqlite",
  "semver",
  "serde",

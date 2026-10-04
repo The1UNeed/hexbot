@@ -4036,6 +4036,8 @@ mod file_bridge_tests {
                 "runtime/provider-auth/grant.json",
                 "profiles/owl/pi/auth.json",
                 "connect.json",
+                "connect-identity.key",
+                "profiles/owl/connect-identity.key",
                 "hexbot.db-wal",
                 "hexbot-runtime.db-shm",
                 "pi-approvals.json",
@@ -4059,7 +4061,12 @@ mod file_bridge_tests {
         assert_eq!(target, home.join("profiles/owl/pi/auth.json"));
         assert!(!ask);
         if crate::credentials::FOLD_CASE {
-            for file in ["profiles/owl/pi/AUTH.JSON", "PROFILES/owl/.env", ".ENV"] {
+            for file in [
+                "profiles/owl/pi/AUTH.JSON",
+                "PROFILES/owl/.env",
+                ".ENV",
+                "CONNECT-IDENTITY.KEY",
+            ] {
                 assert!(
                     guarded_file_path(&home, &home.join(file), false, "smart", &[]).is_err(),
                     "{file}"

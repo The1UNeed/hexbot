@@ -314,6 +314,7 @@ export interface ConnectStatus {
   tunnel_running: boolean
   last_heartbeat_at: null | number
   last_error: null | string
+  identity_error?: null | string
 }
 export interface ConnectRegistration {
   device_code: string

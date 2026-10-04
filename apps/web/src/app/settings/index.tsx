@@ -33,6 +33,7 @@ import {
   type UpdateState
 } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
+import { connectStatusMessage } from '../../lib/connect-status'
 import { connectBaseUrl } from '../../lib/connect-url'
 import { pairWithDaemon, targetOrigin } from '../../lib/connection'
 import type { DaemonInfo, ModelOption, PairingCode, Provider } from '../../lib/types'
@@ -204,10 +205,36 @@ export function ConnectSettings() {
 
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [statusError, setStatusError] = useState<string | null>(null)
   useEffect(() => {
-    void connectStatus()
-      .then(setStatus)
-      .catch(cause => setError(errorText(cause)))
+    let stopped = false
+    let timer: number | undefined
+
+    const refresh = async () => {
+      try {
+        const next = await connectStatus()
+
+        if (!stopped) {
+          setStatus(next)
+          setStatusError(null)
+        }
+      } catch {
+        if (!stopped) {
+          setStatusError('The daemon could not be reached.')
+        }
+      } finally {
+        if (!stopped) {
+          timer = window.setTimeout(() => void refresh(), 5000)
+        }
+      }
+    }
+
+    void refresh()
+
+    return () => {
+      stopped = true
+      window.clearTimeout(timer)
+    }
   }, [])
   useEffect(() => {
     if (!registration) {
@@ -367,7 +394,13 @@ export function ConnectSettings() {
           />
         </Group>
       )}
-      {error ? <ErrorLine>{error}</ErrorLine> : null}
+      {error || statusError ? <ErrorLine>{error ?? statusError}</ErrorLine> : null}
+      {status?.registered && status.last_error ? (
+        <ErrorLine>{connectStatusMessage(status.last_error)}</ErrorLine>
+      ) : null}
+      {status?.registered && status.identity_error ? (
+        <ErrorLine>{connectStatusMessage(status.identity_error, true)}</ErrorLine>
+      ) : null}
     </>
   )
 }

@@ -665,3 +665,329 @@ async fn jwks_refreshes_after_ten_minutes_and_throttles_unknown_keys_and_outages
     }
     assert!(mock.events.try_recv().is_err());
 }
+
+async fn prepare_identity(home: &std::path::Path, service: &std::sync::Arc<super::Service>) {
+    let config = services::ConnectConfig::load(home).unwrap().unwrap();
+    let _operation = service.lifecycle.lock().await;
+    super::start_identity(home, service, &config).await;
+}
+async fn identity_finished(service: &super::Service) {
+    if let Some(task) = service.identity_task.lock().await.take() {
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn startup_enrolls_a_persisted_key_once_and_keeps_it_on_conflict_or_old_connect() {
+    for status in [200, 409, 404, 503] {
+        let mut mock = Mock::new().await;
+        let home = home();
+        mock.persist_registration(home.path());
+        mock.data.overrides.lock().await.insert(
+            "/api/daemons/daemon-1/identity".into(),
+            (status, json!({"ok": status == 200})),
+        );
+        let service = super::service(home.path()).await.unwrap();
+        service.data.lock().await.error = Some("cloudflared exited: exit status: 1".into());
+        prepare_identity(home.path(), &service).await;
+        let (body, authorization) = mock.event("/api/daemons/daemon-1/identity").await;
+        identity_finished(&service).await;
+        assert_eq!(
+            super::connect_status(home.path()).await.unwrap()["last_error"],
+            "cloudflared exited: exit status: 1"
+        );
+        assert_eq!(authorization, "Bearer daemon-secret");
+        assert_eq!(body["tunnel_token"], "tunnel-secret");
+        let response = services::identity_response(home.path(), "host", "nonce")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(body["public_key"], response["public_key"]);
+        let saved = fs::read(home.path().join(super::IDENTITY_FILE)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(home.path().join(super::IDENTITY_FILE))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        if status == 409 {
+            assert_eq!(
+                service.data.lock().await.identity_error.as_deref(),
+                Some(super::IDENTITY_CONFLICT)
+            );
+            assert_eq!(
+                super::connect_status(home.path()).await.unwrap()["identity_error"],
+                super::IDENTITY_CONFLICT
+            );
+        }
+        prepare_identity(home.path(), &service).await;
+        assert!(mock.events.try_recv().is_err());
+        assert_eq!(
+            saved,
+            fs::read(home.path().join(super::IDENTITY_FILE)).unwrap()
+        );
+        // A fresh process retries with the same key, including after an old service or conflict.
+        let restarted = std::sync::Arc::new(super::Service::default());
+        prepare_identity(home.path(), &restarted).await;
+        let (again, _) = mock.event("/api/daemons/daemon-1/identity").await;
+        identity_finished(&restarted).await;
+        assert_eq!(body, again);
+        services::shutdown(home.path()).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn identity_file_survives_an_older_daemon_rewriting_connect_json() {
+    let mut mock = Mock::new().await;
+    let home = home();
+    mock.persist_registration(home.path());
+    let encoded = super::new_identity_key().unwrap();
+    let path = home.path().join("connect.json");
+    let mut legacy: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    fs::write(home.path().join(super::IDENTITY_FILE), &encoded).unwrap();
+    let service = super::service(home.path()).await.unwrap();
+    prepare_identity(home.path(), &service).await;
+    identity_finished(&service).await;
+    let (first, _) = mock.event("/api/daemons/daemon-1/identity").await;
+    assert_eq!(
+        fs::read_to_string(home.path().join(super::IDENTITY_FILE)).unwrap(),
+        encoded
+    );
+    // This is what the pre-identity struct's save during repair does.
+    legacy["tunnel_token"] = json!("repaired-token");
+    fs::write(&path, legacy.to_string()).unwrap();
+    let restarted = std::sync::Arc::new(super::Service::default());
+    prepare_identity(home.path(), &restarted).await;
+    identity_finished(&restarted).await;
+    let (second, _) = mock.event("/api/daemons/daemon-1/identity").await;
+    assert_eq!(first["public_key"], second["public_key"]);
+    assert_eq!(second["tunnel_token"], "repaired-token");
+    assert_eq!(
+        fs::read_to_string(home.path().join(super::IDENTITY_FILE)).unwrap(),
+        encoded
+    );
+    services::shutdown(home.path()).await.unwrap();
+}
+
+#[tokio::test]
+async fn corrupt_identity_is_replaced_only_after_connect_accepts_the_first_key() {
+    for status in [200, 409, 404] {
+        let mut mock = Mock::new().await;
+        let home = home();
+        mock.persist_registration(home.path());
+        fs::write(home.path().join(super::IDENTITY_FILE), "corrupt").unwrap();
+        mock.data.overrides.lock().await.insert(
+            "/api/daemons/daemon-1/identity".into(),
+            (status, json!({"ok":true})),
+        );
+        let service = super::service(home.path()).await.unwrap();
+        prepare_identity(home.path(), &service).await;
+        let (body, _) = mock.event("/api/daemons/daemon-1/identity").await;
+        identity_finished(&service).await;
+        if status == 200 {
+            let response = services::identity_response(home.path(), "host", "nonce")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(response["public_key"], body["public_key"]);
+            assert!(
+                super::parse_identity_key(
+                    &fs::read(home.path().join(super::IDENTITY_FILE)).unwrap()
+                )
+                .is_ok()
+            );
+            assert!(service.data.lock().await.identity_error.is_none());
+        } else {
+            assert_eq!(
+                fs::read_to_string(home.path().join(super::IDENTITY_FILE)).unwrap(),
+                "corrupt"
+            );
+            assert!(
+                services::identity_response(home.path(), "host", "nonce")
+                    .await
+                    .is_err()
+            );
+            if status == 409 {
+                assert_eq!(
+                    service.data.lock().await.identity_error.as_deref(),
+                    Some(super::IDENTITY_CONFLICT)
+                );
+            }
+        }
+        services::shutdown(home.path()).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn unreadable_identity_is_reported_without_blocking_or_overwriting() {
+    let mock = Mock::new().await;
+    let home = home();
+    mock.persist_registration(home.path());
+    fs::create_dir(home.path().join(super::IDENTITY_FILE)).unwrap();
+    let service = super::service(home.path()).await.unwrap();
+    prepare_identity(home.path(), &service).await;
+    assert!(service.identity_task.lock().await.is_none());
+    assert_eq!(
+        service.data.lock().await.identity_error.as_deref(),
+        Some(super::IDENTITY_UNAVAILABLE)
+    );
+    assert!(home.path().join(super::IDENTITY_FILE).is_dir());
+    services::shutdown(home.path()).await.unwrap();
+}
+
+#[tokio::test]
+async fn enrollment_does_not_hold_startup_or_signing_and_disconnect_cancels_it() {
+    let mut mock = Mock::new().await;
+    let home = home();
+    mock.persist_registration(home.path());
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    *mock.data.identity_gate.lock().await = Some(gate.clone());
+    let service = super::service(home.path()).await.unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        prepare_identity(home.path(), &service),
+    )
+    .await
+    .unwrap();
+    mock.event("/api/daemons/daemon-1/identity").await;
+    assert!(
+        !service
+            .identity_task
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .is_finished()
+    );
+    let response = tokio::time::timeout(
+        Duration::from_secs(2),
+        services::identity_response(home.path(), "host", "nonce"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(response.is_some());
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        super::drop_registration(home.path(), &service, None, None, false),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(!home.path().join(super::IDENTITY_FILE).exists());
+    assert!(!home.path().join("connect.json").exists());
+    gate.notify_one();
+    assert!(
+        services::identity_response(home.path(), "host", "nonce")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn startup_enrollment_revocation_forgets_both_credentials_and_the_identity() {
+    let mut mock = Mock::new().await;
+    let home = home();
+    mock.persist_registration(home.path());
+    mock.data.overrides.lock().await.insert(
+        "/api/daemons/daemon-1/identity".into(),
+        (410, json!({"error":"daemon_revoked"})),
+    );
+    let service = super::service(home.path()).await.unwrap();
+    let mut changes = service.changed.subscribe();
+    prepare_identity(home.path(), &service).await;
+    mock.event("/api/daemons/daemon-1/identity").await;
+    wait_until(&service, &mut changes, "identity revocation", |data| {
+        data.error.as_deref() == Some(super::REVOKED_REASON)
+    })
+    .await;
+    assert!(!home.path().join("connect.json").exists());
+    assert!(!home.path().join(super::IDENTITY_FILE).exists());
+    assert!(
+        services::identity_response(home.path(), "host", "nonce")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    services::shutdown(home.path()).await.unwrap();
+}
+
+#[tokio::test]
+async fn poll_caches_the_key_and_does_not_immediately_enroll_again() {
+    let mut mock = Mock::new().await;
+    let home = home();
+    mock.configure(home.path());
+    *mock.data.response.lock().await = json!({"status":"approved","daemon_id":"daemon-1","daemon_token":"daemon-secret","slug":"kitchen","tunnel_hostname":"kitchen.connect.example","tunnel_token":"tunnel-secret","owner_id":"cloud-user","issuer":"https://connect.hexbot.app","keys":jwks()["keys"]});
+    services::register_poll(home.path(), "code", false)
+        .await
+        .unwrap();
+    let (body, _) = mock.event("/api/register/poll").await;
+    let service = super::service(home.path()).await.unwrap();
+    prepare_identity(home.path(), &service).await;
+    assert!(service.identity_task.lock().await.is_none());
+    assert!(mock.events.try_recv().is_err());
+    // A signing request uses the cached registration and parsed key, not either file.
+    let config = fs::read(home.path().join("connect.json")).unwrap();
+    fs::write(home.path().join(super::IDENTITY_FILE), "corrupt").unwrap();
+    fs::write(home.path().join("connect.json"), "corrupt").unwrap();
+    assert_eq!(
+        services::identity_response(home.path(), "host", "nonce")
+            .await
+            .unwrap()
+            .unwrap()["public_key"],
+        body["public_key"]
+    );
+    fs::write(home.path().join("connect.json"), config).unwrap();
+    // A new registration invalidates the cached parsed key.
+    service.data.lock().await.error = Some(super::REVOKED_REASON.into());
+    super::identity_error(&service, Some(super::IDENTITY_CONFLICT.into())).await;
+    services::register_poll(home.path(), "other-code", false)
+        .await
+        .unwrap();
+    let (next, _) = mock.event("/api/register/poll").await;
+    let status = super::connect_status(home.path()).await.unwrap();
+    assert!(status["last_error"].is_null());
+    assert!(status["identity_error"].is_null());
+    assert_ne!(body["public_key"], next["public_key"]);
+    assert_eq!(
+        services::identity_response(home.path(), "host", "nonce")
+            .await
+            .unwrap()
+            .unwrap()["public_key"],
+        next["public_key"]
+    );
+    services::shutdown(home.path()).await.unwrap();
+}
+
+#[tokio::test]
+async fn disconnect_removes_registration_before_attempting_key_removal() {
+    let mock = Mock::new().await;
+    let home = home();
+    mock.persist_registration(home.path());
+    // A directory makes key removal fail even when tests run with elevated access.
+    fs::create_dir(home.path().join(super::IDENTITY_FILE)).unwrap();
+    let service = super::service(home.path()).await.unwrap();
+    assert!(
+        super::drop_registration(home.path(), &service, None, None, false)
+            .await
+            .is_err()
+    );
+    assert!(!home.path().join("connect.json").exists());
+    assert!(
+        services::identity_response(home.path(), "host", "nonce")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    services::shutdown(home.path()).await.unwrap();
+}

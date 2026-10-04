@@ -24,6 +24,7 @@ import { uiActions } from '../stores/ui'
 import { useUsers } from '../stores/users'
 
 import { getBridge, type HexbotBridge } from './bridge'
+import { DaemonIdentityError, DaemonUnreachableError } from './daemon-identity'
 import { proofHeaders } from './dpop'
 import { attachEventRouting } from './events'
 import { DEFAULT_DAEMON_PORT } from './pair-link'
@@ -651,7 +652,7 @@ export async function verifyBrowserCookie(origin: string, name: string, deps: Co
 
 /** Never display a fetch or Electron IPC exception verbatim. */
 export function pairingErrorMessage(reason: unknown): string {
-  if (reason instanceof DeviceProofError || reason instanceof BrowserCookieError) {return reason.message}
+  if (reason instanceof DeviceProofError || reason instanceof BrowserCookieError || reason instanceof DaemonIdentityError || reason instanceof DaemonUnreachableError) {return reason.message}
 
   if (reason instanceof InvalidCodeError) {return 'The pairing code is invalid or expired.'}
 
