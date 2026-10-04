@@ -1,4 +1,4 @@
-export { DeviceProofError, readDeviceProofError } from './device-proof-error'
+export { DeviceProofError, isDeviceProofCode, type PairingReply, readDeviceProofError } from './device-proof-error'
 export {
   type ConnectionState,
   type GatewayClientOptions,

@@ -200,8 +200,10 @@ app's daemon list enable a daemon only while it is online.
    The key persists in IndexedDB beside the profile's saved targets. If crypto
    or storage is unavailable, login proceeds without requesting binding;
    browsers keep only the HttpOnly cookie. Proof errors retain the target,
-   retry once, and explain clock or storage problems. A lost key requires
-   sign-in again; see `docs/auth.md` for the error codes.
+   keep reconnecting with backoff, and explain clock or storage problems.
+   Browsers check cookie acceptance before saving a keyless target; if the
+   cookie is blocked, they direct the user to the daemon's own address. A lost
+   key requires pairing again; see `docs/auth.md` for the error codes.
    New apps work with old daemons, which ignore `cnf` and `DPoP`; old apps
    work with new daemons, which mint unbound devices when no proof is sent.
 

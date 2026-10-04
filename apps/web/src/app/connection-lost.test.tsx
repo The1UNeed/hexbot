@@ -1,3 +1,4 @@
+import { DeviceProofError } from '@hermes/shared'
 import { fireEvent, render, screen } from '@testing-library/react'
 
 import { useConnection } from '../stores/connection'
@@ -37,6 +38,7 @@ describe('ConnectionLost', () => {
       attempt: 0,
       daemon: null,
       error: null,
+      proofError: null,
       status: 'connected',
       target: { kind: 'local' }
     })
@@ -99,8 +101,7 @@ describe('ConnectionLost', () => {
   it('shows proof errors and offers an explicit retry without claiming to reconnect', () => {
     useConnection.setState({
       status: 'offline',
-      error:
-        "This device's clock differs from the daemon by 10 minutes. Check both clocks, then retry."
+      proofError: new DeviceProofError('dpop_clock_skew', 1000, 1600)
     })
     render(<Harness />)
 
@@ -108,8 +109,16 @@ describe('ConnectionLost', () => {
       'clock differs from the daemon by 10 minutes'
     )
     expect(screen.getByRole('status')).toHaveTextContent('Retry when ready.')
+    expect(screen.getByRole('status')).not.toHaveClass('hex-pulse')
     fireEvent.click(screen.getByRole('button', { name: 'Reconnect now' }))
     expect(retryNow).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the normal daemon copy for stale raw network errors', () => {
+    useConnection.setState({ status: 'offline', error: 'Failed to fetch', daemon: { daemon_name: 'Studio' } as never })
+    render(<Harness />)
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Hexbot cannot reach Studio.')
+    expect(screen.queryByText('Failed to fetch')).not.toBeInTheDocument()
   })
 
   it('retries now and offers another daemon', () => {

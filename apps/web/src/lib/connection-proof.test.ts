@@ -44,7 +44,7 @@ it('does not create a proof for a daemon-served cookie session', async () => {
 
 it('continues pairing when proof-key storage is unavailable', async () => {
   vi.mocked(proofHeaders).mockResolvedValue({})
-  const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response('{"ok":true}'))
+  const fetch = vi.fn<typeof globalThis.fetch>(async url => new Response(String(url).endsWith('/api/auth/ws-ticket') ? '{"ticket":"cookie"}' : '{"ok":true}'))
   await expect(
     pairWithDaemon('remote.test', 9119, 'CODE', 'Browser', { fetch, bridge: () => null })
   ).resolves.toMatchObject({ deviceToken: '' })
@@ -59,6 +59,7 @@ it('keeps the cookie path working with an old remote daemon that returns no toke
   const fetch = vi.fn<typeof globalThis.fetch>(
     async () => new Response('{"ticket":"cookie-ticket"}')
   )
+
   await resolveWsUrl(
     { kind: 'remote', host: 'old.test', port: 443, tls: true, deviceToken: '' },
     { fetch, bridge: () => null }
@@ -72,9 +73,11 @@ it('keeps the cookie path working with an old remote daemon that returns no toke
 
 it('does not create a proof for the full edition local token', async () => {
   const bridge = { daemon: { localToken: async () => 'local-token' } } as never
+
   const fetch = vi.fn<typeof globalThis.fetch>(
     async () => new Response('{"ticket":"local-ticket"}')
   )
+
   await resolveWsUrl(
     { kind: 'local', origin: 'http://localhost:9119' },
     { fetch, bridge: () => bridge }
@@ -82,7 +85,7 @@ it('does not create a proof for the full edition local token', async () => {
   expect(proofHeaders).not.toHaveBeenCalled()
 })
 
-it('retries a rejected proof once with a fresh proof', async () => {
+it('leaves proof retries to the reconnect supervisor', async () => {
   vi.mocked(proofHeaders)
     .mockResolvedValueOnce({ DPoP: 'first' })
     .mockResolvedValueOnce({ DPoP: 'fresh' })
@@ -97,7 +100,6 @@ it('retries a rejected proof once with a fresh proof', async () => {
       { kind: 'remote', host: 'daemon.test', port: 443, tls: true, deviceToken: 'bound' },
       { fetch }
     )
-  ).resolves.toContain('accepted')
-  expect(fetch).toHaveBeenCalledTimes(2)
-  expect(fetch.mock.calls[1]![1]?.headers).toMatchObject({ DPoP: 'fresh' })
+  ).rejects.toMatchObject({ code: 'invalid_dpop_proof' })
+  expect(fetch).toHaveBeenCalledTimes(1)
 })

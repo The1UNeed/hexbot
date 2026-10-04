@@ -11,11 +11,12 @@ import { fetchConnect } from '../lib/connect-grant'
 import { connectBaseUrl, grantTarget } from '../lib/connect-url'
 import {
   connectTo,
-  InvalidCodeError,
+  pairingErrorMessage,
   pairWithDaemon,
   probeDaemon,
   targetOrigin,
-  UnauthorizedError
+  unwrapPairingReply,
+  verifyBrowserCookie
 } from '../lib/connection'
 import { deviceKey, deviceProof } from '../lib/dpop'
 import { formatAddress, parseAddress, parsePairLink } from '../lib/pair-link'
@@ -24,9 +25,7 @@ import { useConnection } from '../stores/connection'
 export const Route = createFileRoute('/connect')({ component: ConnectPage })
 
 export function parseConnectCallback(input: string): { session: string; state: string } | null {
-  if (!input.startsWith('hexbot://connect')) {
-    return null
-  }
+  if (!input.startsWith('hexbot://connect')) {return null}
   const [beforeHash, hash = ''] = input.split('#')
   const url = new URL(beforeHash ?? input)
   const state = url.searchParams.get('state')
@@ -38,10 +37,12 @@ export function parseConnectCallback(input: string): { session: string; state: s
 function ConnectPage() {
   const navigate = useNavigate()
   const savedTarget = useConnection(state => state.target)
-  const connectionError = useConnection(state => state.error)
+  const proofError = useConnection(state => state.proofError)
+
   const [address, setAddress] = useState(() =>
     savedTarget?.kind === 'remote' ? formatAddress(savedTarget) : '127.0.0.1:9119'
   )
+
   const [code, setCode] = useState('')
   const [deviceName, setDeviceName] = useState(defaultDeviceName)
   const [daemonName, setDaemonName] = useState<string | null>(null)
@@ -68,29 +69,23 @@ function ConnectPage() {
   useEffect(() => {
     const bridge = getBridge()
 
-    if (!bridge?.onNavigate) {
-      return
-    }
+    if (!bridge?.onNavigate) {return}
 
     return bridge.onNavigate(url => {
       const parsed = parseConnectCallback(url)
 
-      if (!parsed || parsed.state !== connectState) {
-        return
-      }
+      if (!parsed || parsed.state !== connectState) {return}
       localStorage.setItem('hexbot.connect.session', parsed.session)
       setClientSession(parsed.session)
     })
   }, [connectState])
   useEffect(() => {
-    if (!clientSession) {
-      return
-    }
+    if (!clientSession) {return}
     void fetchConnect('/api/daemons', clientSession)
       .then(result =>
         setDaemons((result as { daemons?: typeof daemons }).daemons ?? (result as typeof daemons))
       )
-      .catch(reason => setError(String(reason)))
+      .catch(reason => setError(pairingErrorMessage(reason)))
   }, [clientSession])
 
   // Reopening keeps the same state, so the link already open in the browser
@@ -101,17 +96,12 @@ function ConnectPage() {
     const url = `${connectBaseUrl()}/connect/authorize?state=${encodeURIComponent(state)}&device=${encodeURIComponent(deviceName)}`
     const bridge = getBridge()
 
-    if (bridge) {
-      void bridge.openExternal(url)
-    } else {
-      window.location.assign(url)
-    }
+    if (bridge) {void bridge.openExternal(url)}
+    else {window.location.assign(url)}
   }
 
   const pickDaemon = async (daemon: (typeof daemons)[number]) => {
-    if (!clientSession) {
-      return
-    }
+    if (!clientSession) {return}
     setBusy(true)
 
     try {
@@ -132,13 +122,13 @@ function ConnectPage() {
         : undefined
 
       if (bridge?.pairWithGrant) {
-        const result = await bridge.pairWithGrant({
+        const result = unwrapPairingReply(await bridge.pairWithGrant({
           deviceName,
           grant: granted.grant,
           proof,
           host: origin.replace(/^https?:\/\//, ''),
           tls
-        })
+        }))
 
         await connectTo({ deviceToken: result.device_token, host, kind: 'remote', port, tls })
       } else {
@@ -153,22 +143,23 @@ function ConnectPage() {
           method: 'POST'
         })
 
-        const proofError = await readDeviceProofError(response)
+        const failure = await readDeviceProofError(response)
 
-        if (proofError) {
-          throw proofError
+        if (failure) {throw failure}
+
+        if (!response.ok) {throw new Error('Connect login failed')}
+        const login = await response.json() as { device_token?: string }
+
+        if (!login.device_token) {
+          await verifyBrowserCookie(origin, daemon.name ?? daemon.daemon_name ?? host)
         }
 
-        if (!response.ok) {
-          throw new Error(`Connect login failed (${response.status})`)
-        }
-        const login = (await response.json()) as { device_token?: string }
         await connectTo({ deviceToken: login.device_token ?? '', host, kind: 'remote', port, tls })
       }
 
       await navigate({ to: '/' })
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      setError(pairingErrorMessage(reason))
     } finally {
       setBusy(false)
     }
@@ -220,15 +211,7 @@ function ConnectPage() {
       await connectTo({ kind: 'remote', ...parts, deviceToken: paired.deviceToken, tls: false })
       await navigate({ to: '/' })
     } catch (reason) {
-      setError(
-        reason instanceof InvalidCodeError
-          ? 'The pairing code is invalid or expired.'
-          : reason instanceof UnauthorizedError
-            ? 'This device was revoked. Pair it again.'
-            : reason instanceof Error
-              ? reason.message
-              : 'The daemon could not be reached.'
-      )
+      setError(pairingErrorMessage(reason))
     } finally {
       setBusy(false)
     }
@@ -266,7 +249,11 @@ function ConnectPage() {
             <span aria-hidden className="text-muted">
               ·
             </span>
-            <button className="hover:underline" onClick={() => setConnectState(null)} type="button">
+            <button
+              className="hover:underline"
+              onClick={() => setConnectState(null)}
+              type="button"
+            >
               Cancel
             </button>
           </div>
@@ -339,9 +326,9 @@ function ConnectPage() {
             Connect
           </Button>
         </div>
-        {error || connectionError ? (
+        {error || proofError ? (
           <p className="text-secondary text-danger" role="alert">
-            {error || connectionError}
+            {error || proofError?.message}
           </p>
         ) : null}
       </form>

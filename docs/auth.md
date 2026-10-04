@@ -131,7 +131,10 @@ on a `cg_<jwt>` login hashes that entire password string in `ath`.
 Password-login responses include `device_token` and `device_id` only when a
 proof is attached. A browser without key storage keeps only the HttpOnly
 cookie; it does not save an unbound token in localStorage. Ordinary
-daemon-served cookie login is unchanged.
+daemon-served cookie login is unchanged. After a browser login returns no
+token, the app immediately checks that the cookie can mint a ticket before
+saving the target. If the browser blocks that cookie across sites, it directs
+the user to the daemon's own address instead.
 
 Proofs follow the JWT shape in [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.html),
 with header `{typ: "dpop+jwt", alg: "ES256", jwk: <public P-256 JWK>}` and
@@ -183,13 +186,15 @@ JSON `{error: "invalid_dpop_proof", code, message}`. HTTP 401 uses these codes:
 - `dpop_clock_skew`: `iat` is outside ±60 seconds; `server_time` and
   `proof_time` give daemon and proof Unix timestamps in seconds.
 
-`dpop_cache_full` uses HTTP 503 and `Retry-After: 1`. The app retries a proof
-error once with a fresh proof, then explains the problem without deleting the
-saved target. Clock errors show the difference between the two clocks; check
-both devices, since either clock may be wrong. A lost or changed key sends the
-app to sign-in with the saved address and an explanation. Ordinary credential
+`dpop_cache_full` uses HTTP 503 and `Retry-After: 1`. The app explains ticket
+proof errors without deleting the saved target. Except for a key mismatch, it
+keeps reconnecting with a fresh proof using the normal backoff, waiting at
+least `Retry-After` when supplied. Clock errors show the difference between
+the two clocks; check both devices, since either clock may be wrong. A lost or changed key sends the
+app to pairing with the saved address and an explanation. Ordinary credential
 401 responses still clear a revoked target. Storage errors remain HTTP 500
-and do not look like revocation. See `docs/api.md` for the response contract.
+and do not look like revocation. A ticket HTTP 403 also retries without
+clearing the target. See `docs/api.md` for the response contract.
 
 DPoP protects against reuse of a stolen device token without its private key.
 It does not hide traffic from Cloudflare, protect a compromised client that

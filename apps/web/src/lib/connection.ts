@@ -13,7 +13,7 @@
  * is cleared and the connect screen takes over.
  */
 
-import { buildHermesWebSocketUrl, DeviceProofError, readDeviceProofError } from '@hermes/shared'
+import { buildHermesWebSocketUrl, DeviceProofError, isDeviceProofCode, type PairingReply, readDeviceProofError } from '@hermes/shared'
 
 import { botsActions } from '../stores/bots'
 import { connectionActions } from '../stores/connection'
@@ -181,52 +181,46 @@ async function mintTicket(
   const url = `${origin}/api/auth/ws-ticket`
   const crossOrigin = origin !== window.location.origin
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    let response: Response
+  let response: Response
 
-    try {
-      response = await doFetch(url, {
-        ...(bearer
-          ? {
-              headers: {
-                Authorization: `Bearer ${bearer}`,
-                ...(remote ? await proofHeaders('POST', url, bearer) : {})
-              }
+  try {
+    response = await doFetch(url, {
+      ...(bearer
+        ? {
+            headers: {
+              Authorization: `Bearer ${bearer}`,
+              ...(remote ? await proofHeaders('POST', url, bearer) : {})
             }
-          : // Remote browsers without a proof key retain their HttpOnly cookie.
-            { credentials: crossOrigin ? ('include' as const) : ('same-origin' as const) }),
-        method: 'POST'
-      })
-    } catch (error) {
-      throw new UnreachableError(error instanceof Error ? error.message : String(error))
-    }
-
-    const proofError = await readDeviceProofError(response)
-
-    if (proofError) {
-      if (attempt === 0) {
-        continue
-      }
-      throw proofError
-    }
-
-    if (response.status === 401) {
-      throw new UnauthorizedError()
-    }
-
-    if (!response.ok) {
-      throw new UnreachableError(`The daemon refused a WebSocket ticket (HTTP ${response.status}).`)
-    }
-    const body = (await response.json()) as { ticket?: string }
-
-    if (!body.ticket) {
-      throw new UnreachableError('The daemon returned an empty WebSocket ticket.')
-    }
-
-    return body.ticket
+          }
+        : // Remote browsers without a proof key retain their HttpOnly cookie.
+          { credentials: crossOrigin ? ('include' as const) : ('same-origin' as const) }),
+      method: 'POST'
+    })
+  } catch (error) {
+    throw new UnreachableError(error instanceof Error ? error.message : String(error))
   }
 
-  throw new UnreachableError('The daemon refused a WebSocket ticket.')
+  const proofError = await readDeviceProofError(response)
+
+  if (proofError) {
+    throw proofError
+  }
+
+  if (response.status === 401) {
+    throw new UnauthorizedError()
+  }
+
+  if (!response.ok) {
+    throw new UnreachableError(`The daemon refused a WebSocket ticket (HTTP ${response.status}).`)
+  }
+
+  const body = (await response.json()) as { ticket?: string }
+
+  if (!body.ticket) {
+    throw new UnreachableError('The daemon returned an empty WebSocket ticket.')
+  }
+
+  return body.ticket
 }
 
 /** The `/api/ws` URL with a single-use ticket from the device credential. */
@@ -237,6 +231,7 @@ export async function resolveWsUrl(
   const origin = targetOrigin(target)
   const url = new URL(origin)
   const base = { host: url.host, path: '/api/ws', protocol: url.protocol }
+
   const ticket = await mintTicket(
     origin,
     await bearerToken(target, deps),
@@ -263,7 +258,7 @@ export async function pairWithDaemon(
 
   if (bridge) {
     const proof = await proofHeaders('POST', `http://${host}:${port}/auth/password-login`)
-    const result = await bridge.pair(host, port, code, deviceName, proof.DPoP)
+    const result = unwrapPairingReply(await bridge.pair(host, port, code, deviceName, proof.DPoP))
 
     return {
       daemonName: result.daemon_name,
@@ -320,6 +315,10 @@ export async function pairWithDaemon(
     daemon_name?: string
     device_id?: string
     device_token?: string
+  }
+
+  if (!body.device_token) {
+    await verifyBrowserCookie(origin, body.daemon_name ?? host, deps)
   }
 
   return {
@@ -431,11 +430,12 @@ export class ConnectionSupervisor {
       }
 
       if (error instanceof DeviceProofError) {
-        // Retain the target and token. Only a new login or real revocation replaces them.
-        store.setStatus(error.code === 'dpop_key_mismatch' ? 'unauthorized' : 'offline', {
-          attempt: 0,
-          error: error.message
-        })
+        // A changed key needs pairing; temporary proof failures keep reconnecting.
+        if (error.code === 'dpop_key_mismatch') {
+          store.setStatus('unauthorized', { attempt: 0, proofError: error })
+        } else {
+          this.scheduleRetry(error)
+        }
 
         return
       }
@@ -446,7 +446,7 @@ export class ConnectionSupervisor {
         return
       }
 
-      this.scheduleRetry(error instanceof Error ? error.message : String(error))
+      this.scheduleRetry()
     }
   }
 
@@ -575,7 +575,7 @@ export class ConnectionSupervisor {
       this.attempt = 0
     }
 
-    this.scheduleRetry('The connection to the daemon dropped.')
+    this.scheduleRetry()
   }
 
   private handleUnauthorized(message: string): void {
@@ -584,14 +584,15 @@ export class ConnectionSupervisor {
     connectionActions().setStatus('unauthorized', { attempt: 0, error: message })
   }
 
-  private scheduleRetry(error: string): void {
+  private scheduleRetry(proofError: DeviceProofError | null = null): void {
     this.attempt += 1
 
-    const delay = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** (this.attempt - 1))
+    const delay = Math.max(proofError?.retryAfterMs ?? 0, Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** (this.attempt - 1)))
 
     connectionActions().setStatus(this.connectedAt ? 'reconnecting' : 'offline', {
       attempt: this.attempt,
-      error
+      error: null,
+      proofError
     })
 
     this.retryTimer = setTimeout(() => {
@@ -618,4 +619,43 @@ export function connectTo(target: ConnectionTarget): Promise<void> {
 
 export function disconnect(): void {
   getSupervisor().stop()
+}
+
+
+export function unwrapPairingReply<T>(reply: PairingReply<T>): T {
+  if (reply.ok) {return reply.value}
+  const { code, serverTime, proofTime, retryAfterMs } = reply.error
+
+  if (isDeviceProofCode(code)) {throw new DeviceProofError(code, serverTime, proofTime, retryAfterMs)}
+
+  if (code === 'invalid_code') {throw new InvalidCodeError()}
+  throw new UnreachableError()
+}
+
+export class BrowserCookieError extends Error {
+  constructor(name: string, origin: string) {
+    super(`This browser can't keep a key or a sign-in cookie for ${name} from this page. Open ${origin} directly to connect to ${name}.`)
+    this.name = 'BrowserCookieError'
+  }
+}
+
+/** Check cookie acceptance before persisting a keyless browser target. */
+export async function verifyBrowserCookie(origin: string, name: string, deps: ConnectionDeps = {}): Promise<void> {
+  try {
+    await mintTicket(origin, '', false, deps)
+  } catch (error) {
+    if (error instanceof UnauthorizedError) {throw new BrowserCookieError(name, origin)}
+    throw error
+  }
+}
+
+/** Never display a fetch or Electron IPC exception verbatim. */
+export function pairingErrorMessage(reason: unknown): string {
+  if (reason instanceof DeviceProofError || reason instanceof BrowserCookieError) {return reason.message}
+
+  if (reason instanceof InvalidCodeError) {return 'The pairing code is invalid or expired.'}
+
+  if (reason instanceof UnauthorizedError) {return 'This device was revoked. Pair it again.'}
+
+  return 'The daemon could not be reached.'
 }

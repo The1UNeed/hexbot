@@ -1,3 +1,4 @@
+import type { PairingReply } from '@hermes/shared'
 import { contextBridge, ipcRenderer } from 'electron'
 
 const metadata = ipcRenderer.sendSync('hexbot:metadata') as {
@@ -48,11 +49,14 @@ const hexbot = Object.freeze({
   // The main process returns camelCase; the renderer reads the daemon's wire
   // shape (daemon_name, device_id, device_token), so normalise here.
   pair: async (host: string, port: number, code: string, deviceName: string, proof?: string) => {
-    const result = (await ipcRenderer.invoke('hexbot:pair', { host, port, code, deviceName, proof })) as {
-      deviceToken: string
-      daemonName: string
+    const result = (await ipcRenderer.invoke('hexbot:pair', {
+      host, port, code, deviceName, proof
+    })) as PairingReply<{ deviceToken: string; daemonName: string }>
+    if (!result.ok) return result
+    return {
+      ok: true as const,
+      value: { daemon_name: result.value.daemonName, device_id: '', device_token: result.value.deviceToken }
     }
-    return { daemon_name: result.daemonName, device_id: '', device_token: result.deviceToken }
   },
   pairWithGrant: async (input: {
     host: string
@@ -61,11 +65,15 @@ const hexbot = Object.freeze({
     tls?: boolean
     proof?: string
   }) => {
-    const token = (await ipcRenderer.invoke('hexbot:pair-with-grant', {
+    const result = (await ipcRenderer.invoke('hexbot:pair-with-grant', {
       tls: true,
       ...input
-    })) as string
-    return { daemon_name: input.host, device_id: '', device_token: token }
+    })) as PairingReply<string>
+    if (!result.ok) return result
+    return {
+      ok: true as const,
+      value: { daemon_name: input.host, device_id: '', device_token: result.value }
+    }
   },
   httpFetch: (
     url: string,

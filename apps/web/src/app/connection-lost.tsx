@@ -28,14 +28,16 @@ export function useConnectionLost(): boolean {
 
   // A dropped connection locks every page. A daemon that never answered only
   // locks the app pages: the starting pages handle first contact themselves.
-  return status === 'reconnecting' || (status === 'offline' && !STARTING_PAGES.includes(pathname))
+  return (
+    status === 'reconnecting' || (status === 'offline' && !STARTING_PAGES.includes(pathname))
+  )
 }
 
 export function ConnectionLost() {
   const navigate = useNavigate()
   const status = useConnection(state => state.status)
   const attempt = useConnection(state => state.attempt)
-  const error = useConnection(state => state.error)
+  const proofError = useConnection(state => state.proofError)
   const daemon = useConnection(state => state.daemon)
   const target = useConnection(state => state.target)
   const [busy, setBusy] = useState(false)
@@ -77,17 +79,19 @@ export function ConnectionLost() {
       <div className="hex-rise w-full max-w-[420px] space-y-5 rounded-window border border-border bg-surface p-6 text-center shadow-popup">
         <HexbotMark className="mx-auto" mood="sleeping" size={56} />
         <div>
-          <h1 className="text-[length:var(--text-title)] font-semibold" id="connection-lost-title">
+          <h1
+            className="text-[length:var(--text-title)] font-semibold"
+            id="connection-lost-title"
+          >
             Connection lost
           </h1>
           <p className="mt-1 text-secondary text-muted">
-            {error ||
-              (status === 'reconnecting'
-                ? `Hexbot lost its connection to ${name}.`
-                : `Hexbot cannot reach ${name}.`)}
+            {proofError?.message || (status === 'reconnecting'
+              ? `Hexbot lost its connection to ${name}.`
+              : `Hexbot cannot reach ${name}.`)}
           </p>
         </div>
-        <p className="hex-pulse text-secondary text-muted" role="status">
+        <p className="text-secondary text-muted" role="status">
           {attempt > 0 ? `Reconnecting, attempt ${attempt}…` : 'Retry when ready.'}
         </p>
         <div className="flex flex-wrap justify-center gap-2">

@@ -25,7 +25,7 @@ describe('connection gate', () => {
     ).resolves.toBeUndefined()
   })
   it('sends the required username when pairing a browser', async () => {
-    const fetch = vi.fn(async () => response('{"ok":true}'))
+    const fetch = vi.fn(async () => response('{"ok":true,"ticket":"cookie"}'))
     await pairWithDaemon('127.0.0.1', 9119, 'ABCD-EFGH', 'My browser', {
       bridge: () => null, fetch
     })

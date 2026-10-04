@@ -509,9 +509,9 @@ Proof failures at these HTTP endpoints carry
 | `dpop_clock_skew` | 401 | Proof time differs by more than 60 seconds; response also includes `server_time` and `proof_time` (Unix seconds) |
 | `dpop_cache_full` | 503 | Replay cache limit reached; retry later (`Retry-After: 1`) |
 
-Clients must distinguish these responses from a revoked credential: retry once
-with a fresh proof, then show the error while retaining the target. A key
-mismatch requires sign-in again. An ordinary credential 401 has no DPoP code
+Clients must distinguish these responses from a revoked credential: show the
+error, retain the target, and retry with fresh proofs using reconnect backoff
+and any `Retry-After` minimum delay. A key mismatch requires pairing again. An ordinary credential 401 has no DPoP code
 or challenge. Database failures remain HTTP 500. The cache counts only
 authenticated bound-token uses (1,024 per key, 65,536 total); login proofs rely
 on the pairing code or grant's single-use protection instead. CORS exposes

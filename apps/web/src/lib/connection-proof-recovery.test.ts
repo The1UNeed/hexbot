@@ -3,12 +3,14 @@ import { webcrypto } from 'node:crypto'
 import { IDBFactory } from 'fake-indexeddb'
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
   vi.resetModules()
   vi.stubGlobal('crypto', webcrypto)
   vi.stubGlobal('indexedDB', new IDBFactory())
   localStorage.clear()
 })
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -23,11 +25,11 @@ const target = {
 
 it.each([
   ['dpop_clock_skew', 401, /clock differs.*10 minutes/],
-  ['invalid_dpop_proof', 401, /rejected the device proof/],
-  ['dpop_cache_full', 503, /busy checking device proofs/],
-  ['dpop_proof_required', 401, /key could not be loaded/]
+  ['invalid_dpop_proof', 401, /could not verify this app/],
+  ['dpop_cache_full', 503, /daemon is busy/],
+  ['dpop_proof_required', 401, /could not load its saved key/]
 ] as const)(
-  'keeps the saved target after %s and explains after one retry',
+  'keeps the saved target after %s and schedules a fresh proof after backoff',
   async (code, status, message) => {
     const { ConnectionSupervisor } = await import('./connection')
     const { useConnection } = await import('../stores/connection')
@@ -46,14 +48,16 @@ it.each([
 
     const supervisor = new ConnectionSupervisor({ fetch })
     await supervisor.start(target)
-    expect(proofs).toHaveLength(2)
-    expect(proofs[0]).not.toBe(proofs[1])
+    expect(proofs).toHaveLength(1)
     expect(useConnection.getState()).toMatchObject({
       target,
       status: 'offline',
-      error: expect.stringMatching(message)
+      proofError: expect.objectContaining({ message: expect.stringMatching(message) })
     })
     expect(JSON.parse(localStorage.getItem('hexbot.target')!)).toEqual(target)
+    await vi.advanceTimersByTimeAsync(1000)
+    await vi.waitFor(() => expect(proofs).toHaveLength(2))
+    expect(proofs[0]).not.toBe(proofs[1])
     supervisor.stop()
   }
 )
@@ -91,9 +95,11 @@ it('a deleted key routes to sign-in with an accurate message and preserves the s
   expect(useConnection.getState()).toMatchObject({
     target,
     status: 'unauthorized',
-    error: 'The saved device key no longer matches this daemon. Sign in again.'
+    proofError: expect.objectContaining({
+      message: 'The saved device key no longer matches this daemon. Pair it again.'
+    })
   })
-  expect(fetch).toHaveBeenCalledTimes(3)
+  expect(fetch).toHaveBeenCalledTimes(2)
   expect(JSON.parse(localStorage.getItem('hexbot.target')!)).toEqual(target)
   supervisor.stop()
 })
@@ -133,6 +139,70 @@ it.each([403, 500, 503])(
     await supervisor.start(target)
     expect(useConnection.getState()).toMatchObject({ target, status: 'offline' })
     expect(JSON.parse(localStorage.getItem('hexbot.target')!)).toEqual(target)
+    supervisor.stop()
+  }
+)
+
+it.each(['5', 'date'])('honours Retry-After %s before retrying a full cache', async retry => {
+  vi.setSystemTime(new Date('2026-10-04T00:00:00Z'))
+  const { ConnectionSupervisor } = await import('./connection')
+  const header = retry === 'date' ? new Date(Date.now() + 5000).toUTCString() : retry
+  const proofs: string[] = []
+
+  const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
+    if (!String(url).endsWith('/api/auth/ws-ticket')) {
+      return new Response('')
+    }
+
+    proofs.push(new Headers(init?.headers).get('DPoP')!)
+
+    return new Response('{"code":"dpop_cache_full"}', {
+      status: 503,
+      headers: { 'retry-after': header }
+    })
+  })
+
+  const supervisor = new ConnectionSupervisor({ fetch })
+  await supervisor.start(target)
+  expect(proofs).toHaveLength(1)
+  await vi.advanceTimersByTimeAsync(4999)
+  expect(proofs).toHaveLength(1)
+  await vi.advanceTimersByTimeAsync(1)
+  await vi.waitFor(() => expect(proofs).toHaveLength(2))
+  expect(proofs[0]).not.toBe(proofs[1])
+  supervisor.stop()
+})
+
+it.each(['dpop_clock_skew', 'dpop_proof_required', 'dpop_cache_full'])(
+  'resumes the WebSocket handshake when %s clears without a manual click',
+  async code => {
+    const { ConnectionSupervisor } = await import('./connection')
+    const { useConnection } = await import('../stores/connection')
+    let tickets = 0
+
+    const fetch = vi.fn<typeof globalThis.fetch>(async url => {
+      if (!String(url).endsWith('/api/auth/ws-ticket')) {
+        return new Response('')
+      }
+
+      tickets += 1
+
+      return tickets === 1
+        ? new Response(JSON.stringify({ code }), { status: 401 })
+        : new Response('{"ticket":"accepted"}')
+    })
+
+    const socketFactory = vi.fn(() => {
+      throw new Error('fixture ends at the WebSocket handshake')
+    })
+
+    const supervisor = new ConnectionSupervisor({ fetch, socketFactory })
+    await supervisor.start(target)
+    expect(useConnection.getState().proofError?.code).toBe(code)
+    await vi.advanceTimersByTimeAsync(1000)
+    await vi.waitFor(() => expect(socketFactory).toHaveBeenCalledOnce())
+    expect(socketFactory).toHaveBeenCalledWith(expect.stringContaining('ticket=accepted'))
+    expect(useConnection.getState().proofError).toBeNull()
     supervisor.stop()
   }
 )

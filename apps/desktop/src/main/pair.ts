@@ -1,4 +1,4 @@
-import { readDeviceProofError } from '../../../shared/src/device-proof-error'
+import { DeviceProofError, type PairingReply, readDeviceProofError } from '@hermes/shared'
 
 export class PairingError extends Error {
   constructor(public readonly code: 'invalid_code' | 'missing_token' | 'verification_failed') {
@@ -150,4 +150,19 @@ export async function pair({
   }
 
   return { deviceToken, daemonName: result.daemon_name ?? host }
+}
+
+
+export async function pairingReply<T>(run: () => Promise<T>): Promise<PairingReply<T>> {
+  try {
+    return { ok: true, value: await run() }
+  } catch (error) {
+    if (error instanceof DeviceProofError) {
+      const { code, serverTime, proofTime, retryAfterMs } = error
+
+      return { ok: false, error: { code, serverTime, proofTime, retryAfterMs } }
+    }
+
+    return { ok: false, error: { code: error instanceof PairingError ? error.code : 'unreachable' } }
+  }
 }
