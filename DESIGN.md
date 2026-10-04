@@ -181,13 +181,19 @@ more freedom and more capability than a hosted product can offer.
   on Linux), starts at login and keeps running when the app quits. A tray
   item shows status. If the user declines, the daemon runs only while the
   app is open.
+- One installer, as a small windowed app (Hexbot Installer, Tauri) or
+  `curl -fsSL https://hexbot.app/install.sh | sh`, offers Full, Client, and
+  Headless, and fetches only the chosen option. Headless is the daemon alone:
+  `hexbot setup` and `hexbot service install` do without Electron what the
+  full package's first launch does, for servers reached over SSH. Running
+  the installer again updates, changes, or uninstalls; `~/.hexbot` stays.
 - Signed and notarized from milestone 1 with a Developer ID certificate and
   an App Store Connect API key from environment variables.
 - Update feed, downloads and docs at hexbot.app. GitHub Actions CI on macOS
   and Linux runners; release builds on tags. Versions start at 0.1.0. One
   stable channel; beta later.
-- The native `hexbot` CLI provides `serve`, `pair`, `bots`, `rooms`, `devices`,
-  `connect` and `send`. Legacy core administration commands are not included.
+- The native `hexbot` CLI provides `serve`, `setup`, `service`, `status`,
+  `pair`, `bots`, `rooms`, `devices`, `connect` and `send`. Legacy core administration commands are not included.
 
 ## 6. Multi-user (later)
 

@@ -1,7 +1,7 @@
 // PostHog, loaded only after the visitor accepts the cookie notice. It sends
 // page views, autocaptured clicks, Core Web Vitals, uncaught errors, and
 // session recordings (inputs masked) through the /ingest rewrite in
-// vercel.json, plus a `download` event for every build link: edition, os,
+// vercel.json, plus a `download` event for every build link: artifact, edition for packages, os,
 // arch, format, version, channel, and trigger ('auto' when the download page
 // starts it, 'click' otherwise). A download made before the visitor answers
 // is sent if they accept on the same page. Connect (apps/connect) reports to

@@ -1,5 +1,7 @@
-// Start the download for this computer, then show what to do next. Without
-// a script the page offers the Apple Silicon build and lists the rest.
+// Start the download for this computer, then show what to do next: the Hexbot
+// Installer when one is published for it, the full package otherwise. Without
+// a script the page offers the first build and lists the rest.
+import type { DownloadChoice } from '../lib/downloadChoices'
 import { detectTarget, type Target } from '../lib/detectPlatform'
 
 const title = document.querySelector<HTMLElement>('#dl-title')
@@ -28,19 +30,26 @@ function renderer(): string | undefined {
 
 function show(target: Target) {
   if (!title || !sub || !primary || !label) return
-  const build = document.querySelector<HTMLAnchorElement>(`a[data-edition="full"][data-target="${target}"]`)
+  const builds: DownloadChoice[] = JSON.parse(primary.dataset.builds ?? '[]')
+  const build = builds.find(build => build.key === target)
   if (target === 'other' || !build) {
     title.textContent = 'Hexbot runs on Mac and Linux.'
-    sub.textContent = 'Download it on a Mac or a Linux computer. Then reach your bots from this device with a pairing link.'
+    sub.textContent = document.querySelector('#dl-terminal')
+      ? 'Install it on a Mac or a Linux computer, or on a server with the terminal command below. Then reach your bots from this device with a pairing link.'
+      : 'Download it on a Mac or a Linux computer. Then reach your bots from this device with a pairing link.'
     primary.hidden = true
     return
   }
-  const name = build.dataset.name ?? ''
-  primary.href = build.href
-  for (const steps of document.querySelectorAll<HTMLElement>('[data-os]'))
-    steps.hidden = steps.dataset.os !== (target === 'linux' ? 'linux' : 'mac')
+  const name = build.name
+  const kind = build.kind
+  const os = target === 'linux' ? 'linux' : 'mac'
+  primary.href = build.url
+  for (const element of document.querySelectorAll<HTMLElement>('[data-os], [data-for]'))
+    element.hidden = (!!element.dataset.os && element.dataset.os !== os) || (!!element.dataset.for && element.dataset.for !== kind)
   title.textContent = 'Thanks for downloading Hexbot'
-  sub.textContent = `Your download for ${name} should begin automatically.`
+  sub.textContent = kind === 'installer'
+    ? `The Hexbot Installer for ${name} should begin downloading.`
+    : `Your download for ${name} should begin automatically.`
   label.textContent = 'Download again'
   // The file is served as a download, so the page stays put. A click, not
   // location.assign, so analytics.ts counts it as an automatic download.
@@ -49,6 +58,24 @@ function show(target: Target) {
     primary.click()
     delete primary.dataset.trigger
   }, 600)
+}
+
+// Copy buttons start hidden, so without a script the command is plain selectable text.
+for (const button of document.querySelectorAll<HTMLButtonElement>('button[data-copy]')) {
+  const status = button.querySelector('span') ?? button
+  if (!navigator.clipboard) continue
+  button.hidden = false
+  let reset: ReturnType<typeof setTimeout> | undefined
+  button.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(button.dataset.copy ?? '')
+      status.textContent = 'Copied'
+    } catch {
+      status.textContent = 'Select and copy'
+    }
+    clearTimeout(reset)
+    reset = setTimeout(() => { status.textContent = 'Copy' }, 2000)
+  })
 }
 
 if (primary) architecture().then(arch => show(detectTarget({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints, architecture: arch, renderer: renderer() })))

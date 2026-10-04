@@ -604,6 +604,11 @@ on the pairing code or grant's single-use protection instead. CORS exposes
   `--sign-in` preserves outstanding codes for startup links; ordinary pairing replaces the previous code.
 - `hexbot connect [status|disconnect]`: registers, inspects, or disconnects
   this daemon from Hex Connect.
+- `hexbot lan on|off`: turns "Allow other devices" on or off, through the
+  running daemon or offline under its home lock.
+- `hexbot status [--json]`, `hexbot service install|uninstall|start|stop|restart|status|logs`,
+  and `hexbot setup [--activate]`: the Headless commands, described in
+  `backend/hexbot-core/README.md`.
 - `hexbot devices list|revoke`, `hexbot bots list|create|delete`,
   `hexbot rooms list`, and `hexbot send <bot> <text>`.
 - Native commands use the running daemon when available, preserving event

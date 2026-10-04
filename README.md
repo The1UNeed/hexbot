@@ -21,13 +21,27 @@ what you are running.
 | **Nightly** | `Hexbot Nightly` | [hexbot.app](https://hexbot.app/download/) until the first stable release, and [nightly prereleases on GitHub](https://github.com/The1UNeed/hexbot/releases?q=nightly) | Testers who want yesterday's fixes. Installs next to the stable app, updates itself to the next nightly. |
 | **Dev** | `Hexbot (dev)` / source | This repository, see [Develop](#develop) | Contributors and coding agents. |
 
-Each channel comes in two packages for macOS (Apple Silicon and Intel) and
-Linux (AppImage and deb):
+Install with the Hexbot Installer from
+[hexbot.app/download](https://hexbot.app/download/), or from a terminal,
+also over SSH:
 
-- **Full package** (`Hexbot`): the app plus the daemon. Install where your
-  bots should live.
-- **Client only** (`Hexbot Client`): the app alone. Install on any other
-  computer and pair it with a full package.
+```sh
+curl -fsSL https://hexbot.app/install.sh | sh
+```
+
+Both offer three options and download only the one you choose:
+
+- **Full** (`Hexbot`): the app plus the daemon. Install where your bots
+  should live.
+- **Client** (`Hexbot Client`): the app alone. Install on any other computer
+  and pair it with a daemon.
+- **Headless**: the daemon alone, as a background service with the `hexbot`
+  command. Install on a server and use it from Client or Full elsewhere.
+
+Run the installer again to update or repair, change options, or uninstall;
+`~/.hexbot` is kept unless you ask to delete it. Full and Client are also
+direct downloads for macOS (Apple Silicon and Intel) and Linux (AppImage and
+deb). [Install](https://hexbot.app/docs/install/) has the details.
 
 Stable and Nightly share `~/.hexbot`. Back it up before opening a nightly.
 The app follows the track it was installed from; switch in Settings, Updates.

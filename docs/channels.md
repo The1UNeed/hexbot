@@ -54,6 +54,8 @@ lives in a small set of files:
 | `apps/site/public/downloads/manifest.json` | stable | Names the downloadable artifacts on hexbot.app; written by `finalize` |
 | `scripts/desktop/update-nightly-index.mjs` | nightly | Prepends each nightly to `nightlies.json` on `updates.hexbot.app` (last 30) so hexbot.app can list earlier builds. Tested in `packaging.test.mjs` |
 | `apps/site/src/lib/nightly.ts` | nightly | Reads the `nightly-*.yml` feed on `updates.hexbot.app` while the site builds, so the download page can offer the current nightly before the first stable release |
+| `apps/site/src/lib/installers.ts` | stable, nightly | Reads `install/stable.json`, or `install/nightly.json` until stable is published, while the site builds, so the download page offers the Hexbot Installer for each computer. Without it the page offers the packages alone |
+| `apps/site/public/install.sh` | stable, nightly | The `curl -fsSL https://hexbot.app/install.sh \| sh` bootstrap. Served by the site, so a change ships with the next site deploy, not with a release |
 | `packaging/homebrew/*.rb` | stable | Homebrew casks pointing at `updates.hexbot.app`; written by `finalize` |
 | `docs/releases/<version>.md` | stable | Release notes; `release.yml` uses this file as the GitHub release body when it exists, otherwise GitHub generates notes |
 

@@ -14,6 +14,8 @@ Tailscale is the recommended first way to reach your daemon outside your LAN. It
 4. On the daemon computer, run `hexbot pair` to create a fresh code.
 5. Pair using the daemon's Tailscale IP address or MagicDNS name and its Hexbot port.
 
+On a [Headless](/docs/install/#headless) daemon, do steps 3 and 4 from a terminal over SSH; `hexbot status` shows the daemon's Tailscale address and port.
+
 The daemon uses plain WebSocket traffic. Tailscale encrypts traffic between tailnet devices. Do not use the same setup over the public internet without a private network or secure proxy.
 
 ## Access rules
