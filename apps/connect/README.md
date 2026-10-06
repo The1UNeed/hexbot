@@ -46,6 +46,11 @@ pnpm --filter ./apps/connect run migrate
 
 The migration is idempotent. Run it before the first deployment and after schema changes.
 
+Registration starts use a shared Postgres rate limit of ten attempts per minute
+per client. Apply the migration before deploying. On Vercel, client addresses
+come from its deployment-owned header. For another host, see the trusted-proxy
+configuration and cleanup limits in [docs/connect.md](../../docs/connect.md#daemon-registration-device-code).
+
 ## Deploy to Vercel
 
 The Vercel project `hexbot-connect` is connected to the GitHub repository with its root directory at `apps/connect`. Every push to `main` deploys `connect.hexbot.app`; every other branch gets a preview URL, posted on the pull request. Nobody deploys by hand. `docs/deploy.md` describes both environments.

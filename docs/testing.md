@@ -13,6 +13,8 @@
   CI runs the Rust and Pi suites on Linux and macOS. Approval tests use a stub
   sandbox; isolation tests use `sandbox-exec` on macOS and working bubblewrap
   on Linux. CI installs bubblewrap with the AppArmor profile from the install docs.
+  macOS tests check that Auto and Manual deny IPv4 and IPv6 TCP/UDP listeners,
+  while approved full-access commands can still listen.
 - Native browser end to end: `node scripts/dev/native-ui-smoke.mjs` after building
   Rust and the web bundle and installing the locked Pi dependency and Chromium.
   Uses a local streaming model with actual Pi; no provider credentials needed.

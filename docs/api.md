@@ -548,8 +548,10 @@ kind, connector, text, created_at, resolved_at}}` followed by
   device_id, daemon_name}`; the code is single-use and expires in 10 minutes.
 - Device tokens use `Authorization: Bearer <token>`. Prefer `POST
   /api/auth/ws-ticket` then `/api/ws?ticket=<single-use ticket>`; tickets expire
-  after 30 seconds. The legacy `/api/ws?token=<device token>` and direct bearer
-  or cookie upgrade remain accepted, but keep long-lived tokens out of URLs.
+  after 30 seconds. The legacy `/api/ws?token=<device token>` upgrade requires
+  a loopback peer and a loopback Host. Direct bearer or cookie
+  upgrade remains accepted remotely. Keep long-lived tokens out of URLs; the CLI
+  sends its credential in an Authorization header.
 - `DPoP: <signed JWT>` optionally binds a new device at `/hexbot/pair` or
   `/auth/password-login`. Password-login responses include `device_token`
   and `device_id` only when proof is attached. Without proof, browsers retain

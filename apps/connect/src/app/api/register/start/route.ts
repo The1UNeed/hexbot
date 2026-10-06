@@ -4,11 +4,18 @@ import { getStore } from "@/lib/runtime";
 import { hashToken, randomToken } from "@/lib/tokens";
 import { jsonError, parseJson } from "@/lib/http";
 import { NextResponse } from "next/server";
+import { registrationClientHash } from "@/lib/registration-client";
 
 const schema = z.object({ daemon_name: z.string().trim().min(1).max(100), platform: z.string().trim().min(1).max(50) }).strict();
 const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const userCode = () => { const bytes = randomBytes(8); const raw = Array.from(bytes, byte => alphabet[byte % alphabet.length]).join(""); return `${raw.slice(0, 4)}-${raw.slice(4)}`; };
 export async function POST(request: Request) {
+  const windowStart = new Date(Math.floor(Date.now() / 60_000) * 60_000);
+  if (!await getStore().claimRegistrationAttempt(registrationClientHash(request), windowStart)) {
+    const response = jsonError("rate_limited", "Too many registration attempts. Try again shortly.", 429);
+    response.headers.set("Retry-After", String(Math.max(1, Math.ceil((windowStart.getTime() + 60_000 - Date.now()) / 1000))));
+    return response;
+  }
   const body = await parseJson(request, schema); if (body instanceof NextResponse) return body;
   const deviceCode = randomToken("hdc_");
   let code = userCode();

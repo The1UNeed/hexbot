@@ -20,6 +20,12 @@ when a VPN or Tailscale address also appears.
 
 Enabling LAN access makes the daemon listen on all network interfaces. Your router still decides whether devices can reach one another. Guest Wi-Fi networks often block local device traffic.
 
+Direct LAN HTTP does not encrypt sign-ins or conversations. A browser's session
+cookie can be reused by someone who intercepts it. Use a trusted LAN,
+[Tailscale](/docs/tailscale/), or HTTPS, including [Hex Connect](/docs/connect/),
+when the network is not trusted. Device proof keys reduce token replay but do
+not encrypt the connection.
+
 Turning LAN access on or off moves the daemon to its new address without restarting it. Open apps and browsers reconnect, and running bot turns continue.
 
 A [Headless](/docs/install/#headless) daemon has no app on its computer. The installer turns LAN access on; run `hexbot pair` over SSH. `hexbot status` lists the addresses other devices can use.
@@ -29,6 +35,8 @@ A [Headless](/docs/install/#headless) daemon has no app on its computer. The ins
 Open the pairing link in a browser, then choose "Open in Hexbot." You can also open Hexbot, choose "Connect to a daemon," and enter the host, port, and code by hand.
 
 The app exchanges the one-time code for a device token. It stores that token locally and presents it on later connections. The pairing code itself is not reused.
+
+Chat links in the app open in your default browser.
 
 ## Revoke a device
 

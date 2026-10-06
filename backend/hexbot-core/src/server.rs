@@ -685,6 +685,17 @@ async fn daemon_identity(
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
 ) -> Response {
+    let address = peer.map(|Extension(ConnectInfo(address))| address);
+    if !loopback_request(&headers, address) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match app.install_id() {
+        Ok(id) => Json(json!({"install_id": id, "pid": std::process::id()})).into_response(),
+        Err(error) => http_error(error),
+    }
+}
+
+fn loopback_request(headers: &HeaderMap, peer: Option<SocketAddr>) -> bool {
     let local_host = headers
         .get("host")
         .and_then(|h| h.to_str().ok())
@@ -695,15 +706,7 @@ async fn daemon_identity(
             Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
             None => false,
         });
-    if !local_host
-        || !peer.is_some_and(|Extension(ConnectInfo(address))| address.ip().is_loopback())
-    {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    match app.install_id() {
-        Ok(id) => Json(json!({"install_id": id, "pid": std::process::id()})).into_response(),
-        Err(error) => http_error(error),
-    }
+    local_host && peer.is_some_and(|address| address.ip().is_loopback())
 }
 
 async fn auth_providers(State(app): State<Arc<App>>) -> Json<Value> {
@@ -1487,10 +1490,21 @@ async fn spa(State(app): State<Arc<App>>, headers: HeaderMap, uri: axum::http::U
 }
 async fn upgrade(
     State(app): State<Arc<App>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     Query(p): Query<HashMap<String, String>>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
+    // Long-lived credentials in URLs are a local compatibility path only.
+    // A loopback proxy with a remote Host does not make a remote client local.
+    if p.contains_key("token")
+        && !loopback_request(
+            &headers,
+            peer.map(|Extension(ConnectInfo(address))| address),
+        )
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     let token = if let Some(ticket) = p.get("ticket") {
         app.tickets
             .lock()

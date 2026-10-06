@@ -1085,7 +1085,7 @@ export function NetworkSettings(): React.JSX.Element {
                 onCheckedChange={checked => void toggle(checked)}
               />
             }
-            description="Makes this daemon reachable from your LAN."
+            description="Direct LAN HTTP does not encrypt sign-ins or chat. Use Tailscale or HTTPS on untrusted networks."
             title="Allow other devices on this network"
           />
           {network?.lan_enabled ? (
