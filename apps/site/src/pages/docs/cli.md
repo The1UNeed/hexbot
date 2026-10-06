@@ -1,12 +1,19 @@
 ---
 layout: ../../layouts/Docs.astro
 title: CLI
-description: Start, pair, and manage Hexbot from the command line.
+description: Start, pair, and manage the native Hexbot daemon from a terminal.
 ---
 
-The native `hexbot` command starts the daemon, runs it as a service, and manages bots, devices and Hex Connect. It can also list rooms.
+The native `hexbot` command starts the daemon, runs it as a service, manages bots, devices and Hex Connect, lists rooms, and sends one-shot messages.
 
 A [Headless](/docs/install/#headless) install puts the command in `~/.local/bin/hexbot`. It always runs the daemon version that is currently installed, so it keeps working after an update.
+
+```sh
+hexbot --help
+hexbot --version
+```
+
+Commands use `~/.hexbot` by default. Set `HEXBOT_HOME` to select another data directory. Use the same directory for the server and administrative commands; a pairing code from another home will not authenticate with your daemon.
 
 ## Start a daemon
 
@@ -14,7 +21,15 @@ A [Headless](/docs/install/#headless) install puts the command in `~/.local/bin/
 hexbot serve
 ```
 
-The daemon listens on localhost by default. Turn on "Allow other devices" only when another device needs access: `hexbot lan on` turns it on, whether or not the daemon is running, and `hexbot lan off` turns it off. `hexbot serve --lan` and `--no-lan` do the same as they start. Run `hexbot --help` for the current host and port flags. A daemon run by the app or by the service is already running; stop it before you start one by hand.
+The default port is 9119. A fresh daemon listens on localhost. You can choose a numeric bind address and port:
+
+```sh
+hexbot serve --host 127.0.0.1 --port 9119
+```
+
+Turn on "Allow other devices" only when another device needs access: `hexbot lan on` turns it on, whether or not the daemon is running, and `hexbot lan off` turns it off. `hexbot serve --lan` and `--no-lan` do the same as they start; without either flag, the saved setting applies. A daemon run by the app or by the service is already running; stop it before you start one by hand.
+
+When started directly in an interactive terminal, the daemon prints a one-time browser sign-in link. It does not print one when supervised as a service or redirected to a log.
 
 ## Check the daemon
 
@@ -54,28 +69,68 @@ Installs the code tools (uv, Python 3.11, and the voice tools) into `~/.hexbot` 
 hexbot pair
 ```
 
-This prints reachable addresses and a one-time code. A code expires after ten minutes. Do not publish it or paste it into an unrelated chat.
+This prints a reachable address, one-time code, pairing link, and terminal QR code. The code works once and expires after ten minutes. Creating it does not turn on LAN access. Enable LAN first if another device needs to reach the daemon.
+
+Enter the address and code in the app or on the browser sign-in page. Do not publish the code. See [Pairing and LAN](/docs/pairing-and-lan/) for device setup and troubleshooting.
 
 ## Manage bots
 
 ```sh
 hexbot bots list
-hexbot bots create <name>
-hexbot bots delete <name>
+hexbot bots create writer --description "Reviews drafts and edits copy"
 ```
 
-Run `hexbot --help` for bot creation flags. Deleting a bot removes its settings and associated sections when the daemon accepts the request.
+Creation accepts `--title`, `--description`, `--persona`, `--provider`, `--model`, and `--reasoning-effort`, each followed by its value. The description helps teammates choose whom to ask. Use the app to configure provider credentials before sending a message.
 
-## Send a message
+To remove a bot:
 
 ```sh
-hexbot send <bot> <text>
+hexbot bots delete writer
 ```
 
-The named bot uses its configured provider, model, persona, skills, and memory.
+Deletion removes the bot's profile, conversations, memory, and scheduled jobs. Stop any active work first. This operation is permanent.
 
-## Available commands
+## Send a message and list rooms
 
-Run `hexbot --help` to see the native commands. Legacy core administration
-commands are not part of the native daemon. Manage provider keys and settings
-in the app.
+Quote the message so the shell passes it as one argument:
+
+```sh
+hexbot send writer "Summarize the unfinished work in my notes"
+hexbot rooms list
+```
+
+The named bot uses its configured model, soul, skills, and memory. When a daemon is already running, the CLI sends the request to it. If none is running, one-shot chat can start the runtime for that request. Interactive approvals and clarification questions are answered in the terminal.
+
+The native CLI lists rooms; create rooms and manage their members in the app or browser.
+
+## List and revoke devices
+
+```sh
+hexbot devices list
+hexbot devices revoke "DEVICE_ID"
+```
+
+Replace `DEVICE_ID` with an ID from the list. Revoking a device invalidates its token and ends its access. Pair it again to restore access.
+
+## Manage Hex Connect
+
+```sh
+hexbot connect --name "Studio Mac"
+hexbot connect status
+hexbot connect disconnect
+```
+
+Registration prints an address and code for browser approval. `status` shows the registration and tunnel. `disconnect` stops the tunnel, clears local credentials, and asks Connect to revoke the registration; if Connect cannot be reached, revoke the daemon from your daemons page. The daemon keeps working locally.
+
+See [Hex Connect](/docs/connect/) for browser and app sign-in, remote access, and self-hosting the service.
+
+## Source and custom homes
+
+For a source binary, point commands at the same home as the server:
+
+```sh
+HEXBOT_HOME="$PWD/.hexbot" backend/hexbot-core/target/debug/hexbot bots list
+HEXBOT_HOME="$PWD/.hexbot" backend/hexbot-core/target/debug/hexbot pair
+```
+
+The development runner may choose a different port; CLI commands read the running daemon's address from that home. Manage provider keys, connectors, budgets, and bot settings in the app. Legacy administration commands for the former Python daemon are not part of this CLI.

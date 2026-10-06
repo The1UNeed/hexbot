@@ -4,7 +4,7 @@ title: Memory
 description: Learn what Hexbot remembers and where that memory belongs.
 ---
 
-Each bot keeps two files of its own. One text about you is shared by all of your bots. That is the whole system.
+Each bot has its own soul and memory. About you is shared by all of your bots, and a room can keep shared memory through its daily dream.
 
 ## Soul
 
@@ -16,7 +16,9 @@ A bot's memory is what it has learned: facts, preferences, and lessons about wor
 
 Whenever a bot writes to its memory or its soul during a conversation, a small "Memory updated" or "Soul updated" mark appears under its reply. Open it to see what changed.
 
-Other bots do not see it. Each bot also has searchable history over its own sections and the rooms it belongs to. Starting a new section gives the conversation a new context window without erasing that history.
+Hexbot includes a bot's own memory in its starting prompt, rather than another bot's notes. Each bot also has searchable history over its own sections and the rooms it belongs to. Starting a new section gives the conversation a new context window without erasing that history. These ownership rules do not isolate local files from enabled file and terminal tools; see [Multi-user](/docs/multi-user/) before sharing a daemon.
+
+A new section reads the current soul, memory, and About you text into its starting context. Existing sections keep their cached starting context. After editing these settings, start a new section when you need the bot to begin with the updated text. In-conversation memory edits remain part of the conversation that made them.
 
 Archiving a section hides it from the active list. Deleting a section removes the conversation and its history. The bot's memory stays as it is; edit it yourself if something should go. Treat deletion as permanent.
 
@@ -32,4 +34,4 @@ Dreaming is a daily pass that folds a bot's recent conversations into its memory
 
 ## Backups
 
-Memory lives with the daemon under `~/.hexbot`, not on this website. Back up the daemon's data directory if you depend on its history. Anyone who can read that directory may be able to read stored conversations and memory.
+Memory lives with the daemon under `~/.hexbot`, not on this website. Stop the daemon before copying its complete data directory for a backup. Anyone who can read that directory may be able to read stored conversations and memory. See [Install](/docs/install/#data-and-updates) for data and workspace locations.
