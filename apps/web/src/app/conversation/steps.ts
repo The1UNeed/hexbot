@@ -12,6 +12,7 @@ const VERBS: Record<string, [live: string, done: string]> = {
   codemode: ['Running code', 'Ran code'],
   execute_code: ['Running code', 'Ran code'],
   hexbot_rename_section: ['Naming the section', 'Named the section'],
+  hexbot_show_html: ['Drawing', 'Drew'],
   hexbot_soul: ['Updating soul', 'Updated soul'],
   image_generate: ['Generating an image', 'Generated an image'],
   ls: ['Listing files', 'Listed files'],
@@ -36,6 +37,7 @@ const VERBS: Record<string, [live: string, done: string]> = {
 
 /** Tools whose argument preview reads well after the verb, with its connector. */
 const PREVIEW: Record<string, string> = {
+  hexbot_show_html: ' ',
   ls: ' in ',
   patch: ' ',
   read_file: ' ',
@@ -67,6 +69,8 @@ export const QUIET_TOOLS = new Set([
   'clarify',
   // The new title in the roster and the header is the rename's whole result.
   'hexbot_rename_section',
+  // The visual itself, drawn in the reply, is what the bot did.
+  'hexbot_show_html',
   // Memory and soul writes get their own marks under the bubble (memoryMarks).
   'hexbot_soul',
   'memory',
@@ -351,6 +355,7 @@ const ACTIVITY: Record<string, string> = {
   codemode: 'is running code',
   execute_code: 'is running code',
   hexbot_rename_section: 'is naming the section',
+  hexbot_show_html: 'is drawing',
   hexbot_soul: 'is updating its soul',
   image_generate: 'is making an image',
   ls: 'is working with files',

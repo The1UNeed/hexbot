@@ -467,6 +467,9 @@ impl Runtime {
             let enabled = crate::connectors::toolsets(&self.home, bot)?;
             let mut tools = base_tools();
             tools.retain(|t| t["name"] != "message_bot" || enabled.iter().any(|v| v == "hexbot"));
+            if !shows_visuals(&self.home, stored)? {
+                tools.retain(|t| t["name"] != "hexbot_show_html");
+            }
             if crate::connectors::toolsets(&self.home, bot)?
                 .iter()
                 .any(|t| t == "delegation")
@@ -2612,6 +2615,7 @@ impl Runtime {
                 );
                 Ok(json!({"section":section}))
             }
+            "hexbot_show_html" => show_html(&self.home, &s.stored, args),
             "self_soul" | "hexbot_soul" => {
                 let path = self.home.join("profiles").join(&s.bot).join("SOUL.md");
                 if let Some(text) = args["text"].as_str() {
@@ -3192,6 +3196,18 @@ fn base_tools() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "hexbot_show_html",
+            "description": SHOW_HTML_DESCRIPTION,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "A short name for the visual, a few words" },
+                    "html": { "type": "string", "description": "One self-contained HTML document, or a fragment of one" }
+                },
+                "required": ["title", "html"]
+            }
+        }),
+        json!({
             "name": "clarify",
             "description": "Ask one question or a batch of questions and wait for the user to answer.",
             "parameters": {
@@ -3219,6 +3235,54 @@ fn base_tools() -> Vec<Value> {
     ]
 }
 
+/// Largest visual the tool takes, in bytes of HTML.
+const SHOW_HTML_MAX: usize = 512 * 1024;
+
+#[rustfmt::skip]
+const SHOW_HTML_DESCRIPTION: &str = "Show a visual in this conversation: a chart, table, diagram, timeline or mockup drawn from one HTML page that the user sees and can hover, click and scroll. Use it when a picture says more than prose, and call it before your final reply, which appears under the visual; that reply adds only what the visual doesn't show, without announcing or describing it. Not available in rooms.\n\
+Write one self-contained page with inline <style> and <script>, up to 512 KB. Put the data in the page: it cannot fetch anything, and images must be data: URLs. Scripts and stylesheets load only from cdn.jsdelivr.net, unpkg.com, cdnjs.cloudflare.com and esm.sh; fonts also from fonts.googleapis.com and fonts.gstatic.com. Links open in the user's browser once they confirm.\n\
+The page sits borderless on the chat background, as wide as the chat column (about 720px on a computer, 360px on a phone), and its height follows the content up to 2000px. Use fluid widths with no outer padding, card, border or title banner; give charts fixed pixel heights; never size html or body to the viewport (100vh, height:100%).\n\
+Hexbot sets its theme as CSS variables on :root, following the user's light or dark mode live: --background (the chat background), --foreground, --muted (secondary text), --surface and --surface-2 (raised areas), --border, --accent and --accent-foreground, --success, --warning, --danger, --info, --chart-1 to --chart-6 (series colours), --radius, --font-sans, --font-mono. The base style sets the page background, text colour and font from them and removes the body margin; your own CSS overrides it.";
+
+/// Visuals show only in a bot's own sections: not in rooms, threads between
+/// bots, or the hidden sessions behind scheduled jobs and `hexbot send`.
+fn shows_visuals(home: &Path, stored: &str) -> Result<bool> {
+    Ok(db::open(home)?.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?1 AND peer_bot IS NULL) AND NOT EXISTS(SELECT 1 FROM room_sessions WHERE stored_session_id=?1)",
+        [stored],
+        |r| r.get(0),
+    )?)
+}
+
+/// A visual lives in the call's own arguments, which the section keeps with
+/// the rest of its history; the tool only checks them and confirms.
+fn show_html(home: &Path, stored: &str, args: &Value) -> Result<Value> {
+    if !shows_visuals(home, stored)? {
+        return Err(Error::new(
+            4202,
+            "Visuals show only in a bot's own sections. Describe it in words here.",
+        ));
+    }
+    let title = required(args, "title")?.trim();
+    if title.is_empty() || title.chars().count() > 200 {
+        return Err(Error::new(
+            4202,
+            "title must contain between 1 and 200 characters",
+        ));
+    }
+    let html = required(args, "html")?;
+    if html.trim().is_empty() || html.len() > SHOW_HTML_MAX {
+        return Err(Error::new(
+            4202,
+            "html must contain between 1 byte and 512 KB",
+        ));
+    }
+    Ok(json!({
+        "shown": true,
+        "note": "The user sees the visual above your reply. Don't describe it; reply with only what it doesn't show."
+    }))
+}
+
 #[rustfmt::skip]
 const HEXBOT_GUIDANCE: &str = r###"# Hexbot
 You are one of the user's bots in Hexbot, a desktop app. Each bot has a face, a model, skills, its own soul and its own memory. You talk with the user in sections (conversations) and in rooms (group chats with the user and other bots).
@@ -3226,6 +3290,9 @@ Three texts shape you. Your soul, above, is who you are; the user edits it, and 
 
 # Acting and asking
 Read, search, organise and work inside your own files and sections freely. Ask before anything that leaves this computer or reaches a person outside Hexbot — messaging or emailing them, posting, paying, deleting what cannot be recovered — unless the user already told you to in this section, or their approval setting says not to ask. Do the work first, so what you ask the user to approve is concrete. Asking is not free: when a request has an obvious reading, take it, and ask only when the answer changes what you would do. No unsolicited warnings or disclaimers.
+
+# Showing
+In your own sections, when a chart, table, diagram or mockup would say more than prose, show it with hexbot_show_html rather than drawing it in text.
 
 # Rooms
 In a room, reply when you are mentioned or when you add something the others have not; otherwise say (pass). One reply, not fragments. Do not repeat what another bot already said. Speak for yourself, never for the user, and keep what you learned in private sections private.
@@ -3402,6 +3469,7 @@ fn tool_context(name: &str, args: &Value) -> String {
         "execute_code" | "codemode" => "code",
         "delegate_task" => "goal",
         "message_bot" => "to",
+        "hexbot_show_html" => "title",
         name if name.starts_with("mcp__") => args
             .as_object()
             .and_then(|args| {
@@ -4117,6 +4185,7 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
             4243
         );
         assert!(s.tools.iter().any(|t| t["name"] == "hexbot_rename_section"));
+        assert!(s.tools.iter().any(|t| t["name"] == "hexbot_show_html"));
         runtime.shutdown().await;
     }
 }
@@ -4423,5 +4492,41 @@ mod memory_edit_tests {
             )
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod show_html_tests {
+    use super::*;
+
+    #[test]
+    fn show_html_checks_the_page_and_refuses_rooms() {
+        let home = common::TestHome::new();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);INSERT INTO bots(name,owner_id) VALUES('owl','alice'),('fox','alice');INSERT INTO sections(id,bot,owner_id,title) VALUES('first','owl','alice','First');INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('thread','owl','alice','Thread','fox');INSERT INTO rooms(id,name,owner_id) VALUES('r','R','alice');INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('r','owl','in-room')",
+            )
+            .unwrap();
+        let page = json!({"title":"Costs","html":"<p>1</p>"});
+        assert_eq!(
+            show_html(home.path(), "first", &page).unwrap()["shown"],
+            true
+        );
+        for elsewhere in ["in-room", "thread", "cron-owl-1"] {
+            assert_eq!(
+                show_html(home.path(), elsewhere, &page).unwrap_err().code,
+                4202
+            );
+        }
+        for bad in [
+            json!({"html":"<p>1</p>"}),
+            json!({"title":" ","html":"<p>1</p>"}),
+            json!({"title":"Costs","html":"  "}),
+            json!({"title":"Costs","html":"x".repeat(SHOW_HTML_MAX + 1)}),
+        ] {
+            assert!(show_html(home.path(), "first", &bad).is_err());
+        }
     }
 }

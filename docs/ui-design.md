@@ -33,6 +33,9 @@ own visual identity. Read `CLAUDE.md` for the words.
 - Dark: bg #0E0E0E, surface #171717, surface-2 #262626, surface-3 #343434,
   text #F4F4F4, text-muted #8E8E8E, border #2A2A2A, accent #8B85FF,
   danger #F4645B, success #34C759, warning #F7B24A.
+- Chart series, for bot visuals only: light #4F46E5, #0D9488, #D97706,
+  #DB2777, #2F7CF6, #65A30D; dark #8B85FF, #2DD4BF, #FBBF24, #F472B6,
+  #4C9AFF, #A3E635. The first is the accent; the rest step apart in hue.
 - Bot faces: every bot has a face, a shape and a colour with two eyes
   (`lib/avatar-builder.ts`). Uploaded images replace it; otherwise the face
   is derived from the bot's name. Faces wiggle on hover and blink at rest.

@@ -1013,6 +1013,25 @@ async fn connect_browser_login_starts_pkce_redirect() {
 }
 
 #[tokio::test]
+async fn pages_only_frame_the_daemon_itself() {
+    let fixture = Fixture::new(false).await;
+    let client = reqwest::Client::new();
+    for path in ["/", "/app.js", "/b/owl/s/first"] {
+        let response = client
+            .get(format!("{}{path}", fixture.base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.headers()["content-security-policy"],
+            "frame-src 'self'",
+            "{path}"
+        );
+    }
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
 async fn remote_index_and_secure_cookies_do_not_expose_local_token() {
     let fixture = Fixture::new(false).await;
     let client = reqwest::Client::new();

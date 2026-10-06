@@ -1,0 +1,29 @@
+<!doctype html>
+<!--
+  The frame a bot's visual runs in (hexbot_show_html). The app loads it in an
+  iframe sandboxed without allow-same-origin, so the page gets an opaque origin
+  and cannot reach the app, its storage, or the daemon. This policy is the
+  frame's only one: scripts and styles inline or from a few public CDNs, no
+  fetches, images only as data: or blob: URLs. document.write keeps the
+  document, and with it this policy, for the page it writes.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob: https://cdn.jsdelivr.net https://unpkg.com https://cdnjs.cloudflare.com https://esm.sh; style-src 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com https://cdnjs.cloudflare.com https://esm.sh https://fonts.googleapis.com; font-src data: https://cdn.jsdelivr.net https://unpkg.com https://cdnjs.cloudflare.com https://fonts.gstatic.com; img-src data: blob:; media-src data: blob:; connect-src data: blob:; worker-src blob:; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <script>
+      addEventListener('message', function show(event) {
+        var data = event.data
+        if (event.source !== parent || !data || data.method !== 'hexbot/visual/show') return
+        removeEventListener('message', show)
+        document.open()
+        document.write(String(data.params.document))
+        document.close()
+      })
+      parent.postMessage({ jsonrpc: '2.0', method: 'hexbot/visual/ready' }, '*')
+    </script>
+  </head>
+</html>

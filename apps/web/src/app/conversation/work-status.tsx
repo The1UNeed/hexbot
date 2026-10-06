@@ -1,6 +1,7 @@
 import {
   AudioLines,
   Brain,
+  ChartColumn,
   Check,
   ChevronDown,
   ChevronRight,
@@ -40,6 +41,7 @@ const ICONS: Record<string, LucideIcon> = {
   delegate_task: Users,
   codemode: Code,
   execute_code: Code,
+  hexbot_show_html: ChartColumn,
   hexbot_soul: Sparkles,
   image_generate: Image,
   ls: FolderSearch,

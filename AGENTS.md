@@ -48,6 +48,7 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Room**: a group chat with one or more humans and any number of bots. May have a **main bot** that responds when nobody is @-mentioned.
 - **Turn**: one user message and everything the bots do in response. The room turn engine (`backend/hexbot-core/src/rooms.rs`) decides who speaks.
 - **Soul**: a bot's persona, the `SOUL.md` in its profile. The user and the bot both edit it; the bot says so when it does.
+- **Visual**: an interactive HTML page (chart, table, diagram, mockup) a bot shows in a section with `hexbot_show_html`. It sits above the bot's final reply in a sandboxed frame. Not available in rooms.
 - **Memory**: a bot's own notes, the `MEMORY.md` in its profile. The bot writes it during chat, dreaming curates it, the user can edit it. Deleting a section removes its history and leaves memory alone.
 - **About you**: one text per user, written only by the user and read by every bot they own (`users/<id>/user.md`).
 - **Dreaming**: a bot's daily pass over that day's conversations that folds what matters into its memory.

@@ -13,13 +13,16 @@ const daemon = process.env.VITE_HEXBOT_ORIGIN?.replace(/\/+$/, '')
 export default defineConfig({
   base: '/',
   plugins: [tanstackRouter({ target: 'react' }), react(), tailwindcss()],
-  server: daemon
-    ? {
-        proxy: Object.fromEntries(
-          ['/api', '/hexbot', '/login', '/auth'].map(prefix => [prefix, { target: daemon, ws: true }])
-        )
-      }
-    : undefined,
+  server: {
+    // As the daemon does: frames load only from this origin, so a bot's
+    // visual cannot navigate its frame to another site.
+    headers: { 'Content-Security-Policy': "frame-src 'self'" },
+    ...(daemon && {
+      proxy: Object.fromEntries(
+        ['/api', '/hexbot', '/login', '/auth'].map(prefix => [prefix, { target: daemon, ws: true }])
+      )
+    })
+  },
   test: {
     environment: 'jsdom',
     globals: true,

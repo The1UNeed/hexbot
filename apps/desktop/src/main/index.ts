@@ -13,7 +13,7 @@ import {
   type Rectangle
 } from 'electron'
 import { applicationMenuTemplate } from './application-menu'
-import { APP_ORIGIN, installAppProtocol, registerAppScheme } from './app-protocol'
+import { APP_ORIGIN, frameNavigationAllowed, installAppProtocol, registerAppScheme } from './app-protocol'
 import { bootstrap, type BootstrapProgress } from './backend/bootstrap'
 import { DaemonManager } from './backend/manager'
 import { hexbotHome } from './backend/paths'
@@ -139,6 +139,10 @@ async function createWindow(): Promise<BrowserWindow> {
   })
   window.on('closed', () => {
     mainWindow = null
+  })
+  // Frames may only load the visual frame page; see frameNavigationAllowed.
+  window.webContents.on('will-frame-navigate', event => {
+    if (!event.isMainFrame && !frameNavigationAllowed(event.url, window.webContents.getURL())) event.preventDefault()
   })
   window.on('resize', () => void saveBounds(window))
   window.on('move', () => void saveBounds(window))
