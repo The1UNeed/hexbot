@@ -1,4 +1,4 @@
-import { ChevronDown, Copy, ExternalLink, Plus, Search } from 'lucide-react'
+import { ChevronDown, ChevronLeft, Copy, ExternalLink, Plus, Scale, Search } from 'lucide-react'
 import QRCode from 'qrcode'
 import { useEffect, useRef, useState } from 'react'
 
@@ -52,6 +52,8 @@ import { useUsers } from '../../stores/users'
 import { MemoryEditor } from '../bot-settings/memory'
 import { ChoiceRow, dividerClass, Group, Heading, Row, rowFieldClass } from '../bot-settings/shared'
 import { ConfirmUpdate, updateNow, updateTarget } from '../confirm-update'
+
+import { OPEN_SOURCE } from './licenses'
 
 export const SETTINGS_TABS = [
   'providers',
@@ -1565,6 +1567,7 @@ export function UpdatesSettings(): React.JSX.Element {
 export function AboutSettings(): React.JSX.Element {
   const bridge = getBridge()
   const [info, setInfo] = useState<{ hermes_version: null | string; version: string } | null>(null)
+  const [licenses, setLicenses] = useState(false)
   useEffect(() => {
     void daemonInfo().then(setInfo)
   }, [])
@@ -1575,6 +1578,10 @@ export function AboutSettings(): React.JSX.Element {
   const value = (text: string) => (
     <span className="text-[length:var(--text-secondary)] text-muted">{text}</span>
   )
+
+  if (licenses) {
+    return <Licenses onBack={() => setLicenses(false)} />
+  }
 
   return (
     <>
@@ -1594,14 +1601,69 @@ export function AboutSettings(): React.JSX.Element {
         <div className="flex gap-2">
           <Button
             icon={<ExternalLink size={14} />}
-            onClick={() => void open('https://github.com/NousResearch/hermes-agent')}
+            onClick={() => void open('https://github.com/The1UNeed/hexbot')}
           >
             Source
           </Button>
           <Button icon={<ExternalLink size={14} />} onClick={() => void open('https://hexbot.app')}>
             Website
           </Button>
+          <Button icon={<Scale size={14} />} onClick={() => setLicenses(true)}>
+            Licenses
+          </Button>
         </div>
+      </div>
+    </>
+  )
+}
+
+/** The open source projects Hexbot ships or is built on, each linked to its repository. */
+function Licenses({ onBack }: { onBack: () => void }) {
+  const bridge = getBridge()
+
+  return (
+    <>
+      <Button
+        className="-ml-2 mb-3"
+        icon={<ChevronLeft size={14} />}
+        onClick={onBack}
+        size="sm"
+        variant="ghost"
+      >
+        About
+      </Button>
+      <Heading description="Hexbot is AGPL-3.0 software built with these open source projects. Each project's license is in its repository.">
+        Licenses
+      </Heading>
+      <div className="space-y-8">
+        {OPEN_SOURCE.map(group => (
+          <Group key={group.title} title={group.title}>
+            {group.projects.map(project => (
+              <a
+                aria-label={`${project.name}, ${project.license}`}
+                className="hex-focus flex min-h-[44px] items-center gap-3 px-4 py-2.5 first:rounded-t-2xl last:rounded-b-2xl hover:bg-foreground/[0.04]"
+                href={project.repository}
+                key={project.name}
+                onClick={event => {
+                  if (bridge) {
+                    event.preventDefault()
+                    void bridge.openExternal(project.repository)
+                  }
+                }}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                <span className="min-w-0 flex-1 truncate text-[length:var(--text-body)]">
+                  {project.name}
+                </span>
+                <span className="shrink-0 text-[length:var(--text-secondary)] text-muted">
+                  {project.license}
+                </span>
+                <ExternalLink aria-hidden className="shrink-0 text-muted" size={14} />
+              </a>
+            ))}
+          </Group>
+        ))}
       </div>
     </>
   )
