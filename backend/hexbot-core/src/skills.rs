@@ -28,10 +28,8 @@ pub(crate) fn relative(value: &str) -> Result<PathBuf> {
     }
     Ok(path.to_path_buf())
 }
+/// `root` is trusted and may itself be a symlink (a linked `HEXBOT_HOME`).
 pub(crate) fn safe_path(root: &Path, path: &Path) -> Result<()> {
-    if fs::symlink_metadata(root).is_ok_and(|m| m.file_type().is_symlink()) {
-        return Err(Error::new(4202, "skill paths must not contain symlinks"));
-    }
     let relative = path
         .strip_prefix(root)
         .map_err(|_| Error::new(4202, "path is outside the bot directory"))?;
@@ -61,6 +59,10 @@ pub(crate) fn frontmatter(content: &str) -> (Value, String) {
     (json!({}), source.to_owned())
 }
 pub(crate) fn walk_files(root: &Path, path: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    // Here `root` is a skill directory, never the home, so it must be real.
+    if fs::symlink_metadata(root).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(Error::new(4202, "skill paths must not contain symlinks"));
+    }
     safe_path(root, path)?;
     if !path.exists() {
         return Ok(());
@@ -639,6 +641,20 @@ fn fingerprint(dir: &Path) -> Result<Option<String>> {
     Ok(Some(format!("{:x}", hash.finalize())))
 }
 
+// Seeding never copied dotfiles, so one inside a copy was written by the user
+// or a bot, and the copy is kept.
+fn has_hidden(dir: &Path) -> Result<bool> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with('.')
+            || (entry.file_type()?.is_dir() && has_hidden(&entry.path())?)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn deduplicate(
     dir: &Path,
     bundled_dir: &Path,
@@ -659,6 +675,7 @@ fn deduplicate(
             .and_then(|n| history.get(n))
             && let Some(hash) = fingerprint(dir)?
             && hashes.contains(&hash)
+            && !has_hidden(dir)?
         {
             fs::remove_dir_all(dir)?;
         }
@@ -812,8 +829,8 @@ mod tests {
         let config = fs::read(home.path().join("profiles/owl/config.yaml")).unwrap();
         migrate_with(home.path(), bundled.path()).unwrap();
         assert!(!private.join("work/same").exists());
-        assert!(!private.join("work/extra").exists());
-        for name in ["body", "support"] {
+        assert!(private.join("work/extra/.note").is_file());
+        for name in ["body", "support", "extra"] {
             assert!(private.join("work").join(name).is_dir());
         }
         assert_eq!(
@@ -837,6 +854,24 @@ mod tests {
         assert!(
             private.join("work/same").exists(),
             "completed migration is not rerun"
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_home_migrates_and_resolves() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("real")).unwrap();
+        let home = dir.path().join("home");
+        std::os::unix::fs::symlink(dir.path().join("real"), &home).unwrap();
+        let bundled = tempfile::tempdir().unwrap();
+        put(bundled.path(), "work/same", "body");
+        db::migrate(&home).unwrap();
+        migrate_with(&home, bundled.path()).unwrap();
+        assert!(
+            resolve_with(&home, None, bundled.path())
+                .unwrap()
+                .iter()
+                .any(|s| s.name == "same")
         );
     }
     #[test]
@@ -885,9 +920,9 @@ mod tests {
         let old = put(bundled.path(), "work/old", "old version");
         let old_hash = fingerprint(&old).unwrap().unwrap();
         copy_tree(&old, &private.join("work/old")).unwrap();
-        fs::write(private.join("work/old/.note"), "not seeded").unwrap();
-        fs::create_dir(private.join("work/old/.hidden")).unwrap();
-        fs::write(private.join("work/old/.hidden/data"), "ignored").unwrap();
+        copy_tree(&old, &private.join("work/noted")).unwrap();
+        fs::create_dir(private.join("work/noted/.hidden")).unwrap();
+        fs::write(private.join("work/noted/.hidden/data"), "user data").unwrap();
         put(bundled.path(), "work/old", "new version");
         put(bundled.path(), "work/modified", "new version");
         put(&private, "work/modified", "user edited");
@@ -899,7 +934,7 @@ mod tests {
         fs::create_dir_all(private.join("empty/nested")).unwrap();
         fs::write(
             bundled.path().join(".history.json"),
-            json!({"old":[old_hash]}).to_string(),
+            json!({"old":[old_hash],"noted":[old_hash]}).to_string(),
         )
         .unwrap();
         #[cfg(unix)]
@@ -927,6 +962,7 @@ mod tests {
         }
         migrate_with(home.path(), bundled.path()).unwrap();
         assert!(!private.join("work/old").exists());
+        assert!(private.join("work/noted/.hidden/data").is_file());
         assert!(!private.join("clean").exists());
         assert!(!private.join("empty").exists());
         assert!(private.join("work/modified/SKILL.md").exists());
