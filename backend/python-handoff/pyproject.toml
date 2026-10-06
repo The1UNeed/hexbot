@@ -6,7 +6,7 @@ dependencies = []
 
 [project.optional-dependencies]
 all = []
-dev = ["pytest==8.4.2"]
+dev = ["pytest==9.0.3"]
 
 [project.scripts]
 hexbot = "hexbot.cli:main"
