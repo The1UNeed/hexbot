@@ -1,12 +1,4 @@
-import {
-  ChartColumn,
-  ChevronsRight,
-  Code,
-  ExternalLink,
-  Maximize2,
-  PanelRight,
-  X
-} from 'lucide-react'
+import { ChartColumn, ChevronsRight, ExternalLink, Maximize2, X } from 'lucide-react'
 import {
   type KeyboardEvent,
   type ReactNode,
@@ -18,7 +10,6 @@ import {
   useSyncExternalStore
 } from 'react'
 
-import { Dialog } from '../../components/ui/dialog'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { useUi } from '../../stores/ui'
@@ -250,56 +241,12 @@ function Action({
   )
 }
 
-/** The page's HTML, for reading or copying. */
-function Source({ visual }: { visual: Visual }) {
-  return (
-    <pre className="max-h-96 overflow-auto rounded-[14px] bg-background/70 p-3 font-mono text-[length:var(--text-meta)] break-all whitespace-pre-wrap text-foreground/80">
-      {visual.html}
-    </pre>
-  )
-}
-
-/** A visual at full size over the app, still live. */
-function VisualDialog({
-  onClose,
-  open,
-  visual
-}: {
-  onClose: () => void
-  open: boolean
-  visual: Visual
-}) {
-  const { offer, setLink } = useLinkOffer()
-
-  return (
-    <Dialog
-      className="w-[min(60rem,94vw)]"
-      onOpenChange={next => !next && onClose()}
-      open={open}
-      title={visual.title}
-      toolbar={
-        <Action label="Close" onClick={onClose}>
-          <X size={15} />
-        </Action>
-      }
-    >
-      <div className="flex flex-col gap-2 px-6 pt-3 pb-6">
-        <div className="rounded-[16px] bg-background p-4 shadow-card">
-          <VisualPage onLink={setLink} visual={visual} />
-        </div>
-        {offer}
-      </div>
-    </Dialog>
-  )
-}
-
 /**
- * One visual in the chat: a bot bubble with the page inside and a title row
- * of actions to read its HTML, see it full size, or open it beside the chat.
+ * One visual in the chat: a bot bubble with the page inside, live to hover
+ * and click, under a title row whose one action, Expand, opens it beside the
+ * chat as a tab.
  */
 export function VisualBubble({ fresh = false, visual }: { fresh?: boolean; visual: Visual }) {
-  const [source, setSource] = useState(false)
-  const [expanded, setExpanded] = useState(false)
   const beside = useVisuals(state => state.tabs.some(tab => tab.toolId === visual.toolId))
   const { offer, setLink } = useLinkOffer()
 
@@ -315,35 +262,18 @@ export function VisualBubble({ fresh = false, visual }: { fresh?: boolean; visua
             {visual.title}
           </span>
           <Action
-            label={source ? 'Show visual' : 'Show HTML'}
-            onClick={() => setSource(!source)}
-            pressed={source}
-          >
-            <Code size={14} />
-          </Action>
-          <Action label="Expand" onClick={() => setExpanded(true)}>
-            <Maximize2 size={14} />
-          </Action>
-          <Action
-            label="Open beside the chat"
+            label="Expand beside the chat"
             onClick={() => visualsActions().open(visual)}
             pressed={beside}
           >
-            <PanelRight size={14} />
+            <Maximize2 size={14} />
           </Action>
         </div>
-        {source ? (
-          <div className="px-3">
-            <Source visual={visual} />
-          </div>
-        ) : null}
-        {/* Hidden, not unmounted, while the HTML shows: the page keeps its state. */}
-        <div className="px-4" hidden={source}>
+        <div className="px-4">
           <VisualPage onLink={setLink} surface="--hex-bubble" visual={visual} />
         </div>
       </div>
       {offer}
-      <VisualDialog onClose={() => setExpanded(false)} open={expanded} visual={visual} />
     </div>
   )
 }

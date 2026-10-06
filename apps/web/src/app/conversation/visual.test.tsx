@@ -137,22 +137,17 @@ describe('VisualBubble', () => {
     expect(frame.style.height).toBe('2000px')
   })
 
-  it('shows the HTML without reloading the page, and opens beside the chat', () => {
+  it('stays live in the chat and expands beside it as a tab', () => {
     render(<VisualBubble visual={costs} />)
-    const frame = screen.getByTitle('Costs')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Show HTML' }))
-    expect(screen.getByText('<p>chart</p>')).toBeInTheDocument()
-    expect(screen.getByTitle('Costs')).toBe(frame)
-    expect(frame).not.toBeVisible()
+    expect(screen.queryByRole('button', { name: /HTML/ })).toBeNull()
+    expect(screen.getByTitle('Costs')).toBeVisible()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Show visual' }))
-    expect(frame).toBeVisible()
-
-    const beside = screen.getByRole('button', { name: 'Open beside the chat' })
-    fireEvent.click(beside)
+    const expand = screen.getByRole('button', { name: 'Expand beside the chat' })
+    fireEvent.click(expand)
     expect(useVisuals.getState()).toMatchObject({ active: 't1', tabs: [costs] })
-    expect(beside).toHaveAttribute('aria-pressed', 'true')
+    expect(expand).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTitle('Costs')).toBeVisible()
   })
 })
 

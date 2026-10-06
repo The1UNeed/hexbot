@@ -155,11 +155,11 @@ more freedom and more capability than a hosted product can offer.
 - Bot avatars: uploaded image, generated initials by default.
 - Tool calls show only while they run, then collapse into one line above the reply.
 - Visuals: a bot can show a chart, table, diagram or mockup as an HTML page
-  in the conversation (`hexbot_show_html`). It is drawn in a bot bubble above
-  the bot's final reply, with a title and three actions: show the HTML, see
-  it full size, and open it beside the chat, where each visual gets a tab
-  like a browser's. It follows the app's theme and runs sandboxed with no
-  network access beyond a few script CDNs.
+  in the conversation (`hexbot_show_html`). It is drawn, live, in a bot
+  bubble above the bot's final reply, under its title and an Expand button
+  that opens it beside the chat, where each visual gets a tab like a
+  browser's. It follows the app's theme and runs sandboxed with no network
+  access beyond a few script CDNs.
 
 ## 4. Network, auth, Connect
 

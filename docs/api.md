@@ -303,9 +303,8 @@ The daemon only checks the title (1 to 200 characters) and the page (up to
 512 KB) and answers `{shown: true, note}`. Clients find the visual in the
 call's arguments: live from `tool.start`, restored from the assistant row's
 `tool_calls`. The web UI draws it in a bot bubble between the bot's earlier
-messages and its final reply, under a title row with Show HTML, Expand (a
-dialog) and Open beside the chat, which adds a tab to the side panel; tabs
-stay mounted, close one by one, and close together when the user leaves the
+messages and its final reply, live, under a title row whose Expand button
+adds a tab to the side panel; tabs stay mounted, close one by one, and close together when the user leaves the
 section. Each copy runs in an iframe sandboxed with `allow-scripts` only, so the page has an
 opaque origin. The frame loads `/visual-frame.html` from the web bundle,
 whose own CSP allows inline scripts and a few public CDNs but no fetches, and
