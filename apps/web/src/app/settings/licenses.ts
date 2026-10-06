@@ -5,6 +5,8 @@ export interface OpenSourceProject {
   /** Direct dependency names this entry covers; `licenses.test.ts` checks none is missing. */
   packages?: string[]
   repository: string
+  /** Bundled skills carrying this project's license; `licenses.test.ts` checks none is missing. */
+  skills?: string[]
 }
 
 export interface OpenSourceGroup {
@@ -34,7 +36,26 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         repository: 'https://github.com/BurntSushi/ripgrep'
       },
       { license: 'MIT OR Apache-2.0', name: 'fd', repository: 'https://github.com/sharkdp/fd' },
-      { license: 'Public domain', name: 'SQLite', repository: 'https://github.com/sqlite/sqlite' }
+      { license: 'Public domain', name: 'SQLite', repository: 'https://github.com/sqlite/sqlite' },
+      { license: 'MIT OR Apache-2.0', name: 'uv', repository: 'https://github.com/astral-sh/uv' },
+      { license: 'PSF-2.0', name: 'Python', repository: 'https://github.com/python/cpython' },
+      { license: 'LGPL-3.0', name: 'edge-tts', repository: 'https://github.com/rany2/edge-tts' },
+      {
+        license: 'Apache-2.0',
+        name: 'cloudflared',
+        repository: 'https://github.com/cloudflare/cloudflared'
+      }
+    ]
+  },
+  {
+    title: 'Skills',
+    projects: [
+      {
+        license: 'MIT',
+        name: 'Humanizer',
+        repository: 'https://github.com/blader/humanizer',
+        skills: ['humanizer']
+      }
     ]
   },
   {
