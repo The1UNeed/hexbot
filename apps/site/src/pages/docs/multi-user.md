@@ -35,3 +35,12 @@ The admin can set a daily token budget for each user. A null budget means no Hex
 The Usage view reports input tokens, output tokens, estimated cost, and a breakdown by bot. Members can view only their own usage. The admin can view usage for any user.
 
 Provider invoices remain the final record of charges. Hexbot's cost number is an estimate based on the model information available to the daemon.
+
+## Skills
+
+Bundled and shared skills live in one library. New library skills are enabled
+for every bot by default. Admins manage the library and can turn a skill off
+globally. Bot owners can change their bot's grants and private skills. Skills
+a bot writes stay private. An admin can share skills from a bot they own. New sections list skill
+descriptions and load the full instructions when needed. Changing a grant
+affects future skill reads in open sections; their stored prompts stay fixed.

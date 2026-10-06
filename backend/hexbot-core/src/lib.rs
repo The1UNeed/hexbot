@@ -31,6 +31,7 @@ pub mod server;
 pub mod services;
 pub mod settings;
 pub mod setup;
+pub mod skills;
 pub mod system_service;
 pub mod team;
 

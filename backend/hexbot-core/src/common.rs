@@ -201,8 +201,34 @@ pub fn read_config(home: &Path) -> Result<Value> {
         Err(e) => Err(e.into()),
     }
 }
+// All daemon config mutations hold this lock from read through write. Never
+// hold it across an await. If both locks are needed, acquire skills first.
+static CONFIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(crate) struct ConfigWriter(std::sync::MutexGuard<'static, ()>);
+
+pub(crate) fn config_writer() -> Result<ConfigWriter> {
+    Ok(ConfigWriter(CONFIG_LOCK.lock().map_err(|_| {
+        Error::new(5200, "config lock unavailable")
+    })?))
+}
+impl ConfigWriter {
+    pub(crate) fn write(&self, home: &Path, value: &Value) -> Result<()> {
+        let _guard = &self.0;
+        write_yaml(&home.join("config.yaml"), value)
+    }
+}
+
+pub fn update_config(home: &Path, change: impl FnOnce(&mut Value) -> Result<()>) -> Result<()> {
+    let writer = config_writer()?;
+    let mut config = read_config(home)?;
+    change(&mut config)?;
+    writer.write(home, &config)
+}
+
+/// Replace a config. Read-modify-write callers must use update_config instead.
 pub fn write_config(home: &Path, value: &Value) -> Result<()> {
-    write_yaml(&home.join("config.yaml"), value)
+    config_writer()?.write(home, value)
 }
 
 /// Write a complete YAML value while retaining unchanged syntax and comments.

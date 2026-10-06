@@ -181,6 +181,7 @@ pub fn migrate(home: &Path) -> Result<()> {
         [SCHEMA_VERSION],
     )?;
     transaction.commit()?;
+    crate::skills::migrate(home)?;
     Ok(())
 }
 

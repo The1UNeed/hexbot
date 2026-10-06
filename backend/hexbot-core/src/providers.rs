@@ -328,9 +328,10 @@ fn update_mirrors(home: &Path, names: &[&str], replacement: Option<&str>) -> Res
             .filter(|v| !v.is_empty())
             .collect::<Vec<_>>();
         if dir.join("config.yaml").exists() && !old.is_empty() {
-            let mut cfg = common::read_config(&dir)?;
-            scrub_mirrors(&mut cfg, &old, replacement);
-            common::write_config(&dir, &cfg)?;
+            common::update_config(&dir, |cfg| {
+                scrub_mirrors(cfg, &old, replacement);
+                Ok(())
+            })?;
         }
     }
     let mut auth = read_json(&home.join("auth.json"))?;

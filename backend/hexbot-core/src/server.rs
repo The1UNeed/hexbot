@@ -585,6 +585,56 @@ impl App {
             .unwrap_or_default()
     }
     fn changed(&self, audience: &[String], method: &str, p: &Value, result: &Value) {
+        if method.starts_with("hexbot.skills.")
+            && !matches!(method, "hexbot.skills.list" | "hexbot.skills.get")
+        {
+            let global = p["bot"].is_null() || method == "hexbot.skills.share";
+            let mut owners = audience.to_vec();
+            let query = if global {
+                "SELECT id FROM users"
+            } else {
+                "SELECT owner_id AS id FROM bots WHERE name=?"
+            };
+            let bot = p["bot"].as_str().unwrap_or("");
+            let params: Vec<&dyn rusqlite::ToSql> = if global { vec![] } else { vec![&bot] };
+            if let Ok(rows) =
+                db::open(&self.home).and_then(|conn| common::rows(&conn, query, &params))
+            {
+                owners.extend(
+                    rows.into_iter()
+                        .filter_map(|r| r["id"].as_str().map(str::to_owned)),
+                );
+            }
+            owners.sort();
+            owners.dedup();
+            let payload = if global {
+                json!({"name":p["name"]})
+            } else {
+                json!({"name":p["name"],"bot":p["bot"]})
+            };
+            for owner in owners {
+                self.events
+                    .emit(&owner, None, "hexbot.skills.changed", payload.clone());
+                self.events
+                    .emit(&owner, None, "hexbot.bots.changed", json!({}));
+            }
+            return;
+        }
+        if (method == "hexbot.bots.update" && p.get("skills").is_some())
+            || (method == "profiles.configure" && p.get("disabled_skills").is_some())
+            || (method == "hexbot.connectors.set_for_bot"
+                && matches!(p["id"].as_str(), Some("notion" | "airtable")))
+        {
+            self.changed(
+                audience,
+                "hexbot.skills.set_for_bot",
+                &json!({
+                    "bot":p["bot"].as_str().or(p["name"].as_str()),
+                    "name":p["id"].as_str(),
+                }),
+                result,
+            );
+        }
         let group = method.split('.').nth(1).unwrap_or("");
         let action = method.rsplit('.').next().unwrap_or("");
         if !matches!(

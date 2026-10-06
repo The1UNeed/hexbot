@@ -123,7 +123,10 @@ more freedom and more capability than a hosted product can offer.
   and Deny. Native notifications for approvals and mentions.
 - New bots get files, web search, browser and terminal (terminal gated by
   approvals). Computer use is off until enabled. Self-authored skills are on,
-  with a transcript notice.
+  with a transcript notice. Bundled and user-shared skills form one library,
+  enabled for every bot unless disabled globally or for that bot. Bots write
+  private skills; an admin can share their own bot's skills into the library.
+  A bot owner can edit its private skills and grants.
 - Tools run on the host in a shared workspace at `~/Hexbot`. Per-bot working
   directories come with the roster milestone.
 
@@ -131,7 +134,9 @@ more freedom and more capability than a hosted product can offer.
 
 - Persistent, Discord-thread-like conversations per bot and per room. Each is
   its own persistent conversation with its own context window.
-- A new section starts with only the bot's memory and skills.
+- A new section starts with the bot's memory and a catalog of skill descriptions.
+  It loads skill bodies when needed. Existing prompts stay fixed; skill reads
+  use current bodies and grants.
 - Sidebar: one list of bots and rooms ordered by recent activity. Each entry
   shows one or two recent sections and expands to show the rest. Archived
   sections sit collapsed at the bottom.

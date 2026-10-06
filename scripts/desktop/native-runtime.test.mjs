@@ -33,6 +33,7 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
   const root = await mkdtemp(join(tmpdir(), 'hexbot-stage-'))
   try {
     for (const path of ['apps/desktop', 'apps/web/dist', 'skills', 'backend/pi-runtime', `backend/hexbot-core/target/${rustTarget(process.platform, process.arch)}/release`]) await mkdir(join(root, path), { recursive: true })
+    await writeFile(join(root, 'skills/.history.json'), '{}\n')
     await writeFile(join(root, 'apps/web/dist/index.html'), '<html>Hexbot</html>')
     await writeFile(join(root, 'apps/desktop/package.json'), JSON.stringify({ version: '1.2.3' }))
     await writeFile(join(root, 'backend/pi-runtime/package.json'), JSON.stringify({ dependencies: { '@earendil-works/pi-coding-agent': '1.0.1' } }))
@@ -52,6 +53,7 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
       }
       return { stdout: '22.20.0' }
     } })
+    assert.equal(await readFile(join(result.destination, 'skills/.history.json'), 'utf8'), '{}\n')
     const manifest = JSON.parse(await readFile(join(result.destination, 'manifest.json'), 'utf8'))
     assert.equal(manifest.piVersion, '1.0.1'); assert.equal(manifest.version, '1.2.3')
     assert.match(manifest.files['hexbot-core'], /^[a-f0-9]{64}$/)

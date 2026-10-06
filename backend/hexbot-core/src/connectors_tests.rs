@@ -281,10 +281,17 @@ async fn skill_listing_reads_metadata_and_disabled_state() {
         "---\nname: notion\ndescription: Read workspace pages.\n---\n# Body\n",
     )
     .unwrap();
-    assert_eq!(
-        rpc(home.path(), "hexbot.skills.list", json!({"bot":"owl"})).await,
-        json!({"skills":[{"name":"notion","description":"Read workspace pages.","category":"work","enabled":true}]})
-    );
+    let listed = rpc(home.path(), "hexbot.skills.list", json!({"bot":"owl"})).await;
+    let notion = listed["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "notion")
+        .unwrap();
+    assert_eq!(notion["description"], "Read workspace pages.");
+    assert_eq!(notion["category"], "work");
+    assert_eq!(notion["source"], "bot");
+    assert_eq!(notion["enabled"], true);
     rpc(
         home.path(),
         "hexbot.connectors.set_for_bot",
@@ -292,7 +299,12 @@ async fn skill_listing_reads_metadata_and_disabled_state() {
     )
     .await;
     assert_eq!(
-        rpc(home.path(), "hexbot.skills.list", json!({"bot":"owl"})).await["skills"][0]["enabled"],
+        rpc(home.path(), "hexbot.skills.list", json!({"bot":"owl"})).await["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "notion")
+            .unwrap()["enabled"],
         false
     );
     rpc(
@@ -302,7 +314,12 @@ async fn skill_listing_reads_metadata_and_disabled_state() {
     )
     .await;
     assert_eq!(
-        rpc(home.path(), "hexbot.skills.list", json!({"bot":"owl"})).await["skills"][0]["enabled"],
+        rpc(home.path(), "hexbot.skills.list", json!({"bot":"owl"})).await["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "notion")
+            .unwrap()["enabled"],
         true
     );
 }

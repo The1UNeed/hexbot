@@ -1,5 +1,9 @@
 //! Persistent bots and sections. Runtime attachment is handled by `runtime`.
-use crate::{Error, Result, common::*, db, runtime_store};
+use crate::{
+    Error, Result,
+    common::{self, *},
+    db, runtime_store,
+};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde_json::{Value, json};
@@ -397,8 +401,7 @@ fn shape_bot(home: &Path, caller: &str, row: Value, all: bool) -> Result<Value> 
         "title": row["title"].as_str().unwrap_or(""),
         "description": row["description"].as_str().unwrap_or(""),
         "persona": read_text(home, &profile(home, name)?.join("SOUL.md"))?,
-        "skills": serde_json::from_str::<Value>(row["skills_json"].as_str().unwrap_or("[]"))
-            .unwrap_or(json!([])),
+        "skills": crate::skills::resolve(home, Some(name))?.into_iter().filter(|s| s.enabled).map(|s| s.name).collect::<Vec<_>>(),
         "tools": tools,
         "dream_enabled": row["dream_enabled"].as_i64().unwrap_or(1) != 0,
         "shareable": row["shareable"].as_i64().unwrap_or(0) != 0,
@@ -497,102 +500,12 @@ fn validate_patch(home: &Path, p: &Value) -> Result<()> {
     }
     Ok(())
 }
-fn seed_skills(home: &Path, destination: &Path) -> Result<()> {
-    fn copy(source: &Path, dest: &Path) -> Result<()> {
-        fs::create_dir_all(dest)?;
-        for entry in fs::read_dir(source)? {
-            let entry = entry?;
-            let kind = entry.file_type()?;
-            let name = entry.file_name();
-            if name.to_string_lossy().starts_with('.') {
-                continue;
-            }
-            if kind.is_dir() {
-                copy(&entry.path(), &dest.join(name))?;
-            } else if kind.is_file() {
-                fs::copy(entry.path(), dest.join(name))?;
-            }
-        }
-        Ok(())
-    }
-    let source = std::env::var_os("HEXBOT_BUNDLED_SKILLS")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../skills"));
-    safe(home, destination)?;
-    if source.is_dir() {
-        copy(&source, destination)?;
-    }
-    Ok(())
-}
 pub fn enabled_skills(home: &Path, name: &str) -> Result<Vec<Value>> {
-    fn walk(home: &Path, path: &Path, disabled: &[Value], out: &mut Vec<Value>) -> Result<()> {
-        safe(home, path)?;
-        if !path.exists() {
-            return Ok(());
-        }
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            let kind = entry.file_type()?;
-            if kind.is_dir() {
-                walk(home, &entry.path(), disabled, out)?;
-            } else if kind.is_file() && entry.file_name() == "SKILL.md" {
-                let name = path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                if !disabled
-                    .iter()
-                    .any(|d| d.as_str().is_some_and(|d| d.eq_ignore_ascii_case(&name)))
-                    && !out.iter().any(|s| s["name"] == name)
-                {
-                    out.push(json!({"name":name,"path":entry.path(),"content":read_text(home,&entry.path())?}));
-                }
-            }
-        }
-        Ok(())
-    }
-    let cfg = config(home, name)?;
-    let disabled = cfg["skills"]["disabled"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    let mut result = vec![];
-    walk(
-        home,
-        &profile(home, name)?.join("skills"),
-        &disabled,
-        &mut result,
-    )?;
-    walk(home, &home.join("skills"), &disabled, &mut result)?;
-    result.sort_by_key(|s| s["name"].as_str().unwrap_or("").to_string());
-    Ok(result)
-}
-fn installed_skills(home: &Path, name: &str) -> Result<Vec<String>> {
-    fn walk(home: &Path, path: &Path, out: &mut Vec<String>) -> Result<()> {
-        safe(home, path)?;
-        if !path.exists() {
-            return Ok(());
-        }
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            let kind = entry.file_type()?;
-            if kind.is_dir() {
-                walk(home, &entry.path(), out)?;
-            } else if kind.is_file()
-                && entry.file_name() == "SKILL.md"
-                && let Some(name) = path.file_name()
-            {
-                out.push(name.to_string_lossy().into_owned());
-            }
-        }
-        Ok(())
-    }
-    let mut names = Vec::new();
-    walk(home, &profile(home, name)?.join("skills"), &mut names)?;
-    names.sort();
-    names.dedup();
-    Ok(names)
+    Ok(crate::skills::resolve(home, Some(name))?
+        .into_iter()
+        .filter(|s| s.enabled)
+        .map(|s| json!(s))
+        .collect())
 }
 fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Value> {
     let name = required(p, "name")?;
@@ -600,14 +513,7 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
     match method {
         "profiles.describe" => {
             let cfg = config(home, name)?;
-            let disabled = cfg["skills"]["disabled"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            let skills = installed_skills(home, name)?
-                .into_iter()
-                .map(|s| json!({"enabled":!disabled.iter().any(|d|d.as_str().is_some_and(|d|d.eq_ignore_ascii_case(&s))),"name":s}))
-                .collect::<Vec<_>>();
+            let skills = crate::skills::resolve(home, Some(name))?;
             let enabled = crate::connectors::toolsets(home, name)?;
             let mut names = enabled.clone();
             names.extend(TOOLS.iter().map(|(_, t)| t.to_string()));
@@ -668,6 +574,7 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
             }
             validate_patch(home, &patch)?;
             configure(home, name, &patch)?;
+            let writer = common::config_writer()?;
             let mut cfg = config(home, name)?;
             for (key, section, leaf) in [
                 ("disabled_skills", "skills", "disabled"),
@@ -686,7 +593,7 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
                     cfg[section][leaf] = value.clone();
                 }
             }
-            write_yaml(home, &profile(home, name)?.join("config.yaml"), &cfg)?;
+            writer.write(&profile(home, name)?, &cfg)?;
             if let Some(description) = p["description"].as_str() {
                 db::open(home)?.execute(
                     "UPDATE bots SET description=?,updated_at=? WHERE name=?",
@@ -707,6 +614,8 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
     }
 }
 fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
+    let _skills = crate::skills::read_lock()?;
+    let writer = common::config_writer()?;
     let dir = profile(home, name)?;
     let mut cfg = config(home, name)?;
     if cfg["model"].is_string() {
@@ -781,9 +690,9 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
         cfg["known_plugin_toolsets"]["cli"] = json!(["hexbot"]);
     }
     if let Some(v) = p["skills"].as_array() {
-        let installed = installed_skills(home, name)?;
+        let installed = crate::skills::resolve_unlocked(home, Some(name))?;
         for chosen in v {
-            if !installed.iter().any(|s| chosen == s) {
+            if !installed.iter().any(|s| chosen == &s.name) {
                 return Err(Error::new(
                     4202,
                     format!("unknown skill: {}", chosen.as_str().unwrap_or("")),
@@ -793,7 +702,12 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
         cfg["skills"]["disabled"] = json!(
             installed
                 .into_iter()
-                .filter(|s| !v.contains(&json!(s)))
+                .filter(|s| if s.disabled_globally {
+                    !s.enabled_for_bot
+                } else {
+                    !v.contains(&json!(s.name))
+                })
+                .map(|s| s.name)
                 .collect::<Vec<_>>()
         );
     }
@@ -807,7 +721,7 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
             .map(Value::from)
             .unwrap_or(Value::Null);
     }
-    write_yaml(home, &dir.join("config.yaml"), &cfg)?;
+    writer.write(&dir, &cfg)?;
     if let Some(v) = p["persona"].as_str() {
         let path = dir.join("SOUL.md");
         safe(home, &path)?;
@@ -886,9 +800,11 @@ fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     })?;
     // Seed deployment defaults so every new bot sees the existing model and tool settings.
     let result = (|| {
-        let global = creation_config(read_config(home)?);
-        seed_skills(home, &dir.join("skills"))?;
-        write_yaml(home, &dir.join("config.yaml"), &global)?;
+        {
+            let writer = common::config_writer()?;
+            let global = creation_config(read_config(home)?);
+            writer.write(&dir, &global)?;
+        }
         configure(home, name, &patch)?;
         let now = now();
         let mut conn = db::open(home)?;
@@ -1208,6 +1124,8 @@ fn creation_config(mut config: Value) -> Value {
     }
     if let Some(object) = config.as_object_mut() {
         object.remove("custom_providers");
+        // Global skill revocations stay global; new bots inherit new grants live.
+        object.remove("skills");
     }
     if let Some(servers) = config["mcp_servers"].as_object_mut() {
         for server in servers.values_mut() {

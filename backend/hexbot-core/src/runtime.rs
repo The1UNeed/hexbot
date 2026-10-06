@@ -772,13 +772,9 @@ impl Runtime {
         } else {
             pi.args.extend(["--tools".into(), names.join(",")]);
         }
-        if options["restricted"].is_null() {
-            for skill in options["skills"].as_array().into_iter().flatten() {
-                if let Some(path) = skill["path"].as_str() {
-                    pi.args.extend(["--skill".into(), path.into()]);
-                }
-            }
-        }
+        // Skills load through skill_view, which checks live grants. Pi's own
+        // skill commands would read files without that check. Frozen options
+        // in existing sections remain untouched.
         if let Some(reasoning) = options["reasoning_effort"].as_str() {
             pi.args.extend(["--thinking".into(), reasoning.into()]);
         }
@@ -894,17 +890,17 @@ impl Runtime {
         let prompt = format!("{}{}", prompt, self.team_block(botrow, owner, bot)?);
         let skills = crate::catalog::enabled_skills(&self.home, bot)?;
         let prompt = format!(
-            "{}\n\n# Available skills\n{}",
+            "{}\n\n# Available skills\nLoad a skill with skill_view before using it.\n{}",
             prompt,
             skills
                 .iter()
                 .map(|v| format!(
-                    "## {}\n{}",
+                    "- {}: {}",
                     v["name"].as_str().unwrap_or(""),
-                    v["content"].as_str().unwrap_or("")
+                    v["description"].as_str().unwrap_or("")
                 ))
                 .collect::<Vec<_>>()
-                .join("\n\n")
+                .join("\n")
         );
         Ok((prompt, skills))
     }
@@ -2663,6 +2659,20 @@ impl Runtime {
                     }
                     None => call.await?,
                 };
+                if name == "skill_manage" && result["success"] == true {
+                    self.events.emit(
+                        &bot_owner,
+                        None,
+                        "hexbot.skills.changed",
+                        json!({"bot":s.bot}),
+                    );
+                    self.events.emit(
+                        &bot_owner,
+                        None,
+                        "hexbot.bots.changed",
+                        json!({"name":s.bot}),
+                    );
+                }
                 if matches!(name, "todo" | "todo_list") {
                     self.emit(s, "todo.updated", result.clone());
                 }
@@ -3545,6 +3555,86 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         let hub = EventHub::new();
         let runtime = Runtime::new(home.path().into(), hub.clone(), script).unwrap();
         (home, runtime, hub)
+    }
+    #[tokio::test]
+    async fn skills_prompt_is_lean_and_existing_options_are_never_refreshed() {
+        let (home, runtime, _) = setup();
+        let skill = home.path().join("skills/writing/custom-notes/SKILL.md");
+        common::atomic_write(
+            &skill,
+            b"---\ndescription: Plan a task.\n---\nFULL BODY MARKER",
+        )
+        .unwrap();
+        runtime.open_session("alice", "owl", "first").await.unwrap();
+        let frozen = || -> (String, String) {
+            store::open(home.path())
+                .unwrap()
+                .query_row(
+                    "SELECT prompt,options FROM native_sessions WHERE stored_id='first'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap()
+        };
+        let (prompt, options) = frozen();
+        assert!(prompt.contains("- custom-notes: Plan a task."));
+        assert!(prompt.contains("Load a skill with skill_view before using it."));
+        assert!(!prompt.contains("FULL BODY MARKER"));
+        assert!(!options.contains("FULL BODY MARKER"));
+        let options: Value = serde_json::from_str(&options).unwrap();
+        assert!(
+            options["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["name"] == "skill_view")
+        );
+        assert!(
+            !options["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["name"] == "skill_manage")
+        );
+        runtime.close_stored("alice", "first").await.unwrap();
+        // Simulate a section from the old implementation, including inline
+        // skill bodies and an unversioned options row belonging to its owner.
+        let old_prompt = format!("{prompt}\n## custom-notes\nFULL BODY MARKER");
+        let mut old_options = options;
+        old_options["prompt"] = json!(old_prompt);
+        old_options["skills"] =
+            json!([{"name":"custom-notes","path":skill,"content":"FULL BODY MARKER"}]);
+        old_options
+            .as_object_mut()
+            .unwrap()
+            .remove("prompt_version");
+        let old_options = old_options.to_string();
+        store::open(home.path())
+            .unwrap()
+            .execute(
+                "UPDATE native_sessions SET prompt=?,options=? WHERE stored_id='first'",
+                params![old_prompt, old_options],
+            )
+            .unwrap();
+        common::atomic_write(
+            &skill,
+            b"---\ndescription: Changed description.\n---\nChanged body.",
+        )
+        .unwrap();
+        crate::skills::set_enabled(home.path(), Some("owl"), "custom-notes", false).unwrap();
+        runtime.open_session("alice", "owl", "first").await.unwrap();
+        assert_eq!(frozen(), (old_prompt, old_options));
+        let processes = fs::read_to_string(home.path().join("processes.jsonl")).unwrap();
+        for line in processes.lines() {
+            let process: Value = serde_json::from_str(line).unwrap();
+            assert!(
+                !process["args"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("--skill"))
+            );
+        }
+        runtime.shutdown().await;
     }
     #[tokio::test]
     async fn max_turns_environment_prefers_hexbot_and_keeps_legacy_fallback() {
