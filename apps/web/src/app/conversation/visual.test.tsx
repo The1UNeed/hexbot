@@ -2,9 +2,10 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ToolCall } from '../../lib/types'
+import { useVisuals, visualsActions } from '../../stores/visuals'
 
 import { readVisualTheme, visualDocument, visualsOf } from './visual'
-import { VisualFrame } from './visual-frame'
+import { VisualBubble, VisualPanel } from './visual-frame'
 
 const call = (partial: Partial<ToolCall>): ToolCall => ({
   args: { html: '<p>chart</p>', title: 'Costs' },
@@ -75,9 +76,14 @@ describe('readVisualTheme', () => {
   })
 })
 
-describe('VisualFrame', () => {
+const costs = { html: '<p>chart</p>', title: 'Costs', toolId: 't1' }
+const map = { html: '<svg></svg>', title: 'Map', toolId: 't2' }
+
+describe('VisualBubble', () => {
+  afterEach(() => visualsActions().closeAll())
+
   it('writes the page once the frame is ready and follows its height', () => {
-    render(<VisualFrame visual={{ html: '<p>chart</p>', title: 'Costs', toolId: 't1' }} />)
+    render(<VisualBubble visual={costs} />)
     const frame = screen.getByTitle('Costs') as HTMLIFrameElement
     const target = frame.contentWindow!
     const post = vi.spyOn(target, 'postMessage').mockImplementation(() => {})
@@ -102,23 +108,18 @@ describe('VisualFrame', () => {
     send({ jsonrpc: '2.0', method: 'ui/notifications/size-changed', params: { height: 9000 } })
     expect(frame.style.height).toBe('2000px')
 
-    // A link the page asks for waits for the user to open it from the app.
+    // A link the page asks for waits for the user to open it from the app;
+    // anything but http(s) is never offered.
     const open = vi.spyOn(window, 'open').mockImplementation(() => null)
     send({
       id: 'link-1',
       jsonrpc: '2.0',
       method: 'ui/open-link',
-      params: { url: 'https://example.com/costs' }
-    })
-    send({
-      id: 'link-2',
-      jsonrpc: '2.0',
-      method: 'ui/open-link',
       params: { url: 'javascript:alert(1)' }
     })
-    expect(screen.queryByRole('button', { name: /Open/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Open example/ })).toBeNull()
     send({
-      id: 'link-3',
+      id: 'link-2',
       jsonrpc: '2.0',
       method: 'ui/open-link',
       params: { url: 'https://example.com/costs' }
@@ -126,7 +127,7 @@ describe('VisualFrame', () => {
     expect(open).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Open example.com/costs' }))
     expect(open).toHaveBeenCalledWith('https://example.com/costs', '_blank', 'noopener,noreferrer')
-    expect(screen.queryByRole('button', { name: /Open/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Open example/ })).toBeNull()
 
     // Another window cannot resize the frame.
     send(
@@ -134,5 +135,63 @@ describe('VisualFrame', () => {
       window
     )
     expect(frame.style.height).toBe('2000px')
+  })
+
+  it('shows the HTML without reloading the page, and opens beside the chat', () => {
+    render(<VisualBubble visual={costs} />)
+    const frame = screen.getByTitle('Costs')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show HTML' }))
+    expect(screen.getByText('<p>chart</p>')).toBeInTheDocument()
+    expect(screen.getByTitle('Costs')).toBe(frame)
+    expect(frame).not.toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show visual' }))
+    expect(frame).toBeVisible()
+
+    const beside = screen.getByRole('button', { name: 'Open beside the chat' })
+    fireEvent.click(beside)
+    expect(useVisuals.getState()).toMatchObject({ active: 't1', tabs: [costs] })
+    expect(beside).toHaveAttribute('aria-pressed', 'true')
+  })
+})
+
+describe('visual tabs', () => {
+  afterEach(() => visualsActions().closeAll())
+
+  it('open like browser tabs: once each, the closed one handing over to its neighbour', () => {
+    const { activate, close, open } = visualsActions()
+    open(costs)
+    open(map)
+    open(costs)
+    expect(useVisuals.getState()).toMatchObject({ active: 't1', tabs: [costs, map] })
+
+    activate('t2')
+    close('t2')
+    expect(useVisuals.getState()).toMatchObject({ active: 't1', tabs: [costs] })
+
+    close('t1')
+    expect(useVisuals.getState()).toMatchObject({ active: null, tabs: [] })
+  })
+
+  it('keep every page mounted and switch between them in the panel', () => {
+    act(() => {
+      visualsActions().open(costs)
+      visualsActions().open(map)
+    })
+    render(<VisualPanel />)
+
+    const first = screen.getByTitle('Costs')
+    expect(first).not.toBeVisible()
+    expect(screen.getByTitle('Map')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Costs' }))
+    expect(screen.getByRole('tab', { name: 'Costs' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTitle('Costs')).toBe(first)
+    expect(first).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close Costs' }))
+    expect(screen.queryByTitle('Costs')).toBeNull()
+    expect(screen.getByTitle('Map')).toBeVisible()
   })
 })

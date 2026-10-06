@@ -4,7 +4,9 @@ import { type CSSProperties, type ReactNode, useEffect, useState } from 'react'
 
 import { cn } from '../lib/cn'
 import { useUi } from '../stores/ui'
+import { useVisuals, visualsActions } from '../stores/visuals'
 
+import { VisualPanel } from './conversation/visual-frame'
 import { ThreadPanel } from './panel/thread'
 import { ConversationColumn, ProfilePanel, RosterColumn } from './slots'
 
@@ -14,6 +16,8 @@ const PANEL_MOTION = 240
 
 export function AppShell({ children }: { children?: ReactNode }) {
   const [panelWidth, setPanelWidth] = useState(320)
+  // Visuals beside the chat get a wider panel of their own: room for a chart.
+  const [visualsWidth, setVisualsWidth] = useState(600)
   const [mobileRosterOpen, setMobileRosterOpen] = useState(false)
   const [resizing, setResizing] = useState(false)
   const sidebarWidth = useUi(state => state.sidebarWidth)
@@ -27,7 +31,10 @@ export function AppShell({ children }: { children?: ReactNode }) {
   const roomMode = Boolean(params.room)
   // The thread panel takes the same slot as the profile, in rooms too, and goes first.
   const showThread = Boolean(thread) && !children
-  const showPanel = showThread || (panelOpen && !roomMode && !children)
+  // Visuals opened beside the chat take the slot first, wider, as tabs.
+  const showVisuals = useVisuals(state => state.tabs.length > 0) && !children
+  const showPanel = showVisuals || showThread || (panelOpen && !roomMode && !children)
+  const width = showVisuals ? visualsWidth : panelWidth
 
   // The panel stays in the tree for one beat after it closes, so it can slide
   // out while its column shrinks instead of vanishing.
@@ -65,17 +72,19 @@ export function AppShell({ children }: { children?: ReactNode }) {
   useEffect(() => setMobileRosterOpen(false), [params.bot, params.room, params.section])
   // A thread belongs to the chat it was opened from; leaving that chat closes it.
   useEffect(() => closeThread(), [closeThread, params.bot, params.room, params.section])
+  useEffect(() => visualsActions().closeAll(), [params.bot, params.room, params.section])
 
-  const panel =
-    thread && showThread ? (
-      <ThreadPanel key={`${thread.bot}/${thread.peer}`} thread={thread} />
-    ) : (
-      <ProfilePanel />
-    )
+  const panel = showVisuals ? (
+    <VisualPanel />
+  ) : thread && showThread ? (
+    <ThreadPanel key={`${thread.bot}/${thread.peer}`} thread={thread} />
+  ) : (
+    <ProfilePanel />
+  )
 
   const resize = (side: 'left' | 'right', start: number) => (event: React.PointerEvent) => {
     event.currentTarget.setPointerCapture(event.pointerId)
-    const initial = side === 'left' ? sidebarWidth : panelWidth
+    const initial = side === 'left' ? sidebarWidth : width
     setResizing(true)
 
     const move = (next: PointerEvent) => {
@@ -83,6 +92,8 @@ export function AppShell({ children }: { children?: ReactNode }) {
 
       if (side === 'left') {
         setSidebarWidth(initial + delta)
+      } else if (showVisuals) {
+        setVisualsWidth(Math.max(420, Math.min(960, initial - delta)))
       } else {
         setPanelWidth(Math.max(300, Math.min(520, initial - delta)))
       }
@@ -110,7 +121,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
 
   // The panel's track holds the panel and its gutter; closed, only the gutter
   // remains, so the chat keeps its right margin and the track can animate.
-  const panelTrack = showPanel && !compact ? panelWidth + GUTTER : GUTTER
+  const panelTrack = showPanel && !compact ? width + GUTTER : GUTTER
 
   return (
     <main
@@ -180,7 +191,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
                 'hex-glass-strong mr-2 ml-2 shrink-0 transition-opacity duration-[var(--hex-motion-panel)]',
                 showPanel ? 'opacity-100' : 'opacity-0'
               )}
-              style={{ width: panelWidth }}
+              style={{ width }}
             >
               {panel}
             </aside>
@@ -191,7 +202,8 @@ export function AppShell({ children }: { children?: ReactNode }) {
         <aside
           className={cn(
             card,
-            'hex-glass-strong fixed inset-y-2 right-2 z-40 w-[min(92vw,360px)] max-[700px]:inset-y-2 max-[700px]:rounded-[22px]',
+            'hex-glass-strong fixed inset-y-2 right-2 z-40 max-[700px]:inset-y-2 max-[700px]:rounded-[22px]',
+            showVisuals ? 'w-[min(92vw,600px)]' : 'w-[min(92vw,360px)]',
             showPanel ? 'hex-slide-in' : 'hex-slide-out'
           )}
         >

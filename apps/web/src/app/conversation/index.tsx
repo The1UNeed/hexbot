@@ -489,7 +489,11 @@ export function MessageRow({
   // One keyed child in a flat list: when the final reply lands under it, the
   // frame stays put instead of reloading the page.
   if (visuals.length) {
-    column.splice(replied ? last : bubbles.length, 0, <Visuals key="visuals" visuals={visuals} />)
+    column.splice(
+      replied ? last : bubbles.length,
+      0,
+      <Visuals fresh={fresh} key="visuals" visuals={visuals} />
+    )
   }
 
   // The column reads in order: the bot's messages, their marks, and at the
