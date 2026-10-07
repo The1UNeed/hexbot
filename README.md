@@ -1,6 +1,6 @@
-# Hexbot [alpha]
+# Hexbot
 
-Self-hosted bots with faces, names, and a memory of their own.
+**HexBot is currently in beta, so expect to occasionally run into hiccups and bugs, however we encourage you to give it a shot anyway.**
 
 Hexbot is a desktop app and a background daemon. You create **bots**, each
 with its own persona, model, skills, and memory. You talk to a bot in a

@@ -384,13 +384,16 @@ fn shape_bot(home: &Path, caller: &str, row: Value, all: bool) -> Result<Value> 
         }
     }
     let enabled = crate::connectors::toolsets(home, name)?;
-    let tools = json!(
-        TOOLS
-            .iter()
-            .filter(|(_, v)| enabled.iter().any(|t| t == v))
-            .map(|(k, _)| *k)
-            .collect::<Vec<_>>()
-    );
+    let missing = crate::native_tools::not_set_up(home, name)?;
+    let available = TOOLS
+        .iter()
+        .filter(|(_, v)| !missing.contains(v))
+        .collect::<Vec<_>>();
+    let tools = available
+        .iter()
+        .filter(|(_, v)| enabled.iter().any(|t| t == v))
+        .map(|(k, _)| *k)
+        .collect::<Vec<_>>();
     Ok(json!({
         "name": name,
         "display_name": row["display_name"]
@@ -403,6 +406,7 @@ fn shape_bot(home: &Path, caller: &str, row: Value, all: bool) -> Result<Value> 
         "persona": read_text(home, &profile(home, name)?.join("SOUL.md"))?,
         "skills": crate::skills::resolve(home, Some(name))?.into_iter().filter(|s| s.enabled).map(|s| s.name).collect::<Vec<_>>(),
         "tools": tools,
+        "available_tools": available.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
         "dream_enabled": row["dream_enabled"].as_i64().unwrap_or(1) != 0,
         "shareable": row["shareable"].as_i64().unwrap_or(0) != 0,
         "notify": row["notify"].as_i64().unwrap_or(1) != 0,
@@ -677,9 +681,14 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
                 .map(Value::from)
                 .collect()
             });
+        // A tool that isn't set up on this computer is dropped, so a bot
+        // never keeps one switched on that settings no longer shows.
+        let effective = common::merged_config_with(home, &cfg)?;
+        let missing = crate::native_tools::not_set_up_with_config(home, name, &effective)?;
         enabled.retain(|v| !TOOLS.iter().any(|(_, t)| v == t));
         for item in tools {
             if let Some((_, t)) = TOOLS.iter().find(|(k, _)| item == k)
+                && !missing.contains(t)
                 && !enabled.contains(&json!(t))
             {
                 enabled.push(json!(t));

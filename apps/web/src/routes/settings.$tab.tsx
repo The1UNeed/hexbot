@@ -1,5 +1,6 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import {
+  Archive,
   Brain,
   Download,
   Gauge,
@@ -25,6 +26,7 @@ export const Route = createFileRoute('/settings/$tab')({ component: SettingsDial
 
 const ITEMS: Record<SettingsTab, SettingsTabItem<SettingsTab>> = {
   about: { icon: Info, id: 'about', label: 'About' },
+  archive: { icon: Archive, id: 'archive', label: 'Archive' },
   appearance: { icon: SunMoon, id: 'appearance', label: 'Appearance' },
   approvals: { icon: ShieldCheck, id: 'approvals', label: 'Approvals' },
   connect: { icon: Globe, id: 'connect', label: 'Hex Connect' },
@@ -39,7 +41,7 @@ const ITEMS: Record<SettingsTab, SettingsTabItem<SettingsTab>> = {
 const GROUPS: { ids: SettingsTab[]; label: string }[] = [
   { ids: ['providers', 'usage'], label: 'Models' },
   { ids: ['network', 'connect', 'users'], label: 'Devices' },
-  { ids: ['memory', 'approvals', 'appearance'], label: 'You' },
+  { ids: ['memory', 'archive', 'approvals', 'appearance'], label: 'You' },
   { ids: ['updates', 'about'], label: 'App' }
 ]
 

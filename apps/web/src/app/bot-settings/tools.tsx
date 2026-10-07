@@ -73,6 +73,13 @@ export const TOOL_GROUPS: { rows: ToolRow[]; title: string }[] = [
 
 export function ToolsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const tools = Array.isArray(bot.tools) ? bot.tools : []
+  const available = bot.available_tools
+
+  const groups = TOOL_GROUPS.map(group => ({
+    ...group,
+    rows: available ? group.rows.filter(row => available.includes(row.key)) : group.rows
+  })).filter(group => group.rows.length > 0)
+
   const [editingDir, setEditingDir] = useState(false)
   const [dir, setDir] = useState(bot.workdir ?? '')
   useEffect(() => setDir(bot.workdir ?? ''), [bot.workdir])
@@ -82,11 +89,11 @@ export function ToolsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
 
   return (
     <div>
-      <Heading description="What this bot can do on this computer. Nothing here needs an account.">
+      <Heading description="What this bot can do on this computer. Tools this computer isn't set up for don't appear.">
         Tools
       </Heading>
       <div className="space-y-8">
-        {TOOL_GROUPS.map(group => (
+        {groups.map(group => (
           <Group key={group.title} title={group.title}>
             {group.rows.map(row => (
               <Row

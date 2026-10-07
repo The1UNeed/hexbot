@@ -295,6 +295,45 @@ async fn vision_and_speech_execute_configured_http_services() {
     server.abort();
 }
 #[tokio::test]
+async fn speech_checks_the_requested_provider_instead_of_the_default() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = Router::new().route(
+        "/audio/speech",
+        post(|| async { b"ID3test-audio".to_vec() }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let h = home(json!({"tools":{"enabled_toolsets":["tts"]},"tts":{
+        "provider":"edge","edge":{"command": "/missing/hexbot-edge-tts"},
+        "openai":{"base_url":format!("http://{address}")}
+    }}));
+    let audio = call(
+        h.path(),
+        "text_to_speech",
+        json!({"text":"Hello","provider":"openai"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read(audio["file_path"].as_str().unwrap()).unwrap(),
+        b"ID3test-audio"
+    );
+    let mut cfg = common::read_config(h.path()).unwrap();
+    cfg["tts"]["provider"] = json!("openai");
+    common::write_config(h.path(), &cfg).unwrap();
+    let denied = call(
+        h.path(),
+        "text_to_speech",
+        json!({"text":"Hello","provider":"elevenlabs"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(denied.code, 4302);
+    assert!(denied.message.contains("not set up"));
+    server.abort();
+}
+
+#[tokio::test]
 async fn python_hermes_tools_calls_conversation_dispatcher_and_propagates_denial() {
     let h = home(json!({"tools":{"enabled_toolsets":["code_execution"]}}));
     let requests = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
@@ -739,8 +778,33 @@ fn missing_explicit_optional_commands_are_not_advertised() {
     );
 }
 #[cfg(unix)]
+#[test]
+fn tools_are_offered_only_once_set_up() {
+    let h = home(json!({"tools":{"enabled_toolsets":["tts","vision"]}}));
+    let mut cfg = common::read_config(h.path()).unwrap();
+    cfg["tts"] = json!({"provider":"edge","edge":{"command":h.path().join("edge-tts")}});
+    cfg["auxiliary"] = json!({"vision":{"provider":"custom"}});
+    common::write_config(h.path(), &cfg).unwrap();
+    let offered = |name: &str| {
+        native_tools::descriptors(h.path(), "tester")
+            .unwrap()
+            .iter()
+            .any(|d| d["name"] == name)
+    };
+    let missing = native_tools::not_set_up(h.path(), "tester").unwrap();
+    assert!(missing.contains(&"tts") && missing.contains(&"vision"));
+    assert!(!offered("text_to_speech") && !offered("vision_analyze"));
+
+    script(h.path(), "edge-tts", "");
+    cfg["auxiliary"]["vision"]["base_url"] = json!("http://127.0.0.1:9");
+    common::write_config(h.path(), &cfg).unwrap();
+    let missing = native_tools::not_set_up(h.path(), "tester").unwrap();
+    assert!(!missing.contains(&"tts") && !missing.contains(&"vision"));
+    assert!(offered("text_to_speech") && offered("vision_analyze"));
+}
+#[cfg(unix)]
 #[tokio::test]
-async fn browser_use_exec_requires_network_interception() {
+async fn browser_use_backend_is_not_set_up() {
     let h =
         home(json!({"tools":{"enabled_toolsets":["browser"]},"browser":{"backend":"browser-use"}}));
     std::fs::create_dir_all(h.path().join("bin")).unwrap();
@@ -749,18 +813,23 @@ async fn browser_use_exec_requires_network_interception() {
         "uvx",
         "import sys,json,os\nprint(json.dumps({'args':sys.argv[1:],'code':sys.stdin.read(),'session':os.environ['BU_NAME']}))",
     );
+    // browser_exec needs network interception that was never ported, so the
+    // browser-use backend leaves the browser toolset without a working tool.
     assert!(
-        native_tools::descriptors(h.path(), "tester")
+        !native_tools::descriptors(h.path(), "tester")
             .unwrap()
             .iter()
             .any(|d| d["name"] == "browser_exec")
     );
-    assert_eq!(
-        call(h.path(), "browser_exec", json!({"code":"print('test')"}))
-            .await
-            .unwrap_err()
-            .code,
-        4302
+    assert!(
+        native_tools::not_set_up(h.path(), "tester")
+            .unwrap()
+            .contains(&"browser")
     );
+    let error = call(h.path(), "browser_exec", json!({"code":"print('test')"}))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, 4302);
+    assert!(error.message.contains("not set up"));
     native_tools::close_session(h.path(), "conversation").await;
 }
