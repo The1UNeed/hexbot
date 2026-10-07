@@ -35,7 +35,8 @@ more freedom and more capability than a hosted product can offer.
 
 - Each bot has two files: its soul (persona; the user and the bot both edit
   it, and the bot says so when it does) and its memory (short entries the
-  bot writes during chat, capped at 2,200 characters, injected every turn).
+  bot writes during chat, each ending with the month it was learned, capped
+  at 2,200 characters, injected every turn).
   Searchable history over its own sections and rooms sits beside them.
 - About you: one text per user, capped at 2,000 characters, written only by
   the user and injected into every bot they own. Nothing else is shared

@@ -83,7 +83,9 @@ it also installs over SSH when nobody is signed in at the screen.
 - Memory stays in `profiles/<bot>/memories/MEMORY.md`, soul in `SOUL.md`, and
   About you in `users/<id>/user.md`. Deleting a section leaves bot memory alone.
   Only sections, rooms, and dreams write it; a scheduled job's memory tool
-  records proposals instead, and its soul tool only reads.
+  records proposals instead, and its soul tool only reads. The memory tool's
+  `add`, `append`, and `replace` end each entry with the month it was learned
+  (`[YYYY-MM]`); `set` and the app write text as given (`docs/dreaming.md`).
 - `hexbot-runtime.db` stores native transcript projections, usage, and frozen
   session options. Pi keeps its conversation JSONL under the native session
   directory. Existing Python `state.db` history is imported once, including

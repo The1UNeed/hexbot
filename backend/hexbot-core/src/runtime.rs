@@ -2657,10 +2657,18 @@ impl Runtime {
                         &Value::Object(kept),
                     );
                 }
+                // Added and replaced entries carry the month they were learned.
+                // The daemon stamps them here so the month does not depend on
+                // the model following a format; a job's proposal is stored as
+                // written and stamped when the dream applies it through this
+                // same arm. `set` is written as given.
                 match action {
                     "read" => memory.get_bot(&bot_owner, &s.bot),
                     "add" | "append" => {
-                        let text = required(args, "text")?;
+                        let text = crate::memory::stamp_entries(
+                            required(args, "text")?,
+                            &crate::memory::month_stamp(),
+                        );
                         memory.update_bot(&bot_owner, &s.bot, |old| {
                             let updated = format!("{old}\n{text}").trim().to_owned();
                             check_memory_edit(old, &updated)?;
@@ -2671,10 +2679,14 @@ impl Runtime {
                         let previous = required(args, "old_text")?;
                         let text = args["text"].as_str().unwrap_or("");
                         memory.update_bot(&bot_owner, &s.bot, |old| {
-                            if !old.contains(previous) {
+                            let Some(at) = old.find(previous) else {
                                 return Err(Error::new(4202, "memory text was not found"));
-                            }
-                            let updated = old.replacen(previous, text, 1);
+                            };
+                            let updated = crate::memory::restamp_span(
+                                &old.replacen(previous, text, 1),
+                                at..at + text.len(),
+                                &crate::memory::month_stamp(),
+                            );
                             check_memory_edit(old, &updated)?;
                             Ok(updated)
                         })
@@ -3450,7 +3462,7 @@ fn show_html(home: &Path, stored: &str, args: &Value) -> Result<Value> {
 #[rustfmt::skip]
 const HEXBOT_GUIDANCE: &str = r###"# Hexbot
 You are one of the user's bots in Hexbot, a desktop app. Each bot has a face, a model, skills, its own soul and its own memory. You talk with the user in sections (conversations) and in rooms (group chats with the user and other bots).
-Three texts shape you. Your soul, above, is who you are; the user edits it, and so may you with hexbot_soul when the user asks you to change or you learn how they want you to work — read it first, write the complete text, and say what you changed. About you is the user's own note about themselves; only they write it. Your memory is what you have learned: short entries you write with the memory tool as you go, tidied by your daily dream when dreaming is on. It is short on purpose; keep it dense.
+Three texts shape you. Your soul, above, is who you are; the user edits it, and so may you with hexbot_soul when the user asks you to change or you learn how they want you to work — read it first, write the complete text, and say what you changed. About you is the user's own note about themselves; only they write it. Your memory is what you have learned: short entries you write with the memory tool as you go, tidied by your daily dream when dreaming is on. Each entry you add or replace gets the month on the end, so you can see how old a fact is. It is short on purpose; keep it dense.
 
 # Acting and asking
 Read, search, organise and work inside your own files and sections freely. Ask before anything that leaves this computer or reaches a person outside Hexbot — messaging or emailing them, posting, paying, deleting what cannot be recovered — unless the user already told you to in this section, or their approval setting says not to ask. Do the work first, so what you ask the user to approve is concrete. Asking is not free: when a request has an obvious reading, take it, and ask only when the answer changes what you would do. No unsolicited warnings or disclaimers.

@@ -401,3 +401,56 @@ fn atomic_memory_edits_keep_unicode_caps_and_leave_failed_edits_unwritten() {
     );
     assert_eq!(store.get_bot("alice", "owl").unwrap()["memory_md"], "界🦉é");
 }
+
+#[test]
+fn added_entries_are_stamped_per_line_and_kept_when_already_stamped() {
+    use crate::memory::stamp_entries;
+    assert_eq!(
+        stamp_entries("Likes tea.", "2026-10"),
+        "Likes tea. [2026-10]"
+    );
+    assert_eq!(
+        stamp_entries(
+            "Met in 2024. [2024-05]\n## Work\n\n  Ships on Fridays.  \n界🦉é\n",
+            "2026-10"
+        ),
+        "Met in 2024. [2024-05]\n## Work\n\n  Ships on Fridays. [2026-10]\n界🦉é [2026-10]"
+    );
+    // Only a trailing [YYYY-MM] counts as a stamp.
+    assert_eq!(
+        stamp_entries("[2024-05] early\nv[2024-5]\n[2024-05].", "2026-10"),
+        "[2024-05] early [2026-10]\nv[2024-5] [2026-10]\n[2024-05]. [2026-10]"
+    );
+    assert_eq!(stamp_entries("", "2026-10"), "");
+}
+
+#[test]
+fn replacements_restamp_only_the_lines_they_touch() {
+    use crate::memory::restamp_span;
+    let text = "Likes tea. [2024-05]\n## Work\nShips on Fridays. [2024-05] [2025-01]\nUndated";
+    // "tea" -> "coffee" touches the first line, whose old stamp is refreshed.
+    assert_eq!(
+        restamp_span(&text.replacen("tea", "coffee", 1), 6..12, "2026-10"),
+        "Likes coffee. [2026-10]\n## Work\nShips on Fridays. [2024-05] [2025-01]\nUndated"
+    );
+    // Doubled stamps collapse into one, and a heading in the span stays bare.
+    let at = text.find("## Work").unwrap();
+    let new = "## Work\nShips on Mondays. [2020-01]";
+    assert_eq!(
+        restamp_span(
+            &text.replacen("## Work\nShips on Fridays. [2024-05] [2025-01]", new, 1),
+            at..at + new.len(),
+            "2026-10"
+        ),
+        "Likes tea. [2024-05]\n## Work\nShips on Mondays. [2026-10]\nUndated"
+    );
+    // New text that ends with a newline does not reach into the next line.
+    let at = text.find("Undated").unwrap();
+    let replaced = text.replacen("Undated", "Dated\n", 1) + "Next";
+    assert_eq!(
+        restamp_span(&replaced, at..at + 6, "2026-10"),
+        "Likes tea. [2024-05]\n## Work\nShips on Fridays. [2024-05] [2025-01]\nDated [2026-10]\nNext"
+    );
+    // An empty replacement is a removal.
+    assert_eq!(restamp_span(text, 6..6, "2026-10"), text);
+}

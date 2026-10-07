@@ -4,11 +4,13 @@ use std::{
     collections::HashMap,
     fs,
     io::Write,
+    ops::Range,
     path::{Component, Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
     time::UNIX_EPOCH,
 };
 
+use chrono::NaiveDate;
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 
@@ -236,6 +238,95 @@ impl MemoryStore {
         fs::File::open(parent)?.sync_all()?;
         Ok(())
     }
+}
+
+/// The day a test pinned with `fix_today`, if any.
+static TODAY: OnceLock<NaiveDate> = OnceLock::new();
+
+/// The daemon's local day, which every stamp and date here is taken from.
+/// A test pins it with `fix_today`, so writing a stamp and reading it back
+/// cannot straddle midnight.
+fn local_today() -> NaiveDate {
+    TODAY
+        .get()
+        .copied()
+        .unwrap_or_else(|| chrono::Local::now().date_naive())
+}
+
+/// Pin the daemon's day for the rest of the process. For tests only: the day
+/// cannot change once set, so every test in one binary pins the same one.
+#[doc(hidden)]
+pub fn fix_today(date: NaiveDate) {
+    let pinned = *TODAY.get_or_init(|| date);
+    assert_eq!(pinned, date, "tests in one process pin one day");
+}
+
+/// The month entries are stamped with, `YYYY-MM` in the daemon's local time.
+pub fn month_stamp() -> String {
+    local_today().format("%Y-%m").to_string()
+}
+
+/// Entries a bot adds carry the month they were learned, so a dream can tell
+/// a stale fact from a current one. Every non-empty line of `text` is one
+/// entry and gets ` [YYYY-MM]` unless it already ends with a stamp; headings
+/// and blank lines are left alone. Whole-file writes (`set`) are never
+/// stamped, so the dream and the user keep control of the text.
+pub fn stamp_entries(text: &str, month: &str) -> String {
+    text.lines()
+        .map(|line| {
+            let entry = line.trim_end();
+            if entry.is_empty() || entry.starts_with('#') || is_stamped(entry) {
+                line.to_owned()
+            } else {
+                format!("{entry} [{month}]")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A replacement confirms the entries it touches: every line that crosses
+/// `span`, the byte range of the new text inside `text`, ends with this
+/// month's stamp in place of any older one, including a stamp the new text
+/// brought along. An empty replacement is a removal and stamps nothing.
+pub fn restamp_span(text: &str, span: Range<usize>, month: &str) -> String {
+    if span.is_empty() {
+        return text.to_owned();
+    }
+    let start = text[..span.start].rfind('\n').map_or(0, |i| i + 1);
+    let last = span.end - usize::from(text[..span.end].ends_with('\n'));
+    let end = text[last..].find('\n').map_or(text.len(), |i| last + i);
+    let touched = text[start..end]
+        .lines()
+        .map(|line| {
+            let entry = strip_stamps(line.trim_end());
+            if entry.is_empty() || entry.starts_with('#') {
+                line.to_owned()
+            } else {
+                format!("{entry} [{month}]")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{}{touched}{}", &text[..start], &text[end..])
+}
+
+fn is_stamped(entry: &str) -> bool {
+    let b = entry.trim_end().as_bytes();
+    let n = b.len();
+    n >= 9
+        && b[n - 9] == b'['
+        && b[n - 8..n - 4].iter().all(u8::is_ascii_digit)
+        && b[n - 4] == b'-'
+        && b[n - 3..n - 1].iter().all(u8::is_ascii_digit)
+        && b[n - 1] == b']'
+}
+
+fn strip_stamps(mut entry: &str) -> &str {
+    while is_stamped(entry) {
+        entry = entry[..entry.len() - 9].trim_end();
+    }
+    entry
 }
 
 // Python's int() accepts boolean and floating-point YAML scalars as well.

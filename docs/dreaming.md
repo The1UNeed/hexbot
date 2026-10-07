@@ -63,6 +63,18 @@ The native scheduler and digest builder live in
   completes, the proposals it read are marked consumed with that dream's id;
   a failed dream leaves them pending, as it leaves `since` where it was.
   Deleting the bot deletes its proposals.
+- Memory entries end with the month they were learned, `[YYYY-MM]` in the
+  daemon's local time. The daemon adds it when the memory tool's `add` or
+  `append` runs, to every non-empty line that is not a heading and does not
+  already end with a stamp; `replace` restamps the lines it touches with the
+  current month, since a replacement confirms the entry; an empty
+  replacement is a removal. `set`, `remove`, the Memory tab, and
+  `hexbot.memory.bot.set` write text as given, so the dream and the user
+  keep control. A proposal is stored as the job wrote it and stamped when the
+  dream applies it through its own memory tool. The dream prompt names the
+  current month and asks the dream to keep stamps, refresh one when a fact
+  is confirmed again, and treat undated or old entries that may have changed
+  as candidates to verify or remove. Stamps count against the memory cap.
 - Dream rows in `hexbot.db` record `memory_before`, `memory_after`, status,
   and summary. The Memory tab shows the two versions side by side.
   `hexbot.dreaming.restore {id}` restores `memory_before`.
