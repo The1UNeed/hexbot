@@ -293,6 +293,33 @@ characters, and broadcasts `hexbot.sections.changed`. It refuses in rooms and
 in the Dreams section. The roster and the conversation header fade the new
 title in where the old one was.
 
+The `hexbot_show_html {title, html}` tool shows a visual: one self-contained
+HTML page (a chart, table, diagram or mockup) drawn in the conversation. It
+is a base tool, on for every bot in sections opened after it shipped. It is
+left out where nobody would see the page: rooms, threads between bots,
+subagents, scheduled jobs and `hexbot send`; a call there is refused. The page stays in the call's arguments, which the section
+already keeps, so nothing else is stored and deleting the section deletes it.
+The daemon only checks the title (1 to 200 characters) and the page (up to
+512 KB) and answers `{shown: true, note}`. Clients find the visual in the
+call's arguments: live from `tool.start`, restored from the assistant row's
+`tool_calls`. The web UI draws it in a bot bubble between the bot's earlier
+messages and its final reply, live, under a title row whose Expand button
+adds a tab to the side panel; tabs stay mounted, close one by one, and close together when the user leaves the
+section. Each copy runs in an iframe sandboxed with `allow-scripts` only, so the page has an
+opaque origin. The frame loads `/visual-frame.html` from the web bundle,
+whose own CSP allows inline scripts and a few public CDNs but no fetches, and
+writes the page into it after a bootstrap that applies the theme as CSS
+variables (`--background`, `--foreground`, `--chart-1` to `--chart-6`, ...),
+reports the page's height, and passes http(s) link clicks to the app. Host
+and frame talk in MCP Apps messages (`ui/notifications/host-context-changed`,
+`ui/notifications/size-changed`, `ui/open-link`). The page cannot prove a
+click was the user's, so a link only appears as an Open button under the
+visual, and the browser opens it from there. Daemon pages (and `pnpm dev`)
+send `Content-Security-Policy: frame-src 'self'`, so a visual cannot navigate
+its frame to another site; the Electron app's own policy does the same, it
+serves the frame page without that policy, and it blocks any frame
+navigation other than to it.
+
 ### Connectors and skills
 
 A connector is an outside service a bot can reach (web search, image

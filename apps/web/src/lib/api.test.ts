@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import { memoryMarks } from '../app/conversation/steps'
+
 import { attachFile, messagesFromHistory } from './api'
 import { rpcCall } from './rpc'
 
@@ -46,6 +48,55 @@ describe('history projection', () => {
     expect(message?.toolCalls).toHaveLength(1)
     // History keeps no timestamps: no start time rather than the time it was reopened.
     expect(message?.toolCalls[0]?.startedAt).toBe(0)
+  })
+
+  it('restores each call with the arguments the assistant row made it with', () => {
+    const [message] = messagesFromHistory([
+      {
+        role: 'assistant',
+        text: '',
+        tool_calls: [
+          {
+            function: {
+              arguments: '{"title":"Costs","html":"<p>1</p>"}',
+              name: 'hexbot_show_html'
+            },
+            id: 'call-1',
+            type: 'function'
+          }
+        ]
+      },
+      {
+        name: 'hexbot_show_html',
+        role: 'tool',
+        text: '{"shown":true}',
+        tool_call_id: 'call-1',
+        tool_id: 'call-1'
+      },
+      { role: 'assistant', text: 'Done.' }
+    ] as Parameters<typeof messagesFromHistory>[0])
+
+    expect(message?.toolCalls[0]?.args).toEqual({ html: '<p>1</p>', title: 'Costs' })
+  })
+
+  it('brings back the memory marks a reopened section showed live', () => {
+    const [message] = messagesFromHistory([
+      {
+        role: 'assistant',
+        text: '',
+        tool_calls: [
+          {
+            function: { arguments: '{"action":"add","content":"Likes tea."}', name: 'memory' },
+            id: 'call-2',
+            type: 'function'
+          }
+        ]
+      },
+      { name: 'memory', role: 'tool', text: '{"ok":true}', tool_call_id: 'call-2' },
+      { role: 'assistant', text: 'Noted.' }
+    ] as Parameters<typeof messagesFromHistory>[0])
+
+    expect(memoryMarks(message!)).toEqual([{ kind: 'memory', text: 'Likes tea.' }])
   })
 })
 

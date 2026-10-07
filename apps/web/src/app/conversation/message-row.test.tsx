@@ -33,4 +33,60 @@ describe('MessageRow', () => {
     expect(screen.getByText('Done.')).toBeInTheDocument()
     expect(screen.queryByRole('status')).toBeNull()
   })
+
+  it('draws a visual between what the bot said first and its final reply', () => {
+    row({
+      parts: ['Here are the costs.'],
+      text: 'March doubled.',
+      toolCalls: [
+        {
+          args: { html: '<p>chart</p>', title: 'Costs' },
+          durationS: 0,
+          name: 'hexbot_show_html',
+          result: null,
+          startedAt: 0,
+          status: 'ok',
+          toolId: 't1'
+        }
+      ]
+    })
+
+    const frame = screen.getByTitle('Costs')
+    expect(frame).toHaveAttribute('sandbox', 'allow-scripts')
+    expect(frame).toHaveAttribute('src', '/visual-frame.html')
+    const before = screen.getByText('Here are the costs.')
+    const after = screen.getByText('March doubled.')
+    expect(before.compareDocumentPosition(frame) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(frame.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('keeps the same frame when the final reply lands under it', () => {
+    const toolCalls: Message['toolCalls'] = [
+      {
+        args: { html: '<p>chart</p>', title: 'Costs' },
+        durationS: 0,
+        name: 'hexbot_show_html',
+        result: null,
+        startedAt: 0,
+        status: 'ok',
+        toolId: 't1'
+      }
+    ]
+
+    const view = row({ parts: ['Here are the costs.'], streaming: true, text: 'March', toolCalls })
+    const frame = screen.getByTitle('Costs')
+
+    view.rerender(
+      <MessageRow
+        message={message({ parts: ['Here are the costs.'], text: 'March doubled.', toolCalls })}
+        onImage={() => {}}
+        onRetry={() => {}}
+      />
+    )
+
+    expect(screen.getByTitle('Costs')).toBe(frame)
+    expect(frame.compareDocumentPosition(screen.getByText('March doubled.'))).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING
+    )
+  })
 })

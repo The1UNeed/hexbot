@@ -59,6 +59,8 @@ import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
 import { MemoryMarks } from './memory-marks'
 import { RoomConversation } from './room'
+import { visualsOf } from './visual'
+import { Visuals } from './visual-frame'
 import { WaitingBanner } from './waiting-banner'
 import { LiveStatus, WorkSummary } from './work-status'
 
@@ -450,6 +452,50 @@ export function MessageRow({
   const last = bubbles.length - 1
   const name = bot?.display_name ?? 'Bot'
 
+  // Visuals sit above the bot's final reply, under what it said before. They
+  // take the column's full width; bubbles keep theirs.
+  const visuals = assistant ? visualsOf(message) : []
+  const replied = assistant && !message.streaming && Boolean(message.text.trim())
+
+  const column = bubbles.map((text, index) => (
+    <div
+      className={cn(
+        'flex gap-1',
+        visuals.length ? 'max-w-[min(85%,40rem)]' : 'max-w-full',
+        !assistant && 'flex-row-reverse'
+      )}
+      key={index}
+    >
+      <div
+        className={cn(
+          assistant ? bubbleClass : userBubbleClass,
+          index >= still && 'hex-message',
+          index >= still && !assistant && 'hex-message-mine'
+        )}
+      >
+        {text ? (
+          <div className="hex-prose">
+            <Markdown text={text} />
+          </div>
+        ) : null}
+        {index === last ? (
+          <Attachments attachments={message.attachments} onImage={onImage} />
+        ) : null}
+      </div>
+      {index === last && !message.streaming ? <BubbleActions actions={actions} /> : null}
+    </div>
+  ))
+
+  // One keyed child in a flat list: when the final reply lands under it, the
+  // frame stays put instead of reloading the page.
+  if (visuals.length) {
+    column.splice(
+      replied ? last : bubbles.length,
+      0,
+      <Visuals fresh={fresh} key="visuals" visuals={visuals} />
+    )
+  }
+
   // The column reads in order: the bot's messages, their marks, and at the
   // foot the live status while the turn runs, then the line for what it did.
   // The bots it asked get their own row under the turn, two faces turned
@@ -464,7 +510,9 @@ export function MessageRow({
         )}
         data-testid={assistant ? 'bot-message' : 'user-message'}
       >
-        {assistant && showFace && (bubbles.length > 0 || message.streaming) ? (
+        {assistant &&
+        showFace &&
+        (bubbles.length > 0 || visuals.length > 0 || message.streaming) ? (
           <Avatar
             className={cn('mt-1', message.streaming && 'hex-think')}
             image={avatarData(bot)}
@@ -475,34 +523,12 @@ export function MessageRow({
         ) : null}
         <div
           className={cn(
-            'flex min-w-0 max-w-[min(85%,40rem)] flex-col gap-1',
+            'flex min-w-0 flex-col gap-1',
+            visuals.length ? 'w-full' : 'max-w-[min(85%,40rem)]',
             assistant ? 'items-start' : 'items-end'
           )}
         >
-          {bubbles.map((text, index) => (
-            <div
-              className={cn('flex max-w-full gap-1', !assistant && 'flex-row-reverse')}
-              key={index}
-            >
-              <div
-                className={cn(
-                  assistant ? bubbleClass : userBubbleClass,
-                  index >= still && 'hex-message',
-                  index >= still && !assistant && 'hex-message-mine'
-                )}
-              >
-                {text ? (
-                  <div className="hex-prose">
-                    <Markdown text={text} />
-                  </div>
-                ) : null}
-                {index === last ? (
-                  <Attachments attachments={message.attachments} onImage={onImage} />
-                ) : null}
-              </div>
-              {index === last && !message.streaming ? <BubbleActions actions={actions} /> : null}
-            </div>
-          ))}
+          {column}
           {assistant ? <MemoryMarks message={message} /> : null}
           {assistant ? (
             <WorkSummary computer={!showFace} fresh={fresh} message={message} name={name} />

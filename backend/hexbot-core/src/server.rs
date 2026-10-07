@@ -1759,6 +1759,16 @@ async fn handle_request(
         Err(error) => json!({"jsonrpc":"2.0","id":id,"error":error.rpc_value()}),
     })
 }
+/// Frames on a daemon page may only load from the daemon. A bot's visual runs
+/// in a sandboxed frame (`/visual-frame.html`); this keeps its script from
+/// navigating that frame to another site with data in the URL.
+async fn frame_policy(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .entry(axum::http::header::CONTENT_SECURITY_POLICY)
+        .or_insert(HeaderValue::from_static("frame-src 'self'"));
+    response
+}
 pub fn router(app: Arc<App>) -> Router {
     let mut router = Router::new()
         .route("/", get(index))
@@ -1779,6 +1789,7 @@ pub fn router(app: Arc<App>) -> Router {
         );
     }
     router
+        .layer(axum::middleware::map_response(frame_policy))
         .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
         .layer(axum::middleware::from_fn_with_state(
             app.clone(),
