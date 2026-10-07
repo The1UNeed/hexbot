@@ -1,6 +1,5 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
 import {
-  Archive,
   ChevronDown,
   ChevronRight,
   MoreHorizontal,
@@ -407,7 +406,6 @@ export function RosterColumn() {
   const currentUser = useUsers(state => state.current)
   const [query, setQuery] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const [archivedOpen, setArchivedOpen] = useState(false)
   const [botDialog, setBotDialog] = useState(false)
   const [roomDialog, setRoomDialog] = useState(false)
 
@@ -515,10 +513,6 @@ export function RosterColumn() {
 
       return matchesBot || matching.length > 0
     })
-
-  const archived = Object.values(sectionMap).filter(
-    section => section.archived_at && !isThread(section)
-  )
 
   const open = (bot: string, section: string) => {
     void sectionsActions()
@@ -760,40 +754,6 @@ export function RosterColumn() {
         )}
       </div>
       <div className="shrink-0 px-2 pb-2">
-        {archived.length ? (
-          <>
-            <button
-              className={footerRow}
-              onClick={() => setArchivedOpen(value => !value)}
-              type="button"
-            >
-              <span className={footerIcon}>
-                <Archive size={14} />
-              </span>
-              <span className="flex-1 font-medium">Archived</span>
-              <span className="text-[length:var(--text-meta)] text-muted">{archived.length}</span>
-              {archivedOpen ? (
-                <ChevronDown className="text-muted" size={14} />
-              ) : (
-                <ChevronRight className="text-muted" size={14} />
-              )}
-            </button>
-            {archivedOpen ? (
-              <div className="ml-[42px] max-h-32 overflow-auto pb-1">
-                {archived.map(section => (
-                  <button
-                    className="block w-full truncate rounded-control px-2.5 py-1.5 text-left text-[length:var(--text-secondary)] text-muted hover:bg-surface-2"
-                    key={section.id}
-                    onClick={() => open(section.bot, section.id)}
-                    type="button"
-                  >
-                    {section.title}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </>
-        ) : null}
         <UpdatePill className="mb-1 w-full" />
         <div className={cn(footerRow, 'hover:bg-transparent')}>
           <span className="relative">

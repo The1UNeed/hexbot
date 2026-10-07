@@ -23,6 +23,14 @@
   --hex-success: #16a34a;
   --hex-warning: #b54708;
 
+  /* Series colours for charts in bot visuals: accent first, then apart in hue. */
+  --hex-chart-1: #4f46e5;
+  --hex-chart-2: #0d9488;
+  --hex-chart-3: #d97706;
+  --hex-chart-4: #db2777;
+  --hex-chart-5: #2f7cf6;
+  --hex-chart-6: #65a30d;
+
   --hex-radius-control: 8px;
   --hex-radius-panel: 12px;
   --hex-radius-bubble: 18px;
@@ -78,6 +86,13 @@
     --hex-success: #34c759;
     --hex-warning: #f7b24a;
 
+    --hex-chart-1: #8b85ff;
+    --hex-chart-2: #2dd4bf;
+    --hex-chart-3: #fbbf24;
+    --hex-chart-4: #f472b6;
+    --hex-chart-5: #4c9aff;
+    --hex-chart-6: #a3e635;
+
     --hex-shadow-popup: 0 16px 40px -8px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.06);
 
     --hex-canvas: #09090a;
@@ -111,6 +126,13 @@
   --hex-success: #16a34a;
   --hex-warning: #b54708;
 
+  --hex-chart-1: #4f46e5;
+  --hex-chart-2: #0d9488;
+  --hex-chart-3: #d97706;
+  --hex-chart-4: #db2777;
+  --hex-chart-5: #2f7cf6;
+  --hex-chart-6: #65a30d;
+
   --hex-shadow-popup: 0 12px 32px -8px rgb(0 0 0 / 0.2), 0 0 0 1px rgb(0 0 0 / 0.04);
 
   --hex-canvas: #f3f3f5;
@@ -142,6 +164,13 @@
   --hex-info: #4c9aff;
   --hex-success: #34c759;
   --hex-warning: #f7b24a;
+
+  --hex-chart-1: #8b85ff;
+  --hex-chart-2: #2dd4bf;
+  --hex-chart-3: #fbbf24;
+  --hex-chart-4: #f472b6;
+  --hex-chart-5: #4c9aff;
+  --hex-chart-6: #a3e635;
 
   --hex-shadow-popup: 0 16px 40px -8px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.06);
 

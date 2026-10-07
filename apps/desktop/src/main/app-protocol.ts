@@ -45,6 +45,56 @@ export function resolveAppRequest(
   return { file: join(rootDir, 'index.html'), mime: MIME['.html']! }
 }
 
+/** The page bot visuals run in (apps/web/public); it carries its own CSP. */
+export const VISUAL_FRAME_PATH = '/visual-frame.html'
+
+const APP_CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: http: https:",
+  "font-src 'self' data:",
+  "connect-src 'self' http: https: ws: wss:",
+  "media-src 'self' blob:"
+].join('; ')
+
+/**
+ * Headers for a bundle file. HTML gets the app's CSP, except the visual frame:
+ * its page needs inline scripts the app's policy forbids, so it sets a
+ * stricter one of its own and runs sandboxed in an opaque origin.
+ */
+export function appResponseHeaders(
+  file: string,
+  mime: string,
+  rootDir: string
+): Record<string, string> {
+  const headers: Record<string, string> = { 'content-type': mime, 'cache-control': 'no-cache' }
+  if (mime.startsWith('text/html') && file !== join(rootDir, VISUAL_FRAME_PATH)) {
+    headers['content-security-policy'] = APP_CSP
+  }
+  return headers
+}
+
+/**
+ * A frame inside the app may only load the visual frame page from the app's
+ * own origin. A visual's script that tries to navigate its frame elsewhere,
+ * to carry data out in the URL, is stopped.
+ */
+export function frameNavigationAllowed(url: string, pageUrl: string): boolean {
+  try {
+    const target = new URL(url)
+    const page = new URL(pageUrl)
+    // Compared part by part: URL.origin is "null" for the app's own scheme.
+    return (
+      target.protocol === page.protocol &&
+      target.host === page.host &&
+      target.pathname === VISUAL_FRAME_PATH
+    )
+  } catch {
+    return false
+  }
+}
+
 /** Must run before app.whenReady(). */
 export function registerAppScheme(): void {
   protocol.registerSchemesAsPrivileged([
@@ -69,19 +119,7 @@ export function installAppProtocol(rootDir: string, exists: (file: string) => bo
     const { file, mime } = resolveAppRequest(url.pathname, rootDir, exists)
     try {
       const body = await readFile(file)
-      const headers: Record<string, string> = { 'content-type': mime, 'cache-control': 'no-cache' }
-      if (mime.startsWith('text/html')) {
-        headers['content-security-policy'] = [
-          "default-src 'self'",
-          "script-src 'self'",
-          "style-src 'self' 'unsafe-inline'",
-          "img-src 'self' data: blob: http: https:",
-          "font-src 'self' data:",
-          "connect-src 'self' http: https: ws: wss:",
-          "media-src 'self' blob:"
-        ].join('; ')
-      }
-      return new Response(body, { headers })
+      return new Response(body, { headers: appResponseHeaders(file, mime, rootDir) })
     } catch {
       return net
         .fetch('data:text/plain,Not found', { method: 'GET' })

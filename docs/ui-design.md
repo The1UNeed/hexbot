@@ -33,6 +33,9 @@ own visual identity. Read `CLAUDE.md` for the words.
 - Dark: bg #0E0E0E, surface #171717, surface-2 #262626, surface-3 #343434,
   text #F4F4F4, text-muted #8E8E8E, border #2A2A2A, accent #8B85FF,
   danger #F4645B, success #34C759, warning #F7B24A.
+- Chart series, for bot visuals only: light #4F46E5, #0D9488, #D97706,
+  #DB2777, #2F7CF6, #65A30D; dark #8B85FF, #2DD4BF, #FBBF24, #F472B6,
+  #4C9AFF, #A3E635. The first is the accent; the rest step apart in hue.
 - Bot faces: every bot has a face, a shape and a colour with two eyes
   (`lib/avatar-builder.ts`). Uploaded images replace it; otherwise the face
   is derived from the bot's name. Faces wiggle on hover and blink at rest.
@@ -96,9 +99,9 @@ the roster slides in as a drawer.
   is sent. Untouched sections and older ones stay behind "More", which lists
   everything with untouched sections last.
   A bot with nothing to list is just its row; there is no fold toggle.
-- Bottom: an "Archived" collapsed group (only when there is
-  something archived), then the current user with a connection dot on their
-  avatar and a settings gear.
+- Bottom: the current user with a connection dot on their avatar and a
+  settings gear. Archived sections are not listed here; they live in
+  Settings, Archive.
 - Selection: one section is active, or the bot row is filled when its open
   section is not listed. Clicking a bot row starts fresh: it opens the bot's
   newest untouched section, or creates one. The header "+" menu also creates
@@ -312,7 +315,8 @@ nested inside a card and no row carries more than one line of explanation.
 ### Settings (the shared shell, global tabs)
 
 Tabs in four groups: Models (Providers, Usage), Devices (Network, Hex
-Connect, Users), You (Memory, Approvals, Appearance), App (Updates, About).
+Connect, Users), You (Memory, Archive, Approvals, Appearance), App (Updates,
+About).
 
 - Providers: a search pill, then "Connected" and "More providers" cards,
   one row per provider with its state and one control ("Add key", "Sign
@@ -322,6 +326,11 @@ Connect, Users), You (Memory, Approvals, Appearance), App (Updates, About).
 - Network: "Allow other devices on this network" switch, the addresses
   while it is on, a Paired devices card with Revoke and "Create link", and
   the pairing card (code, QR, link, Copy) once a link exists.
+- Archive: every archived section, newest first, grouped This week, Last
+  week, then by month. A search pill matches titles, first messages, and bot
+  names; a chip per bot narrows the list; on wide windows a rail on the right
+  jumps between groups. Each row shows the bot's face, title, bot, message
+  count, first message, and the archive date; hovering shows Open and Restore.
 - Approvals: "Choose when Hexbot asks before a bot acts. Bots and rooms can
   override it." Modes Manual, Auto, and Bypass (admin only), one row each;
   a notice when the daemon has no OS sandbox.

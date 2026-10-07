@@ -13,7 +13,7 @@ import {
   type Rectangle
 } from 'electron'
 import { applicationMenuTemplate } from './application-menu'
-import { APP_ORIGIN, installAppProtocol, registerAppScheme } from './app-protocol'
+import { APP_ORIGIN, frameNavigationAllowed, installAppProtocol, registerAppScheme } from './app-protocol'
 import { bootstrap, type BootstrapProgress } from './backend/bootstrap'
 import { DaemonManager } from './backend/manager'
 import { hexbotHome } from './backend/paths'
@@ -27,6 +27,7 @@ import { createTray } from './tray'
 import { setCrashReports, startCrashReports } from './crash-reports'
 import { readDesktopState, updateDesktopState } from './desktop-state'
 import { handleDaemonUpdateRequest } from './remote-update'
+import { guardWindow, isTrustedSender } from './window-security'
 import {
   checkForUpdates,
   downloadUpdate,
@@ -40,6 +41,7 @@ import {
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
 const rendererDirectory = join(currentDirectory, '../renderer')
+const webDevUrl = app.isPackaged ? undefined : resolveWebDevUrl()
 if (!app.isPackaged) app.setName(hasRuntime ? 'Hexbot (dev)' : 'Hexbot Client (dev)')
 const devIcon = !app.isPackaged ? join(currentDirectory, '../../resources/icon-dev.png') : undefined
 // Keep Chromium's profile (localStorage, caches) inside the Hexbot home so an
@@ -124,6 +126,7 @@ async function createWindow(): Promise<BrowserWindow> {
     window.on('page-title-updated', event => event.preventDefault())
   }
   mainWindow = window
+  guardWindow(window.webContents, url => shell.openExternal(url), webDevUrl)
   window.once('ready-to-show', () => {
     window.show()
     if (pendingLink) {
@@ -132,7 +135,11 @@ async function createWindow(): Promise<BrowserWindow> {
     }
   })
   window.on('close', event => {
-    if (!quitting && process.platform === 'darwin' && ['running', 'external'].includes(daemon.status().state)) {
+    if (
+      !quitting &&
+      process.platform === 'darwin' &&
+      ['running', 'external'].includes(daemon.status().state)
+    ) {
       event.preventDefault()
       window.hide()
     }
@@ -140,11 +147,15 @@ async function createWindow(): Promise<BrowserWindow> {
   window.on('closed', () => {
     mainWindow = null
   })
+  // Frames may only load the visual frame page; see frameNavigationAllowed.
+  window.webContents.on('will-frame-navigate', event => {
+    if (!event.isMainFrame && !frameNavigationAllowed(event.url, window.webContents.getURL())) event.preventDefault()
+  })
   window.on('resize', () => void saveBounds(window))
   window.on('move', () => void saveBounds(window))
   if (app.isPackaged) await window.loadURL(`${APP_ORIGIN}/`)
   else {
-    const devUrl = resolveWebDevUrl()
+    const devUrl = webDevUrl!
     try {
       const response = await fetch(devUrl, { signal: AbortSignal.timeout(2_000) })
       if (!response.ok) throw new Error(`Web dev server returned ${response.status}`)
@@ -183,7 +194,13 @@ function sendProgress(progress: BootstrapProgress): void {
     window.webContents.send('hexbot:daemon:progress', progress)
 }
 function registerIpc(): void {
-  ipcMain.handle('hexbot:http-fetch', async (_event, rawUrl: unknown, rawInit: unknown) => {
+  const handle = (channel: string, listener: Parameters<typeof ipcMain.handle>[1]): void => {
+    ipcMain.handle(channel, (event, ...args) => {
+      if (!isTrustedSender(event, mainWindow, webDevUrl)) throw new Error('Untrusted app frame')
+      return listener(event, ...args)
+    })
+  }
+  handle('hexbot:http-fetch', async (_event, rawUrl: unknown, rawInit: unknown) => {
     // The renderer runs on hexbot-app://, which the daemon's CORS policy does
     // not admit; the main process performs its HTTP calls instead.
     const url = validString(rawUrl, 'url', 4_096)
@@ -209,6 +226,10 @@ function registerIpc(): void {
     }
   })
   ipcMain.on('hexbot:metadata', event => {
+    if (!isTrustedSender(event, mainWindow, webDevUrl)) {
+      event.returnValue = null
+      return
+    }
     event.returnValue = {
       e2eTarget: process.env.HEXBOT_E2E_TARGET,
       platform: process.platform,
@@ -217,25 +238,25 @@ function registerIpc(): void {
       edition
     }
   })
-  ipcMain.handle('hexbot:daemon:status', () => daemon.status())
-  ipcMain.handle('hexbot:daemon:start', async () => {
+  handle('hexbot:daemon:status', () => daemon.status())
+  handle('hexbot:daemon:start', async () => {
     requireRuntime('Running a daemon on this machine')
     await bootstrap(sendProgress)
     return daemon.start()
   })
-  ipcMain.handle('hexbot:daemon:stop', () => daemon.stop())
-  ipcMain.handle('hexbot:daemon:local-token', async () => {
+  handle('hexbot:daemon:stop', () => daemon.stop())
+  handle('hexbot:daemon:local-token', async () => {
     try {
       return (await readFile(join(hexbotHome(), 'local-device.token'), 'utf8')).trim() || null
     } catch {
       return null
     }
   })
-  ipcMain.handle('hexbot:pair', (_event, value: unknown) => pairingReply(() => pair(validatePair(value))))
-  ipcMain.handle('hexbot:pair-with-grant', (_event, value: unknown) =>
+  handle('hexbot:pair', (_event, value: unknown) => pairingReply(() => pair(validatePair(value))))
+  handle('hexbot:pair-with-grant', (_event, value: unknown) =>
     pairingReply(() => pairWithGrant(validateGrantPair(value)))
   )
-  ipcMain.handle('hexbot:notify', (_event, value: unknown) => {
+  handle('hexbot:notify', (_event, value: unknown) => {
     if (!value || typeof value !== 'object') throw new TypeError('Invalid notification')
     const item = value as Record<string, unknown>
     notify(
@@ -247,35 +268,35 @@ function registerIpc(): void {
       () => mainWindow
     )
   })
-  ipcMain.handle('hexbot:open-external', (_event, value: unknown) => {
+  handle('hexbot:open-external', (_event, value: unknown) => {
     const url = new URL(validString(value, 'URL', 2_048))
     if (!['https:', 'http:'].includes(url.protocol)) throw new TypeError('Unsupported URL')
     return shell.openExternal(url.href)
   })
-  ipcMain.handle(
+  handle(
     'hexbot:pick-files',
     async () =>
       (await dialog.showOpenDialog({ properties: ['openFile', 'multiSelections'] })).filePaths
   )
-  ipcMain.handle('hexbot:updater:state', () => getUpdateState())
-  ipcMain.handle('hexbot:updater:check', () => checkForUpdates('settings'))
-  ipcMain.handle('hexbot:updater:download', () => downloadUpdate())
-  ipcMain.handle('hexbot:updater:install', () => installUpdate())
-  ipcMain.handle('hexbot:updater:channel', () => readUpdateChannelSetting())
-  ipcMain.handle('hexbot:updater:set-channel', (_event, channel: unknown) => {
+  handle('hexbot:updater:state', () => getUpdateState())
+  handle('hexbot:updater:check', () => checkForUpdates('settings'))
+  handle('hexbot:updater:download', () => downloadUpdate())
+  handle('hexbot:updater:install', () => installUpdate())
+  handle('hexbot:updater:channel', () => readUpdateChannelSetting())
+  handle('hexbot:updater:set-channel', (_event, channel: unknown) => {
     if (channel !== 'stable' && channel !== 'nightly') throw new TypeError('Invalid update channel')
     return setUpdateChannel(channel)
   })
-  ipcMain.handle('hexbot:crash-reports:set', (_event, enabled: unknown) => {
+  handle('hexbot:crash-reports:set', (_event, enabled: unknown) => {
     if (typeof enabled !== 'boolean') throw new TypeError('Invalid crash report preference')
     return setCrashReports(enabled)
   })
-  ipcMain.handle('hexbot:service:install', () => {
+  handle('hexbot:service:install', () => {
     requireRuntime('Starting the daemon at login')
     return installService()
   })
-  ipcMain.handle('hexbot:service:uninstall', () => uninstallService())
-  ipcMain.handle('hexbot:service:status', () => serviceStatus())
+  handle('hexbot:service:uninstall', () => uninstallService())
+  handle('hexbot:service:status', () => serviceStatus())
 }
 
 if (app.isPackaged) app.setAsDefaultProtocolClient('hexbot')

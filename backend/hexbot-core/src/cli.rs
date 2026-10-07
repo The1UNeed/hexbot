@@ -11,7 +11,10 @@ use std::{
     path::Path,
     time::Duration,
 };
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Message, client::IntoClientRequest},
+};
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -137,15 +140,16 @@ async fn socket(home: &Path) -> Result<Option<Socket>> {
         return Err(Error::new(5200, "Invalid daemon port"));
     }
     let token = auth::local_token(home)?;
-    match tokio::time::timeout(
-        Duration::from_secs(3),
-        connect_async(format!(
-            "ws://{}/api/ws?token={token}",
-            SocketAddr::new(host, port)
-        )),
-    )
-    .await
-    {
+    let mut request = format!("ws://{}/api/ws", SocketAddr::new(host, port))
+        .into_client_request()
+        .map_err(|e| Error::new(5200, format!("Invalid daemon request: {e}")))?;
+    request.headers_mut().insert(
+        "authorization",
+        format!("Bearer {token}")
+            .parse()
+            .map_err(|_| Error::new(5200, "Invalid daemon token"))?,
+    );
+    match tokio::time::timeout(Duration::from_secs(3), connect_async(request)).await {
         Ok(Ok((socket, _))) => Ok(Some(socket)),
         Ok(Err(tokio_tungstenite::tungstenite::Error::Io(_))) | Err(_) => Ok(None),
         Ok(Err(e)) => Err(Error::new(
@@ -538,6 +542,9 @@ pub async fn dispatch(home: &Path, args: &[String]) -> Option<Result<()>> {
                     "off"
                 }
             );
+            if v["lan_enabled"] == true {
+                println!("Direct LAN HTTP does not encrypt sign-ins or chat. Use Tailscale or HTTPS on untrusted networks.");
+            }
         } else if let Some(text) = v["text"].as_str() {
             println!("{text}");
         } else if let Some(url) = v["connected"].as_str() {

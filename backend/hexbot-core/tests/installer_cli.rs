@@ -79,9 +79,11 @@ fn lan_access_turns_on_and_off_without_a_daemon() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.starts_with(&format!("LAN access is {action}.\n")));
         assert_eq!(
-            String::from_utf8_lossy(&output.stdout),
-            format!("LAN access is {action}.\n")
+            stdout.contains("does not encrypt sign-ins or chat"),
+            expected
         );
         let output = run(home.path(), user.path(), &["status", "--json"]);
         let status: Value = serde_json::from_slice(&output.stdout).unwrap();

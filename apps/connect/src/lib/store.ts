@@ -7,10 +7,12 @@ export interface Registration { id: string; userCode: string; deviceCodeHash: st
 export interface ClientSession { id: string; userId: string; tokenHash: string; deviceName: string; createdAt: Date; lastSeenAt: Date | null; revokedAt: Date | null }
 /** Spent and expired codes and registrations are cleared a day after they expire, as the privacy policy says. */
 export const GRANT_CODE_RETENTION_MS = 24 * 60 * 60_000;
+export const REGISTRATION_ATTEMPTS_PER_MINUTE = 10;
 /** A one-time code handed to a browser signing in to a daemon; the daemon exchanges it for a grant (docs/connect.md). */
 export interface GrantCode { id: string; codeHash: string; daemonId: string; userId: string; deviceName: string; challenge: string; redirectUri: string; createdAt: Date; expiresAt: Date; consumedAt: Date | null }
 
 export interface Store {
+  claimRegistrationAttempt(clientHash: string, windowStart: Date): Promise<boolean>;
   getOrCreateUser(clerkUserId: string): Promise<User>;
   createRegistration(input: Omit<Registration, "id" | "userId" | "approvedAt" | "consumedAt" | "daemonId">): Promise<Registration>;
   findRegistrationByDeviceHash(hash: string): Promise<Registration | null>;
@@ -42,6 +44,17 @@ export interface Store {
 }
 
 export class MemoryStore implements Store {
+  private registrationAttempts = new Map<string, { window: number; count: number }>();
+  async claimRegistrationAttempt(clientHash: string, windowStart: Date) {
+    const window = windowStart.getTime();
+    for (const [key, value] of this.registrationAttempts) if (value.window < window - GRANT_CODE_RETENTION_MS) this.registrationAttempts.delete(key);
+    const previous = this.registrationAttempts.get(clientHash);
+    if (previous && previous.window > window) return false;
+    const count = previous?.window === window ? previous.count : 0;
+    if (count >= REGISTRATION_ATTEMPTS_PER_MINUTE) return false;
+    this.registrationAttempts.set(clientHash, { window, count: count + 1 });
+    return true;
+  }
   users: User[] = []; daemons: Daemon[] = []; registrations: Registration[] = []; clientSessions: ClientSession[] = []; grantCodes: GrantCode[] = [];
   async getOrCreateUser(clerkUserId: string) { let row = this.users.find(x => x.clerkUserId === clerkUserId); if (!row) { row = { id: randomUUID(), clerkUserId, createdAt: new Date() }; this.users.push(row); } return row; }
   async createRegistration(input: Omit<Registration, "id" | "userId" | "approvedAt" | "consumedAt" | "daemonId">) { const cutoff = Date.now() - GRANT_CODE_RETENTION_MS; this.registrations = this.registrations.filter(x => x.expiresAt.getTime() > cutoff); const row = { ...input, id: randomUUID(), userId: null, approvedAt: null, consumedAt: null, daemonId: null }; this.registrations.push(row); return row; }
@@ -81,9 +94,36 @@ const registrationRow = (r: DbRow): Registration => ({ id: String(r.id), userCod
 
 export class NeonStore implements Store {
   private sql: NeonQueryFunction<false, false>;
+  private nextRegistrationCleanup = 0;
   constructor(databaseUrl: string) { this.sql = neon(databaseUrl); }
+  async claimRegistrationAttempt(clientHash: string, windowStart: Date) {
+    const rows = await this.sql`
+      INSERT INTO registration_attempts (client_hash, window_start, attempts)
+      VALUES (${clientHash}, ${windowStart.toISOString()}, 1)
+      ON CONFLICT (client_hash) DO UPDATE SET
+        window_start = EXCLUDED.window_start,
+        attempts = CASE WHEN registration_attempts.window_start < EXCLUDED.window_start
+          THEN 1 ELSE registration_attempts.attempts + 1 END
+      WHERE registration_attempts.window_start < EXCLUDED.window_start
+        OR (registration_attempts.window_start = EXCLUDED.window_start
+          AND registration_attempts.attempts < ${REGISTRATION_ATTEMPTS_PER_MINUTE})
+      RETURNING attempts`;
+    return rows.length === 1;
+  }
   async getOrCreateUser(clerkUserId: string) { const rows = await this.sql`INSERT INTO users (clerk_user_id) VALUES (${clerkUserId}) ON CONFLICT (clerk_user_id) DO UPDATE SET clerk_user_id=EXCLUDED.clerk_user_id RETURNING *`; const r = rows[0] as DbRow; return { id: String(r.id), clerkUserId: String(r.clerk_user_id), createdAt: new Date(String(r.created_at)) }; }
-  async createRegistration(i: Omit<Registration, "id" | "userId" | "approvedAt" | "consumedAt" | "daemonId">) { await this.sql`DELETE FROM registrations WHERE expires_at < ${new Date(Date.now() - GRANT_CODE_RETENTION_MS).toISOString()}`; const rows = await this.sql`INSERT INTO registrations (user_code,device_code_hash,daemon_name,platform,ingress_port,expires_at) VALUES (${i.userCode},${i.deviceCodeHash},${i.daemonName},${i.platform},${i.ingressPort},${i.expiresAt.toISOString()}) RETURNING *`; return registrationRow(rows[0] as DbRow); }
+  async createRegistration(i: Omit<Registration, "id" | "userId" | "approvedAt" | "consumedAt" | "daemonId">) {
+    if (Date.now() >= this.nextRegistrationCleanup) {
+      this.nextRegistrationCleanup = Date.now() + 60_000;
+      const cutoff = new Date(Date.now() - GRANT_CODE_RETENTION_MS).toISOString();
+      try {
+        await this.sql`DELETE FROM registrations WHERE id IN (SELECT id FROM registrations WHERE expires_at < ${cutoff} ORDER BY expires_at LIMIT 1000)`;
+        // Recheck age so a concurrent request cannot lose its refreshed counter.
+        await this.sql`DELETE FROM registration_attempts WHERE window_start < ${cutoff} AND client_hash IN (SELECT client_hash FROM registration_attempts WHERE window_start < ${cutoff} ORDER BY window_start LIMIT 1000)`;
+      } catch (error) { this.nextRegistrationCleanup = 0; throw error; }
+    }
+    const rows = await this.sql`INSERT INTO registrations (user_code,device_code_hash,daemon_name,platform,ingress_port,expires_at) VALUES (${i.userCode},${i.deviceCodeHash},${i.daemonName},${i.platform},${i.ingressPort},${i.expiresAt.toISOString()}) RETURNING *`;
+    return registrationRow(rows[0] as DbRow);
+  }
   async findRegistrationByDeviceHash(h: string) { const rows = await this.sql`SELECT * FROM registrations WHERE device_code_hash=${h} LIMIT 1`; return rows[0] ? registrationRow(rows[0] as DbRow) : null; }
   async findRegistrationByUserCode(c: string) { const rows = await this.sql`SELECT * FROM registrations WHERE user_code=${c} ORDER BY expires_at DESC LIMIT 1`; return rows[0] ? registrationRow(rows[0] as DbRow) : null; }
   async approveRegistration(id: string, userId: string, daemonId: string) { const rows = await this.sql`UPDATE registrations SET user_id=${userId}, approved_at=now(), daemon_id=${daemonId} WHERE id=${id} RETURNING *`; return registrationRow(rows[0] as DbRow); }

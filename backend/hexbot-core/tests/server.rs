@@ -31,6 +31,9 @@ impl Drop for Fixture {
 }
 impl Fixture {
     async fn new(gated: bool) -> Self {
+        Self::with_peer(gated, None).await
+    }
+    async fn with_peer(gated: bool, peer: Option<std::net::SocketAddr>) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let home = directory.path().join("home");
         db::migrate(&home).unwrap();
@@ -75,7 +78,10 @@ emit({type:'agent_end'});emit({type:'agent_settled'});}});
         }
         let app = App::new(home.clone(), advertised, pi, Some(dist)).unwrap();
         let token = auth::local_token(&home).unwrap();
-        let router = server::router(app.clone());
+        let mut router = server::router(app.clone());
+        if let Some(peer) = peer {
+            router = router.layer(axum::Extension(axum::extract::ConnectInfo(peer)));
+        }
         let task = tokio::spawn(async move {
             axum::serve(
                 listener,
@@ -879,6 +885,60 @@ async fn websocket_upgrade_rejects_cross_origin_even_with_valid_token() {
     fixture.shutdown().await;
 }
 
+#[tokio::test]
+async fn remote_websockets_require_headers_or_tickets_instead_of_query_tokens() {
+    // A tunnel connects from loopback but forwards the daemon's public Host.
+    let local = Fixture::new(true).await;
+    let mut proxied = format!("{}?token={}", local.ws(), local.token)
+        .into_client_request()
+        .unwrap();
+    proxied
+        .headers_mut()
+        .insert("host", "daemon.example".parse().unwrap());
+    match connect_async(proxied).await.unwrap_err() {
+        tokio_tungstenite::tungstenite::Error::Http(response) => assert_eq!(response.status(), 403),
+        other => panic!("unexpected response: {other}"),
+    }
+    local.shutdown().await;
+    let fixture = Fixture::with_peer(true, Some("192.168.1.2:1234".parse().unwrap())).await;
+    let failed = connect_async(format!("{}?token={}", fixture.ws(), fixture.token))
+        .await
+        .unwrap_err();
+    match failed {
+        tokio_tungstenite::tungstenite::Error::Http(response) => assert_eq!(response.status(), 403),
+        other => panic!("unexpected response: {other}"),
+    }
+    for (header, value) in [
+        ("authorization", format!("Bearer {}", fixture.token)),
+        ("cookie", format!("hermes_session_at={}", fixture.token)),
+    ] {
+        let mut request = fixture.ws().into_client_request().unwrap();
+        request.headers_mut().insert(header, value.parse().unwrap());
+        let (mut socket, _) = connect_async(request).await.unwrap();
+        assert_eq!(frame(&mut socket).await["params"]["type"], "gateway.ready");
+        socket.close(None).await.unwrap();
+    }
+    let ticket: Value = reqwest::Client::new()
+        .post(format!("{}/api/auth/ws-ticket", fixture.base))
+        .bearer_auth(&fixture.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let (mut socket, _) = connect_async(format!(
+        "{}?ticket={}",
+        fixture.ws(),
+        ticket["ticket"].as_str().unwrap()
+    ))
+    .await
+    .unwrap();
+    assert_eq!(frame(&mut socket).await["params"]["type"], "gateway.ready");
+    socket.close(None).await.unwrap();
+    fixture.shutdown().await;
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn attachment_transport_accepts_supported_sizes_and_reports_oversize() {
@@ -1067,6 +1127,25 @@ async fn connect_browser_login_starts_pkce_redirect() {
         status.is_redirection() && location.is_some(),
         "Connect browser login returned {status} without a redirect"
     );
+}
+
+#[tokio::test]
+async fn pages_only_frame_the_daemon_itself() {
+    let fixture = Fixture::new(false).await;
+    let client = reqwest::Client::new();
+    for path in ["/", "/app.js", "/b/owl/s/first"] {
+        let response = client
+            .get(format!("{}{path}", fixture.base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.headers()["content-security-policy"],
+            "frame-src 'self'",
+            "{path}"
+        );
+    }
+    fixture.shutdown().await;
 }
 
 #[tokio::test]

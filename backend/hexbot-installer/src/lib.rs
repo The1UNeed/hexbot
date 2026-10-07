@@ -318,7 +318,7 @@ impl Installer {
                 self.run(&self.paths.executable(), &["lan", "on"], false, progress)?;
                 progress(Progress::new(
                     "lan",
-                    "LAN access is on. Turn it off with: hexbot lan off",
+                    "LAN access is on. Turn it off with: hexbot lan off. Direct LAN HTTP does not encrypt sign-ins or chat. Use Tailscale or HTTPS on untrusted networks.",
                 ));
             }
             self.run(
