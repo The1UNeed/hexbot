@@ -114,6 +114,8 @@ export interface Bot {
   status_detail?: BotStatusDetail | null
   title: string
   tools: string[]
+  /** Tools set up on the daemon's computer; older daemons leave it out. */
+  available_tools?: BotTool[]
   updated_at: null | number
   /** Per-bot working directory; null means the deployment workspace. */
   workdir?: null | string

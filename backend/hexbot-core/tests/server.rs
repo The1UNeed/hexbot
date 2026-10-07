@@ -504,6 +504,63 @@ async fn websocket_rpc_errors_notifications_and_current_device_shape() {
 }
 
 #[tokio::test]
+async fn provider_key_changes_refresh_tool_availability_for_every_user() {
+    let fixture = Fixture::new(false).await;
+    db::open(&fixture.home)
+        .unwrap()
+        .execute(
+            "INSERT INTO users VALUES ('member','Member','member','{}',0,NULL)",
+            [],
+        )
+        .unwrap();
+    let member = support::mint_device(&fixture.home, "Member", "test", "member").unwrap();
+    let mut member_socket = fixture
+        .socket(member["device_token"].as_str().unwrap())
+        .await;
+    let mut admin = fixture.socket(&fixture.token).await;
+    for (id, method, params) in [
+        (
+            "add",
+            "hexbot.providers.set_key",
+            json!({"provider":"openai","key":"test-key"}),
+        ),
+        (
+            "remove",
+            "hexbot.providers.clear_key",
+            json!({"provider":"openai"}),
+        ),
+    ] {
+        admin
+            .send(Message::Text(
+                json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let mut saw_event = false;
+        let mut saw_response = false;
+        while !saw_event || !saw_response {
+            let event = frame(&mut admin).await;
+            if event["id"] == id {
+                assert!(event.get("error").is_none(), "{event}");
+                saw_response = true;
+            }
+            if event["params"]["type"] == "hexbot.bots.changed" {
+                saw_event = true;
+            }
+        }
+        assert_eq!(
+            frame(&mut member_socket).await["params"]["type"],
+            "hexbot.bots.changed"
+        );
+    }
+    admin.close(None).await.unwrap();
+    member_socket.close(None).await.unwrap();
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
 async fn websocket_mutation_events_owner_isolation_and_flat_replay() {
     let fixture = Fixture::new(false).await;
     db::open(&fixture.home)

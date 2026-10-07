@@ -70,8 +70,13 @@ fn read_env(path: &Path) -> Result<BTreeMap<String, String>> {
     env_values(path)
 }
 pub fn credentials(home: &Path, bot: &str) -> Result<BTreeMap<String, String>> {
+    profile_credentials(home, &profile(home, bot)?)
+}
+/// Credentials for a profile directory, including one whose bot is still
+/// being created and not yet registered.
+pub fn profile_credentials(home: &Path, dir: &Path) -> Result<BTreeMap<String, String>> {
     let mut values = read_env(home)?;
-    for (k, v) in read_env(&profile(home, bot)?)? {
+    for (k, v) in read_env(dir)? {
         if !v.is_empty() {
             values.insert(k, v);
         }

@@ -585,6 +585,25 @@ impl App {
             .unwrap_or_default()
     }
     fn changed(&self, audience: &[String], method: &str, p: &Value, result: &Value) {
+        if matches!(
+            method,
+            "hexbot.providers.set_key"
+                | "hexbot.providers.clear_key"
+                | "model.save_key"
+                | "model.disconnect"
+        ) {
+            if let Ok(owners) = db::open(&self.home)
+                .and_then(|conn| common::rows(&conn, "SELECT id FROM users", &[]))
+            {
+                for owner in owners {
+                    if let Some(owner) = owner["id"].as_str() {
+                        self.events
+                            .emit(owner, None, "hexbot.bots.changed", json!({}));
+                    }
+                }
+            }
+            return;
+        }
         if method.starts_with("hexbot.skills.")
             && !matches!(method, "hexbot.skills.list" | "hexbot.skills.get")
         {

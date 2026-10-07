@@ -8,6 +8,7 @@ import { useConnectors } from '../../stores/connectors'
 import { ConnectorsTab } from './connectors'
 import { DreamingBlock, MemoryEditor } from './memory'
 import { ModelTab } from './model'
+import { ToolsTab } from './tools'
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
@@ -358,5 +359,27 @@ describe('connectors page', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Connect and test' }))
     await waitFor(() => expect(screen.queryByText('Set up Notion')).not.toBeInTheDocument())
+  })
+})
+
+describe('tools tab', () => {
+  it('shows only the tools this computer is set up for', () => {
+    const onSave = vi.fn()
+    render(
+      <ToolsTab
+        bot={{ ...bot, available_tools: ['terminal', 'files'], tools: ['files'] }}
+        onSave={onSave}
+      />
+    )
+    expect(screen.getByRole('switch', { name: 'Files' })).toBeChecked()
+    expect(screen.queryByRole('switch', { name: 'Browser' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Senses')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('switch', { name: 'Terminal' }))
+    expect(onSave).toHaveBeenCalledWith({ tools: ['files', 'terminal'] })
+  })
+
+  it('shows every tool when the daemon does not say what is set up', () => {
+    render(<ToolsTab bot={bot} onSave={vi.fn()} />)
+    expect(screen.getByRole('switch', { name: 'Browser' })).toBeInTheDocument()
   })
 })
