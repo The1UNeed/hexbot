@@ -149,6 +149,34 @@ async fn idle_restart_preserves_live_id_prompt_tools_and_client_watermarks() {
     assert_exited(&after[1]);
 }
 #[tokio::test]
+async fn sessions_ignore_project_pi_settings_and_run_on_hexbots_compaction_budget() {
+    let (home, runtime, _hub) = setup();
+    fs::create_dir_all(home.workspace().join(".pi")).unwrap();
+    fs::write(
+        home.workspace().join(".pi/settings.json"),
+        r#"{"compaction":{"enabled":false}}"#,
+    )
+    .unwrap();
+    open(&runtime).await;
+    let process = &processes(home.path())[0];
+    let args = process["args"].as_array().unwrap();
+    assert!(args.contains(&json!("--no-approve")));
+    assert!(!args.contains(&json!("builtin:mcp")));
+    let settings: Value = serde_json::from_slice(
+        &fs::read(home.path().join("profiles/owl/pi/settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(settings["compaction"]["enabled"], true);
+    assert_eq!(settings["compaction"]["reserveTokens"], 16384);
+    // "fixture" has no known window, so it is assumed small and compacts at 75%.
+    assert_eq!(
+        settings["compaction"]["modelOverrides"]["openai/fixture"],
+        json!({"reserveTokens":8192,"keepRecentTokens":8192})
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn retire_skips_staged_attachments_busy_turns_and_pending_dialogs() {
     let (_home, runtime, _) = setup();
     let id = open(&runtime).await;

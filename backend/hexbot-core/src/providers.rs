@@ -93,6 +93,77 @@ fn write_json(path: &Path, value: &Value) -> Result<()> {
 fn credentials_lock() -> &'static Mutex<()> {
     common::credentials_lock()
 }
+/// Assumed for a model whose window neither the models.dev cache, `model_overrides`,
+/// nor `model.context_length` gives. Small enough that a local server does not
+/// truncate the prompt unnoticed; compaction scales to it below.
+const DEFAULT_CONTEXT_WINDOW: u64 = 32768;
+/// Pi 1.0.1's own compaction defaults, written explicitly so a Pi upgrade cannot
+/// move them. Compaction fires when the context exceeds `window - reserve`.
+const COMPACTION_RESERVE_TOKENS: u64 = 16384;
+const COMPACTION_KEEP_RECENT_TOKENS: u64 = 20000;
+/// Reserve and keep-recent budgets for one model. Both are capped at a quarter of
+/// the window, so compaction never fires below 75% of it and never halves a
+/// small window the way the global values would.
+fn compaction_budget(context_window: u64) -> (u64, u64) {
+    let quarter = context_window / 4;
+    (
+        COMPACTION_RESERVE_TOKENS.min(quarter),
+        COMPACTION_KEEP_RECENT_TOKENS.min(quarter),
+    )
+}
+/// Snapshot of ids, transports, and context windows from the pinned Pi SDK
+/// (`generate-pi-catalog.mjs`); Pi's built-in model metadata stays intact.
+fn pi_catalog() -> &'static Value {
+    static PI_CATALOG: OnceLock<Value> = OnceLock::new();
+    PI_CATALOG.get_or_init(|| {
+        serde_json::from_str(include_str!("pi_catalog.json")).expect("valid pinned Pi catalog")
+    })
+}
+/// Hexbot owns the `compaction` key of the bot's Pi `settings.json`; every other
+/// key is kept. Models Pi knows natively keep Pi's metadata, and their budgets
+/// scale by the windows in the pinned catalog, so a small built-in model such as
+/// `openai/gpt-4` (8,192) does not keep a reserve larger than its window. A
+/// running Pi keeps the settings it loaded, so an unchanged file is left alone.
+fn write_pi_settings(agent_dir: &Path, providers: &Value) -> Result<()> {
+    let mut overrides = json!({});
+    let mut scale = |key: String, window: u64| {
+        let (reserve, keep) = compaction_budget(window);
+        if (reserve, keep) != (COMPACTION_RESERVE_TOKENS, COMPACTION_KEEP_RECENT_TOKENS)
+            && overrides.get(&key).is_none()
+        {
+            overrides[key] = json!({"reserveTokens":reserve,"keepRecentTokens":keep});
+        }
+    };
+    for (pi, entry) in providers.as_object().into_iter().flatten() {
+        for model in entry["models"].as_array().into_iter().flatten() {
+            if let (Some(id), Some(window)) =
+                (model["id"].as_str(), model["contextWindow"].as_u64())
+            {
+                scale(format!("{pi}/{id}"), window);
+            }
+        }
+    }
+    for (pi, entry) in pi_catalog()["providers"].as_object().into_iter().flatten() {
+        for (id, window) in entry["windows"].as_object().into_iter().flatten() {
+            if let Some(window) = window.as_u64() {
+                scale(format!("{pi}/{id}"), window);
+            }
+        }
+    }
+    let path = agent_dir.join("settings.json");
+    let mut settings = read_json(&path)?;
+    let compaction = json!({
+        "enabled": true,
+        "reserveTokens": COMPACTION_RESERVE_TOKENS,
+        "keepRecentTokens": COMPACTION_KEEP_RECENT_TOKENS,
+        "modelOverrides": overrides
+    });
+    if settings["compaction"] == compaction {
+        return Ok(());
+    }
+    settings["compaction"] = compaction;
+    write_json(&path, &settings)
+}
 fn key(home: &Path, p: &Value) -> Result<Option<String>> {
     let disabled = read_json(&home.join("providers-disabled.json"))?;
     if disabled[string(p, "name")] == true {
@@ -1012,11 +1083,7 @@ fn prepare_pi_config_locked(
         "cerebras",
         "mistral",
     ];
-    // Snapshot of ids and transports from the pinned Pi SDK; built-in metadata stays intact.
-    static PI_CATALOG: OnceLock<Value> = OnceLock::new();
-    let pi_catalog = PI_CATALOG.get_or_init(|| {
-        serde_json::from_str(include_str!("pi_catalog.json")).expect("valid pinned Pi catalog")
-    });
+    let pi_catalog = pi_catalog();
     let cache = read_json(&home.join("models_dev_cache.json")).unwrap_or_else(|_| json!({}));
     for p in profiles() {
         let slug = string(p, "name");
@@ -1065,6 +1132,11 @@ fn prepare_pi_config_locked(
                 ids.push(model.to_owned())
             }
         }
+        // `context_length` is the `num_ctx` the daemon sends a local server, so
+        // it is the window that server actually uses for the selected model.
+        let configured_window = (selected && slug == "custom")
+            .then(|| cfg["model"]["context_length"].as_u64())
+            .flatten();
         if native {
             let known = pi_catalog["providers"][&pi]["models"].as_array();
             ids.retain(|id| !known.is_some_and(|known| known.iter().any(|v| v == id)));
@@ -1079,6 +1151,10 @@ fn prepare_pi_config_locked(
             .into_iter()
             .map(|id| {
                 let meta = metadata(&cache, &cfg, slug, &id);
+                let window = configured_window
+                    .filter(|_| id == string(&cfg["model"], "default"))
+                    .or_else(|| meta["limit"]["context"].as_u64())
+                    .unwrap_or(DEFAULT_CONTEXT_WINDOW);
                 json!({
                     "id": id,
                     "name": id,
@@ -1093,7 +1169,7 @@ fn prepare_pi_config_locked(
                         "cacheRead": meta["cost"]["cache_read"].as_f64().unwrap_or(0.0),
                         "cacheWrite": meta["cost"]["cache_write"].as_f64().unwrap_or(0.0)
                     },
-                    "contextWindow": meta["limit"]["context"].as_u64().unwrap_or(32768),
+                    "contextWindow": window,
                     "maxTokens": meta["limit"]["output"].as_u64().unwrap_or(8192)
                 })
             })
@@ -1148,7 +1224,7 @@ fn prepare_pi_config_locked(
                 json!({
                     "id": id,
                     "name": id,
-                    "contextWindow": meta["limit"]["context"].as_u64().unwrap_or(32768),
+                    "contextWindow": meta["limit"]["context"].as_u64().unwrap_or(DEFAULT_CONTEXT_WINDOW),
                     "maxTokens": meta["limit"]["output"].as_u64().unwrap_or(8192),
                     "reasoning": meta["reasoning"].as_bool().unwrap_or(false),
                     "input": meta["modalities"]["input"]
@@ -1183,7 +1259,8 @@ fn prepare_pi_config_locked(
     for (k, v) in providers.as_object().unwrap() {
         models["providers"][k] = v.clone()
     }
-    write_json(&agent_dir.join("models.json"), &models)
+    write_json(&agent_dir.join("models.json"), &models)?;
+    write_pi_settings(agent_dir, &providers)
 }
 fn jwt_claims(token: &str) -> Option<Value> {
     let payload = token.split('.').nth(1)?;
@@ -2393,5 +2470,90 @@ mod migration_tests {
             original
         );
         server.abort();
+    }
+    #[test]
+    fn pi_settings_scale_compaction_to_each_window_and_keep_foreign_keys() {
+        assert_eq!(compaction_budget(1_000_000), (16384, 20000));
+        assert_eq!(compaction_budget(65536), (16384, 16384));
+        assert_eq!(compaction_budget(DEFAULT_CONTEXT_WINDOW), (8192, 8192));
+        assert_eq!(compaction_budget(4096), (1024, 1024));
+        let home = tempfile::tempdir().unwrap();
+        crate::db::migrate(home.path()).unwrap();
+        let profile = home.path().join("profiles/owl");
+        fs::create_dir_all(&profile).unwrap();
+        common::write_config(
+            &profile,
+            &json!({"model":{"provider":"ollama","default":"small","base_url":"http://127.0.0.1:11434/v1","context_length":8192},
+                "fallback_providers":[{"provider":"custom","model":"unknown"},{"provider":"custom","model":"wide"}]}),
+        )
+        .unwrap();
+        write_json(
+            &home.path().join("models_dev_cache.json"),
+            &json!({"custom":{"models":{"wide":{"limit":{"context":200000}}}}}),
+        )
+        .unwrap();
+        let dir = profile.join("pi");
+        // Pi's own keys and Hexbot's stale compaction values are replaced or kept as a whole.
+        write_json(
+            &dir.join("settings.json"),
+            &json!({"theme":"dark","compaction":{"reserveTokens":1,"modelOverrides":{"custom/gone":{}}}}),
+        )
+        .unwrap();
+        prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
+        let models = read_json(&dir.join("models.json")).unwrap();
+        let window = |id: &str| {
+            models["providers"]["custom"]["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["id"] == id)
+                .unwrap()["contextWindow"]
+                .clone()
+        };
+        assert_eq!(window("small"), 8192);
+        assert_eq!(window("unknown"), DEFAULT_CONTEXT_WINDOW);
+        assert_eq!(window("wide"), 200000);
+        let settings = read_json(&dir.join("settings.json")).unwrap();
+        assert_eq!(settings["theme"], "dark");
+        let compaction = &settings["compaction"];
+        assert_eq!(compaction["enabled"], true);
+        assert_eq!(compaction["reserveTokens"], 16384);
+        assert_eq!(compaction["keepRecentTokens"], 20000);
+        let overrides = &compaction["modelOverrides"];
+        assert_eq!(
+            overrides["custom/small"],
+            json!({"reserveTokens": 2048, "keepRecentTokens": 2048})
+        );
+        assert_eq!(
+            overrides["custom/unknown"],
+            json!({"reserveTokens": 8192, "keepRecentTokens": 8192})
+        );
+        assert!(overrides.get("custom/wide").is_none());
+        assert!(overrides.get("custom/gone").is_none());
+        // Models Pi ships natively are not in models.json, but their budgets
+        // scale by the pinned catalog's windows: gpt-4 has 8,192 tokens.
+        assert_eq!(
+            overrides["openai/gpt-4"],
+            json!({"reserveTokens": 2048, "keepRecentTokens": 2048})
+        );
+        assert!(overrides.get("anthropic/claude-sonnet-4-5").is_none());
+        assert!(
+            models["providers"]["openai"]["models"]
+                .as_array()
+                .is_none_or(|models| models.iter().all(|m| m["id"] != "gpt-4"))
+        );
+        // Catalog models of every provider with an endpoint are listed without a
+        // window while the models.dev cache is empty, so they scale too.
+        assert_eq!(
+            overrides["nous/anthropic/claude-opus-5"]["reserveTokens"],
+            8192
+        );
+        // An unchanged compaction key leaves the file alone, so a running Pi and
+        // the file keep agreeing; the pretty-printed bytes written by hand stay.
+        let path = dir.join("settings.json");
+        let bytes = serde_json::to_vec(&settings).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
     }
 }
