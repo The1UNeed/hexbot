@@ -17,3 +17,7 @@ ALTER TABLE daemons ADD COLUMN IF NOT EXISTS tunnel_repair_at timestamptz;
 
 -- Identity enrollment is optional until this migration runs after deploy.
 ALTER TABLE daemons ADD COLUMN IF NOT EXISTS identity_key text;
+
+-- App sign-in: approving stores the app's PKCE challenge; the session token is minted only when the app polls with the verifier.
+CREATE TABLE IF NOT EXISTS client_authorizations (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), challenge text UNIQUE NOT NULL, user_id uuid NOT NULL REFERENCES users(id), device_name text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL, consumed_at timestamptz);
+CREATE INDEX IF NOT EXISTS client_authorizations_expires_at_idx ON client_authorizations(expires_at);

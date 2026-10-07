@@ -1,5 +1,11 @@
 import { connectBaseUrl } from './connect-url'
 
+export class ConnectRequestError extends Error {
+  constructor(readonly status: number) {
+    super(`Hex Connect request failed (${status})`)
+  }
+}
+
 export async function fetchConnect(
   path: string,
   token: string,
@@ -15,7 +21,7 @@ export async function fetchConnect(
   })
 
   if (!response.ok) {
-    throw new Error(`Hex Connect request failed (${response.status})`)
+    throw new ConnectRequestError(response.status)
   }
 
   return response.json()

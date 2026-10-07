@@ -46,6 +46,8 @@ Environment variables are set per environment in the Vercel project. Production 
 
 **Owner pinning (this release).** The migration drops `registrations.credentials`, so the running service cannot approve registrations between the migration and the deploy; run them back to back. Grants now carry `aud`, which older daemons reject, and daemons from this release ignore a `connect.json` written before owner pinning. After deploying, update each daemon, revoke the old registrations on connect.hexbot.app, and run `hexbot connect` again; the new registrations get hostnames in the tunnel zone.
 
+**App sign-in polling.** The migration adds `client_authorizations`. Until it runs, Connect hands the app its session through the older `hexbot://connect` link, which reaches the right app only when it is the one macOS opens for `hexbot://`, and `/api/health` reports `schema: "behind"`. Run the migration to finish the change.
+
 **Deploy order for a Connect change.** Migrate the database first (`DATABASE_URL=... pnpm --filter ./apps/connect run migrate`; the migration is idempotent), then let the push to `main` deploy Connect, then release the daemon. Daemons from this release require grants with a `jti` and use `POST /api/grants/exchange`, which an older Connect does not serve, and a newer Connect needs the `grant_codes` table, so the other orders break sign-in until the last piece lands.
 
 Order of operations for the first real deployment:

@@ -14,6 +14,9 @@ import { POST as tunnelRepair } from "@/app/api/daemons/[id]/tunnel/route";
 import { Reachability } from "@/lib/reachability";
 import AuthorizePage from "@/app/connect/authorize/page";
 import { authorizeClient } from "@/app/connect/authorize/actions";
+import { POST as pollAuthorization } from "@/app/api/authorize/poll/route";
+import { confirmationCode } from "@/lib/app-signin";
+import { pkceChallenge } from "@/lib/tokens";
 
 const request = (path: string, body?: unknown, token?: string, method = "POST") => new Request(`http://localhost${path}`, { method, headers: { ...(body ? { "Content-Type": "application/json" } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined });
 let store: MemoryStore; let tunnels: FakeTunnelProvider;
@@ -116,6 +119,49 @@ describe("client authorization", () => {
     expect(result.href).toMatch(/^hexbot:\/\/connect\?state=desktop-state#session=hxc_/);
     expect(store.clientSessions).toHaveLength(1);
     expect(store.clientSessions[0].deviceName).toBe("Alex Mac");
+  });
+
+  const authorizeForm = (challenge: string, state = "desktop-state") => { const form = new FormData(); form.set("state", state); form.set("challenge", challenge); form.set("device", "Alex Mac"); return form; };
+  const pollWith = async (verifier: string) => (await pollAuthorization(request("/api/authorize/poll", { verifier }))).json();
+
+  it("hands the session only to the app holding the verifier, once", async () => {
+    const verifier = randomToken(); const challenge = pkceChallenge(verifier);
+    expect(await pollWith(verifier)).toEqual({ status: "pending", interval: 2 });
+    expect(await authorizeClient({}, authorizeForm(challenge))).toEqual({ approved: true });
+    expect(store.clientSessions).toHaveLength(0);
+    expect(await pollWith(randomToken())).toMatchObject({ status: "pending" });
+    const approved = await pollWith(verifier);
+    expect(approved).toMatchObject({ status: "approved", session: expect.stringMatching(/^hxc_/) });
+    expect(store.clientSessions).toHaveLength(1);
+    expect(store.clientSessions[0]).toMatchObject({ deviceName: "Alex Mac", tokenHash: hashToken(approved.session) });
+    expect(JSON.stringify(store)).not.toContain(approved.session);
+    expect(await pollWith(verifier)).toMatchObject({ status: "pending" });
+    expect(store.clientSessions).toHaveLength(1);
+  });
+
+  it("refuses a challenge another account approved and an expired approval", async () => {
+    const verifier = randomToken(); const challenge = pkceChallenge(verifier);
+    process.env.DEV_USER_ID = "someone-else";
+    expect(await authorizeClient({}, authorizeForm(challenge))).toEqual({ approved: true });
+    process.env.DEV_USER_ID = "clerk-dev-user";
+    expect(await authorizeClient({}, authorizeForm(challenge))).toEqual({ error: "This sign-in request was already used. Start again in Hexbot." });
+    store.clientAuthorizations[0].expiresAt = new Date(Date.now() - 1);
+    expect(await pollWith(verifier)).toMatchObject({ status: "pending" });
+    expect(store.clientSessions).toHaveLength(0);
+  });
+
+  it("falls back to the hexbot:// link before the migration", async () => {
+    store.approveClientAuthorization = async () => { throw new Error('relation "client_authorizations" does not exist'); };
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const result = await authorizeClient({}, authorizeForm(pkceChallenge(randomToken())));
+    expect(result.href).toMatch(/^hexbot:\/\/connect\?state=desktop-state#session=hxc_/);
+    expect(store.clientSessions).toHaveLength(1);
+  });
+
+  it("rejects a malformed verifier and derives the code the app shows", async () => {
+    expect((await pollAuthorization(request("/api/authorize/poll", { verifier: "short" }))).status).toBe(400);
+    // The same vector is checked in apps/web/src/lib/connect-signin.test.ts.
+    expect(confirmationCode(pkceChallenge("hexbot-app-signin-test-vector-0123456789abcdef"))).toBe("BHTN-JQRC");
   });
 });
 

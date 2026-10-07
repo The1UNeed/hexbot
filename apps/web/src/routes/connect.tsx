@@ -7,8 +7,14 @@ import { Input } from '../components/ui/input'
 import { Spinner } from '../components/ui/spinner'
 import { Wordmark } from '../components/ui/wordmark'
 import { defaultDeviceName, getBridge } from '../lib/bridge'
-import { fetchConnect } from '../lib/connect-grant'
-import { connectBaseUrl, grantTarget } from '../lib/connect-url'
+import { ConnectRequestError, fetchConnect } from '../lib/connect-grant'
+import {
+  type AppSignIn,
+  authorizeUrl,
+  collectAppSignIn,
+  startAppSignIn
+} from '../lib/connect-signin'
+import { grantTarget } from '../lib/connect-url'
 import {
   connectTo,
   pairingErrorMessage,
@@ -49,7 +55,7 @@ function ConnectPage() {
   const [daemonName, setDaemonName] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [connectState, setConnectState] = useState<string | null>(null)
+  const [signIn, setSignIn] = useState<AppSignIn | null>(null)
 
   const [daemons, setDaemons] = useState<
     Array<{
@@ -68,38 +74,86 @@ function ConnectPage() {
     localStorage.getItem('hexbot.connect.session')
   )
 
+  const finishSignIn = (session: string) => {
+    localStorage.setItem('hexbot.connect.session', session)
+    setClientSession(session)
+    setSignIn(null)
+  }
+
+  // A signed-out or revoked app session sends the user back to the sign-in button.
+  const connectFailure = (reason: unknown) => {
+    if (reason instanceof ConnectRequestError && reason.status === 401) {
+      localStorage.removeItem('hexbot.connect.session')
+      setClientSession(null)
+      setDaemons([])
+
+      return setError('Your Hex Connect sign-in ended. Sign in again.')
+    }
+
+    setError(
+      reason instanceof ConnectRequestError
+        ? 'Hex Connect could not be reached.'
+        : pairingErrorMessage(reason)
+    )
+  }
+
+  // Connect hands the session to whoever holds the verifier, so this works
+  // even when the hexbot:// link opens another Hexbot app.
+  useEffect(() => {
+    if (!signIn) {return}
+    let stopped = false
+
+    const timer = window.setInterval(() => {
+      if (Date.now() > signIn.deadline) {
+        setSignIn(null)
+
+        return setError('The Hex Connect sign-in expired. Try again.')
+      }
+
+      void collectAppSignIn(signIn).then(session => {
+        if (session && !stopped) {finishSignIn(session)}
+      })
+    }, 2000)
+
+    return () => {
+      stopped = true
+      window.clearInterval(timer)
+    }
+  }, [signIn])
+  // Connect deployments from before polling return the session in a hexbot:// link.
   useEffect(() => {
     const bridge = getBridge()
 
-    if (!bridge?.onNavigate) {return}
+    if (!bridge?.onNavigate || !signIn) {return}
 
     return bridge.onNavigate(url => {
       const parsed = parseConnectCallback(url)
 
-      if (!parsed || parsed.state !== connectState) {return}
-      localStorage.setItem('hexbot.connect.session', parsed.session)
-      setClientSession(parsed.session)
+      if (parsed?.state === signIn.state) {finishSignIn(parsed.session)}
     })
-  }, [connectState])
+  }, [signIn])
   useEffect(() => {
     if (!clientSession) {return}
     void fetchConnect('/api/daemons', clientSession)
       .then(result =>
         setDaemons((result as { daemons?: typeof daemons }).daemons ?? (result as typeof daemons))
       )
-      .catch(reason => setError(pairingErrorMessage(reason)))
+      .catch(connectFailure)
   }, [clientSession])
 
-  // Reopening keeps the same state, so the link already open in the browser
-  // still completes the sign-in.
-  const startConnectLogin = (existing?: string) => {
-    const state = existing ?? crypto.randomUUID()
-    setConnectState(state)
-    const url = `${connectBaseUrl()}/connect/authorize?state=${encodeURIComponent(state)}&device=${encodeURIComponent(deviceName)}`
+  const openSignIn = (pending: AppSignIn) => {
+    const url = authorizeUrl(pending, deviceName)
     const bridge = getBridge()
 
     if (bridge) {void bridge.openExternal(url)}
-    else {window.location.assign(url)}
+    else {window.open(url, '_blank', 'noopener')}
+  }
+
+  const startConnectLogin = async () => {
+    setError(null)
+    const pending = await startAppSignIn()
+    setSignIn(pending)
+    openSignIn(pending)
   }
 
   const pickDaemon = async (daemon: (typeof daemons)[number]) => {
@@ -162,7 +216,7 @@ function ConnectPage() {
 
       await navigate({ to: '/' })
     } catch (reason) {
-      setError(pairingErrorMessage(reason))
+      connectFailure(reason)
     } finally {
       setBusy(false)
     }
@@ -228,7 +282,7 @@ function ConnectPage() {
         onSubmit={submit}
       >
         <header className="space-y-3">
-          <Wordmark mood={connectState && !clientSession ? 'listening' : 'idle'} />
+          <Wordmark mood={signIn ? 'listening' : 'idle'} />
           <div>
             <h1 className="text-[length:var(--text-title)] font-semibold">Connect to Hexbot</h1>
             <p className="mt-1 text-secondary text-muted">
@@ -236,15 +290,20 @@ function ConnectPage() {
             </p>
           </div>
         </header>
-        {connectState && !clientSession ? (
-          <div className="flex h-9 items-center gap-3" role="status">
+        {signIn ? (
+          <div className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-1" role="status">
             <span className="flex items-center gap-2 text-muted">
               <Spinner label="Waiting for the browser" size="sm" />
-              Continue in your browser
+              <span>
+                Continue in your browser. Code{' '}
+                <span className="font-mono text-foreground" data-testid="connect-signin-code">
+                  {signIn.code}
+                </span>
+              </span>
             </span>
             <button
               className="text-accent hover:underline"
-              onClick={() => startConnectLogin(connectState)}
+              onClick={() => openSignIn(signIn)}
               type="button"
             >
               Reopen link
@@ -254,14 +313,14 @@ function ConnectPage() {
             </span>
             <button
               className="hover:underline"
-              onClick={() => setConnectState(null)}
+              onClick={() => setSignIn(null)}
               type="button"
             >
               Cancel
             </button>
           </div>
         ) : (
-          <Button onClick={() => startConnectLogin()} type="button">
+          <Button onClick={() => void startConnectLogin()} type="button">
             Sign in with Hex Connect
           </Button>
         )}

@@ -245,11 +245,24 @@ app's daemon list enable a daemon only while it is online.
 
 ## App sign-in
 
-1. The app opens the system browser at
-   `/connect/authorize?state=<random>&device=<name>`. After Clerk sign-in
-   and an explicit click, Connect redirects to
-   `hexbot://connect?state=<same>#session=<client session token>`. The token
-   stays in the fragment; the Electron protocol handler delivers it.
+1. The app makes a PKCE verifier (32 random bytes, base64url) and opens the
+   system browser at
+   `/connect/authorize?challenge=<S256 of the verifier>&state=<random>&device=<name>`.
+   It shows an eight-character code derived from the challenge's first eight
+   bytes; the authorize page shows the same code. After Clerk sign-in and an
+   explicit click, Connect stores the approval (`client_authorizations`, ten
+   minutes) and the page tells the user to return to Hexbot. The app polls
+   `POST /api/authorize/poll {verifier}` every two seconds, answered
+   `{status: "pending"}` until the approval exists and then, once,
+   `{status: "approved", session: <client session token>}`; the token is minted
+   in that response and stored hashed. Nothing travels through `hexbot://`, so
+   sign-in reaches the app that asked even when Stable, Nightly, Client, and
+   dev builds on one computer all claim the scheme and macOS hands links to
+   one of them. Before the migration, and for apps that send only `state`,
+   Connect keeps the older hand-off: it redirects to
+   `hexbot://connect?state=<same>#session=<client session token>`, and the
+   waiting app accepts a link whose `state` matches. A `401` from Connect drops
+   the stored session and asks the user to sign in again.
 2. `GET /api/daemons` with the client session token lists the user's daemons
    with online state (`status` and `online`, see "Online state") and
    `identity_key`, null when unknown.
@@ -426,7 +439,8 @@ count. On `replaced: false` nothing is rewritten and nothing is reset. A
   409 on conflict, 410 if revoked), `DELETE /api/daemons/{id}` (owner session or
   the daemon's own token), `POST /api/daemons/{id}/rename`.
 - `POST /api/grants/exchange` (daemon token).
-- `GET /connect/authorize` (page), `GET /api/me`, `DELETE /api/sessions/{id}`.
+- `GET /connect/authorize` (page), `POST /api/authorize/poll {verifier}`,
+  `GET /api/me`, `DELETE /api/sessions/{id}`.
 - `GET /.well-known/jwks.json`, `GET /api/health`.
 
 Authentication: Clerk session for pages, server actions, and
@@ -485,7 +499,10 @@ signing key.
   CLI disconnect against a running daemon (`tests/cli.rs`), private identity
   key persistence and permissions, startup enrollment, strict legacy poll
   compatibility, and the public nonce-signing endpoint.
-- Client: the `hexbot://connect` handler, the `tls` connection path, the
+- Client: app sign-in by polling with the verifier (only the verifier's
+  holder collects the session, once; another account's approval and expired
+  approvals are refused; the confirmation code matches between app and
+  Connect), the `hexbot://connect` fallback, the `tls` connection path, the
   prefixed cookie names, identity verification before grants, malformed or
   replayed signatures, refusal of 404 with a known key, and missing-key and
   unsupported-Ed25519 fallbacks.

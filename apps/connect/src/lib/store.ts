@@ -9,6 +9,8 @@ export interface ClientSession { id: string; userId: string; tokenHash: string; 
 export const GRANT_CODE_RETENTION_MS = 24 * 60 * 60_000;
 export const REGISTRATION_ATTEMPTS_PER_MINUTE = 10;
 /** A one-time code handed to a browser signing in to a daemon; the daemon exchanges it for a grant (docs/connect.md). */
+/** An app sign-in the user approved, waiting for the app to collect it with the verifier behind `challenge` (docs/connect.md, "App sign-in"). */
+export interface ClientAuthorization { id: string; challenge: string; userId: string; deviceName: string; createdAt: Date; expiresAt: Date; consumedAt: Date | null }
 export interface GrantCode { id: string; codeHash: string; daemonId: string; userId: string; deviceName: string; challenge: string; redirectUri: string; createdAt: Date; expiresAt: Date; consumedAt: Date | null }
 
 /** Every table migrations.sql creates and every column it adds later; a test keeps this in step with the file. */
@@ -19,6 +21,7 @@ export const SCHEMA: Record<string, string[]> = {
   registration_attempts: [],
   client_sessions: [],
   grant_codes: [],
+  client_authorizations: [],
 };
 /** Names (`table` or `table.column`) from SCHEMA that are absent from `present`, a set of `table.column` strings. */
 export function schemaGaps(present: Set<string>): string[] {
@@ -55,6 +58,10 @@ export interface Store {
   listClientSessions(userId: string): Promise<ClientSession[]>;
   touchClientSession(id: string, at: Date): Promise<void>;
   revokeClientSession(id: string, userId: string, at: Date): Promise<boolean>;
+  /** False when another account already approved this challenge or it was already collected. */
+  approveClientAuthorization(input: Omit<ClientAuthorization, "id" | "createdAt" | "consumedAt">): Promise<boolean>;
+  /** Marks an approved, unexpired, uncollected authorization collected, at most once. */
+  claimClientAuthorization(challenge: string, at: Date): Promise<Pick<ClientAuthorization, "userId" | "deviceName"> | null>;
   createGrantCode(input: Omit<GrantCode, "id" | "createdAt" | "consumedAt">): Promise<GrantCode>;
   findGrantCodeByHash(hash: string): Promise<GrantCode | null>;
   consumeGrantCode(id: string): Promise<boolean>;
@@ -73,7 +80,7 @@ export class MemoryStore implements Store {
     this.registrationAttempts.set(clientHash, { window, count: count + 1 });
     return true;
   }
-  users: User[] = []; daemons: Daemon[] = []; registrations: Registration[] = []; clientSessions: ClientSession[] = []; grantCodes: GrantCode[] = [];
+  users: User[] = []; daemons: Daemon[] = []; registrations: Registration[] = []; clientSessions: ClientSession[] = []; grantCodes: GrantCode[] = []; clientAuthorizations: ClientAuthorization[] = [];
   async getOrCreateUser(clerkUserId: string) { let row = this.users.find(x => x.clerkUserId === clerkUserId); if (!row) { row = { id: randomUUID(), clerkUserId, createdAt: new Date() }; this.users.push(row); } return row; }
   async createRegistration(input: Omit<Registration, "id" | "userId" | "approvedAt" | "consumedAt" | "daemonId">) { const cutoff = Date.now() - GRANT_CODE_RETENTION_MS; this.registrations = this.registrations.filter(x => x.expiresAt.getTime() > cutoff); const row = { ...input, id: randomUUID(), userId: null, approvedAt: null, consumedAt: null, daemonId: null }; this.registrations.push(row); return row; }
   async findRegistrationByDeviceHash(hash: string) { return this.registrations.find(x => x.deviceCodeHash === hash) ?? null; }
@@ -98,6 +105,13 @@ export class MemoryStore implements Store {
   async listClientSessions(userId: string) { return this.clientSessions.filter(x => x.userId === userId && !x.revokedAt); }
   async touchClientSession(id: string, at: Date) { const row = this.clientSessions.find(x => x.id === id); if (row) row.lastSeenAt = at; }
   async revokeClientSession(id: string, userId: string, at: Date) { const row = this.clientSessions.find(x => x.id === id && x.userId === userId && !x.revokedAt); if (!row) return false; row.revokedAt = at; return true; }
+  async approveClientAuthorization(input: Omit<ClientAuthorization, "id" | "createdAt" | "consumedAt">) {
+    const cutoff = Date.now() - GRANT_CODE_RETENTION_MS; this.clientAuthorizations = this.clientAuthorizations.filter(x => x.expiresAt.getTime() > cutoff);
+    const existing = this.clientAuthorizations.find(x => x.challenge === input.challenge);
+    if (existing) { if (existing.userId !== input.userId || existing.consumedAt) return false; Object.assign(existing, input); return true; }
+    this.clientAuthorizations.push({ ...input, id: randomUUID(), createdAt: new Date(), consumedAt: null }); return true;
+  }
+  async claimClientAuthorization(challenge: string, at: Date) { const row = this.clientAuthorizations.find(x => x.challenge === challenge && !x.consumedAt && x.expiresAt > at); if (!row) return null; row.consumedAt = at; return { userId: row.userId, deviceName: row.deviceName }; }
   async createGrantCode(input: Omit<GrantCode, "id" | "createdAt" | "consumedAt">) { const cutoff = Date.now() - GRANT_CODE_RETENTION_MS; this.grantCodes = this.grantCodes.filter(x => x.expiresAt.getTime() > cutoff); const row = { ...input, id: randomUUID(), createdAt: new Date(), consumedAt: null }; this.grantCodes.push(row); return row; }
   async findGrantCodeByHash(hash: string) { return this.grantCodes.find(x => x.codeHash === hash) ?? null; }
   async consumeGrantCode(id: string) { const row = this.grantCodes.find(x => x.id === id); if (!row || row.consumedAt) return false; row.consumedAt = new Date(); return true; }
@@ -165,6 +179,12 @@ export class NeonStore implements Store {
   async listClientSessions(uid: string) { return (await this.sql`SELECT * FROM client_sessions WHERE user_id=${uid} AND revoked_at IS NULL ORDER BY created_at`).map(r => sessionRow(r as DbRow)); }
   async touchClientSession(id: string, at: Date) { await this.sql`UPDATE client_sessions SET last_seen_at=${at.toISOString()} WHERE id=${id}`; }
   async revokeClientSession(id: string, uid: string, at: Date) { const rows = await this.sql`UPDATE client_sessions SET revoked_at=${at.toISOString()} WHERE id=${id} AND user_id=${uid} AND revoked_at IS NULL RETURNING id`; return rows.length === 1; }
+  async approveClientAuthorization(i: Omit<ClientAuthorization, "id" | "createdAt" | "consumedAt">) {
+    await this.sql`DELETE FROM client_authorizations WHERE expires_at < ${new Date(Date.now() - GRANT_CODE_RETENTION_MS).toISOString()}`;
+    const rows = await this.sql`INSERT INTO client_authorizations (challenge,user_id,device_name,expires_at) VALUES (${i.challenge},${i.userId},${i.deviceName},${i.expiresAt.toISOString()}) ON CONFLICT (challenge) DO UPDATE SET device_name=EXCLUDED.device_name, expires_at=EXCLUDED.expires_at WHERE client_authorizations.user_id=EXCLUDED.user_id AND client_authorizations.consumed_at IS NULL RETURNING id`;
+    return rows.length === 1;
+  }
+  async claimClientAuthorization(challenge: string, at: Date) { const rows = await this.sql`UPDATE client_authorizations SET consumed_at=${at.toISOString()} WHERE challenge=${challenge} AND consumed_at IS NULL AND expires_at > ${at.toISOString()} RETURNING user_id, device_name`; const r = rows[0] as DbRow | undefined; return r ? { userId: String(r.user_id), deviceName: String(r.device_name) } : null; }
   async createGrantCode(i: Omit<GrantCode, "id" | "createdAt" | "consumedAt">) { await this.sql`DELETE FROM grant_codes WHERE expires_at < ${new Date(Date.now() - GRANT_CODE_RETENTION_MS).toISOString()}`; const rows = await this.sql`INSERT INTO grant_codes (code_hash,daemon_id,user_id,device_name,challenge,redirect_uri,expires_at) VALUES (${i.codeHash},${i.daemonId},${i.userId},${i.deviceName},${i.challenge},${i.redirectUri},${i.expiresAt.toISOString()}) RETURNING *`; return grantCodeRow(rows[0] as DbRow); }
   async findGrantCodeByHash(h: string) { const rows = await this.sql`SELECT * FROM grant_codes WHERE code_hash=${h} LIMIT 1`; return rows[0] ? grantCodeRow(rows[0] as DbRow) : null; }
   async consumeGrantCode(id: string) { const rows = await this.sql`UPDATE grant_codes SET consumed_at=now() WHERE id=${id} AND consumed_at IS NULL RETURNING id`; return rows.length === 1; }

@@ -1,6 +1,6 @@
 import { DeviceProofError } from '@hermes/shared'
 import type * as Router from '@tanstack/react-router'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import type { ComponentType } from 'react'
 
 import { useConnection } from '../stores/connection'
@@ -143,4 +143,66 @@ it('checks cookie acceptance before saving a keyless Connect target', async () =
   )
   expect(useConnection.getState().target).toBeNull()
   expect(localStorage.getItem('hexbot.target')).toBeNull()
+})
+
+it('collects the Hex Connect session by polling, whichever app gets the hexbot:// link', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  const openExternal = vi.fn(async (_url: string) => undefined)
+  window.hexbot = { openExternal, onNavigate: () => () => undefined } as unknown as Window['hexbot']
+  let approved = false
+  const polled: unknown[] = []
+
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/api/authorize/poll')) {
+        polled.push(JSON.parse(String(init?.body)))
+
+        return new Response(
+          approved ? '{"status":"approved","session":"hxc_new"}' : '{"status":"pending"}'
+        )
+      }
+
+      if (url.endsWith('/api/daemons')) {
+        return new Response(
+          '{"daemons":[{"id":"studio","name":"Studio","tunnel_hostname":"studio.test"}]}'
+        )
+      }
+
+      return new Response('{}', { status: 404 })
+    })
+  )
+
+  try {
+    const ConnectPage = Route.options.component as ComponentType
+    render(<ConnectPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in with Hex Connect' }))
+    const code = await screen.findByTestId('connect-signin-code')
+    expect(code.textContent).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/)
+    const opened = new URL(openExternal.mock.calls[0]?.[0] ?? '')
+    expect(opened.searchParams.get('challenge')).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    await act(() => vi.advanceTimersByTimeAsync(2000))
+    expect(polled).toHaveLength(1)
+    approved = true
+    await act(() => vi.advanceTimersByTimeAsync(2000))
+    expect(await screen.findByRole('button', { name: /Studio/ })).toBeInTheDocument()
+    expect(localStorage.getItem('hexbot.connect.session')).toBe('hxc_new')
+    expect(screen.queryByTestId('connect-signin-code')).not.toBeInTheDocument()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('drops a signed-out Hex Connect session and asks to sign in again', async () => {
+  localStorage.setItem('hexbot.connect.session', 'hxc_revoked')
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => new Response('{}', { status: 401 }))
+  )
+  const ConnectPage = Route.options.component as ComponentType
+  render(<ConnectPage />)
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Your Hex Connect sign-in ended. Sign in again.'
+  )
+  expect(localStorage.getItem('hexbot.connect.session')).toBeNull()
 })

@@ -40,7 +40,7 @@ Starting browser sign-in from a LAN, Tailscale, or localhost address first redir
 
 ## Sign in from the app
 
-On a computer without a daemon, or in the client-only package, open Hexbot, choose **Sign in with Hex Connect**, and finish signing in in your system browser. The browser returns to Hexbot, which lists your daemons; pick one and you are connected over TLS. The app appears under **Apps signed in with your account** on connect.hexbot.app, where you can sign it out.
+On a computer without a daemon, or in the client-only package, open Hexbot, choose **Sign in with Hex Connect**, and finish signing in in your system browser. Check that the code on the page matches the one Hexbot shows, choose **Authorize**, then return to Hexbot, which lists your daemons; pick one and you are connected over TLS. The app appears under **Apps signed in with your account** on connect.hexbot.app, where you can sign it out.
 
 Behind the scenes the app receives a short-lived, single-use login grant and exchanges it directly with the daemon for a normal revocable device token. The daemon owner can revoke that device as with a LAN-paired device.
 
