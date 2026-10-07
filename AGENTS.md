@@ -71,6 +71,7 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 | `apps/shared/` | `@hermes/shared`. `apps/web` imports its gateway client and event types | all |
 | `apps/site/` | Astro site at hexbot.app: landing page, docs, pairing page, `install.sh` | stable |
 | `apps/connect/` | Next.js Connect service at connect.hexbot.app | all |
+| `apps/mobile/` | Expo phone app (iOS first, Android next). Pairs with a daemon like the client-only package; reuses `@hermes/shared` and the web client's stores | dev |
 | `scripts/desktop/` | Version, build, icon, update feed, and cask scripts, each with tests | stable, nightly |
 | `scripts/dev/` | `run.mjs` (`pnpm dev`) and the live smoke scripts | dev |
 | `.github/workflows/` | `ci.yml` (tests, also called by release), `release.yml` (stable and nightly) | see file |
@@ -156,6 +157,7 @@ cargo clippy --locked --manifest-path apps/installer/src-tauri/Cargo.toml --all-
 pnpm --filter ./apps/site run check
 pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run && pnpm --filter ./apps/connect run lint
 node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs
+pnpm --filter ./apps/mobile run typecheck && pnpm --filter ./apps/mobile run test
 ```
 
 `ci.yml` runs all of these on every push and pull request, and `release.yml`
