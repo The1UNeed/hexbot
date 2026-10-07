@@ -115,6 +115,21 @@ the roster slides in as a drawer.
   clicking it opens or closes the side panel. Top right, round glass buttons for section actions (Rename,
   Archive, Delete) and, while the panel is closed, the panel toggle. The
   model is chosen in Bot settings, Model, not in the chat.
+- Context meter: left of the section actions, a glass pill with a 28 px
+  hairline bar and "Context 62%" in meta type, muted; a tick on the bar marks
+  where older messages get summarised. Hover or focus (the pill is in the tab
+  order) for the plain numbers ("41k of 200k tokens. Older messages are
+  summarised at 184k.") in a solid tooltip, so the conversation never shows
+  through it. Within 15% of that point the pill turns warning and the tooltip
+  asks for a new section; while Hexbot summarises it reads "Compacting", and
+  right after, until the next reply is measured, a neutral "Context" with
+  "Recounting after the summary." Nothing is drawn until the daemon has
+  measured the section (`hexbot.sections.open`, `session.usage`), and nothing
+  in rooms. The bar never animates; it is redrawn when a turn ends, a
+  compaction starts or ends, or the model changes. The conversation column is
+  a container: under 54rem the word "Context" goes, and the centred title
+  truncates before it can reach the pill. The context window is never called
+  memory.
 - Transcript: a centred column capped at 52rem. Bot messages left-aligned
   in soft grey bubbles, human messages right-aligned in inverse bubbles
   (black on light, white on dark). A bot's own chat draws no faces in the

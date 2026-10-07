@@ -517,3 +517,22 @@ export interface Usage {
   total_tokens?: number
   [key: string]: unknown
 }
+
+/**
+ * How full a section's context is, from the daemon with `session.usage` and
+ * `hexbot.sections.open`. `tokens` is null until the first reply and right
+ * after a compaction; `window` and `compact_at` are null when the model is
+ * unknown. The window is never called memory: Memory is the bot's MEMORY.md.
+ */
+export interface ContextUsage {
+  /** Where older messages get summarised: the window minus the model's reserve. */
+  compact_at: null | number
+  /** True from a compaction's start until the daemon says it is done. */
+  compacting: boolean
+  /** True while `tokens` is null because a compaction just ran, until the next reply. */
+  recounting?: boolean
+  /** Orders reports of one session; a report below the one held is stale. */
+  seq?: number
+  tokens: null | number
+  window: null | number
+}

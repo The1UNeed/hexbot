@@ -36,7 +36,14 @@ import { transcriptNotify, useTranscripts } from '../stores/transcripts'
 import { useUi } from '../stores/ui'
 
 import type { HexbotRpcClient } from './rpc'
-import type { ClarifyRequestPayload, RoomEvent, RoomTurn, SessionInfo, Usage } from './types'
+import type {
+  ClarifyRequestPayload,
+  ContextUsage,
+  RoomEvent,
+  RoomTurn,
+  SessionInfo,
+  Usage
+} from './types'
 
 export interface EventRouterDeps {
   refreshBots?: () => void
@@ -293,6 +300,10 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
     case 'session.usage':
       transcripts.sessionUsage(sessionId, ((payload.usage as Usage) ?? payload) as Usage)
+
+      if (payload.context && typeof payload.context === 'object') {
+        transcripts.sessionContext(sessionId, payload.context as ContextUsage)
+      }
 
       return
 

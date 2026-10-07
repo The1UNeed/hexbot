@@ -17,7 +17,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, Weak,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -75,6 +75,16 @@ struct Live {
     event_gate: Mutex<()>,
     attachment_gate: AsyncMutex<()>,
     permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
+    /// The compaction settings this Pi process loaded at start; the meter's
+    /// compaction point comes from here, not from a file a later section may
+    /// have rewritten.
+    compaction: Value,
+    /// Set once Pi has compacted this session, so a null token count afterwards
+    /// is reported as recounting rather than as nothing measured yet.
+    compacted: AtomicBool,
+    /// The highest `seq` of a context report sent for this session; a slower
+    /// report with a lower number is dropped.
+    usage_sent: AtomicU64,
 }
 pub struct Runtime {
     home: PathBuf,
@@ -88,6 +98,10 @@ pub struct Runtime {
     children: Mutex<HashMap<String, delegation::Child>>,
     description_refreshes: Mutex<HashMap<String, bool>>,
     warned_servers: Mutex<std::collections::HashSet<String>>,
+    /// Orders context reports across sessions and idle restarts. Seeded from
+    /// the clock so a report after a daemon restart still outranks the last
+    /// one a client kept.
+    usage_seq: AtomicU64,
 }
 impl Runtime {
     pub fn new(home: PathBuf, events: EventHub, pi_executable: PathBuf) -> Result<Arc<Self>> {
@@ -107,6 +121,7 @@ impl Runtime {
             children: Mutex::new(HashMap::new()),
             description_refreshes: Mutex::new(HashMap::new()),
             warned_servers: Mutex::new(std::collections::HashSet::new()),
+            usage_seq: AtomicU64::new((common::now() * 1000.0) as u64),
         });
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let weak = Arc::downgrade(&runtime);
@@ -322,6 +337,78 @@ impl Runtime {
             ));
         }
         Ok(reply.data.unwrap_or_else(|| json!({})))
+    }
+    /// How full the section's context is, from Pi's own estimate, with the
+    /// point where Pi will compact it under the settings this process loaded.
+    /// `tokens` is null right after a compaction until the next reply, as Pi
+    /// reports it, and `recounting` says so; `window` and `compact_at` are null
+    /// when Pi has no model. `compacting` is set from a compaction's start
+    /// event until Pi says it is done. `seq` orders the reports of one session.
+    async fn context_usage(s: &Live, compacting: bool, seq: u64) -> Value {
+        let stats = Self::command(s, json!({"type":"get_session_stats"}))
+            .await
+            .unwrap_or_default();
+        let state = Self::command(s, json!({"type":"get_state"}))
+            .await
+            .unwrap_or_default();
+        let model = &state["model"];
+        let window = stats["contextUsage"]["contextWindow"]
+            .as_u64()
+            .or_else(|| model["contextWindow"].as_u64());
+        let compact_at = window.map(|window| {
+            crate::providers::compaction_point(
+                &s.compaction,
+                model["provider"].as_str().unwrap_or(""),
+                model["id"].as_str().unwrap_or(""),
+                window,
+            )
+        });
+        let tokens = stats["contextUsage"]["tokens"].clone();
+        let recounting = tokens.is_null() && s.compacted.load(Ordering::Relaxed);
+        json!({
+            "tokens": tokens,
+            "window": window,
+            "compact_at": compact_at,
+            "compacting": compacting || state["isCompacting"] == true,
+            "recounting": recounting,
+            "seq": seq
+        })
+    }
+    fn next_usage_seq(&self) -> u64 {
+        self.usage_seq.fetch_add(1, Ordering::Relaxed) + 1
+    }
+    /// `session.usage` carries the section's totals and its context meter. Pi
+    /// answers the meter's questions over RPC, so the event is sent from a task
+    /// rather than from the event handler: after each turn, when a compaction
+    /// starts and ends, and after a model switch. Tasks finish in any order, so
+    /// each report takes its `seq` here, in event order, and a report that a
+    /// later one has overtaken is dropped rather than sent out of order.
+    fn emit_usage(&self, s: &Arc<Live>, compacting: bool) {
+        let Some(runtime) = self.weak.upgrade() else {
+            return;
+        };
+        let seq = self.next_usage_seq();
+        let session = s.clone();
+        let mut tasks = s.requests.lock().unwrap();
+        while tasks.try_join_next().is_some() {}
+        tasks.spawn(async move {
+            let usage = store::usage(&runtime.home, &session.stored).unwrap_or_else(|error| {
+                eprintln!(
+                    "Usage unavailable for {}: {}",
+                    session.stored, error.message
+                );
+                json!({})
+            });
+            let context = Self::context_usage(&session, compacting, seq).await;
+            if session.usage_sent.fetch_max(seq, Ordering::AcqRel) > seq {
+                return;
+            }
+            runtime.emit(
+                &session,
+                "session.usage",
+                json!({"usage":usage,"context":context}),
+            );
+        });
     }
     fn open_lock(&self, stored: &str) -> Arc<AsyncMutex<()>> {
         let mut locks = self.opening.lock().unwrap();
@@ -671,6 +758,8 @@ impl Runtime {
             options["provider"].as_str(),
         )
         .await?;
+        // What this Pi process is about to load, kept with the session.
+        let compaction = crate::providers::compaction_settings(&agent_dir);
         let mut pi = PiOptions::new(&self.pi_executable, &cwd, &agent_dir);
         // Staged attachments travel in one prompt record and Pi echoes it back.
         // The bound is checked while serializing; it does not preallocate RAM.
@@ -829,6 +918,9 @@ impl Runtime {
             permit: Mutex::new(Some(permit)),
             settled,
             tools: options["tools"].as_array().cloned().unwrap_or_default(),
+            compaction,
+            compacted: AtomicBool::new(false),
+            usage_sent: AtomicU64::new(0),
         });
         {
             let mut sessions = self.sessions.lock().unwrap();
@@ -1485,6 +1577,9 @@ impl Runtime {
                 return Ok(json!({"section":section,"submitted":true}));
             }
             let mut result = json!({"section":section,"messages":messages});
+            let seq = self.next_usage_seq();
+            result["context"] = Self::context_usage(&s, false, seq).await;
+            s.usage_sent.fetch_max(seq, Ordering::AcqRel);
             let (approval, clarify) = Self::pending_cards(&s);
             if let Some(payload) = clarify {
                 result["pending_clarify"] = payload;
@@ -1638,6 +1733,8 @@ impl Runtime {
                     "session.info",
                     json!({"model":target["id"],"provider":target["provider"]}),
                 );
+                // The new model's window and compaction point.
+                self.emit_usage(&s, false);
                 Ok(json!({"confirm_required":false}))
             }
             "approval.received" => Ok(
@@ -2946,7 +3043,7 @@ impl Runtime {
                     json!({})
                 });
                 self.emit(s, "message.complete", json!({"text":text,"error":error,"status":if error.is_some(){"error"}else{"complete"},"usage":usage}));
-                self.emit(s, "session.usage", json!({"usage":usage}));
+                self.emit_usage(s, false);
                 self.emit(s, "status.update", json!({"kind":"idle","text":""}));
                 s.settled.send_modify(|v| *v += 1);
                 let now = common::now();
@@ -3110,11 +3207,17 @@ impl Runtime {
                     json!({"kind":"waiting","text":"Retrying the model request"}),
                 );
             }
-            "compaction_start" | "auto_compaction_start" => self.emit(
-                s,
-                "status.update",
-                json!({"kind":"working","text":"Compacting conversation"}),
-            ),
+            "compaction_start" | "auto_compaction_start" => {
+                self.emit(
+                    s,
+                    "status.update",
+                    json!({"kind":"working","text":"Compacting conversation"}),
+                );
+                s.compacted.store(true, Ordering::Relaxed);
+                self.emit_usage(s, true);
+            }
+            // The meter recounts until the next reply measures the compacted context.
+            "compaction_end" | "auto_compaction_end" => self.emit_usage(s, false),
             _ => {}
         }
         Ok(())

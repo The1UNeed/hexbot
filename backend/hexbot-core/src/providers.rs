@@ -164,6 +164,28 @@ fn write_pi_settings(agent_dir: &Path, providers: &Value) -> Result<()> {
     settings["compaction"] = compaction;
     write_json(&path, &settings)
 }
+/// The `compaction` key of the bot's Pi `settings.json` as `write_pi_settings`
+/// left it. A Pi process keeps the settings it loaded at start, so the runtime
+/// reads this once when it starts a section's process and keeps it with the
+/// session, rather than reading a file a later section may have rewritten.
+pub fn compaction_settings(agent_dir: &Path) -> Value {
+    read_json(&agent_dir.join("settings.json"))
+        .map(|settings| settings["compaction"].clone())
+        .unwrap_or_default()
+}
+/// Where Pi compacts a section running `provider/model` with a `window` of
+/// tokens under these `compaction` settings: the window minus the reserve
+/// `write_pi_settings` gave that model, so the meter clients draw agrees with
+/// what Pi does. A model without an override takes the global value. Never
+/// below half the window, so a reserve that does not fit a window can not put
+/// the point at zero.
+pub fn compaction_point(compaction: &Value, provider: &str, model: &str, window: u64) -> u64 {
+    let reserve = compaction["modelOverrides"][format!("{provider}/{model}")]["reserveTokens"]
+        .as_u64()
+        .or_else(|| compaction["reserveTokens"].as_u64())
+        .unwrap_or(COMPACTION_RESERVE_TOKENS);
+    window.saturating_sub(reserve).max(window / 2)
+}
 fn key(home: &Path, p: &Value) -> Result<Option<String>> {
     let disabled = read_json(&home.join("providers-disabled.json"))?;
     if disabled[string(p, "name")] == true {
@@ -2555,5 +2577,28 @@ mod migration_tests {
         fs::write(&path, &bytes).unwrap();
         prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
         assert_eq!(fs::read(&path).unwrap(), bytes);
+        // The meter's compaction point comes from the same key: a listed model
+        // uses its override, a native small model its scaled one, a wide model
+        // the global reserve, and a reserve larger than the window leaves the
+        // point at half of it rather than zero.
+        let compaction = compaction_settings(&dir);
+        assert_eq!(compaction_point(&compaction, "custom", "small", 8192), 6144);
+        assert_eq!(
+            compaction_point(&compaction, "custom", "wide", 200000),
+            183616
+        );
+        assert_eq!(compaction_point(&compaction, "openai", "gpt-4", 8192), 6144);
+        assert_eq!(
+            compaction_point(&compaction, "anthropic", "claude-opus-5", 200000),
+            183616
+        );
+        assert_eq!(compaction_point(&compaction, "custom", "small", 1000), 500);
+        assert_eq!(
+            compaction_point(&compaction, "anthropic", "claude-opus-5", 20000),
+            10000
+        );
+        let missing = compaction_settings(&home.path().join("missing"));
+        assert!(missing.is_null());
+        assert_eq!(compaction_point(&missing, "x", "y", 100000), 83616);
     }
 }

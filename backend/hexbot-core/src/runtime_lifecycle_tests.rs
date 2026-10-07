@@ -175,6 +175,131 @@ async fn sessions_ignore_project_pi_settings_and_run_on_hexbots_compaction_budge
     );
     runtime.shutdown().await;
 }
+/// Sections report how full their context is and where Pi will compact it:
+/// Pi's own estimate, and the reserve Hexbot wrote for the model, from the
+/// settings the process loaded. The meter goes out with `session.usage` after
+/// a turn and around a compaction, in order, and says when it is recounting.
+#[tokio::test]
+async fn sections_report_context_usage_and_compaction_point() {
+    let (home, runtime, hub) = setup();
+    // The plain fake answers every command with no data: Pi without a model.
+    let opened = runtime
+        .call("alice", "hexbot.sections.open", &json!({"id":"first"}))
+        .await
+        .unwrap()
+        .unwrap();
+    let first_seq = opened["context"]["seq"].as_u64().unwrap();
+    assert_eq!(
+        opened["context"],
+        json!({"tokens":null,"window":null,"compact_at":null,"compacting":false,"recounting":false,"seq":first_seq})
+    );
+    runtime.close_stored("alice", "first").await.unwrap();
+    let script = home.path().join("pi.cjs");
+    let source = fs::read_to_string(&script).unwrap().replace(
+        "success:true,data:{}",
+        "success:true,data:c.type==='get_session_stats'?{contextUsage:{tokens:20000,contextWindow:32768,percent:61}}:c.type==='get_state'?{model:{provider:'openai',id:'fixture',contextWindow:32768}}:{}",
+    );
+    fs::write(script, source).unwrap();
+    let opened = runtime
+        .call("alice", "hexbot.sections.open", &json!({"id":"first"}))
+        .await
+        .unwrap()
+        .unwrap();
+    // "fixture" has an unknown window, so its reserve is a quarter of it (8192).
+    let seq = opened["context"]["seq"].as_u64().unwrap();
+    assert!(seq > first_seq);
+    assert_eq!(
+        opened["context"],
+        json!({"tokens":20000,"window":32768,"compact_at":24576,"compacting":false,"recounting":false,"seq":seq})
+    );
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    // The process keeps the settings it loaded; a file rewritten later (here,
+    // with a larger reserve for the model) does not move its compaction point.
+    assert_eq!(
+        s.compaction["modelOverrides"]["openai/fixture"]["reserveTokens"],
+        8192
+    );
+    fs::write(
+        home.path().join("profiles/owl/pi/settings.json"),
+        r#"{"compaction":{"reserveTokens":16384,"modelOverrides":{"openai/fixture":{"reserveTokens":16000}}}}"#,
+    )
+    .unwrap();
+    let mut events = hub.subscribe();
+    async fn next_usage(
+        events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
+    ) -> Value {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "session.usage" {
+                return event.frame["params"]["payload"].clone();
+            }
+        }
+    }
+    runtime
+        .event(&s, json!({"type":"compaction_start","reason":"threshold"}))
+        .unwrap();
+    let usage = next_usage(&mut events).await;
+    assert_eq!(usage["context"]["compacting"], true);
+    assert_eq!(usage["context"]["tokens"], 20000);
+    runtime
+        .event(&s, json!({"type":"compaction_end","reason":"threshold"}))
+        .unwrap();
+    assert_eq!(
+        next_usage(&mut events).await["context"]["compacting"],
+        false
+    );
+    runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
+    let usage = next_usage(&mut events).await;
+    assert_eq!(usage["context"]["compact_at"], 24576);
+    assert_eq!(usage["context"]["recounting"], false);
+    assert_eq!(usage["usage"]["total_tokens"], 0);
+    // Reports take their order from the events, not from which RPC answers
+    // first: a start report overtaken by the end report is dropped, so a fast
+    // compaction cannot leave the meter stuck on "Compacting".
+    let overtaken = runtime.usage_seq.load(Ordering::Relaxed) + 2;
+    s.usage_sent.store(overtaken, Ordering::Relaxed);
+    runtime.emit_usage(&s, true);
+    runtime.emit_usage(&s, false);
+    let mut tasks = std::mem::take(&mut *s.requests.lock().unwrap());
+    while tasks.join_next().await.is_some() {}
+    let usage = next_usage(&mut events).await;
+    assert_eq!(usage["context"]["compacting"], false);
+    assert_eq!(usage["context"]["seq"], overtaken);
+    runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
+    let usage = next_usage(&mut events).await;
+    assert_eq!(usage["context"]["compacting"], false);
+    assert_eq!(usage["context"]["seq"], overtaken + 1);
+    // After a compaction Pi has no token count until the next reply; the
+    // report says it is recounting rather than that nothing was measured.
+    let script = home.path().join("pi.cjs");
+    let source = fs::read_to_string(&script)
+        .unwrap()
+        .replace("tokens:20000,", "tokens:null,");
+    fs::write(script, source).unwrap();
+    runtime.close_stored("alice", "first").await.unwrap();
+    let opened = runtime
+        .call("alice", "hexbot.sections.open", &json!({"id":"first"}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(opened["context"]["tokens"], Value::Null);
+    assert_eq!(opened["context"]["recounting"], false);
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    runtime
+        .event(&s, json!({"type":"compaction_start","reason":"threshold"}))
+        .unwrap();
+    let usage = next_usage(&mut events).await;
+    assert_eq!(usage["context"]["compacting"], true);
+    assert_eq!(usage["context"]["recounting"], true);
+    runtime
+        .event(&s, json!({"type":"compaction_end","reason":"threshold"}))
+        .unwrap();
+    let usage = next_usage(&mut events).await;
+    assert_eq!(usage["context"]["compacting"], false);
+    assert_eq!(usage["context"]["recounting"], true);
+    runtime.shutdown().await;
+}
 
 #[tokio::test]
 async fn retire_skips_staged_attachments_busy_turns_and_pending_dialogs() {

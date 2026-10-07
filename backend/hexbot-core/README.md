@@ -102,7 +102,10 @@ it also installs over SSH when nobody is signed in at the screen.
   recent 20,000. Each model Hexbot lists in `models.json` gets a
   `modelOverrides` entry capping both at a quarter of its context window, so
   compaction fires at 75% of the window or later for every model instead of
-  at half of a 32k window. A model with no known window (an empty models.dev
+  at half of a 32k window. The context meter clients draw
+  (`hexbot.sections.open` and `session.usage`, `docs/api.md`) takes its
+  `compact_at` from this key as the section's Pi process loaded it at start,
+  so it always matches what that process does. A model with no known window (an empty models.dev
   cache, a custom or local server, an OpenRouter model missing from the
   catalog) is assumed to have 32,768 tokens and compacts near 24,500; set
   `model_overrides.<provider>.<model>.context_window` (or

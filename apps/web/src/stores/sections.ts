@@ -170,7 +170,7 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   async open(id) {
-    const { messages, pending_clarify, section } = await sectionsOpen(id)
+    const { context, messages, pending_clarify, section } = await sectionsOpen(id)
     const live = section.live_session_id
 
     set(state => ({
@@ -189,6 +189,10 @@ export const useSections = create<SectionsState>((set, get) => ({
             message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
           )
         )
+
+      if (context) {
+        useTranscripts.getState().sessionContext(live, context)
+      }
 
       if (pending_clarify) {
         useTranscripts.getState().clarifyRequest(live, pending_clarify, { notify: false })

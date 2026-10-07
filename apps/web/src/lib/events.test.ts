@@ -50,6 +50,50 @@ describe('event routing', () => {
     expect(transcript.usage?.total_tokens).toBe(12)
   })
 
+  it('keeps the context meter from session.usage beside the totals', () => {
+    const context = { compact_at: 183_616, compacting: false, tokens: 41_000, window: 200_000 }
+
+    routeEvent({
+      payload: { context, usage: { total_tokens: 12 } },
+      session_id: 'live-3',
+      type: 'session.usage'
+    } as unknown as GatewayEvent)
+
+    const transcript = useTranscripts.getState().bySession['live-3']!
+    expect(transcript.usage?.total_tokens).toBe(12)
+    expect(transcript.context).toEqual(context)
+
+    // An older daemon sends no context; the meter stays as it was.
+    routeEvent({
+      payload: { usage: { total_tokens: 20 } },
+      session_id: 'live-3',
+      type: 'session.usage'
+    } as unknown as GatewayEvent)
+    expect(useTranscripts.getState().bySession['live-3']!.context).toEqual(context)
+
+    // Reports carry a sequence number; one that arrives after a newer report
+    // (a compaction's start measured slower than its end) is dropped.
+    const ended = { ...context, compacting: false, recounting: true, seq: 8, tokens: null }
+    const started = { ...context, compacting: true, seq: 7 }
+
+    for (const report of [ended, started]) {
+      routeEvent({
+        payload: { context: report, usage: {} },
+        session_id: 'live-3',
+        type: 'session.usage'
+      } as unknown as GatewayEvent)
+    }
+
+    expect(useTranscripts.getState().bySession['live-3']!.context).toEqual(ended)
+
+    routeEvent({
+      payload: { context: { ...context, seq: 9 }, usage: {} },
+      session_id: 'live-3',
+      type: 'session.usage'
+    } as unknown as GatewayEvent)
+    expect(useTranscripts.getState().bySession['live-3']!.context?.seq).toBe(9)
+  })
+
   it('routes reasoning into the trace and the status line beside it', () => {
     const event = (type: string, text: string) =>
       ({ payload: { text }, session_id: 'live-2', type }) as unknown as GatewayEvent
