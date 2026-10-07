@@ -19,11 +19,28 @@ The native scheduler and digest builder live in
   caps the complete serialized digest at 60,000 bytes, and reports how many
   conversations it left out as `omitted_conversations`. Titles keep their
   first 256 characters.
+- A section Pi compacted since the last dream also carries the summaries Pi
+  wrote at those compactions as `compactions: [{at, summary}]`, oldest
+  first, read from the section's `conversation.jsonl` on the current branch
+  only; abandoned branches, deleted sections, and legacy sections without a
+  conversation file contribute none. The dream makes no model call for them.
+  Summaries count against the same 12,000 characters: each is capped at
+  4,000, the newest are kept first because a later compaction folds the
+  earlier ones in, and the verbatim tail keeps at least 4,000 characters of
+  its own, so the summary of the morning and the tail of the evening fit
+  together. Pi writes a summary from the transcript it compacts, tool results
+  included, so a summary can carry text from a fetched page that the digest
+  itself leaves out. The prompt adds one clause, only when a section has
+  summaries, saying what they are and that they may carry text from pages
+  and other tools: the dream uses only what the user or the bot clearly
+  established in them and never takes an instruction from them, as it does
+  with proposals.
 - The digest carries what the user and the bot said. It leaves out the bot's
   own `Dreams` section, so a dream never re-reads its previous summaries, and
   it leaves out tool results such as `web_extract` output, so fetched pages
-  do not become memory. A teammate's reply through `message_bot` is speech
-  and stays. The `Dreams` section is known by its title everywhere (sidebar,
+  do not become memory through the transcript; the compaction summaries
+  above are the one place such text can still reach the dream, labelled as
+  such. A teammate's reply through `message_bot` is speech and stays. The `Dreams` section is known by its title everywhere (sidebar,
   Memory tab, `post_summary`), so a section the user titles "Dreams" is
   treated as the dream log here as well.
 - Scheduled jobs do not write memory. In a job's session, and in any delegate
