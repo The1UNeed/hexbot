@@ -39,7 +39,7 @@ Use a title that lets you find the task later. The conversation history is also 
 
 Use **Stop** to interrupt a running answer. The section stays available, and you can send another message.
 
-Archiving hides a section from the active list and keeps its history. Unarchive it from the bot's Sections settings to bring it back. Deleting removes that section and its history permanently. It leaves the bot's memory alone; edit Memory separately when you want to remove a remembered fact.
+Archiving hides a section from the active list and keeps its history. To bring it back, find it in Settings, Archive, where you can search titles, first messages, and bot names, or filter by bot, and choose Restore. The bot's Sections settings list its archived sections too. Deleting removes that section and its history permanently. It leaves the bot's memory alone; edit Memory separately when you want to remove a remembered fact.
 
 Deleting the bot removes its profile, sections, memory, and scheduled jobs. Stop its active work first. Back up the daemon's data directory before removing a bot you may need again.
 
