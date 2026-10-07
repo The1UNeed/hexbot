@@ -60,7 +60,8 @@ struct State {
     unsaved: VecDeque<(Value, Option<String>, Option<Value>)>,
 }
 const MAX_HOPS: usize = 8;
-/// Frozen prompts built without anyone else's About you carry this tag.
+/// Frozen prompts built without anyone else's About you carry this tag. Only
+/// tagged rows are rebuilt at compaction (`refresh_prompt`).
 const PROMPT_VERSION: u64 = 2;
 struct Live {
     owner: String,
@@ -540,7 +541,8 @@ impl Runtime {
                 && options["prompt_version"].is_null()
                 && prompt.contains("\n\n# About the user\n")
             {
-                let prompt = self.session_prompt(&botrow, owner, bot, &cwd)?.0;
+                let tools = options["tools"].as_array().cloned().unwrap_or_default();
+                let prompt = self.session_prompt(&botrow, owner, bot, &cwd, &tools)?.0;
                 options["prompt"] = json!(prompt);
                 options["prompt_version"] = json!(PROMPT_VERSION);
                 store::open(&self.home)?.execute(
@@ -550,7 +552,6 @@ impl Runtime {
             }
             options
         } else {
-            let (mut prompt, skills) = self.session_prompt(&botrow, owner, bot, &cwd)?;
             let enabled = crate::connectors::toolsets(&self.home, bot)?;
             let mut tools = base_tools();
             tools.retain(|t| t["name"] != "message_bot" || enabled.iter().any(|v| v == "hexbot"));
@@ -567,6 +568,16 @@ impl Runtime {
                 tools.push(crate::dreaming::tool_descriptor());
             }
             tools.extend(crate::native_tools::descriptors(&self.home, bot)?);
+            if let Some(allowed) = restricted {
+                tools.retain(|t| {
+                    t["name"]
+                        .as_str()
+                        .is_some_and(|name| allowed.contains(&name))
+                });
+            }
+            // The prompt describes the tools frozen with the section, so it is
+            // built from them and tagged with their layout (`prompt_layout`).
+            let (mut prompt, skills) = self.session_prompt(&botrow, owner, bot, &cwd, &tools)?;
             let servers = if restricted.is_none() {
                 crate::connectors::mcp_servers(&self.home, bot)?
             } else {
@@ -593,15 +604,7 @@ impl Runtime {
                     mcp_names.push(json!(name));
                 }
             }
-            if !mcp_names.is_empty() {
-                prompt.push_str("\n\n# Connected tools\nThese servers are reachable from codemode scripts. Use searchTools() or describeNamespace(\"mcp__<name>\") to find their tools:\n");
-                for name in &mcp_names {
-                    prompt.push_str(&format!(
-                        "- mcp__{}\n",
-                        name.as_str().unwrap().replace('-', "_")
-                    ));
-                }
-            }
+            prompt.push_str(&connected_tools_block(&mcp_names));
             let mut config = common::read_config(&self.home)?;
             if let Ok(text) = fs::read_to_string(profile.join("config.yaml")) {
                 let local: Value =
@@ -621,13 +624,6 @@ impl Runtime {
                         config["model"][target] = value.clone();
                     }
                 }
-            }
-            if let Some(allowed) = restricted {
-                tools.retain(|t| {
-                    t["name"]
-                        .as_str()
-                        .is_some_and(|name| allowed.contains(&name))
-                });
             }
             let mode = session_approval(
                 &db::open(&self.home)?,
@@ -650,6 +646,7 @@ impl Runtime {
             let mut opts = json!({
                 "prompt": prompt,
                 "prompt_version": PROMPT_VERSION,
+                "prompt_layout": prompt_layout(&tools),
                 "mcpServers": mcp_names,
                 "tools": tools,
                 "approvalMode": mode,
@@ -954,12 +951,18 @@ impl Runtime {
         );
         Ok(s)
     }
+    /// The section's prompt: its fixed lines and guidance around the bot's
+    /// name, soul, memory and About you, then the team block and the skill
+    /// catalog. `tools` are the daemon tools frozen with the section; the
+    /// team block follows them, so a rebuilt prompt never points at a tool
+    /// the section lacks.
     fn session_prompt(
         &self,
         botrow: &Value,
         owner: &str,
         bot: &str,
         cwd: &Path,
+        tools: &[Value],
     ) -> Result<(String, Vec<Value>)> {
         let profile = self.home.join("profiles").join(bot);
         let soul = fs::read_to_string(profile.join("SOUL.md")).unwrap_or_default();
@@ -976,24 +979,29 @@ impl Runtime {
             String::new()
         };
         let prompt = format!(
-            "You are {}, a Hexbot bot. Use your tools to complete the user's requests. Conversations persist. Keep private information within this user's conversations.\n\n# Soul\n{}\n\n# Memory\n{}{}\n\nUse the memory tool for memory and daily notes. Use hexbot_soul to change your persona and tell the user when you do. Never modify the user's About you text.",
-            botrow["display_name"].as_str().unwrap_or(bot),
+            "{}{}{}{}{}",
+            PROMPT_INTRO.replace("{name}", botrow["display_name"].as_str().unwrap_or(bot)),
             soul,
+            PROMPT_MEMORY,
             memory,
             about
         );
         let prompt = format!(
-            "{}\n\n{}\n\nYour bot files are in {}\nWorking directory: {}\nKeep your notes in your own bot files. Other bots keep their own notes.",
+            "{}{}\n\n{}\n\n{}{}",
             prompt,
-            format_args!("{}\n\n{}", crate::settings::PLATFORM_HINT, HEXBOT_GUIDANCE),
-            profile.display(),
-            cwd.display()
+            PROMPT_RULES,
+            crate::settings::PLATFORM_HINT,
+            HEXBOT_GUIDANCE,
+            PROMPT_FILES
+                .replace("{profile}", &profile.display().to_string())
+                .replace("{cwd}", &cwd.display().to_string())
         );
-        let prompt = format!("{}{}", prompt, self.team_block(botrow, owner, bot)?);
+        let prompt = format!("{}{}", prompt, self.team_block(botrow, owner, bot, tools)?);
         let skills = crate::catalog::enabled_skills(&self.home, bot)?;
         let prompt = format!(
-            "{}\n\n# Available skills\nLoad a skill with skill_view before using it.\n{}",
+            "{}{}{}",
             prompt,
+            PROMPT_SKILLS,
             skills
                 .iter()
                 .map(|v| format!(
@@ -1005,6 +1013,68 @@ impl Runtime {
                 .join("\n")
         );
         Ok((prompt, skills))
+    }
+    /// The section's prompt as the open path would build it now. The extension
+    /// asks at compaction, the one moment the history cache is already lost, so
+    /// a long section picks up its bot's current soul, memory and About you.
+    /// Returns `{text}` when the prompt changed and null when it is
+    /// byte-identical or the row was frozen under another layout (its fixed
+    /// lines, guidance or tool names). Tools never change, so only the bot's
+    /// name, soul, memory, About you, teammates and skill catalog can.
+    fn refresh_prompt(&self, s: &Live) -> Result<Value> {
+        let conn = store::open(&self.home)?;
+        let (stored, raw): (String, String) = conn.query_row(
+            "SELECT prompt,options FROM native_sessions WHERE stored_id=? AND owner=?",
+            params![s.stored, s.owner],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let mut options: Value =
+            serde_json::from_str(&raw).map_err(|e| Error::new(5200, e.to_string()))?;
+        // An untagged row was frozen by an older layout, with inline skills and
+        // its own tools; a rebuilt prompt would not match them. Nor is a row
+        // whose fixed lines, guidance or tool names have changed since: its
+        // frozen schemas would not know what a current prompt describes.
+        let tools = options["tools"].as_array().cloned().unwrap_or_default();
+        if options["prompt_version"] != PROMPT_VERSION
+            || options["prompt_layout"] != json!(prompt_layout(&tools))
+        {
+            return Ok(Value::Null);
+        }
+        let botrow = common::rows(
+            &db::open(&self.home)?,
+            "SELECT * FROM bots WHERE name=?",
+            &[&s.bot],
+        )?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::new(4205, "bot not found"))?;
+        let settings = crate::settings::get(&self.home)?;
+        let configured = common::configured_workdir(
+            &[
+                options["workdirOverride"].as_str(),
+                botrow["workdir"].as_str(),
+            ],
+            &settings,
+        );
+        let cwd = common::resolve_workdir(&self.home, configured)?;
+        let cwd = options["cwd"]
+            .as_str()
+            .and_then(|saved| common::saved_workdir(&self.home, saved))
+            .unwrap_or(cwd);
+        let (mut prompt, skills) = self.session_prompt(&botrow, &s.owner, &s.bot, &cwd, &tools)?;
+        prompt.push_str(&connected_tools_block(
+            options["mcpServers"].as_array().map_or(&[], Vec::as_slice),
+        ));
+        if prompt == stored {
+            return Ok(Value::Null);
+        }
+        options["prompt"] = json!(prompt);
+        options["skills"] = json!(skills);
+        conn.execute(
+            "UPDATE native_sessions SET prompt=?,options=? WHERE stored_id=?",
+            params![prompt, options.to_string(), s.stored],
+        )?;
+        Ok(json!({"text":prompt}))
     }
     async fn submit(
         &self,
@@ -2383,7 +2453,10 @@ impl Runtime {
         }
         Ok(())
     }
-    fn team_block(&self, row: &Value, owner: &str, bot: &str) -> Result<String> {
+    /// Teammates are listed when `message_bot` is among the section's tools,
+    /// which the open path takes from the `hexbot` toolset and a rebuild from
+    /// the frozen list, so the block never names a tool the section lacks.
+    fn team_block(&self, row: &Value, owner: &str, bot: &str, tools: &[Value]) -> Result<String> {
         if row["owner_id"] != owner {
             return Ok(String::new());
         }
@@ -2397,10 +2470,7 @@ impl Runtime {
                 &own
             }
         );
-        if crate::connectors::toolsets(&self.home, bot)?
-            .iter()
-            .any(|v| v == "hexbot")
-        {
+        if tools.iter().any(|t| t["name"] == "message_bot") {
             let teammates = common::rows(
                 &db::open(&self.home)?,
                 "SELECT * FROM bots WHERE owner_id=? AND name<>? ORDER BY last_activity_at DESC,name LIMIT 24",
@@ -2571,6 +2641,7 @@ impl Runtime {
             "hexbot_todo_context" => {
                 Ok(json!({"text":crate::native_product_tools::todo_context(&self.home,&s.stored)?}))
             }
+            "hexbot_session_prompt" => self.refresh_prompt(s),
             "delegate_task" => self.delegate(s, args).await,
             "message_bot" => {
                 self.require_toolset(s, "hexbot", name)?;
@@ -2832,7 +2903,7 @@ impl Runtime {
                     );
                 }
                 Ok(
-                    json!({"soul":fs::read_to_string(path).unwrap_or_default(),"cap":4000,"saved":args["text"].is_string(),"note":"Changes apply to new sections. Tell the user what changed."}),
+                    json!({"soul":fs::read_to_string(path).unwrap_or_default(),"cap":4000,"saved":args["text"].is_string(),"note":"Changes apply to new sections, and to a long section when it next compacts. Tell the user what changed."}),
                 )
             }
             _ => {
@@ -3463,6 +3534,64 @@ Write one self-contained page with inline <style> and <script>, up to 512 KB. Pu
 The page sits borderless on the chat background, as wide as the chat column (about 720px on a computer, 360px on a phone), and its height follows the content up to 2000px. Use fluid widths with no outer padding, card, border or title banner; give charts fixed pixel heights; never size html or body to the viewport (100vh, height:100%).\n\
 Hexbot sets its theme as CSS variables on :root, following the user's light or dark mode live: --background (the chat background), --foreground, --muted (secondary text), --surface and --surface-2 (raised areas), --border, --accent and --accent-foreground, --success, --warning, --danger, --info, --chart-1 to --chart-6 (series colours), --radius, --font-sans, --font-mono. The base style sets the page background, text colour and font from them and removes the body margin; your own CSS overrides it.";
 
+/// The prompt's fixed lines around the bot's own texts (`session_prompt`).
+const PROMPT_INTRO: &str = "You are {name}, a Hexbot bot. Use your tools to complete the user's requests. Conversations persist. Keep private information within this user's conversations.\n\n# Soul\n";
+const PROMPT_MEMORY: &str = "\n\n# Memory\n";
+const PROMPT_RULES: &str = "\n\nUse the memory tool for memory and daily notes. Use hexbot_soul to change your persona and tell the user when you do. Never modify the user's About you text.";
+const PROMPT_FILES: &str = "\n\nYour bot files are in {profile}\nWorking directory: {cwd}\nKeep your notes in your own bot files. Other bots keep their own notes.";
+const PROMPT_SKILLS: &str =
+    "\n\n# Available skills\nLoad a skill with skill_view before using it.\n";
+const CONNECTED_TOOLS: &str = "\n\n# Connected tools\nThese servers are reachable from codemode scripts. Use searchTools() or describeNamespace(\"mcp__<name>\") to find their tools:\n";
+/// Everything in a prompt that is not the bot's name, soul, memory, About
+/// you, teammates or skill catalog: the fixed lines, the guidance and the
+/// names of the daemon tools frozen with the section. Stored with the
+/// section as `prompt_layout`; `refresh_prompt` rebuilds a prompt only while
+/// the tag is current, so a section frozen before a guidance or tool change
+/// is never told about an action its frozen schemas reject.
+fn prompt_layout(tools: &[Value]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    for part in [
+        PROMPT_INTRO,
+        PROMPT_MEMORY,
+        PROMPT_RULES,
+        crate::settings::PLATFORM_HINT,
+        HEXBOT_GUIDANCE,
+        PROMPT_FILES,
+        crate::team::HEADER,
+        crate::team::REQUEST_GUIDANCE,
+        crate::team::REPLY_GUIDANCE,
+        PROMPT_SKILLS,
+        CONNECTED_TOOLS,
+    ] {
+        hash.update(part);
+        hash.update([0]);
+    }
+    let mut names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+    names.sort_unstable();
+    for name in names {
+        hash.update(name);
+        hash.update([0]);
+    }
+    format!("{:x}", hash.finalize())
+}
+/// The prompt's closing block naming the section's connected servers. Built
+/// from the names frozen in `options.mcpServers`, so a rebuilt prompt lists
+/// the same namespaces as the one it replaces.
+fn connected_tools_block(mcp_names: &[Value]) -> String {
+    let mut block = String::new();
+    if mcp_names.is_empty() {
+        return block;
+    }
+    block.push_str(CONNECTED_TOOLS);
+    for name in mcp_names {
+        block.push_str(&format!(
+            "- mcp__{}\n",
+            name.as_str().unwrap_or("").replace('-', "_")
+        ));
+    }
+    block
+}
 /// Visuals show only in a bot's own sections: not in rooms, threads between
 /// bots, or the hidden sessions behind scheduled jobs and `hexbot send`.
 fn shows_visuals(home: &Path, stored: &str) -> Result<bool> {
@@ -4248,8 +4377,82 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         assert!(quoted.contains("quoted heading"));
         runtime.close_stored("bob", "shared").await.unwrap();
         common::atomic_write(&home.path().join("profiles/owl/SOUL.md"), b"Changed again").unwrap();
-        runtime.open_session("bob", "owl", "shared").await.unwrap();
+        let shared = runtime.open_session("bob", "owl", "shared").await.unwrap();
         assert_eq!(frozen("shared").0, quoted);
+        // At compaction the prompt is rebuilt once, by the open path's rules:
+        // the shared bot still gets no About you.
+        let fresh = runtime
+            .tool(&shared, "hexbot_session_prompt", &json!({}))
+            .await
+            .unwrap();
+        let (rebuilt, rebuilt_options) = frozen("shared");
+        assert_eq!(fresh["text"], rebuilt);
+        assert_ne!(rebuilt, quoted);
+        assert!(rebuilt.contains("# Soul\nChanged again"));
+        assert!(rebuilt.contains("quoted heading"));
+        assert!(!rebuilt.contains("Bob likes tea"));
+        assert!(!rebuilt.contains("Private owner facts"));
+        assert_eq!(rebuilt_options["prompt"], rebuilt);
+        assert_eq!(rebuilt_options["prompt_version"], PROMPT_VERSION);
+        // Nothing changed since: the prompt stays byte-identical.
+        assert_eq!(
+            runtime
+                .tool(&shared, "hexbot_session_prompt", &json!({}))
+                .await
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(frozen("shared"), (rebuilt.clone(), rebuilt_options));
+        // Between compactions the rebuilt prompt is frozen like the first one.
+        common::atomic_write(
+            &home.path().join("profiles/owl/SOUL.md"),
+            b"Changed once more",
+        )
+        .unwrap();
+        runtime.close_stored("bob", "shared").await.unwrap();
+        runtime.open_session("bob", "owl", "shared").await.unwrap();
+        assert_eq!(frozen("shared").0, rebuilt);
+        // The owner's own section keeps its About you when rebuilt.
+        let first = runtime.open_session("alice", "owl", "first").await.unwrap();
+        let fresh = runtime
+            .tool(&first, "hexbot_session_prompt", &json!({}))
+            .await
+            .unwrap();
+        assert!(
+            fresh["text"]
+                .as_str()
+                .unwrap()
+                .contains("# Soul\nChanged once more")
+        );
+        assert!(
+            fresh["text"]
+                .as_str()
+                .unwrap()
+                .contains("# About the user\nPrivate owner facts")
+        );
+        assert_eq!(frozen("first").0, fresh["text"]);
+        // A row frozen by an older layout keeps its prompt through compaction.
+        let (old, mut old_options) = frozen("first");
+        old_options
+            .as_object_mut()
+            .unwrap()
+            .remove("prompt_version");
+        store::open(home.path())
+            .unwrap()
+            .execute(
+                "UPDATE native_sessions SET options=? WHERE stored_id='first'",
+                [old_options.to_string()],
+            )
+            .unwrap();
+        common::atomic_write(&home.path().join("profiles/owl/SOUL.md"), b"Changed last").unwrap();
+        assert_eq!(
+            runtime
+                .tool(&first, "hexbot_session_prompt", &json!({}))
+                .await
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(frozen("first"), (old, old_options));
         runtime.shutdown().await;
     }
     /// Tool rows reach clients under the names and previews they label, live and restored.

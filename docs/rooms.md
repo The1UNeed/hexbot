@@ -134,7 +134,8 @@ The native daemon provides `message_bot {to, text, wait: bool}` for bots:
   `# Team` block before its skills: how other bots see it and, when its
   `hexbot` toolset is on, the owner's other bots (up to 24) with their
   descriptions. Like the rest of the prompt it is frozen with the section;
-  new teammates and changed descriptions reach new sections only.
+  new teammates and changed descriptions reach new sections, and a running
+  section when it next compacts.
 - Delivery is in-process: resume or create the target bot's thread with the
   sender, a section with `peer_bot` set to the sender (one per pair, titled
   `From <sender>`), submit the text there as a hidden user-role message

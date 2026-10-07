@@ -151,7 +151,26 @@ it also installs over SSH when nobody is signed in at the screen.
   started with.
 - A conversation keeps its system prompt, skill catalog and tool definitions
   across turns and daemon restarts. Skill bodies and grants resolve live. Runtime settings outside the prompt may
-  resolve live.
+  resolve live. The one exception is compaction (automatic or `/compact`):
+  the extension's `session_compact` handler asks the daemon for the section's
+  prompt over the bridge (`hexbot_session_prompt`), the daemon rebuilds it
+  with the same `session_prompt` path and rules as at section open (no About
+  you for a shared bot in another user's room, skills by name, the frozen
+  connected server namespaces), and stores and returns it only when the text
+  differs; otherwise null and nothing changes. The next turn sends the new
+  prompt. Tool declarations never change, so for Anthropic-style requests
+  (tools, then system, then messages, each with its own cache breakpoint)
+  the tools prefix stays cached and the cost is one cache write of the
+  system prompt per compaction that changed it, on top of the compacted
+  history Pi rewrites anyway. A rebuilt prompt must match the section's
+  frozen tool schemas, so each row carries `prompt_layout`, a hash of the
+  prompt's fixed lines, `HEXBOT_GUIDANCE` and the frozen tool names; the
+  team block lists teammates when `message_bot` is among those tools. A row
+  whose tag is not the current one, or without the current
+  `prompt_version` tag, was frozen under another layout and is never
+  rebuilt: only the bot's name, soul, memory, About you, teammates and
+  skill catalog ever change. Guidance and tool changes still reach new
+  sections only.
   Native live session IDs remain distinct from stored section IDs.
 - HTTP cookies, pairing, device revocation, JSON-RPC names, error objects,
   owner-scoped events, replay sequence numbers, and replay epochs preserve the

@@ -104,6 +104,11 @@ export default function hexbot(pi: any) {
   };
   let live = config;
   let primary: any;
+  // The system prompt is frozen with the section, with one exception: at
+  // compaction, when the history cache is already lost, the daemon rebuilds it
+  // so a long section picks up its bot's current soul, memory and About you.
+  // The tool declarations never change, so their cached prefix survives.
+  let prompt = config.prompt;
   const refresh = async (ctx: any) => { live = {...config, ...await bridge(ctx, 'hexbot_session_settings')}; };
   // Resolve credentials in memory on the first prompt. RPC cannot answer a
   // bridge request during session_start, before its stdin reader is attached.
@@ -367,13 +372,21 @@ export default function hexbot(pi: any) {
     const model = ctx.modelRegistry.find(live.provider, live.model) ?? primary;
     if (model && (ctx.model?.provider !== model.provider || ctx.model?.id !== model.id)) await pi.setModel(model);
     fallbackUsed = false; iterations = 0; limitReached = false;
-    return {systemPrompt: config.prompt};
+    return {systemPrompt: prompt};
   });
   pi.on('session_compact', async (_event: any, ctx: any) => {
-    const raw = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({name: 'hexbot_todo_context', args: {}}));
-    if (!raw) return;
-    const reply = JSON.parse(raw);
-    if (reply.result?.text) pi.sendMessage({customType: 'hexbot_todo', content: reply.result.text, display: false});
+    // The todo list and the prompt are two requests; one failing or empty
+    // never stops the other.
+    try {
+      const todo = await bridge(ctx, 'hexbot_todo_context');
+      if (todo?.text) pi.sendMessage({customType: 'hexbot_todo', content: todo.text, display: false});
+    } catch {}
+    // Null means the prompt is unchanged. A failed request keeps the prompt the
+    // section had, which is what every turn before this one used.
+    try {
+      const fresh = await bridge(ctx, 'hexbot_session_prompt');
+      if (typeof fresh?.text === 'string' && fresh.text) prompt = fresh.text;
+    } catch {}
   });
   pi.on('agent_before_settle', async (event: any, ctx: any) => {
     if (limitReached || event.outcome !== 'error' || fallbackUsed) return;

@@ -826,6 +826,33 @@ async fn mcp_names_and_prompt_are_frozen_without_credentials_or_discovery() {
     let resumed = &processes(home.path())[1];
     assert_eq!(resumed["config"]["mcpServers"], json!(["fixture-one"]));
     assert_eq!(resumed["config"]["prompt"], prompt);
+    // A prompt rebuilt at compaction lists the frozen namespaces, not the
+    // servers configured since.
+    let s = runtime
+        .sessions
+        .lock()
+        .unwrap()
+        .get("first")
+        .unwrap()
+        .clone();
+    fs::write(home.path().join("profiles/owl/SOUL.md"), "Refreshed soul").unwrap();
+    let fresh = runtime
+        .tool(&s, "hexbot_session_prompt", &json!({}))
+        .await
+        .unwrap();
+    let text = fresh["text"].as_str().unwrap();
+    assert!(text.contains("# Soul\nRefreshed soul"));
+    assert!(text.ends_with("# Connected tools\nThese servers are reachable from codemode scripts. Use searchTools() or describeNamespace(\"mcp__<name>\") to find their tools:\n- mcp__fixture_one\n"));
+    assert!(!text.contains("mcp__new"));
+    assert_eq!(
+        text.rsplit_once("\n\n# Connected tools").unwrap().1,
+        prompt
+            .as_str()
+            .unwrap()
+            .rsplit_once("\n\n# Connected tools")
+            .unwrap()
+            .1
+    );
     runtime.shutdown().await;
 }
 
@@ -2020,8 +2047,11 @@ fn team_prompt_uses_descriptions_owner_scope_toolsets_order_and_limit() {
     )
     .unwrap();
     let mut row = bot_row(home.path(), "owl").unwrap();
+    // The block follows the tools frozen with the section, not the toolset
+    // at the time of a rebuild: message_bot lists the teammates.
+    let messaging = [json!({"name":"memory"}), json!({"name":"message_bot"})];
     let prompt = runtime
-        .session_prompt(&row, "alice", "owl", &home.workspace())
+        .session_prompt(&row, "alice", "owl", &home.workspace(), &messaging)
         .unwrap()
         .0;
     assert!(prompt.contains("Other bots see you as: User description"));
@@ -2040,27 +2070,27 @@ fn team_prompt_uses_descriptions_owner_scope_toolsets_order_and_limit() {
     row["description"] = json!(" \n");
     assert!(
         runtime
-            .team_block(&row, "alice", "owl")
+            .team_block(&row, "alice", "owl", &messaging)
             .unwrap()
             .contains("Other bots see you as: Auto description")
     );
     row["auto_description"] = Value::Null;
     assert!(
         runtime
-            .team_block(&row, "alice", "owl")
+            .team_block(&row, "alice", "owl", &messaging)
             .unwrap()
             .contains("Other bots see you as: Title")
     );
     row["title"] = Value::Null;
     assert!(
         runtime
-            .team_block(&row, "alice", "owl")
+            .team_block(&row, "alice", "owl", &messaging)
             .unwrap()
             .contains("Other bots see you as: no description yet")
     );
     assert!(
         !runtime
-            .session_prompt(&row, "bob", "owl", &home.workspace())
+            .session_prompt(&row, "bob", "owl", &home.workspace(), &messaging)
             .unwrap()
             .0
             .contains("# Team")
@@ -2068,15 +2098,14 @@ fn team_prompt_uses_descriptions_owner_scope_toolsets_order_and_limit() {
     for n in 0..25 {
         conn.execute("INSERT INTO bots(name,owner_id,description,last_activity_at) VALUES(?,'alice','Helps',3)", [format!("helper{n:02}")]).unwrap();
     }
-    let block = runtime.team_block(&row, "alice", "owl").unwrap();
+    let block = runtime
+        .team_block(&row, "alice", "owl", &messaging)
+        .unwrap();
     assert_eq!(block.lines().filter(|s| s.starts_with("- ")).count(), 24);
     assert!(!block.contains("helper24"));
-    fs::write(
-        h.join("profiles/owl/config.yaml"),
-        "tools:\n  enabled_toolsets: []\n",
-    )
-    .unwrap();
-    let block = runtime.team_block(&row, "alice", "owl").unwrap();
+    let block = runtime
+        .team_block(&row, "alice", "owl", &[json!({"name":"memory"})])
+        .unwrap();
     assert!(block.contains(crate::team::REPLY_GUIDANCE));
     assert!(!block.contains(crate::team::REQUEST_GUIDANCE));
     assert!(!block.contains("- helper"));
@@ -2121,6 +2150,99 @@ async fn team_prompt_stays_frozen_across_profile_changes_and_restart() {
     .unwrap();
     open(&restarted).await;
     assert_eq!(saved(), before);
+    // Rebuilt at compaction, the block follows the tools frozen with the
+    // section: message_bot was frozen, so the teammates stay listed with their
+    // current descriptions although the toolset is off now.
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "tools:\n  enabled_toolsets: []\n",
+    )
+    .unwrap();
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("UPDATE bots SET description='Edits prose' WHERE name='cat';")
+        .unwrap();
+    let first = restarted
+        .sessions
+        .lock()
+        .unwrap()
+        .get("first")
+        .unwrap()
+        .clone();
+    let rebuilt = restarted
+        .tool(&first, "hexbot_session_prompt", &json!({}))
+        .await
+        .unwrap();
+    let text = rebuilt["text"].as_str().unwrap();
+    assert!(text.contains("Changed description"));
+    assert!(text.contains("- cat (cat): Edits prose"));
+    assert!(text.contains(crate::team::REQUEST_GUIDANCE));
+    assert_eq!(saved(), text);
+    // A section frozen without message_bot gains no teammates when the
+    // toolset is turned on later.
+    db::open(home.path())
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO sections(id,bot,owner_id,title) VALUES('second','owl','alice','Second');",
+        )
+        .unwrap();
+    let second = restarted
+        .open_session("alice", "owl", "second")
+        .await
+        .unwrap();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "tools:\n  enabled_toolsets: [hexbot]\n",
+    )
+    .unwrap();
+    fs::write(home.path().join("profiles/owl/SOUL.md"), "A new soul").unwrap();
+    let rebuilt = restarted
+        .tool(&second, "hexbot_session_prompt", &json!({}))
+        .await
+        .unwrap();
+    let text = rebuilt["text"].as_str().unwrap();
+    assert!(text.contains("# Soul\nA new soul"));
+    assert!(text.contains(crate::team::REPLY_GUIDANCE));
+    assert!(!text.contains(crate::team::REQUEST_GUIDANCE));
+    assert!(!text.contains("- cat (cat)"));
+    // A section frozen under other fixed lines, guidance or tool names (an
+    // older build) keeps its prompt: its schemas would not match a new one.
+    let conn = store::open(home.path()).unwrap();
+    let raw: String = conn
+        .query_row(
+            "SELECT options FROM native_sessions WHERE stored_id='second'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut options: Value = serde_json::from_str(&raw).unwrap();
+    assert!(
+        options["prompt_layout"]
+            .as_str()
+            .is_some_and(|tag| tag.len() == 64)
+    );
+    options["prompt_layout"] = json!("an older layout");
+    conn.execute(
+        "UPDATE native_sessions SET options=? WHERE stored_id='second'",
+        [options.to_string()],
+    )
+    .unwrap();
+    fs::write(home.path().join("profiles/owl/SOUL.md"), "A newer soul").unwrap();
+    assert_eq!(
+        restarted
+            .tool(&second, "hexbot_session_prompt", &json!({}))
+            .await
+            .unwrap(),
+        Value::Null
+    );
+    let kept: String = conn
+        .query_row(
+            "SELECT prompt FROM native_sessions WHERE stored_id='second'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, text);
     restarted.shutdown().await;
 }
 

@@ -331,7 +331,8 @@ replace its own `SOUL.md` (capped at 4000 characters). It sits in its own
 plugin toolset, `hexbot-soul`, which is never written to
 `known_plugin_toolsets`, so the core keeps it on for every bot. A write calls
 `profiles.configure {soul}` and broadcasts `hexbot.bots.changed`; it reaches
-new sections only, since a running section's prompt is frozen. The chat
+new sections, and a running section when it next compacts, since a section's
+prompt is otherwise frozen. The chat
 shows a "Soul updated" mark under the bubble, as it shows "Memory updated"
 for the builtin memory tool and "Note added" for its `note` action.
 

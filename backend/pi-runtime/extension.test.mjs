@@ -23,7 +23,7 @@ function fixture(t, mode = 'manual', enabledToolsets = [], extra = {}) {
   const config = {home, cwd:home, prompt:'Frozen prompt', tools:[], enabledToolsets, provider:'test', model:'primary', ...extra};
   const path = join(home, 'config.json'); writeFileSync(path, JSON.stringify(config));
   process.env.HEXBOT_SESSION_CONFIG = path;
-  const handlers = {}, tools = {}, requests = [], choices = [], models = [], registrations = [], notices = [], activeTools = [];
+  const handlers = {}, tools = {}, requests = [], choices = [], models = [], registrations = [], notices = [], activeTools = [], sent = [];
   const settings = {...config, approvalMode:mode, mcpState:Object.fromEntries((config.mcpServers ?? []).map(name => [name,{revision:'initial'}]))};
   const ctx = {model:{provider:'test',id:'primary'}, modelRegistry:{find:(provider,id)=>({provider,id})}, ui:{
     async input(title) {
@@ -35,7 +35,7 @@ function fixture(t, mode = 'manual', enabledToolsets = [], extra = {}) {
     notify:(message, type)=>notices.push({message,type}),
     async select(title, options) {choices.push({...JSON.parse(title.slice('__HEXBOT_APPROVAL__'.length)), options}); return ctx.choice ?? 'deny';}
   }};
-  const pi = {setActiveTools:names=>activeTools.push(names), getAllTools:()=>Object.values(tools), unregisterMcpServer:()=>{}, registerMcpServer:(name, config)=>registrations.push({name,config}), on:(name,handler)=>handlers[name]=handler, registerTool:tool=>tools[tool.name]=tool, registerProvider(){}, async setModel(model){models.push(model);ctx.model=model;return true;}, sendMessage(){}, getThinkingLevel(){}};
+  const pi = {setActiveTools:names=>activeTools.push(names), getAllTools:()=>Object.values(tools), unregisterMcpServer:()=>{}, registerMcpServer:(name, config)=>registrations.push({name,config}), on:(name,handler)=>handlers[name]=handler, registerTool:tool=>tools[tool.name]=tool, registerProvider(){}, async setModel(model){models.push(model);ctx.model=model;return true;}, sendMessage(message){sent.push(message);}, getThinkingLevel(){}};
   hexbot(pi);
   let calls = 0;
   const gate = (toolName, input, toolCallId = `call-${++calls}`) => handlers.tool_call({toolName, input, toolCallId}, ctx);
@@ -46,7 +46,7 @@ function fixture(t, mode = 'manual', enabledToolsets = [], extra = {}) {
     assert.equal(await gate(toolName, checked, toolCallId), undefined);
     return tools[toolName].execute(toolCallId, input, undefined, undefined, ctx);
   };
-  return {home, handlers, tools, settings, ctx, requests, choices, models, registrations, notices, activeTools, gate, run, swap};
+  return {home, handlers, tools, settings, ctx, requests, choices, models, registrations, notices, activeTools, sent, gate, run, swap};
 }
 
 test('case cannot disguise credential or host configuration paths on case-insensitive file systems', {skip: process.platform !== 'darwin'}, async t => {
@@ -149,6 +149,57 @@ test('each new turn restores primary and uses live fallback without changing pro
   await f.handlers.before_agent_start({},f.ctx);
   await f.handlers.agent_before_settle({outcome:'error'},f.ctx);
   assert.equal(f.ctx.model.id,'replacement');
+});
+test('the prompt is rebuilt at compaction only, and a failed request keeps the old one', async t => {
+  const f = fixture(t);
+  let answer = () => JSON.stringify({result:null});
+  let todo = title => input(title);
+  const input = f.ctx.ui.input;
+  f.ctx.ui.input = async title => {
+    const request = JSON.parse(title.slice('__HEXBOT_TOOL__'.length));
+    if (request.name === 'hexbot_todo_context') return todo(title);
+    if (request.name !== 'hexbot_session_prompt') return input(title);
+    f.requests.push(request);
+    return answer();
+  };
+  const tools = Object.keys(f.tools);
+  assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Frozen prompt'});
+  assert.ok(!f.requests.some(r => r.name === 'hexbot_session_prompt'), 'a turn never asks');
+  // Unchanged bot files: null, and the prompt stays.
+  await f.handlers.session_compact({}, f.ctx);
+  assert.deepEqual(f.requests.filter(r => r.name !== 'hexbot_session_settings' && r.name !== 'hexbot_mcp_servers').map(r => r.name), ['hexbot_todo_context', 'hexbot_session_prompt']);
+  assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Frozen prompt'});
+  answer = () => JSON.stringify({result:{text:'Rebuilt prompt'}});
+  await f.handlers.session_compact({}, f.ctx);
+  assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Rebuilt prompt'});
+  // The daemon refused, then the bridge broke: compaction completes, the prompt stays.
+  answer = () => JSON.stringify({error:'daemon is shutting down'});
+  await f.handlers.session_compact({}, f.ctx);
+  assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Rebuilt prompt'});
+  answer = () => { throw new Error('bridge down'); };
+  await f.handlers.session_compact({}, f.ctx);
+  assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Rebuilt prompt'});
+  answer = () => '';
+  await f.handlers.session_compact({}, f.ctx);
+  assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Rebuilt prompt'});
+  assert.equal(f.requests.filter(r => r.name === 'hexbot_todo_context').length, 5);
+  assert.deepEqual(Object.keys(f.tools), tools);
+  // The two requests are independent: an interrupted or failed todo request
+  // still lets the prompt change, and a todo arrives while the prompt fails.
+  answer = () => JSON.stringify({result:{text:'Rebuilt again'}});
+  todo = async () => '';
+  await f.handlers.session_compact({}, f.ctx);
+  assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Rebuilt again'});
+  answer = () => JSON.stringify({result:{text:'Rebuilt a third time'}});
+  todo = async () => JSON.stringify({error:'todo store is busy'});
+  await f.handlers.session_compact({}, f.ctx);
+  assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Rebuilt a third time'});
+  assert.deepEqual(f.sent, []);
+  answer = () => { throw new Error('bridge down'); };
+  todo = async () => JSON.stringify({result:{text:'- [ ] finish the export'}});
+  await f.handlers.session_compact({}, f.ctx);
+  assert.deepEqual(f.sent.map(m => m.content), ['- [ ] finish the export']);
+  assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Rebuilt a third time'});
 });
 test('credential file symlinks cannot disguise protected names', t => {
   const f=fixture(t);
