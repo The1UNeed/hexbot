@@ -18,6 +18,14 @@ use crate::{Error, Result, db};
 
 pub const USER_CAP: i64 = 2000;
 pub const DEFAULT_BOT_CAP: i64 = 2200;
+/// A bot's daily notes are one file per local day beside its memory,
+/// `memories/notes/YYYY-MM-DD.md`. The bot appends to today's file during
+/// conversations; nothing injects them into a prompt. The dream reads them
+/// and keeps what lasts in memory, and after NOTE_RETENTION_DAYS they go.
+pub const NOTE_DAY_CAP: i64 = 4000;
+pub const NOTE_RETENTION_DAYS: i64 = 30;
+/// Days one memory read may cover, so a read never floods the context.
+pub const NOTE_READ_DAYS: i64 = 7;
 
 // Separate conversations and RPC handlers construct their own MemoryStore.
 // Share the write lock across instances so read-modify-write remains atomic.
@@ -106,6 +114,129 @@ impl MemoryStore {
         check_cap(&text, cap, "memory")?;
         self.write(&relative, &text)?;
         Ok(json!({"memory_md": text, "cap": cap}))
+    }
+
+    /// Append a note to today's file while excluding other bot writers.
+    /// `check` sees the day's current text and the result, like a memory
+    /// edit. The day is capped so a note never grows past what a dream
+    /// can read; the error says so in words the bot can act on.
+    pub fn add_note(
+        &self,
+        caller: &str,
+        bot: &str,
+        text: &str,
+        check: impl FnOnce(&str, &str) -> Result<()>,
+    ) -> Result<Value> {
+        let note = text.trim();
+        if note.is_empty() {
+            return Err(Error::new(4202, "a note needs some text"));
+        }
+        let _guard = BOT_WRITES
+            .lock()
+            .map_err(|_| Error::new(5200, "memory write lock poisoned"))?;
+        self.require_bot(caller, bot)?;
+        let today = local_today();
+        let relative = note_path(bot, today);
+        let current = read_optional(&self.path(&relative)?)?;
+        let updated = if current.trim().is_empty() {
+            note.to_owned()
+        } else {
+            format!("{}\n{note}", current.trim_end())
+        };
+        check(&current, &updated)?;
+        let length = updated.chars().count();
+        if length as i64 > NOTE_DAY_CAP {
+            return Err(Error::new(
+                4221,
+                format!(
+                    "Today's notes are {length} characters with this one; the cap is {NOTE_DAY_CAP}. Keep notes short, or fold what matters into memory."
+                ),
+            ));
+        }
+        self.write(&relative, &updated)?;
+        prune_notes(&self.home, bot, today)?;
+        Ok(json!({"date": today.to_string(), "notes_md": updated, "cap": NOTE_DAY_CAP}))
+    }
+
+    /// Notes for the days `from..=to`, oldest first; days without notes are left out.
+    pub fn get_notes(
+        &self,
+        caller: &str,
+        bot: &str,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> Result<Value> {
+        self.require_bot(caller, bot)?;
+        let mut notes = vec![];
+        for date in from.iter_days().take_while(|date| *date <= to) {
+            let text = read_optional(&self.path(&note_path(bot, date))?)?;
+            if !text.trim().is_empty() {
+                notes.push(json!({"date": date.to_string(), "text": text}));
+            }
+        }
+        Ok(
+            json!({"notes": notes, "from": from.to_string(), "to": to.to_string(), "cap": NOTE_DAY_CAP}),
+        )
+    }
+
+    /// Every day that has notes, newest first, for the Memory tab, with the
+    /// daemon's `today` so a client in another timezone names the days as
+    /// the daemon files them.
+    pub fn list_notes(&self, caller: &str, bot: &str) -> Result<Value> {
+        self.require_bot(caller, bot)?;
+        let mut days = vec![];
+        for date in note_days(&self.home, bot)?.into_iter().rev() {
+            let text = read_optional(&self.path(&note_path(bot, date))?)?;
+            if !text.trim().is_empty() {
+                days.push(json!({"date": date.to_string(), "text": text}));
+            }
+        }
+        Ok(
+            json!({"days": days, "today": local_today().to_string(), "cap": NOTE_DAY_CAP, "retention_days": NOTE_RETENTION_DAYS}),
+        )
+    }
+
+    /// The user's edit of one day, written as given; an empty text removes
+    /// the day. With `expected`, the text the editor loaded, the edit is
+    /// refused when the day has changed since, so a note the bot added in
+    /// the meantime is not written over.
+    pub fn set_notes(
+        &self,
+        caller: &str,
+        bot: &str,
+        date: NaiveDate,
+        text: &str,
+        expected: Option<&str>,
+    ) -> Result<Value> {
+        let _guard = BOT_WRITES
+            .lock()
+            .map_err(|_| Error::new(5200, "memory write lock poisoned"))?;
+        self.require_bot(caller, bot)?;
+        check_cap(text, NOTE_DAY_CAP, "notes")?;
+        let relative = note_path(bot, date);
+        if let Some(expected) = expected
+            && read_optional(&self.path(&relative)?)? != expected
+        {
+            return Err(Error::new(
+                4209,
+                "The bot added to this day's notes since you opened it. Reloaded; try again.",
+            ));
+        }
+        if text.trim().is_empty() {
+            remove_optional(&self.path(&relative)?)?;
+        } else {
+            self.write(&relative, text)?;
+        }
+        Ok(json!({"date": date.to_string(), "text": text, "cap": NOTE_DAY_CAP}))
+    }
+
+    pub fn delete_notes(&self, caller: &str, bot: &str, date: NaiveDate) -> Result<Value> {
+        let _guard = BOT_WRITES
+            .lock()
+            .map_err(|_| Error::new(5200, "memory write lock poisoned"))?;
+        self.require_bot(caller, bot)?;
+        remove_optional(&self.path(&note_path(bot, date))?)?;
+        Ok(json!({"date": date.to_string(), "deleted": true}))
     }
 
     fn require_user(&self, owner: &str) -> Result<()> {
@@ -243,10 +374,10 @@ impl MemoryStore {
 /// The day a test pinned with `fix_today`, if any.
 static TODAY: OnceLock<NaiveDate> = OnceLock::new();
 
-/// The daemon's local day, which every stamp and date here is taken from.
-/// A test pins it with `fix_today`, so writing a stamp and reading it back
-/// cannot straddle midnight.
-fn local_today() -> NaiveDate {
+/// The daemon's local day, which every stamp and note date is taken from.
+/// A test pins it with `fix_today`, so writing a stamp or a note and reading
+/// it back cannot straddle midnight.
+pub fn local_today() -> NaiveDate {
     TODAY
         .get()
         .copied()
@@ -264,6 +395,115 @@ pub fn fix_today(date: NaiveDate) {
 /// The month entries are stamped with, `YYYY-MM` in the daemon's local time.
 pub fn month_stamp() -> String {
     local_today().format("%Y-%m").to_string()
+}
+
+/// A note day as the tool and the app name it: `YYYY-MM-DD`, nothing looser,
+/// since the day is also the file name.
+pub fn parse_note_date(text: &str) -> Result<NaiveDate> {
+    NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d")
+        .ok()
+        .filter(|date| date.to_string() == text.trim())
+        .ok_or_else(|| Error::new(4202, "date must be a day written as YYYY-MM-DD"))
+}
+
+/// What the memory tool's `notes` argument may say: `today`, `yesterday`, one
+/// day as `YYYY-MM-DD`, or a range `YYYY-MM-DD..YYYY-MM-DD` of at most
+/// NOTE_READ_DAYS days.
+pub fn parse_note_range(spec: &str, today: NaiveDate) -> Result<(NaiveDate, NaiveDate)> {
+    let spec = spec.trim();
+    let (from, to) = match spec {
+        "today" => (today, today),
+        "yesterday" => {
+            let day = today.pred_opt().unwrap_or(today);
+            (day, day)
+        }
+        _ => match spec.split_once("..") {
+            Some((from, to)) => (parse_note_date(from)?, parse_note_date(to)?),
+            None => {
+                let day = parse_note_date(spec).map_err(|_| {
+                    Error::new(
+                        4202,
+                        "notes must be today, yesterday, a day (YYYY-MM-DD) or a range (YYYY-MM-DD..YYYY-MM-DD)",
+                    )
+                })?;
+                (day, day)
+            }
+        },
+    };
+    if to < from {
+        return Err(Error::new(4202, "a notes range must start before it ends"));
+    }
+    if (to - from).num_days() >= NOTE_READ_DAYS {
+        return Err(Error::new(
+            4202,
+            format!("Read at most {NOTE_READ_DAYS} days of notes at a time."),
+        ));
+    }
+    Ok((from, to))
+}
+
+fn notes_dir(bot: &str) -> PathBuf {
+    bot_path(bot).join("memories/notes")
+}
+
+fn note_path(bot: &str, date: NaiveDate) -> PathBuf {
+    notes_dir(bot).join(format!("{date}.md"))
+}
+
+/// Days with a notes file, oldest first. Only regular files named like a day
+/// count; anything else in the folder is ignored and never touched.
+fn note_days(home: &Path, bot: &str) -> Result<Vec<NaiveDate>> {
+    check_identifier(bot)?;
+    let mut days = vec![];
+    let dir = home.join(notes_dir(bot));
+    if !dir.is_dir() {
+        return Ok(days);
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        if let Some(day) = name
+            .to_str()
+            .and_then(|name| name.strip_suffix(".md"))
+            .and_then(|day| parse_note_date(day).ok())
+        {
+            days.push(day);
+        }
+    }
+    days.sort_unstable();
+    Ok(days)
+}
+
+/// Notes from `from` on, oldest first, for the dream digest. Ownership is the
+/// caller's concern, as with the memory file the digest reads beside them.
+pub fn notes_from(home: &Path, bot: &str, from: NaiveDate) -> Result<Vec<(NaiveDate, String)>> {
+    let mut notes = vec![];
+    for date in note_days(home, bot)? {
+        if date < from {
+            continue;
+        }
+        let text = read_optional(&home.join(note_path(bot, date)))?;
+        if !text.trim().is_empty() {
+            notes.push((date, text));
+        }
+    }
+    Ok(notes)
+}
+
+/// Delete note files older than NOTE_RETENTION_DAYS before `today` and return
+/// their days. Nothing but those files is removed.
+pub fn prune_notes(home: &Path, bot: &str, today: NaiveDate) -> Result<Vec<NaiveDate>> {
+    let mut removed = vec![];
+    for date in note_days(home, bot)? {
+        if (today - date).num_days() > NOTE_RETENTION_DAYS {
+            fs::remove_file(home.join(note_path(bot, date)))?;
+            removed.push(date);
+        }
+    }
+    Ok(removed)
 }
 
 /// Entries a bot adds carry the month they were learned, so a dream can tell
@@ -409,6 +649,14 @@ fn check_cap(text: &str, cap: i64, label: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn remove_optional(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn read_optional(path: &Path) -> Result<String> {

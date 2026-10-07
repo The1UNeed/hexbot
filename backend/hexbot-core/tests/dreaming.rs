@@ -1082,3 +1082,127 @@ async fn dream_prompt_explains_compaction_summaries_when_a_section_has_them() {
     dreams.shutdown().await;
     runtime.shutdown().await;
 }
+
+fn note(home: &Path, bot: &str, date: chrono::NaiveDate, text: &str) {
+    let dir = home.join("profiles").join(bot).join("memories/notes");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(format!("{date}.md")), text).unwrap();
+}
+
+/// The digest carries the bot's notes from the day of the last dream on,
+/// oldest first, and keeps them before any transcript when a day overflows
+/// one prompt. A room dream reads none.
+#[test]
+fn digest_carries_notes_since_the_last_dream_before_transcripts() {
+    let home = setup();
+    let h = home.path();
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
+    hexbot_core::memory::fix_today(today);
+    let day = |back: u64| today - chrono::Days::new(back);
+    note(h, "owl", day(5), "five days ago");
+    note(h, "owl", day(1), "yesterday");
+    note(h, "owl", day(0), "today");
+    let since = Local
+        .from_local_datetime(&day(1).and_hms_opt(12, 0, 0).unwrap())
+        .earliest()
+        .unwrap()
+        .timestamp() as f64;
+    let digest = dreaming::build_digest(h, "owl", since, None).unwrap();
+    assert_eq!(
+        digest["notes"],
+        json!([
+            {"date": day(1).to_string(), "text": "yesterday"},
+            {"date": day(0).to_string(), "text": "today"}
+        ])
+    );
+    assert_eq!(
+        dreaming::build_digest(h, "owl", 0.0, None).unwrap()["notes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(
+        dreaming::build_digest(h, "owl", 0.0, Some("room")).unwrap()["notes"],
+        json!([])
+    );
+    // A busy day: three full note days and eight long sections. The notes all
+    // stay; the sections give way.
+    for back in 0..3 {
+        note(h, "owl", day(back), &"n".repeat(4000));
+    }
+    let conn = db::open(h).unwrap();
+    for n in 1..=8 {
+        let id = format!("busy-{n}");
+        conn.execute(
+            "INSERT INTO sections(id,bot,owner_id,title,created_at,updated_at) VALUES (?,'owl','alice','Busy',?,?)",
+            rusqlite::params![id, n, n],
+        )
+        .unwrap();
+        runtime_store::append(
+            h,
+            &id,
+            json!({"role":"user","text":"x".repeat(13000),"timestamp":100 + n}),
+        )
+        .unwrap();
+    }
+    let digest = dreaming::build_digest(h, "owl", 0.0, None).unwrap();
+    assert_eq!(digest["notes"].as_array().unwrap().len(), 4);
+    assert_eq!(digest["sections"].as_array().unwrap().len(), 3);
+    assert_eq!(digest["omitted_conversations"], 5);
+    assert!(digest.to_string().len() <= 60_000);
+    // Notes have a budget of their own: the newest days are kept.
+    for back in 3..8 {
+        note(h, "owl", day(back), &"o".repeat(4000));
+    }
+    let digest = dreaming::build_digest(h, "owl", 0.0, None).unwrap();
+    let dates: Vec<_> = digest["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["date"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        dates,
+        [day(2).to_string(), day(1).to_string(), day(0).to_string()]
+    );
+}
+
+/// A dream reads its notes with one clause of instruction, and removes the
+/// days past their 30 days before it starts; nothing else in the folder moves.
+#[tokio::test]
+async fn dream_reads_notes_and_prunes_old_days() {
+    let home = setup();
+    let h = home.path();
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
+    hexbot_core::memory::fix_today(today);
+    note(h, "owl", today, "Alex wants the short opening.");
+    note(h, "owl", today - chrono::Days::new(40), "long ago");
+    fs::write(h.join("profiles/owl/memories/notes/README.md"), "keep").unwrap();
+    let hub = EventHub::new();
+    let mut receiver = hub.subscribe();
+    let runtime = Runtime::new(h.into(), hub.clone(), fake_pi(h, false)).unwrap();
+    let dreams = Dreaming::new(h.into(), runtime.clone(), hub);
+    dreams
+        .call("alice", "hexbot.dreaming.run_now", &json!({"bot":"owl"}))
+        .await
+        .unwrap()
+        .unwrap();
+    let changed = event(&mut receiver, "hexbot.dreaming.changed").await;
+    assert_eq!(changed["dream"]["status"], "complete");
+    let prompts = fs::read_to_string(h.join("prompts.log")).unwrap();
+    assert!(prompts.contains("notes are not memory"));
+    assert!(prompts.contains(&format!(
+        r#""notes":[{{"date":"{today}","text":"Alex wants the short opening."}}]"#
+    )));
+    assert!(!prompts.contains("long ago"));
+    let dir = h.join("profiles/owl/memories/notes");
+    assert!(
+        !dir.join(format!("{}.md", today - chrono::Days::new(40)))
+            .exists()
+    );
+    assert!(dir.join(format!("{today}.md")).exists());
+    assert_eq!(fs::read_to_string(dir.join("README.md")).unwrap(), "keep");
+    dreams.shutdown().await;
+    runtime.shutdown().await;
+}

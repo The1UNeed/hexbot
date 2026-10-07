@@ -220,6 +220,7 @@ export default function hexbot(pi: any) {
         const path = canonicalPath(input, cwd);
         checked(path);
         if (credentialPath(resolve(cwd, input), live.home) || credentialPath(path, live.home)) return {block: true, reason: 'Credential files are private.'};
+        if (live.guest === true && (privatePath(resolve(cwd, input), live.home) || privatePath(path, live.home))) return {block: true, reason: PRIVATE_TO_OWNER};
         if (['write', 'edit'].includes(event.toolName)) {
           const denial = writeDenial(input, cwd, live.home, live.outputDirs);
           if (denial) return {block: true, reason: denial};
@@ -263,6 +264,10 @@ export default function hexbot(pi: any) {
     ? '[The command ran in the read-only sandbox, without internet access. If it failed for that reason, run it again with full_access and a reason.]'
     : `[The command ran in the sandbox, without internet access and with writes only in ${live.cwd ?? config.cwd}, its output folders, and temporary folders. If it failed for that reason, run it again with full_access and a reason.]`;
 
+  // What the file tools never show outside Bypass: credential files, and in a
+  // shared bot's session in someone else's room, its owner's memory, notes
+  // and every About you (the daemon says so with `guest` in the live settings).
+  const hidden = (path: string, home: string) => credentialPath(path, home) || (live.guest === true && privatePath(path, home));
   // Keep the built-in schemas and select tools only from the frozen configuration.
   // Refresh cwd at execution time without rewriting the cached prompt or history.
   // The bash schema gains Codex's escalation fields in every mode, so a mode
@@ -275,7 +280,7 @@ export default function hexbot(pi: any) {
     wrapped.add(name);
     const bypass = () => live.approvalMode === 'off';
     const options = (level: Level = 'confined') => name === 'bash' ? {spawnHook: (c: any) => level === 'none' ? c : {...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)}} :
-      name === 'grep' && !bypass() ? {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: (path: string) => credentialPath(path, live.home) ? '' : readFileSync(path, 'utf8')}} : {};
+      name === 'grep' && !bypass() ? {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: (path: string) => hidden(path, live.home) ? '' : readFileSync(path, 'utf8')}} : {};
     const tool = factory(config.cwd, options());
     const definition = name === 'bash' ? {
       description: tool.description + ' Commands may run in a sandbox that blocks internet access and writes outside the workspace. When a command needs either, set full_access and give a reason.',
@@ -309,6 +314,7 @@ export default function hexbot(pi: any) {
       // of '..' must not select a different file after a symlink was checked.
       const path = canonicalPath(args.path ?? '.', cwd);
       if (credentialPath(resolve(cwd, args.path ?? '.'), live.home) || credentialPath(path, live.home)) throw new Error('Credential files are private.');
+      if (live.guest === true && (privatePath(resolve(cwd, args.path ?? '.'), live.home) || privatePath(path, live.home))) throw new Error(PRIVATE_TO_OWNER);
       if (['write', 'edit'].includes(name)) {
         // The approval covered the file the gate resolved, not a link swapped in since.
         if (path !== allowed.target) throw new Error('The file changed after it was checked. Try again.');
@@ -320,7 +326,7 @@ export default function hexbot(pi: any) {
       const result = await factory(cwd, options()).execute(id, args, signal, ['grep', 'find', 'ls'].includes(name) ? undefined : update);
       if (['grep', 'find', 'ls'].includes(name)) {
         const base = statSync(path).isDirectory() ? path : dirname(path);
-        return sanitizeSearchResult(result, name, base, live.home);
+        return sanitizeSearchResult(result, name, base, live.home, hidden);
       }
       return result;
     }});
@@ -455,13 +461,13 @@ export function cleared(message: any): any {
 
 // Filenames can contain grep's line delimiters too (for example owl-2-beta).
 // Check every possible path prefix, including text nested in truncation details.
-export function sanitizeSearchResult(value: any, name: string, base: string, home: string): any {
+export function sanitizeSearchResult(value: any, name: string, base: string, home: string, isHidden: (path: string, home: string) => boolean = credentialPath): any {
   if (typeof value === 'string') return value.split('\n').filter(line => {
     const paths = name === 'grep' ? [...line.matchAll(/(:\d+:|-\d+-)/g)].map(match => line.slice(0, match.index)) : [line.replace(/\/$/, '')];
-    return !paths.some(path => credentialPath(resolve(base, path), home) || credentialPath(canonicalPath(path, base), home));
+    return !paths.some(path => isHidden(resolve(base, path), home) || isHidden(canonicalPath(path, base), home));
   }).join('\n');
-  if (Array.isArray(value)) return value.map(part => sanitizeSearchResult(part, name, base, home));
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, part]) => [key, sanitizeSearchResult(part, name, base, home)]));
+  if (Array.isArray(value)) return value.map(part => sanitizeSearchResult(part, name, base, home, isHidden));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, part]) => [key, sanitizeSearchResult(part, name, base, home, isHidden)]));
   return value;
 }
 
@@ -516,6 +522,21 @@ function credentialName(path: string, home: string): boolean {
   const root = under(path, resolve(home)) ? resolve(home) : canonicalPath(home, process.cwd());
   const local = relative(fold(root), fold(path)).split(sep).join('/');
   return !local.startsWith('../') && (policyRegex(credentialPolicy.basename).test(name) || policyRegex(credentialPolicy.home).test(local));
+}
+const PRIVATE_TO_OWNER = "The bot's memory, notes and About you files are private to its owner and stay out of this room.";
+// A bot's memory and daily notes, and every user's About you, as the file
+// tools of a shared bot in someone else's room must not read them: it gets no
+// About you there and its memory tool refuses notes. The path as given and
+// its target are both checked, so a link cannot disguise one.
+export function privatePath(path: string, home: string): boolean {
+  const lexical = resolve(path);
+  path = canonicalPath(path, process.cwd());
+  return privateName(lexical, home) || privateName(path, home);
+}
+function privateName(path: string, home: string): boolean {
+  const root = under(path, resolve(home)) ? resolve(home) : canonicalPath(home, process.cwd());
+  const local = relative(fold(root), fold(path)).split(sep).join('/');
+  return !local.startsWith('../') && /^(users\/[^/]+\/user\.md|profiles\/[^/]+\/memories(\/.*)?)$/.test(local);
 }
 const NEVER_WRITTEN = 'Credential and system configuration files are never written by tools.';
 // credential-policy.json "write": deny entries are credential stores that tools

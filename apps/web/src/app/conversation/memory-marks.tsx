@@ -8,10 +8,11 @@ import { type MemoryMark, memoryMarks } from './steps'
 
 const LABEL: Record<MemoryMark['kind'], string> = {
   memory: 'Memory updated',
+  note: 'Note added',
   soul: 'Soul updated'
 }
 
-/** One "Memory updated" or "Soul updated" mark; opens to show what was written. */
+/** One "Memory updated", "Note added" or "Soul updated" mark; opens to show what was written. */
 function Mark({ mark }: { mark: MemoryMark }) {
   const [open, setOpen] = useState(false)
 
@@ -36,9 +37,9 @@ function Mark({ mark }: { mark: MemoryMark }) {
 }
 
 /**
- * Under a bot's bubble: a small mark for every memory or soul write the turn
- * made, so the user always sees when the bot changed what it knows or who it
- * is. The tool rows themselves stay out of the work panel.
+ * Under a bot's bubble: a small mark for every memory, note or soul write the
+ * turn made, so the user always sees when the bot changed what it knows or who
+ * it is. The tool rows themselves stay out of the work panel.
  */
 export function MemoryMarks({ message }: { message: Message }) {
   const marks = memoryMarks(message)

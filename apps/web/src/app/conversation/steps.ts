@@ -83,7 +83,7 @@ export const QUIET_TOOLS = new Set([
 ])
 
 export interface MemoryMark {
-  kind: 'memory' | 'soul'
+  kind: 'memory' | 'note' | 'soul'
   text: string
 }
 
@@ -136,6 +136,13 @@ function markFor(call: ToolCall): MemoryMark | null {
     return null
   }
 
+  // A note goes to the day's notes file, not to memory; the mark says which.
+  if (args.action === 'note') {
+    const text = string(args.text)
+
+    return text ? { kind: 'note', text } : null
+  }
+
   const operations = Array.isArray(args.operations) ? args.operations.map(record) : [args]
 
   const lines = operations.flatMap(operation => {
@@ -148,7 +155,7 @@ function markFor(call: ToolCall): MemoryMark | null {
   return lines.length ? { kind: 'memory', text: lines.join('\n') } : null
 }
 
-/** Every memory or soul write the turn made, in order. */
+/** Every memory, note or soul write the turn made, in order. */
 export const memoryMarks = (message: Message): MemoryMark[] =>
   message.toolCalls.flatMap(call => {
     const mark = markFor(call)

@@ -86,6 +86,15 @@ it also installs over SSH when nobody is signed in at the screen.
   records proposals instead, and its soul tool only reads. The memory tool's
   `add`, `append`, and `replace` end each entry with the month it was learned
   (`[YYYY-MM]`); `set` and the app write text as given (`docs/dreaming.md`).
+  Daily notes are one file a day in `memories/notes/YYYY-MM-DD.md`, 4,000
+  characters a day, written by the tool's `note` action and read with
+  `read {notes}`, never injected, read by the dream before transcripts, and
+  deleted after 30 days. A shared bot in someone else's room is a guest
+  there (`guest` in its live settings): its memory tool refuses notes and
+  answers writes with a confirmation instead of the text, and the private
+  extension's file tools refuse `memories/` and every `users/<id>/user.md`,
+  through links too, outside Bypass. The sandbox for shell commands hides
+  credential files only.
 - `hexbot-runtime.db` stores native transcript projections, usage, and frozen
   session options. Pi keeps its conversation JSONL under the native session
   directory. Existing Python `state.db` history is imported once, including

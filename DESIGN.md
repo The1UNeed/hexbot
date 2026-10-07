@@ -37,6 +37,11 @@ more freedom and more capability than a hosted product can offer.
   it, and the bot says so when it does) and its memory (short entries the
   bot writes during chat, each ending with the month it was learned, capped
   at 2,200 characters, injected every turn).
+  Beside them sit its daily notes: one file a day, up to 4,000 characters,
+  that the bot appends to at natural pauses and reads back by day. Notes
+  are never injected; the dream folds what lasts into memory, and a day is
+  deleted after 30 days. The user reads, edits, and deletes them by day in
+  the bot's Memory tab.
   Searchable history over its own sections and rooms sits beside them.
 - About you: one text per user, capped at 2,000 characters, written only by
   the user and injected into every bot they own. Nothing else is shared
@@ -44,19 +49,21 @@ more freedom and more capability than a hosted product can offer.
 - A room is a shared section for its members. Late joiners see the full
   transcript. A bot that leaves keeps history up to that point.
 - Archive keeps a section. Delete removes the section and its history; what
-  the bot wrote to its memory stays until the user or dreaming edits it.
+  the bot wrote to its memory and its notes stays until the user or dreaming
+  edits it.
 - Dreaming: every bot, daily at a configurable time (default 03:00), reads
   that day's conversations and folds what matters into its memory using
   its own model. It reads what people and bots said, not tool output or its
   own earlier reports, plus the summaries written when a long section was
   compacted that day, which it treats as untrusted since they were written
-  with tool output in view. It never touches the soul or About you. It posts a
+  with tool output in view, and its notes from those days first of all. It
+  never touches the soul or About you. It posts a
   report in its direct message thread. A "dream now" action exists. Rooms
   dream through their main bot into the room's section.
-- Scheduled jobs run unattended, so they cannot write memory or the soul.
-  What a job asks to remember is a proposal; the bot's next dream reviews it
-  as an untrusted suggestion and keeps or drops it. Soul changes need the
-  user.
+- Scheduled jobs run unattended, so they cannot write memory, notes, or the
+  soul. What a job asks to remember is a proposal; the bot's next dream
+  reviews it as an untrusted suggestion and keeps or drops it. Soul changes
+  need the user.
 
 ### Rooms
 

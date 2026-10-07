@@ -42,6 +42,6 @@ An autonomous agent job cannot wait for you to answer a question or approve a to
 
 ## Jobs and memory
 
-A job can read the bot's memory but not write it. When a job asks to add, replace, or remove a memory entry, Hexbot saves the request as a proposal, and the bot's next dream decides whether to keep it. This keeps text a job fetched from the web out of memory until the bot has looked at it with the rest of the day. See [Dreaming](/docs/dreaming/#proposals-from-scheduled-jobs). A job cannot change the bot's soul either; the bot tells you when it wants a soul change, and you make it in a section.
+A job can read the bot's memory and notes but not write them. When a job asks to add, replace, or remove a memory entry, or to note something, Hexbot saves the request as a proposal, and the bot's next dream decides whether to keep it. This keeps text a job fetched from the web out of memory until the bot has looked at it with the rest of the day. See [Dreaming](/docs/dreaming/#proposals-from-scheduled-jobs). A job cannot change the bot's soul either; the bot tells you when it wants a soul change, and you make it in a section.
 
 For memory reviews, use [Dreaming](/docs/dreaming/). Dreaming has its own controls and saves summaries in the bot's dream log.

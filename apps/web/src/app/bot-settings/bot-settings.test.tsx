@@ -6,7 +6,14 @@ import type { Bot, Connector } from '../../lib/types'
 import { useConnectors } from '../../stores/connectors'
 
 import { ConnectorsTab } from './connectors'
-import { DreamingBlock, MemoryEditor } from './memory'
+import {
+  deleteNotesQuestion,
+  DreamingBlock,
+  MemoryEditor,
+  noteDay,
+  noteDayLabel,
+  NotesBlock
+} from './memory'
 import { ModelTab } from './model'
 import { ToolsTab } from './tools'
 
@@ -96,6 +103,154 @@ describe('memory editor', () => {
     fireEvent.change(screen.getByLabelText('About you'), { target: { value: 'Name: Alex' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(save).toHaveBeenCalledWith('Name: Alex')
+  })
+})
+
+describe('notes', () => {
+  // The daemon's day, not the client's clock: a Client in another timezone
+  // still calls the daemon's files Today and Yesterday.
+  const today = '2026-10-07'
+
+  it('names days in the user\'s words, by the daemon\'s day', () => {
+    expect(noteDayLabel('2026-10-07', today)).toBe('Today')
+    expect(noteDayLabel('2026-10-06', today)).toBe('Yesterday')
+    expect(noteDayLabel('2026-10-03', today)).toMatch(/Sat/)
+    expect(noteDayLabel('2026-10-03', today)).not.toMatch(/2026/)
+    expect(noteDayLabel('2025-12-31', today)).toMatch(/2025/)
+    expect(noteDayLabel('2026-01-01', '2026-01-02')).toBe('Yesterday')
+    expect(noteDay(new Date(2026, 0, 2))).toBe('2026-01-02')
+    expect(deleteNotesQuestion('2026-10-07', today)).toBe("Delete today's notes?")
+    expect(deleteNotesQuestion('2026-10-06', today)).toBe("Delete yesterday's notes?")
+    expect(deleteNotesQuestion('2026-10-03', today)).toMatch(/^Delete the notes for Sat, /)
+  })
+
+  it('lists days newest first, edits the chosen day and deletes one', async () => {
+    const call = fakeRpc({
+      'hexbot.memory.notes.delete': () => ({ deleted: true }),
+      'hexbot.memory.notes.list': () => ({
+        cap: 4000,
+        days: [
+          { date: '2026-10-07', text: 'Went over the Q3 export.\nVendor column is stale.' },
+          { date: '2026-10-06', text: 'Set up the export.' }
+        ],
+        retention_days: 30,
+        today
+      }),
+      'hexbot.memory.notes.set': params => ({ cap: 4000, date: params.date, text: params.text })
+    })
+
+    render(<NotesBlock bot="scout" />)
+    expect(await screen.findByRole('button', { name: /Today/, pressed: true })).toBeVisible()
+    expect(screen.getByRole('button', { name: /Yesterday/, pressed: false })).toBeVisible()
+    expect(screen.getByText('2 notes')).toBeVisible()
+    expect(screen.getByLabelText('Notes for Today')).toHaveValue(
+      'Went over the Q3 export.\nVendor column is stale.'
+    )
+    expect(screen.getByText(/Short notes the bot keeps each day/)).toBeVisible()
+    expect(screen.getByText(/Days older than 30 days are removed/)).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: /Yesterday/ }))
+    expect(screen.getByRole('button', { name: /Yesterday/ })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    )
+
+    const editor = screen.getByLabelText('Notes for Yesterday')
+    expect(editor).toHaveValue('Set up the export.')
+    fireEvent.change(editor, { target: { value: 'Set up the export, twice.' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('hexbot.memory.notes.set', {
+        bot: 'scout',
+        date: '2026-10-06',
+        expected: 'Set up the export.',
+        text: 'Set up the export, twice.'
+      })
+    )
+
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(confirm).toHaveBeenCalledWith("Delete yesterday's notes?")
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('hexbot.memory.notes.delete', {
+        bot: 'scout',
+        date: '2026-10-06'
+      })
+    )
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Yesterday/ })).toBeNull())
+    // The editor moves to the day that is left.
+    expect(screen.getByLabelText('Notes for Today')).toBeVisible()
+    confirm.mockRestore()
+    setActiveRpc(null)
+  })
+
+  it('keeps a note the bot added while the day was being edited', async () => {
+    // The day on the daemon gains a line after the tab loaded it.
+    let stored = 'Set up the export.'
+
+    const call = fakeRpc({
+      'hexbot.memory.notes.list': () => ({
+        cap: 4000,
+        days: [{ date: today, text: stored }],
+        retention_days: 30,
+        today
+      }),
+      'hexbot.memory.notes.set': params => {
+        if (params.expected !== stored) {
+          throw Object.assign(new Error('The bot added to this day\'s notes since you opened it.'), {
+            code: 4209
+          })
+        }
+
+        stored = String(params.text)
+
+        return { cap: 4000, date: params.date, text: params.text }
+      }
+    })
+
+    render(<NotesBlock bot="scout" />)
+    const editor = await screen.findByLabelText('Notes for Today')
+    stored = 'Set up the export.\nAlex wants the CSV too.'
+    fireEvent.change(editor, { target: { value: 'Set up the export pipeline.' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('hexbot.memory.notes.set', {
+        bot: 'scout',
+        date: today,
+        expected: 'Set up the export.\nAlex wants the CSV too.',
+        text: 'Set up the export pipeline.\nAlex wants the CSV too.'
+      })
+    )
+    await waitFor(() =>
+      expect(screen.getByLabelText('Notes for Today')).toHaveValue(
+        'Set up the export pipeline.\nAlex wants the CSV too.'
+      )
+    )
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+
+    // A change that is not an appended note reloads the day and says so.
+    stored = 'Rewritten elsewhere.'
+    fireEvent.change(screen.getByLabelText('Notes for Today'), {
+      target: { value: 'Set up the export pipeline, again.' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/since you opened it/)
+    await waitFor(() =>
+      expect(screen.getByLabelText('Notes for Today')).toHaveValue('Rewritten elsewhere.')
+    )
+    setActiveRpc(null)
+  })
+
+  it('says when there are no notes yet', async () => {
+    fakeRpc({
+      'hexbot.memory.notes.list': () => ({ cap: 4000, days: [], retention_days: 30, today })
+    })
+    render(<NotesBlock bot="scout" />)
+    expect(await screen.findByText('No notes yet')).toBeVisible()
+    expect(screen.getByText(/Short notes the bot keeps each day/)).toBeVisible()
+    expect(screen.queryByRole('textbox')).toBeNull()
+    setActiveRpc(null)
   })
 })
 

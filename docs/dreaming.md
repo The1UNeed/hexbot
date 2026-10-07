@@ -43,16 +43,41 @@ The native scheduler and digest builder live in
   such. A teammate's reply through `message_bot` is speech and stays. The `Dreams` section is known by its title everywhere (sidebar,
   Memory tab, `post_summary`), so a section the user titles "Dreams" is
   treated as the dream log here as well.
-- Scheduled jobs do not write memory. In a job's session, and in any delegate
-  under it, the memory tool reads as usual, but `add`, `append`, `replace`,
-  `set`, and `remove` are saved as rows in `memory_proposals` (bot, owner,
-  job id, action, arguments, created_at) after the same injection scan and
-  memory cap as an edit, so a proposal the dream could never apply is
-  refused at once. The tool result tells the bot the change waits for its
-  next dream. A bot keeps at most 100 pending proposals; older ones are
-  dropped unread. Reviewed proposals are kept 30 days. The soul tool reads
-  in a job's session but refuses to write: soul changes need the user, in a
-  section, and the dream never writes the soul either.
+- A bot keeps daily notes beside its memory: one file per local day,
+  `profiles/<bot>/memories/notes/YYYY-MM-DD.md`, capped at 4,000 characters
+  a day with an error that tells the bot to keep notes short or fold what
+  matters into memory. The memory tool's `note` action appends to today's
+  file after the same injection scan as a memory edit; lines carry no month
+  stamp, since the file is the date. `read` with `notes` (`today`,
+  `yesterday`, a day, or a range of up to seven days) returns those days
+  instead of memory. Notes never enter a prompt. A shared bot in someone
+  else's room cannot read its owner's notes there, as it gets no About you;
+  its memory writes there answer with a confirmation rather than the text,
+  and the extension's file tools refuse the bot's `memories/` folder and
+  every About you in that session (`guest` in the live settings).
+  Nothing else indexes them; a day or a range is the way to find one.
+- The bot dream (not a room dream) reads the notes from the day of the last
+  successful dream on as `notes: [{date, text}]`, oldest first, at most
+  16,000 bytes with the newest days kept, counted against the 60,000-byte
+  budget before any transcript: a day's notes are already that day
+  condensed. The prompt adds one clause: read them first, fold the durable
+  facts and lessons into memory, notes are not memory. Before building the
+  digest the dream deletes note files older than 30 days; only files named
+  like a day are touched. The Memory tab shows notes by day; the user can
+  edit or delete a day there, and `hexbot.memory.notes.set` writes text as
+  given. Deleting a section leaves notes alone, like memory; deleting the
+  bot deletes them with the profile.
+- Scheduled jobs do not write memory or notes. In a job's session, and in
+  any delegate under it, the memory tool reads as usual, but `add`,
+  `append`, `replace`, `set`, `remove`, and `note` are saved as rows in
+  `memory_proposals` (bot, owner, job id, action, arguments, created_at)
+  after the same injection scan and memory cap as an edit, so a proposal the
+  dream could never apply is refused at once. The tool result tells the bot
+  the change waits for its next dream. A bot keeps at most 100 pending
+  proposals; older ones are dropped unread. Reviewed proposals are kept 30
+  days. The soul tool reads in a job's session but refuses to write: soul
+  changes need the user, in a section, and the dream never writes the soul
+  either.
 - The next bot dream (not a room dream) puts pending proposals in the digest
   as `proposals`, newest first, at most 20 and at most 10,000 bytes, counted
   against the 60,000-byte budget; a proposal that does not fit is skipped
@@ -86,7 +111,7 @@ The native scheduler and digest builder live in
 
 ## Room memory
 
-A room dream curates the main bot's private durable notes, then produces a
+A room dream curates the main bot's private memory, then produces a
 shared summary of at most 3,000 characters. Private user facts must stay out
 of that summary. The result is stored in `room_memory` and injected into
 members' room prompt headers. Members keep their own private notes about

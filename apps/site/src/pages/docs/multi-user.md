@@ -24,7 +24,7 @@ Hexbot enforces ownership, not the operating system. Every bot runs as the daemo
 
 ## Shareable bots
 
-A bot owner can mark a bot as shareable. Other members may then add it to their rooms. The bot keeps its owner's soul, skills, and memory. It does not gain access to the room owner's About you text. Older shared conversations that included that text refresh their prompt when reopened.
+A bot owner can mark a bot as shareable. Other members may then add it to their rooms. The bot keeps its owner's soul, skills, and memory. It does not gain access to the room owner's About you text, and in that room its file tools refuse its owner's memory and notes and every About you. Older shared conversations that included that text refresh their prompt when reopened.
 
 Usage in that room counts against the member who invited the shared bot. This keeps the cost attached to the person who started the work.
 

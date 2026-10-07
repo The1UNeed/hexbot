@@ -16,13 +16,19 @@ A bot's memory is what it has learned: facts, preferences, and lessons about wor
 
 Each entry the bot writes ends with the month it learned it, such as `[2026-10]`, so a dream can tell an old note from a current one. Hexbot adds the stamp when the bot writes; entries you type in the editor are saved as you wrote them. A scheduled job running on its own cannot write memory; what it asks for waits as a proposal for the bot's next dream (see [Scheduled work](/docs/scheduling/#jobs-and-memory)).
 
-Whenever a bot writes to its memory or its soul during a conversation, a small "Memory updated" or "Soul updated" mark appears under its reply. Open it to see what changed.
+## Notes
+
+Beside its memory, a bot keeps notes: a short line here and there about what happened, filed by day. It writes one at a natural pause, when something is worth keeping, and can read a day or a few days back when it needs them. Notes stay out of its conversations unless it reads them, so they cost nothing while they sit there. Each night the bot's [dream](/docs/dreaming/) reads the notes since its last dream first, folds what lasts into memory, and leaves the rest. A day's notes hold up to 4,000 characters, and days older than 30 days are removed.
+
+You can read, edit, and delete notes by day in the bot's settings under Memory. If the bot adds a note while you are editing that day, Hexbot keeps the bot's line and asks you to try again with the reloaded text. A bot shared into someone else's room cannot read your notes there, with its memory tool or its file tools, just as it does not see your About you.
+
+Whenever a bot writes to its memory, its notes, or its soul during a conversation, a small "Memory updated", "Note added", or "Soul updated" mark appears under its reply. Open it to see what changed.
 
 Hexbot includes a bot's own memory in its starting prompt, rather than another bot's notes. Each bot also has searchable history over its own sections and the rooms it belongs to. Starting a new section gives the conversation a new context window without erasing that history. These ownership rules do not isolate local files from enabled file and terminal tools; see [Multi-user](/docs/multi-user/) before sharing a daemon.
 
 A new section reads the current soul, memory, and About you text into its starting context. Existing sections keep their cached starting context. After editing these settings, start a new section when you need the bot to begin with the updated text. In-conversation memory edits remain part of the conversation that made them.
 
-Archiving a section hides it from the active list. Deleting a section removes the conversation and its history. The bot's memory stays as it is; edit it yourself if something should go. Treat deletion as permanent.
+Archiving a section hides it from the active list. Deleting a section removes the conversation and its history. The bot's memory and notes stay as they are; edit them yourself if something should go. Treat deletion as permanent. Deleting a bot deletes its notes with it.
 
 ## About you
 

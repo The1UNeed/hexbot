@@ -164,7 +164,10 @@ async fn shared_room_memory_soul_and_approvals_keep_bot_and_conversation_owners_
         .run_hidden("bob", "shared", "root-bob", "memory")
         .await
         .unwrap();
-    assert!(reply.contains("Shared room memory."));
+    // The write lands in the owner's memory, and the guest room sees a
+    // confirmation rather than the text.
+    assert!(reply.contains("\"saved\":true"), "{reply}");
+    assert!(!reply.contains("Shared room memory."), "{reply}");
     let memory = MemoryStore::new(h.path().into());
     assert_eq!(
         memory.get_bot("alice", "shared").unwrap()["memory_md"],

@@ -48,6 +48,9 @@ fn lifecycle_preserves_memory_and_reopens_archived_sections() {
     memory
         .set_bot("alice", "research-owl", "Durable memory")
         .unwrap();
+    memory
+        .add_note("alice", "research-owl", "A day's note", |_, _| Ok(()))
+        .unwrap();
     runtime_store::append(h, id, json!({"role":"user","text":"First message"})).unwrap();
     assert_eq!(
         catalog::section(h, "alice", id).unwrap()["message_count"],
@@ -146,6 +149,7 @@ fn lifecycle_preserves_memory_and_reopens_archived_sections() {
         "hexbot.bots.delete",
         json!({"name":"research-owl"}),
     );
+    // The profile goes with its notes; only the memory file is kept aside.
     assert!(!h.join("profiles/research-owl").exists());
     let archived = fs::read_dir(h.join("runtime/deleted-bots"))
         .unwrap()
