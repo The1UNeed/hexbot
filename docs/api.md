@@ -193,8 +193,10 @@ loaded it at start, and never below half the window; see
 `backend/hexbot-core/README.md`). `tokens` is null until the first reply and
 right after a compaction, until the next reply measures the compacted
 context; in the second case `recounting` is true, so a client keeps the meter
-in a neutral state instead of hiding it. `window` and `compact_at` are null
-when Pi has no model. `compacting` is true from a compaction's start until Pi
+in a neutral state instead of hiding it. Right after the daemon clears old
+tool output (`backend/hexbot-core/README.md`) it is Pi's size estimate of the
+edited context until the next reply. `window` and `compact_at` are null when
+Pi has no model. `compacting` is true from a compaction's start until Pi
 reports it done. `seq` grows with every report of the daemon; the daemon
 measures each report in its own task and drops one a later report has
 overtaken, and a client drops a report whose `seq` is below the one it holds.

@@ -5,6 +5,7 @@ import {createServer} from 'node:net';
 import {once} from 'node:events';
 import {tmpdir, homedir} from 'node:os';
 import {join, dirname} from 'node:path';
+import {SessionManager} from '@earendil-works/pi-coding-agent';
 import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, sanitizeSearchResult, hostWriteTier, escapeMcpValues} from './extension.ts';
 
 // These gates assume the OS sandbox is in place, as it always is on macOS. On
@@ -643,4 +644,108 @@ test('resource reads stop when their server is revoked or changed, without askin
   assert.equal(await f.handlers.tool_call({...read,input:{server:'other',uri:'other://a'}}, f.ctx), undefined);
   delete f.settings.mcpState.demo;
   assert.match((await f.handlers.tool_call(read, f.ctx)).reason, /removed or disabled/);
+});
+
+// Old tool output is cleared once, shortly before Pi would compact. The
+// conversation is Pi's own in-memory session, so the drafts the handler returns
+// go through Pi's context_edit validation and projection.
+const user = text => ({role:'user', content:text, timestamp:1});
+const assistant = call => ({role:'assistant', content: call ? [{type:'toolCall', id:call, name:call, arguments:{}}] : [{type:'text', text:'Done.'}],
+  api:'test', provider:'test', model:'primary', usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}, stopReason: call ? 'toolUse' : 'stop', timestamp:1});
+const result = (tool, chars) => ({role:'toolResult', toolCallId:tool, toolName:tool, content:[{type:'text', text:'x'.repeat(chars)}], isError:false, timestamp:1});
+function conversation(messages) {
+  const manager = SessionManager.inMemory('/tmp');
+  const ids = {};
+  for (const message of messages) {
+    const id = manager.appendMessage(message);
+    if (message.role === 'toolResult') ids[message.toolName] = id;
+  }
+  const turn = (f, tokens, entries = []) => f.handlers.turn_end({message:{stopReason:'stop'}, entries, context:{contextEntries: manager.buildSessionProjection().entries}}, {...f.ctx, getContextUsage:() => ({tokens, contextWindow:32768, percent:tokens / 32768 * 100})});
+  const visible = () => Object.fromEntries(manager.buildSessionProjection().entries.filter(e => e.sourceEntry.type === 'message' && e.sourceEntry.message.role === 'toolResult').map(e => [e.sourceEntry.message.toolName, e.messages[0].content[0].text.length]));
+  return {manager, ids, turn, visible};
+}
+function trimFixture(t, compaction) {
+  // The settings are read when the extension loads, so the file comes first.
+  const agentDir = mkdtempSync(join(tmpdir(), 'hexbot-agent-'));
+  t.after(() => rmSync(agentDir, {recursive:true, force:true}));
+  if (compaction) writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({theme:'dark', compaction}));
+  const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = agentDir;
+  t.after(() => { if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; });
+  return {...fixture(t), agentDir};
+}
+// Reserve 8,192 for this model: Pi compacts at 24,576 of 32,768, so the trim
+// line is 21,299 and a trim must land under 17,203.
+const overrides = {enabled:true, reserveTokens:16384, keepRecentTokens:20000, modelOverrides:{'test/primary':{reserveTokens:8192, keepRecentTokens:8192}}};
+// Four user messages. Only read and web_extract are old, large, and not verbatim.
+const history = [result('early', 20000), user('Look through the project'),
+  assistant('read'), result('read', 20000), assistant('clarify'), result('clarify', 8000), assistant('bash'), result('bash', 800),
+  assistant('memory'), result('memory', 8000), assistant('web_extract'), result('web_extract', 16000), assistant('skill_view'), result('skill_view', 8000), assistant(),
+  user('Go on'), assistant('grep'), result('grep', 16000), assistant(),
+  user('And the rest'), assistant('ls'), result('ls', 16000), assistant(),
+  user('Thanks'), assistant()];
+
+test('crossing the trim line clears old tool output once and keeps protected results', async t => {
+  const f = trimFixture(t, overrides);
+  const c = conversation(history);
+  assert.equal(await c.turn(f, 15000), undefined);
+  assert.equal(await c.turn(f, 21000), undefined);
+  const before = structuredClone(c.manager.getEntry(c.ids.read));
+  const reply = await c.turn(f, 21500, [{type:'custom', customType:'other'}]);
+  assert.deepEqual(reply.entries.map(e => e.type), ['custom', 'context_edit', 'context_edit']);
+  assert.deepEqual(reply.entries.slice(1).map(e => e.targetId), [c.ids.read, c.ids.web_extract]);
+  for (const edit of reply.entries.slice(1)) c.manager.appendContextEdit(edit.targetId, edit.replacement);
+  const visible = c.visible();
+  assert.ok(visible.read < 200 && visible.web_extract < 200, JSON.stringify(visible));
+  assert.deepEqual([visible.early, visible.clarify, visible.bash, visible.memory, visible.skill_view, visible.grep, visible.ls], [20000, 8000, 800, 8000, 8000, 16000, 16000]);
+  assert.match(c.manager.buildSessionProjection().messages.find(m => m.role === 'toolResult' && m.toolName === 'read').content[0].text, /20,000 characters.*cleared/);
+  assert.deepEqual(c.manager.getEntry(c.ids.read), before);
+  // Still over the line: nothing more until usage drops and crosses again.
+  assert.equal(await c.turn(f, 22000), undefined);
+  assert.equal(await c.turn(f, 12000), undefined);
+  // Four more user messages: grep, ls and the new find result are now behind the third most recent.
+  for (const message of [user('Find the tests'), assistant('find'), result('find', 20000), assistant(), user('ok'), assistant(), user('ok'), assistant(), user('ok'), assistant()]) c.ids[message.toolName] = c.manager.appendMessage(message);
+  assert.deepEqual((await c.turn(f, 22000)).entries.map(e => e.targetId), [c.ids.grep, c.ids.ls, c.ids.find]);
+});
+test('a long run under one user message is never trimmed, and its results age by user messages', async t => {
+  const f = trimFixture(t, overrides);
+  const rounds = [user('Look through everything')];
+  for (let i = 0; i < 12; i++) rounds.push(assistant('read'), {...result('read', 20000), toolName:`read${i}`, toolCallId:`read${i}`});
+  rounds.push(assistant());
+  const c = conversation(rounds);
+  // Pi ends a turn after every tool round; the bot is still using these reads.
+  assert.equal(await c.turn(f, 23000), undefined);
+  for (const message of [user('Go on'), assistant(), user('And then'), assistant()]) c.manager.appendMessage(message);
+  assert.equal(await c.turn(f, 23000), undefined, 'the third most recent user message is the first one');
+  c.manager.appendMessage(user('Thanks')); c.manager.appendMessage(assistant());
+  assert.equal((await c.turn(f, 23000)).entries.length, 12);
+});
+test('no trim when it would not bring usage well under the compaction point, and the check stays armed', async t => {
+  const f = trimFixture(t, overrides);
+  const c = conversation([user('Hi'), assistant('read'), result('read', 20000), assistant(), user('Go on'), assistant(), user('More'), assistant()]);
+  // read is since the third most recent user message, so nothing can be cleared.
+  assert.equal(await c.turn(f, 23000), undefined);
+  c.manager.appendMessage(user('And')); c.manager.appendMessage(assistant());
+  assert.equal(await c.turn(f, 23000), undefined, 'clearing 5,000 tokens from 23,000 stays over 17,203');
+  assert.deepEqual((await c.turn(f, 21500)).entries.map(e => e.targetId), [c.ids.read]);
+});
+test('the trim line follows the global reserve when the model has no override', async t => {
+  const f = trimFixture(t, {...overrides, modelOverrides:{}});
+  const c = conversation(history);
+  // Compaction at 16,384, the line at 13,107.
+  assert.equal(await c.turn(f, 13000), undefined);
+  assert.equal((await c.turn(f, 13500)).entries.length, 2);
+  const g = trimFixture(t, {...overrides, enabled:false});
+  assert.equal(await conversation(history).turn(g, 30000), undefined);
+  // A reserve larger than the window cannot put the point under half of it.
+  const h = trimFixture(t, {...overrides, modelOverrides:{'test/primary':{reserveTokens:30000}}});
+  assert.equal(await conversation(history).turn(h, 12000), undefined);
+  assert.equal((await conversation(history).turn(h, 13500)).entries.length, 2);
+});
+test('the compaction settings are the ones this process started with', async t => {
+  const f = trimFixture(t, overrides);
+  // The daemon rewrites the file for a later section; Pi keeps what it loaded.
+  writeFileSync(join(f.agentDir, 'settings.json'), JSON.stringify({compaction:{...overrides, modelOverrides:{}}}));
+  const c = conversation(history);
+  assert.equal(await c.turn(f, 13500), undefined);
+  assert.equal((await c.turn(f, 21500)).entries.length, 2);
 });

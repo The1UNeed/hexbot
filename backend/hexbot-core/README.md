@@ -119,6 +119,27 @@ it also installs over SSH when nobody is signed in at the screen.
   small built-in model such as `openai/gpt-4` compacts at 6,144 tokens rather
   than never. A running Pi keeps the settings it loaded at start, so the
   daemon leaves an unchanged file alone.
+- Shortly before Pi would compact, the private extension clears old tool
+  output instead (`extension.ts`, `turn_end`). When Pi's context estimate
+  passes the compaction point minus a tenth of the window, tool results from
+  before the third most recent user message and over about 1,000 characters
+  are replaced in model context by a one-line note saying the output was
+  cleared; the call and its arguments stay, and so do results of `clarify`,
+  `memory`, `hexbot_soul`, `todo`, `message_bot`, `skill_view` and
+  `delegate_task`, and anything before the first user message. Results are
+  kept by user messages, not assistant rounds, because Pi ends a turn after
+  every tool round and a long run is still using its reads. The edits are Pi
+  `context_edit` entries in `conversation.jsonl`:
+  they change only what the model sees from then on, never the displayed
+  history (`reconcile` skips them), billing, or the summaries dreaming reads.
+  One trim per crossing of the line, so the cached prefix is rewritten once
+  rather than every request; it happens only when it would bring usage under
+  70% of the compaction point, otherwise compaction runs as before. Right
+  after a trim the meter's `tokens` is Pi's size estimate of the edited
+  context until the next reply measures it. The extension reads the
+  compaction key of `settings.json` once when it loads, as Pi does, so its
+  line, Pi's compaction and the meter follow the settings this process
+  started with.
 - A conversation keeps its system prompt, skill catalog and tool definitions
   across turns and daemon restarts. Skill bodies and grants resolve live. Runtime settings outside the prompt may
   resolve live.

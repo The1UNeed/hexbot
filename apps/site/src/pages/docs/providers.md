@@ -45,7 +45,7 @@ model:
 
 Replace `your-loaded-model` with an actual model name on that server. Refresh provider settings and start a new section after configuration changes. For an authenticated endpoint, configure its credentials on the daemon too. Local models need the capabilities your task uses, such as tool calling or image input.
 
-Tell the daemon the model's context window when it cannot find out itself. When a section's context fills, the daemon summarises its oldest part and keeps the most recent 20,000 tokens, starting at 75% of the window or later. A model the daemon does not know is assumed to have 32,768 tokens, so a larger model would be summarised far earlier than it needs to be. For Ollama, set `context_length` under `model`; the daemon sends it to the server as `num_ctx` and sizes the summary step to it. For any other model, add a `model_overrides` entry:
+Tell the daemon the model's context window when it cannot find out itself. When a section's context fills, the daemon first clears old tool output (file contents, command output, fetched pages) from what the model sees, keeping the conversation itself word for word; if that is not enough, it summarises the section's oldest part and keeps the most recent 20,000 tokens, starting at 75% of the window or later. A model the daemon does not know is assumed to have 32,768 tokens, so a larger model would be summarised far earlier than it needs to be. For Ollama, set `context_length` under `model`; the daemon sends it to the server as `num_ctx` and sizes the summary step to it. For any other model, add a `model_overrides` entry:
 
 ```yaml
 model:

@@ -933,7 +933,10 @@ fn digest_carries_compaction_summaries_of_the_current_branch_since_the_last_drea
             said("u3", Some("c1"), "user", &evening, 16),
             said("a3", Some("u3"), "assistant", "evening answer", 17),
             compacted("c2", "a3", "summary of the afternoon", 18),
-            said("u4", Some("c2"), "user", "late question", 19),
+            // The extension cleared an old tool result: a context edit changes
+            // model context only, never the digest or the displayed history.
+            json!({"type":"context_edit","id":"e1","parentId":"c2","timestamp":hour(18),"targetId":"a3","replacement":{"content":[{"type":"text","text":"[Old tool output cleared to save context]"}]}}),
+            said("u4", Some("e1"), "user", "late question", 19),
             said("a4", Some("u4"), "assistant", "late answer", 19),
         ],
     );
@@ -958,6 +961,7 @@ fn digest_carries_compaction_summaries_of_the_current_branch_since_the_last_drea
     let text = digest.to_string();
     assert!(!text.contains("before the last dream"));
     assert!(!text.contains("abandoned"));
+    assert!(!text.contains("cleared to save context"));
     // Nothing compacted since the last dream: the section looks as it always did.
     let later = dreaming::build_digest(h, "owl", epoch(18) + 1.0, None).unwrap();
     assert!(later["sections"][0].get("compactions").is_none());

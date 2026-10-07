@@ -2,7 +2,7 @@
 import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync } from 'node:fs';
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
-import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
+import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool, estimateTokens } from '@earendil-works/pi-coding-agent';
 import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
@@ -60,6 +60,31 @@ export default function hexbot(pi: any) {
   let iterations = 0;
   let limitReached = false;
   const maxTurns = Number(config.maxTurns);
+  // Shortly before Pi would compact, clear old tool output once. Pi's compaction
+  // check runs right after this boundary, on the edited context. The edits are
+  // persisted context_edit entries, so the cached prefix changes once per
+  // crossing and never per request; the request-local `context` event would
+  // move the prefix every turn. Armed again once usage is back under the line.
+  // The compaction settings are read once here, where Pi has just loaded its
+  // own copy; the daemon rewrites the file for later sections, and this
+  // process keeps compacting under the settings it started with.
+  const compaction = compactionSettings();
+  let trimArmed = true;
+  const trim = (event: any, ctx: any) => {
+    const usage = ctx.getContextUsage?.();
+    if (!usage || usage.tokens === null || !(usage.contextWindow > 0)) return;
+    const compactAt = compactionPoint(compaction, usage.contextWindow, ctx.model);
+    if (compactAt === undefined) return;
+    if (usage.tokens < compactAt - usage.contextWindow * TRIM_MARGIN) { trimArmed = true; return; }
+    if (!trimArmed) return;
+    const stale = staleToolResults(event.context?.contextEntries ?? []);
+    const saved = stale.reduce((sum, {message}) => sum + estimateTokens(message) - estimateTokens(cleared(message)), 0);
+    // Not worth a cache rewrite: let compaction run. Checked again next turn,
+    // when more results have aged past the kept turns.
+    if (usage.tokens - saved > compactAt * TRIM_TARGET) return;
+    trimArmed = false;
+    return stale.map(({id, message}) => ({type: 'context_edit', targetId: id, replacement: {content: cleared(message).content}}));
+  };
   pi.on('turn_end', async (event: any, ctx: any) => {
     iterations++;
     if (Number.isFinite(maxTurns) && maxTurns > 0 && iterations >= maxTurns && event.message?.stopReason === 'toolUse') {
@@ -67,6 +92,8 @@ export default function hexbot(pi: any) {
       await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({name: 'hexbot_turn_limit', args: {limit: maxTurns}}));
       ctx.abort();
     }
+    const edits = trim(event, ctx);
+    if (edits?.length) return {entries: [...event.entries ?? [], ...edits]};
   });
   const bridge = async (ctx: any, name: string, args: any = {}) => {
     const raw = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({name, args}));
@@ -376,6 +403,54 @@ export default function hexbot(pi: any) {
       }
     });
   }
+}
+
+// Old tool output is cleared when usage passes the compaction point minus a
+// tenth of the window, and only if that would bring it under 70% of the point.
+// Results since the third most recent user message are kept: Pi ends a turn
+// after every tool round, so the bot may still be using them mid-task, and a
+// single long run is never trimmed under its own user message. Results under
+// about 1,000 characters are not worth an edit. The bot must keep what the
+// user answered, its own notes, soul and todo list, what another bot said, a
+// skill's instructions and a delegate's report, word for word.
+const TRIM_MARGIN = 0.1;
+const TRIM_TARGET = 0.7;
+const KEEP_TURNS = 3;
+const FLOOR_TOKENS = 250;
+const VERBATIM = new Set(['clarify', 'memory', 'hexbot_soul', 'todo', 'todo_list', 'message_bot', 'skill_view', 'delegate_task']);
+// The compaction key the daemon writes into the bot's Pi settings.json
+// (providers.rs, write_pi_settings; the daemon snapshots the same key when it
+// launches this process, so the meter agrees). Empty when the file is unreadable.
+function compactionSettings(): any {
+  try { return JSON.parse(readFileSync(join(process.env.PI_CODING_AGENT_DIR!, 'settings.json'), 'utf8')).compaction ?? {}; } catch { return {}; }
+}
+// Where Pi compacts: the window minus the model's reserve, Pi's own default
+// when the key has none, and never below half the window (the daemon's floor).
+function compactionPoint(compaction: any, window: number, model: any): number | undefined {
+  if (compaction.enabled === false) return;
+  const reserve = compaction.modelOverrides?.[`${model?.provider}/${model?.id}`]?.reserveTokens ?? compaction.reserveTokens ?? 16384;
+  return Math.max(window - reserve, Math.floor(window / 2));
+}
+// Tool results in the projected context that are old and large enough to clear:
+// behind the first user message, before the third most recent user message,
+// not from a verbatim tool. A result cleared earlier is already under the floor.
+export function staleToolResults(contextEntries: any[]): {id: string, message: any}[] {
+  const flat = contextEntries.flatMap(entry => (entry.messages ?? []).map((message: any) => ({entry, message})));
+  const users = flat.filter(({message}) => message.role === 'user').length;
+  let prompted = 0;
+  const stale: {id: string, message: any}[] = [];
+  for (const {entry, message} of flat) {
+    if (message.role === 'user') prompted++;
+    if (message.role !== 'toolResult' || !prompted || prompted > users - KEEP_TURNS) continue;
+    if (entry.sourceEntry?.type !== 'message' || VERBATIM.has(message.toolName)) continue;
+    if (estimateTokens(message) < FLOOR_TOKENS) continue;
+    stale.push({id: entry.sourceEntry.id, message});
+  }
+  return stale;
+}
+export function cleared(message: any): any {
+  const chars = (message.content ?? []).reduce((sum: number, block: any) => sum + (block.type === 'text' ? block.text.length : 0), 0);
+  return {...message, content: [{type: 'text', text: `[Old tool output (${chars.toLocaleString('en-US')} characters) cleared to save context; the call and its arguments are kept. Run it again if the output is needed.]`}]};
 }
 
 // Filenames can contain grep's line delimiters too (for example owl-2-beta).
