@@ -234,7 +234,7 @@ export default function hexbot(pi: any) {
     isolatedCommand(command, live.home, live.outputDirs, level === 'confined' ? workspace() : undefined);
   const sandboxNote = () => live.approvalMode === 'manual'
     ? '[The command ran in the read-only sandbox, without internet access. If it failed for that reason, run it again with full_access and a reason.]'
-    : `[The command ran in the sandbox, without internet access and with writes only in ${live.cwd ?? config.cwd}. If it failed for that reason, run it again with full_access and a reason.]`;
+    : `[The command ran in the sandbox, without internet access and with writes only in ${live.cwd ?? config.cwd}, its output folders, and temporary folders. If it failed for that reason, run it again with full_access and a reason.]`;
 
   // Keep the built-in schemas and select tools only from the frozen configuration.
   // Refresh cwd at execution time without rewriting the cached prompt or history.

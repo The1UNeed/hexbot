@@ -266,6 +266,24 @@ test('the workspace sandbox confines writes and blocks the network', {skip:proce
   assert.equal(run(`echo x > '${other}/x' && (exec 3<>/dev/tcp/127.0.0.1/${port}) && echo done`, undefined), 'done\n');
 });
 
+test('macOS Auto and Manual refuse network listeners; approved full access permits them', {skip:process.platform !== 'darwin'}, async t => {
+  const {spawnSync} = await import('node:child_process');
+  const {sandboxProfile} = await import('./isolation.ts');
+  const base = mkdtempSync(join(tmpdir(), 'hexbot-inbound-'));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const home = join(base, 'home'); mkdirSync(home);
+  for (const address of ['127.0.0.1', '0.0.0.0', '::1', '::']) {
+    for (const type of ['SOCK_STREAM', 'SOCK_DGRAM']) {
+      const script = `import socket\ns = socket.socket(socket.${address.includes(':') ? 'AF_INET6' : 'AF_INET'}, socket.${type})\ntry:\n s.bind((${JSON.stringify(address)}, 0))\n${type === 'SOCK_STREAM' ? ' s.listen(1)\n' : ''}except PermissionError:\n print('blocked')\nelse:\n print('allowed')`;
+      for (const workspace of [[base], [], undefined]) {
+        const result = spawnSync('/usr/bin/sandbox-exec', ['-p', sandboxProfile(home, [], workspace), '/usr/bin/python3', '-c', script], {encoding:'utf8', timeout:10000});
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.stdout, workspace === undefined ? 'allowed\n' : 'blocked\n', `${address} ${type} ${JSON.stringify(workspace)}`);
+      }
+    }
+  }
+});
+
 test('bubblewrap confines a workspace command to its folders without a network', async t => {
   const {execFileSync} = await import('node:child_process');
   const {chmodSync, realpathSync} = await import('node:fs');

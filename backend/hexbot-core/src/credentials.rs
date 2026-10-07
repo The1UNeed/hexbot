@@ -537,7 +537,7 @@ fn sandbox_profile(layout: &Layout) -> String {
             .collect::<Vec<_>>()
             .join(" ");
         format!(
-            "(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-read* {stores})(deny file-write* (require-not (require-any {inside})))(deny file-write* {config})"
+            "(deny network-inbound)(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-read* {stores})(deny file-write* (require-not (require-any {inside})))(deny file-write* {config})"
         )
     });
     format!(
@@ -1012,6 +1012,7 @@ mod tests {
             sandbox_profile(&confined)
         );
         assert!(sandbox_profile(&confined).contains("(deny network-outbound (remote ip))"));
+        assert!(sandbox_profile(&confined).contains("(deny network-inbound)"));
         let confined_bwrap: Vec<OsString> = extension["confinedBwrap"]
             .as_array()
             .unwrap()

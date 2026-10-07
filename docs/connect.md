@@ -162,6 +162,23 @@ forward to, so the whole flow runs on one machine.
 
 ## Daemon registration (device code)
 
+Registration starts allow ten attempts per minute per client. The counter is
+atomic in Postgres and shared across app instances. IPv6 addresses share an
+allowance per /64. Excess requests receive HTTP 429 with `Retry-After` before
+registration lookup or creation. Addresses are hashed in the counter table.
+
+On Vercel the app uses the deployment-owned `x-vercel-forwarded-for` header,
+as described in [Vercel's request-header documentation](https://vercel.com/docs/headers/request-headers).
+Self-hosted deployments ignore address headers unless `CONNECT_TRUST_PROXY=1`;
+then the front proxy must overwrite `x-real-ip` and block direct access to Next.js.
+Without a trusted address, requests share one allowance. Apply the database
+migration before deploying this change. Edge limits are still needed for large
+traffic floods because shared counter checks themselves reach the database.
+
+Expired registrations and client counters are eligible for removal after a day.
+Expiry indexes support cleanup in batches of at most 1,000 rows, at most once
+per minute per running app instance, when a registration is created.
+
 1. `hexbot connect [--name NAME]` calls `POST /api/register/start
    {daemon_name, platform}` → `{device_code, user_code, verify_url,
    interval}` and prints the URL and the eight-character code. The app does

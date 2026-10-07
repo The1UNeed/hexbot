@@ -434,8 +434,15 @@ async fn disconnected_one_shot_request_closes_session_and_reaps_owned_pi() {
     .unwrap()
     .unwrap();
     let router = server::router(app.clone());
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let token = auth::local_token(h.path()).unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
     let (mut socket, _) =
         tokio_tungstenite::connect_async(format!("ws://{address}/api/ws?token={token}"))
             .await
