@@ -5,7 +5,7 @@ import { Button } from './button'
 import { Chip } from './chip'
 import { Dialog } from './dialog'
 import { Input } from './input'
-import { Menu } from './menu'
+import { ContextMenu, Menu } from './menu'
 import { Select } from './select'
 import { Spinner } from './spinner'
 import { Textarea } from './textarea'
@@ -65,6 +65,18 @@ describe('UI components', () => {
     render(<Menu items={[{ label: 'Create' }]} trigger={<button>New</button>} />)
     fireEvent.click(screen.getByRole('button', { name: 'New' }))
     expect(screen.getByText('Create')).toBeVisible()
+  })
+  it('opens ContextMenu on right click and runs the chosen item', async () => {
+    const archive = vi.fn()
+    render(
+      <ContextMenu items={[{ label: 'Archive', onSelect: archive }]}>
+        <button>Garden plans</button>
+      </ContextMenu>
+    )
+    const row = screen.getByRole('button', { name: 'Garden plans' })
+    expect(fireEvent.contextMenu(row)).toBe(false)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Archive' }))
+    expect(archive).toHaveBeenCalledOnce()
   })
   it('renders Select', () => {
     render(

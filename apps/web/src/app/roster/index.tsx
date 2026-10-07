@@ -15,7 +15,7 @@ import { AvatarBuilder } from '../../components/ui/avatar-builder'
 import { Button } from '../../components/ui/button'
 import { Dialog } from '../../components/ui/dialog'
 import { Input } from '../../components/ui/input'
-import { Menu } from '../../components/ui/menu'
+import { ContextMenu, Menu } from '../../components/ui/menu'
 import { RoomCluster } from '../../components/ui/room-cluster'
 import { Select } from '../../components/ui/select'
 import { StatusDot, StatusTag } from '../../components/ui/status-dot'
@@ -34,14 +34,7 @@ import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { REASONING_LEVELS } from '../../lib/reasoning'
 import { toMillis } from '../../lib/time'
-import type {
-  Bot,
-  ModelOption,
-  ReasoningEffort,
-  Room,
-  RoomEvent,
-  Section
-} from '../../lib/types'
+import type { Bot, ModelOption, ReasoningEffort, Room, RoomEvent, Section } from '../../lib/types'
 import { useBotList, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useDrafts } from '../../stores/drafts'
@@ -59,12 +52,13 @@ import {
 import { useSettings } from '../../stores/settings'
 import { useTranscripts } from '../../stores/transcripts'
 import { useUsers } from '../../stores/users'
+import { rememberedTab } from '../bot-settings'
 import { UpdatePill } from '../update-pill'
 
 const DAY = 86_400_000
 
 const rowClass =
-  'flex w-full items-center gap-3 rounded-panel px-2.5 py-2.5 text-left outline-none transition-colors duration-[var(--hex-motion-fast)] hover:bg-foreground/[0.04]'
+  'flex w-full items-center gap-3 rounded-panel px-2.5 py-2.5 text-left outline-none transition-colors duration-[var(--hex-motion-fast)] hover:bg-foreground/[0.04] data-[popup-open]:bg-foreground/[0.04]'
 
 const rowFocus = 'ring-1 ring-foreground/40'
 
@@ -130,12 +124,14 @@ function RoomRow({
   active,
   focused,
   onOpen,
+  onSettings,
   query,
   room
 }: {
   active: boolean
   focused: string | null
   onOpen: (id: string) => void
+  onSettings: (id: string) => void
   query: string
   room: Room
 }) {
@@ -154,29 +150,31 @@ function RoomRow({
   const dot = status === 'idle' && roomUnread(room, events, currentId) ? 'done' : status
 
   return (
-    <button
-      className={cn(
-        rowClass,
-        active && 'bg-background shadow-card',
-        focused === `room:${room.id}` && rowFocus
-      )}
-      data-roster-id={`room:${room.id}`}
-      onClick={() => onOpen(room.id)}
-      type="button"
-    >
-      <RoomCluster bots={bots} room={room} status={dot} />
-      <span className="min-w-0 flex-1">
-        <span className="flex items-baseline gap-2">
-          <span className="min-w-0 flex-1 truncate font-semibold">{room.name}</span>
-          <StatusTag status={status} />
+    <ContextMenu items={[{ label: 'Settings', onSelect: () => onSettings(room.id) }]}>
+      <button
+        className={cn(
+          rowClass,
+          active && 'bg-background shadow-card',
+          focused === `room:${room.id}` && rowFocus
+        )}
+        data-roster-id={`room:${room.id}`}
+        onClick={() => onOpen(room.id)}
+        type="button"
+      >
+        <RoomCluster bots={bots} room={room} status={dot} />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate font-semibold">{room.name}</span>
+            <StatusTag status={status} />
+          </span>
+          <span className="block truncate text-[length:var(--text-secondary)] text-muted">
+            {typeof latest?.payload.text === 'string'
+              ? latest.payload.text
+              : `${active_.length} bot${active_.length === 1 ? '' : 's'}`}
+          </span>
         </span>
-        <span className="block truncate text-[length:var(--text-secondary)] text-muted">
-          {typeof latest?.payload.text === 'string'
-            ? latest.payload.text
-            : `${active_.length} bot${active_.length === 1 ? '' : 's'}`}
-        </span>
-      </span>
-    </button>
+      </button>
+    </ContextMenu>
   )
 }
 
@@ -235,6 +233,7 @@ interface BotRowsProps {
   onDelete: (section: Section) => void
   onExpand: () => void
   onOpen: (bot: string, section: string) => void
+  onSettings: (bot: string) => void
   onStart: (bot: string) => void
   query: string
   sections: Section[]
@@ -267,6 +266,7 @@ function BotRows({
   onDelete,
   onExpand,
   onOpen,
+  onSettings,
   onStart,
   query,
   sections
@@ -301,82 +301,92 @@ function BotRows({
 
   return (
     <div data-testid="bot-group">
-      <button
-        className={cn(
-          rowClass,
-          selected && 'bg-background shadow-card',
-          focused === `bot:${bot.name}` && rowFocus
-        )}
-        data-roster-id={`bot:${bot.name}`}
-        onClick={() => onStart(bot.name)}
-        type="button"
+      <ContextMenu
+        items={[
+          { label: 'New section', onSelect: () => onStart(bot.name) },
+          { label: 'Settings', onSelect: () => onSettings(bot.name) }
+        ]}
       >
-        <span className="relative shrink-0">
-          <Avatar image={avatarData(bot)} name={bot.display_name} size="lg" />
-          <StatusDot status={dot} />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="flex items-baseline gap-2">
-            <span className="min-w-0 flex-1 truncate font-semibold">{bot.display_name}</span>
-            <StatusTag status={status} />
+        <button
+          className={cn(
+            rowClass,
+            selected && 'bg-background shadow-card',
+            focused === `bot:${bot.name}` && rowFocus
+          )}
+          data-roster-id={`bot:${bot.name}`}
+          onClick={() => onStart(bot.name)}
+          type="button"
+        >
+          <span className="relative shrink-0">
+            <Avatar image={avatarData(bot)} name={bot.display_name} size="lg" />
+            <StatusDot status={dot} />
           </span>
-          {label ? (
-            <span className="block truncate text-[length:var(--text-secondary)] text-muted">
-              {label}
+          <span className="min-w-0 flex-1">
+            <span className="flex items-baseline gap-2">
+              <span className="min-w-0 flex-1 truncate font-semibold">{bot.display_name}</span>
+              <StatusTag status={status} />
             </span>
-          ) : null}
-        </span>
-      </button>
+            {label ? (
+              <span className="block truncate text-[length:var(--text-secondary)] text-muted">
+                {label}
+              </span>
+            ) : null}
+          </span>
+        </button>
+      </ContextMenu>
       {rows.length > 0 || canExpand ? (
         <div className="mb-1 ml-5 flex flex-col gap-px border-l border-border pr-1 pl-1.5">
           {rows.map(section => {
             const status = sectionStatusOf(bot, section.id, live)
             const dot = status === 'idle' && unseen(section, active) ? 'done' : status
 
+            const actions = [
+              { label: 'Archive', onSelect: () => onArchive(section) },
+              { label: 'Delete', onSelect: () => onDelete(section) }
+            ]
+
             return (
-              <div
-                className={cn(
-                  'group/row flex items-center rounded-[10px] pr-1 transition-colors hover:bg-foreground/[0.04]',
-                  active === section.id && 'bg-background shadow-card'
-                )}
-                key={section.id}
-              >
-                <button
+              <ContextMenu items={actions} key={section.id}>
+                <div
                   className={cn(
-                    'flex min-w-0 flex-1 items-center gap-2 rounded-control px-2 py-1 text-left text-[length:var(--text-meta)] outline-none',
-                    active === section.id ? 'text-foreground' : 'text-muted',
-                    focused === `section:${section.id}` && rowFocus
+                    'group/row flex items-center rounded-[10px] pr-1 transition-colors hover:bg-foreground/[0.04] data-[popup-open]:bg-foreground/[0.04]',
+                    active === section.id && 'bg-background shadow-card'
                   )}
-                  data-roster-id={`section:${section.id}`}
-                  onClick={() => onOpen(bot.name, section.id)}
-                  type="button"
                 >
-                  <span className="relative grid size-[12px] shrink-0 place-items-center">
-                    {dot === 'idle' && drafts[section.id] ? (
-                      <SquarePen aria-label="Draft" size={12} />
-                    ) : (
-                      <StatusDot className="static size-2 border-0" status={dot} />
+                  <button
+                    className={cn(
+                      'flex min-w-0 flex-1 items-center gap-2 rounded-control px-2 py-1 text-left text-[length:var(--text-meta)] outline-none',
+                      active === section.id ? 'text-foreground' : 'text-muted',
+                      focused === `section:${section.id}` && rowFocus
                     )}
-                  </span>
-                  <Title className="min-w-0 flex-1 truncate" text={section.title} />
-                  <StatusTag status={status === 'needs_you' ? status : undefined} />
-                </button>
-                <Menu
-                  items={[
-                    { label: 'Archive', onSelect: () => onArchive(section) },
-                    { label: 'Delete', onSelect: () => onDelete(section) }
-                  ]}
-                  trigger={
-                    <button
-                      aria-label={`Section actions for ${section.title}`}
-                      className="grid size-6 shrink-0 place-items-center rounded-full text-muted opacity-0 transition-opacity group-hover/row:opacity-100 hover:text-foreground focus-visible:opacity-100 data-[popup-open]:opacity-100"
-                      type="button"
-                    >
-                      <MoreHorizontal size={14} />
-                    </button>
-                  }
-                />
-              </div>
+                    data-roster-id={`section:${section.id}`}
+                    onClick={() => onOpen(bot.name, section.id)}
+                    type="button"
+                  >
+                    <span className="relative grid size-[12px] shrink-0 place-items-center">
+                      {dot === 'idle' && drafts[section.id] ? (
+                        <SquarePen aria-label="Draft" size={12} />
+                      ) : (
+                        <StatusDot className="static size-2 border-0" status={dot} />
+                      )}
+                    </span>
+                    <Title className="min-w-0 flex-1 truncate" text={section.title} />
+                    <StatusTag status={status === 'needs_you' ? status : undefined} />
+                  </button>
+                  <Menu
+                    items={actions}
+                    trigger={
+                      <button
+                        aria-label={`Section actions for ${section.title}`}
+                        className="grid size-6 shrink-0 place-items-center rounded-full text-muted opacity-0 transition-opacity group-hover/row:opacity-100 hover:text-foreground focus-visible:opacity-100 data-[popup-open]:opacity-100"
+                        type="button"
+                      >
+                        <MoreHorizontal size={14} />
+                      </button>
+                    }
+                  />
+                </div>
+              </ContextMenu>
             )
           })}
           {canExpand ? (
@@ -522,6 +532,12 @@ export function RosterColumn() {
   }
 
   const openRoom = (room: string) => void navigate({ to: '/r/$room', params: { room } })
+
+  const openRoomSettings = (room: string) =>
+    void navigate({ to: '/r/$room/settings', params: { room } })
+
+  const openBotSettings = (bot: string) =>
+    void navigate({ to: '/b/$bot/settings/$tab', params: { bot, tab: rememberedTab(bot) } })
 
   /** After archiving or deleting the open section, land on the bot's next one (or a new one). */
   const leaveSection = async (bot: string, sectionId: string) => {
@@ -728,6 +744,7 @@ export function RosterColumn() {
               focused={focused}
               key={`room:${(entry.item as Room).id}`}
               onOpen={openRoom}
+              onSettings={openRoomSettings}
               query={query}
               room={entry.item as Room}
             />
@@ -744,6 +761,7 @@ export function RosterColumn() {
               onDelete={section => void deleteSection(section)}
               onExpand={() => void expandBot((entry.item as Bot).name)}
               onOpen={open}
+              onSettings={openBotSettings}
               onStart={name => void createSection(name)}
               query={query}
               sections={Object.values(sectionMap).filter(
