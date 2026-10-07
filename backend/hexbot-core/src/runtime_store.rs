@@ -34,7 +34,14 @@ pub fn open(home: &Path) -> Result<Connection> {
       CREATE TRIGGER IF NOT EXISTS summary_message_insert AFTER INSERT ON native_messages BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;
       CREATE TRIGGER IF NOT EXISTS summary_message_update AFTER UPDATE ON native_messages BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;
       CREATE TRIGGER IF NOT EXISTS summary_message_delete AFTER DELETE ON native_messages BEGIN DELETE FROM native_summaries WHERE session_id=OLD.session_id; END;
-      CREATE TRIGGER IF NOT EXISTS summary_journal_update AFTER UPDATE ON native_pi_journal BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;",
+      CREATE TRIGGER IF NOT EXISTS summary_journal_update AFTER UPDATE ON native_pi_journal BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;
+      CREATE TABLE IF NOT EXISTS native_history_versions(session_id TEXT PRIMARY KEY, version INTEGER NOT NULL);
+      CREATE TRIGGER IF NOT EXISTS history_message_insert AFTER INSERT ON native_messages BEGIN INSERT INTO native_history_versions VALUES(NEW.session_id,1) ON CONFLICT(session_id) DO UPDATE SET version=version+1; END;
+      CREATE TRIGGER IF NOT EXISTS history_message_update AFTER UPDATE ON native_messages BEGIN INSERT INTO native_history_versions VALUES(NEW.session_id,1) ON CONFLICT(session_id) DO UPDATE SET version=version+1; END;
+      CREATE TRIGGER IF NOT EXISTS history_message_delete AFTER DELETE ON native_messages BEGIN INSERT INTO native_history_versions VALUES(OLD.session_id,1) ON CONFLICT(session_id) DO UPDATE SET version=version+1; END;
+      CREATE TRIGGER IF NOT EXISTS history_journal_insert AFTER INSERT ON native_pi_journal WHEN NEW.projection_seq IS NOT NULL BEGIN INSERT INTO native_history_versions VALUES(NEW.session_id,1) ON CONFLICT(session_id) DO UPDATE SET version=version+1; END;
+      CREATE TRIGGER IF NOT EXISTS history_journal_update AFTER UPDATE OF active,projection_seq ON native_pi_journal WHEN OLD.active IS NOT NEW.active OR OLD.projection_seq IS NOT NEW.projection_seq BEGIN INSERT INTO native_history_versions VALUES(NEW.session_id,1) ON CONFLICT(session_id) DO UPDATE SET version=version+1; END;
+      CREATE TRIGGER IF NOT EXISTS history_journal_delete AFTER DELETE ON native_pi_journal WHEN OLD.projection_seq IS NOT NULL BEGIN INSERT INTO native_history_versions VALUES(OLD.session_id,1) ON CONFLICT(session_id) DO UPDATE SET version=version+1; END;",
     )?;
     crate::db::migrate_runtime(&conn)?;
     Ok(conn)
@@ -50,6 +57,21 @@ pub fn history(home: &Path, stored: &str) -> Result<Vec<Value>> {
         serde_json::from_str(&s).map_err(|e| crate::Error::new(5200, e.to_string()))
     })
     .collect()
+}
+/// A counter the triggers bump whenever a session's displayed history can change:
+/// a message row, or the journal link that orders it or hides it on another branch.
+/// History search compares it to skip sections it already indexed. A version only
+/// grows; the row goes only with `delete`, which tombstones the session, so a
+/// session without one has never been written or is gone for good.
+pub fn history_version(conn: &Connection, stored: &str) -> Result<i64> {
+    Ok(conn
+        .query_row(
+            "SELECT version FROM native_history_versions WHERE session_id=?",
+            [stored],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0))
 }
 pub fn append(home: &Path, stored: &str, mut message: Value) -> Result<()> {
     let conn = open(home)?;
@@ -160,6 +182,12 @@ pub fn delete(home: &Path, stored: &str) -> Result<()> {
             [stored],
         )?;
         tx.execute("DELETE FROM native_messages WHERE session_id=?", [stored])?;
+        // Last, after the message delete trigger has bumped it: the session is
+        // tombstoned above, so its history can never be written again.
+        tx.execute(
+            "DELETE FROM native_history_versions WHERE session_id=?",
+            [stored],
+        )?;
         tx.execute("DELETE FROM native_sessions WHERE stored_id=?", [stored])?;
         tx.commit()?;
         let path = home.join("runtime/sessions").join(stored);

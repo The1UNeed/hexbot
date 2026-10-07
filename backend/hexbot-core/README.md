@@ -102,6 +102,18 @@ it also installs over SSH when nobody is signed in at the screen.
   Python history. There is no Python rollback package.
   Session recovery reconciles Pi's durable log with native history and usage;
   replaying an already recorded message does not duplicate it or its cost.
+  `native_history_versions` counts, by trigger, every change to a session's
+  displayed history: a message row, or the journal link that orders it or
+  hides it on another branch. History search (`session_search`) keeps an
+  in-memory FTS5 index per bot, owner, and role filter, shared by every
+  section of the bot (the asking section is left out when a query is
+  answered), at most eight and about 256 MB in all, estimated as the text
+  twice plus 512 bytes a message, and on every query compares each
+  section's row and version with what it indexed, re-reading only sections
+  that changed, appeared, or went away. A hit answers in the time of the
+  FTS5 query alone; a deleted section is gone from results at the next
+  query because its `sections` row is, and `delete` drops its version row
+  with the rest of its history.
 - Settled Pi processes retire after 15 idle minutes. Session IDs remain valid;
   a later RPC resumes the durable session. Staged files and pending questions
   prevent retirement. Replay retention is bounded by session count and bytes.
