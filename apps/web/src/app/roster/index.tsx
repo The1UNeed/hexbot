@@ -694,7 +694,7 @@ export function RosterColumn() {
             trigger={
               <button
                 aria-label="New"
-                className="hex-glass hex-glass-press grid size-9 shrink-0 place-items-center rounded-full text-foreground/75 transition-colors hover:text-foreground"
+                className="hex-glass hex-glass-press grid size-9 shrink-0 place-items-center rounded-full text-foreground/75 hover:text-foreground"
                 type="button"
               >
                 <Plus size={18} />

@@ -48,12 +48,15 @@ own visual identity. Read `CLAUDE.md` for the words.
   cards that sit on the canvas: a hairline plus one soft shadow.
 - Liquid glass (`hex-glass`, `hex-glass-strong` in `tokens.css`) is for
   floating chrome only: the name pill and round buttons above the chat, the
-  composer, the waiting pill, the side panel, dialogs and menus. A
-  translucent fill blurs and saturates what scrolls under it, a specular rim
-  is brighter at the top left, and a soft sheen crosses the top. In
-  Chromium (the app, Chrome, Edge) the backdrop also bends a few pixels
-  through the `#hex-liquid` SVG filter in `index.html`; other browsers blur
-  only. Content (bubbles, cards, rows) is never glass.
+  composer, the waiting pill, the side panel, dialogs and menus. As on iOS,
+  a clear fill blurs and saturates what scrolls under it, and a hairline
+  specular rim catches light on the top-left edge and, fainter, on the
+  bottom-right. Rim, edge glow and shadow are one `box-shadow`, so glass
+  costs one backdrop blur and nothing else; no SVG filters. Pressing glass
+  (`hex-glass-press`) swells it on a spring (`--hex-ease-glass`, 1.1, or
+  1.04 for wide pills via `--hex-press-scale`) and lights it from within;
+  letting go springs it back. Reduce transparency turns it solid. Content
+  (bubbles, cards, rows) is never glass.
 - Motion, one short scale in `tokens.css`: 120 ms (`fast`) for hover, press
   and menus; 180 ms (`rise`) for a label or popover arriving, a 4 px lift
   and a fade, never a scale; 320 ms (`enter`, `ease-spring`) for a chat

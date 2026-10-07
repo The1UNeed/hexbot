@@ -1163,7 +1163,7 @@ function BotConversation() {
             <div className="flex max-w-lg flex-col items-center gap-2">
               {suggestedPrompts(bot?.description ?? '', bot?.display_name).map(prompt => (
                 <button
-                  className="hex-glass-press hex-focus rounded-full bg-bubble px-4 py-2 text-[length:var(--text-secondary)] text-foreground/85 transition-colors duration-[var(--hex-motion-fast)] hover:bg-surface-2 hover:text-foreground"
+                  className="hex-glass-press hex-focus rounded-full bg-bubble [--hex-press-scale:1.04] px-4 py-2 text-[length:var(--text-secondary)] text-foreground/85 hover:bg-surface-2 hover:text-foreground"
                   key={prompt}
                   onClick={() => send(prompt)}
                   type="button"
@@ -1271,7 +1271,7 @@ function BotConversation() {
                 ? `${name}, ${section.title}`
                 : name
             }
-            className="hex-glass hex-glass-press hex-focus hex-no-drag pointer-events-auto flex h-9 max-w-[min(100%,30rem)] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5"
+            className="hex-glass hex-glass-press hex-focus hex-no-drag pointer-events-auto flex h-9 max-w-[min(100%,30rem)] [--hex-press-scale:1.04] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5"
             onClick={() => togglePanel()}
             title={panelOpen ? 'Hide details' : 'Show details'}
             type="button"
@@ -1318,7 +1318,7 @@ function BotConversation() {
           trigger={
             <button
               aria-label="Conversation actions"
-              className="hex-glass hex-glass-press hex-focus grid size-9 place-items-center rounded-full text-foreground/70 transition-colors duration-[var(--hex-motion-fast)] hover:text-foreground"
+              className="hex-glass hex-glass-press hex-focus grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
               type="button"
             >
               <MoreHorizontal size={16} />
@@ -1328,7 +1328,7 @@ function BotConversation() {
         {panelOpen ? null : (
           <button
             aria-label="Toggle profile panel"
-            className="hex-glass hex-glass-press hex-focus hex-fade grid size-9 place-items-center rounded-full text-foreground/70 transition-colors duration-[var(--hex-motion-fast)] hover:text-foreground"
+            className="hex-glass hex-glass-press hex-focus hex-fade grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
             onClick={() => togglePanel()}
             type="button"
           >
