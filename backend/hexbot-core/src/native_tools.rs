@@ -245,12 +245,18 @@ fn edge_command(home: &Path, options: &Value) -> String {
 /// computer. They are never offered to a model and never shown in bot
 /// settings.
 pub fn not_set_up(home: &Path, bot: &str) -> Result<Vec<&'static str>> {
-    let cfg = common::merged_config(home, bot)?;
+    not_set_up_with_config(home, bot, &common::merged_config(home, bot)?)
+}
+pub(crate) fn not_set_up_with_config(
+    home: &Path,
+    bot: &str,
+    cfg: &Value,
+) -> Result<Vec<&'static str>> {
     let env = connectors::profile_credentials(home, &crate::catalog::profile(home, bot)?)?;
     Ok(
         ["code_execution", "browser", "computer_use", "vision", "tts"]
             .into_iter()
-            .filter(|toolset| !set_up(home, &cfg, &env, toolset))
+            .filter(|toolset| !set_up(home, cfg, &env, toolset))
             .collect(),
     )
 }
@@ -283,25 +289,7 @@ fn set_up(
                 _ => false,
             }
         }
-        "tts" => {
-            let provider = text(&cfg["tts"], "provider", "edge");
-            let options = &cfg["tts"][provider];
-            match provider {
-                "openai" => {
-                    has("VOICE_TOOLS_OPENAI_KEY")
-                        || has("OPENAI_API_KEY")
-                        || !text(options, "base_url", "").is_empty()
-                }
-                "mistral" => has("MISTRAL_API_KEY"),
-                "elevenlabs" => has("ELEVENLABS_API_KEY"),
-                "edge" => on_path(&edge_command(home, options)).is_some(),
-                name => {
-                    let custom = &cfg["tts"]["providers"][name];
-                    custom["type"] == "command"
-                        && custom["command"].as_str().and_then(on_path).is_some()
-                }
-            }
-        }
+        "tts" => speech_set_up(home, cfg, env, text(&cfg["tts"], "provider", "edge")),
         "vision" => {
             let aux = &cfg["auxiliary"]["vision"];
             // An explicit endpoint may need no key, like a local server.
@@ -317,6 +305,29 @@ fn set_up(
             }
         }
         _ => true,
+    }
+}
+fn speech_set_up(
+    home: &Path,
+    cfg: &Value,
+    env: &std::collections::BTreeMap<String, String>,
+    provider: &str,
+) -> bool {
+    let has = |name: &str| !credential(env, name).is_empty();
+    let options = &cfg["tts"][provider];
+    match provider {
+        "openai" => {
+            has("VOICE_TOOLS_OPENAI_KEY")
+                || has("OPENAI_API_KEY")
+                || !text(options, "base_url", "").is_empty()
+        }
+        "mistral" => has("MISTRAL_API_KEY"),
+        "elevenlabs" => has("ELEVENLABS_API_KEY"),
+        "edge" => on_path(&edge_command(home, options)).is_some(),
+        name => {
+            let custom = &cfg["tts"]["providers"][name];
+            custom["type"] == "command" && custom["command"].as_str().and_then(on_path).is_some()
+        }
     }
 }
 pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
@@ -599,7 +610,17 @@ pub async fn call(
         }
         let cfg = common::merged_config(home, bot)?;
         let env = connectors::credentials(home, bot)?;
-        if !set_up(home, &cfg, &env, family) {
+        let available = if name == "text_to_speech" {
+            speech_set_up(
+                home,
+                &cfg,
+                &env,
+                text(args, "provider", text(&cfg["tts"], "provider", "edge")),
+            )
+        } else {
+            set_up(home, &cfg, &env, family)
+        };
+        if !available {
             return Err(Error::new(
                 4302,
                 format!("tool is not set up on this computer: {name}"),

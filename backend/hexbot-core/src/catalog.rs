@@ -683,7 +683,8 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
             });
         // A tool that isn't set up on this computer is dropped, so a bot
         // never keeps one switched on that settings no longer shows.
-        let missing = crate::native_tools::not_set_up(home, name)?;
+        let effective = common::merged_config_with(home, &cfg)?;
+        let missing = crate::native_tools::not_set_up_with_config(home, name, &effective)?;
         enabled.retain(|v| !TOOLS.iter().any(|(_, t)| v == t));
         for item in tools {
             if let Some((_, t)) = TOOLS.iter().find(|(k, _)| item == k)

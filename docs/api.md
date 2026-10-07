@@ -92,6 +92,9 @@ or endpoint for its vision provider, and voice edge-tts or its provider's
 key. The others are always available. `tools` only reports available tools,
 and a tool that isn't available is never offered to a model; a frozen section
 that still lists one gets an error when calling it.
+Provider key changes broadcast `hexbot.bots.changed` to every user so paired
+clients refresh tool availability. Speech calls check the requested provider
+when it overrides the default.
 
 `status` is `idle`, `working`, `needs_you`, or `stopped` (priority in that
 reverse order), folded by the daemon from live session state, room turns,
@@ -137,7 +140,8 @@ inside the Hexbot home, symlinks included.
   `computer_use`, `vision`, `voice`, `message_bots`, `delegate`, and
   `scheduling`; toolsets owned by connectors (web, image_gen, mcp-*) are left
   as they are. Both capability lists use replace semantics. A tool missing
-  from `available_tools` is dropped from `tools` on write.
+  from `available_tools` is dropped from `tools` on write. Combined model and
+  tool edits use the new provider when checking availability.
 - `hexbot.bots.clear_status {name}` → `{bot: Bot}`. Closes every open incident
   for the bot.
 - `hexbot.bots.delete {name}` → `{deleted: true}` (deletes the profile

@@ -590,6 +590,11 @@ fn outside_home(home: &Path, canonical: &Path) -> Result<()> {
 }
 
 pub fn merged_config(home: &Path, bot: &str) -> Result<Value> {
+    merged_config_with(home, &read_config(&crate::catalog::profile(home, bot)?)?)
+}
+
+/// Merge a pending profile edit with daemon defaults before writing it.
+pub(crate) fn merged_config_with(home: &Path, profile_config: &Value) -> Result<Value> {
     fn merge(dst: &mut Value, src: &Value) {
         if let Some(src) = src.as_object() {
             if !dst.is_object() {
@@ -609,10 +614,7 @@ pub fn merged_config(home: &Path, bot: &str) -> Result<Value> {
         }
     }
     let mut cfg = read_config(home)?;
-    merge(
-        &mut cfg,
-        &read_config(&crate::catalog::profile(home, bot)?)?,
-    );
+    merge(&mut cfg, profile_config);
     Ok(cfg)
 }
 

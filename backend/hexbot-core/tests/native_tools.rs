@@ -295,6 +295,45 @@ async fn vision_and_speech_execute_configured_http_services() {
     server.abort();
 }
 #[tokio::test]
+async fn speech_checks_the_requested_provider_instead_of_the_default() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = Router::new().route(
+        "/audio/speech",
+        post(|| async { b"ID3test-audio".to_vec() }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let h = home(json!({"tools":{"enabled_toolsets":["tts"]},"tts":{
+        "provider":"edge","edge":{"command": "/missing/hexbot-edge-tts"},
+        "openai":{"base_url":format!("http://{address}")}
+    }}));
+    let audio = call(
+        h.path(),
+        "text_to_speech",
+        json!({"text":"Hello","provider":"openai"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read(audio["file_path"].as_str().unwrap()).unwrap(),
+        b"ID3test-audio"
+    );
+    let mut cfg = common::read_config(h.path()).unwrap();
+    cfg["tts"]["provider"] = json!("openai");
+    common::write_config(h.path(), &cfg).unwrap();
+    let denied = call(
+        h.path(),
+        "text_to_speech",
+        json!({"text":"Hello","provider":"elevenlabs"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(denied.code, 4302);
+    assert!(denied.message.contains("not set up"));
+    server.abort();
+}
+
+#[tokio::test]
 async fn python_hermes_tools_calls_conversation_dispatcher_and_propagates_denial() {
     let h = home(json!({"tools":{"enabled_toolsets":["code_execution"]}}));
     let requests = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
