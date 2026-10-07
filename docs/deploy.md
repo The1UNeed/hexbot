@@ -40,7 +40,7 @@ Smoke check after a deploy: `https://hexbot.app/`, `/docs/`, `/docs/connect/`, `
 
 ## Connect
 
-Connect needs Clerk, Neon, Cloudflare, a signing key, and optionally the PostHog key. `apps/connect/README.md` lists every variable and where it comes from. Without them the deployment is a placeholder: every API call returns 401 and the pages say sign-in is unavailable. `GET /api/health` returns `ready: false` until all four backends are the production ones.
+Connect needs Clerk, Neon, Cloudflare, a signing key, and optionally the PostHog key. `apps/connect/README.md` lists every variable and where it comes from. Without them the deployment is a placeholder: every API call returns 401 and the pages say sign-in is unavailable. `GET /api/health` returns `ready: false` until all four backends are the production ones and the database has the current migration. When the migration has not run, it says `schema: "behind"` and lists the `missing` tables and columns; `schema: "unreachable"` means the database did not answer.
 
 Environment variables are set per environment in the Vercel project. Production holds the real accounts. Preview holds nothing today, so a preview of Connect builds and serves pages but rejects every sign-in; to make previews usable, add a Clerk development instance, a Neon branch, and a separate signing key to the Preview environment only. Never give Preview the production Clerk, Neon, or Cloudflare credentials. `CONNECT_BASE_URL` stays unset in Preview because the code falls back to the request origin.
 
