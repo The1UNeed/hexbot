@@ -76,7 +76,20 @@ describe("tunnel hostnames and ports", () => {
 describe("health", () => {
   it("reports placeholder backends until production services are configured", async () => {
     const { GET } = await import("@/app/api/health/route");
-    expect(await (await GET()).json()).toMatchObject({ ok: true, ready: false, store: "memory", tunnels: "fake", auth: "dev", signing: "ephemeral" });
+    expect(await (await GET()).json()).toMatchObject({ ok: true, ready: false, store: "memory", tunnels: "fake", auth: "dev", signing: "ephemeral", schema: "current" });
+  });
+
+  it("names what the database is missing until the migration runs", async () => {
+    const { GET } = await import("@/app/api/health/route");
+    store.missingSchema = async () => ["registration_attempts"];
+    expect(await (await GET()).json()).toMatchObject({ ready: false, schema: "behind", missing: ["registration_attempts"] });
+  });
+
+  it("reports an unreachable database instead of failing", async () => {
+    const { GET } = await import("@/app/api/health/route");
+    store.missingSchema = async () => { throw new Error("connection refused"); };
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try { const response = await GET(); expect(response.status).toBe(200); expect(await response.json()).toMatchObject({ ready: false, schema: "unreachable" }); } finally { errors.mockRestore(); }
   });
 });
 

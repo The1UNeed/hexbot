@@ -11,7 +11,24 @@ export const REGISTRATION_ATTEMPTS_PER_MINUTE = 10;
 /** A one-time code handed to a browser signing in to a daemon; the daemon exchanges it for a grant (docs/connect.md). */
 export interface GrantCode { id: string; codeHash: string; daemonId: string; userId: string; deviceName: string; challenge: string; redirectUri: string; createdAt: Date; expiresAt: Date; consumedAt: Date | null }
 
+/** Every table migrations.sql creates and every column it adds later; a test keeps this in step with the file. */
+export const SCHEMA: Record<string, string[]> = {
+  users: [],
+  daemons: ["ingress_port", "tunnel_repair_at", "identity_key"],
+  registrations: ["daemon_id"],
+  registration_attempts: [],
+  client_sessions: [],
+  grant_codes: [],
+};
+/** Names (`table` or `table.column`) from SCHEMA that are absent from `present`, a set of `table.column` strings. */
+export function schemaGaps(present: Set<string>): string[] {
+  const tables = new Set([...present].map(name => name.split(".")[0]));
+  return Object.entries(SCHEMA).flatMap(([table, columns]) => tables.has(table) ? columns.filter(c => !present.has(`${table}.${c}`)).map(c => `${table}.${c}`) : [table]);
+}
+
 export interface Store {
+  /** What the database lacks from migrations.sql, empty when the migration has run. */
+  missingSchema(): Promise<string[]>;
   claimRegistrationAttempt(clientHash: string, windowStart: Date): Promise<boolean>;
   getOrCreateUser(clerkUserId: string): Promise<User>;
   createRegistration(input: Omit<Registration, "id" | "userId" | "approvedAt" | "consumedAt" | "daemonId">): Promise<Registration>;
@@ -45,6 +62,7 @@ export interface Store {
 
 export class MemoryStore implements Store {
   private registrationAttempts = new Map<string, { window: number; count: number }>();
+  async missingSchema(): Promise<string[]> { return []; }
   async claimRegistrationAttempt(clientHash: string, windowStart: Date) {
     const window = windowStart.getTime();
     for (const [key, value] of this.registrationAttempts) if (value.window < window - GRANT_CODE_RETENTION_MS) this.registrationAttempts.delete(key);
@@ -96,6 +114,7 @@ export class NeonStore implements Store {
   private sql: NeonQueryFunction<false, false>;
   private nextRegistrationCleanup = 0;
   constructor(databaseUrl: string) { this.sql = neon(databaseUrl); }
+  async missingSchema() { const rows = await this.sql`SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = current_schema()`; return schemaGaps(new Set(rows.map(r => `${r.table_name}.${r.column_name}`))); }
   async claimRegistrationAttempt(clientHash: string, windowStart: Date) {
     const rows = await this.sql`
       INSERT INTO registration_attempts (client_hash, window_start, attempts)

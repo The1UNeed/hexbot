@@ -69,7 +69,7 @@ Production needs these environment variables, all from `.env.example`:
 | `CONNECT_SIGNING_KEY_JWK` | one line from `node scripts/make-signing-key.mjs` |
 | `CONNECT_JWKS_EXTRA` | optional JSON array of public JWKs to publish beside the signing key, for rotation (`docs/connect.md`) |
 
-Do not set `DEV_USER_ID` in production. Run the migration against the production database, then redeploy from the Vercel dashboard, then confirm `https://connect.hexbot.app/api/health` returns `ready: true`.
+Do not set `DEV_USER_ID` in production. Run the migration against the production database, then redeploy from the Vercel dashboard, then confirm `https://connect.hexbot.app/api/health` returns `ready: true`. If it reports `schema: "behind"`, the migration has not reached that database; `missing` names what it lacks.
 
 DNS for `hexbot.app` must be a Cloudflare zone, because tunnel hostnames are Cloudflare DNS records. Keep the records that point `hexbot.app`, `www`, and `connect` at Vercel set to DNS only (not proxied).
 
