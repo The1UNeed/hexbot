@@ -103,6 +103,29 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
             columns.push(((*name).into(), "TEXT".into(), false, None, 0));
         }
     }
+    // Native-only tables, in sqlite_master name order with the rest.
+    let text = |name: &str, required: bool| (name.into(), "TEXT".into(), required, None, 0);
+    expected.push((
+        "memory_proposals".into(),
+        vec![
+            ("id".into(), "TEXT".into(), false, None, 1),
+            text("bot", true),
+            text("owner_id", true),
+            text("job_id", true),
+            text("action", true),
+            (
+                "args_json".into(),
+                "TEXT".into(),
+                true,
+                Some("'{}'".into()),
+                0,
+            ),
+            ("created_at".into(), "REAL".into(), true, None, 0),
+            ("consumed_at".into(), "REAL".into(), false, None, 0),
+            text("consumed_by", false),
+        ],
+    ));
+    expected.sort_by(|a, b| a.0.cmp(&b.0));
     expected
 }
 

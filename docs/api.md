@@ -145,7 +145,7 @@ inside the Hexbot home, symlinks included.
 - `hexbot.bots.clear_status {name}` → `{bot: Bot}`. Closes every open incident
   for the bot.
 - `hexbot.bots.delete {name}` → `{deleted: true}` (deletes the profile
-  directory, all rows, and the bot's scheduled jobs; refuses with 4211 if any of its sections is live
+  directory, all rows, the bot's scheduled jobs, and the memory proposals those jobs left; refuses with 4211 if any of its sections is live
   and mid-turn — `session.active_list` status `working` or `waiting` —
   with `data.sections: [{id, status}]`).
 

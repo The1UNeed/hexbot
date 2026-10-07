@@ -652,6 +652,8 @@ fn deleting_a_bot_removes_its_scheduled_jobs() {
     create(h);
     let jobs = runtime_store::open(h).unwrap();
     jobs.execute_batch("INSERT INTO native_jobs(id,owner,bot,job_json) VALUES ('daily','alice','research-owl','{}'),('other','alice','other-owl','{}'); INSERT INTO native_job_imports(bot) VALUES ('research-owl');").unwrap();
+    let main = db::open(h).unwrap();
+    main.execute_batch("INSERT INTO memory_proposals(id,bot,owner_id,job_id,action,args_json,created_at) VALUES ('p1','research-owl','alice','daily','add','{}',1),('p2','other-owl','alice','other','add','{}',1);").unwrap();
     call(
         h,
         "alice",
@@ -665,6 +667,14 @@ fn deleting_a_bot_removes_its_scheduled_jobs() {
     );
     assert_eq!(count("SELECT COUNT(*) FROM native_job_imports"), 0);
     assert_eq!(count("SELECT COUNT(*) FROM native_jobs"), 1);
+    // The memory proposals its jobs left behind go with it.
+    assert_eq!(
+        main.query_row("SELECT group_concat(bot) FROM memory_proposals", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap(),
+        "other-owl"
+    );
 }
 
 #[test]

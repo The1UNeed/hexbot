@@ -607,6 +607,11 @@ impl Runtime {
                 .and_then(|p| p.get("parent_session"))
                 .cloned()
                 .unwrap_or(Value::Null);
+            // A scheduled job's session, and any delegate under it, proposes memory.
+            opts["job"] = overrides
+                .and_then(|p| p.get("job"))
+                .cloned()
+                .unwrap_or(Value::Null);
             store::open(&self.home)?.execute(
                 "INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES(?,?,?,?,?)",
                 params![stored, owner, bot, prompt, opts.to_string()],
@@ -2517,7 +2522,42 @@ impl Runtime {
             }
             "memory" => {
                 let memory = MemoryStore::new(self.home.clone());
-                match args["action"].as_str().unwrap_or("read") {
+                let action = args["action"].as_str().unwrap_or("read");
+                // A scheduled job runs unattended, often straight after reading the
+                // web, so its writes wait for the bot's next dream. The proposal
+                // takes the same scan and cap as an edit, and the dream scans
+                // again when it applies one.
+                if action != "read"
+                    && let Some(job) = self.session_settings(s)?["job"].as_str()
+                {
+                    let text = match action {
+                        "add" | "append" | "set" => required(args, "text")?,
+                        "replace" => {
+                            required(args, "old_text")?;
+                            args["text"].as_str().unwrap_or("")
+                        }
+                        "remove" => {
+                            required(args, "text")?;
+                            ""
+                        }
+                        _ => return Err(Error::new(4202, "unknown memory action")),
+                    };
+                    check_memory_edit("", text)?;
+                    memory.check_bot_fits(&bot_owner, &s.bot, text)?;
+                    let kept = ["text", "old_text"]
+                        .into_iter()
+                        .filter_map(|k| args[k].as_str().map(|v| (k.to_owned(), json!(v))))
+                        .collect::<serde_json::Map<_, _>>();
+                    return crate::dreaming::propose_memory(
+                        &self.home,
+                        &bot_owner,
+                        &s.bot,
+                        job,
+                        action,
+                        &Value::Object(kept),
+                    );
+                }
+                match action {
                     "read" => memory.get_bot(&bot_owner, &s.bot),
                     "add" | "append" => {
                         let text = required(args, "text")?;
@@ -2615,6 +2655,14 @@ impl Runtime {
             "self_soul" | "hexbot_soul" => {
                 let path = self.home.join("profiles").join(&s.bot).join("SOUL.md");
                 if let Some(text) = args["text"].as_str() {
+                    // A scheduled job runs unattended, often straight after reading
+                    // the web; it reads the soul but the user changes it, in a section.
+                    if self.session_settings(s)?["job"].is_string() {
+                        return Err(Error::new(
+                            4302,
+                            "Soul changes need the user. A scheduled job can read the soul but not change it; ask the user in a section.",
+                        ));
+                    }
                     if text.trim().is_empty() || text.chars().count() > 4000 {
                         return Err(Error::new(
                             4202,
