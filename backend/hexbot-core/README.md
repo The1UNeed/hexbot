@@ -90,11 +90,33 @@ it also installs over SSH when nobody is signed in at the screen.
   characters a day, written by the tool's `note` action and read with
   `read {notes}`, never injected, read by the dream before transcripts, and
   deleted after 30 days. A shared bot in someone else's room is a guest
-  there (`guest` in its live settings): its memory tool refuses notes and
-  answers writes with a confirmation instead of the text, and the private
-  extension's file tools refuse `memories/` and every `users/<id>/user.md`,
-  through links too, outside Bypass. The sandbox for shell commands hides
-  credential files only.
+  there (`guest` and its own `session` id in its live settings): its memory
+  tool refuses notes and answers writes with a confirmation instead of the
+  text. Its memory is in its own prompt; what stays out of the room is its
+  daily notes, every About you and the other sections' folders. The private
+  extension's file tools refuse `memories/`, every `users/<id>/user.md` and
+  `runtime/sessions` but the own section (`privatePath`), through links,
+  firmlink aliases and mounts too (the folders' identity), outside Bypass.
+  The worker bridge (`guarded_file_path` with the own section id) refuses
+  the same paths for `hermes_tools.read_file`, `write_file` and `patch` from
+  `execute_code`, and then judges the file it opened by device and inode
+  (`PrivateFiles`), so an alias or a link swapped in after the path check is
+  refused too. The sandbox for its shell commands, `user_bash` and
+  `execute_code` (the own section id on `isolatedCommand` in `isolation.ts`
+  and `isolated_command` in `credentials.rs`) hides the same paths: by
+  pattern and subpath on macOS, and on Linux by masking the whole `users`
+  folder, every `profiles/*/memories` folder and `runtime/sessions`, which
+  the builder creates first so a file written while a code worker lives is
+  masked too, with the own section bound back and its attachments folder
+  writable; `execute_code` restarts a guest's worker when the mask list
+  changes (`guest_masks`). A `full_access` request in a guest session is
+  refused by the extension's gate before any approval card, so a guest never
+  runs in the base layer, and without an OS sandbox the guest's commands and
+  code are refused (`NO_GUEST_SANDBOX`) rather than offered to the room owner
+  for approval. Hard links to those files made elsewhere are readable by a
+  sandboxed command (the bridge refuses them), and the bot's shared
+  `artifacts` folder is readable by a guest. In the owner's own sessions the
+  sandbox hides credential files only.
 - `hexbot-runtime.db` stores native transcript projections, usage, and frozen
   session options. Pi keeps its conversation JSONL under the native session
   directory. Existing Python `state.db` history is imported once, including

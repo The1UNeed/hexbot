@@ -1,7 +1,7 @@
 // Child-process isolation for Pi's bash tool. credentials.rs builds the same
 // profile for Python and scheduled scripts from the same credential-policy.json;
 // a parity test there compares the two outputs.
-import {readFileSync, readdirSync, realpathSync, existsSync, statSync} from 'node:fs';
+import {readFileSync, readdirSync, realpathSync, existsSync, statSync, mkdirSync} from 'node:fs';
 import {join, relative, resolve, dirname, basename} from 'node:path';
 import {homedir} from 'node:os';
 import {spawnSync} from 'node:child_process';
@@ -91,10 +91,50 @@ function storeAncestors(denied: string[]): string[] {
 // Only the daemon-chosen output folders are writable inside the home. The
 // session cwd is never one of them: the daemon refuses a workspace there and
 // ignores a saved cwd inside it.
-function layout(home: string, outputs: string[] = []) {
+function layout(home: string, outputs: string[] = [], guest?: string) {
   const roots = [...new Set([resolve(home), realpathSync(home)])];
   const writable = outputs.filter(p => existsSync(p)).map(p => realpathSync(p)).filter(p => roots.some(root => p.startsWith(root + '/')));
-  return {roots, paths: secretPaths(home), writable, denied: deniedWrites()};
+  return {roots, paths: secretPaths(home), writable, denied: deniedWrites(), hidden: guest !== undefined ? privatePaths(roots) : [], sessions: guest !== undefined ? sessionMasks(roots, guest) : []};
+}
+// A shared bot in someone else's room is a guest there: every bot's memory and
+// notes folder, every About you, and every other section's folder (its history
+// quotes what the owner read, and its attachments are the owner's) are
+// unreadable for the programs a command starts, as privatePath() in the
+// extension makes them for the file tools. `guest` is the guest's own section
+// id: that folder stays readable, with its output folders writable.
+// macOS matches the files by pattern, so one that appears mid-command is
+// covered. bubblewrap can only mask a path that exists when the command
+// starts, and a code run keeps its worker between calls, so the masks are
+// whole folders the builder creates first: `users` (a guest needs nothing
+// there), every bot's `memories`, and `runtime/sessions` with the own section
+// bound back. An About you, note or section written later lands under a mask.
+export const PRIVATE_PATTERNS = ['profiles/[^/]+/memories(/.*)?', 'users/[^/]+/user\\.md'];
+export const NO_GUEST_SANDBOX = 'Hexbot has no OS sandbox on this system, so a shared bot cannot run commands or code in someone else\'s room. Install bubblewrap and restart the daemon.';
+const isDirectory = (path: string) => { try { return statSync(path).isDirectory(); } catch { return false; } };
+function privatePaths(roots: string[]): string[] {
+  const paths = new Set<string>();
+  const add = (path: string) => { try { mkdirSync(path, {recursive:true}); } catch {} if (isDirectory(path)) { paths.add(path); paths.add(realpathSync(path)); } };
+  for (const root of roots) {
+    add(join(root, 'users'));
+    // A profile that is a link to a folder elsewhere is masked by both paths.
+    for (const bot of entries(join(root, 'profiles'))) if (isDirectory(join(root, 'profiles', bot.name))) add(join(root, 'profiles', bot.name, 'memories'));
+  }
+  return [...paths].sort();
+}
+// One mask per real folder: a home named through a link gives the lexical and
+// canonical `runtime/sessions` the same folder, and a second tmpfs on it would
+// hide the own section bound back under the first. The own section and its
+// output folders are named by real path too, as the outputs are.
+function sessionMasks(roots: string[], section: string): {masked: string, own?: string}[] {
+  const masks = new Map<string, string | undefined>();
+  for (const root of roots) {
+    const sessions = join(root, 'runtime/sessions');
+    try { mkdirSync(sessions, {recursive:true}); } catch {}
+    if (!isDirectory(sessions)) continue;
+    const masked = realpathSync(sessions);
+    if (!masks.has(masked)) masks.set(masked, section ? join(masked, section) : undefined);
+  }
+  return [...masks].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([masked, own]) => ({masked, own}));
 }
 // Codex's workspace sandbox, for a session's own commands in Manual and Auto:
 // no network, no host Unix sockets (a user service manager or Docker would
@@ -114,8 +154,8 @@ function confined(workspace: string[]) {
   }
   return {writable, config};
 }
-export function sandboxProfile(home: string, outputs: string[] = [], workspace?: string[]): string {
-  const {roots, paths, writable, denied} = layout(home, outputs);
+export function sandboxProfile(home: string, outputs: string[] = [], workspace?: string[], guest?: string): string {
+  const {roots, paths, writable, denied, hidden, sessions} = layout(home, outputs, guest);
   const patterns = roots.flatMap(root => ['^' + regexEscape(root) + '/(.*/)?' + credentialPolicy.basename.slice(1), '^' + regexEscape(root) + '/' + credentialPolicy.home.slice(1)]);
   const ssh = join(homedir(), '.ssh');
   const sshFilters = [...new Set([ssh, existsSync(ssh) ? realpathSync(ssh) : ssh])].map(root => `(require-all (subpath ${JSON.stringify(root)}) (require-not (regex ${JSON.stringify(sandboxRegex('^' + regexEscape(root) + '/' + credentialPolicy.sshPublic.slice(1)))})))`);
@@ -130,20 +170,35 @@ export function sandboxProfile(home: string, outputs: string[] = [], workspace?:
     const inside = [...DEVICES.map(p => `(literal ${JSON.stringify(p)})`), ...['/dev/fd', ...open].map(p => `(subpath ${JSON.stringify(p)})`)].join(' ');
     confine = `(deny network-inbound)(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-read* ${stores})(deny file-write* (require-not (require-any ${inside})))(deny file-write* ${config.map(p => `(literal ${JSON.stringify(p)}) (subpath ${JSON.stringify(p)})`).join(' ')})`;
   }
-  return `(version 1)(allow default)(deny process-exec (literal "/usr/bin/open") (literal "/bin/launchctl") (literal "/usr/bin/osascript"))(deny file-write* (require-all ${insideHome} ${exceptWritable}))(deny file-write* ${stores})${ancestors ? `(deny file-write-unlink ${ancestors})` : ''}${confine}(deny file-read* file-write* ${filters.join(' ')})`;
+  // Guest rules hold in the base layer too: an approved full_access command
+  // in someone else's room still cannot read the owner's files.
+  const owner = guest !== undefined ? `(deny file-read* ${[...roots.flatMap(root => PRIVATE_PATTERNS.map(pattern => `(regex ${JSON.stringify(sandboxRegex('^' + regexEscape(root) + '/' + pattern + '$'))})`)), ...hidden.map(path => `(subpath ${JSON.stringify(path)})`), ...sessions.map(({masked, own}) => own ? `(require-all (subpath ${JSON.stringify(masked)}) (require-not (subpath ${JSON.stringify(own)})))` : `(subpath ${JSON.stringify(masked)})`)].join(' ')})` : '';
+  return `(version 1)(allow default)(deny process-exec (literal "/usr/bin/open") (literal "/bin/launchctl") (literal "/usr/bin/osascript"))(deny file-write* (require-all ${insideHome} ${exceptWritable}))(deny file-write* ${stores})${ancestors ? `(deny file-write-unlink ${ancestors})` : ''}${confine}${owner}(deny file-read* file-write* ${filters.join(' ')})`;
 }
-export function bwrapArguments(home: string, outputs: string[] = [], workspace?: string[]): string[] {
-  const {roots, paths, writable, denied} = layout(home, outputs);
+export function bwrapArguments(home: string, outputs: string[] = [], workspace?: string[], guest?: string): string[] {
+  const {roots, paths, writable, denied, hidden, sessions} = layout(home, outputs, guest);
   const confine = workspace && confined(workspace);
   const args = confine ? ['--die-with-parent', '--new-session', '--unshare-pid', '--unshare-net', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/run', '--tmpfs', '/tmp'] : ['--die-with-parent', '--unshare-pid', '--bind', '/', '/', '--proc', '/proc'];
   if (confine) for (const path of confine.writable) if (path !== '/tmp') args.push('--bind', path, path);
   for (const root of roots) args.push('--ro-bind', root, root);
-  for (const path of writable) if (!confine || confine.writable.some(root => path === root || path.startsWith(root + '/'))) args.push('--bind', path, path);
+  const open = writable.filter(path => !confine || confine.writable.some(root => path === root || path.startsWith(root + '/')));
+  for (const path of open) args.push('--bind', path, path);
   // A store that does not exist yet cannot be bound (bubblewrap would create the
   // mount point on the host).
   for (const path of denied) if (existsSync(path)) args.push(...!confine ? ['--ro-bind', path, path] : statSync(path).isDirectory() ? ['--tmpfs', path, '--remount-ro', path] : ['--ro-bind', '/dev/null', path]);
   for (const path of confine ? confine.config : []) if (existsSync(path)) args.push('--ro-bind', path, path);
-  for (const path of paths) if (existsSync(path)) args.push(...(statSync(path).isDirectory() ? ['--tmpfs', path, '--remount-ro', path] : ['--ro-bind', '/dev/null', path]));
+  for (const path of [...paths, ...hidden]) if (existsSync(path)) args.push(...(statSync(path).isDirectory() ? ['--tmpfs', path, '--remount-ro', path] : ['--ro-bind', '/dev/null', path]));
+  // The sessions mask covers the output folder bound above, so the own section
+  // comes back inside it, read-only with its output folders writable, before
+  // the mask itself is made read-only.
+  for (const {masked, own} of sessions) {
+    args.push('--tmpfs', masked);
+    if (own && existsSync(own)) {
+      args.push('--ro-bind', own, own);
+      for (const path of open) if (path.startsWith(own + '/')) args.push('--bind', path, path);
+    }
+    args.push('--remount-ro', masked);
+  }
   return args;
 }
 // Neither sandbox caps process creation, so a workspace command may start at
@@ -154,14 +209,17 @@ export function processLimit(): number | undefined {
   const listed = spawnSync('ps', [...process.platform === 'linux' ? ['-L'] : [], '-U', String(process.getuid?.() ?? ''), '-o', 'pid='], {encoding: 'utf8', timeout: 5000});
   return listed.status === 0 ? listed.stdout.split('\n').filter(Boolean).length + PROCESS_HEADROOM : undefined;
 }
-export function isolatedCommand(command: string, home: string, outputs: string[] = [], workspace?: string[]): string {
+// `guest` is a shared bot's own section id in someone else's room, where its
+// owner's files stay unreadable; such a command never runs without a sandbox.
+export function isolatedCommand(command: string, home: string, outputs: string[] = [], workspace?: string[], guest?: string): string {
   // A command that cannot be capped does not run.
   if (workspace) {
     const limit = processLimit();
     command = limit ? `ulimit -u ${limit} || exit 126\n${command}` : "echo 'Hexbot could not cap processes for the sandbox.' >&2; exit 126";
   }
-  if (process.platform === 'darwin') return `/usr/bin/sandbox-exec -p ${quote(sandboxProfile(home, outputs, workspace))} /bin/bash --noprofile --norc -c ${quote(command)}`;
+  if (process.platform === 'darwin') return `/usr/bin/sandbox-exec -p ${quote(sandboxProfile(home, outputs, workspace, guest))} /bin/bash --noprofile --norc -c ${quote(command)}`;
   const executable = probeIsolation();
-  if (executable) return [executable, ...bwrapArguments(home, outputs, workspace), '--', '/bin/bash', '--noprofile', '--norc', '-c', command].map(quote).join(' ');
+  if (executable) return [executable, ...bwrapArguments(home, outputs, workspace, guest), '--', '/bin/bash', '--noprofile', '--norc', '-c', command].map(quote).join(' ');
+  if (guest !== undefined) throw new Error(NO_GUEST_SANDBOX);
   return command;
 }

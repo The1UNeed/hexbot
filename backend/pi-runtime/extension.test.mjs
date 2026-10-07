@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync, existsSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {once} from 'node:events';
 import {tmpdir, homedir} from 'node:os';
@@ -95,34 +95,43 @@ test('ls and grep filter credentials and symlink targets from their output', asy
   const grep=await f.run('grep',{path:f.home,pattern:'needle'});
   assert.doesNotMatch(JSON.stringify(grep),/secret|auth.json|alias.txt/);assert.match(JSON.stringify(grep),/safe needle/);
 });
-// A shared bot in someone else's room: the daemon marks the session a guest.
-// Its owner's memory and notes, and every About you, are then out of reach of
-// the file tools, through links too, while its soul and the rest stay readable.
+// A shared bot in someone else's room: the daemon marks the session a guest
+// and names its section. Its owner's memory and notes, every About you, and
+// every other section's folder (history quotes what the owner read; uploads
+// are the owner's) are then out of reach of the file tools, through links too,
+// while its soul, its own section's uploads and the rest stay readable.
 function ownerFiles(home) {
   mkdirSync(join(home, 'profiles/owl/memories/notes'), {recursive:true});
   mkdirSync(join(home, 'users/alice'), {recursive:true});
+  mkdirSync(join(home, 'runtime/sessions/first/attachments'), {recursive:true});
+  mkdirSync(join(home, 'runtime/sessions/shared/attachments'), {recursive:true});
   writeFileSync(join(home, 'profiles/owl/memories/MEMORY.md'), 'memory needle');
   writeFileSync(join(home, 'profiles/owl/memories/notes/2026-10-07.md'), 'note needle');
   writeFileSync(join(home, 'users/alice/user.md'), 'about needle');
   writeFileSync(join(home, 'profiles/owl/SOUL.md'), 'soul needle');
+  writeFileSync(join(home, 'runtime/sessions/first/conversation.jsonl'), 'history needle');
+  writeFileSync(join(home, 'runtime/sessions/shared/attachments/upload.txt'), 'upload needle');
   symlinkSync(join(home, 'profiles/owl/memories/notes/2026-10-07.md'), join(home, 'alias.md'));
   symlinkSync(join(home, 'profiles/owl/memories'), join(home, 'profiles/owl/elsewhere'));
 }
-const PRIVATE = ['profiles/owl/memories/MEMORY.md', 'profiles/owl/memories/notes/2026-10-07.md', 'profiles/owl/memories/notes', 'profiles/owl/memories', 'users/alice/user.md', 'alias.md', 'profiles/owl/elsewhere/MEMORY.md', 'profiles/owl/elsewhere/notes/2026-10-07.md'];
-test('a shared bot in someone else\'s room cannot read its owner\'s memory, notes or any About you', async t => {
-  const f = fixture(t, 'smart', ['file'], {guest:true});
+const PRIVATE = ['profiles/owl/memories/MEMORY.md', 'profiles/owl/memories/notes/2026-10-07.md', 'profiles/owl/memories/notes', 'profiles/owl/memories', 'users/alice/user.md', 'alias.md', 'profiles/owl/elsewhere/MEMORY.md', 'profiles/owl/elsewhere/notes/2026-10-07.md', 'runtime/sessions/first/conversation.jsonl', 'runtime/sessions/first', 'runtime/sessions'];
+const GUEST = {guest:true, session:'shared'};
+test('a shared bot in someone else\'s room cannot read its owner\'s memory, notes, any About you or another section', async t => {
+  const f = fixture(t, 'smart', ['file'], GUEST);
   ownerFiles(f.home);
   for (const path of PRIVATE) {
-    assert.equal(privatePath(join(f.home, path), f.home), true, path);
-    for (const tool of ['read', 'ls', 'grep', 'find']) assert.match((await f.gate(tool, {path:join(f.home, path), pattern:'needle'}))?.reason ?? '', /private to its owner/, `${tool} ${path}`);
-    await assert.rejects(f.swap('read', {path:join(f.home, 'profiles/owl/SOUL.md')}, {path:join(f.home, path)}), /private to its owner/, path);
+    assert.equal(privatePath(join(f.home, path), f.home, 'shared'), true, path);
+    for (const tool of ['read', 'ls', 'grep', 'find']) assert.match((await f.gate(tool, {path:join(f.home, path), pattern:'needle'}))?.reason ?? '', /stay out of this room/, `${tool} ${path}`);
+    await assert.rejects(f.swap('read', {path:join(f.home, 'profiles/owl/SOUL.md')}, {path:join(f.home, path)}), /stay out of this room/, path);
   }
-  for (const path of ['profiles/owl/SOUL.md', 'profiles/owl', 'users/alice', 'profiles/owl/memories.txt']) assert.equal(privatePath(join(f.home, path), f.home), false, path);
+  for (const path of ['profiles/owl/SOUL.md', 'profiles/owl', 'users/alice', 'profiles/owl/memories.txt', 'runtime/sessions/shared', 'runtime/sessions/shared/attachments/upload.txt']) assert.equal(privatePath(join(f.home, path), f.home, 'shared'), false, path);
+  assert.equal(privatePath(join(f.home, 'runtime/sessions/shared/attachments/upload.txt'), f.home, 'sharedx'), true);
   assert.equal(await f.gate('read', {path:join(f.home, 'profiles/owl/SOUL.md')}), undefined);
   assert.match(JSON.stringify(await f.run('read', {path:join(f.home, 'profiles/owl/SOUL.md')})), /soul needle/);
+  assert.match(JSON.stringify(await f.run('read', {path:join(f.home, 'runtime/sessions/shared/attachments/upload.txt')})), /upload needle/);
   const grep = JSON.stringify(await f.run('grep', {path:f.home, pattern:'needle'}));
-  assert.doesNotMatch(grep, /memory needle|note needle|about needle|alias|elsewhere/);
-  assert.match(grep, /soul needle/);
+  assert.doesNotMatch(grep, /memory needle|note needle|about needle|history needle|alias|elsewhere/);
+  assert.match(grep, /soul needle/); assert.match(grep, /upload needle/);
   const find = JSON.stringify(await f.run('find', {path:f.home, pattern:'*.md'}));
   assert.doesNotMatch(find, /MEMORY|2026-10-07|user\.md|alias|elsewhere/);
   assert.match(find, /SOUL/);
@@ -133,9 +142,40 @@ test('a shared bot in someone else\'s room cannot read its owner\'s memory, note
 test('the owner\'s own sections read memory, notes and About you as before', async t => {
   const f = fixture(t, 'smart', ['file']);
   ownerFiles(f.home);
+  assert.match(JSON.stringify(await f.run('read', {path:join(f.home, 'runtime/sessions/first/conversation.jsonl')})), /history needle/);
   for (const path of PRIVATE) assert.equal(await f.gate('read', {path:join(f.home, path)}), undefined, path);
   assert.match(JSON.stringify(await f.run('read', {path:join(f.home, 'profiles/owl/memories/notes/2026-10-07.md')})), /note needle/);
   assert.match(JSON.stringify(await f.run('grep', {path:f.home, pattern:'needle'})), /note needle/);
+});
+// The gate judges the path a request names; a guest's read and grep then judge
+// the file they opened. A hard link to a note names it by a path the gate does
+// not know, and a folder swapped for a link to the notes after the gate's check
+// would reach the note by the checked path. An owner session reads by path.
+test('a guest\'s read and grep judge the file they opened, not the path that was checked', async t => {
+  const {linkSync, renameSync} = await import('node:fs');
+  const swapped = async (f, id) => {
+    const box = join(f.home, 'box'); mkdirSync(box); writeFileSync(join(box, '2026-10-07.md'), 'box needle');
+    assert.equal(await f.gate('read', {path:join(box, '2026-10-07.md')}, id), undefined);
+    // Without a context the wrapper checks the path before its first await; the
+    // swap lands before Pi opens the file.
+    const pending = f.tools.read.execute(id, {path:join(box, '2026-10-07.md')}, undefined, undefined, undefined);
+    renameSync(box, box + '-old'); symlinkSync(join(f.home, 'profiles/owl/memories/notes'), box);
+    return pending;
+  };
+  const f = fixture(t, 'smart', ['file'], GUEST);
+  ownerFiles(f.home);
+  const plain = join(f.home, 'plain.md'); linkSync(join(f.home, 'profiles/owl/memories/notes/2026-10-07.md'), plain);
+  assert.equal(await f.gate('read', {path:plain}), undefined);
+  await assert.rejects(f.run('read', {path:plain}), /stay out of this room/);
+  const grep = JSON.stringify(await f.run('grep', {path:f.home, pattern:'needle'}));
+  assert.doesNotMatch(grep, /note needle|plain/); assert.match(grep, /soul needle/);
+  const find = JSON.stringify(await f.run('find', {path:f.home, pattern:'*.md'}));
+  assert.doesNotMatch(find, /plain/); assert.match(find, /SOUL/);
+  assert.match(JSON.stringify(await f.run('read', {path:join(f.home, 'runtime/sessions/shared/attachments/upload.txt')})), /upload needle/);
+  await assert.rejects(swapped(f, 'swap-guest'), /stay out of this room/);
+  const owner = fixture(t, 'smart', ['file']);
+  ownerFiles(owner.home);
+  assert.match(JSON.stringify(await swapped(owner, 'swap-owner')), /note needle/);
 });
 test('each new turn restores primary and uses live fallback without changing prompt', async t => {
   const f=fixture(t);
@@ -505,10 +545,38 @@ test('without an OS sandbox every shell command asks in Manual and Auto', async 
     out.asked = choices.length;
     settings.approvalMode = 'off';
     out.offPasses = (await gate('pwd')) === undefined;
+    // A guest session is refused instead, with no card, even after Allow in
+    // this section; its user's own commands too. Bypass is unchanged.
+    settings.approvalMode = 'smart'; settings.guest = true; settings.session = 'shared';
+    out.guestRefused = (await gate('ls'))?.reason;
+    out.guestUserBash = (await handlers.user_bash({command:'ls'}, ctx)).result?.output;
+    out.guestAsked = choices.length;
+    settings.approvalMode = 'off';
+    out.guestOffPasses = (await gate('pwd')) === undefined;
     console.log(JSON.stringify(out));`;
   const result = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', script], {env:{...process.env, PATH:home, HEXBOT_SESSION_CONFIG:config}, encoding:'utf8'}));
-  assert.deepEqual(result, {manualDenied:true, smartDenied:true, reason:result.reason, sessionPasses:true, afterSession:true, asked:3, offPasses:true});
+  const refusal = "Hexbot has no OS sandbox on this system, so a shared bot cannot run commands or code in someone else's room. Install bubblewrap and restart the daemon.";
+  assert.deepEqual(result, {manualDenied:true, smartDenied:true, reason:result.reason, sessionPasses:true, afterSession:true, asked:3, offPasses:true, guestRefused:refusal, guestUserBash:refusal, guestAsked:3, guestOffPasses:true});
   assert.match(result.reason, /no OS sandbox/);
+});
+
+// The Data volume's firmlink alias of a path (/System/Volumes/Data/...) is
+// another spelling that resolving leaves as it is; the folders' identity
+// catches it, for the file tools and for grep's reads.
+test('a macOS firmlink alias of the home cannot disguise a private file', {skip: process.platform !== 'darwin'}, async t => {
+  const f = fixture(t, 'smart', ['file'], GUEST);
+  ownerFiles(f.home);
+  const alias = '/System/Volumes/Data' + realpathSync(f.home);
+  if (!existsSync(alias)) return t.skip('no Data volume alias of the temp folder');
+  assert.equal(canonicalPath(join(alias, 'users/alice/user.md'), f.home), join(alias, 'users/alice/user.md'));
+  for (const path of ['users/alice/user.md', 'profiles/owl/memories/notes/2026-10-07.md', 'profiles/owl/memories', 'runtime/sessions/first/conversation.jsonl']) {
+    assert.equal(privatePath(join(alias, path), f.home, 'shared'), true, path);
+    assert.match((await f.gate('read', {path:join(alias, path)}))?.reason ?? '', /stay out of this room/, path);
+  }
+  for (const path of ['profiles/owl/SOUL.md', 'runtime/sessions/shared/attachments/upload.txt']) assert.equal(privatePath(join(alias, path), f.home, 'shared'), false, path);
+  const grep = JSON.stringify(await f.run('grep', {path:alias, pattern:'needle'}));
+  assert.doesNotMatch(grep, /memory needle|note needle|about needle|history needle/);
+  assert.match(grep, /soul needle/);
 });
 
 test('file tools never write credential stores or daemon configuration outside Bypass', async t => {
@@ -567,6 +635,55 @@ test('user bash runs in the sandbox with a sanitized environment outside Bypass'
   let output = '';
   const result = await permitted.operations.exec('env', f.home, {env:{PATH:process.env.PATH, OPENAI_API_KEY:'secret'}, onData:data => output += data});
   assert.equal(result.exitCode, 0); assert.doesNotMatch(output, /OPENAI_API_KEY|secret/);
+});
+
+// The guest session's sandbox hides the same files its file tools refuse, for
+// the bot's commands and the user's own `!` commands; the owner's sessions read
+// them. The shim on Linux applies no sandbox, so only macOS runs this;
+// isolation.test.mjs covers bubblewrap.
+test('a shared bot\'s shell in someone else\'s room cannot read its owner\'s memory, notes or any About you', {skip: process.platform !== 'darwin'}, async t => {
+  for (const guest of [true, false]) {
+    const f = fixture(t, 'smart', ['terminal'], guest ? GUEST : {});
+    ownerFiles(f.home);
+    f.ctx.choice = 'once';
+    const read = async (path, extra = {}) => { try { return JSON.stringify(await f.run('bash', {command:`cat '${join(f.home, path)}'`, ...extra})); } catch (error) { return error.message; } };
+    for (const path of ['profiles/owl/memories/MEMORY.md', 'profiles/owl/memories/notes/2026-10-07.md', 'users/alice/user.md', 'alias.md', 'runtime/sessions/first/conversation.jsonl']) {
+      if (guest) assert.doesNotMatch(await read(path), /needle/, path); else assert.match(await read(path), /needle/, path);
+    }
+    assert.match(await read('profiles/owl/SOUL.md'), /soul needle/);
+    assert.match(await read('runtime/sessions/shared/attachments/upload.txt'), /upload needle/);
+    const permitted = await f.handlers.user_bash({command:'cat'}, f.ctx);
+    let output = '';
+    await permitted.operations.exec(`cat '${join(f.home, 'profiles/owl/memories/MEMORY.md')}' '${join(f.home, 'profiles/owl/SOUL.md')}' 2>/dev/null`, f.home, {env:{PATH:process.env.PATH}, onData:data => output += data});
+    if (guest) assert.doesNotMatch(output, /memory needle/); else assert.match(output, /memory needle/);
+    assert.match(output, /soul needle/);
+  }
+});
+
+// Full access would run outside the workspace sandbox, where a service broker
+// on the host can start a reader outside any sandbox, so a guest session never
+// gets it: the request is refused before any approval card, in every mode, and
+// a failed sandboxed command is not told to ask for it. Owner sessions ask as
+// before, and the frozen bash schema keeps its fields.
+test('full access is not available to a shared bot in someone else\'s room', async t => {
+  const refusal = "Full access is not available to a shared bot in someone else's room.";
+  const input = {command:'echo failed; exit 7', full_access:true, reason:'Needs the internet.'};
+  const guest = fixture(t, 'smart', ['terminal'], GUEST);
+  guest.ctx.choice = 'once';
+  for (const mode of ['smart', 'manual']) {
+    guest.settings.approvalMode = mode;
+    assert.deepEqual(await guest.gate('bash', input), {block:true, reason:refusal});
+    const result = await guest.run('bash', {command:'echo failed; exit 7'});
+    assert.equal(result.structuredContent.exit_code, 7);
+    const text = result.content.map(item => item.text).join('\n');
+    assert.match(text, /Full access is not available/); assert.doesNotMatch(text, /run it again with full_access/);
+  }
+  assert.deepEqual(guest.choices, []);
+  assert.ok(guest.tools.bash.parameters.properties.full_access);
+  const owner = fixture(t, 'smart', ['terminal']);
+  owner.ctx.choice = 'once';
+  assert.equal(await owner.gate('bash', input), undefined);
+  assert.equal(owner.choices.length, 1); assert.match(owner.choices[0].reason, /Needs the internet/);
 });
 
 test('execution refuses a call whose mode or file changed after the gate allowed it', async t => {

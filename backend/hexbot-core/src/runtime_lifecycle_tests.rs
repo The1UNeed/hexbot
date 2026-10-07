@@ -2949,3 +2949,285 @@ async fn notes_are_written_by_sections_proposed_by_jobs_and_private_in_shared_ro
     assert_eq!(runtime.session_settings(&section).unwrap()["guest"], false);
     runtime.shutdown().await;
 }
+
+/// The code runtime's file helper (`hermes_tools.read_file` and friends) runs
+/// in the daemon, outside the worker's sandbox, so the bridge itself refuses a
+/// guest the files the sandbox hides. The owner's own section reads them.
+#[tokio::test]
+async fn code_file_helper_refuses_a_guest_the_owners_private_files() {
+    let (home, runtime, _) = setup();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [code_execution, file]\n",
+    )
+    .unwrap();
+    db::open(home.path())
+        .unwrap()
+        .execute_batch(
+            "UPDATE bots SET shareable=1, approval_mode='smart';INSERT INTO sections(id,bot,owner_id,title) VALUES('shared','owl','bob','Shared');INSERT INTO rooms(id,name,owner_id) VALUES('shared-room','Shared','bob');INSERT INTO room_members(room_id,member_kind,member_id) VALUES('shared-room','bot','owl');INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('shared-room','owl','shared');",
+        )
+        .unwrap();
+    fs::create_dir_all(home.path().join("users/alice")).unwrap();
+    fs::write(home.path().join("users/alice/user.md"), "about needle").unwrap();
+    fs::create_dir_all(home.path().join("profiles/owl/memories/notes")).unwrap();
+    fs::write(
+        home.path().join("profiles/owl/memories/MEMORY.md"),
+        "memory needle",
+    )
+    .unwrap();
+    fs::write(
+        home.path()
+            .join("profiles/owl/memories/notes/2026-10-07.md"),
+        "note needle",
+    )
+    .unwrap();
+    let section = runtime.open_session("alice", "owl", "first").await.unwrap();
+    let shared = runtime.open_session("bob", "owl", "shared").await.unwrap();
+    // The owner's section history quotes what it read; the guest's own
+    // section holds the room's uploads.
+    fs::write(
+        home.path()
+            .join("runtime/sessions/first/conversation.jsonl"),
+        "history needle",
+    )
+    .unwrap();
+    fs::create_dir_all(home.path().join("runtime/sessions/shared/attachments")).unwrap();
+    fs::write(
+        home.path()
+            .join("runtime/sessions/shared/attachments/upload.txt"),
+        "upload needle",
+    )
+    .unwrap();
+    // The first prompt attaches the bridge; the helper runs without one here.
+    runtime.register_worker_bridge(&section);
+    runtime.register_worker_bridge(&shared);
+    let run = |s: &Arc<Live>, code: String| {
+        let runtime = runtime.clone();
+        let s = s.clone();
+        async move {
+            let result = runtime
+                .tool(&s, "execute_code", &json!({"code": code}))
+                .await
+                .unwrap();
+            result["output"].as_str().unwrap().to_owned()
+        }
+    };
+    let read = |path: &Path| {
+        format!(
+            "from hermes_tools import read_file\ntry:\n    print(read_file({path:?}))\nexcept Exception as error:\n    print('refused:', error)",
+            path = path.to_string_lossy()
+        )
+    };
+    for file in [
+        "users/alice/user.md",
+        "profiles/owl/memories/MEMORY.md",
+        "profiles/owl/memories/notes/2026-10-07.md",
+        "runtime/sessions/first/conversation.jsonl",
+    ] {
+        let guest = run(&shared, read(&home.path().join(file))).await;
+        assert!(!guest.contains("needle"), "{file}: {guest}");
+        assert!(
+            guest.contains(crate::credentials::PRIVATE_TO_OWNER),
+            "{file}: {guest}"
+        );
+        assert!(
+            run(&section, read(&home.path().join(file)))
+                .await
+                .contains("needle"),
+            "{file}"
+        );
+    }
+    let upload = home
+        .path()
+        .join("runtime/sessions/shared/attachments/upload.txt");
+    assert!(run(&shared, read(&upload)).await.contains("upload needle"));
+    // A write into a new subfolder of the guest's own uploads creates it.
+    let fresh = home
+        .path()
+        .join("runtime/sessions/shared/attachments/new/out.txt");
+    let written = run(
+        &shared,
+        format!(
+            "from hermes_tools import write_file\ntry:\n    print(write_file(path={path:?}, content='fresh'))\nexcept Exception as error:\n    print('refused:', error)",
+            path = fresh.to_string_lossy()
+        ),
+    )
+    .await;
+    assert!(!written.contains("refused"), "{written}");
+    assert_eq!(fs::read_to_string(&fresh).unwrap(), "fresh");
+    // The bridge judges the file it opened: a hard link in the workspace and,
+    // on macOS, the Data volume's firmlink alias of the home name the same
+    // files by paths the path check does not know.
+    let linked = home.workspace().join("plain.md");
+    fs::hard_link(home.path().join("users/alice/user.md"), &linked).unwrap();
+    let guest = run(&shared, read(&linked)).await;
+    assert!(
+        guest.contains(crate::credentials::PRIVATE_TO_OWNER),
+        "{guest}"
+    );
+    assert!(run(&section, read(&linked)).await.contains("about needle"));
+    let alias = PathBuf::from(format!(
+        "/System/Volumes/Data{}",
+        fs::canonicalize(home.path()).unwrap().display()
+    ));
+    if alias.is_dir() {
+        let guest = run(
+            &shared,
+            read(&alias.join("profiles/owl/memories/MEMORY.md")),
+        )
+        .await;
+        assert!(
+            guest.contains(crate::credentials::PRIVATE_TO_OWNER),
+            "{guest}"
+        );
+    }
+    // Writes through the helper are refused the same way.
+    let about = home.path().join("users/alice/user.md");
+    let write = format!(
+        "from hermes_tools import write_file, patch\nfor call in (lambda: write_file(path={path:?}, content='changed'), lambda: patch(path={path:?}, old_string='needle', new_string='changed')):\n    try:\n        call()\n    except Exception as error:\n        print('refused:', error)",
+        path = about.to_string_lossy()
+    );
+    let guest = run(&shared, write).await;
+    assert_eq!(
+        guest.matches(crate::credentials::PRIVATE_TO_OWNER).count(),
+        2,
+        "{guest}"
+    );
+    assert_eq!(fs::read_to_string(&about).unwrap(), "about needle");
+    runtime.shutdown().await;
+}
+
+/// The sandbox itself keeps a guest's code out of the owner's files: `open()`
+/// in a guest section fails on About you, memory, notes and another section's
+/// history, reads the guest's own uploads, and the owner's section reads all
+/// of it. A bot profile that appears while the guest's worker lives restarts
+/// it under the new mask. Without an OS sandbox the guest's code is refused
+/// rather than offered to the room owner for approval.
+#[tokio::test]
+async fn code_in_a_guest_section_cannot_open_the_owners_private_files() {
+    let (home, runtime, hub) = setup();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [code_execution]\n",
+    )
+    .unwrap();
+    db::open(home.path())
+        .unwrap()
+        .execute_batch(
+            "UPDATE bots SET shareable=1, approval_mode='smart';INSERT INTO sections(id,bot,owner_id,title) VALUES('shared','owl','bob','Shared');INSERT INTO rooms(id,name,owner_id) VALUES('shared-room','Shared','bob');INSERT INTO room_members(room_id,member_kind,member_id) VALUES('shared-room','bot','owl');INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('shared-room','owl','shared');",
+        )
+        .unwrap();
+    fs::create_dir_all(home.path().join("users/alice")).unwrap();
+    fs::write(home.path().join("users/alice/user.md"), "about needle").unwrap();
+    fs::create_dir_all(home.path().join("profiles/owl/memories/notes")).unwrap();
+    fs::write(
+        home.path().join("profiles/owl/memories/MEMORY.md"),
+        "memory needle",
+    )
+    .unwrap();
+    fs::write(
+        home.path()
+            .join("profiles/owl/memories/notes/2026-10-07.md"),
+        "note needle",
+    )
+    .unwrap();
+    fs::write(home.path().join("profiles/owl/SOUL.md"), "soul needle").unwrap();
+    let section = runtime.open_session("alice", "owl", "first").await.unwrap();
+    let shared = runtime.open_session("bob", "owl", "shared").await.unwrap();
+    fs::write(
+        home.path()
+            .join("runtime/sessions/first/conversation.jsonl"),
+        "history needle",
+    )
+    .unwrap();
+    fs::create_dir_all(home.path().join("runtime/sessions/shared/attachments")).unwrap();
+    fs::write(
+        home.path()
+            .join("runtime/sessions/shared/attachments/upload.txt"),
+        "upload needle",
+    )
+    .unwrap();
+    if !crate::credentials::isolation_available() {
+        let mut events = hub.subscribe();
+        let refused = runtime
+            .tool(&shared, "execute_code", &json!({"code":"print(1)"}))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, 4302);
+        assert_eq!(refused.message, crate::credentials::NO_GUEST_SANDBOX);
+        while let Ok(event) = events.try_recv() {
+            assert_ne!(event.frame["params"]["type"], "approval.request");
+        }
+        runtime.shutdown().await;
+        return;
+    }
+    let run = |s: &Arc<Live>, code: String| {
+        let runtime = runtime.clone();
+        let s = s.clone();
+        async move {
+            let result = runtime
+                .tool(&s, "execute_code", &json!({"code": code}))
+                .await
+                .unwrap();
+            result["output"].as_str().unwrap().to_owned()
+        }
+    };
+    let read = |path: &Path| {
+        format!(
+            "try:\n    print(open({path:?}).read())\nexcept OSError as error:\n    print('blocked:', type(error).__name__)",
+            path = path.to_string_lossy()
+        )
+    };
+    for file in [
+        "users/alice/user.md",
+        "profiles/owl/memories/MEMORY.md",
+        "profiles/owl/memories/notes/2026-10-07.md",
+        "runtime/sessions/first/conversation.jsonl",
+    ] {
+        let guest = run(&shared, read(&home.path().join(file))).await;
+        assert!(guest.contains("blocked"), "{file}: {guest}");
+        assert!(!guest.contains("needle"), "{file}: {guest}");
+        let owner = run(&section, read(&home.path().join(file))).await;
+        assert!(owner.contains("needle"), "{file}: {owner}");
+    }
+    for file in [
+        "profiles/owl/SOUL.md",
+        "runtime/sessions/shared/attachments/upload.txt",
+    ] {
+        let guest = run(&shared, read(&home.path().join(file))).await;
+        assert!(guest.contains("needle"), "{file}: {guest}");
+    }
+    // The worker keeps its state between calls, until a new bot profile
+    // appears: the guest's worker restarts so the new memory folder is masked
+    // too; the owner's worker keeps running.
+    run(&shared, "marker = 1".into()).await;
+    run(&section, "marker = 1".into()).await;
+    fs::create_dir_all(home.path().join("profiles/newt/memories")).unwrap();
+    fs::write(
+        home.path().join("profiles/newt/memories/MEMORY.md"),
+        "late needle",
+    )
+    .unwrap();
+    assert_eq!(
+        run(&shared, "print('marker' in globals())".into())
+            .await
+            .trim(),
+        "False"
+    );
+    assert_eq!(
+        run(&section, "print('marker' in globals())".into())
+            .await
+            .trim(),
+        "True"
+    );
+    let late = run(
+        &shared,
+        read(&home.path().join("profiles/newt/memories/MEMORY.md")),
+    )
+    .await;
+    assert!(
+        late.contains("blocked") && !late.contains("needle"),
+        "{late}"
+    );
+    runtime.shutdown().await;
+}

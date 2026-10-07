@@ -53,8 +53,10 @@ The native scheduler and digest builder live in
   instead of memory. Notes never enter a prompt. A shared bot in someone
   else's room cannot read its owner's notes there, as it gets no About you;
   its memory writes there answer with a confirmation rather than the text,
-  and the extension's file tools refuse the bot's `memories/` folder and
-  every About you in that session (`guest` in the live settings).
+  and the extension's file tools, the daemon's file bridge and the sandbox
+  for its commands and code refuse the bot's `memories/` folder, every About
+  you and other sections' history in that session (`guest` in the live
+  settings; `docs/multi-user.md`).
   Nothing else indexes them; a day or a range is the way to find one.
 - The bot dream (not a room dream) reads the notes from the day of the last
   successful dream on as `notes: [{date, text}]`, oldest first, at most

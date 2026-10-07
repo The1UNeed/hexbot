@@ -2194,8 +2194,10 @@ impl Runtime {
         saved["cwd"] = json!(common::resolve_workdir(&self.home, configured)?);
         saved["home"] = json!(self.home);
         // A shared bot in someone else's room: the extension keeps its file
-        // tools out of memory, notes and About you files (`privatePath`).
+        // tools and sandbox out of memory, notes, About you files and other
+        // sections' folders (`privatePath`); its own section is named here.
         saved["guest"] = json!(owner != s.owner);
+        saved["session"] = json!(s.stored);
         // Hash expanded entries, not just YAML: credential edits revoke old clients too.
         if let Some(names) = own["mcpServers"].as_array() {
             let servers = crate::connectors::pi_mcp_servers(&self.home, &s.bot, names)?;
@@ -2551,6 +2553,8 @@ impl Runtime {
                         } else {
                             PathBuf::from(live["cwd"].as_str().unwrap_or(".")).join(raw)
                         };
+                        let guest = (live["guest"] == true && live["approvalMode"] != "off")
+                            .then_some(session.stored.as_str());
                         let (path, ask) = guarded_file_path(
                             &runtime.home,
                             &path,
@@ -2560,18 +2564,54 @@ impl Runtime {
                                 .chain(live["outputDirs"].as_array().into_iter().flatten())
                                 .filter_map(|v| v.as_str().map(PathBuf::from))
                                 .collect::<Vec<_>>(),
+                            guest,
                         )?;
                         if ask && !runtime.native_approval(&session, json!({"tool":name,"toolCall":{"title":path.to_string_lossy()},"input":args})).await? {
                             return Err(Error::new(4302, "The user denied this action."));
                         }
+                        // The path was judged above; a guest's opened file is
+                        // judged by what it is, so an alias or a link swapped
+                        // in since cannot reach a private file. Collected after
+                        // the first open, so what was opened is in the set.
+                        let private = std::cell::OnceCell::new();
+                        let refuse = |meta: &fs::Metadata| -> Result<()> {
+                            let Some(section) = guest else {
+                                return Ok(());
+                            };
+                            let private = private.get_or_init(|| {
+                                crate::credentials::PrivateFiles::collect(&runtime.home, section)
+                            });
+                            if private.contains(meta) {
+                                return Err(Error::new(4302, crate::credentials::PRIVATE_TO_OWNER));
+                            }
+                            Ok(())
+                        };
+                        let read = |path: &Path| -> Result<String> {
+                            let file = common::open_regular(path)?;
+                            refuse(&file.metadata()?)?;
+                            String::from_utf8(common::read_opened(file, 256 * 1024)?)
+                                .map_err(|_| Error::new(4202, "file is not UTF-8 text"))
+                        };
                         return match name.as_str() {
                             "read_file" => {
-                                let text = common::read_regular_text(&path, 256 * 1024)?;
+                                let text = read(&path)?;
                                 Ok(
                                     json!({"content":text.chars().take(256*1024).collect::<String>()}),
                                 )
                             }
                             "write_file" => {
+                                // The folder written into, created first as the
+                                // write would (a new subfolder of an output), and
+                                // the file replaced.
+                                if guest.is_some() {
+                                    if let Some(parent) = path.parent() {
+                                        fs::create_dir_all(parent)?;
+                                        refuse(&fs::File::open(parent)?.metadata()?)?;
+                                    }
+                                    if let Ok(file) = common::open_regular(&path) {
+                                        refuse(&file.metadata()?)?;
+                                    }
+                                }
                                 common::atomic_write(
                                     &path,
                                     required(&args, "content")?.as_bytes(),
@@ -2581,7 +2621,7 @@ impl Runtime {
                             "patch" => {
                                 let old = required(&args, "old_string")?;
                                 let new = args["new_string"].as_str().unwrap_or("");
-                                let text = common::read_regular_text(&path, 256 * 1024)?;
+                                let text = read(&path)?;
                                 if text.matches(old).count() != 1 {
                                     return Err(Error::new(4202, "patch must match exactly once"));
                                 }
@@ -2615,7 +2655,9 @@ impl Runtime {
             |r| r.get(0),
         )?;
         // Code runs in the workspace sandbox outside Bypass. Auto runs it without
-        // asking; Manual asks first, and so does Auto when there is no sandbox.
+        // asking; Manual asks first, and so does Auto when there is no sandbox,
+        // except in a guest session, where the one who would approve is the
+        // room owner, the person the sandbox keeps the files from: refused.
         let mut code_sandbox = None;
         if name == "execute_code" {
             crate::credentials::check_code(args["code"].as_str().unwrap_or(""))?;
@@ -2624,8 +2666,12 @@ impl Runtime {
             code_sandbox = Some((
                 Some(mode != "off"),
                 PathBuf::from(live["cwd"].as_str().unwrap_or(".")),
+                live["guest"] == true,
             ));
             let sandboxed = crate::credentials::isolation_available();
+            if live["guest"] == true && mode != "off" && !sandboxed {
+                return Err(Error::new(4302, crate::credentials::NO_GUEST_SANDBOX));
+            }
             let mut request =
                 json!({"tool":"execute_code","toolCall":{"title":args["code"]},"input":args});
             request["reason"] = json!(if sandboxed {
@@ -4736,13 +4782,17 @@ mod code_environment_tests {
 
 /// The checked target and whether a write needs approval: every write in Manual;
 /// in Auto, writes outside `writable` and host configuration files from
-/// credential-policy.json. Bypass checks nothing.
+/// credential-policy.json. A guest session (a shared bot in someone else's
+/// room, `guest` being its own section id) is refused its owner's memory and
+/// notes, every About you and every other section's folder, as the
+/// extension's file tools refuse them. Bypass checks nothing.
 fn guarded_file_path(
     home: &Path,
     path: &Path,
     write: bool,
     mode: &str,
     writable: &[PathBuf],
+    guest: Option<&str>,
 ) -> Result<(PathBuf, bool)> {
     fn resolve(path: &Path) -> Result<PathBuf> {
         let mut resolved = PathBuf::new();
@@ -4785,6 +4835,12 @@ fn guarded_file_path(
             || crate::credentials::credential_name(&root, path);
         if credentials {
             return Err(Error::new(4302, "Credential files are private."));
+        }
+        if let Some(section) = guest
+            && (crate::credentials::private_name(home, path, section)
+                || crate::credentials::private_name(&root, path, section))
+        {
+            return Err(Error::new(4302, crate::credentials::PRIVATE_TO_OWNER));
         }
         if write {
             match crate::credentials::host_write_tier(path) {
@@ -4851,11 +4907,121 @@ mod file_bridge_tests {
                 "pi-approvals.json",
             ] {
                 assert!(
-                    guarded_file_path(&home, &home.join(file), false, mode, &[]).is_err(),
+                    guarded_file_path(&home, &home.join(file), false, mode, &[], None).is_err(),
                     "{file} {mode}"
                 );
             }
-            assert!(guarded_file_path(&home, &home.join("notes.txt"), true, mode, &[]).is_err());
+            assert!(
+                guarded_file_path(&home, &home.join("notes.txt"), true, mode, &[], None).is_err()
+            );
+        }
+        // A guest session is refused the owner's memory, notes and every About
+        // you, through a link too; the owner's own sessions read them, and
+        // Bypass checks nothing.
+        fs::create_dir_all(home.join("profiles/owl/memories/notes")).unwrap();
+        fs::create_dir_all(home.join("users/alice")).unwrap();
+        fs::write(home.join("profiles/owl/memories/MEMORY.md"), "memory").unwrap();
+        fs::write(
+            home.join("profiles/owl/memories/notes/2026-10-07.md"),
+            "note",
+        )
+        .unwrap();
+        fs::write(home.join("users/alice/user.md"), "about").unwrap();
+        // Other sections' folders are private too; the guest's own is not.
+        fs::create_dir_all(home.join("runtime/sessions/first/attachments")).unwrap();
+        fs::create_dir_all(home.join("runtime/sessions/shared/attachments")).unwrap();
+        fs::write(
+            home.join("runtime/sessions/first/conversation.jsonl"),
+            "history",
+        )
+        .unwrap();
+        fs::write(
+            home.join("runtime/sessions/shared/attachments/upload.txt"),
+            "upload",
+        )
+        .unwrap();
+        for file in [
+            "profiles/owl/memories/MEMORY.md",
+            "profiles/owl/memories/notes/2026-10-07.md",
+            "profiles/owl/memories",
+            "users/alice/user.md",
+            "runtime/sessions/first/conversation.jsonl",
+            "runtime/sessions/first/attachments",
+            "runtime/sessions",
+        ] {
+            for mode in ["manual", "smart"] {
+                for write in [false, true] {
+                    let refused = guarded_file_path(
+                        &home,
+                        &home.join(file),
+                        write,
+                        mode,
+                        &[],
+                        Some("shared"),
+                    )
+                    .unwrap_err();
+                    assert_eq!(
+                        refused.message,
+                        crate::credentials::PRIVATE_TO_OWNER,
+                        "{file} {mode}"
+                    );
+                }
+            }
+            assert!(guarded_file_path(&home, &home.join(file), false, "smart", &[], None).is_ok());
+            assert!(
+                guarded_file_path(&home, &home.join(file), false, "off", &[], Some("shared"))
+                    .is_ok()
+            );
+        }
+        for file in [
+            "runtime/sessions/shared",
+            "runtime/sessions/shared/attachments/upload.txt",
+        ] {
+            assert!(
+                guarded_file_path(&home, &home.join(file), false, "smart", &[], Some("shared"))
+                    .is_ok(),
+                "{file}"
+            );
+            assert!(
+                guarded_file_path(
+                    &home,
+                    &home.join(file),
+                    false,
+                    "smart",
+                    &[],
+                    Some("sharedx")
+                )
+                .is_err(),
+                "{file}"
+            );
+        }
+        if crate::credentials::FOLD_CASE {
+            for file in ["PROFILES/owl/MEMORIES/memory.md", "users/alice/USER.MD"] {
+                assert!(
+                    guarded_file_path(&home, &home.join(file), false, "smart", &[], Some("shared"))
+                        .is_err(),
+                    "{file}"
+                );
+            }
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(home.join("users/alice/user.md"), home.join("about.md"))
+                .unwrap();
+            assert!(
+                guarded_file_path(
+                    &home,
+                    &home.join("about.md"),
+                    false,
+                    "smart",
+                    &[],
+                    Some("shared")
+                )
+                .is_err()
+            );
+            assert!(
+                guarded_file_path(&home, &home.join("about.md"), false, "smart", &[], None).is_ok()
+            );
         }
         // Bypass is plain Pi: nothing is checked.
         let (target, ask) = guarded_file_path(
@@ -4864,6 +5030,7 @@ mod file_bridge_tests {
             true,
             "off",
             &[],
+            None,
         )
         .unwrap();
         assert_eq!(target, home.join("profiles/owl/pi/auth.json"));
@@ -4876,30 +5043,44 @@ mod file_bridge_tests {
                 "CONNECT-IDENTITY.KEY",
             ] {
                 assert!(
-                    guarded_file_path(&home, &home.join(file), false, "smart", &[]).is_err(),
+                    guarded_file_path(&home, &home.join(file), false, "smart", &[], None).is_err(),
                     "{file}"
                 );
             }
             let upper = PathBuf::from(home.to_string_lossy().to_uppercase()).join("notes.txt");
-            assert!(guarded_file_path(&home, &upper, true, "smart", &[]).is_err());
+            assert!(guarded_file_path(&home, &upper, true, "smart", &[], None).is_err());
         }
         let workspace = home.join("workspace");
         let other = tempfile::tempdir().unwrap();
         let outside = fs::canonicalize(other.path()).unwrap();
         fs::create_dir_all(&workspace).unwrap();
         let ask = |path: &Path, mode| {
-            guarded_file_path(&home, path, true, mode, std::slice::from_ref(&workspace))
-                .unwrap()
-                .1
+            guarded_file_path(
+                &home,
+                path,
+                true,
+                mode,
+                std::slice::from_ref(&workspace),
+                None,
+            )
+            .unwrap()
+            .1
         };
         // Manual asks before every change, Auto only outside the workspace.
         assert!(ask(&workspace.join("notes.txt"), "manual"));
         assert!(!ask(&workspace.join("notes.txt"), "smart"));
         assert!(ask(&outside.join("notes.txt"), "smart"));
         assert!(
-            !guarded_file_path(&home, &outside.join("notes.txt"), false, "manual", &[])
-                .unwrap()
-                .1
+            !guarded_file_path(
+                &home,
+                &outside.join("notes.txt"),
+                false,
+                "manual",
+                &[],
+                None
+            )
+            .unwrap()
+            .1
         );
         for mode in ["manual", "smart"] {
             for path in [
@@ -4915,7 +5096,8 @@ mod file_bridge_tests {
                         &home.join(path),
                         true,
                         mode,
-                        std::slice::from_ref(&workspace)
+                        std::slice::from_ref(&workspace),
+                        None,
                     )
                     .is_err()
                 );
@@ -4925,19 +5107,26 @@ mod file_bridge_tests {
             let user = PathBuf::from(user);
             let ssh = user.join(".ssh");
             for name in ["config", "known_hosts", "id_ed25519.pub"] {
-                assert!(guarded_file_path(&home, &ssh.join(name), false, "smart", &[]).is_ok());
+                assert!(
+                    guarded_file_path(&home, &ssh.join(name), false, "smart", &[], None).is_ok()
+                );
             }
             assert!(
-                guarded_file_path(&home, &ssh.join("id_ed25519"), false, "smart", &[]).is_err()
+                guarded_file_path(&home, &ssh.join("id_ed25519"), false, "smart", &[], None)
+                    .is_err()
             );
             for mode in ["manual", "smart"] {
                 for path in ["/etc/hosts", "/private/etc/hosts"] {
-                    assert!(guarded_file_path(&home, Path::new(path), true, mode, &[]).is_err());
+                    assert!(
+                        guarded_file_path(&home, Path::new(path), true, mode, &[], None).is_err()
+                    );
                 }
-                let denied = guarded_file_path(&home, &user.join(".netrc"), true, mode, &[]);
+                let denied = guarded_file_path(&home, &user.join(".netrc"), true, mode, &[], None);
                 assert!(denied.unwrap_err().to_string().contains("private"));
                 // Credential stores are private to reads too.
-                assert!(guarded_file_path(&home, &user.join(".netrc"), false, mode, &[]).is_err());
+                assert!(
+                    guarded_file_path(&home, &user.join(".netrc"), false, mode, &[], None).is_err()
+                );
                 // A shell profile asks even inside the workspace.
                 let (_, ask) = guarded_file_path(
                     &home,
@@ -4945,6 +5134,7 @@ mod file_bridge_tests {
                     true,
                     mode,
                     std::slice::from_ref(&user),
+                    None,
                 )
                 .unwrap();
                 assert!(ask, "{mode}");
@@ -4954,14 +5144,114 @@ mod file_bridge_tests {
         {
             std::os::unix::fs::symlink(home.join("profiles/owl/pi"), home.join("alias")).unwrap();
             assert!(
-                guarded_file_path(&home, &home.join("alias/../.env"), false, "smart", &[]).is_err()
+                guarded_file_path(
+                    &home,
+                    &home.join("alias/../.env"),
+                    false,
+                    "smart",
+                    &[],
+                    None
+                )
+                .is_err()
             );
             std::os::unix::fs::symlink(
                 home.join("profiles/owl/pi/auth.json"),
                 home.join("safe.txt"),
             )
             .unwrap();
-            assert!(guarded_file_path(&home, &home.join("safe.txt"), false, "smart", &[]).is_err());
+            assert!(
+                guarded_file_path(&home, &home.join("safe.txt"), false, "smart", &[], None)
+                    .is_err()
+            );
+        }
+    }
+
+    /// The bridge judges the file it opened, not only the path it was given:
+    /// a hard link made elsewhere, a link swapped in after the path check, and
+    /// a macOS firmlink alias of the home all reach a private file by identity.
+    #[test]
+    fn bridge_refuses_a_guest_private_files_by_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(temp.path()).unwrap();
+        fs::create_dir_all(home.join("users/alice")).unwrap();
+        fs::create_dir_all(home.join("profiles/owl/memories/notes")).unwrap();
+        fs::create_dir_all(home.join("runtime/sessions/first")).unwrap();
+        fs::create_dir_all(home.join("runtime/sessions/shared/attachments")).unwrap();
+        fs::write(home.join("users/alice/user.md"), "about").unwrap();
+        fs::write(
+            home.join("profiles/owl/memories/notes/2026-10-07.md"),
+            "note",
+        )
+        .unwrap();
+        fs::write(home.join("profiles/owl/SOUL.md"), "soul").unwrap();
+        fs::write(
+            home.join("runtime/sessions/first/conversation.jsonl"),
+            "history",
+        )
+        .unwrap();
+        fs::write(
+            home.join("runtime/sessions/shared/attachments/upload.txt"),
+            "upload",
+        )
+        .unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let open = |path: &Path| common::open_regular(path).unwrap().metadata().unwrap();
+        let private = crate::credentials::PrivateFiles::collect(&home, "shared");
+        for file in [
+            "users/alice/user.md",
+            "profiles/owl/memories/notes/2026-10-07.md",
+            "runtime/sessions/first/conversation.jsonl",
+        ] {
+            assert!(private.contains(&open(&home.join(file))), "{file}");
+            // A hard link elsewhere is the same file.
+            let link = outside.path().join(file.replace('/', "-"));
+            fs::hard_link(home.join(file), &link).unwrap();
+            assert!(private.contains(&open(&link)), "{file}");
+            assert!(
+                guarded_file_path(&home, &link, false, "smart", &[], Some("shared")).is_ok(),
+                "the path check alone lets {file} through its link"
+            );
+        }
+        for file in [
+            "profiles/owl/SOUL.md",
+            "runtime/sessions/shared/attachments/upload.txt",
+        ] {
+            assert!(!private.contains(&open(&home.join(file))), "{file}");
+        }
+        assert!(private.contains(&fs::metadata(home.join("users/alice")).unwrap()));
+        assert!(private.contains(&fs::metadata(home.join("runtime/sessions/first")).unwrap()));
+        assert!(!private.contains(&fs::metadata(home.join("runtime/sessions/shared")).unwrap()));
+        // The path check passes a link to a plain file; by the time the file
+        // is opened the link points at a note. The opened file is refused.
+        let link = outside.path().join("plain.md");
+        fs::write(outside.path().join("harmless.md"), "harmless").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("harmless.md"), &link).unwrap();
+        let (checked, _) =
+            guarded_file_path(&home, &link, false, "smart", &[], Some("shared")).unwrap();
+        assert_eq!(
+            checked,
+            fs::canonicalize(outside.path())
+                .unwrap()
+                .join("harmless.md")
+        );
+        fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(
+            home.join("profiles/owl/memories/notes/2026-10-07.md"),
+            &link,
+        )
+        .unwrap();
+        let file = common::open_regular(&link).unwrap();
+        assert!(
+            crate::credentials::PrivateFiles::collect(&home, "shared")
+                .contains(&file.metadata().unwrap())
+        );
+        // macOS: the Data volume's firmlink alias is another spelling of the
+        // same home that resolving leaves as it is.
+        let alias = PathBuf::from(format!("/System/Volumes/Data{}", home.display()));
+        if alias.is_dir() {
+            let about = alias.join("users/alice/user.md");
+            assert_eq!(fs::canonicalize(&about).unwrap(), about);
+            assert!(private.contains(&open(&about)));
         }
     }
 }

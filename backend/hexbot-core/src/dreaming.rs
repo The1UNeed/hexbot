@@ -1333,6 +1333,7 @@ impl Dreaming {
                 &program,
                 &[workspace, artifacts],
                 confine,
+                None,
             )?
         };
         if matches!(

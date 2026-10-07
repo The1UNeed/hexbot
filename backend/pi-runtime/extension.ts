@@ -1,9 +1,9 @@
 /** Hexbot's frozen session tools and approval bridge. Pi owns the agent loop. */
-import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync } from 'node:fs';
+import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync, readdirSync, openSync, fstatSync, closeSync, accessSync, constants } from 'node:fs';
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
-import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool, estimateTokens } from '@earendil-works/pi-coding-agent';
-import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation} from './isolation.ts';
+import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool, estimateTokens, detectSupportedImageMimeTypeFromFile } from '@earendil-works/pi-coding-agent';
+import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, NO_GUEST_SANDBOX} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -167,7 +167,10 @@ export default function hexbot(pi: any) {
     return workspaceRoots().some(root => under(target, canonicalPath(root, process.cwd())));
   };
   type Level = 'none' | 'base' | 'confined';
-  const levelFor = (input: any): Level => live.approvalMode === 'off' ? 'none' : input.full_access === true ? 'base' : 'confined';
+  // A guest session (a shared bot in someone else's room) never leaves the
+  // workspace sandbox: the base layer keeps the host's service brokers
+  // reachable, and a reader they start would run outside any sandbox.
+  const levelFor = (input: any): Level => live.approvalMode === 'off' ? 'none' : input.full_access === true && live.guest !== true ? 'base' : 'confined';
   // What the gate allowed for each call: the mode it decided under, how bash
   // runs, and the file it checked. Pi may gate several calls before running
   // them, so execution refuses a call whose mode or target has changed since.
@@ -225,7 +228,7 @@ export default function hexbot(pi: any) {
         const path = canonicalPath(input, cwd);
         checked(path);
         if (credentialPath(resolve(cwd, input), live.home) || credentialPath(path, live.home)) return {block: true, reason: 'Credential files are private.'};
-        if (live.guest === true && (privatePath(resolve(cwd, input), live.home) || privatePath(path, live.home))) return {block: true, reason: PRIVATE_TO_OWNER};
+        if (live.guest === true && (privatePath(resolve(cwd, input), live.home, live.session) || privatePath(path, live.home, live.session))) return {block: true, reason: PRIVATE_TO_OWNER};
         if (['write', 'edit'].includes(event.toolName)) {
           const denial = writeDenial(input, cwd, live.home, live.outputDirs);
           if (denial) return {block: true, reason: denial};
@@ -236,10 +239,14 @@ export default function hexbot(pi: any) {
       }
       if (event.toolName === 'bash') {
         if (event.input.full_access === true) {
+          if (live.guest === true) return {block: true, reason: NO_GUEST_FULL_ACCESS};
           const why = typeof event.input.reason === 'string' && event.input.reason.trim() ? event.input.reason.trim() : 'No reason given.';
           ask = {key: 'shell:full-access', command: event.input.command, reason: 'Run outside the sandbox, with internet access and writes outside the workspace. ' + why};
         } else if (!isolationAvailable()) {
           // Without an OS sandbox nothing confines a command, so each one asks.
+          // In a guest session the one who would approve is the room owner,
+          // the person the sandbox keeps the files from, so it is refused.
+          if (live.guest === true) return {block: true, reason: NO_GUEST_SANDBOX};
           ask = {key: 'shell:unsandboxed', command: event.input.command, reason: 'Hexbot has no OS sandbox on this system, so this command can read and change any file you can. Install bubblewrap and restart the daemon to restore isolation.'};
         }
       }
@@ -263,16 +270,21 @@ export default function hexbot(pi: any) {
     }
   };
   // The user's own commands and the code runtime's terminal have no full_access.
+  // A guest session's sandbox also hides what privatePath() hides from the file
+  // tools, in the base layer too, and keeps the guest's own section readable.
+  const guestSection = () => live.guest === true ? String(live.session ?? '') : undefined;
   const spawnFor = (level: Level, command: string) => level === 'none' ? command :
-    isolatedCommand(command, live.home, live.outputDirs, level === 'confined' ? workspace() : undefined);
-  const sandboxNote = () => live.approvalMode === 'manual'
-    ? '[The command ran in the read-only sandbox, without internet access. If it failed for that reason, run it again with full_access and a reason.]'
-    : `[The command ran in the sandbox, without internet access and with writes only in ${live.cwd ?? config.cwd}, its output folders, and temporary folders. If it failed for that reason, run it again with full_access and a reason.]`;
+    isolatedCommand(command, live.home, live.outputDirs, level === 'confined' ? workspace() : undefined, guestSection());
+  const sandboxNote = () => (live.approvalMode === 'manual'
+    ? '[The command ran in the read-only sandbox, without internet access. '
+    : `[The command ran in the sandbox, without internet access and with writes only in ${live.cwd ?? config.cwd}, its output folders, and temporary folders. `)
+    + (live.guest === true ? NO_GUEST_FULL_ACCESS : 'If it failed for that reason, run it again with full_access and a reason.') + ']';
 
   // What the file tools never show outside Bypass: credential files, and in a
-  // shared bot's session in someone else's room, its owner's memory, notes
-  // and every About you (the daemon says so with `guest` in the live settings).
-  const hidden = (path: string, home: string) => credentialPath(path, home) || (live.guest === true && privatePath(path, home));
+  // shared bot's session in someone else's room, its owner's memory and notes,
+  // every About you and every other section's folder (the daemon says so with
+  // `guest` and the section's own id in the live settings).
+  const hidden = (path: string, home: string) => credentialPath(path, home) || (live.guest === true && privatePath(path, home, live.session));
   // Keep the built-in schemas and select tools only from the frozen configuration.
   // Refresh cwd at execution time without rewriting the cached prompt or history.
   // The bash schema gains Codex's escalation fields in every mode, so a mode
@@ -284,8 +296,20 @@ export default function hexbot(pi: any) {
     if (!enabled(name)) continue;
     wrapped.add(name);
     const bypass = () => live.approvalMode === 'off';
-    const options = (level: Level = 'confined') => name === 'bash' ? {spawnHook: (c: any) => level === 'none' ? c : {...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)}} :
-      name === 'grep' && !bypass() ? {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: (path: string) => hidden(path, live.home) ? '' : readFileSync(path, 'utf8')}} : {};
+    // An owner session reads by path. A guest session's call (`files`) opens
+    // first and judges the descriptor, so a link swapped in after the path was
+    // checked cannot reach a private file.
+    const options = (level: Level = 'confined', files?: GuestFiles) => {
+      if (name === 'bash') return {spawnHook: (c: any) => level === 'none' ? c : {...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)}};
+      if (bypass()) return {};
+      if (name === 'grep') return {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: async (path: string) => hidden(path, live.home) ? '' : files ? (await files.open(path, fd => readFileSync(fd, 'utf8'))) ?? '' : readFileSync(path, 'utf8')}};
+      if (name === 'read' && files) {
+        const judged = async <T>(path: string, use: (fd: number) => T | Promise<T>) => { const result = await files.open(path, use); if (result === undefined) throw new Error(PRIVATE_TO_OWNER); return result; };
+        // The image sniff reads the judged descriptor through /dev/fd.
+        return {operations: {access: async (path: string) => accessSync(path, constants.R_OK), detectImageMimeType: (path: string) => judged(path, fd => detectSupportedImageMimeTypeFromFile(`/dev/fd/${fd}`)), readFile: (path: string) => judged(path, fd => readFileSync(fd))}};
+      }
+      return {};
+    };
     const tool = factory(config.cwd, options());
     const definition = name === 'bash' ? {
       description: tool.description + ' Commands may run in a sandbox that blocks internet access and writes outside the workspace. When a command needs either, set full_access and give a reason.',
@@ -319,7 +343,7 @@ export default function hexbot(pi: any) {
       // of '..' must not select a different file after a symlink was checked.
       const path = canonicalPath(args.path ?? '.', cwd);
       if (credentialPath(resolve(cwd, args.path ?? '.'), live.home) || credentialPath(path, live.home)) throw new Error('Credential files are private.');
-      if (live.guest === true && (privatePath(resolve(cwd, args.path ?? '.'), live.home) || privatePath(path, live.home))) throw new Error(PRIVATE_TO_OWNER);
+      if (live.guest === true && (privatePath(resolve(cwd, args.path ?? '.'), live.home, live.session) || privatePath(path, live.home, live.session))) throw new Error(PRIVATE_TO_OWNER);
       if (['write', 'edit'].includes(name)) {
         // The approval covered the file the gate resolved, not a link swapped in since.
         if (path !== allowed.target) throw new Error('The file changed after it was checked. Try again.');
@@ -327,11 +351,15 @@ export default function hexbot(pi: any) {
         if (denial) throw new Error(denial);
       }
       args = {...args, path};
+      // A guest's call judges what it opens and what it lists by identity too
+      // (ripgrep reads the match lines itself): a hard link to a note is a
+      // path the checks above do not know.
+      const files = live.guest === true ? guestFiles(live.home, live.session) : undefined;
       // Avoid streaming unfiltered search output.
-      const result = await factory(cwd, options()).execute(id, args, signal, ['grep', 'find', 'ls'].includes(name) ? undefined : update);
+      const result = await factory(cwd, options('confined', files)).execute(id, args, signal, ['grep', 'find', 'ls'].includes(name) ? undefined : update);
       if (['grep', 'find', 'ls'].includes(name)) {
         const base = statSync(path).isDirectory() ? path : dirname(path);
-        return sanitizeSearchResult(result, name, base, live.home, hidden);
+        return sanitizeSearchResult(result, name, base, live.home, files ? (path, home) => hidden(path, home) || files.names(path) : hidden);
       }
       return result;
     }});
@@ -536,20 +564,75 @@ function credentialName(path: string, home: string): boolean {
   const local = relative(fold(root), fold(path)).split(sep).join('/');
   return !local.startsWith('../') && (policyRegex(credentialPolicy.basename).test(name) || policyRegex(credentialPolicy.home).test(local));
 }
-const PRIVATE_TO_OWNER = "The bot's memory, notes and About you files are private to its owner and stay out of this room.";
-// A bot's memory and daily notes, and every user's About you, as the file
+const PRIVATE_TO_OWNER = "The bot's memory and notes, every About you, and other sections' history are private to their owners and stay out of this room.";
+const NO_GUEST_FULL_ACCESS = "Full access is not available to a shared bot in someone else's room.";
+// A bot's memory and daily notes, every user's About you, and every section
+// folder under runtime/sessions but the session's own (`section`), as the file
 // tools of a shared bot in someone else's room must not read them: it gets no
-// About you there and its memory tool refuses notes. The path as given and
-// its target are both checked, so a link cannot disguise one.
-export function privatePath(path: string, home: string): boolean {
+// About you there, its memory tool refuses notes, and other sections' history
+// quotes both. The path as given and its target are both checked, so a link
+// cannot disguise one, and so is the identity of the target's folders, for an
+// alias that resolving leaves in place (a macOS firmlink such as
+// /System/Volumes/Data, or a mount).
+export function privatePath(path: string, home: string, section?: string): boolean {
   const lexical = resolve(path);
   path = canonicalPath(path, process.cwd());
-  return privateName(lexical, home) || privateName(path, home);
+  return privateName(lexical, home, section) || privateName(path, home, section) || privateIdentity(path, home, section);
 }
-function privateName(path: string, home: string): boolean {
+function privateName(path: string, home: string, section?: string): boolean {
   const root = under(path, resolve(home)) ? resolve(home) : canonicalPath(home, process.cwd());
   const local = relative(fold(root), fold(path)).split(sep).join('/');
-  return !local.startsWith('../') && /^(users\/[^/]+\/user\.md|profiles\/[^/]+\/memories(\/.*)?)$/.test(local);
+  if (local.startsWith('../')) return false;
+  const own = section ? fold(`runtime/sessions/${section}`) : undefined;
+  if (own && (local === own || local.startsWith(own + '/'))) return false;
+  return /^(users\/[^/]+\/user\.md|profiles\/[^/]+\/memories(\/.*)?|runtime\/sessions(\/.*)?)$/.test(local);
+}
+const identity = (path: string) => { try { const stat = statSync(path); return `${stat.dev}:${stat.ino}`; } catch { return undefined; } };
+const names = (dir: string) => { try { return readdirSync(dir); } catch { return []; } };
+function privateIdentity(path: string, home: string, section?: string): boolean {
+  const sessions = join(home, 'runtime/sessions');
+  const own = section ? identity(join(sessions, section)) : undefined;
+  const roots = new Set([identity(sessions), ...names(join(home, 'users')).map(user => identity(join(home, 'users', user, 'user.md'))), ...names(join(home, 'profiles')).map(bot => identity(join(home, 'profiles', bot, 'memories')))].filter(Boolean));
+  for (let current = path; ; current = dirname(current)) {
+    const id = identity(current);
+    if (id && id === own) return false;
+    if (id && roots.has(id)) return true;
+    if (dirname(current) === current) return false;
+  }
+}
+// The identities (device and inode) of every file and folder a guest session
+// is refused: everything under `users`, under every bot's `memories`, and
+// under `runtime/sessions` but the guest's own section, as PrivateFiles in
+// credentials.rs collects them for the daemon's file bridge. privatePath()
+// judges the path a request names; this judges the file the request opened.
+function privateIdentities(home: string, section?: string): Set<string> {
+  const sessions = join(home, 'runtime/sessions');
+  const pending = [join(home, 'users'), sessions, ...names(join(home, 'profiles')).map(bot => join(home, 'profiles', bot, 'memories'))];
+  const ids = new Set<string>();
+  for (let path = pending.pop(); path !== undefined; path = pending.pop()) {
+    // Links are not followed: a link the owner left inside is only itself.
+    let stat; try { stat = lstatSync(path); } catch { continue; }
+    ids.add(`${stat.dev}:${stat.ino}`);
+    if (stat.isDirectory()) for (const name of names(path)) if (path !== sessions || name !== section) pending.push(join(path, name));
+  }
+  return ids;
+}
+// One guest tool call's view of those identities, collected on first use, so
+// a file that existed when the call opened or listed it is in the set.
+type GuestFiles = ReturnType<typeof guestFiles>;
+function guestFiles(home: string, section?: string) {
+  let ids: Set<string> | undefined;
+  const has = (stat: {dev: number | bigint, ino: number | bigint}) => (ids ??= privateIdentities(home, section)).has(`${stat.dev}:${stat.ino}`);
+  return {
+    // Opens `path` and hands the descriptor to `use`, or returns undefined
+    // when what it opened is private.
+    open: async <T>(path: string, use: (fd: number) => T | Promise<T>): Promise<T | undefined> => {
+      const fd = openSync(path, 'r');
+      try { return has(fstatSync(fd)) ? undefined : await use(fd); } finally { closeSync(fd); }
+    },
+    // Whether the file `path` names now is private (a listing's result).
+    names: (path: string) => { try { return has(statSync(path)); } catch { return false; } },
+  };
 }
 const NEVER_WRITTEN = 'Credential and system configuration files are never written by tools.';
 // credential-policy.json "write": deny entries are credential stores that tools

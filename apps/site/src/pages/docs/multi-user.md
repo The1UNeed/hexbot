@@ -20,11 +20,11 @@ The admin can rename or disable a user later. Disabling a user blocks their devi
 Hexbot refuses to disable or demote the last enabled admin. Members do not
 receive the daemon's state directory path in daemon information.
 
-Hexbot enforces ownership, not the operating system. Every bot runs as the daemon's OS user, so a member's bot with the terminal or file toolset can read any user's About you, memory, soul, and section history on that daemon. The sandbox hides credential files only. Invite people you trust with the data your bots keep.
+Hexbot enforces ownership, not the operating system. Every bot runs as the daemon's OS user, so a member's bot with the terminal or file toolset can read any user's About you, memory, soul, and section history on that daemon. In a bot's own sections the sandbox hides credential files only. Invite people you trust with the data your bots keep.
 
 ## Shareable bots
 
-A bot owner can mark a bot as shareable. Other members may then add it to their rooms. The bot keeps its owner's soul, skills, and memory. It does not gain access to the room owner's About you text, and in that room its file tools refuse its owner's memory and notes and every About you. Older shared conversations that included that text refresh their prompt when reopened.
+A bot owner can mark a bot as shareable. Other members may then add it to their rooms. The bot keeps its owner's soul, skills, and memory. It does not gain access to the room owner's About you text. Its memory is part of the bot wherever it goes; what stays out of the room is its owner's daily notes, every user's About you, and the history and uploads of other sections. In that room its file tools and its Python file helpers refuse those files, and its shell commands, its Python code, and your own `!` commands there run in a sandbox that hides them. Full access is not available to it there, so a command that needs the internet or writes outside the workspace cannot run, and on a Linux daemon without bubblewrap its commands and code do not run at all. Two things remain visible: a hard link to one of those files made elsewhere, which a shell command can read (the Python helpers refuse it), and the bot's artifacts folder, which all of its sections share, including code output. Neither adds anything a bot in its owner's own section could not already copy. Only Bypass, which has no sandbox, leaves everything readable. Older shared conversations that included that text refresh their prompt when reopened.
 
 Usage in that room counts against the member who invited the shared bot. This keeps the cost attached to the person who started the work.
 

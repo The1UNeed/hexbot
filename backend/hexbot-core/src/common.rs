@@ -467,7 +467,12 @@ pub fn credentials_lock() -> &'static std::sync::Mutex<()> {
 
 /// Open without blocking on a FIFO, then check the opened object and bound the read.
 pub fn read_regular(path: &Path, limit: usize) -> Result<Vec<u8>> {
-    use std::io::Read;
+    read_opened(open_regular(path)?, limit)
+}
+/// Open without blocking on a FIFO and check that a regular file was opened.
+/// A caller that must judge the file it got, not the path it named, checks
+/// the returned file before reading it with `read_opened`.
+pub fn open_regular(path: &Path) -> Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -479,6 +484,10 @@ pub fn read_regular(path: &Path, limit: usize) -> Result<Vec<u8>> {
     if !file.metadata()?.is_file() {
         return Err(Error::new(4202, "path must be a regular file"));
     }
+    Ok(file)
+}
+pub fn read_opened(file: fs::File, limit: usize) -> Result<Vec<u8>> {
+    use std::io::Read;
     let mut bytes = Vec::new();
     file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > limit {

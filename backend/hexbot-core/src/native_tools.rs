@@ -76,9 +76,11 @@ async fn request(request: reqwest::RequestBuilder) -> Result<Value> {
 tokio::task_local! { static SECTION_CWD: PathBuf; }
 // How the section's code runs: in the workspace sandbox (Manual and Auto,
 // `Some(true)`), with no sandbox (Bypass, `Some(false)`), or with the base
-// layer when the caller does not say; and the live working directory, which
-// a bot or section can change.
-tokio::task_local! { pub(crate) static CODE_SANDBOX: (Option<bool>, PathBuf); }
+// layer when the caller does not say; the live working directory, which a bot
+// or section can change; and whether the section is a guest's (a shared bot in
+// someone else's room), whose sandbox hides its owner's memory, notes and
+// every About you.
+tokio::task_local! { pub(crate) static CODE_SANDBOX: (Option<bool>, PathBuf, bool); }
 pub(crate) fn workdir(home: &Path, bot: &str) -> Result<PathBuf> {
     if let Ok(cwd) = SECTION_CWD.try_with(Clone::clone) {
         return Ok(cwd);
@@ -1105,7 +1107,10 @@ for line in sys.stdin:
  except Exception as error: print(json.dumps({'success':False,'error':str(error)}),flush=True)
 "#;
 struct Kernel {
-    sandbox: (Option<bool>, PathBuf),
+    sandbox: (Option<bool>, PathBuf, bool),
+    /// The folders a guest's worker was started with masked (Linux cannot
+    /// mask a folder that did not exist then); a new bot's folder restarts it.
+    masks: Vec<PathBuf>,
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
@@ -1205,12 +1210,19 @@ async fn execute_code(
     let mut kernel = kernel.lock().await;
     let sandbox = match CODE_SANDBOX.try_with(Clone::clone) {
         Ok(sandbox) => sandbox,
-        Err(_) => (None, workdir(home, bot)?),
+        Err(_) => (None, workdir(home, bot)?, false),
     };
-    // A mode or workspace change takes effect on the next run: the worker
-    // restarts in the new sandbox.
+    let masks = if sandbox.2 {
+        crate::credentials::guest_masks(home)?
+    } else {
+        vec![]
+    };
+    // A mode, workspace or mask change takes effect on the next run: the
+    // worker restarts in the new sandbox.
     if (args["reset"] == true
-        || kernel.as_ref().is_some_and(|k| k.sandbox != sandbox)
+        || kernel
+            .as_ref()
+            .is_some_and(|k| k.sandbox != sandbox || k.masks != masks)
         || kernel
             .as_mut()
             .is_some_and(|k| k.child.try_wait().ok().flatten().is_some()))
@@ -1234,6 +1246,7 @@ async fn execute_code(
                 } else {
                     crate::credentials::Confine::No
                 },
+                sandbox.2.then_some(stored),
             )?
         };
         desktop_environment(&mut command);
@@ -1249,6 +1262,7 @@ async fn execute_code(
             .map_err(|_| failure(format!("Python code runtime could not start: {python}")))?;
         *kernel = Some(Kernel {
             sandbox: sandbox.clone(),
+            masks,
             input: child.stdin.take().expect("piped stdin"),
             output: BufReader::new(child.stdout.take().expect("piped stdout")),
             child,

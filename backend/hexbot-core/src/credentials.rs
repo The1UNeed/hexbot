@@ -330,6 +330,155 @@ struct Layout {
     writable: Vec<PathBuf>,
     denied: Vec<PathBuf>,
     confine: Option<Confinement>,
+    /// A guest session's masks. `None` in the bot owner's own sessions.
+    guest: Option<GuestMasks>,
+}
+/// A shared bot in someone else's room is a guest there: its owner's memory
+/// and notes, every About you and every other section's folder (its history
+/// quotes what the owner read, and its attachments are the owner's) are
+/// unreadable for the programs a command starts, as the extension's
+/// `privatePath()` makes them for the file tools. The guest's own section
+/// folder stays readable, with its output folders writable.
+/// macOS matches the files by pattern, so one that appears mid-command is
+/// covered. bubblewrap can only mask a path that exists when the command
+/// starts, and a code run keeps its worker between calls, so the masks are
+/// whole folders the builder creates first: `users` (a guest needs nothing
+/// there), every bot's `memories`, and `runtime/sessions` with the own section
+/// bound back. An About you, note or section written later lands under a mask.
+struct GuestMasks {
+    /// The `users` folder and every bot's `memories` folder.
+    hidden: Vec<PathBuf>,
+    /// Each `runtime/sessions` folder with the guest's own section inside it.
+    sessions: Vec<(PathBuf, Option<PathBuf>)>,
+}
+const PRIVATE_PATTERNS: [&str; 2] = ["profiles/[^/]+/memories(/.*)?", "users/[^/]+/user\\.md"];
+pub(crate) const PRIVATE_TO_OWNER: &str = "The bot's memory and notes, every About you, and other sections' history are private to their owners and stay out of this room.";
+/// Why a guest session's command or code does not start without an OS sandbox:
+/// the one who would approve it is the room owner, the person the sandbox
+/// keeps the files from.
+pub const NO_GUEST_SANDBOX: &str = "Hexbot has no OS sandbox on this system, so a shared bot cannot run commands or code in someone else's room. Install bubblewrap and restart the daemon.";
+/// Whether `path` is one of those files under `home`, as given, so a guest
+/// session's daemon-side file bridge refuses it like the extension's file
+/// tools. `section` is the guest's own section id, whose folder is not private.
+pub(crate) fn private_name(home: &Path, path: &Path, section: &str) -> bool {
+    static PRIVATE: OnceLock<regex::Regex> = OnceLock::new();
+    let private = PRIVATE.get_or_init(|| {
+        regex::Regex::new(&format!(
+            "{}^(?:{}|runtime/sessions(/.*)?)$",
+            if FOLD_CASE { "(?i)" } else { "" },
+            PRIVATE_PATTERNS.join("|")
+        ))
+        .unwrap()
+    });
+    let path = folded(path);
+    let Ok(local) = path.strip_prefix(folded(home)) else {
+        return false;
+    };
+    let local = local.to_string_lossy().replace('\\', "/");
+    let own = folded(&Path::new("runtime/sessions").join(section))
+        .to_string_lossy()
+        .replace('\\', "/");
+    if !section.is_empty() && (local == own || local.starts_with(&format!("{own}/"))) {
+        return false;
+    }
+    private.is_match(&local)
+}
+/// The identities (device and inode) of every file and folder a guest session
+/// is refused: everything under `users`, under every bot's `memories`, and
+/// under `runtime/sessions` but the guest's own section. `private_name` judges
+/// the path a request names; this judges the file the request opened, so an
+/// alias the path check cannot see (a macOS firmlink such as
+/// `/System/Volumes/Data`, a mount, a hard link, or a link swapped in after the
+/// path was checked) is caught too. Collect it after the open: a file that
+/// existed then is in the set.
+pub(crate) struct PrivateFiles(std::collections::HashSet<(u64, u64)>);
+impl PrivateFiles {
+    pub(crate) fn collect(home: &Path, section: &str) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        let sessions = home.join("runtime/sessions");
+        let mut pending = vec![home.join("users"), sessions.clone()];
+        pending.extend(entries(&home.join("profiles")).map(|e| e.path().join("memories")));
+        let mut ids = std::collections::HashSet::new();
+        while let Some(path) = pending.pop() {
+            // Links are not followed: a link the owner left inside is only itself.
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            ids.insert((meta.dev(), meta.ino()));
+            if meta.is_dir() {
+                pending.extend(entries(&path).map(|e| e.path()).filter(|p| {
+                    p.parent() != Some(sessions.as_path())
+                        || p.file_name().and_then(|n| n.to_str()) != Some(section)
+                }));
+            }
+        }
+        Self(ids)
+    }
+    pub(crate) fn contains(&self, meta: &std::fs::Metadata) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        self.0.contains(&(meta.dev(), meta.ino()))
+    }
+}
+fn private_paths(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = vec![];
+    let mut add = |path: PathBuf| {
+        let _ = std::fs::create_dir_all(&path);
+        if !path.is_dir() {
+            return;
+        }
+        let real = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        for path in [path, real] {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    };
+    for root in roots {
+        add(root.join("users"));
+        // A profile that is a link to a folder elsewhere is masked by both paths.
+        for entry in entries(&root.join("profiles")) {
+            if entry.path().is_dir() {
+                add(entry.path().join("memories"));
+            }
+        }
+    }
+    // Byte order, as the extension sorts (`owl-x` before `owl/`).
+    paths.sort_by(|a, b| a.as_os_str().cmp(b.as_os_str()));
+    paths
+}
+/// One mask per real folder: a home named through a link gives the lexical
+/// and canonical `runtime/sessions` the same folder, and a second tmpfs on it
+/// would hide the own section bound back under the first. The own section and
+/// its output folders are named by real path too, as the outputs are.
+fn session_masks(roots: &[PathBuf], section: &str) -> Vec<(PathBuf, Option<PathBuf>)> {
+    let mut masks: Vec<(PathBuf, Option<PathBuf>)> = vec![];
+    for root in roots {
+        let sessions = root.join("runtime/sessions");
+        let _ = std::fs::create_dir_all(&sessions);
+        if !sessions.is_dir() {
+            continue;
+        }
+        let masked = std::fs::canonicalize(&sessions).unwrap_or(sessions);
+        if !masks.iter().any(|(m, _)| *m == masked) {
+            let own = (!section.is_empty()).then(|| masked.join(section));
+            masks.push((masked, own));
+        }
+    }
+    masks.sort_by(|a, b| a.0.as_os_str().cmp(b.0.as_os_str()));
+    masks
+}
+/// The folders a guest session's sandbox masks right now, so a code worker
+/// started before a bot profile appeared can be restarted under the new mask.
+pub(crate) fn guest_masks(home: &Path) -> Result<Vec<PathBuf>> {
+    let mut roots = vec![home.to_owned(), std::fs::canonicalize(home)?];
+    roots.dedup();
+    let mut masks = private_paths(&roots);
+    masks.extend(
+        session_masks(&roots, "")
+            .into_iter()
+            .map(|(masked, _)| masked),
+    );
+    Ok(masks)
 }
 /// Codex's workspace sandbox for a section's code in Manual and Auto: no
 /// network, no host Unix sockets, no signals outside it, writes only inside the
@@ -426,7 +575,12 @@ fn store_ancestors(denied: &[PathBuf]) -> Vec<PathBuf> {
     }
     ancestors
 }
-fn layout(home: &Path, writable: &[PathBuf], workspace: Option<&[PathBuf]>) -> Result<Layout> {
+fn layout(
+    home: &Path,
+    writable: &[PathBuf],
+    workspace: Option<&[PathBuf]>,
+    guest: Option<&str>,
+) -> Result<Layout> {
     let mut roots = vec![home.to_owned(), std::fs::canonicalize(home)?];
     roots.dedup();
     let writable = writable
@@ -434,12 +588,17 @@ fn layout(home: &Path, writable: &[PathBuf], workspace: Option<&[PathBuf]>) -> R
         .filter_map(|p| std::fs::canonicalize(p).ok())
         .filter(|p| roots.iter().any(|root| p != root && p.starts_with(root)))
         .collect();
+    let guest = guest.map(|section| GuestMasks {
+        hidden: private_paths(&roots),
+        sessions: session_masks(&roots, section),
+    });
     Ok(Layout {
         roots,
         paths: secret_paths(home),
         writable,
         denied: denied_writes()?,
         confine: workspace.map(confine).transpose()?,
+        guest,
     })
 }
 fn sandbox_profile(layout: &Layout) -> String {
@@ -540,8 +699,45 @@ fn sandbox_profile(layout: &Layout) -> String {
             "(deny network-inbound)(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-read* {stores})(deny file-write* (require-not (require-any {inside})))(deny file-write* {config})"
         )
     });
+    // Guest rules hold in the base layer too: an approved full_access command
+    // in someone else's room still cannot read the owner's files.
+    let owner = layout.guest.as_ref().map_or_else(String::new, |guest| {
+        let rules = layout
+            .roots
+            .iter()
+            .flat_map(|root| {
+                PRIVATE_PATTERNS.iter().map(move |pattern| {
+                    format!(
+                        "(regex {})",
+                        quoted(sandbox_regex(&format!(
+                            "^{}/{pattern}$",
+                            regex_escape(&root.to_string_lossy())
+                        )))
+                    )
+                })
+            })
+            .chain(
+                guest
+                    .hidden
+                    .iter()
+                    .map(|p| format!("(subpath {})", quoted(p.to_string_lossy()))),
+            )
+            .chain(guest.sessions.iter().map(|(masked, own)| {
+                let masked = quoted(masked.to_string_lossy());
+                match own {
+                    Some(own) => format!(
+                        "(require-all (subpath {masked}) (require-not (subpath {})))",
+                        quoted(own.to_string_lossy())
+                    ),
+                    None => format!("(subpath {masked})"),
+                }
+            }))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("(deny file-read* {rules})")
+    });
     format!(
-        "(version 1)(allow default)(deny process-exec (literal \"/usr/bin/open\") (literal \"/bin/launchctl\") (literal \"/usr/bin/osascript\"))(deny file-write* (require-all (require-any {inside_home}) {except_writable}))(deny file-write* {stores}){ancestors}{confine}(deny file-read* file-write* {})",
+        "(version 1)(allow default)(deny process-exec (literal \"/usr/bin/open\") (literal \"/bin/launchctl\") (literal \"/usr/bin/osascript\"))(deny file-write* (require-all (require-any {inside_home}) {except_writable}))(deny file-write* {stores}){ancestors}{confine}{owner}(deny file-read* file-write* {})",
         filters.join(" ")
     )
 }
@@ -587,12 +783,17 @@ fn bwrap_arguments(layout: &Layout) -> Vec<OsString> {
     for root in &layout.roots {
         args.extend(["--ro-bind".into(), root.into(), root.into()]);
     }
-    for path in layout.writable.iter().filter(|path| {
-        layout
-            .confine
-            .as_ref()
-            .is_none_or(|c| c.writable.iter().any(|root| path.starts_with(root)))
-    }) {
+    let open: Vec<&PathBuf> = layout
+        .writable
+        .iter()
+        .filter(|path| {
+            layout
+                .confine
+                .as_ref()
+                .is_none_or(|c| c.writable.iter().any(|root| path.starts_with(root)))
+        })
+        .collect();
+    for path in &open {
         args.extend(["--bind".into(), path.into(), path.into()]);
     }
     // A store that does not exist yet cannot be bound (bubblewrap would create the
@@ -619,7 +820,12 @@ fn bwrap_arguments(layout: &Layout) -> Vec<OsString> {
     {
         args.extend(["--ro-bind".into(), path.into(), path.into()]);
     }
-    for path in layout.paths.iter().filter(|p| p.exists()) {
+    for path in layout
+        .paths
+        .iter()
+        .chain(layout.guest.iter().flat_map(|g| &g.hidden))
+        .filter(|p| p.exists())
+    {
         if path.is_dir() {
             args.extend([
                 "--tmpfs".into(),
@@ -630,6 +836,19 @@ fn bwrap_arguments(layout: &Layout) -> Vec<OsString> {
         } else {
             args.extend(["--ro-bind".into(), "/dev/null".into(), path.into()]);
         }
+    }
+    // The sessions mask covers the output folder bound above, so the own section
+    // comes back inside it, read-only with its output folders writable, before
+    // the mask itself is made read-only.
+    for (masked, own) in layout.guest.iter().flat_map(|g| &g.sessions) {
+        args.extend(["--tmpfs".into(), masked.into()]);
+        if let Some(own) = own.as_ref().filter(|own| own.exists()) {
+            args.extend(["--ro-bind".into(), own.into(), own.into()]);
+            for path in open.iter().filter(|p| p.starts_with(own) && **p != own) {
+                args.extend(["--bind".into(), path.into(), path.into()]);
+            }
+        }
+        args.extend(["--remount-ro".into(), masked.into()]);
     }
     args
 }
@@ -669,12 +888,15 @@ pub enum Confine {
     /// The workspace sandbox with nothing writable (Manual).
     ReadOnly,
 }
-/// A sandboxed command.
+/// A sandboxed command. `guest` is a shared bot's own section id in someone
+/// else's room, where its owner's files stay unreadable; such a command never
+/// runs without a sandbox.
 pub fn isolated_command(
     home: &Path,
     program: &str,
     writable: &[PathBuf],
     confine: Confine,
+    guest: Option<&str>,
 ) -> Result<tokio::process::Command> {
     let workspace: Vec<PathBuf> = match confine {
         Confine::No => vec![],
@@ -689,6 +911,7 @@ pub fn isolated_command(
         home,
         writable,
         (confine != Confine::No).then_some(workspace.as_slice()),
+        guest,
     )?;
     let mut command = if cfg!(target_os = "macos") {
         let mut command = tokio::process::Command::new("/usr/bin/sandbox-exec");
@@ -702,6 +925,9 @@ pub fn isolated_command(
             .arg(program);
         command
     } else {
+        if guest.is_some() {
+            return Err(Error::new(4302, NO_GUEST_SANDBOX));
+        }
         warn_unavailable_isolation();
         tokio::process::Command::new(program)
     };
@@ -854,6 +1080,7 @@ mod tests {
             writable: vec![],
             denied: denied_writes().unwrap(),
             confine: None,
+            guest: None,
         });
         for binary in ["/usr/bin/open", "/bin/launchctl", "/usr/bin/osascript"] {
             assert!(profile.contains(&format!("(literal {})", quoted(binary))));
@@ -928,6 +1155,7 @@ mod tests {
             writable: vec![],
             denied: denied_writes().unwrap(),
             confine: None,
+            guest: None,
         });
         if let Some(user) = std::env::var_os("HOME") {
             let user = PathBuf::from(user);
@@ -971,41 +1199,86 @@ mod tests {
         std::fs::write(home.join("profiles/owl/AUTH.JSON"), "secret").unwrap();
         std::fs::write(home.join("python/deep/auth.json"), "skipped").unwrap();
         std::fs::write(home.join("desktop-data/token"), "secret").unwrap();
-        let layout = layout(&home, &[attachments.clone(), outputs.clone()], None).unwrap();
-        let workspace = [base.path().join("work"), outputs.clone()];
+        std::fs::create_dir_all(home.join("profiles/owl/memories/notes")).unwrap();
+        std::fs::create_dir_all(home.join("users/alice")).unwrap();
+        std::fs::write(home.join("profiles/owl/memories/MEMORY.md"), "memory").unwrap();
+        std::fs::write(home.join("users/alice/user.md"), "about").unwrap();
+        // A bot without a memory folder yet: the guest layout creates it, so
+        // the mask applies before the bot's first note. A bot whose name
+        // extends another's sorts differently by component and by byte; a
+        // profile that is a link is masked too. Another section's folder is
+        // under the sessions mask; the guest's own ("one") comes back.
+        std::fs::create_dir_all(home.join("profiles/newt")).unwrap();
+        std::fs::create_dir_all(home.join("profiles/owl-x/memories")).unwrap();
+        std::fs::create_dir_all(base.path().join("linked-profile/memories")).unwrap();
+        std::os::unix::fs::symlink(
+            base.path().join("linked-profile"),
+            home.join("profiles/lynx"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(home.join("runtime/sessions/two")).unwrap();
+        std::fs::write(
+            home.join("runtime/sessions/two/conversation.jsonl"),
+            "history",
+        )
+        .unwrap();
+        let layout = layout(&home, &[attachments.clone(), outputs.clone()], None, None).unwrap();
+        assert!(!home.join("profiles/newt/memories").exists());
+        let workspace = [
+            base.path().join("work"),
+            outputs.clone(),
+            attachments.clone(),
+        ];
         std::fs::create_dir_all(&workspace[0]).unwrap();
         let confined = super::layout(
             &home,
             &[attachments.clone(), outputs.clone()],
             Some(&workspace),
+            None,
         )
         .unwrap();
-        let script = "const {sandboxProfile, bwrapArguments} = await import(process.argv[1]); const [home, work, ...outputs] = process.argv.slice(2); const workspace = [work, outputs[1]]; console.log(JSON.stringify({profile: sandboxProfile(home, outputs), bwrap: bwrapArguments(home, outputs), confined: sandboxProfile(home, outputs, workspace), confinedBwrap: bwrapArguments(home, outputs, workspace)}));";
-        let output = std::process::Command::new("node")
-            .args(["--input-type=module", "-e", script, "--"])
-            .arg(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../pi-runtime/isolation.ts"
-            ))
-            .args([&home, &workspace[0], &attachments, &outputs])
-            .output()
-            .expect("node runs the extension's isolation module");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let extension: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let guest = super::layout(
+            &home,
+            &[attachments.clone(), outputs.clone()],
+            Some(&workspace),
+            Some("one"),
+        )
+        .unwrap();
+        let run_extension = |home: &Path,
+                             attachments: &Path,
+                             outputs: &Path|
+         -> serde_json::Value {
+            let script = "const {sandboxProfile, bwrapArguments} = await import(process.argv[1]); const [home, work, ...outputs] = process.argv.slice(2); const workspace = [work, outputs[1], outputs[0]]; console.log(JSON.stringify({profile: sandboxProfile(home, outputs), bwrap: bwrapArguments(home, outputs), confined: sandboxProfile(home, outputs, workspace), confinedBwrap: bwrapArguments(home, outputs, workspace), guest: sandboxProfile(home, outputs, workspace, 'one'), guestBwrap: bwrapArguments(home, outputs, workspace, 'one')}));";
+            let output = std::process::Command::new("node")
+                .args(["--input-type=module", "-e", script, "--"])
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../pi-runtime/isolation.ts"
+                ))
+                .args([home, &workspace[0], attachments, outputs])
+                .output()
+                .expect("node runs the extension's isolation module");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            serde_json::from_slice(&output.stdout).unwrap()
+        };
+        let arguments = |value: &serde_json::Value| -> Vec<OsString> {
+            value
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().into())
+                .collect()
+        };
+        let extension = run_extension(&home, &attachments, &outputs);
         assert_eq!(
             extension["profile"].as_str().unwrap(),
             sandbox_profile(&layout)
         );
-        let bwrap: Vec<OsString> = extension["bwrap"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap().into())
-            .collect();
+        let bwrap = arguments(&extension["bwrap"]);
         assert_eq!(bwrap, bwrap_arguments(&layout));
         assert_eq!(
             extension["confined"].as_str().unwrap(),
@@ -1013,19 +1286,143 @@ mod tests {
         );
         assert!(sandbox_profile(&confined).contains("(deny network-outbound (remote ip))"));
         assert!(sandbox_profile(&confined).contains("(deny network-inbound)"));
-        let confined_bwrap: Vec<OsString> = extension["confinedBwrap"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap().into())
-            .collect();
+        let confined_bwrap = arguments(&extension["confinedBwrap"]);
         assert_eq!(confined_bwrap, bwrap_arguments(&confined));
         assert!(confined_bwrap.iter().any(|arg| arg == "--unshare-net"));
+        // A guest session masks the users folder and every bot's memory folder,
+        // creating them first so a file written later lands under a mask; the
+        // owner's own sessions carry no such rule.
+        assert_eq!(
+            extension["guest"].as_str().unwrap(),
+            sandbox_profile(&guest)
+        );
+        let guest_bwrap = arguments(&extension["guestBwrap"]);
+        assert_eq!(guest_bwrap, bwrap_arguments(&guest));
+        let users = home.join("users");
+        assert!(home.join("profiles/newt/memories").is_dir());
+        // The pattern follows the host's case policy (character pairs on macOS).
+        assert!(
+            sandbox_profile(&guest).contains(&format!("{}\")", sandbox_regex("/memories(/.*)?$")))
+        );
+        for folder in [
+            home.join("profiles/owl/memories"),
+            home.join("profiles/owl-x/memories"),
+            home.join("profiles/newt/memories"),
+            home.join("profiles/lynx/memories"),
+            base.path()
+                .canonicalize()
+                .unwrap()
+                .join("linked-profile/memories"),
+            users.clone(),
+        ] {
+            assert!(
+                sandbox_profile(&guest)
+                    .contains(&format!("(subpath {})", quoted(folder.to_string_lossy()))),
+                "{}",
+                folder.display()
+            );
+            assert!(
+                guest_bwrap.windows(4).any(|w| w[0] == "--tmpfs"
+                    && w[1] == folder.as_os_str()
+                    && w[2] == "--remount-ro"),
+                "{}",
+                folder.display()
+            );
+            assert!(!confined_bwrap.iter().any(|arg| arg == folder.as_os_str()));
+        }
+        assert!(!sandbox_profile(&confined).contains(&sandbox_regex("memories")));
+        assert!(
+            !guest_bwrap
+                .iter()
+                .any(|arg| arg.to_string_lossy().ends_with("user.md"))
+        );
+        // The sessions mask names the real folder (the temp folder is a link
+        // on macOS), which the sandbox matches after resolving the path.
+        let sessions = home.canonicalize().unwrap().join("runtime/sessions");
+        let own = sessions.join("one");
+        assert!(sandbox_profile(&guest).contains(&format!(
+            "(require-all (subpath {}) (require-not (subpath {})))",
+            quoted(sessions.to_string_lossy()),
+            quoted(own.to_string_lossy())
+        )));
+        assert!(
+            !sandbox_profile(&confined)
+                .contains(&format!("(subpath {})", quoted(sessions.to_string_lossy())))
+        );
+        let at = |needle: &[&std::ffi::OsStr]| {
+            guest_bwrap
+                .windows(needle.len())
+                .position(|w| w.iter().map(OsString::as_os_str).eq(needle.iter().copied()))
+                .unwrap_or_else(|| panic!("{needle:?} in {guest_bwrap:?}"))
+        };
+        // Output folders are canonical, so they come back under the mask.
+        let real = attachments.canonicalize().unwrap();
+        let masked = at(&["--tmpfs".as_ref(), sessions.as_os_str()]);
+        assert!(masked > at(&["--bind".as_ref(), real.as_os_str(), real.as_os_str()]));
+        assert!(at(&["--ro-bind".as_ref(), own.as_os_str(), own.as_os_str()]) > masked);
+        let rebound = guest_bwrap
+            .windows(3)
+            .enumerate()
+            .filter(|(_, w)| w[0] == "--bind" && w[1] == real.as_os_str())
+            .map(|(i, _)| i)
+            .max()
+            .unwrap();
+        assert!(rebound > masked);
+        assert!(at(&["--remount-ro".as_ref(), sessions.as_os_str()]) > rebound);
+        assert!(!confined_bwrap.iter().any(|arg| arg == sessions.as_os_str()));
         assert!(
             bwrap
                 .iter()
                 .any(|arg| arg == attachments.canonicalize().unwrap().as_os_str())
         );
+        // A home named through a link: its lexical and canonical sessions
+        // folder are one, masked once by real path, so the own section and its
+        // uploads bound back under the mask are not hidden by a second one.
+        let link = base.path().join("link-home");
+        std::os::unix::fs::symlink(&home, &link).unwrap();
+        let link_attachments = link.join("runtime/sessions/one/attachments");
+        let link_outputs = link.join("profiles/owl/artifacts");
+        let linked = super::layout(
+            &link,
+            &[link_attachments.clone(), link_outputs.clone()],
+            Some(&workspace),
+            Some("one"),
+        )
+        .unwrap();
+        let extension = run_extension(&link, &link_attachments, &link_outputs);
+        assert_eq!(
+            extension["guest"].as_str().unwrap(),
+            sandbox_profile(&linked)
+        );
+        let linked_bwrap = arguments(&extension["guestBwrap"]);
+        assert_eq!(linked_bwrap, bwrap_arguments(&linked));
+        let lexical = link.join("runtime/sessions");
+        assert!(!linked_bwrap.iter().any(|arg| arg == lexical.as_os_str()));
+        assert!(!sandbox_profile(&linked).contains(&quoted(lexical.to_string_lossy())));
+        assert_eq!(
+            linked_bwrap
+                .windows(2)
+                .filter(|w| w[0] == "--tmpfs" && w[1] == sessions.as_os_str())
+                .count(),
+            1
+        );
+        let at = |needle: &[&std::ffi::OsStr]| {
+            linked_bwrap
+                .windows(needle.len())
+                .position(|w| w.iter().map(OsString::as_os_str).eq(needle.iter().copied()))
+                .unwrap_or_else(|| panic!("{needle:?} in {linked_bwrap:?}"))
+        };
+        let masked = at(&["--tmpfs".as_ref(), sessions.as_os_str()]);
+        let own_bound = at(&["--ro-bind".as_ref(), own.as_os_str(), own.as_os_str()]);
+        let rebound = linked_bwrap
+            .windows(3)
+            .enumerate()
+            .filter(|(_, w)| w[0] == "--bind" && w[1] == real.as_os_str())
+            .map(|(i, _)| i)
+            .max()
+            .unwrap();
+        assert!(masked < own_bound && own_bound < rebound);
+        assert!(at(&["--remount-ro".as_ref(), sessions.as_os_str()]) > rebound);
         assert!(
             !bwrap
                 .iter()
@@ -1161,6 +1558,7 @@ mod tests {
                 home.join("runtime/sessions/one/attachments"),
             ],
             Confine::No,
+            None,
         )
         .unwrap()
         .args(["-c", &script])
@@ -1199,7 +1597,8 @@ mod tests {
         }
         let home = tempfile::tempdir().unwrap();
         let limit = |confine| {
-            let mut command = isolated_command(home.path(), "/bin/bash", &[], confine).unwrap();
+            let mut command =
+                isolated_command(home.path(), "/bin/bash", &[], confine, None).unwrap();
             command.args(["-c", "ulimit -u"]);
             async move {
                 let output = command.output().await.unwrap();
@@ -1238,7 +1637,7 @@ mod tests {
         let user = PathBuf::from(std::env::var_os("HOME").unwrap());
         if !isolation_available() {
             let home = tempfile::tempdir().unwrap();
-            let args = bwrap_arguments(&layout(home.path(), &[], None).unwrap());
+            let args = bwrap_arguments(&layout(home.path(), &[], None, None).unwrap());
             for local in &policy().write.deny {
                 let path = user.join(local);
                 assert!(
@@ -1250,7 +1649,7 @@ mod tests {
         }
         let home = tempfile::tempdir().unwrap();
         let script = "curl -s -o \"$HOME/.aws/credentials\" \"file://$HOME/source\" 2>/dev/null && exit 17; truncate -s0 \"$HOME/.netrc\" 2>/dev/null && exit 18; echo x > \"$HOME/.aws/credentials\" 2>/dev/null && exit 10; echo x > \"$HOME/.netrc\" 2>/dev/null && exit 12; echo x > \"$HOME/.npmrc\" 2>/dev/null && exit 13; python3 -c 'open(\"'\"$HOME\"'/.aws/other\",\"w\")' 2>/dev/null && exit 15; echo ok > \"$HOME/notes.txt\" || exit 16; echo done";
-        let result = isolated_command(home.path(), "/bin/bash", &[], Confine::No)
+        let result = isolated_command(home.path(), "/bin/bash", &[], Confine::No, None)
             .unwrap()
             .args(["-c", script])
             .output()
@@ -1328,14 +1727,19 @@ mod tests {
         let key = home.path().join("connect-identity.key");
         std::fs::write(&key, "private key").unwrap();
         for mode in [Confine::Workspace, Confine::ReadOnly] {
-            let result =
-                isolated_command(home.path(), "/bin/sh", &[workspace.path().to_owned()], mode)
-                    .unwrap()
-                    .args(["-c", "cat \"$1\" && exit 10; echo denied", "identity-test"])
-                    .arg(&key)
-                    .output()
-                    .await
-                    .unwrap();
+            let result = isolated_command(
+                home.path(),
+                "/bin/sh",
+                &[workspace.path().to_owned()],
+                mode,
+                None,
+            )
+            .unwrap()
+            .args(["-c", "cat \"$1\" && exit 10; echo denied", "identity-test"])
+            .arg(&key)
+            .output()
+            .await
+            .unwrap();
             assert!(
                 result.status.success(),
                 "{mode:?}: {}",
@@ -1349,14 +1753,14 @@ mod tests {
     async fn python_isolated_from_secrets() {
         let home = tempfile::tempdir().unwrap();
         std::fs::write(home.path().join(".env"), "SECRET").unwrap();
-        let result = isolated_command(home.path(), "/bin/cat", &[], Confine::No)
+        let result = isolated_command(home.path(), "/bin/cat", &[], Confine::No, None)
             .unwrap()
             .arg(home.path().join(".env"))
             .output()
             .await
             .unwrap();
         assert!(!result.status.success());
-        let result = isolated_command(home.path(), "python3", &[], Confine::No)
+        let result = isolated_command(home.path(), "python3", &[], Confine::No, None)
             .unwrap()
             .args([
                 "-c",
@@ -1369,7 +1773,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.status.success());
-        let result = isolated_command(home.path(), "/bin/echo", &[], Confine::No)
+        let result = isolated_command(home.path(), "/bin/echo", &[], Confine::No, None)
             .unwrap()
             .arg("ordinary")
             .output()
