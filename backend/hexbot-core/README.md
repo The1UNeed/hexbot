@@ -74,13 +74,17 @@ it also installs over SSH when nobody is signed in at the screen.
 
 ## Storage and compatibility
 
-- `hexbot.db` keeps schema v13, IDs, ownership, rooms, sections, and settings.
+- `hexbot.db` keeps schema v14, IDs, ownership, rooms, sections, and settings.
   Migrations use captured legacy schema fixtures for starting versions 1–12
   and check that rows survive upgrades and repeated runs. Version 12 adds
   `devices.jkt` for optional device proof-key binding. Version 13 folds former
   accounts into the owner while preserving bot and room approval restrictions.
+  Version 14 adds `memory_proposals`, the memory changes scheduled jobs ask
+  for until the bot's next dream reviews them (`docs/dreaming.md`).
 - Memory stays in `profiles/<bot>/memories/MEMORY.md`, soul in `SOUL.md`, and
   About you in `users/<id>/user.md`. Deleting a section leaves bot memory alone.
+  Only sections, rooms, and dreams write it; a scheduled job's memory tool
+  records proposals instead, and its soul tool only reads.
 - `hexbot-runtime.db` stores native transcript projections, usage, and frozen
   session options. Pi keeps its conversation JSONL under the native session
   directory. Existing Python `state.db` history is imported once, including

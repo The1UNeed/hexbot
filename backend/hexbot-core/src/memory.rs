@@ -79,6 +79,13 @@ impl MemoryStore {
         self.update_bot(caller, bot, |_| Ok(text.to_owned()))
     }
 
+    /// Refuse text that could never fit the bot's memory, so a proposal is
+    /// turned down at once instead of failing in the dream that reviews it.
+    pub fn check_bot_fits(&self, caller: &str, bot: &str, text: &str) -> Result<()> {
+        self.require_bot(caller, bot)?;
+        check_cap(text, self.bot_cap(bot)?, "proposed memory")
+    }
+
     /// Apply an edit to the latest memory while excluding other bot writers.
     pub fn update_bot(
         &self,

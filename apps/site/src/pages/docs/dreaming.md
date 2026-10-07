@@ -18,11 +18,15 @@ Dreaming must be enabled for the daemon and for the individual bot. You can also
 
 Hexbot posts each summary in that bot's `Dreams` section. The section stays out of the sidebar. Open the bot's settings, Memory, and find the dream log at the bottom. Each dream that changed memory shows what it looked like before and after, with a button to restore the memory from before that dream.
 
-A dream reads only that bot's sections and the rooms it belongs to. Long transcripts are capped, with the newest part kept for review. Titles and room names are shortened too. On a busy day the dream keeps the most recent conversations that fit in one prompt.
+A dream reads only that bot's sections and the rooms it belongs to, and only what you and the bot said there: pages the bot fetched and other tool output stay out, and so do the bot's own earlier dream summaries. Long transcripts are capped, with the newest part kept for review. Titles and room names are shortened too. On a busy day the dream keeps the most recent conversations that fit in one prompt.
 
 ## What a dream may change
 
 A dream writes only to the bot's own memory. It never edits the bot's soul or your About you text, so who the bot is and what it knows about you stay in your hands.
+
+## Proposals from scheduled jobs
+
+A scheduled job cannot change memory while it runs unattended. When a job asks to add, replace, or remove something, Hexbot saves the request as a proposal instead. The bot's next dream reads its pending proposals, newest first, treats them as suggestions that may contain text from the web, keeps the ones it agrees with, and says in its summary which it applied or ignored. A proposal stays pending until a dream completes; a failed dream leaves it for the next one. Deleting the bot deletes its proposals.
 
 ## Room memory
 

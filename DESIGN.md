@@ -46,9 +46,14 @@ more freedom and more capability than a hosted product can offer.
   the bot wrote to its memory stays until the user or dreaming edits it.
 - Dreaming: every bot, daily at a configurable time (default 03:00), reads
   that day's conversations and folds what matters into its memory using
-  its own model. It never touches the soul or About you. It posts a
+  its own model. It reads what people and bots said, not tool output or its
+  own earlier reports. It never touches the soul or About you. It posts a
   report in its direct message thread. A "dream now" action exists. Rooms
   dream through their main bot into the room's section.
+- Scheduled jobs run unattended, so they cannot write memory or the soul.
+  What a job asks to remember is a proposal; the bot's next dream reviews it
+  as an untrusted suggestion and keeps or drops it. Soul changes need the
+  user.
 
 ### Rooms
 
