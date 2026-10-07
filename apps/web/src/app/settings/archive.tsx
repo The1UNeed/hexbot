@@ -72,11 +72,14 @@ const selectArchived = (state: { byId: Record<string, Section> }) =>
 export function ArchiveSettings() {
   const navigate = useNavigate()
   const archived = useSections(useShallow(selectArchived))
+  const loading = useSections(state => state.loading)
+  const error = useSections(state => state.error)
   const bots = useBotList()
   const [query, setQuery] = useState('')
   const [bot, setBot] = useState<null | string>(null)
   const [current, setCurrent] = useState<null | string>(null)
   const [restoring, setRestoring] = useState<null | string>(null)
+  const [restoreError, setRestoreError] = useState<null | string>(null)
   const groupRefs = useRef(new Map<string, HTMLElement>())
   // A rail click owns the highlight while its scroll runs; the last groups may never reach the top.
   const jumpedAt = useRef(0)
@@ -96,10 +99,11 @@ export function ArchiveSettings() {
 
   // Chips for bots that have something archived, in the order of their newest archive.
   const botChips = [...new Set(sorted.map(section => section.bot))]
+  const selectedBot = bot && botChips.includes(bot) ? bot : null
 
   const visible = sorted.filter(
     section =>
-      (!bot || section.bot === bot) &&
+      (!selectedBot || section.bot === selectedBot) &&
       (!needle ||
         section.title.toLowerCase().includes(needle) ||
         section.preview.toLowerCase().includes(needle) ||
@@ -159,9 +163,12 @@ export function ArchiveSettings() {
 
   const restore = async (section: Section) => {
     setRestoring(section.id)
+    setRestoreError(null)
 
     try {
       await sectionsActions().unarchive(section.id)
+    } catch (error) {
+      setRestoreError(error instanceof Error ? error.message : String(error))
     } finally {
       setRestoring(null)
     }
@@ -177,6 +184,16 @@ export function ArchiveSettings() {
       <Heading description="Conversations you archived. Restore one to put it back in the sidebar.">
         Archive
       </Heading>
+      {error ? (
+        <div className="space-y-2" role="alert">
+          <p>Could not load the archive: {error}</p>
+          <Button onClick={() => void sectionsActions().refresh()} size="sm" variant="ghost">
+            Retry
+          </Button>
+        </div>
+      ) : null}
+      {restoreError ? <p role="alert">Could not restore the conversation: {restoreError}</p> : null}
+      {loading ? <p role="status">Loading the archive...</p> : null}
       {sorted.length ? (
         <div className="space-y-3">
           <label className="relative block">
@@ -188,13 +205,13 @@ export function ArchiveSettings() {
               aria-label="Search the archive"
               className="rounded-full pl-9"
               onChange={event => setQuery(event.target.value)}
-              placeholder="Search titles, replies, and bots"
+              placeholder="Search titles, first messages, and bots"
               value={query}
             />
           </label>
           {botChips.length > 1 ? (
             <div aria-label="Filter by bot" className="flex flex-wrap gap-1.5" role="group">
-              <FilterChip onClick={() => setBot(null)} pressed={!bot}>
+              <FilterChip onClick={() => setBot(null)} pressed={!selectedBot}>
                 All
               </FilterChip>
               {botChips.map(name => (
@@ -202,7 +219,7 @@ export function ArchiveSettings() {
                   bot={botsByName.get(name)}
                   key={name}
                   onClick={() => setBot(value => (value === name ? null : name))}
-                  pressed={bot === name}
+                  pressed={selectedBot === name}
                 >
                   {displayName(name)}
                 </FilterChip>
@@ -288,13 +305,13 @@ export function ArchiveSettings() {
               </section>
             ))}
           </div>
-        ) : (
+        ) : !loading && !error ? (
           <p className="px-1 text-[length:var(--text-secondary)] text-muted">
             {sorted.length
               ? 'Nothing archived matches that.'
               : 'Nothing archived. Archive a conversation from its menu and it waits here.'}
           </p>
-        )}
+        ) : null}
       </div>
     </div>
   )

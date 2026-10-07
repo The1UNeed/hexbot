@@ -47,7 +47,14 @@ const sections = [
 describe('archive settings', () => {
   beforeEach(() => {
     navigate.mockReset()
-    useSections.setState({ byId: {}, idsByBot: {}, liveSessionId: {}, sendingTitles: {} })
+    useSections.setState({
+      byId: {},
+      idsByBot: {},
+      liveSessionId: {},
+      sendingTitles: {},
+      error: null,
+      loading: false
+    })
     useBots.setState({
       byName: {
         ada: { avatar: null, display_name: 'Ada', name: 'ada' } as Bot,
@@ -73,7 +80,7 @@ describe('archive settings', () => {
     expect(screen.queryByText('Still open')).toBeNull()
   })
 
-  it('narrows by search across titles, replies and bots, and by bot', async () => {
+  it('narrows by search across titles, first messages and bots, and by bot', async () => {
     render(<ArchiveSettings />)
     await screen.findByText('Web search')
 
@@ -101,6 +108,57 @@ describe('archive settings', () => {
 
     await waitFor(() => expect(screen.queryByText('Web search')).toBeNull())
     expect(sectionsUnarchive).toHaveBeenCalledWith('a')
+  })
+
+  it('shows other bots after restoring the selected bot’s last archive', async () => {
+    vi.mocked(sectionsUnarchive).mockResolvedValue({
+      section: { ...sections[1]!, archived_at: null }
+    })
+    render(<ArchiveSettings />)
+    await screen.findByText('Release notes')
+    fireEvent.click(within(screen.getByRole('group')).getByRole('button', { name: /Milo/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }))
+
+    await screen.findByText('Web search')
+    expect(screen.getByText('Nightly build')).toBeTruthy()
+    expect(screen.queryByText('Nothing archived matches that.')).toBeNull()
+  })
+
+  it('shows loading until the archive arrives', async () => {
+    let resolve!: (value: { sections: Section[] }) => void
+    vi.mocked(sectionsList).mockReturnValue(
+      new Promise(done => {
+        resolve = done
+      })
+    )
+    render(<ArchiveSettings />)
+
+    expect(screen.getByRole('status').textContent).toContain('Loading the archive')
+    expect(screen.queryByText(/Nothing archived/)).toBeNull()
+    resolve({ sections })
+    await screen.findByText('Web search')
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('shows a load failure and retries', async () => {
+    vi.mocked(sectionsList).mockRejectedValueOnce(new Error('Disconnected'))
+    render(<ArchiveSettings />)
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Disconnected')
+    expect(screen.queryByText(/Nothing archived/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await screen.findByText('Web search')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('shows restore failures and keeps the archived conversation', async () => {
+    vi.mocked(sectionsUnarchive).mockRejectedValueOnce(new Error('Disconnected'))
+    render(<ArchiveSettings />)
+    const row = (await screen.findByText('Web search')).closest('li')!
+    fireEvent.click(within(row).getByRole('button', { name: 'Restore' }))
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not restore')
+    expect(screen.getByText('Web search')).toBeTruthy()
   })
 
   it('opens a section in its conversation', async () => {

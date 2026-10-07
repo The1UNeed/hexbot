@@ -327,10 +327,10 @@ About).
   while it is on, a Paired devices card with Revoke and "Create link", and
   the pairing card (code, QR, link, Copy) once a link exists.
 - Archive: every archived section, newest first, grouped This week, Last
-  week, then by month. A search pill matches titles, last replies, and bot
+  week, then by month. A search pill matches titles, first messages, and bot
   names; a chip per bot narrows the list; on wide windows a rail on the right
   jumps between groups. Each row shows the bot's face, title, bot, message
-  count, last reply, and the archive date; hovering shows Open and Restore.
+  count, first message, and the archive date; hovering shows Open and Restore.
 - Approvals: "Choose when Hexbot asks before a bot acts. Bots and rooms can
   override it." Modes Manual, Auto, and Bypass (admin only), one row each;
   a notice when the daemon has no OS sandbox.
