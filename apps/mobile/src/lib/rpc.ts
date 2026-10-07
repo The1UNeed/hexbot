@@ -10,7 +10,7 @@ export class HexbotRpcClient {
   private readonly client: JsonRpcGatewayClient
 
   constructor(
-    private readonly wsUrl: string,
+    private wsUrl: string,
     options: GatewayClientOptions = {}
   ) {
     this.client = new JsonRpcGatewayClient(options)
@@ -24,8 +24,9 @@ export class HexbotRpcClient {
     return this.wsUrl
   }
 
-  connect(): Promise<void> {
-    return this.client.connect(this.wsUrl)
+  connect(wsUrl = this.wsUrl): Promise<void> {
+    this.wsUrl = wsUrl
+    return this.client.connect(wsUrl)
   }
 
   call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
@@ -53,6 +54,7 @@ export class HexbotRpcClient {
 }
 
 let active: HexbotRpcClient | null = null
+let scope = 0
 
 /**
  * The connection supervisor publishes the live client here; `lib/api.ts` and
@@ -65,16 +67,26 @@ export class NotConnectedError extends Error {
   }
 }
 
-const waiters: Array<(client: HexbotRpcClient) => void> = []
+const waiters: Array<{
+  resolve: (client: HexbotRpcClient) => void
+  reject: (error: Error) => void
+}> = []
 
 export function setActiveRpc(client: HexbotRpcClient | null): void {
   active = client
 
   if (client) {
-    for (const resolve of waiters.splice(0)) {
-      resolve(client)
+    for (const waiter of waiters.splice(0)) {
+      waiter.resolve(client)
     }
   }
+}
+
+/** Pending requests belong to one paired daemon and cannot cross a switch. */
+export function resetRpcScope(): void {
+  scope += 1
+  active = null
+  for (const waiter of waiters.splice(0)) waiter.reject(new NotConnectedError('daemon changed'))
 }
 
 /** How long a call waits for a connection before failing. */
@@ -82,8 +94,9 @@ export const CONNECT_WAIT_MS = 15_000
 
 function waitForActive(timeoutMs: number): Promise<HexbotRpcClient> {
   return new Promise((resolve, reject) => {
+    const waiter = { resolve: onReady, reject: onError }
     const timer = setTimeout(() => {
-      const index = waiters.indexOf(onReady)
+      const index = waiters.indexOf(waiter)
 
       if (index >= 0) {
         waiters.splice(index, 1)
@@ -97,7 +110,11 @@ function waitForActive(timeoutMs: number): Promise<HexbotRpcClient> {
       resolve(client)
     }
 
-    waiters.push(onReady)
+    function onError(error: Error): void {
+      clearTimeout(timer)
+      reject(error)
+    }
+    waiters.push(waiter)
   })
 }
 
@@ -107,11 +124,14 @@ export async function rpcCall<T>(
   params: Record<string, unknown> = {},
   waitMs = CONNECT_WAIT_MS
 ): Promise<T> {
+  const generation = scope
   const client = active ?? (await waitForActive(waitMs).catch(() => null))
 
-  if (!client) {
+  if (!client || generation !== scope) {
     throw new NotConnectedError(method)
   }
 
-  return client.call<T>(method, params)
+  const result = await client.call<T>(method, params)
+  if (generation !== scope) throw new NotConnectedError(method)
+  return result
 }

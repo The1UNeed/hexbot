@@ -10,14 +10,14 @@ import { useConnection } from '../stores/connection'
  * connects to another daemon from Settings.
  */
 export default function Pair() {
-  const params = useLocalSearchParams<{ code?: string; host?: string; port?: string }>()
+  const params = useLocalSearchParams<{ code?: string; host?: string; port?: string; tls?: string }>()
   const url = Linking.useLinkingURL()
   const paired = useConnection(state => Boolean(state.target))
-  const link = (url ? parsePairLink(url) : null) ?? (params.host ? { code: params.code ?? '', host: params.host, port: Number(params.port) || 9119 } : null)
+  const link = (url ? parsePairLink(url) : null) ?? (params.host ? { code: params.code ?? '', host: params.host, port: Number(params.port) || (params.tls === 'true' ? 443 : 9119), tls: params.tls == null ? Number(params.port) === 443 : params.tls === 'true' || params.tls === '1' } : null)
 
   if (paired || !link) {
     return <Redirect href="/" />
   }
 
-  return <Redirect href={{ params: { code: link.code, host: link.host, port: String(link.port) }, pathname: '/connect' }} />
+  return <Redirect href={{ params: { code: link.code, host: link.host, port: String(link.port), tls: String(link.tls) }, pathname: '/connect' }} />
 }

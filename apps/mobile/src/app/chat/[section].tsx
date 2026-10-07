@@ -14,7 +14,8 @@ import { Composer, type StagedFile } from '../../components/chat/composer'
 import { buildRows, type Row } from '../../components/chat/timeline'
 import { LiveStatus, MemoryMarks, WorkingFace, WorkSummary } from '../../components/chat/work'
 import { BotFace } from '../../components/face'
-import { fileAttach, imageAttachBytes, pdfAttach, promptSubmit, sectionsMarkRead, sessionInterrupt } from '../../lib/api'
+import { fileAttach, imageAttachBytes, pdfAttach, sectionsMarkRead, sessionInterrupt } from '../../lib/api'
+import { attachmentPrompt, submitChatPrompt } from '../../lib/chat-send'
 import { freshSection, openSection } from '../../lib/navigation'
 import type { Attachment, Bot } from '../../lib/types'
 import { useBot } from '../../stores/bots'
@@ -49,32 +50,6 @@ function stoppedCardFor(bot: Bot | undefined, sectionId: string, messages: Trans
     streaming: false,
     text: '',
     toolCalls: []
-  }
-}
-
-/**
- * Submit a prompt; if the daemon no longer holds the live session (reaped
- * after a restart), reopen the section once and resend there. Any other
- * failure lands in the transcript as a Stopped card.
- */
-async function submitOrReopen(sessionId: string, sectionId: string, text: string) {
-  try {
-    await promptSubmit(sessionId, text)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-
-    if (/session not found/i.test(message)) {
-      const reopened = await sectionsActions().open(sectionId)
-
-      if (reopened.liveSessionId && reopened.liveSessionId !== sessionId) {
-        transcriptActions().appendUserMessage(reopened.liveSessionId, text)
-        await promptSubmit(reopened.liveSessionId, text)
-
-        return
-      }
-    }
-
-    transcriptActions().errorEvent(sessionId, message)
   }
 }
 
@@ -167,6 +142,7 @@ export default function ChatScreen() {
   const liveId = useLiveSessionId(sectionId)
   const transcript = useTranscript(liveId)
   const connection = useConnection(state => state.status)
+  const daemonId = useConnection(state => state.daemon?.install_id)
   const [unavailable, setUnavailable] = useState(false)
   const [composerHeight, setComposerHeight] = useState(70)
   const [renaming, setRenaming] = useState(false)
@@ -217,9 +193,9 @@ export default function ChatScreen() {
 
   useEffect(() => {
     if (section?.bot && sectionId) {
-      uiActions().setLastSection({ bot: section.bot, section: sectionId })
+      uiActions().setLastSection({ bot: section.bot, daemon: daemonId, section: sectionId })
     }
-  }, [section?.bot, sectionId])
+  }, [daemonId, section?.bot, sectionId])
 
   useEffect(() => {
     if (sectionId && liveId && !streaming) {
@@ -255,10 +231,11 @@ export default function ChatScreen() {
       return false
     }
 
-    transcriptActions().appendUserMessage(liveId, text, attachments)
-    sectionsActions().markTouched(section.id, text)
+    const prompt = attachmentPrompt(text, files.length > 0)
+    transcriptActions().appendUserMessage(liveId, prompt, attachments)
+    sectionsActions().markTouched(section.id, prompt)
     listRef.current?.toEnd()
-    void submitOrReopen(liveId, section.id, text).finally(() => void sectionsActions().settleTitle(section.id))
+    void submitChatPrompt(liveId, section.id, prompt, files.length ? id => upload(id, files) : undefined).finally(() => void sectionsActions().settleTitle(section.id))
 
     return true
   }
@@ -267,7 +244,7 @@ export default function ChatScreen() {
     const last = messages.findLast(message => message.role === 'user')
 
     if (liveId && last) {
-      void submitOrReopen(liveId, sectionId, last.text)
+      void submitChatPrompt(liveId, sectionId, last.text)
     }
   }
 

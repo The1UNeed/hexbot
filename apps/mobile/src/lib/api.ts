@@ -695,6 +695,15 @@ export function nextMessageId(prefix = 'm'): string {
   return `${prefix}${messageCounter}-${Date.now().toString(36)}`
 }
 
+function parseArguments(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return text
+  }
+}
+
+
 /**
  * Turn the Hexbot `session.history` projection into transcript messages.
  * Tool rows fold into the assistant message that precedes them, matching how
@@ -714,6 +723,7 @@ export function messagesFromHistory(
 ): Message[] {
   const messages: Message[] = []
   const prefix = options.sender ? `@${options.sender}: ` : null
+  const callArgs = new Map<string, unknown>()
 
   for (const row of rows) {
     let text = typeof row.text === 'string' ? row.text : ''
@@ -726,11 +736,22 @@ export function messagesFromHistory(
       text = text.slice(prefix.length)
     }
 
+    for (const call of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
+      const { function: fn, id } = (call ?? {}) as {
+        function?: { arguments?: unknown }
+        id?: unknown
+      }
+
+      if (typeof id === 'string' && typeof fn?.arguments === 'string') {
+        callArgs.set(id, parseArguments(fn.arguments))
+      }
+    }
+
     if (row.role === 'tool') {
       const target = messages.at(-1)
 
       const call = {
-        args: row.args ?? null,
+        args: row.args ?? callArgs.get(String(row.tool_call_id ?? row.tool_id)) ?? null,
         durationS: null,
         name: String(row.name ?? 'tool'),
         result: row.text ?? null,

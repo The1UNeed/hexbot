@@ -22,7 +22,7 @@ import { type Palette, useTheme } from '../theme'
 export default function Connect() {
   const { colors } = useTheme()
   const insets = useSafeAreaInsets()
-  const params = useLocalSearchParams<{ code?: string; host?: string; port?: string }>()
+  const params = useLocalSearchParams<{ code?: string; host?: string; port?: string; tls?: string }>()
   const notice = useConnection(state => (state.status === 'unauthorized' ? state.error : null))
   const [address, setAddress] = useState('')
   const [code, setCode] = useState('')
@@ -33,13 +33,13 @@ export default function Connect() {
 
   useEffect(() => {
     if (params.host) {
-      setAddress(formatAddress({ host: params.host, port: Number(params.port) || 9119 }))
+      setAddress(formatAddress({ host: params.host, port: Number(params.port) || (params.tls === 'true' ? 443 : 9119), tls: params.tls == null ? Number(params.port) === 443 : params.tls === 'true' || params.tls === '1' }))
     }
 
     if (params.code) {
       setCode(params.code)
     }
-  }, [params.code, params.host, params.port])
+  }, [params.code, params.host, params.port, params.tls])
 
   useEffect(() => {
     const link = url ? parsePairLink(url) : null
@@ -88,7 +88,7 @@ export default function Connect() {
         deviceName: Constants.deviceName ?? 'Phone',
         host: parts.host,
         port: parts.port,
-        tls: /^https:\/\//i.test(address.trim()) || parts.port === 443
+        tls: parts.tls
       })
 
       await connectTo(target)

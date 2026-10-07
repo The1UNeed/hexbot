@@ -9,16 +9,20 @@
 import { buildHermesWebSocketUrl, readDeviceProofError } from '@hermes/shared'
 import { Platform } from 'react-native'
 
-import { botsActions } from '../stores/bots'
+import { botsActions, useBots } from '../stores/bots'
 import { connectionActions, type RemoteTarget } from '../stores/connection'
+import { useConnectors } from '../stores/connectors'
+import { useDrafts } from '../stores/drafts'
 import { useRooms } from '../stores/rooms'
-import { sectionsActions } from '../stores/sections'
-import { settingsActions } from '../stores/settings'
+import { sectionsActions, useSections } from '../stores/sections'
+import { settingsActions, useSettings } from '../stores/settings'
+import { useTranscripts } from '../stores/transcripts'
 import { uiActions } from '../stores/ui'
 import { useUsers } from '../stores/users'
 
 import { attachEventRouting } from './events'
-import { HexbotRpcClient, setActiveRpc } from './rpc'
+import { useNotice } from './notify'
+import { HexbotRpcClient, resetRpcScope, setActiveRpc } from './rpc'
 import type { DaemonInfo } from './types'
 
 export const BACKOFF_MIN_MS = 1_000
@@ -53,7 +57,8 @@ interface ReadyPayload {
 }
 
 export function targetOrigin(target: Pick<RemoteTarget, 'host' | 'port' | 'tls'>): string {
-  const host = target.host.includes(':') && !target.host.startsWith('[') ? `[${target.host}]` : target.host
+  const host =
+    target.host.includes(':') && !target.host.startsWith('[') ? `[${target.host}]` : target.host
   const defaultPort = target.tls ? 443 : 80
 
   return `${target.tls ? 'https' : 'http'}://${host}${target.port === defaultPort ? '' : `:${target.port}`}`
@@ -67,7 +72,9 @@ async function timedFetch(url: string, init: RequestInit): Promise<Response> {
     return await fetch(url, { ...init, signal: controller.signal })
   } catch (error) {
     throw new UnreachableError(
-      controller.signal.aborted ? 'The daemon did not answer in time.' : 'Could not reach the daemon at that address.'
+      controller.signal.aborted
+        ? 'The daemon did not answer in time.'
+        : 'Could not reach the daemon at that address.'
     )
   } finally {
     clearTimeout(timer)
@@ -157,16 +164,43 @@ export async function pairWithDaemon(input: {
 
   return {
     daemonName: body.daemon_name ?? input.host,
-    target: { deviceToken: body.device_token, host: input.host, kind: 'remote', port: input.port, tls }
+    target: {
+      deviceToken: body.device_token,
+      host: input.host,
+      kind: 'remote',
+      port: input.port,
+      tls
+    }
   }
 }
 
 export function pairingErrorMessage(reason: unknown): string {
-  if (reason instanceof InvalidCodeError || reason instanceof UnreachableError || reason instanceof UnauthorizedError) {
+  if (
+    reason instanceof InvalidCodeError ||
+    reason instanceof UnreachableError ||
+    reason instanceof UnauthorizedError
+  ) {
     return reason.message
   }
 
   return 'The daemon could not be reached.'
+}
+
+/** Forget all data belonging to the previous daemon, keeping phone preferences. */
+function clearDaemonState(): void {
+  resetRpcScope()
+  useBots.setState(useBots.getInitialState())
+  useSections.setState(useSections.getInitialState())
+  useRooms.setState(useRooms.getInitialState())
+  useSettings.setState(useSettings.getInitialState())
+  useUsers.setState(useUsers.getInitialState())
+  useConnectors.setState(useConnectors.getInitialState())
+  useTranscripts.getState().dropAll()
+  useDrafts.setState({ byId: {} })
+  useNotice.setState({ notice: null })
+  uiActions().setLastSection(null)
+  connectionActions().setDaemon(null)
+  connectionActions().setEpoch(null)
 }
 
 /**
@@ -176,12 +210,16 @@ export function pairingErrorMessage(reason: unknown): string {
 export class ConnectionSupervisor {
   private attempt = 0
   private client: HexbotRpcClient | null = null
+  // Keep the shared client's event watermarks while the socket reconnects.
+  private retainedClient: HexbotRpcClient | null = null
+  private detachState: (() => void) | null = null
   private connectedAt = 0
   private detach: (() => void) | null = null
   /** Bumped on every start/stop so a late async open cannot win a race. */
   private generation = 0
   private revoked = false
   private retryTimer: null | ReturnType<typeof setTimeout> = null
+  private opening: Promise<void> | null = null
   private stopped = true
   private target: null | RemoteTarget = null
 
@@ -194,7 +232,17 @@ export class ConnectionSupervisor {
       return Promise.resolve()
     }
 
+    const previous = this.target ?? connectionActions().target
     this.teardown()
+    if (
+      previous &&
+      (previous.host !== target.host ||
+        previous.port !== target.port ||
+        previous.tls !== target.tls ||
+        previous.deviceToken !== target.deviceToken)
+    ) {
+      clearDaemonState()
+    }
     this.stopped = false
     this.revoked = false
     this.attempt = 0
@@ -240,13 +288,15 @@ export class ConnectionSupervisor {
       return
     }
 
-    void this.client.call('gateway.ping', {}).catch(() => {
-      this.client?.close()
+    const client = this.client
+    void client.call('gateway.ping', {}).catch(() => {
+      client.close()
     })
   }
 
   private teardown(): void {
     this.generation += 1
+    this.opening = null
     this.stopped = true
 
     if (this.retryTimer) {
@@ -256,12 +306,26 @@ export class ConnectionSupervisor {
 
     this.detach?.()
     this.detach = null
-    this.client?.close()
+    this.detachState?.()
+    this.detachState = null
+    this.retainedClient?.close()
+    this.retainedClient = null
     this.client = null
     setActiveRpc(null)
   }
 
-  private async attemptConnect(): Promise<void> {
+  private attemptConnect(): Promise<void> {
+    if (this.opening) return this.opening
+    const opening = this.connectAttempt()
+    this.opening = opening
+    const clear = () => {
+      if (this.opening === opening) this.opening = null
+    }
+    void opening.then(clear, clear)
+    return opening
+  }
+
+  private async connectAttempt(): Promise<void> {
     if (this.stopped || !this.target) {
       return
     }
@@ -269,7 +333,9 @@ export class ConnectionSupervisor {
     const generation = this.generation
     const target = this.target
 
-    connectionActions().setStatus(this.connectedAt ? 'reconnecting' : 'connecting', { attempt: this.attempt })
+    connectionActions().setStatus(this.connectedAt ? 'reconnecting' : 'connecting', {
+      attempt: this.attempt
+    })
 
     try {
       await this.open(target, generation)
@@ -295,56 +361,75 @@ export class ConnectionSupervisor {
       return
     }
 
-    const client = new HexbotRpcClient(wsUrl, {
-      onSocketClose: event => {
-        // 4401/4403 are the gateway's auth close codes.
-        if (event.code === 4401 || event.code === 4403) {
-          this.revoked = true
+    const client =
+      this.retainedClient ??
+      new HexbotRpcClient(wsUrl, {
+        onSocketClose: event => {
+          // 4401/4403 are the gateway's auth close codes.
+          if (event.code === 4401 || event.code === 4403) {
+            this.revoked = true
+          }
+
+          return false
         }
+      })
 
-        return false
-      }
-    })
-
+    this.retainedClient = client
+    // Replay may arrive as soon as the socket opens, before gateway.ready.
+    const detach = attachEventRouting(client)
+    this.detach = detach
+    let detachOpeningState = () => {}
+    let openingStarted = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let off = () => {}
     const ready = new Promise<ReadyPayload>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        off()
-        reject(new UnreachableError('The daemon did not finish connecting.'))
-      }, READY_TIMEOUT_MS)
-
-      const off = client.subscribe<ReadyPayload>('gateway.ready', event => {
-        clearTimeout(timer)
-        off()
+      timer = setTimeout(
+        () => reject(new UnreachableError('The daemon did not finish connecting.')),
+        READY_TIMEOUT_MS
+      )
+      detachOpeningState = client.onState(state => {
+        if (openingStarted && (state === 'closed' || state === 'error'))
+          reject(new UnreachableError('The daemon disconnected while connecting.'))
+      })
+      off = client.subscribe<ReadyPayload>('gateway.ready', event => {
+        if (generation !== this.generation) return
+        this.adoptEpoch(event.payload?.replay_epoch ?? null)
         resolve(event.payload ?? {})
       })
     })
 
-    await client.connect()
-
-    const payload = await ready
+    try {
+      openingStarted = true
+      await Promise.all([client.connect(wsUrl), ready])
+    } catch (error) {
+      detach()
+      if (generation === this.generation) this.detach = null
+      client.close()
+      throw error
+    } finally {
+      clearTimeout(timer)
+      off()
+      detachOpeningState()
+    }
 
     if (generation !== this.generation) {
       client.close()
-
       return
     }
 
     this.client = client
-    this.detach = attachEventRouting(client)
     setActiveRpc(client)
-
-    client.onState(state => {
+    this.detachState = client.onState(state => {
       if (state === 'closed' || state === 'error') {
         this.handleDrop(generation)
       }
     })
 
-    this.adoptEpoch(payload.replay_epoch ?? null)
     this.connectedAt = Date.now()
     this.attempt = 0
     connectionActions().setStatus('connected', { attempt: 0, error: null })
 
-    await this.hydrate()
+    await this.hydrate(generation)
   }
 
   /** A new replay epoch means the daemon restarted; reopen sections lazily. */
@@ -358,7 +443,7 @@ export class ConnectionSupervisor {
     store.setEpoch(epoch)
   }
 
-  private async hydrate(): Promise<void> {
+  private async hydrate(generation: number): Promise<void> {
     const store = connectionActions()
 
     try {
@@ -370,6 +455,9 @@ export class ConnectionSupervisor {
         useUsers.getState().refresh()
       ])
 
+      if (generation !== this.generation || this.stopped) {
+        return
+      }
       store.setDaemon(info)
 
       const last = uiActions().lastSection
@@ -378,7 +466,10 @@ export class ConnectionSupervisor {
         uiActions().setLastSection(null)
       }
     } catch (error) {
-      store.setStatus('connected', { error: error instanceof Error ? error.message : String(error) })
+      if (generation !== this.generation || this.stopped) return
+      store.setStatus('connected', {
+        error: error instanceof Error ? error.message : String(error)
+      })
     }
   }
 
@@ -390,6 +481,8 @@ export class ConnectionSupervisor {
     setActiveRpc(null)
     this.detach?.()
     this.detach = null
+    this.detachState?.()
+    this.detachState = null
     this.client = null
 
     if (this.revoked) {
@@ -409,6 +502,7 @@ export class ConnectionSupervisor {
     this.teardown()
     this.target = null
     connectionActions().clearTarget()
+    clearDaemonState()
     connectionActions().setStatus('unauthorized', { attempt: 0, error: message })
   }
 
@@ -417,7 +511,10 @@ export class ConnectionSupervisor {
 
     const delay = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** (this.attempt - 1))
 
-    connectionActions().setStatus(this.connectedAt ? 'reconnecting' : 'offline', { attempt: this.attempt, error })
+    connectionActions().setStatus(this.connectedAt ? 'reconnecting' : 'offline', {
+      attempt: this.attempt,
+      error
+    })
 
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null
@@ -436,15 +533,16 @@ export function getSupervisor(): ConnectionSupervisor {
 
 /** Save the target and connect to it. */
 export function connectTo(target: RemoteTarget): Promise<void> {
+  const opening = getSupervisor().start(target)
   connectionActions().setTarget(target)
-
-  return getSupervisor().start(target)
+  return opening
 }
 
 /** Forget this daemon on this phone. */
 export function signOut(): void {
   getSupervisor().stop()
   connectionActions().clearTarget()
+  clearDaemonState()
 }
 
 /**
@@ -457,7 +555,9 @@ export async function forgetDaemon(): Promise<void> {
 
   if (rpc) {
     try {
-      const { devices } = await rpc.call<{ devices: { current?: boolean; id: string }[] }>('hexbot.devices.list')
+      const { devices } = await rpc.call<{ devices: { current?: boolean; id: string }[] }>(
+        'hexbot.devices.list'
+      )
       const current = devices.find(device => device.current)
 
       if (current) {

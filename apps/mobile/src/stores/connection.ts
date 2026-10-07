@@ -70,7 +70,7 @@ export const useConnection = create<ConnectionState>(set => ({
 
   clearTarget() {
     void writeSecure(TARGET_KEY, null)
-    set({ daemon: null, target: null })
+    set({ daemon: null, epoch: null, target: null })
   },
 
   setDaemon(daemon) {

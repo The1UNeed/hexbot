@@ -27,7 +27,7 @@ export default function Scan() {
             }
 
             handled.current = true
-            router.dismissTo({ params: { code: link.code, host: link.host, port: String(link.port) }, pathname: '/connect' })
+            router.dismissTo({ params: { code: link.code, host: link.host, port: String(link.port), tls: String(link.tls) }, pathname: '/connect' })
           }}
           style={StyleSheet.absoluteFill}
         />

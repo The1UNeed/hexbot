@@ -10,7 +10,6 @@ import { Icon } from '../../components/icon'
 import { errorText } from '../../components/settings/kit'
 import { useBotList } from '../../stores/bots'
 import { useRooms } from '../../stores/rooms'
-import { useSettings } from '../../stores/settings'
 import { useTheme } from '../../theme'
 
 const FACE = 60
@@ -24,7 +23,6 @@ const FACE = 60
 export default function NewRoom() {
   const { colors } = useTheme()
   const bots = useBotList()
-  const settings = useSettings(state => state.settings)
   const [name, setName] = useState('')
   const [members, setMembers] = useState<string[]>([])
   const [main, setMain] = useState<null | string>(null)
@@ -48,11 +46,6 @@ export default function NewRoom() {
 
     try {
       const room = await useRooms.getState().create({
-        approval_mode: settings?.approval_mode ?? 'smart',
-        limits: {
-          bot_turns_per_human_turn: settings?.room_bot_turns_per_human_turn ?? 8,
-          budget_tokens_per_human_turn: settings?.room_budget_tokens_per_human_turn ?? null
-        },
         ...(main ? { main_bot: main } : {}),
         members,
         name: name.trim()

@@ -34,7 +34,7 @@ version.
 | Path | What |
 | --- | --- |
 | `src/app/` | Routes (expo-router). `_layout.tsx` is the root stack, the connection bootstrap and the pairing guard |
-| `src/lib/` | Daemon contract and helpers. `api.ts`, `types.ts`, `events.ts`, `rpc.ts` are the web client's, unchanged; `connection.ts` is the phone's pairing and reconnect supervisor |
+| `src/lib/` | Daemon contract and helpers. `api.ts`, `types.ts`, and `events.ts` follow the web client; `rpc.ts` retains replay cursors across reconnects; `connection.ts` is the phone's pairing and reconnect supervisor |
 | `src/stores/` | zustand stores, the web client's, with storage swapped for AsyncStorage and the Keychain |
 | `src/components/` | Faces, glass, the grouped list kit, chat, bot and settings pieces |
 | `src/theme/` | Tokens from `docs/ui-design.md` |
@@ -81,3 +81,10 @@ pnpm --filter ./apps/mobile run test
 The unit tests run the stores and the connection supervisor in Node with
 fakes for the native modules (`test/mocks`). Most store tests are the web
 client's own, so the two clients keep the same behaviour.
+
+Reconnects reuse the RPC client and replay events missed while offline. Switching
+daemons clears cached chats, rooms, providers, devices, connectors, and drafts.
+Bot settings show only tools available on the daemon computer.
+Room creation inherits the daemon's approval mode and turn limits. HTTPS and WSS
+addresses preserve TLS and default to port 443, including pairing links.
+CI typechecks and tests the mobile app and exports both iOS and Android bundles.

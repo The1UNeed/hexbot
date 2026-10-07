@@ -25,7 +25,7 @@
 - Packaging and release scripts: `node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs`.
 - Site: `pnpm --filter ./apps/site run check`.
 - Connect: `pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run && pnpm --filter ./apps/connect run lint`.
-- Mobile: `pnpm --filter ./apps/mobile run typecheck && pnpm --filter ./apps/mobile run test`. Not yet in CI. For
+- Mobile: `pnpm --filter ./apps/mobile run typecheck && pnpm --filter ./apps/mobile run test`. CI also exports the iOS and Android JavaScript bundles. For
   the app itself, `node apps/mobile/scripts/demo-daemon.mjs --home <dir>` runs a daemon with a local streaming
   model and seeded bots, and `apps/mobile/scripts/sim.mjs` pairs and screenshots an iOS Simulator
   (`apps/mobile/README.md`).

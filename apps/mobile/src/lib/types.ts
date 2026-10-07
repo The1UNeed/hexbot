@@ -89,6 +89,8 @@ export interface BotStatusDetail {
 }
 
 export interface Bot {
+  /** Missing on older daemons, which showed every tool. */
+  available_tools?: BotTool[]
   /** Per-bot override; `inherit` follows the deployment setting. */
   approval_mode?: BotApprovalMode
   avatar: Avatar | null

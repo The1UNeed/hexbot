@@ -8,11 +8,13 @@ export interface PairLink {
   code: string
   host: string
   port: number
+  tls: boolean
 }
 
 export interface AddressParts {
   host: string
   port: number
+  tls: boolean
 }
 
 export const DEFAULT_DAEMON_PORT = 9119
@@ -40,18 +42,26 @@ export function parsePairLink(input: string): null | PairLink {
   const fragmentParams = new URLSearchParams(fragment)
   const host = (params.get('host') ?? '').trim()
   const code = (fragmentParams.get('code') ?? params.get('code') ?? '').trim()
-  const port = Number.parseInt(params.get('port') ?? '', 10)
+  const port = Number(params.get('port'))
 
   if (!host || !code) {
     return null
   }
 
-  return { code, host, port: Number.isFinite(port) && port > 0 ? port : DEFAULT_DAEMON_PORT }
+  const tlsParam = params.get('tls')
+  const tls = tlsParam == null ? port === 443 : tlsParam === 'true' || tlsParam === '1'
+  return {
+    code,
+    host,
+    port:
+      Number.isInteger(port) && port > 0 && port <= 65535 ? port : tls ? 443 : DEFAULT_DAEMON_PORT,
+    tls
+  }
 }
 
 /**
  * Accepts `host`, `host:port`, `http://host:port` or `ws://host:port` and
- * normalises it to `{host, port}`.
+ * normalises it to `{host, port, tls}`.
  */
 export function parseAddress(input: string): AddressParts | null {
   const raw = input.trim().replace(/\/+$/, '')
@@ -65,15 +75,30 @@ export function parseAddress(input: string): AddressParts | null {
   try {
     const url = new URL(withScheme)
 
-    if (!url.hostname) {
+    if (!url.hostname || !['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol)) {
       return null
     }
 
-    const port = url.port ? Number.parseInt(url.port, 10) : DEFAULT_DAEMON_PORT
+    const explicitScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw)
+    // URL strips an explicit default port, so read it from the authority too.
+    const authority = withScheme.split('://')[1]?.split(/[/?#]/)[0] ?? ''
+    const explicitPort = /:(\d+)$/.exec(authority)?.[1]
+    const tls =
+      url.protocol === 'https:' ||
+      url.protocol === 'wss:' ||
+      (!explicitScheme && explicitPort === '443')
+    const port = explicitPort
+      ? Number(explicitPort)
+      : explicitScheme
+        ? tls
+          ? 443
+          : 80
+        : DEFAULT_DAEMON_PORT
 
     return {
       host: url.hostname,
-      port: Number.isFinite(port) && port > 0 ? port : DEFAULT_DAEMON_PORT
+      port,
+      tls
     }
   } catch {
     return null
@@ -81,5 +106,7 @@ export function parseAddress(input: string): AddressParts | null {
 }
 
 export function formatAddress(parts: AddressParts): string {
-  return `${parts.host}:${parts.port}`
+  const host =
+    parts.host.includes(':') && !parts.host.startsWith('[') ? `[${parts.host}]` : parts.host
+  return `${parts.tls ? 'https://' : 'http://'}${host}:${parts.port}`
 }

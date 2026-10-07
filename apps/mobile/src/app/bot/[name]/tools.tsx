@@ -32,13 +32,17 @@ const GROUPS: { rows: { key: BotTool; subtitle: string; title: string }[]; title
 
 export default function Tools() {
   return (
-    <BotPage lead="What this bot can do on the computer it runs on. Nothing here needs an account." title="Tools">
+    <BotPage lead="What this bot can do on the computer it runs on. Only tools set up on that computer are shown." title="Tools">
       {({ bot, quietly }) => {
         const tools = Array.isArray(bot.tools) ? bot.tools : []
+        const groups = GROUPS.map(group => ({
+          ...group,
+          rows: group.rows.filter(row => !bot.available_tools || bot.available_tools.includes(row.key))
+        })).filter(group => group.rows.length)
 
         return (
           <>
-            {GROUPS.map(group => (
+            {groups.map(group => (
               <Group key={group.title} label={group.title}>
                 {group.rows.map(row => (
                   <SwitchRow
