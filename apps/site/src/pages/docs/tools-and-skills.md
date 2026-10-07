@@ -23,7 +23,7 @@ Open Bot settings, Tools. Each switch controls one capability:
 | Delegate | Hands a subtask to an isolated subagent. |
 | Scheduling | Creates and manages reminders and recurring jobs. |
 
-Tools execute where the daemon runs, even when you use the client app on another computer. Enabling a tool does not install every dependency it needs. Browser and computer use need their configured browser or driver. Full and Headless install Python for code execution and the voice tools. Neither installs Poppler: to render PDF pages, install it on the daemon computer (`brew install poppler` or `sudo apt install poppler-utils`).
+Tools execute where the daemon runs, even when you use the client app on another computer. A tool that needs something the daemon computer doesn't have is hidden from this list and from the bot until it's set up: code execution needs Python, browser needs a browser driver or a CDP address, computer use needs the cua driver, vision needs a key or endpoint for its vision model, and voice needs edge-tts or a voice provider key. A hidden tool that was switched on is switched off the next time you save the bot's tools. Full and Headless install Python for code execution and the voice tools. Neither installs Poppler: to render PDF pages, install it on the daemon computer (`brew install poppler` or `sudo apt install poppler-utils`).
 
 The **Working directory** is the bot's workspace. Choose a project folder outside `~/.hexbot`; the daemon refuses its own data directory as a workspace. [Approvals](/docs/approvals/) explains sandbox access, network requests, and credential protection.
 

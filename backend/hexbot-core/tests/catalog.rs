@@ -460,6 +460,30 @@ fn create_accepts_explicit_empty_tool_selection_before_registry_insert() {
 }
 
 #[test]
+fn tools_not_set_up_are_hidden_and_dropped_on_save() {
+    let home = setup();
+    let absent = home.path().join("absent-binary");
+    hexbot_core::common::write_config(
+        home.path(),
+        &json!({"computer_use":{"command":absent},"tts":{"provider":"edge","edge":{"command":absent}}}),
+    )
+    .unwrap();
+    create(home.path());
+    let bot = call(
+        home.path(),
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"research-owl","tools":["files","voice","computer_use"]}),
+    )["bot"]
+        .clone();
+    assert_eq!(bot["tools"], json!(["files"]));
+    let available = bot["available_tools"].as_array().unwrap();
+    assert!(available.contains(&json!("files")));
+    assert!(!available.contains(&json!("voice")));
+    assert!(!available.contains(&json!("computer_use")));
+}
+
+#[test]
 fn empty_native_history_never_resurrects_legacy_messages() {
     let home = setup();
     let h = home.path();

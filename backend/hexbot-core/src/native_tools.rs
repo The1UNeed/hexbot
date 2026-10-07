@@ -206,13 +206,131 @@ fn family(name: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+fn python_command(
+    home: &Path,
+    cfg: &Value,
+    env: &std::collections::BTreeMap<String, String>,
+) -> String {
+    let configured = credential(env, "HEXBOT_CODE_PYTHON");
+    let managed = common::managed_python(home);
+    let fallback = if managed != Path::new("python3") {
+        managed.to_string_lossy().into_owned()
+    } else {
+        on_path("python3")
+            .or_else(|| on_path("python"))
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "python3".into())
+    };
+    text(
+        &cfg["code_execution"],
+        "python",
+        if configured.is_empty() {
+            &fallback
+        } else {
+            &configured
+        },
+    )
+    .to_owned()
+}
+fn edge_command(home: &Path, options: &Value) -> String {
+    let managed = home.join("bin/edge-tts");
+    let fallback = if managed.is_file() {
+        managed
+    } else {
+        on_path("edge-tts").unwrap_or_else(|| PathBuf::from("edge-tts"))
+    };
+    text(options, "command", &fallback.to_string_lossy()).to_owned()
+}
+/// Toolsets missing the program they run or the service they call on this
+/// computer. They are never offered to a model and never shown in bot
+/// settings.
+pub fn not_set_up(home: &Path, bot: &str) -> Result<Vec<&'static str>> {
+    let cfg = common::merged_config(home, bot)?;
+    let env = connectors::profile_credentials(home, &crate::catalog::profile(home, bot)?)?;
+    Ok(
+        ["code_execution", "browser", "computer_use", "vision", "tts"]
+            .into_iter()
+            .filter(|toolset| !set_up(home, &cfg, &env, toolset))
+            .collect(),
+    )
+}
+fn set_up(
+    home: &Path,
+    cfg: &Value,
+    env: &std::collections::BTreeMap<String, String>,
+    toolset: &str,
+) -> bool {
+    let has = |name: &str| !credential(env, name).is_empty();
+    match toolset {
+        "code_execution" => on_path(&python_command(home, cfg, env)).is_some(),
+        "computer_use" => on_path(text(&computer_config(cfg, env), "command", "")).is_some(),
+        "browser" => {
+            let browser = &cfg["browser"];
+            if text(browser, "backend", "") == "off" {
+                return false;
+            }
+            if !text(browser, "cdp_url", "").is_empty() || has("BROWSER_CDP_URL") {
+                return true;
+            }
+            // The browser-use backend only offers browser_exec, which is not ported.
+            if text(browser, "backend", "") == "browser-use" {
+                return false;
+            }
+            match text(browser, "cloud_provider", "") {
+                "browserbase" => has("BROWSERBASE_API_KEY") && has("BROWSERBASE_PROJECT_ID"),
+                "browser-use" => has("BROWSER_USE_API_KEY"),
+                "" | "local" => on_path(&browser_command(cfg)[0]).is_some(),
+                _ => false,
+            }
+        }
+        "tts" => {
+            let provider = text(&cfg["tts"], "provider", "edge");
+            let options = &cfg["tts"][provider];
+            match provider {
+                "openai" => {
+                    has("VOICE_TOOLS_OPENAI_KEY")
+                        || has("OPENAI_API_KEY")
+                        || !text(options, "base_url", "").is_empty()
+                }
+                "mistral" => has("MISTRAL_API_KEY"),
+                "elevenlabs" => has("ELEVENLABS_API_KEY"),
+                "edge" => on_path(&edge_command(home, options)).is_some(),
+                name => {
+                    let custom = &cfg["tts"]["providers"][name];
+                    custom["type"] == "command"
+                        && custom["command"].as_str().and_then(on_path).is_some()
+                }
+            }
+        }
+        "vision" => {
+            let aux = &cfg["auxiliary"]["vision"];
+            // An explicit endpoint may need no key, like a local server.
+            let endpoint = !text(aux, "base_url", "").is_empty();
+            match text(aux, "provider", text(&cfg["model"], "provider", "openai")) {
+                "anthropic" | "claude" => endpoint || has("ANTHROPIC_API_KEY"),
+                "google" | "gemini" => endpoint || has("GOOGLE_API_KEY") || has("GEMINI_API_KEY"),
+                "openai" | "openai-api" => endpoint || has("OPENAI_API_KEY"),
+                "openrouter" => endpoint || has("OPENROUTER_API_KEY"),
+                "ollama" => true,
+                "custom" => endpoint || !text(&cfg["model"], "base_url", "").is_empty(),
+                _ => false,
+            }
+        }
+        _ => true,
+    }
+}
 pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
     let enabled = connectors::toolsets(home, bot)?;
     let cfg = common::merged_config(home, bot)?;
     let env = connectors::credentials(home, bot)?;
     let mut out = vec![];
+    let mut ready = std::collections::HashMap::new();
     let mut add = |family: &str, d: Value| {
-        if enabled.iter().any(|v| v == family) {
+        if enabled.iter().any(|v| v == family)
+            && *ready
+                .entry(family.to_owned())
+                .or_insert_with(|| set_up(home, &cfg, &env, family))
+        {
             out.push(d)
         }
     };
@@ -481,6 +599,12 @@ pub async fn call(
         }
         let cfg = common::merged_config(home, bot)?;
         let env = connectors::credentials(home, bot)?;
+        if !set_up(home, &cfg, &env, family) {
+            return Err(Error::new(
+                4302,
+                format!("tool is not set up on this computer: {name}"),
+            ));
+        }
         match name {
             "web_search" => search(&cfg, &env, args).await,
             "web_extract" => extract(home, bot, &cfg, &env, args).await,
@@ -1075,25 +1199,8 @@ async fn execute_code(
         let _ = worker.child.wait().await;
     }
     if kernel.is_none() {
-        let configured = credential(env, "HEXBOT_CODE_PYTHON");
-        let managed = common::managed_python(home);
-        let fallback = if managed != Path::new("python3") {
-            managed.to_string_lossy().into_owned()
-        } else {
-            on_path("python3")
-                .or_else(|| on_path("python"))
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "python3".into())
-        };
-        let python = text(
-            &cfg["code_execution"],
-            "python",
-            if configured.is_empty() {
-                &fallback
-            } else {
-                &configured
-            },
-        );
+        let python = python_command(home, cfg, env);
+        let python = python.as_str();
         let mut command = if sandbox.0 == Some(false) {
             Command::new(python)
         } else {
@@ -1668,13 +1775,7 @@ async fn speech(
             common::atomic_write(&output, &audio)?;
         }
         "edge" => {
-            let managed = home.join("bin/edge-tts");
-            let fallback = if managed.is_file() {
-                managed
-            } else {
-                on_path("edge-tts").unwrap_or_else(|| PathBuf::from("edge-tts"))
-            };
-            let mut command = Command::new(text(options, "command", &fallback.to_string_lossy()));
+            let mut command = Command::new(edge_command(home, options));
             command
                 .args([
                     "--text",
