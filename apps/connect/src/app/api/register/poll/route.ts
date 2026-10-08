@@ -18,7 +18,9 @@ export async function POST(request: Request) {
   // Secrets exist only in this response: the tunnel token comes from Cloudflare, the daemon token is minted here and stored hashed.
   const tunnelToken = await getTunnels().connectorToken(daemon.tunnelId);
   if (!await getStore().consumeRegistration(row.id)) return jsonError("consumed", "The registration credentials have already been collected", 410);
-  const daemonToken = randomToken("hxd_"); await getStore().setDaemonTokenHash(daemon.id, hashToken(daemonToken));
+  // Mint only while the daemon is still unrevoked: a revoke during the tunnel token fetch must win.
+  const daemonToken = randomToken("hxd_");
+  if (!await getStore().setDaemonTokenHash(daemon.id, hashToken(daemonToken))) return NextResponse.json({ status: "denied" });
   // Registration must succeed even before the identity column has been migrated.
   if (body.public_key) {
     try { await getStore().enrollDaemonIdentity(daemon.id, body.public_key); }

@@ -14,12 +14,21 @@ export async function POST(request: Request) {
   if (!registration) return jsonError("invalid_user_code", "The user code is invalid", 404);
   if (registration.expiresAt.getTime() <= Date.now()) return jsonError("expired", "The user code has expired", 410);
   if (registration.approvedAt) return jsonError("already_approved", "This registration is already approved", 409);
-  const user = await getStore().getOrCreateUser(clerkId); const slug = generateSlug();
-  const tunnel = await getTunnels().create(slug);
+  const user = await getStore().getOrCreateUser(clerkId);
+  // Claim before creating anything: of two overlapping approvals only one gets a tunnel and a daemon.
+  if (!await getStore().claimRegistration(registration.id, user.id, new Date())) return jsonError("already_approved", "This registration is already approved", 409);
+  const slug = generateSlug();
+  let tunnel: { tunnelId: string; hostname: string };
+  try { tunnel = await getTunnels().create(slug); }
+  catch (error) { await getStore().releaseRegistration(registration.id).catch(() => undefined); throw error; }
   try {
     // The daemon's real token is minted when it polls; until then the row holds the hash of a token nobody has.
     const daemon = await getStore().createDaemon({ userId: user.id, name: registration.daemonName, slug, tunnelId: tunnel.tunnelId, tunnelHostname: tunnel.hostname, ingressPort: registration.ingressPort, tokenHash: hashToken(randomToken()) });
-    await getStore().approveRegistration(registration.id, user.id, daemon.id);
+    await getStore().approveRegistration(registration.id, daemon.id);
     return NextResponse.json({ approved: true, daemon_id: daemon.id, name: daemon.name, hostname: daemon.tunnelHostname });
-  } catch (error) { await getTunnels().delete(tunnel.tunnelId).catch(() => undefined); throw error; }
+  } catch (error) {
+    await getTunnels().delete(tunnel.tunnelId).catch(() => undefined);
+    await getStore().releaseRegistration(registration.id).catch(() => undefined);
+    throw error;
+  }
 }
