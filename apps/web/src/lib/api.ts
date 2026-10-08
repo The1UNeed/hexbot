@@ -771,7 +771,7 @@ function clarifyFromHistory(
 
   return {
     answers,
-    expired: Object.keys(answers).length < questions.length || undefined,
+    expired: questions.some(item => !((item.questionId ?? requestId) in answers)) || undefined,
     questions,
     receivedAt: 0,
     requestId,

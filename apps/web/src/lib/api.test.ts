@@ -206,6 +206,28 @@ describe('history projection', () => {
     expect(message?.clarifies?.[0]?.expired).toBeUndefined()
   })
 
+  it('settles a batch whose questions share an id with one answer', () => {
+    const [message] = messagesFromHistory([
+      {
+        role: 'assistant',
+        text: 'Hi.',
+        tool_calls: [
+          {
+            function: {
+              arguments: '{"questions":[{"qid":"q2","question":"Why?"},{"question":"How?"}]}',
+              name: 'clarify'
+            },
+            id: 'c1',
+            type: 'function'
+          }
+        ]
+      },
+      { name: 'clarify', role: 'tool', text: '{"q2":"Because"}', tool_call_id: 'c1', tool_id: 'c1' }
+    ] as Parameters<typeof messagesFromHistory>[0])
+
+    expect(message?.clarifies?.[0]?.expired).toBeUndefined()
+  })
+
   it('leaves a question still waiting to the live card', () => {
     const [message] = messagesFromHistory([
       {
