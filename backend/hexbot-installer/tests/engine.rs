@@ -32,13 +32,7 @@ fn install_change_repair_and_uninstall_use_only_isolated_paths() {
             },
         )]),
     };
-    let publish = |m: &Manifest| {
-        fs::write(
-            tree.join(format!("install/{}.json", m.channel)),
-            serde_json::to_vec(m).unwrap(),
-        )
-        .unwrap()
-    };
+    let publish = |m: &Manifest| publish(&tree, m.channel, m);
     publish(&manifest);
     assert_eq!(default_track(&server.base).unwrap(), Track::Nightly);
     let engine = Installer {
@@ -289,11 +283,7 @@ fn linux_appimage_writes_a_desktop_entry_and_replaces_the_previous_app() {
             },
         )]),
     };
-    fs::write(
-        root.path().join("install/stable.json"),
-        serde_json::to_vec(&manifest).unwrap(),
-    )
-    .unwrap();
+    publish(root.path(), "stable", &manifest);
     let engine = Installer {
         paths: paths.clone(),
         target: Target::LinuxX86_64,

@@ -91,9 +91,8 @@ handoff removes the old Python environment and source copies. A small forwarding
 script can remain at the old launchd path until the app reloads the service.
 Bootstrap rewrites old launchd/systemd definitions and removes the venv PATH.
 
-Known gap: update manifests are not signed yet. HTTPS and archive SHA-256 checks
-protect transport and detect corruption, but do not authenticate a manifest
-independently of the update server. Manifest signing is a follow-up.
+Native manifests are signed like install manifests (see "Update signing"); the
+handoff refuses one without a valid signature.
 
 Native staging and the dev runner share the pins in
 `apps/desktop/src/main/backend/tools.ts`. They verify ripgrep 15.2.0 and fd
@@ -216,6 +215,40 @@ on GitHub; installed apps then find no update. The bucket layout is in
 `docs/channels.md`. Versioned packages are immutable. The `.yml` feeds,
 `nightlies.json`, and `install/<track>.json` and `.txt` are rewritten, so a
 bad release is fixed by cutting the next one.
+
+### Update signing
+
+Every manifest a client verifies carries an Ed25519 signature from the release
+key: `daemon/native/<version>/<target>/manifest.json.sig` beside each native
+manifest, and `install/<version>/<track>.json.sig` for the install manifest.
+The install manifest's signature sits at the immutable versioned path, so
+replacing `install/<track>.json` never races it. The installer engine, the
+daemon's native updater, and the Python handoff refuse a manifest without a
+valid signature; the signed checksums then pin every package. Anyone who
+controls the update origin, its TLS, or `HEXBOT_UPDATE_URL` cannot ship a build
+without the key.
+
+The public keys are `packaging/update-signing-key.pub` (raw Ed25519, base64,
+one per line), compiled into the Rust binaries and copied into
+`backend/python-handoff/hexbot/update_signature.py`; a release script test keeps
+the copies equal. The private key is the `HEXBOT_UPDATE_SIGNING_KEY` secret, a
+PKCS#8 PEM. The `Sign the update manifests` step signs with it and checks each
+signature against the committed public key, so a mismatched secret fails the
+release before anything is uploaded. The post-publish check verifies the
+published signatures again.
+
+```sh
+gh secret set HEXBOT_UPDATE_SIGNING_KEY < hexbot-update-signing-key.pem
+```
+
+Keep the PEM offline after storing it. To replace the key, run
+`node scripts/desktop/update-signing.mjs generate NEW-KEY.pem`, which adds the
+new public key as a second line; copy it into `update_signature.py` and release
+with the old secret, so installed builds learn the new key from an update they
+can verify. Once that release has reached users, switch the secret to the new
+PEM and remove the old public key. Debug builds also trust a public test key
+(`TEST_KEY` in `backend/hexbot-core/src/update_signature.rs`) so tests and
+`apps/installer`'s fake update server can sign; release builds never do.
 
 ### Apple signing and notarization
 

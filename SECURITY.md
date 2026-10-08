@@ -80,9 +80,15 @@ not encrypted by an OS keychain. Same-user malware and unprotected backups can
 read them. The daemon and its configured providers must be trusted with these keys.
 
 Installers validate archive paths, reject links, enforce size limits, and verify
-download checksums. Checksums detect corruption; unsigned native manifests
-still trust HTTPS and write access to the update origin. Manifest signing needs
-independent release-key provisioning. See [the update API](docs/api.md).
+download checksums. Every install and native update manifest carries an
+Ed25519 signature from the release key, and the installer, the daemon, and the
+Python handoff refuse a manifest without one; the manifest's checksums then pin
+each package. Control of the update origin, its TLS, or `HEXBOT_UPDATE_URL` is
+not enough to ship a build. Update URLs must use HTTPS. The terminal installer
+script follows no redirects; it still trusts HTTPS to `hexbot.app` and the update
+server for the installer it downloads. Desktop app updates rely on macOS code
+signing; Linux AppImage updates are checked by checksum only. See
+[release signing](docs/release.md#update-signing).
 
 ## Report scope
 

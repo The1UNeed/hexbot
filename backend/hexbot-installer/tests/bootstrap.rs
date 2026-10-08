@@ -294,3 +294,43 @@ fn bootstrap_executes_from_cache_or_explicit_override_and_cleans_up() {
         assert_eq!(fs::read_dir(expected).unwrap().count(), 0);
     }
 }
+
+/// A redirect would let whoever answers it supply both the checksum and the
+/// binary, so the bootstrap follows none; and it speaks only HTTPS.
+#[test]
+fn bootstrap_follows_no_redirects_and_refuses_plain_http() {
+    let root = tempfile::tempdir().unwrap();
+    let server = common::Server::new(root.path());
+    let foreign_root = tempfile::tempdir().unwrap();
+    let foreign = common::Server::new(foreign_root.path());
+    fs::create_dir(root.path().join("install")).unwrap();
+    fs::write(
+        root.path().join("install/nightly.txt.redirect"),
+        format!("{}/install/nightly.txt", foreign.base),
+    )
+    .unwrap();
+    let script =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/site/public/install.sh");
+    let run = |base: &str| {
+        Command::new("sh")
+            .arg(&script)
+            .env("HEXBOT_UPDATE_URL", base)
+            .env("HEXBOT_TRACK", "nightly")
+            .env("HEXBOT_INSTALL_TMPDIR", root.path())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let output = run(&server.base);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("installer index"));
+    assert!(foreign.requests.lock().unwrap().is_empty());
+    for base in ["http://updates.example.test", "https://user@updates.example.test"] {
+        let output = run(base);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("must be an HTTPS address"),
+            "{base}"
+        );
+    }
+}

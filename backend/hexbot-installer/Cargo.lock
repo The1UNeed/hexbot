@@ -323,6 +323,7 @@ dependencies = [
  "flate2",
  "libc",
  "reqwest",
+ "ring",
  "semver",
  "serde",
  "serde_json",

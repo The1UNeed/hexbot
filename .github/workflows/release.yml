@@ -456,6 +456,12 @@ jobs:
           node scripts/desktop/make-install-manifest.mjs --channel "$CHANNEL" --version "$VERSION" dist/updates "${missing[@]}"
           node --input-type=module -e 'import fs from "node:fs"; const m=JSON.parse(fs.readFileSync(`dist/updates/install/${process.env.CHANNEL}.json`)); for(const target of ["macos-aarch64","macos-x86_64","linux-x86_64"]) for(const option of ["full","client","headless","installer"]) if(!m.targets[target]?.[option]) throw Error(`Missing ${target}/${option}`)'
           find dist/updates -type f | sort
+      # Daemons, installers, and the Python handoff install nothing without these
+      # signatures. The step checks each one against packaging/update-signing-key.pub.
+      - name: Sign the update manifests
+        env:
+          HEXBOT_UPDATE_SIGNING_KEY: ${{ secrets.HEXBOT_UPDATE_SIGNING_KEY }}
+        run: node scripts/desktop/update-signing.mjs sign dist/updates --channel "$CHANNEL" --version "$VERSION"
       - name: Publish the update feed to updates.hexbot.app
         if: env.HAS_R2 == 'true'
         env:
@@ -498,6 +504,7 @@ jobs:
         run: |
           set -euo pipefail
           feed=$([ "$CHANNEL" = stable ] && echo latest || echo nightly)
+          signed='import {readFileSync} from "node:fs"; import {releaseKeys, verifies} from "./scripts/desktop/update-signing.mjs"; const [manifest, signature] = process.argv.slice(1); if (!verifies(releaseKeys(), readFileSync(manifest), readFileSync(signature, "utf8"))) { console.error(`::error::${manifest} is not signed by the release key`); process.exit(1) }'
           for path in full/mac/arm64/$feed-mac.yml full/mac/x64/$feed-mac.yml full/linux/x64/$feed-linux.yml \
                       client/mac/arm64/$feed-mac.yml client/mac/x64/$feed-mac.yml client/linux/x64/$feed-linux.yml; do
             url="https://updates.hexbot.app/$path"
@@ -511,12 +518,16 @@ jobs:
           for target in macos-aarch64 macos-x86_64 linux-x86_64; do
             url="https://updates.hexbot.app/daemon/native/$VERSION/$target/manifest.json"
             curl -fsS --retry 5 --retry-delay 5 "$url" > native-manifest.json
+            curl -fsS --retry 5 --retry-delay 5 "$url.sig" > native-manifest.json.sig
             node -e 'const fs=require("fs"); const m=JSON.parse(fs.readFileSync("native-manifest.json")); if(m.version!==process.env.VERSION || m.format!=="tar.gz") process.exit(1)'
+            node --input-type=module -e "$signed" native-manifest.json native-manifest.json.sig
             echo "ok  $url"
           done
           url="https://updates.hexbot.app/install/$CHANNEL.json"
           curl -fsS --retry 5 --retry-delay 5 "$url" > install-manifest.json
+          curl -fsS --retry 5 --retry-delay 5 "https://updates.hexbot.app/install/$VERSION/$CHANNEL.json.sig" > install-manifest.json.sig
           node -e 'const fs=require("fs"); const m=JSON.parse(fs.readFileSync("install-manifest.json")); if(m.version!==process.env.VERSION || m.channel!==process.env.CHANNEL || m.schema!==1) process.exit(1)'
+          node --input-type=module -e "$signed" install-manifest.json install-manifest.json.sig
           echo "ok  $url"
           url="https://updates.hexbot.app/daemon/hexbot-src-$VERSION.tar.gz"
           if curl -fsSI --retry 5 --retry-delay 5 "$url" > /dev/null; then
