@@ -3,7 +3,7 @@ import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync } from 'n
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
-import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation} from './isolation.ts';
+import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -435,7 +435,11 @@ function credentialName(path: string, home: string): boolean {
     const store = policyRoot(entry);
     return under(path, store) || under(path, canonicalPath(store, process.cwd()));
   })) return true;
+  if (readDenied().some(store => under(path, store))) return true;
   const name = basename(path);
+  if (secretFileName(name)) {
+    try { if (!statSync(path).isDirectory()) return true; } catch { return true; }
+  }
 
   if (!home) throw new Error('Hexbot home is unavailable');
   const root = under(path, resolve(home)) ? resolve(home) : canonicalPath(home, process.cwd());

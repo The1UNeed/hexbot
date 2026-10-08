@@ -237,15 +237,19 @@ for a member's bot or room, error 4301, and such a bot runs in Auto). In Auto (`
 private extension runs each shell command in a sandbox with no network that
 writes only inside the workspace: the bot's working directory, its artifact
 and attachment folders, and temp folders, with shell profiles and login items
-read-only even there. A command that needs more sets `full_access` with a
+read-only even there. Git folders (`.git`) are read-only in it too, so a hook
+or config cannot be planted for the user's next commit, and `.env` files,
+keychains, and browser profiles (`readDeny` in the policy) are unreadable. No
+level sends Apple Events. A command that needs more sets `full_access` with a
 `reason` on the bash tool; the user sees both and, if approved, the command
 runs with the sandbox's base layer only (credential paths still masked). In
 Manual the shell sandbox is read-only and every file change asks. Both modes
 ask before browser page scripts and before scheduling an absolute script path.
 
-Python code execution runs in the same workspace sandbox outside Bypass.
-Auto runs it without asking; Manual asks first (`runtime.rs`, `native_approval`);
-Bypass runs it unsandboxed. A small literal guard (`check_code`) refuses a
+Python code execution runs in the sandbox the section's commands get: the
+workspace sandbox in Auto, without asking; in Manual, after asking
+(`runtime.rs`, `native_approval`), read-only except its own artifact folder;
+unsandboxed in Bypass. A small literal guard (`check_code`) refuses a
 handful of catastrophic one-liners in every mode. The extension offers
 `once`, `session`, and `deny` on its cards, and a `session` choice quiets that
 kind of request for the rest of the section; daemon-raised requests offer

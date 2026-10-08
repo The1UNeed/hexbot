@@ -2514,7 +2514,8 @@ impl Runtime {
             [&s.bot],
             |r| r.get(0),
         )?;
-        // Code runs in the workspace sandbox outside Bypass. Auto runs it without
+        // Code runs in the sandbox the section's commands get: read-only in
+        // Manual, the workspace in Auto, none in Bypass. Auto runs it without
         // asking; Manual asks first, and so does Auto when there is no sandbox.
         let mut code_sandbox = None;
         if name == "execute_code" {
@@ -2522,7 +2523,11 @@ impl Runtime {
             let live = self.session_settings(s)?;
             let mode = live["approvalMode"].clone();
             code_sandbox = Some((
-                Some(mode != "off"),
+                match mode.as_str() {
+                    Some("off") => None,
+                    Some("manual") => Some(crate::credentials::Confine::ReadOnly),
+                    _ => Some(crate::credentials::Confine::Workspace),
+                },
                 PathBuf::from(live["cwd"].as_str().unwrap_or(".")),
             ));
             let sandboxed = crate::credentials::isolation_available();

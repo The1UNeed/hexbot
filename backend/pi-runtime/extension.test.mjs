@@ -113,6 +113,19 @@ test('credential file symlinks cannot disguise protected names', t => {
   writeFileSync(join(outside,'opaque'),'secret');symlinkSync(join(outside,'opaque'),join(f.home,'.env'));
   assert.equal(credentialPath(join(f.home,'.env'),f.home),true);
 });
+test('project secrets and browser stores are private to the file tools; examples and venvs are not', async t => {
+  const f=fixture(t,'smart',['file']);
+  const work=mkdtempSync(join(tmpdir(),'hexbot-project-'));t.after(()=>rmSync(work,{recursive:true,force:true}));
+  for (const name of ['.env','.env.local','.ENV.production']) { writeFileSync(join(work,name),'secret'); assert.equal(credentialPath(join(work,name),f.home),true,name); }
+  for (const name of ['.env.example','.env.sample','.envrc','env.txt']) { writeFileSync(join(work,name),'ok'); assert.equal(credentialPath(join(work,name),f.home),false,name); }
+  mkdirSync(join(work,'.env')+'-dir'); mkdirSync(join(work,'venv/.env'),{recursive:true});
+  assert.equal(credentialPath(join(work,'venv/.env'),f.home),false);
+  for (const store of ['Library/Keychains/login.keychain-db','Library/Application Support/Google/Chrome/Default/Cookies','.mozilla/firefox/x/logins.json'])
+    assert.equal(credentialPath(join(homedir(),store),f.home),true,store);
+  f.settings.cwd=work;
+  assert.equal((await f.gate('read',{path:join(work,'.env')}))?.reason,'Credential files are private.');
+  assert.equal(await f.gate('read',{path:join(work,'.env.example')}),undefined);
+});
 test('primary model changes remain live across fallback restoration', async t => {
   const f=fixture(t);
   await f.handlers.before_agent_start({},f.ctx);

@@ -74,6 +74,14 @@ If bubblewrap is missing or cannot start, Hexbot has no OS sandbox: a shell comm
 
 Credential stores stay private in Manual and Auto: `~/.netrc`, `~/.pgpass`, `~/.npmrc`, `~/.pypirc`, `~/.git-credentials`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.azure`, `~/.config/gh` and `~/.config/gcloud`. The file tools neither read nor write them, and the workspace sandbox hides them from every program a command starts. A command you approve for full access can read them, since tools like `aws` or `gh` need their keys, but it still cannot write them. macOS protects these names even before they exist and keeps `~/.config` in place so a nested store cannot be renamed out of reach. Linux protects stores that exist when a command or code run starts; a store that does not exist yet can be created by a full-access command, or by any command when the workspace holds your home folder, and one created later stays visible to a code run that is still going.
 
+Project secrets and browser data are private the same way. Files named `.env` or `.env.<anything>` (but not `.env.example`, `.env.sample`, `.env.template` or `.env.dist`), your keychains, and browser profiles, which hold cookies and saved passwords, are unreadable to the file tools and to sandboxed commands. When a bot needs a `.env` to run something, it asks for full access. On Linux the sandbox hides `.env` files that exist in the workspace, up to three folders deep, when a command starts.
+
+Git's own folders (`.git`) are read-only inside the sandbox, wherever they are in the workspace. A hook or setting written there would run outside the sandbox the next time you commit, so a bot commits, initializes or clones a repository with a full-access command, which asks first. On Linux this covers repositories that exist in the workspace, up to three folders deep, when a command starts.
+
+On macOS, sandboxed commands cannot send Apple Events, so they cannot drive Finder or another app.
+
+In Manual, approved Python code runs read-only too. It can write only its own output folder in the Hexbot home.
+
 Shell profiles, `~/.gitconfig`, launch agents, autostart entries and systemd user units are read-only inside the sandbox; a file tool asks before writing one. File tools refuse writes under `/etc` and `/private/etc` in Manual and Auto; a command that writes there needs full access, so it asks, and `sudo` system administration stays possible once approved.
 
 SSH private keys are private; config, known hosts, authorized keys, and public keys are not. Commands can use your SSH agent for Git without reading private keys. Reaching a remote host needs the network, so `ssh`, `scp`, `rsync` and the like ask in Manual and Auto.
