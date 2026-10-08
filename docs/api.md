@@ -510,10 +510,12 @@ arguments and status, not full nested result bodies; its record is bounded.
 - `hexbot.models.list {provider?, include_unconfigured?, refresh?}` →
   `{curated: [Model], all: [Model], all_source, error?}` with
   `Model = {provider, id, label, context?, input_cost?, output_cost?, reasoning_levels?}`,
-  built from `model.options`. Naming a configured provider asks it for its
-  current list (OpenAI Codex through its `/models` endpoint with the
-  ChatGPT sign-in), falling back to the pinned Pi catalog and the profile
-  list. `reasoning_levels` are the thinking levels both Pi and the provider
+  built from `model.options`. Ids come from the profile list and the pinned
+  Pi catalog. Naming a configured provider also asks it for its current list
+  when that list holds only models an agent can run: OpenAI Codex (its
+  `/models` endpoint with the ChatGPT sign-in, which also reports reasoning
+  levels), a provider with a `models_url` such as OpenRouter, or one with no
+  catalog of its own. Other providers are asked only with `refresh: true`. `reasoning_levels` are the thinking levels both Pi and the provider
   accept, in Pi's order, or whichever of them knows the model; it is absent
   when neither does. Levels a provider reports for a model newer than the
   pinned Pi are kept in `live_model_levels.json` and given to Pi. A

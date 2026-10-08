@@ -261,7 +261,7 @@ nested inside a card and no row carries more than one line of explanation.
   Connectors, Skills); Manage (Approvals, Sections, Advanced).
 - Tabs: Profile (face, name, label, description, Shareable), Soul
   (full-height editor, template menu with a confirm, word count), Model
-  (configured providers only, the provider's live model list with the
+  (configured providers only, the provider's model list with the
   curated models on top, reasoning levels the model supports, context and
   price when known), Memory (this bot's memory and dreaming; About you is
   shared and links to Settings, Memory), Tools (switches grouped as

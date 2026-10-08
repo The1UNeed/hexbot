@@ -617,19 +617,12 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
         _ => Err(Error::new(-32601, "method not found")),
     }
 }
-/// Writes a bot's profile. Sections still on its previous model move with it.
+/// Writes a bot's profile. Sections still on its previous model move with it,
+/// under the same lock so concurrent updates move them in order.
 fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
-    let before = section_model(home, name)?;
-    write_profile(home, name, p)?;
-    let after = section_model(home, name)?;
-    if before != after {
-        runtime_store::follow_bot_model(home, name, &before, &after)?;
-    }
-    Ok(())
-}
-fn write_profile(home: &Path, name: &str, p: &Value) -> Result<()> {
     let _skills = crate::skills::read_lock()?;
     let writer = common::config_writer()?;
+    let before = section_model(home, name)?;
     let dir = profile(home, name)?;
     let mut cfg = config(home, name)?;
     if cfg["model"].is_string() {
@@ -741,6 +734,10 @@ fn write_profile(home: &Path, name: &str, p: &Value) -> Result<()> {
             .unwrap_or(Value::Null);
     }
     writer.write(&dir, &cfg)?;
+    let after = section_model(home, name)?;
+    if before != after {
+        runtime_store::follow_bot_model(home, name, &before, &after)?;
+    }
     if let Some(v) = p["persona"].as_str() {
         let path = dir.join("SOUL.md");
         safe(home, &path)?;

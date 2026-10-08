@@ -699,10 +699,13 @@ async fn live_models(home: &Path, p: &Value) -> Result<(Vec<String>, Value)> {
     if slug == "openai-codex" {
         return codex_models(home, base).await;
     }
+    let base = base.trim_end_matches('/');
     let url = if !string(p, "models_url").is_empty() {
         string(p, "models_url").to_owned()
+    } else if slug == "anthropic" && !base.ends_with("/v1") {
+        format!("{base}/v1/models")
     } else {
-        format!("{}/models", base.trim_end_matches('/'))
+        format!("{base}/models")
     };
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Ok((vec![], json!({})));
@@ -712,10 +715,10 @@ async fn live_models(home: &Path, p: &Value) -> Result<(Vec<String>, Value)> {
         req = req.header("anthropic-version", "2023-06-01");
     }
     if let Some(k) = custom_key(home, p)? {
-        req = if slug == "anthropic" {
-            req.header("x-api-key", k)
-        } else {
-            req.bearer_auth(k)
+        req = match slug {
+            "anthropic" => req.header("x-api-key", k),
+            "gemini" => req.header("x-goog-api-key", k),
+            _ => req.bearer_auth(k),
         }
     } else if matches!(
         slug,
@@ -819,7 +822,8 @@ fn reasoning_levels(
                 .filter(|level| live.contains(level))
                 .cloned()
                 .collect::<Vec<_>>();
-            Some(if both.is_empty() { live } else { both })
+            // Pi runs a model it knows with its own levels.
+            Some(if both.is_empty() { pi } else { both })
         }
         (Some(levels), None) | (None, Some(levels)) => Some(levels),
         (None, None) => (metadata(cache, cfg, provider, id)["reasoning"] == false)
@@ -841,14 +845,15 @@ pub async fn model_options(home: &Path, p: &Value) -> Result<Value> {
         let mut source = "catalog";
         let mut error = None;
         let mut levels = Value::Null;
-        // Choosing a provider asks it for its current list; the catalog is the fallback.
-        let requested = string(p, "provider");
+        // Choosing a provider asks it for its current list when that list holds
+        // only models an agent can run: Codex's plan list, a dedicated models URL,
+        // or a provider with no catalog of its own. Others use the pinned catalog
+        // unless asked to refresh.
+        let requested = canonical_provider(string(p, "provider"));
+        let listed = slug == "openai-codex" || !string(provider, "models_url").is_empty();
         if configured
-            && if requested.is_empty() {
-                p["refresh"] == true
-            } else {
-                canonical_provider(requested) == slug
-            }
+            && (requested.is_empty() || requested == slug)
+            && (p["refresh"] == true || (!requested.is_empty() && (listed || models.is_empty())))
         {
             match live_models(home, provider).await {
                 Ok((m, live)) if !m.is_empty() => {

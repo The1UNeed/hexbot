@@ -50,9 +50,17 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
     try {
       const list = await providerModels(provider)
       const model = list.find(item => item.id === bot.model) ?? list[0]
+      const label = providerRows.find(row => row.id === provider)?.label ?? provider
+
+      // A provider without a model to run would leave the bot on another provider's model.
+      if (!model) {
+        setError(`${label} lists no models right now. The bot stays where it is.`)
+
+        return
+      }
 
       setLoaded({ list, provider })
-      await onSave({ provider, ...(model ? { model: model.id } : {}) })
+      await onSave({ model: model.id, provider })
     } catch (cause) {
       setError(errorText(cause))
     }

@@ -146,9 +146,6 @@ impl Runtime {
             .cloned();
         if let Some(s) = existing {
             common::bot_session_access(&self.home, caller, &s.bot, &s.stored)?;
-            if self.model_changed(&s)? {
-                return self.open_session(caller, &s.bot, &s.stored).await;
-            }
             s.state.lock().unwrap().last_activity = common::now();
             return Ok(s);
         }
@@ -1561,7 +1558,16 @@ impl Runtime {
                 .collect::<Vec<_>>();
             return Ok(json!({"sessions":sessions}));
         }
-        let s = self.live(caller, required(p, "session_id")?).await?;
+        let mut s = self.live(caller, required(p, "session_id")?).await?;
+        // New input moves a section to its bot's new model; reads and controls
+        // keep the process that is running.
+        if matches!(
+            method,
+            "prompt.submit" | "image.attach_bytes" | "pdf.attach" | "file.attach"
+        ) && self.model_changed(&s)?
+        {
+            s = self.open_session(caller, &s.bot, &s.stored).await?;
+        }
         match method {
             "prompt.submit" => {
                 let result = self
@@ -3893,7 +3899,12 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         )
         .unwrap()
         .unwrap();
-        let reopened = runtime.live("alice", &s.id).await.unwrap();
+        // Reads keep the running process; the next input restarts it.
+        assert!(Arc::ptr_eq(
+            &s,
+            &runtime.live("alice", &s.id).await.unwrap()
+        ));
+        let reopened = runtime.open_session("alice", "owl", "first").await.unwrap();
         assert!(!Arc::ptr_eq(&s, &reopened));
         assert_eq!(reopened.id, s.id);
         let log = fs::read_to_string(home.path().join("processes.jsonl")).unwrap();
@@ -3918,7 +3929,7 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
             serde_json::from_str::<Value>(&job).unwrap()["model"],
             "cheap"
         );
-        let again = runtime.live("alice", &s.id).await.unwrap();
+        let again = runtime.open_session("alice", "owl", "first").await.unwrap();
         assert!(Arc::ptr_eq(&reopened, &again));
         crate::catalog::call(
             home.path(),
@@ -3930,7 +3941,7 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         .unwrap();
         assert!(!Arc::ptr_eq(
             &again,
-            &runtime.live("alice", &s.id).await.unwrap()
+            &runtime.open_session("alice", "owl", "first").await.unwrap()
         ));
     }
     #[tokio::test]
