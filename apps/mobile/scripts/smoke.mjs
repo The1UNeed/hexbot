@@ -335,6 +335,7 @@ try {
   await expect
     .poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.reasoning_effort)
     .toBe('high')
+  await expect(page.getByTestId('threads-model')).toContainText('High')
   await shot('model-menu')
   await page.getByTestId('threads-model-menu-backdrop').click({ position: { x: 12, y: 12 } })
   await page.getByTestId(`thread-row-${section}`).click()
