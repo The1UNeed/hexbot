@@ -713,7 +713,7 @@ export function clarifyQuestions(payload: ClarifyRequestPayload): ClarifyQuestio
       multiSelect: Boolean(item.multi_select),
       question: item.question,
       // The daemon numbers a batch the same way when the model left ids out.
-      questionId: item.qid || `q${index + 1}`
+      questionId: typeof item.qid === 'string' && item.qid ? item.qid : `q${index + 1}`
     }))
   }
 
@@ -736,16 +736,22 @@ function clarifyFromHistory(
   args: unknown,
   row: HistoryRow
 ): ClarifyRequest | null {
-  if (!args || typeof args !== 'object') {
+  // The tool only fails before it asks: the user never saw the question.
+  if (!args || typeof args !== 'object' || row.is_error === true) {
     return null
   }
 
   const questions = clarifyQuestions(args as ClarifyRequestPayload)
+
+  if (!questions.some(item => item.question)) {
+    return null
+  }
+
   const result = typeof row.text === 'string' ? row.text : ''
   let answers: Record<string, string> = {}
 
   // The private extension's reply when the question was cancelled.
-  if (row.is_error !== true && result && result !== 'The question was cancelled.') {
+  if (result && result !== 'The question was cancelled.') {
     if (questions[0]?.questionId) {
       try {
         const parsed: unknown = JSON.parse(result)

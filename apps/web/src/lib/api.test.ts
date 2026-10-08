@@ -163,6 +163,49 @@ describe('history projection', () => {
     expect(messages[3]?.clarifies).toBeUndefined()
   })
 
+  it('skips a question the tool refused before asking', () => {
+    const [message] = messagesFromHistory([
+      {
+        role: 'assistant',
+        text: 'Hi.',
+        tool_calls: [{ function: { arguments: '{}', name: 'clarify' }, id: 'c1', type: 'function' }]
+      },
+      {
+        is_error: true,
+        name: 'clarify',
+        role: 'tool',
+        text: 'A question is required',
+        tool_call_id: 'c1',
+        tool_id: 'c1'
+      }
+    ] as Parameters<typeof messagesFromHistory>[0])
+
+    expect(message?.clarifies).toBeUndefined()
+  })
+
+  it('numbers a batch whose ids are not text, as the daemon does', () => {
+    const [message] = messagesFromHistory([
+      {
+        role: 'assistant',
+        text: 'Hi.',
+        tool_calls: [
+          {
+            function: { arguments: '{"questions":[{"qid":1,"question":"Why?"}]}', name: 'clarify' },
+            id: 'c1',
+            type: 'function'
+          }
+        ]
+      },
+      { name: 'clarify', role: 'tool', text: '{"q1":"Because"}', tool_call_id: 'c1', tool_id: 'c1' }
+    ] as Parameters<typeof messagesFromHistory>[0])
+
+    expect(message?.clarifies?.[0]).toMatchObject({
+      answers: { q1: 'Because' },
+      questions: [{ questionId: 'q1' }]
+    })
+    expect(message?.clarifies?.[0]?.expired).toBeUndefined()
+  })
+
   it('leaves a question still waiting to the live card', () => {
     const [message] = messagesFromHistory([
       {
