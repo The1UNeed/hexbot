@@ -324,8 +324,8 @@ body {
       scale: none;
     }
   }
-  /* Reduce transparency: solid chrome, no blur. Chromium reports it (the app, Chrome,
-     Edge); Safari and Firefox do not, so there glass stays clear. */
+  /* Reduce transparency: solid chrome, no blur. Chromium reports it on macOS and
+     Windows (the app, Chrome, Edge); Safari and Firefox do not, so glass stays clear there. */
   @media (prefers-reduced-transparency: reduce) {
     .hex-glass,
     .hex-glass-strong {

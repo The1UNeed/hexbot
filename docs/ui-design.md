@@ -55,9 +55,10 @@ own visual identity. Read `CLAUDE.md` for the words.
   costs one backdrop blur and nothing else; no SVG filters. Pressing glass
   (`hex-glass-press`) swells it on a spring (`--hex-ease-glass`, 1.1, or
   1.04 for wide pills via `--hex-press-scale`) and lights it from within;
-  letting go springs it back. Reduce transparency turns it solid in the
-  app, Chrome and Edge; Safari and Firefox don't report that setting, so
-  glass stays clear there. Content (bubbles, cards, rows) is never glass.
+  letting go springs it back. Reduce transparency (macOS) or Transparency
+  effects off (Windows) turns it solid in the app, Chrome and Edge; Linux
+  has no such setting, and Safari and Firefox don't report it, so glass
+  stays clear there. Content (bubbles, cards, rows) is never glass.
 - Motion, one short scale in `tokens.css`: 120 ms (`fast`) for hover, press
   and menus; 180 ms (`rise`) for a label or popover arriving, a 4 px lift
   and a fade, never a scale; 320 ms (`enter`, `ease-spring`) for a chat
