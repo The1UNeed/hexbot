@@ -2401,20 +2401,29 @@ mod migration_tests {
     use super::*;
     #[test]
     fn pickers_list_pinned_pi_models_with_the_levels_they_accept() {
-        assert!(catalog_models("openai-codex").iter().any(|id| id == "gpt-6.1-sol"));
+        assert!(
+            catalog_models("openai-codex")
+                .iter()
+                .any(|id| id == "gpt-6.1-sol")
+        );
         let none = json!({});
-        let levels = |provider, id, live: &Value| reasoning_levels(&none, &none, provider, id, live);
+        let levels =
+            |provider, id, live: &Value| reasoning_levels(&none, &none, provider, id, live);
         assert_eq!(
             levels("opencode-go", "glm-5.3-flash", &none).unwrap(),
             ["low", "high", "max"]
         );
         // Codex reports its levels; Pi's extra "minimal" alias is not one of them.
-        let live = json!({"gpt-6.1-sol":["low","medium","high","xhigh","max"],"gpt-7":["low","high"]});
+        let live =
+            json!({"gpt-6.1-sol":["low","medium","high","xhigh","max"],"gpt-7":["low","high"]});
         assert_eq!(
             levels("openai-codex", "gpt-6.1-sol", &live).unwrap(),
             ["low", "medium", "high", "xhigh", "max"]
         );
-        assert_eq!(levels("openai-codex", "gpt-7", &live).unwrap(), ["low", "high"]);
+        assert_eq!(
+            levels("openai-codex", "gpt-7", &live).unwrap(),
+            ["low", "high"]
+        );
         assert_eq!(levels("opencode-go", "unknown-model", &none), None);
     }
     #[test]

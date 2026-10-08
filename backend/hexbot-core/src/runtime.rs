@@ -80,7 +80,11 @@ struct Live {
 }
 /// The part of a section's options that picks its model.
 fn model_choice(options: &Value) -> Value {
-    json!([options["provider"], options["model"], options["reasoning_effort"]])
+    json!([
+        options["provider"],
+        options["model"],
+        options["reasoning_effort"]
+    ])
 }
 pub struct Runtime {
     home: PathBuf,
@@ -3910,7 +3914,10 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(serde_json::from_str::<Value>(&job).unwrap()["model"], "cheap");
+        assert_eq!(
+            serde_json::from_str::<Value>(&job).unwrap()["model"],
+            "cheap"
+        );
         let again = runtime.live("alice", &s.id).await.unwrap();
         assert!(Arc::ptr_eq(&reopened, &again));
     }

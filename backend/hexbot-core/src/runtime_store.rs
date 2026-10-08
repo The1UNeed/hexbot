@@ -176,7 +176,9 @@ pub fn follow_bot_model(home: &Path, bot: &str, before: &Value, after: &Value) -
     let conn = open(home)?;
     let rows = conn
         .prepare("SELECT stored_id,options FROM native_sessions WHERE bot=?")?
-        .query_map([bot], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .query_map([bot], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (stored, raw) in rows {
         let mut options: Value =
