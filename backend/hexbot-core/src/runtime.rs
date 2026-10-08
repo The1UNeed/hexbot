@@ -372,8 +372,14 @@ impl Runtime {
         locks.insert(stored.into(), Arc::downgrade(&lock));
         lock
     }
+    /// Opens a section to read or control it; a running process stays as it is.
     async fn open_session(&self, owner: &str, bot: &str, stored: &str) -> Result<Arc<Live>> {
-        self.open_session_with_tools(owner, bot, stored, None, None)
+        self.open_session_with_tools(owner, bot, stored, None, None, false)
+            .await
+    }
+    /// Opens a section to give it input, first moving it to its bot's new model.
+    async fn open_for_input(&self, owner: &str, bot: &str, stored: &str) -> Result<Arc<Live>> {
+        self.open_session_with_tools(owner, bot, stored, None, None, true)
             .await
     }
     async fn open_session_with_tools(
@@ -383,6 +389,7 @@ impl Runtime {
         stored: &str,
         restricted: Option<&[&str]>,
         overrides: Option<&Value>,
+        input: bool,
     ) -> Result<Arc<Live>> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(Error::new(5201, "daemon is shutting down"));
@@ -415,7 +422,7 @@ impl Runtime {
             };
         let lock = self.open_lock(stored);
         let _guard = lock.lock().await;
-        self.open_session_locked(owner, bot, stored, restricted, overrides)
+        self.open_session_locked(owner, bot, stored, restricted, overrides, input)
             .await
     }
     async fn open_session_locked(
@@ -425,6 +432,7 @@ impl Runtime {
         stored: &str,
         restricted: Option<&[&str]>,
         overrides: Option<&Value>,
+        input: bool,
     ) -> Result<Arc<Live>> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(Error::new(5201, "daemon is shutting down"));
@@ -442,7 +450,7 @@ impl Runtime {
             }
             // A new model starts a new process on the same conversation and
             // live ID. A section that is still working switches next time.
-            if !(self.model_changed(&s)? && self.retire_quiet(&s, f64::INFINITY)) {
+            if !(input && self.model_changed(&s)? && self.retire_quiet(&s, f64::INFINITY)) {
                 s.state.lock().unwrap().last_activity = common::now();
                 return Ok(s);
             }
@@ -1153,8 +1161,15 @@ impl Runtime {
         let restricted = options["enabled_tools"]
             .as_array()
             .map(|v| v.iter().filter_map(Value::as_str).collect::<Vec<_>>());
-        self.open_session_with_tools(owner, bot, stored, restricted.as_deref(), Some(options))
-            .await?;
+        self.open_session_with_tools(
+            owner,
+            bot,
+            stored,
+            restricted.as_deref(),
+            Some(options),
+            true,
+        )
+        .await?;
         let result = self.run_hidden(owner, bot, stored, text).await;
         if let Err(error) = self.close_stored(owner, stored).await {
             eprintln!("Could not close background bot {stored}: {}", error.message);
@@ -1180,7 +1195,7 @@ impl Runtime {
         )? {
             return Err(Error::new(4202, "restricted sessions must be fresh"));
         }
-        self.open_session_with_tools(owner, bot, stored, Some(allowed_tools), None)
+        self.open_session_with_tools(owner, bot, stored, Some(allowed_tools), None, true)
             .await?;
         let result = self.run_hidden(owner, bot, stored, text).await;
         if let Err(error) = self.close_stored(owner, stored).await {
@@ -1208,7 +1223,7 @@ impl Runtime {
         hops: Option<Arc<AtomicUsize>>,
     ) -> Result<String> {
         common::bot_session_access(&self.home, owner, bot, stored)?;
-        let s = self.open_session(owner, bot, stored).await?;
+        let s = self.open_for_input(owner, bot, stored).await?;
         let mut settled = s.settled.subscribe();
         let before = *settled.borrow();
         let finished = tokio::time::timeout(deadline, async {
@@ -1566,7 +1581,7 @@ impl Runtime {
             "prompt.submit" | "image.attach_bytes" | "pdf.attach" | "file.attach"
         ) && self.model_changed(&s)?
         {
-            s = self.open_session(caller, &s.bot, &s.stored).await?;
+            s = self.open_for_input(caller, &s.bot, &s.stored).await?;
         }
         match method {
             "prompt.submit" => {
@@ -1891,7 +1906,7 @@ impl Runtime {
             }
             // Existing sections retain their frozen tools.
             let parent = self
-                .open_session_locked(owner, bot, stored, None, None)
+                .open_session_locked(owner, bot, stored, None, None, true)
                 .await?;
             drop(guard);
             self.submit(&parent, text, true, true, None).await
@@ -3904,7 +3919,14 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
             &s,
             &runtime.live("alice", &s.id).await.unwrap()
         ));
-        let reopened = runtime.open_session("alice", "owl", "first").await.unwrap();
+        assert!(Arc::ptr_eq(
+            &s,
+            &runtime.open_session("alice", "owl", "first").await.unwrap()
+        ));
+        let reopened = runtime
+            .open_for_input("alice", "owl", "first")
+            .await
+            .unwrap();
         assert!(!Arc::ptr_eq(&s, &reopened));
         assert_eq!(reopened.id, s.id);
         let log = fs::read_to_string(home.path().join("processes.jsonl")).unwrap();
@@ -3928,7 +3950,10 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         let job = serde_json::from_str::<Value>(&job).unwrap();
         assert_eq!(job["model"], "cheap");
         assert!(job["reasoning_effort"].is_null());
-        let again = runtime.open_session("alice", "owl", "first").await.unwrap();
+        let again = runtime
+            .open_for_input("alice", "owl", "first")
+            .await
+            .unwrap();
         assert!(Arc::ptr_eq(&reopened, &again));
         crate::catalog::call(
             home.path(),
@@ -3940,7 +3965,10 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         .unwrap();
         assert!(!Arc::ptr_eq(
             &again,
-            &runtime.open_session("alice", "owl", "first").await.unwrap()
+            &runtime
+                .open_for_input("alice", "owl", "first")
+                .await
+                .unwrap()
         ));
     }
     #[tokio::test]
@@ -3993,6 +4021,7 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
                 "child",
                 None,
                 Some(&json!({"parent_session":"first"})),
+                false,
             )
             .await
             .unwrap();

@@ -41,7 +41,13 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
     }
   }, [bot.provider, loaded.provider])
 
-  const models = bot.provider === loaded.provider ? loaded.list : []
+  const listed = bot.provider === loaded.provider ? loaded.list : []
+
+  // The bot's own model stays visible even when the provider's list leaves it out.
+  const models =
+    bot.model && listed.length && !listed.some(item => item.id === bot.model)
+      ? [...listed, { id: bot.model, label: bot.model, provider: bot.provider }]
+      : listed
 
   // Only providers with a key or sign-in; the bot's own stays listed so it reads correctly.
   const providers = providerRows.filter(row => row.configured || row.id === bot.provider)

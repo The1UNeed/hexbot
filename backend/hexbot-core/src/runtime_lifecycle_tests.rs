@@ -719,7 +719,7 @@ async fn legacy_sections_keep_the_bridge_and_restricted_sections_get_no_mcp() {
         json!([])
     );
     let restricted = runtime
-        .open_session_with_tools("alice", "owl", "restricted", Some(&[]), None)
+        .open_session_with_tools("alice", "owl", "restricted", Some(&[]), None, false)
         .await
         .unwrap();
     assert_eq!(

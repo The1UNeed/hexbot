@@ -14,6 +14,10 @@ describe('reasoning levels', () => {
   it('offers only the levels a model supports', () => {
     expect(reasoningOptions(glm).map(level => level.label)).toEqual(['Low', 'High', 'Max'])
     expect(reasoningOptions({ ...glm, reasoning_levels: undefined })).toHaveLength(7)
+    expect(reasoningOptions({ ...glm, reasoning_levels: [] }).map(level => level.value)).toEqual([
+      'off'
+    ])
+    expect(runningLevel('high', { ...glm, reasoning_levels: [] })).toBe('off')
   })
 
   it('rounds up to the next supported level like Pi, else down', () => {

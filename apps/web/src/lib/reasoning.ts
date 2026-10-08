@@ -15,9 +15,14 @@ export const REASONING_LEVELS: { label: string; value: ReasoningEffort }[] = [
 export function reasoningOptions(model?: ModelOption) {
   const supported = model?.reasoning_levels
 
-  return supported?.length
+  if (!supported) {
+    return REASONING_LEVELS
+  }
+
+  // A model that reports no levels does not reason.
+  return supported.length
     ? REASONING_LEVELS.filter(level => supported.includes(level.value))
-    : REASONING_LEVELS
+    : REASONING_LEVELS.filter(level => level.value === 'off')
 }
 
 /** The level a model actually runs at: Pi rounds up to the next supported level, else down. */

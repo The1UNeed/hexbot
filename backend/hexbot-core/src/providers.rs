@@ -850,10 +850,12 @@ pub async fn model_options(home: &Path, p: &Value) -> Result<Value> {
         // or a provider with no catalog of its own. Others use the pinned catalog
         // unless asked to refresh.
         let requested = canonical_provider(string(p, "provider"));
-        let listed = slug == "openai-codex" || !string(provider, "models_url").is_empty();
+        let listed = slug == "openai-codex"
+            || !string(provider, "models_url").is_empty()
+            || provider["models"].as_array().is_none_or(Vec::is_empty);
         if configured
             && (requested.is_empty() || requested == slug)
-            && (p["refresh"] == true || (!requested.is_empty() && (listed || models.is_empty())))
+            && (p["refresh"] == true || (!requested.is_empty() && listed))
         {
             match live_models(home, provider).await {
                 Ok((m, live)) if !m.is_empty() => {
