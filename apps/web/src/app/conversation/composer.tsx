@@ -83,7 +83,7 @@ export function ComposerShell({
         {onAttach ? (
           <button
             aria-label="Attach files"
-            className="hex-glass-press hex-focus grid size-[30px] shrink-0 place-items-center rounded-full bg-foreground/[0.06] text-foreground transition-colors hover:bg-foreground/10"
+            className="hex-glass-press hex-focus grid size-[30px] shrink-0 place-items-center rounded-full bg-foreground/[0.06] text-foreground hover:bg-foreground/10"
             onClick={onAttach}
             type="button"
           >
@@ -97,7 +97,7 @@ export function ComposerShell({
         {streaming ? (
           <button
             aria-label="Stop"
-            className="hex-glass-press hex-focus hex-fade grid size-[30px] shrink-0 place-items-center rounded-full bg-foreground text-background transition-opacity hover:opacity-85"
+            className="hex-glass-press hex-focus hex-fade grid size-[30px] shrink-0 place-items-center rounded-full bg-foreground text-background hover:opacity-85"
             onClick={onStop}
             type="button"
           >
@@ -107,7 +107,7 @@ export function ComposerShell({
           <button
             aria-label="Send"
             className={cn(
-              'hex-glass-press hex-focus grid size-[30px] shrink-0 place-items-center rounded-full transition-[background-color,color,transform] duration-[var(--hex-motion-fast)]',
+              'hex-glass-press hex-focus grid size-[30px] shrink-0 place-items-center rounded-full',
               canSend
                 ? 'bg-foreground text-background hover:opacity-85'
                 : 'bg-foreground/[0.06] text-muted'

@@ -340,7 +340,7 @@ export function RoomConversation() {
         </div>
         <button
           aria-label="Room settings"
-          className="hex-glass hex-glass-press hex-focus hex-no-drag absolute top-2.5 right-3 grid size-9 place-items-center rounded-full text-foreground/70 transition-colors duration-[var(--hex-motion-fast)] hover:text-foreground"
+          className="hex-glass hex-glass-press hex-focus hex-no-drag absolute top-2.5 right-3 grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
           onClick={() => void navigate({ params: { room: roomId }, to: '/r/$room/settings' })}
           type="button"
         >

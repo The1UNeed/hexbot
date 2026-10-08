@@ -45,14 +45,13 @@
 
   --hex-canvas: #f3f3f5;
   --hex-bubble: #f0f0f2;
-  --hex-glass-bg: rgb(255 255 255 / 0.6);
-  --hex-glass-strong: rgb(252 252 253 / 0.82);
-  --hex-glass-rim-hi: rgb(255 255 255 / 0.95);
-  --hex-glass-rim-lo: rgb(255 255 255 / 0.4);
-  --hex-glass-sheen: rgb(255 255 255 / 0.55);
+  --hex-glass-bg: rgb(255 255 255 / 0.58);
+  --hex-glass-strong: rgb(250 250 252 / 0.8);
+  --hex-glass-glow: rgb(255 255 255 / 0.7);
   --hex-glass-shadow:
-    0 0 0 0.5px rgb(0 0 0 / 0.07), 0 1px 2px rgb(0 0 0 / 0.04), 0 8px 24px -12px rgb(0 0 0 / 0.14),
-    inset 0 1px 1px rgb(255 255 255 / 0.8);
+    inset 1px 1px 0 -0.5px rgb(255 255 255 / 0.95), inset -1px -1px 0 -0.5px rgb(255 255 255 / 0.6),
+    inset 0 0 6px rgb(255 255 255 / 0.35), 0 0 0 0.5px rgb(0 0 0 / 0.08),
+    0 4px 14px -4px rgb(0 0 0 / 0.12);
   --hex-card-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.06), 0 1px 3px rgb(0 0 0 / 0.04);
 
   /*
@@ -68,6 +67,12 @@
   --hex-ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
   --hex-ease-spring: cubic-bezier(0.3, 1.25, 0.5, 1);
   --hex-ease-in-out: cubic-bezier(0.45, 0, 0.2, 1);
+  /* A sampled spring (damping 0.62) for glass that swells under a press. */
+  --hex-motion-glass: 520ms;
+  --hex-ease-glass: linear(
+    0, 0.113, 0.352, 0.608, 0.819, 0.965, 1.048, 1.08, 1.081, 1.065, 1.043, 1.023, 1.008, 0.999,
+    0.994, 0.993, 0.994, 0.996, 0.997, 0.999, 1
+  );
 }
 
 @media (prefers-color-scheme: dark) {
@@ -97,14 +102,13 @@
 
     --hex-canvas: #09090a;
     --hex-bubble: #232326;
-    --hex-glass-bg: rgb(40 40 44 / 0.55);
-    --hex-glass-strong: rgb(26 26 29 / 0.82);
-    --hex-glass-rim-hi: rgb(255 255 255 / 0.24);
-    --hex-glass-rim-lo: rgb(255 255 255 / 0.06);
-    --hex-glass-sheen: rgb(255 255 255 / 0.07);
+    --hex-glass-bg: rgb(28 28 31 / 0.6);
+    --hex-glass-strong: rgb(24 24 27 / 0.82);
+    --hex-glass-glow: rgb(255 255 255 / 0.2);
     --hex-glass-shadow:
-      0 0 0 0.5px rgb(255 255 255 / 0.09), 0 1px 2px rgb(0 0 0 / 0.4),
-      0 12px 34px -10px rgb(0 0 0 / 0.65), inset 0 1px 0 rgb(255 255 255 / 0.08);
+      inset 1px 1px 0 -0.5px rgb(255 255 255 / 0.3), inset -1px -1px 0 -0.5px rgb(255 255 255 / 0.12),
+      inset 0 0 6px rgb(255 255 255 / 0.04), 0 0 0 0.5px rgb(255 255 255 / 0.07),
+      0 4px 16px -4px rgb(0 0 0 / 0.5);
     --hex-card-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.07), 0 1px 3px rgb(0 0 0 / 0.5);
   }
 }
@@ -137,14 +141,13 @@
 
   --hex-canvas: #f3f3f5;
   --hex-bubble: #f0f0f2;
-  --hex-glass-bg: rgb(255 255 255 / 0.6);
-  --hex-glass-strong: rgb(252 252 253 / 0.82);
-  --hex-glass-rim-hi: rgb(255 255 255 / 0.95);
-  --hex-glass-rim-lo: rgb(255 255 255 / 0.4);
-  --hex-glass-sheen: rgb(255 255 255 / 0.55);
+  --hex-glass-bg: rgb(255 255 255 / 0.58);
+  --hex-glass-strong: rgb(250 250 252 / 0.8);
+  --hex-glass-glow: rgb(255 255 255 / 0.7);
   --hex-glass-shadow:
-    0 0 0 0.5px rgb(0 0 0 / 0.07), 0 1px 2px rgb(0 0 0 / 0.04), 0 8px 24px -12px rgb(0 0 0 / 0.14),
-    inset 0 1px 1px rgb(255 255 255 / 0.8);
+    inset 1px 1px 0 -0.5px rgb(255 255 255 / 0.95), inset -1px -1px 0 -0.5px rgb(255 255 255 / 0.6),
+    inset 0 0 6px rgb(255 255 255 / 0.35), 0 0 0 0.5px rgb(0 0 0 / 0.08),
+    0 4px 14px -4px rgb(0 0 0 / 0.12);
   --hex-card-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.06), 0 1px 3px rgb(0 0 0 / 0.04);
 }
 
@@ -176,14 +179,13 @@
 
   --hex-canvas: #09090a;
   --hex-bubble: #232326;
-  --hex-glass-bg: rgb(40 40 44 / 0.55);
-  --hex-glass-strong: rgb(26 26 29 / 0.82);
-  --hex-glass-rim-hi: rgb(255 255 255 / 0.24);
-  --hex-glass-rim-lo: rgb(255 255 255 / 0.06);
-  --hex-glass-sheen: rgb(255 255 255 / 0.07);
+  --hex-glass-bg: rgb(28 28 31 / 0.6);
+  --hex-glass-strong: rgb(24 24 27 / 0.82);
+  --hex-glass-glow: rgb(255 255 255 / 0.2);
   --hex-glass-shadow:
-    0 0 0 0.5px rgb(255 255 255 / 0.09), 0 1px 2px rgb(0 0 0 / 0.4),
-    0 12px 34px -10px rgb(0 0 0 / 0.65), inset 0 1px 0 rgb(255 255 255 / 0.08);
+    inset 1px 1px 0 -0.5px rgb(255 255 255 / 0.3), inset -1px -1px 0 -0.5px rgb(255 255 255 / 0.12),
+    inset 0 0 6px rgb(255 255 255 / 0.04), 0 0 0 0.5px rgb(255 255 255 / 0.07),
+    0 4px 16px -4px rgb(0 0 0 / 0.5);
   --hex-card-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.07), 0 1px 3px rgb(0 0 0 / 0.5);
 }
 
@@ -255,9 +257,11 @@ body {
 }
 
 /*
- * Liquid glass, faked in CSS: a translucent fill that blurs and saturates
- * what scrolls under it, a specular rim brighter at the top left, and a soft
- * sheen across the top. Only floating chrome uses it (the header pill, the
+ * Liquid glass, after iOS: a clear fill that blurs and saturates what
+ * scrolls under it, and a hairline specular rim that catches light on the
+ * top-left edge and, fainter, on the bottom-right. The rim, the edge glow and
+ * the shadow are one box-shadow, so the glass costs a single backdrop blur
+ * and no extra layers. Only floating chrome uses it (the header pill, the
  * composer, panels and dialogs), never content. `hex-glass-strong` is the
  * denser fill for large surfaces that carry text.
  */
@@ -268,60 +272,67 @@ body {
     position: relative;
     isolation: isolate;
     background: var(--hex-glass-bg);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
-    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    backdrop-filter: blur(16px) saturate(180%);
     box-shadow: var(--hex-glass-shadow);
   }
   .hex-glass-strong {
     background: var(--hex-glass-strong);
-    -webkit-backdrop-filter: blur(32px) saturate(170%);
-    backdrop-filter: blur(32px) saturate(170%);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    backdrop-filter: blur(28px) saturate(180%);
   }
-  /* Chromium (the app, Chrome, Edge) bends the backdrop through #hex-liquid in index.html. */
-  @supports (-webkit-app-region: drag) {
-    .hex-glass {
-      backdrop-filter: url(#hex-liquid) blur(16px) saturate(180%);
-    }
-  }
-  .hex-glass::before,
-  .hex-glass-strong::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    z-index: -1;
-    padding: 1px;
-    border-radius: inherit;
-    background: linear-gradient(
-      150deg,
-      var(--hex-glass-rim-hi) 0%,
-      transparent 34%,
-      transparent 66%,
-      var(--hex-glass-rim-lo) 100%
-    );
-    -webkit-mask:
-      linear-gradient(#000 0 0) content-box,
-      linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor;
-    mask-composite: exclude;
-    pointer-events: none;
-  }
+  /* The light a touch puts into the glass: hidden until hover or press. */
   .hex-glass::after {
     content: '';
     position: absolute;
     inset: 0;
     z-index: -1;
     border-radius: inherit;
-    background: linear-gradient(180deg, var(--hex-glass-sheen) 0%, transparent 55%);
+    background: radial-gradient(120% 120% at 50% 0%, var(--hex-glass-glow), transparent 70%);
+    opacity: 0;
+    transition: opacity var(--hex-motion-panel) var(--hex-ease-out);
     pointer-events: none;
   }
-  /* Pressing glass dips it a little, like a soft button. */
+  @media (hover: hover) {
+    .hex-glass.hex-glass-press:hover::after {
+      opacity: 0.5;
+    }
+  }
+  .hex-glass.hex-glass-press:active::after {
+    opacity: 1;
+    transition-duration: var(--hex-motion-fast);
+  }
+  /*
+   * Pressing glass swells it on a spring and lights it from within, as on
+   * iOS; letting go springs it back. Colour changes keep the short ease.
+   */
   .hex-glass-press {
     transition:
-      transform var(--hex-motion-fast) var(--hex-ease-out),
-      background-color var(--hex-motion-fast) var(--hex-ease-out);
+      scale var(--hex-motion-glass) var(--hex-ease-glass),
+      color var(--hex-motion-fast) var(--hex-ease-out),
+      background-color var(--hex-motion-fast) var(--hex-ease-out),
+      opacity var(--hex-motion-fast) var(--hex-ease-out);
   }
-  .hex-glass-press:active {
-    transform: scale(0.96);
+  .hex-glass-press:active:not(:disabled) {
+    scale: var(--hex-press-scale, 1.1);
+    transition-duration:
+      var(--hex-motion-panel), var(--hex-motion-fast), var(--hex-motion-fast),
+      var(--hex-motion-fast);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .hex-glass-press:active:not(:disabled) {
+      scale: none;
+    }
+  }
+  /* Reduce transparency: solid chrome, no blur. Chromium reports it on macOS and
+     Windows (the app, Chrome, Edge); Safari and Firefox do not, so glass stays clear there. */
+  @media (prefers-reduced-transparency: reduce) {
+    .hex-glass,
+    .hex-glass-strong {
+      background: var(--hex-surface);
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
   }
   /* Keyboard focus: the accent ring, outside the shape, on every rounded control. */
   .hex-focus {
