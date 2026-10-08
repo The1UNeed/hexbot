@@ -1160,7 +1160,8 @@ function BotStep({
           <Select
             label="Provider"
             onValueChange={value => {
-              // The old provider's model must not be created with the new provider.
+              // The old provider's models must not be created with the new provider.
+              setModels([])
               setModel('')
               setProvider(value)
             }}

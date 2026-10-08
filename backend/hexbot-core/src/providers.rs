@@ -689,18 +689,31 @@ async fn provider_json(req: reqwest::RequestBuilder) -> Result<Value> {
 async fn live_models(home: &Path, p: &Value) -> Result<(Vec<String>, Value)> {
     let cfg = common::read_config(home)?;
     let slug = string(p, "name");
-    let base = if canonical_provider(string(&cfg["model"], "provider")) == slug {
+    // Discovery asks the endpoint inference uses: the selected model's
+    // base_url, then the provider's base URL variable, then the profile.
+    let env_name = string(p, "base_url_env_var");
+    let configured = if canonical_provider(string(&cfg["model"], "provider")) == slug {
         cfg["model"]["base_url"]
             .as_str()
-            .unwrap_or(string(p, "base_url"))
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
     } else {
-        string(p, "base_url")
-    };
+        None
+    }
+    .or_else(|| {
+        (!env_name.is_empty())
+            .then(|| common::env_values(home).ok()?.get(env_name).cloned())
+            .flatten()
+            .or_else(|| std::env::var(env_name).ok())
+            .filter(|s| !s.is_empty())
+    });
+    let base = configured.as_deref().unwrap_or(string(p, "base_url"));
     if slug == "openai-codex" {
         return codex_models(home, base).await;
     }
     let base = base.trim_end_matches('/');
-    let url = if !string(p, "models_url").is_empty() {
+    // A fixed models URL belongs to the built-in endpoint, not an override.
+    let url = if configured.is_none() && !string(p, "models_url").is_empty() {
         string(p, "models_url").to_owned()
     } else if slug == "anthropic" && !base.ends_with("/v1") {
         format!("{base}/v1/models")

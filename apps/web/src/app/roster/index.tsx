@@ -858,10 +858,11 @@ export function RosterColumn() {
               <Field label="Provider">
                 <Select
                   label="Provider"
-                  onValueChange={provider =>
-                    // The old provider's model must not be created with the new provider.
+                  onValueChange={provider => {
+                    // The old provider's models must not be created with the new provider.
+                    setNewModels([])
                     setNewBot(value => ({ ...value, model: '', provider }))
-                  }
+                  }}
                   options={configuredProviders.map(item => ({ label: item.label, value: item.id }))}
                   placeholder="Provider"
                   value={newBot.provider || undefined}

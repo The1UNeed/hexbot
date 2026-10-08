@@ -45,7 +45,7 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
 
   // The bot's own model stays visible even when the provider's list leaves it out.
   const models =
-    bot.model && listed.length && !listed.some(item => item.id === bot.model)
+    bot.model && bot.provider === loaded.provider && !listed.some(item => item.id === bot.model)
       ? [...listed, { id: bot.model, label: bot.model, provider: bot.provider }]
       : listed
 
@@ -78,7 +78,9 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
       setLoaded({ list, provider })
       await onSave({ model: model.id, provider })
     } catch (cause) {
-      setError(errorText(cause))
+      if (request === latestSwitch.current) {
+        setError(errorText(cause))
+      }
     }
   }
 

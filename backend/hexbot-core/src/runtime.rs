@@ -1521,7 +1521,12 @@ impl Runtime {
             if method == "hexbot.bots.introduce" && p["name"] != bot {
                 return Err(Error::new(4204, "bot does not match section"));
             }
-            let s = self.open_session(caller, &bot, stored).await?;
+            // An introduction is the section's first input.
+            let s = if method == "hexbot.bots.introduce" {
+                self.open_for_input(caller, &bot, stored).await?
+            } else {
+                self.open_session(caller, &bot, stored).await?
+            };
             let messages = store::history(&self.home, stored)?;
             let summary = store::summary(&self.home, stored)?;
             section["live_session_id"] = json!(s.id);
