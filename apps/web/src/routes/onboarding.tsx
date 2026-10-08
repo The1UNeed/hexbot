@@ -591,6 +591,8 @@ async function loadModelChoices(providers: Provider[]): Promise<ModelChoice[]> {
 
 /** The daemon's cap on About you (`hexbot.memory.USER_CAP`). */
 const ABOUT_CAP = 2000
+/** The daemon's cap on your display name (`hexbot.users.me.set`). */
+const NAME_CAP = 64
 
 export interface AboutYou {
   name: string
@@ -636,13 +638,13 @@ export function AboutStep({
     setBusy(true)
 
     try {
-      await userMemorySet(value)
-
-      // The name you give here is the one rooms show.
+      // The name you give here is the one rooms show. It goes first: once
+      // About you is saved, Get Started counts as done and is not shown again.
       if (name) {
         await useMe.getState().rename(name)
       }
 
+      await userMemorySet(value)
       onContinue()
     } catch (reason) {
       onError(String(reason))
@@ -658,6 +660,7 @@ export function AboutStep({
         <Input
           autoFocus
           data-testid="onboarding-about-name"
+          maxLength={NAME_CAP}
           onChange={patch('name')}
           placeholder="Alex"
           value={about.name}

@@ -285,6 +285,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
         method,
         "hexbot.users.me"
             | "hexbot.users.me.set"
+            | "hexbot.users.list"
             | "hexbot.devices.list"
             | "hexbot.devices.revoke"
             | "hexbot.pairing.code"
@@ -295,9 +296,14 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
         db::migrate(home)?;
         let current = user(home, caller)?;
         match method {
-            "hexbot.users.me" => {
-                Ok(json!({"id":current["id"],"display_name":current["display_name"]}))
-            }
+            // `role` and `users.list` keep apps older than 0.1.6 offering the
+            // owner's controls, Bypass included.
+            "hexbot.users.me" => Ok(
+                json!({"id":current["id"],"display_name":current["display_name"],"role":"admin"}),
+            ),
+            "hexbot.users.list" => Ok(
+                json!({"users":[{"id":current["id"],"display_name":current["display_name"],"role":"admin"}]}),
+            ),
             "hexbot.users.me.set" => {
                 if let Some(map) = p.as_object() {
                     for key in map.keys() {

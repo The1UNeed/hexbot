@@ -94,6 +94,27 @@ describe('onboarding', () => {
     })
   })
 
+  it('saves the name before About you, so a failed rename asks again', async () => {
+    const call = vi.fn((method: string) =>
+      method === 'hexbot.users.me.set'
+        ? Promise.reject(new Error('connection lost'))
+        : Promise.resolve({ cap: 2000, text: '', updated_at: 1 })
+    )
+
+    setActiveRpc({ call } as never)
+    const onContinue = vi.fn()
+    const onError = vi.fn()
+    render(<AboutStep onContinue={onContinue} onError={onError} />)
+
+    expect(screen.getByLabelText('Your name')).toHaveAttribute('maxLength', '64')
+    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Alex' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+
+    await waitFor(() => expect(onError).toHaveBeenCalledOnce())
+    expect(onContinue).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalledWith('hexbot.memory.user.set', expect.anything())
+  })
+
   it('records a skip so the init page is not asked again', async () => {
     const call = vi.fn(() => Promise.resolve({ cap: 2000, text: '', updated_at: 1 }))
     setActiveRpc({ call } as never)

@@ -28,11 +28,7 @@ fn devices_belong_to_the_owner_and_invites_are_gone() {
         auth::verify_token(h, token).unwrap().unwrap()["owner_id"],
         "local"
     );
-    for method in [
-        "hexbot.users.list",
-        "hexbot.users.invite",
-        "hexbot.users.update",
-    ] {
+    for method in ["hexbot.users.invite", "hexbot.users.update"] {
         assert!(
             auth::call(h, "local", method, &json!({})).is_none(),
             "{method}"
@@ -226,7 +222,12 @@ fn renaming_yourself_and_last_seen() {
     let token = auth::local_token(h).unwrap();
     assert_eq!(
         rpc(h, "local", "hexbot.users.me", json!({})).unwrap(),
-        json!({"id":"local","display_name":"Admin"})
+        json!({"id":"local","display_name":"Admin","role":"admin"})
+    );
+    // Apps older than 0.1.6 list users when the role is admin.
+    assert_eq!(
+        rpc(h, "local", "hexbot.users.list", json!({})).unwrap(),
+        json!({"users":[{"id":"local","display_name":"Admin","role":"admin"}]})
     );
     for (bad, code) in [
         (json!({}), 4200),

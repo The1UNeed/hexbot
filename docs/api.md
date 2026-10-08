@@ -586,10 +586,13 @@ A client newer than the daemon asks the daemon to update itself
 
 A daemon belongs to one person. Earlier builds let an admin invite others;
 upgrading folds their bots, sections and rooms into the owner, revokes their
-devices, and removes the invite, list and update methods.
+devices, and removes the invite and update methods.
 
-- `hexbot.users.me {}` → `{id, display_name}`. The name Get Started asks for;
-  rooms show it on your messages.
+- `hexbot.users.me {}` → `{id, display_name, role}`. The name Get Started asks
+  for; rooms show it on your messages. `role` is always `admin`.
+- `hexbot.users.list {}` → `{users: [{id, display_name, role}]}`, only you.
+  Kept with `role` so apps older than 0.1.6 still offer Bypass and the other
+  owner controls.
 - `hexbot.users.me.set {display_name}` → `{id, display_name}`. The name is
   trimmed, nonempty (4200) and at most 64 characters (4202).
 - `hexbot.usage.summary {since?}` → `{input_tokens, output_tokens,
