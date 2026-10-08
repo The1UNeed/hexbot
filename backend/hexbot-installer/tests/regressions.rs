@@ -211,13 +211,7 @@ fn manifests_and_redirects_cannot_leave_the_configured_origin() {
             },
         )]),
     };
-    let publish = |m: &Manifest| {
-        fs::write(
-            temp.path().join("install/stable.json"),
-            serde_json::to_vec(m).unwrap(),
-        )
-        .unwrap()
-    };
+    let publish = |m: &Manifest| publish(temp.path(), "stable", m);
     publish(&manifest);
     assert!(
         fetch_manifest(&server.base, Track::Stable)
@@ -302,11 +296,7 @@ fn running_legacy_appimage_blocks_replace_change_and_uninstall() {
             },
         )]),
     };
-    fs::write(
-        temp.path().join("install/stable.json"),
-        serde_json::to_vec(&manifest).unwrap(),
-    )
-    .unwrap();
+    publish(temp.path(), "stable", &manifest);
     let mut child = Command::new("sh")
         .args(["-c", "printf 'ready\\n'; read line"])
         .env("APPIMAGE", &legacy)
@@ -367,11 +357,7 @@ fn publish_options(root: &Path, engine: &Installer) {
             },
         )]),
     };
-    fs::write(
-        root.join("install/stable.json"),
-        serde_json::to_vec(&manifest).unwrap(),
-    )
-    .unwrap();
+    publish(root, "stable", &manifest);
 }
 
 #[test]
@@ -611,11 +597,7 @@ fn app_ids_must_match_the_manifest_track_before_installing() {
                     },
                     suffix
                 ));
-                fs::write(
-                    root.path().join(format!("install/{track}.json")),
-                    serde_json::to_vec(&manifest).unwrap(),
-                )
-                .unwrap();
+                publish(root.path(), track, &manifest);
                 let error = engine.apply(option, track, &mut |_| {}).unwrap_err();
                 assert!(error.to_string().contains("selected track"), "{error}");
                 assert!(!engine.paths.receipt().exists());
@@ -759,4 +741,70 @@ exit 1
         fs::read_to_string(root.path().join("home/systemctl-calls")).unwrap(),
         "--user disable --now hexbot\n--user daemon-reload\n--user disable --now hexbot\n--user daemon-reload\n"
     );
+}
+
+/// Whoever controls the update origin, its TLS, or HEXBOT_UPDATE_URL cannot
+/// ship a build: the manifest needs the release key's signature, and its
+/// checksums then pin every package.
+#[test]
+fn unsigned_or_altered_manifests_and_plain_http_are_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("install")).unwrap();
+    let server = Server::new(temp.path());
+    let artifact = app_artifact(
+        temp.path(),
+        &server.base,
+        InstallOption::Client,
+        Target::LinuxX86_64,
+    );
+    let manifest = Manifest {
+        schema: 1,
+        channel: Track::Stable,
+        version: "0.0.1".into(),
+        min_installer: "0.0.1".into(),
+        targets: std::collections::BTreeMap::from([(
+            "linux-x86_64".into(),
+            Artifacts {
+                client: Some(artifact),
+                ..Default::default()
+            },
+        )]),
+    };
+    let signature = temp.path().join("install/0.0.1/stable.json.sig");
+    fs::write(
+        temp.path().join("install/stable.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    assert!(fetch_manifest(&server.base, Track::Stable).is_err());
+    publish(temp.path(), "stable", &manifest);
+    fetch_manifest(&server.base, Track::Stable).unwrap();
+    let mut altered = manifest.clone();
+    altered.min_installer = "0.0.0".into();
+    let signed = fs::read(&signature).unwrap();
+    fs::write(
+        temp.path().join("install/stable.json"),
+        serde_json::to_vec(&altered).unwrap(),
+    )
+    .unwrap();
+    fs::write(&signature, &signed).unwrap();
+    let error = fetch_manifest(&server.base, Track::Stable).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        hexbot_installer::update_signature::INVALID
+    );
+    let mut engine = engine(temp.path());
+    engine.base_url = server.base.clone();
+    assert!(
+        engine
+            .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+            .is_err()
+    );
+    assert!(!engine.paths.receipt().exists());
+    for base in ["http://updates.example", "https://user@updates.example"] {
+        assert_eq!(
+            fetch_manifest(base, Track::Stable).unwrap_err().to_string(),
+            "The update URL must use HTTPS."
+        );
+    }
 }

@@ -14,6 +14,11 @@ import unittest
 from unittest.mock import patch
 
 from hexbot import native_transition as transition
+from hexbot import update_signature
+
+# The public test key that debug Rust builds also trust (update_signature.rs).
+SEED = hashlib.sha256(b"hexbot update signing test key").digest()
+TEST_KEY, _ = update_signature.sign(SEED, b"")
 
 
 class NativeTransitionTests(unittest.TestCase):
@@ -52,12 +57,15 @@ class NativeTransitionTests(unittest.TestCase):
         if url.endswith("manifest.json"):
             self.assertEqual(url, "https://updates.example/daemon/native/1.2.3/linux-x86_64/manifest.json")
             destination.write_text(json.dumps(self.manifest))
+        elif url.endswith("manifest.json.sig"):
+            self.assertEqual(limit, 1024)
+            destination.write_text(update_signature.sign(SEED, json.dumps(self.manifest).encode())[1])
         else:
             self.assertEqual(url, self.manifest["url"])
             shutil.copyfile(self.archive, destination)
 
     def install(self):
-        return transition.install(self.home, self.version, download=self.download)
+        return transition.install(self.home, self.version, download=self.download, keys=(TEST_KEY,))
 
     def launcher(self):
         launcher = self.home / "runtime/venv/bin/hexbot"
@@ -139,11 +147,31 @@ class NativeTransitionTests(unittest.TestCase):
                     self.manifest["sha256"] = "0" * 64
                 download = self.download if failure != "download" else lambda *_: (_ for _ in ()).throw(OSError("offline"))
                 with self.assertRaises((ValueError, OSError)):
-                    transition.install(self.home, self.version, download=download)
+                    transition.install(self.home, self.version, download=download, keys=(TEST_KEY,))
                 self.assertEqual(launcher.read_text(), "#!/bin/sh\necho old\n")
                 self.assertFalse((self.home / "runtime/native-current.json").exists())
                 self.assertFalse((self.home / "runtime/native-executable").exists())
                 self.assertEqual(list((self.home / "runtime/native").iterdir()), [])
+
+    def test_manifests_without_the_release_signature_are_refused(self):
+        launcher = self.launcher()
+        signed = self.download
+
+        def altered(url, destination, limit):
+            signed(url, destination, limit)
+            if url.endswith("manifest.json"):
+                destination.write_text(json.dumps({**self.manifest, "url": "https://updates.example/other.tar.gz"}))
+
+        def foreign(url, destination, limit):
+            signed(url, destination, limit)
+            if url.endswith(".sig"):
+                destination.write_text(update_signature.sign(b"\x07" * 32, json.dumps(self.manifest).encode())[1])
+
+        for download, keys in ((self.download, update_signature.RELEASE_KEYS), (altered, (TEST_KEY,)), (foreign, (TEST_KEY,))):
+            with self.assertRaisesRegex(ValueError, "release key"):
+                transition.install(self.home, self.version, download=download, keys=keys)
+            self.assertEqual(launcher.read_text(), "#!/bin/sh\necho old\n")
+            self.assertFalse((self.home / "runtime/native-current.json").exists())
 
     def test_unsafe_archives_are_rejected_before_activation(self):
         for entry in [
@@ -197,7 +225,7 @@ class NativeTransitionTests(unittest.TestCase):
         source = self.root / "source"
         package = source / "hexbot"
         package.mkdir(parents=True)
-        for name in ("__init__.py", "cli.py", "native_transition.py"):
+        for name in ("__init__.py", "cli.py", "native_transition.py", "update_signature.py"):
             shutil.copyfile(Path(transition.__file__).parent / name, package / name)
         (source / transition.MARKER).write_text(json.dumps({"version": self.version}))
         # The old daemon's restart is `python -m hexbot.cli serve --port N`.
@@ -212,11 +240,12 @@ class NativeTransitionTests(unittest.TestCase):
         source = self.root / "source"
         package = source / "hexbot"
         package.mkdir(parents=True)
-        for name in ("__init__.py", "cli.py", "native_transition.py"):
+        for name in ("__init__.py", "cli.py", "native_transition.py", "update_signature.py"):
             shutil.copyfile(Path(transition.__file__).parent / name, package / name)
         (source / transition.MARKER).write_text(json.dumps({"version": self.version}))
         manifest = self.root / "manifest.json"
         manifest.write_text(json.dumps(self.manifest))
+        manifest.with_suffix(".json.sig").write_text(update_signature.sign(SEED, manifest.read_bytes())[1])
         # `uv sync` installs this console entry point from the compatibility source.
         # Inject only its HTTPS download boundary; unpacking, validation and exec are real.
         launcher.write_text(
@@ -226,8 +255,8 @@ class NativeTransitionTests(unittest.TestCase):
             "transition.platform.system = lambda: 'Linux'\n"
             "transition.platform.machine = lambda: 'x86_64'\n"
             "def download(url, destination, limit):\n"
-            f"    shutil.copyfile({str(manifest)!r} if url.endswith('manifest.json') else {str(self.archive)!r}, destination)\n"
-            "transition.install = functools.partial(transition.install, download=download)\n"
+            f"    shutil.copyfile({str(manifest)!r} if url.endswith('manifest.json') else {str(manifest) + '.sig'!r} if url.endswith('.sig') else {str(self.archive)!r}, destination)\n"
+            f"transition.install = functools.partial(transition.install, download=download, keys=({TEST_KEY!r},))\n"
             "from hexbot.cli import main\nraise SystemExit(main())\n"
         )
         env = {**os.environ, "HEXBOT_BACKEND": "rust"}
@@ -304,7 +333,7 @@ class NativeTransitionTests(unittest.TestCase):
         source = self.root / "source"
         package = source / "hexbot"
         package.mkdir(parents=True)
-        for name in ("__init__.py", "cli.py", "native_transition.py"):
+        for name in ("__init__.py", "cli.py", "native_transition.py", "update_signature.py"):
             shutil.copyfile(Path(transition.__file__).parent / name, package / name)
         (source / transition.MARKER).write_text(json.dumps({"version": self.version}))
         launcher = self.launcher()

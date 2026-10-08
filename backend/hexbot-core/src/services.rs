@@ -1887,6 +1887,46 @@ pub(crate) fn extract_archive(source: &Path, destination: &Path, limit: u64) -> 
     Ok(())
 }
 
+/// A native update manifest with its release signature (`<url>.sig`) checked
+/// before anything in it is trusted.
+async fn signed_manifest(url: &str) -> Result<Value> {
+    service_url(url)?;
+    let fetch = |url: String, limit: usize| async move {
+        let response = client()?
+            .get(&url)
+            .send()
+            .await
+            .map_err(|_| Error::new(5243, "native update manifest unavailable"))?;
+        if !response.status().is_success() {
+            return Err(Error::new(
+                5243,
+                format!(
+                    "native update manifest returned HTTP {}",
+                    response.status().as_u16()
+                ),
+            ));
+        }
+        crate::http::bytes(
+            response,
+            limit,
+            |_| Error::new(5243, "native update manifest interrupted"),
+            Error::new(5243, "native update manifest exceeds byte limit"),
+        )
+        .await
+    };
+    let manifest = fetch(url.to_owned(), 1024 * 1024).await?;
+    let signature = fetch(
+        format!("{url}.sig"),
+        crate::update_signature::SIGNATURE_LIMIT,
+    )
+    .await?;
+    if !crate::update_signature::verify(&manifest, &signature) {
+        return Err(Error::new(5243, crate::update_signature::INVALID));
+    }
+    serde_json::from_slice(&manifest)
+        .map_err(|_| Error::new(5243, "native update manifest is invalid JSON"))
+}
+
 async fn native_update(home: &Path, version: &str, service: &Service) -> Result<PathBuf> {
     let config = common::read_config(home)?;
     let base = config
@@ -1898,15 +1938,10 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
     service_url(&base)?;
     let target = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     update_state(service, "checking", None, None).await;
-    let manifest = object(
-        Method::GET,
-        &format!(
-            "{}/daemon/native/{version}/{target}/manifest.json",
-            base.trim_end_matches('/')
-        ),
-        None,
-        None,
-    )
+    let manifest = signed_manifest(&format!(
+        "{}/daemon/native/{version}/{target}/manifest.json",
+        base.trim_end_matches('/')
+    ))
     .await?;
     if manifest["version"] != version || manifest["target"] != target {
         return Err(Error::new(

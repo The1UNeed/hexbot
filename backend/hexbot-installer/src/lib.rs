@@ -4,6 +4,8 @@ mod detect;
 mod install_ownership;
 mod safety;
 mod types;
+#[path = "../../hexbot-core/src/update_signature.rs"]
+pub mod update_signature;
 
 pub use archive::{extract_native, verify_file};
 pub use detect::{Paths, app_option, detect, detect_at, read_receipt, sanitize_appimage_env};
@@ -75,15 +77,38 @@ pub fn default_track(base: &str) -> Result<Track> {
     }
 }
 
+/// The track's install manifest, after its release signature is checked. The
+/// signature lives at the immutable `install/<version>/<track>.json.sig`, so
+/// replacing `install/<track>.json` never races its signature.
 pub fn fetch_manifest(base: &str, track: Track) -> Result<Manifest> {
-    let manifest: Manifest = client(base)?
-        .get(format!(
-            "{}/install/{track}.json",
-            base.trim_end_matches('/')
-        ))
-        .send()?
-        .error_for_status()?
-        .json()?;
+    https_origin(base)?;
+    let base = base.trim_end_matches('/');
+    let client = client(base)?;
+    let fetch = |url: String, limit: u64| -> Result<Vec<u8>> {
+        let mut body = Vec::new();
+        client
+            .get(url)
+            .send()?
+            .error_for_status()?
+            .take(limit + 1)
+            .read_to_end(&mut body)?;
+        if body.len() as u64 > limit {
+            return fail("The install manifest is too large.");
+        }
+        Ok(body)
+    };
+    let bytes = fetch(format!("{base}/install/{track}.json"), 1024 * 1024)?;
+    // Only the version is read before verification, to find the signature.
+    let unverified: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let release = semver::Version::parse(unverified["version"].as_str().unwrap_or_default())?;
+    let signature = fetch(
+        format!("{base}/install/{release}/{track}.json.sig"),
+        update_signature::SIGNATURE_LIMIT as u64,
+    )?;
+    if !update_signature::verify(&bytes, &signature) {
+        return fail(update_signature::INVALID);
+    }
+    let manifest: Manifest = serde_json::from_slice(&bytes)?;
     manifest.validate(&version())?;
     validate_origins(base, &manifest)?;
     if manifest.channel != track {
@@ -92,11 +117,21 @@ pub fn fetch_manifest(base: &str, track: Track) -> Result<Manifest> {
     Ok(manifest)
 }
 
-fn validate_origins(base: &str, manifest: &Manifest) -> Result<()> {
-    let base = reqwest::Url::parse(base)?;
-    if !matches!(base.scheme(), "https" | "http") {
-        return fail("Invalid update URL.");
+/// HTTPS only; plain HTTP just for a loopback test server.
+fn https_origin(base: &str) -> Result<reqwest::Url> {
+    let url = reqwest::Url::parse(base)?;
+    let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    if !(url.scheme() == "https" || url.scheme() == "http" && loopback)
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return fail("The update URL must use HTTPS.");
     }
+    Ok(url)
+}
+
+fn validate_origins(base: &str, manifest: &Manifest) -> Result<()> {
+    let base = https_origin(base)?;
     for artifacts in manifest.targets.values() {
         for artifact in [
             &artifacts.headless,
