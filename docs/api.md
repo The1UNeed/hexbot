@@ -112,8 +112,10 @@ the profile's `config.yaml`. Null means Pi's default, `medium`; Pi rounds a
 level the model lacks up to the next one it has, else down. Changing
 `provider`, `model` or `reasoning_effort` moves every section of the bot still
 on the previous value; each one restarts its Pi process on the same
-conversation and live ID before its next message. Switching models costs the
-cached prefix once. A section on something else, like a scheduled job with
+conversation and live ID the next time it is reached while idle. A turn
+already running, a message queued behind it, and files already attached
+finish on the model they started with. Switching models costs the cached
+prefix once. A section on something else, like a scheduled job with
 its own model or `reasoning_effort`, keeps it.
 `workdir` and the `workspace_dir` setting are refused (4202) when they resolve
 inside the Hexbot home, symlinks included.

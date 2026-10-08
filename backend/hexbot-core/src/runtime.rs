@@ -3920,6 +3920,18 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         );
         let again = runtime.live("alice", &s.id).await.unwrap();
         assert!(Arc::ptr_eq(&reopened, &again));
+        crate::catalog::call(
+            home.path(),
+            "alice",
+            "profiles.configure",
+            &json!({"name":"owl","model":"claude-opus-5-5"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(!Arc::ptr_eq(
+            &again,
+            &runtime.live("alice", &s.id).await.unwrap()
+        ));
     }
     #[tokio::test]
     async fn settings_are_live_and_children_inherit_parent_policy() {

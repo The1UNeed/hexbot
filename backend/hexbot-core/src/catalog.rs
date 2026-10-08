@@ -617,7 +617,17 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
         _ => Err(Error::new(-32601, "method not found")),
     }
 }
+/// Writes a bot's profile. Sections still on its previous model move with it.
 fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
+    let before = section_model(home, name)?;
+    write_profile(home, name, p)?;
+    let after = section_model(home, name)?;
+    if before != after {
+        runtime_store::follow_bot_model(home, name, &before, &after)?;
+    }
+    Ok(())
+}
+fn write_profile(home: &Path, name: &str, p: &Value) -> Result<()> {
     let _skills = crate::skills::read_lock()?;
     let writer = common::config_writer()?;
     let dir = profile(home, name)?;
@@ -914,12 +924,7 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     bot_row(home, caller, name, false)?;
     validate_patch(home, p)?;
     bypass_allowed(home, caller, p)?;
-    let before = section_model(home, name)?;
     configure(home, name, p)?;
-    let after = section_model(home, name)?;
-    if before != after {
-        runtime_store::follow_bot_model(home, name, &before, &after)?;
-    }
     let mut conn = db::open(home)?;
     let tx = conn.transaction()?;
     write_bot_columns(&tx, name, p)?;

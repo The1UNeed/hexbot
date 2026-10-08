@@ -708,12 +708,25 @@ async fn live_models(home: &Path, p: &Value) -> Result<(Vec<String>, Value)> {
         return Ok((vec![], json!({})));
     }
     let mut req = client()?.get(url);
+    if slug == "anthropic" {
+        req = req.header("anthropic-version", "2023-06-01");
+    }
     if let Some(k) = custom_key(home, p)? {
         req = if slug == "anthropic" {
             req.header("x-api-key", k)
-                .header("anthropic-version", "2023-06-01")
         } else {
             req.bearer_auth(k)
+        }
+    } else if matches!(
+        slug,
+        "nous" | "qwen-oauth" | "minimax-oauth" | "xai-oauth" | "anthropic"
+    ) {
+        // Signed-in providers list models with the same token they answer with.
+        let auth = credential_headers(home, home, slug).await?;
+        for (name, value) in auth["headers"].as_object().into_iter().flatten() {
+            if let Some(value) = value.as_str() {
+                req = req.header(name.as_str(), value);
+            }
         }
     }
     let data = provider_json(req).await?;
@@ -847,7 +860,10 @@ pub async fn model_options(home: &Path, p: &Value) -> Result<Value> {
                 Err(e) => error = Some(e.message),
             }
         }
+        // The current model stays selectable when discovery fails, not when the
+        // provider answered without it.
         if configured
+            && source != "live"
             && current == slug
             && let Some(model) = cfg["model"]["default"].as_str().filter(|id| !id.is_empty())
             && !models.iter().any(|id| id == model)
@@ -885,11 +901,12 @@ pub async fn model_options(home: &Path, p: &Value) -> Result<Value> {
             models.push(json!(model));
         }
         let mut error = None;
-        if p["refresh"] == true
-            && (string(p, "provider").is_empty()
-                || canonical_provider(string(p, "provider")) == slug
-                || canonical_provider(string(p, "provider")) == format!("custom:{slug}"))
-        {
+        let requested = canonical_provider(string(p, "provider"));
+        if if requested.is_empty() {
+            p["refresh"] == true
+        } else {
+            requested == slug || requested == format!("custom:{slug}")
+        } {
             match live_models(home, &provider).await {
                 Ok((ids, _)) if !ids.is_empty() => {
                     models = ids.into_iter().map(Value::from).collect()
