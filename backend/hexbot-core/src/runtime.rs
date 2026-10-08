@@ -1141,9 +1141,11 @@ impl Runtime {
             }
         }
     }
+    /// Callers share the live ID with room viewers before running, so a section
+    /// moves to its bot's new model here rather than mid-turn.
     pub async fn ensure_hidden(&self, owner: &str, bot: &str, stored: &str) -> Result<String> {
         common::bot_session_access(&self.home, owner, bot, stored)?;
-        Ok(self.open_session(owner, bot, stored).await?.id.clone())
+        Ok(self.open_for_input(owner, bot, stored).await?.id.clone())
     }
     pub async fn run_hidden_job(
         &self,
