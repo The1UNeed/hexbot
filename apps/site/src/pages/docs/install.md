@@ -195,7 +195,7 @@ Hexbot stores configuration, bots, conversations, memory, and its managed runtim
 
 Stop the daemon before copying its whole data directory for a backup or move. Back up project files separately. Client-only installs keep window state and pairing tokens locally; the connected daemon holds the bots and history.
 
-The app checks `updates.hexbot.app` for updates and waits for your confirmation before downloading and installing one. See [Updates](/docs/updates/) for tracks and remote daemon updates.
+The app checks `updates.hexbot.app` for updates and downloads one when you click Update, then asks before installing it. See [Updates](/docs/updates/) for tracks and remote daemon updates.
 
 ## If setup fails
 

@@ -15,7 +15,7 @@ import { daemonBehind } from '../lib/version-skew'
 import { useConnection } from '../stores/connection'
 import { type DaemonUpdate, useUpdates } from '../stores/updates'
 
-import { ConfirmUpdate, updateNow, updateTarget } from './confirm-update'
+import { ConfirmUpdate, installTarget } from './confirm-update'
 
 export interface PillContent {
   action: 'download' | 'install' | 'settings' | null
@@ -118,6 +118,13 @@ export function UpdatePill({ className }: { className?: string }) {
     return null
   }
 
+  const run = (call: () => Promise<unknown>) => {
+    setPending(true)
+    void call()
+      .catch(() => undefined)
+      .finally(() => setPending(false))
+  }
+
   const act = () => {
     if (pill.action === 'settings') {
       void navigate({ to: '/settings/$tab', params: { tab: 'updates' } })
@@ -129,18 +136,13 @@ export function UpdatePill({ className }: { className?: string }) {
       return
     }
 
-    setConfirming(true)
-  }
+    if (pill.action === 'install') {
+      setConfirming(true)
 
-  const update = () => {
-    if (!bridge) {
       return
     }
 
-    setPending(true)
-    void updateNow(bridge)
-      .catch(() => undefined)
-      .finally(() => setPending(false))
+    run(() => bridge.updater.download())
   }
 
   const Icon =
@@ -164,8 +166,12 @@ export function UpdatePill({ className }: { className?: string }) {
       </button>
       <ConfirmUpdate
         onClose={() => setConfirming(false)}
-        onConfirm={update}
-        version={confirming ? updateTarget(app) : null}
+        onConfirm={() => {
+          if (bridge) {
+            run(() => bridge.updater.install())
+          }
+        }}
+        version={confirming ? installTarget(app) : null}
       />
     </>
   )

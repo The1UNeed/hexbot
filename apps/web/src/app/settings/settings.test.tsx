@@ -465,18 +465,18 @@ describe('settings', () => {
         await screen.findByText('Version 0.1.5-nightly.20260916.9 is available.')
       ).toBeVisible()
       fireEvent.click(screen.getByRole('button', { name: 'Update' }))
+      await waitFor(() => expect(download).toHaveBeenCalledTimes(1))
       const question = 'Are you sure you want to update to version 0.1.5-nightly.20260916.9?'
+      expect(screen.queryByText(question)).toBeNull()
+      fireEvent.click(await screen.findByRole('button', { name: 'Restart and install' }))
       expect(await screen.findByText(question)).toBeVisible()
       fireEvent.click(screen.getByRole('button', { name: 'No' }))
       await waitFor(() => expect(screen.queryByText(question)).toBeNull())
-      expect(download).not.toHaveBeenCalled()
-      fireEvent.click(screen.getByRole('button', { name: 'Update' }))
+      expect(install).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole('button', { name: 'Restart and install' }))
       fireEvent.click(await screen.findByRole('button', { name: 'Yes' }))
       await waitFor(() => expect(install).toHaveBeenCalledTimes(1))
       expect(download).toHaveBeenCalledTimes(1)
-      expect(install.mock.invocationCallOrder[0]).toBeGreaterThan(
-        download.mock.invocationCallOrder[0]!
-      )
     } finally {
       delete (window as { hexbot?: unknown }).hexbot
       useUpdates.setState({ app: null, daemon: null })
