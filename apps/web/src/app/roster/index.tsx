@@ -622,10 +622,14 @@ export function RosterColumn() {
   }
 
   const keyboard = (event: React.KeyboardEvent) => {
-    // Keys pressed in a menu reach here through its portal; the menu handles them.
+    const target = event.target as HTMLElement
+
+    // Only the search box and rows take roster keys. Buttons keep their own, and
+    // menus and dialogs, whose keys reach here through their portals, keep theirs.
     if (
       !['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key) ||
-      !root.current?.contains(event.target as Node)
+      !root.current?.contains(target) ||
+      (target.tagName !== 'INPUT' && !target.closest('[data-roster-id]'))
     ) {
       return
     }

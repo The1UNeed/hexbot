@@ -6,25 +6,6 @@ import { useRooms } from '../../stores/rooms'
 
 import { RosterColumn } from './index'
 
-// The ui store persists to localStorage, which Node shadows without a file; give it memory.
-vi.hoisted(() => {
-  const items = new Map<string, string>()
-
-  Object.defineProperty(globalThis, 'localStorage', {
-    configurable: true,
-    value: {
-      clear: () => items.clear(),
-      getItem: (key: string) => items.get(key) ?? null,
-      key: (index: number) => [...items.keys()][index] ?? null,
-      get length() {
-        return items.size
-      },
-      removeItem: (key: string) => items.delete(key),
-      setItem: (key: string, value: string) => items.set(key, String(value))
-    }
-  })
-})
-
 const navigate = vi.hoisted(() => vi.fn())
 
 vi.mock('@tanstack/react-router', () => ({
@@ -47,19 +28,42 @@ const room = {
 } as unknown as Room
 
 describe('RosterColumn keyboard', () => {
-  it('leaves Enter in a context menu to the menu', async () => {
+  beforeEach(() => {
+    navigate.mockClear()
     useRooms.setState({ byId: { [room.id]: room }, order: [room.id] })
+  })
+
+  it('opens the focused row from the search box', () => {
+    render(<RosterColumn />)
+    const search = screen.getByLabelText('Search bots and sections')
+
+    fireEvent.keyDown(search, { key: 'ArrowDown' })
+    fireEvent.keyDown(search, { key: 'Enter' })
+
+    expect(navigate).toHaveBeenCalledWith({ params: { room: 'garden' }, to: '/r/$room' })
+  })
+
+  it('leaves Enter in a context menu to the menu', async () => {
     render(<RosterColumn />)
     const row = screen.getByRole('button', { name: /Garden/ })
 
     // Arrow keys focus the room row, so Enter there would open the room.
     fireEvent.keyDown(row, { key: 'ArrowDown' })
     fireEvent.contextMenu(row)
-    const item = await screen.findByRole('menuitem', { name: 'Settings' })
-    fireEvent.keyDown(item, { key: 'Enter' })
-    fireEvent.click(item)
+    fireEvent.keyDown(await screen.findByRole('menuitem', { name: 'Settings' }), { key: 'Enter' })
 
+    expect(screen.queryByRole('menuitem')).toBeNull()
     expect(navigate).toHaveBeenCalledOnce()
     expect(navigate).toHaveBeenCalledWith({ params: { room: 'garden' }, to: '/r/$room/settings' })
+  })
+
+  it('leaves Enter on other sidebar buttons to the button', () => {
+    render(<RosterColumn />)
+
+    fireEvent.keyDown(screen.getByRole('button', { name: /Garden/ }), { key: 'ArrowDown' })
+    const event = fireEvent.keyDown(screen.getByRole('button', { name: 'New' }), { key: 'Enter' })
+
+    expect(event).toBe(true)
+    expect(navigate).not.toHaveBeenCalled()
   })
 })
