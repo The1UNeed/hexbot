@@ -869,12 +869,30 @@ impl Dreaming {
                 | "hexbot.dreaming.list"
                 | "hexbot.dreaming.run_now"
                 | "hexbot.dreaming.restore"
+                | "hexbot.jobs.list"
+                | "hexbot.jobs.create"
+                | "hexbot.jobs.update"
+                | "hexbot.jobs.pause"
+                | "hexbot.jobs.resume"
+                | "hexbot.jobs.remove"
+                | "hexbot.jobs.run"
         ) {
             return None;
         }
         Some(self.call_inner(owner, method, p).await)
     }
     async fn call_inner(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {
+        if let Some(action) = method.strip_prefix("hexbot.jobs.") {
+            let bot = common::required(p, "bot")?;
+            let mut params = p.clone();
+            params["action"] = json!(action);
+            let result = self.tool_call(owner, bot, &params).await?;
+            if action != "list" {
+                self.events
+                    .emit(owner, None, "hexbot.jobs.changed", json!({"bot": bot}));
+            }
+            return Ok(result);
+        }
         if method == "hexbot.dreaming.restore" {
             return self.restore(owner, common::required(p, "id")?);
         }

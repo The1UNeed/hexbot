@@ -1406,6 +1406,7 @@ impl Runtime {
                 | "image.attach_bytes"
                 | "pdf.attach"
                 | "file.attach"
+                | "attachments.clear"
         );
         if !matched {
             return None;
@@ -1739,6 +1740,7 @@ impl Runtime {
                 })
             }
             "image.attach_bytes" | "pdf.attach" | "file.attach" => self.attach(&s, method, p).await,
+            "attachments.clear" => self.clear_attachments(&s).await,
             _ => Err(Error::new(-32601, "unknown runtime method")),
         }
     }

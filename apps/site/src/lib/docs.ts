@@ -22,6 +22,7 @@ export const docGroups = [
   {
     title: 'Connect devices and people',
     pages: [
+      { title: 'Mobile app', summary: 'Run the Expo iOS and Android app and connect your daemons.', href: '/docs/mobile/' },
       { title: 'Pairing and LAN', summary: 'Pair an app or browser and revoke a device later.', href: '/docs/pairing-and-lan/' },
       { title: 'Tailscale', summary: 'Reach a daemon over your private network while away.', href: '/docs/tailscale/' },
       { title: 'Hex Connect', summary: 'Sign in from an app or browser without opening a router port.', href: '/docs/connect/' },

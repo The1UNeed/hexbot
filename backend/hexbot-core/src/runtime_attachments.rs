@@ -14,6 +14,30 @@ fn attachment_limit_mib(method: &str) -> usize {
     }
 }
 impl Runtime {
+    pub(super) async fn clear_attachments(&self, s: &Live) -> Result<Value> {
+        let _attachment = s.attachment_gate.lock().await;
+        ensure_open(s)?;
+        let paths = {
+            let mut state = s.state.lock().unwrap();
+            if state.busy {
+                return Err(Error::new(
+                    4002,
+                    "wait for the bot before clearing attachments",
+                ));
+            }
+            state.attachments.clear();
+            state.refs.clear();
+            std::mem::take(&mut state.staged_files)
+        };
+        for path in paths {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(json!({"cleared": true}))
+    }
     pub(super) async fn attach(&self, s: &Live, method: &str, p: &Value) -> Result<Value> {
         let encoded = if method == "file.attach" {
             let url = required(p, "data_url")?;

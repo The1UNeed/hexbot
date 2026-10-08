@@ -26,15 +26,19 @@ data model. The native transport and event projection live in
 - Chat: `prompt.submit {session_id, text}`, `session.interrupt`, `session.steer`.
 - History: `session.history {session_id}`, `session.events.since` on reconnect.
 - Attachments: `image.attach_bytes {session_id, content_base64, filename}`,
-  `file.attach {session_id, data_url, name}`, `pdf.attach {session_id, content_base64}`, `image.detach`.
+  `file.attach {session_id, data_url, name}`, `pdf.attach {session_id, content_base64}`.
+  `attachments.clear {session_id}` clears all unsubmitted attachments and removes
+  their staged files. It refuses while the bot is working and keeps the session.
   Images allow 25 MiB decoded; PDFs and generic files allow 45 MiB.
   Larger attachments return 4202 with the size limit. Browser clients check
   before reading or uploading. WebSocket frames and in-flight request bytes
   are capped at 64 MiB per connection.
-- Approvals: `approval.pending`, `approval.respond {session_id, request_id, choice}`
+- Approvals: `approval.respond {session_id, request_id, choice}`
   with `choice` in `once | session | deny`. `session` quiets the same kind
   of request for the rest of the section; nothing persists across sections.
-  Requests raised by the daemon offer `once | deny` only.
+  Requests raised by the daemon offer `once | deny` only. Opening a section
+  re-emits its pending approval. Questions arrive as `clarify.request` and
+  `pending_clarify` on section open; use `clarify.respond` to answer.
 - Per-section model override: `config.set {key: "model", value, session_id}`.
 - Model picker source: `model.options`.
 - Keys: `model.save_key`, `model.disconnect`.
@@ -224,6 +228,24 @@ roster shows only the title.
   `memory_before` is the memory it replaced, so it can be undone in turn.
   Broadcasts `hexbot.dreaming.changed`.
 
+### Scheduled jobs
+
+Paired apps manage the scheduler through the same owner checks and job storage
+as the bot's scheduling tool. Every method requires `bot`. Job mutations
+broadcast `hexbot.jobs.changed`.
+
+- `hexbot.jobs.list {bot, include_disabled?}` returns `{jobs}`.
+- `hexbot.jobs.create {bot, name?, prompt?, schedule, script?, workdir?, model?,
+  provider?, reasoning_effort?, skills?, repeat?}` returns `{job}`. Jobs need
+  instructions or a script. Wall-clock schedules use the daemon's timezone.
+- `hexbot.jobs.update {bot, job_id, ...changes}` returns `{job}`.
+- `hexbot.jobs.pause {bot, job_id}` / `hexbot.jobs.resume {bot, job_id}` return `{job}`.
+- `hexbot.jobs.remove {bot, job_id}` removes the job.
+- `hexbot.jobs.run {bot, job_id}` starts the job without waiting for its schedule.
+
+The daemon enforces unattended approval rules and script workspace restrictions.
+The mobile app displays output stored on the daemon; jobs do not send push notifications.
+
 ### Rooms
 
 Room shape: `{id, name, owner_id, main_bot, approval_mode, limits,
@@ -251,6 +273,7 @@ and its bots run as the owner.
   sequence order. `limit` is capped at 1000.
 - `hexbot.rooms.stop {id}` → `{stopped: true}`
 - `hexbot.rooms.archive {id}` → `{room}`
+- `hexbot.rooms.unarchive {id}` → `{room}`
 - `hexbot.rooms.delete {id}` → `{deleted: true}`
 - `hexbot.rooms.mark_read {id, seq}` → `{room}`
 

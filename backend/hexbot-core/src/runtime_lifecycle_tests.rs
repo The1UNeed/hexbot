@@ -57,6 +57,47 @@ async fn open(runtime: &Runtime) -> String {
         .unwrap()
         .to_owned()
 }
+
+#[tokio::test]
+async fn clearing_unsubmitted_attachments_preserves_the_session_and_checks_owner() {
+    let (home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let attached = runtime.call("alice", "file.attach", &json!({"session_id":id,"name":"note.txt","data_url":"data:text/plain;base64,aGVsbG8="})).await.unwrap().unwrap();
+    let path = PathBuf::from(attached["path"].as_str().unwrap());
+    assert!(path.exists());
+    assert_eq!(
+        runtime
+            .call("bob", "attachments.clear", &json!({"session_id":id}))
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code,
+        4001
+    );
+    assert!(path.exists());
+    runtime
+        .call("alice", "attachments.clear", &json!({"session_id":id}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!path.exists());
+    assert_eq!(open(&runtime).await, id);
+    assert_eq!(processes(home.path()).len(), 1);
+    let live = runtime.sessions.lock().unwrap()["first"].clone();
+    assert!(live.state.lock().unwrap().refs.is_empty());
+    live.state.lock().unwrap().busy = true;
+    assert_eq!(
+        runtime
+            .call("alice", "attachments.clear", &json!({"session_id":id}))
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code,
+        4002
+    );
+    live.state.lock().unwrap().busy = false;
+    runtime.shutdown().await;
+}
 fn processes(home: &Path) -> Vec<Value> {
     fs::read_to_string(home.join("processes.jsonl"))
         .unwrap()
