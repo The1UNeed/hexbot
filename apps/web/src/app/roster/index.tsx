@@ -622,7 +622,11 @@ export function RosterColumn() {
   }
 
   const keyboard = (event: React.KeyboardEvent) => {
-    if (!['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key)) {
+    // Keys pressed in a menu reach here through its portal; the menu handles them.
+    if (
+      !['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key) ||
+      !root.current?.contains(event.target as Node)
+    ) {
       return
     }
 
