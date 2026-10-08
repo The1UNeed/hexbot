@@ -40,8 +40,15 @@ redaction, and pattern checks do not provide equivalent containment.
   with private network and process namespaces and masked credential paths.
   Writable roots include the working directory, daemon-selected artifact and
   attachment folders, and temporary folders. On macOS these include shared `/tmp`.
-  Ordinary files outside the workspace can still be read.
+  Git's own folders (`.git`) stay read-only inside them, so a sandboxed
+  command cannot plant a hook or config that runs on your next commit; a bot
+  commits, inits, or clones with an approved `full_access` command. Project
+  secrets such as `.env`, keychains, and browser profiles (cookies, saved
+  passwords) are unreadable. Apple Events are refused, so a command cannot
+  drive Finder or another app. Other files outside the workspace can still be
+  read.
 - Manual uses a read-only shell/code sandbox and asks before file changes.
+  Approved code can write only its own output folder in the Hexbot home.
 - An approved `full_access` shell command leaves the workspace restrictions.
   The base credential-path and Hexbot-home protections still apply. Review both
   the command and its reason before granting more access.

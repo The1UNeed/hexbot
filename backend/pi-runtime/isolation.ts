@@ -19,6 +19,8 @@ export const policyRoot = (entry: string) => entry.startsWith('/') ? entry : joi
 // Seatbelt regexes use character pairs rather than JavaScript's i flag.
 const sandboxRegex = (source: string) => foldCase ? source.replace(/[a-z]/gi, c => `[${c.toLowerCase()}${c.toUpperCase()}]`) : source;
 export const privateKeyName = (name: string) => !policyRegex(credentialPolicy.sshPublic).test(name);
+// Project secrets such as .env, wherever they are; .env.example and the like are not.
+export const secretFileName = (name: string) => policyRegex(credentialPolicy.secretFile).test(name) && !policyRegex(credentialPolicy.secretFileExample).test(name);
 const entries = (dir: string) => { try { return readdirSync(dir, {withFileTypes:true}); } catch { return []; } };
 const cache = new Map<string, {at: number, paths: string[]}>();
 function secretPaths(home: string): string[] {
@@ -77,6 +79,40 @@ function deniedWrites(): string[] {
   }
   return denied;
 }
+// Keychains and browser profiles (cookies, saved passwords). Unreadable in
+// Manual and Auto and to the file tools; an approved full_access command may
+// read them.
+export function readDenied(): string[] {
+  const denied: string[] = [];
+  for (const entry of credentialPolicy.readDeny as string[]) {
+    const root = policyRoot(entry);
+    for (const path of [root, realRoot(root)]) if (!denied.includes(path)) denied.push(path);
+  }
+  return denied;
+}
+// Inside the workspace sandbox git's own folders are read-only, as in Codex: a
+// hook, config or gitdir written there would run outside the sandbox on the
+// user's next commit. Project secrets are unreadable there too. Seatbelt matches
+// these names wherever they appear, including ones created later; bubblewrap
+// cannot match names, so on Linux the workspace is searched when a command
+// starts, a few levels deep.
+const GIT_DIR = '(^|/)' + regexEscape('.git') + '(/|$)';
+const WORKSPACE_DEPTH = 3, WORKSPACE_DIRS = 1000;
+export function workspaceProtected(roots: string[]): {git: string[], secrets: string[]} {
+  const git: string[] = [], secrets: string[] = [];
+  let budget = WORKSPACE_DIRS;
+  const walk = (dir: string, depth: number) => {
+    if (budget-- <= 0) return;
+    for (const entry of entries(dir).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+      const path = join(dir, entry.name);
+      if (fold(entry.name) === '.git') git.push(path);
+      else if (entry.isFile() && secretFileName(entry.name)) secrets.push(path);
+      else if (entry.isDirectory() && depth < WORKSPACE_DEPTH && !credentialPolicy.skip.includes(fold(entry.name))) walk(path, depth + 1);
+    }
+  };
+  for (const root of roots) if (root !== '/tmp') walk(root, 0);
+  return {git, secrets};
+}
 // Renaming an ancestor would carry a nested store (~/.config/gh) out from under
 // its rule, so the directories between the home and a store cannot be renamed
 // or removed either; creating siblings inside them stays allowed.
@@ -128,9 +164,12 @@ export function sandboxProfile(home: string, outputs: string[] = [], workspace?:
   if (workspace) {
     const {writable: open, config} = confined(workspace);
     const inside = [...DEVICES.map(p => `(literal ${JSON.stringify(p)})`), ...['/dev/fd', ...open].map(p => `(subpath ${JSON.stringify(p)})`)].join(' ');
-    confine = `(deny network-inbound)(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-read* ${stores})(deny file-write* (require-not (require-any ${inside})))(deny file-write* ${config.map(p => `(literal ${JSON.stringify(p)}) (subpath ${JSON.stringify(p)})`).join(' ')})`;
+    const browsers = readDenied().map(p => `(literal ${JSON.stringify(p)}) (subpath ${JSON.stringify(p)}) (regex ${JSON.stringify(sandboxRegex("^" + regexEscape(p) + "(/|$)"))})`).join(' ');
+    const secret = `(require-all (vnode-type REGULAR-FILE) (regex ${JSON.stringify(sandboxRegex('/' + credentialPolicy.secretFile.slice(1)))}) (require-not (regex ${JSON.stringify(sandboxRegex(credentialPolicy.secretFileExample))})))`;
+    confine = `(deny network-inbound)(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-read* ${stores} ${browsers} ${secret})(deny file-write* (require-not (require-any ${inside})))(deny file-write* ${config.map(p => `(literal ${JSON.stringify(p)}) (subpath ${JSON.stringify(p)})`).join(' ')})(deny file-write* (regex ${JSON.stringify(sandboxRegex(GIT_DIR))}))`;
   }
-  return `(version 1)(allow default)(deny process-exec (literal "/usr/bin/open") (literal "/bin/launchctl") (literal "/usr/bin/osascript"))(deny file-write* (require-all ${insideHome} ${exceptWritable}))(deny file-write* ${stores})${ancestors ? `(deny file-write-unlink ${ancestors})` : ''}${confine}(deny file-read* file-write* ${filters.join(' ')})`;
+  // Apple Events would let a command drive Finder or another app outside the sandbox.
+  return `(version 1)(allow default)(deny process-exec (literal "/usr/bin/open") (literal "/bin/launchctl") (literal "/usr/bin/osascript"))(deny appleevent-send)(deny file-write* (require-all ${insideHome} ${exceptWritable}))(deny file-write* ${stores})${ancestors ? `(deny file-write-unlink ${ancestors})` : ''}${confine}(deny file-read* file-write* ${filters.join(' ')})`;
 }
 export function bwrapArguments(home: string, outputs: string[] = [], workspace?: string[]): string[] {
   const {roots, paths, writable, denied} = layout(home, outputs);
@@ -143,6 +182,12 @@ export function bwrapArguments(home: string, outputs: string[] = [], workspace?:
   // mount point on the host).
   for (const path of denied) if (existsSync(path)) args.push(...!confine ? ['--ro-bind', path, path] : statSync(path).isDirectory() ? ['--tmpfs', path, '--remount-ro', path] : ['--ro-bind', '/dev/null', path]);
   for (const path of confine ? confine.config : []) if (existsSync(path)) args.push('--ro-bind', path, path);
+  if (confine) {
+    for (const path of readDenied()) if (existsSync(path)) args.push(...(statSync(path).isDirectory() ? ['--tmpfs', path, '--remount-ro', path] : ['--ro-bind', '/dev/null', path]));
+    const {git, secrets} = workspaceProtected(confine.writable);
+    for (const path of git) args.push('--ro-bind', path, path);
+    for (const path of secrets) args.push('--ro-bind', '/dev/null', path);
+  }
   for (const path of paths) if (existsSync(path)) args.push(...(statSync(path).isDirectory() ? ['--tmpfs', path, '--remount-ro', path] : ['--ro-bind', '/dev/null', path]));
   return args;
 }

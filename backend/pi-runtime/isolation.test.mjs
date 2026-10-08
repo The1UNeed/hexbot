@@ -310,3 +310,72 @@ test('bubblewrap confines a workspace command to its folders without a network',
   const base = command(undefined);
   assert.ok(base.includes(`'--bind' '/' '/'`)); assert.ok(!base.includes('--unshare-net'));
 });
+
+// A hook or config written into .git would run outside the sandbox on the
+// user's next commit, and a .env or browser cookie would reach the transcript.
+test('the workspace sandbox keeps git folders read-only and hides project secrets and browser stores', {skip:process.platform !== 'darwin'}, async t => {
+  const {execFileSync} = await import('node:child_process');
+  const {realpathSync} = await import('node:fs');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-git-')));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const user = join(base, 'user'), home = join(base, 'hexbot'), work = join(base, 'work');
+  for (const dir of [home, join(work, '.git/hooks'), join(work, 'nested/.git'), join(work, '.env-venv'), join(work, 'venv/.env'), join(user, 'Library/Application Support/Google/Chrome/Default')]) mkdirSync(dir, {recursive:true});
+  writeFileSync(join(work, '.git/config'), '[core]\n');
+  writeFileSync(join(work, '.env'), 'secret');
+  writeFileSync(join(work, '.env.local'), 'secret');
+  writeFileSync(join(work, '.env.example'), 'example');
+  writeFileSync(join(work, 'venv/.env/python'), 'venv');
+  writeFileSync(join(user, 'Library/Application Support/Google/Chrome/Default/Cookies'), 'cookies');
+  const run = (script, workspace) => {
+    const code = `const {isolatedCommand} = await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); const {spawnSync} = await import('node:child_process'); const child = spawnSync('/bin/bash', ['-c', isolatedCommand(${JSON.stringify(script)}, ${JSON.stringify(home)}, [], ${JSON.stringify(workspace)})], {cwd:${JSON.stringify(work)}, encoding:'utf8'}); process.stdout.write(child.stdout); process.exit(child.status);`;
+    return execFileSync(process.execPath, ['--input-type=module', '-e', code], {env:{...process.env, HOME:user}, encoding:'utf8'});
+  };
+  const cookies = `'${user}/Library/Application Support/Google/Chrome/Default/Cookies'`;
+  const confined = [
+    '(echo x > .git/hooks/pre-commit) 2>/dev/null && exit 10',
+    '(echo x >> .git/config) 2>/dev/null && exit 11',
+    'mv .git moved 2>/dev/null && exit 12',
+    '(echo x > nested/.git/commondir) 2>/dev/null && exit 13',
+    'mkdir fresh && mkdir fresh/.git 2>/dev/null && exit 14',
+    '(echo "gitdir: /tmp" > other.git && mv other.git fresh/.git) 2>/dev/null && exit 15',
+    'cat .env 2>/dev/null && exit 16',
+    'cat .env.local 2>/dev/null && exit 17',
+    `cat ${cookies} 2>/dev/null && exit 18`,
+    'cat .env.example >/dev/null || exit 19',
+    'cat venv/.env/python >/dev/null || exit 20',
+    'echo ok > notes.txt || exit 21',
+    'echo done',
+  ].join('; ');
+  assert.equal(run(confined, [work]), 'done\n');
+  assert.equal(run('cat .env 2>/dev/null && exit 16; echo done', []), 'done\n');
+  // An approved full_access command may commit and read them.
+  assert.equal(run(`echo x > .git/hooks/pre-commit && cat .env && cat ${cookies}`, undefined), 'secretcookies');
+});
+
+test('every sandbox level refuses Apple Events', {skip:process.platform !== 'darwin'}, async t => {
+  const {sandboxProfile} = await import('./isolation.ts');
+  const home = mkdtempSync(join(tmpdir(), 'hexbot-events-'));
+  t.after(() => rmSync(home, {recursive:true, force:true}));
+  for (const workspace of [[home], [], undefined]) assert.ok(sandboxProfile(home, [], workspace).includes('(deny appleevent-send)'));
+});
+
+test('bubblewrap keeps existing git folders read-only and masks project secrets in the workspace', async t => {
+  const {execFileSync} = await import('node:child_process');
+  const {chmodSync, realpathSync} = await import('node:fs');
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-bwrap-git-')));
+  t.after(() => rmSync(root, {recursive:true, force:true}));
+  const user = join(root, 'user'), work = join(root, 'work');
+  for (const dir of [user, join(root, 'hexbot'), join(work, '.git'), join(work, 'a/b/.git'), join(work, 'a/b/c/d/.git'), join(work, 'node_modules/x/.git'), join(user, '.mozilla')]) mkdirSync(dir, {recursive:true});
+  for (const file of ['.env', 'a/.env.production', '.env.example']) writeFileSync(join(work, file), 'x');
+  const executable = join(root, 'bwrap'); writeFileSync(executable, '#!/bin/sh\ncase "$*" in *"/usr/bin/env true") exit 0;; *) exit 1;; esac\n'); chmodSync(executable, 0o755);
+  const command = workspace => execFileSync(process.execPath, ['--input-type=module', '-e', `Object.defineProperty(process,'platform',{value:'linux'}); const {isolatedCommand}=await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); console.log(isolatedCommand('true',${JSON.stringify(join(root, 'hexbot'))},[],${JSON.stringify(workspace)}));`], {env:{...process.env, HOME:user, PATH:root}, encoding:'utf8'});
+  const confined = command([work]);
+  for (const git of ['.git', 'a/b/.git']) assert.ok(confined.includes(`'--ro-bind' '${join(work, git)}' '${join(work, git)}'`), git);
+  // The search stops a few levels down and skips dependency trees.
+  for (const git of ['a/b/c/d/.git', 'node_modules/x/.git']) assert.ok(!confined.includes(join(work, git)), git);
+  for (const secret of ['.env', 'a/.env.production']) assert.ok(confined.includes(`'--ro-bind' '/dev/null' '${join(work, secret)}'`), secret);
+  assert.ok(!confined.includes(join(work, '.env.example')));
+  assert.ok(confined.includes(`'--tmpfs' '${join(user, '.mozilla')}' '--remount-ro' '${join(user, '.mozilla')}'`));
+  const base = command(undefined);
+  assert.ok(!base.includes(join(work, '.git')) && !base.includes(join(user, '.mozilla')));
+});

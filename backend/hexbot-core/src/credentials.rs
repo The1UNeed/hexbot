@@ -18,7 +18,13 @@ struct Policy {
     user: Vec<String>,
     #[serde(rename = "sshPublic")]
     ssh_public: String,
+    #[serde(rename = "secretFile")]
+    secret_file: String,
+    #[serde(rename = "secretFileExample")]
+    secret_file_example: String,
     skip: Vec<String>,
+    #[serde(rename = "readDeny")]
+    read_deny: Vec<String>,
     write: WritePolicy,
     environment: Vec<String>,
     #[serde(rename = "displayEnvironment")]
@@ -39,8 +45,15 @@ fn policy() -> &'static Policy {
             .expect("credential policy")
     })
 }
-fn patterns() -> &'static (regex::Regex, regex::Regex, regex::Regex) {
-    static PATTERNS: OnceLock<(regex::Regex, regex::Regex, regex::Regex)> = OnceLock::new();
+type Patterns = (
+    regex::Regex,
+    regex::Regex,
+    regex::Regex,
+    regex::Regex,
+    regex::Regex,
+);
+fn patterns() -> &'static Patterns {
+    static PATTERNS: OnceLock<Patterns> = OnceLock::new();
     PATTERNS.get_or_init(|| {
         let compile = |source: &str| {
             regex::Regex::new(&format!("{}{source}", if FOLD_CASE { "(?i)" } else { "" })).unwrap()
@@ -49,6 +62,8 @@ fn patterns() -> &'static (regex::Regex, regex::Regex, regex::Regex) {
             compile(&policy().basename),
             compile(&policy().home),
             compile(&policy().ssh_public),
+            compile(&policy().secret_file),
+            compile(&policy().secret_file_example),
         )
     })
 }
@@ -67,7 +82,7 @@ pub(crate) fn under(path: &Path, root: &Path) -> bool {
 }
 /// The Hexbot home rules alone: credential names anywhere and protected home paths.
 fn home_credential_name(home: &Path, path: &Path) -> bool {
-    let (name, local, _) = patterns();
+    let (name, local, ..) = patterns();
     let (path_folded, home_folded) = (folded(path), folded(home));
     path_folded.strip_prefix(&home_folded).is_ok_and(|p| {
         name.is_match(path.file_name().and_then(|s| s.to_str()).unwrap_or(""))
@@ -82,7 +97,23 @@ pub fn credential_name(home: &Path, path: &Path) -> bool {
     }) {
         return true;
     }
+    if read_denied().iter().any(|store| under(path, store)) {
+        return true;
+    }
+    if path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(secret_file_name)
+        && !path.is_dir()
+    {
+        return true;
+    }
     home_credential_name(home, path)
+}
+/// Project secrets such as .env, wherever they are; .env.example and the like are not.
+pub(crate) fn secret_file_name(name: &str) -> bool {
+    let (.., secret, example) = patterns();
+    secret.is_match(name) && !example.is_match(name)
 }
 fn user_credential_name(user: &Path, path: &Path) -> bool {
     policy().user.iter().any(|local| {
@@ -403,6 +434,76 @@ fn denied_writes() -> Result<Vec<PathBuf>> {
     }
     Ok(denied)
 }
+/// Keychains and browser profiles (cookies, saved passwords). Unreadable in
+/// Manual and Auto and to the file tools; an approved full-access command may
+/// read them.
+fn read_denied() -> Vec<PathBuf> {
+    let mut denied: Vec<PathBuf> = vec![];
+    for root in policy()
+        .read_deny
+        .iter()
+        .filter_map(|entry| policy_root(entry))
+    {
+        let real = real_root(&root).unwrap_or_else(|_| root.clone());
+        for path in [root, real] {
+            if !denied.contains(&path) {
+                denied.push(path);
+            }
+        }
+    }
+    denied
+}
+/// Inside the workspace sandbox git's own folders are read-only, as in Codex: a
+/// hook, config or gitdir written there would run outside the sandbox on the
+/// user's next commit. Project secrets are unreadable there too. Seatbelt matches
+/// these names wherever they appear, including ones created later; bubblewrap
+/// cannot match names, so on Linux the workspace is searched when a program
+/// starts, a few levels deep. Matches isolation.ts.
+const WORKSPACE_DEPTH: usize = 3;
+const WORKSPACE_DIRS: usize = 1000;
+fn git_dir_regex() -> String {
+    format!("(^|/){}(/|$)", regex_escape(".git"))
+}
+fn workspace_protected(roots: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    fn walk(
+        dir: &Path,
+        depth: usize,
+        budget: &mut usize,
+        git: &mut Vec<PathBuf>,
+        secrets: &mut Vec<PathBuf>,
+    ) {
+        if *budget == 0 {
+            return;
+        }
+        *budget -= 1;
+        let mut list: Vec<_> = entries(dir).collect();
+        list.sort_by_key(|entry| entry.file_name());
+        for entry in list {
+            let path = entry.path();
+            let name = entry.file_name();
+            let kind = entry.file_type().ok();
+            if folded(Path::new(&name)) == Path::new(".git") {
+                git.push(path);
+            } else if kind.is_some_and(|t| t.is_file()) && secret_file_name(&name.to_string_lossy())
+            {
+                secrets.push(path);
+            } else if kind.is_some_and(|t| t.is_dir())
+                && depth < WORKSPACE_DEPTH
+                && !policy()
+                    .skip
+                    .iter()
+                    .any(|skip| folded(Path::new(&name)) == folded(Path::new(skip)))
+            {
+                walk(&path, depth + 1, budget, git, secrets);
+            }
+        }
+    }
+    let (mut git, mut secrets, mut budget) = (vec![], vec![], WORKSPACE_DIRS);
+    for root in roots.iter().filter(|root| *root != Path::new("/tmp")) {
+        walk(root, 0, &mut budget, &mut git, &mut secrets);
+    }
+    (git, secrets)
+}
 /// Renaming an ancestor would carry a nested store (~/.config/gh) out from under
 /// its rule, so the directories between the home and a store cannot be renamed
 /// or removed either; creating siblings inside them stays allowed.
@@ -536,12 +637,33 @@ fn sandbox_profile(layout: &Layout) -> String {
             })
             .collect::<Vec<_>>()
             .join(" ");
+        let browsers = read_denied()
+            .iter()
+            .map(|p| {
+                let path = quoted(p.to_string_lossy());
+                format!(
+                    "(literal {path}) (subpath {path}) (regex {})",
+                    quoted(sandbox_regex(&format!(
+                        "^{}(/|$)",
+                        regex_escape(&p.to_string_lossy())
+                    )))
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let secret = format!(
+            "(require-all (vnode-type REGULAR-FILE) (regex {}) (require-not (regex {})))",
+            quoted(sandbox_regex(&format!("/{}", &policy().secret_file[1..]))),
+            quoted(sandbox_regex(&policy().secret_file_example))
+        );
+        let git = quoted(sandbox_regex(&git_dir_regex()));
         format!(
-            "(deny network-inbound)(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-read* {stores})(deny file-write* (require-not (require-any {inside})))(deny file-write* {config})"
+            "(deny network-inbound)(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-read* {stores} {browsers} {secret})(deny file-write* (require-not (require-any {inside})))(deny file-write* {config})(deny file-write* (regex {git}))"
         )
     });
+    // Apple Events would let a program drive Finder or another app outside the sandbox.
     format!(
-        "(version 1)(allow default)(deny process-exec (literal \"/usr/bin/open\") (literal \"/bin/launchctl\") (literal \"/usr/bin/osascript\"))(deny file-write* (require-all (require-any {inside_home}) {except_writable}))(deny file-write* {stores}){ancestors}{confine}(deny file-read* file-write* {})",
+        "(version 1)(allow default)(deny process-exec (literal \"/usr/bin/open\") (literal \"/bin/launchctl\") (literal \"/usr/bin/osascript\"))(deny appleevent-send)(deny file-write* (require-all (require-any {inside_home}) {except_writable}))(deny file-write* {stores}){ancestors}{confine}(deny file-read* file-write* {})",
         filters.join(" ")
     )
 }
@@ -619,6 +741,27 @@ fn bwrap_arguments(layout: &Layout) -> Vec<OsString> {
     {
         args.extend(["--ro-bind".into(), path.into(), path.into()]);
     }
+    if let Some(confine) = &layout.confine {
+        for path in read_denied().iter().filter(|p| p.exists()) {
+            if path.is_dir() {
+                args.extend([
+                    "--tmpfs".into(),
+                    path.into(),
+                    "--remount-ro".into(),
+                    path.into(),
+                ]);
+            } else {
+                args.extend(["--ro-bind".into(), "/dev/null".into(), path.into()]);
+            }
+        }
+        let (git, secrets) = workspace_protected(&confine.writable);
+        for path in git {
+            args.extend(["--ro-bind".into(), path.clone().into(), path.into()]);
+        }
+        for path in secrets {
+            args.extend(["--ro-bind".into(), "/dev/null".into(), path.into()]);
+        }
+    }
     for path in layout.paths.iter().filter(|p| p.exists()) {
         if path.is_dir() {
             args.extend([
@@ -666,7 +809,9 @@ pub enum Confine {
     No,
     /// Codex's workspace sandbox, with `writable` and the temp folders writable (Auto).
     Workspace,
-    /// The workspace sandbox with nothing writable (Manual).
+    /// The workspace sandbox with the workspace and temp folders read-only
+    /// (Manual). Only the daemon's output folders in the Hexbot home, where the
+    /// code runtime saves its output, stay writable.
     ReadOnly,
 }
 /// A sandboxed command.
@@ -683,7 +828,11 @@ pub fn isolated_command(
             .cloned()
             .chain([std::env::temp_dir(), PathBuf::from("/tmp")])
             .collect(),
-        Confine::ReadOnly => vec![],
+        Confine::ReadOnly => writable
+            .iter()
+            .filter(|path| under(path, home))
+            .cloned()
+            .collect(),
     };
     let layout = layout(
         home,
@@ -973,7 +1122,10 @@ mod tests {
         std::fs::write(home.join("desktop-data/token"), "secret").unwrap();
         let layout = layout(&home, &[attachments.clone(), outputs.clone()], None).unwrap();
         let workspace = [base.path().join("work"), outputs.clone()];
-        std::fs::create_dir_all(&workspace[0]).unwrap();
+        std::fs::create_dir_all(workspace[0].join(".git/hooks")).unwrap();
+        std::fs::create_dir_all(workspace[0].join("app")).unwrap();
+        std::fs::write(workspace[0].join("app/.env"), "secret").unwrap();
+        std::fs::write(workspace[0].join(".env.example"), "example").unwrap();
         let confined = super::layout(
             &home,
             &[attachments.clone(), outputs.clone()],
@@ -1020,6 +1172,20 @@ mod tests {
             .map(|v| v.as_str().unwrap().into())
             .collect();
         assert_eq!(confined_bwrap, bwrap_arguments(&confined));
+        let work = workspace[0].canonicalize().unwrap();
+        assert!(confined_bwrap.windows(3).any(|w| w[0] == "--ro-bind"
+            && w[1] == work.join(".git").as_os_str()
+            && w[2] == work.join(".git").as_os_str()));
+        assert!(confined_bwrap.windows(3).any(|w| w[0] == "--ro-bind"
+            && w[1] == "/dev/null"
+            && w[2] == work.join("app/.env").as_os_str()));
+        assert!(
+            !confined_bwrap
+                .iter()
+                .any(|arg| arg == work.join(".env.example").as_os_str())
+        );
+        assert!(sandbox_profile(&confined).contains("(deny appleevent-send)"));
+        assert!(sandbox_profile(&layout).contains("(deny appleevent-send)"));
         assert!(confined_bwrap.iter().any(|arg| arg == "--unshare-net"));
         assert!(
             bwrap
