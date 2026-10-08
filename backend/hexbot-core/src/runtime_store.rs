@@ -169,6 +169,48 @@ pub fn delete(home: &Path, stored: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Sections still on a bot's previous provider and model move with the bot from
+/// their next message, and take its new thinking level if they had its old one.
+/// A section on another model, like a scheduled job with its own, keeps both.
+pub fn follow_bot_model(home: &Path, bot: &str, before: &Value, after: &Value) -> Result<()> {
+    let conn = open(home)?;
+    let rows = conn
+        .prepare("SELECT stored_id,options FROM native_sessions WHERE bot=?")?
+        .query_map([bot], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (stored, raw) in rows {
+        let mut options: Value =
+            serde_json::from_str(&raw).map_err(|e| crate::Error::new(5200, e.to_string()))?;
+        // Only a section on the bot's previous model follows the bot at all. A
+        // delegated task keeps its parent section's frozen choice.
+        if !options["parent_session"].is_null()
+            || (&options["provider"], &options["model"]) != (&before["provider"], &before["model"])
+        {
+            continue;
+        }
+        let mut moved = false;
+        if (&before["provider"], &before["model"]) != (&after["provider"], &after["model"]) {
+            options["provider"] = after["provider"].clone();
+            options["model"] = after["model"].clone();
+            moved = true;
+        }
+        if before["reasoning_effort"] != after["reasoning_effort"]
+            && options["reasoning_effort"] == before["reasoning_effort"]
+        {
+            options["reasoning_effort"] = after["reasoning_effort"].clone();
+            moved = true;
+        }
+        if moved {
+            conn.execute(
+                "UPDATE native_sessions SET options=? WHERE stored_id=?",
+                params![options.to_string(), stored],
+            )?;
+        }
+    }
+    Ok(())
+}
 pub fn session_dir(home: &Path, stored: &str) -> Result<PathBuf> {
     common::identifier(stored)?;
     check_deleted(&open(home)?, stored)?;

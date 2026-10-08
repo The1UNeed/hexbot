@@ -18,6 +18,7 @@ import {
   daemonInfo,
   modelsList,
   pairingCode,
+  providerModels,
   usageSummary,
   userMemoryGet,
   userMemorySet,
@@ -766,8 +767,7 @@ function DefaultModels() {
     const configured = providers.filter(item => item.configured === true)
     void Promise.all(
       configured.map(provider =>
-        modelsList(provider.id)
-          .then(result => (result.curated.length ? result.curated : result.all))
+        providerModels(provider.id)
           .catch(() => [] as ModelOption[])
           .then(models =>
             models.map(model => ({

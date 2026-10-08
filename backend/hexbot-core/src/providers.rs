@@ -23,6 +23,50 @@ fn profiles() -> &'static [Value] {
 fn string<'a>(v: &'a Value, key: &str) -> &'a str {
     v[key].as_str().unwrap_or("")
 }
+// Providers Pi implements natively retain their own transport and model metadata.
+const NATIVE: &[&str] = &[
+    "openai",
+    "openai-codex",
+    "anthropic",
+    "google",
+    "google-vertex",
+    "amazon-bedrock",
+    "github-copilot",
+    "openrouter",
+    "xai",
+    "deepseek",
+    "fireworks",
+    "huggingface",
+    "kimi-coding",
+    "moonshotai",
+    "moonshotai-cn",
+    "minimax",
+    "minimax-cn",
+    "nvidia",
+    "opencode",
+    "opencode-go",
+    "vercel-ai-gateway",
+    "xiaomi",
+    "zai",
+    "groq",
+    "cerebras",
+    "mistral",
+];
+/// Snapshot of ids, transports and thinking levels from the pinned Pi SDK.
+fn pi_catalog() -> &'static Value {
+    static DATA: OnceLock<Value> = OnceLock::new();
+    DATA.get_or_init(|| {
+        serde_json::from_str(include_str!("pi_catalog.json")).expect("valid pinned Pi catalog")
+    })
+}
+/// Pi's own catalog entry, for providers Pi drives natively.
+fn pi_entry(slug: &str) -> Option<&'static Value> {
+    let pi = pi_provider(slug);
+    NATIVE
+        .contains(&pi.as_str())
+        .then(|| &pi_catalog()["providers"][&pi])
+        .filter(|entry| entry.is_object())
+}
 pub fn canonical_provider(name: &str) -> String {
     let name = name.trim().to_lowercase();
     let alias = match name.as_str() {
@@ -519,6 +563,17 @@ fn catalog_models(slug: &str) -> Vec<String> {
         .filter_map(Value::as_str)
         .map(str::to_owned)
         .collect::<Vec<_>>();
+    // The pinned Pi knows models released after the profile list was written.
+    for id in pi_entry(slug)
+        .and_then(|entry| entry["models"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if !models.iter().any(|known| known == id) {
+            models.push(id.to_owned())
+        }
+    }
     for row in catalog()["curated"].as_array().unwrap() {
         if canonical_provider(string(row, "provider")) == slug {
             let id = string(row, "id").to_owned();
@@ -566,9 +621,12 @@ fn metadata(cache: &Value, cfg: &Value, provider: &str, model: &str) -> Value {
     }
     data
 }
-fn model_row(cache: &Value, cfg: &Value, provider: &str, id: &str) -> Value {
+fn model_row(cache: &Value, cfg: &Value, provider: &str, id: &str, live: &Value) -> Value {
     let data = metadata(cache, cfg, provider, id);
     let mut row = json!({"provider":provider,"id":id,"label":id});
+    if let Some(levels) = reasoning_levels(cache, cfg, provider, id, live) {
+        row["reasoning_levels"] = json!(levels)
+    }
     if let Some(context) = data["limit"]["context"].as_u64() {
         row["context"] = json!(context)
     }
@@ -608,33 +666,13 @@ async fn limited_json(response: reqwest::Response) -> Result<Value> {
     .await
 }
 
-async fn live_models(home: &Path, p: &Value) -> Result<Vec<String>> {
-    let cfg = common::read_config(home)?;
-    let slug = string(p, "name");
-    let base = if canonical_provider(string(&cfg["model"], "provider")) == slug {
-        cfg["model"]["base_url"]
-            .as_str()
-            .unwrap_or(string(p, "base_url"))
-    } else {
-        string(p, "base_url")
-    };
-    let url = if !string(p, "models_url").is_empty() {
-        string(p, "models_url").to_owned()
-    } else {
-        format!("{}/models", base.trim_end_matches('/'))
-    };
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Ok(vec![]);
-    }
-    let mut req = client()?.get(url);
-    if let Some(k) = custom_key(home, p)? {
-        req = if slug == "anthropic" {
-            req.header("x-api-key", k)
-                .header("anthropic-version", "2023-06-01")
-        } else {
-            req.bearer_auth(k)
-        }
-    }
+/// Reasoning levels providers report in their live lists, by provider and model.
+const LIVE_LEVELS: &str = "live_model_levels.json";
+/// Codex hides models from clients older than this. Hexbot drives every listed
+/// model through Pi, so it asks for the full list.
+const CODEX_CLIENT_VERSION: &str = "99.0.0";
+
+async fn provider_json(req: reqwest::RequestBuilder) -> Result<Value> {
     let response = req.send().await.map_err(http_error)?;
     if !response.status().is_success() {
         return Err(Error::new(
@@ -645,7 +683,69 @@ async fn live_models(home: &Path, p: &Value) -> Result<Vec<String>> {
             ),
         ));
     }
-    let data: Value = limited_json(response).await?;
+    limited_json(response).await
+}
+/// Model ids the provider lists right now, with reasoning levels when it reports them.
+async fn live_models(home: &Path, p: &Value) -> Result<(Vec<String>, Value)> {
+    let cfg = common::read_config(home)?;
+    let slug = string(p, "name");
+    // Discovery asks the endpoint inference uses: the selected model's
+    // base_url, then the provider's base URL variable, then the profile.
+    let env_name = string(p, "base_url_env_var");
+    let configured = if canonical_provider(string(&cfg["model"], "provider")) == slug {
+        cfg["model"]["base_url"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    } else {
+        None
+    }
+    .or_else(|| {
+        (!env_name.is_empty())
+            .then(|| common::env_values(home).ok()?.get(env_name).cloned())
+            .flatten()
+            .or_else(|| std::env::var(env_name).ok())
+            .filter(|s| !s.is_empty())
+    });
+    let base = configured.as_deref().unwrap_or(string(p, "base_url"));
+    if slug == "openai-codex" {
+        return codex_models(home, base).await;
+    }
+    let base = base.trim_end_matches('/');
+    // A fixed models URL belongs to the built-in endpoint, not an override.
+    let url = if configured.is_none() && !string(p, "models_url").is_empty() {
+        string(p, "models_url").to_owned()
+    } else if slug == "anthropic" && !base.ends_with("/v1") {
+        format!("{base}/v1/models")
+    } else {
+        format!("{base}/models")
+    };
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Ok((vec![], json!({})));
+    }
+    let mut req = client()?.get(url);
+    if slug == "anthropic" {
+        req = req.header("anthropic-version", "2023-06-01");
+    }
+    if let Some(k) = custom_key(home, p)? {
+        req = match slug {
+            "anthropic" => req.header("x-api-key", k),
+            "gemini" => req.header("x-goog-api-key", k),
+            _ => req.bearer_auth(k),
+        }
+    } else if matches!(
+        slug,
+        "nous" | "qwen-oauth" | "minimax-oauth" | "xai-oauth" | "anthropic"
+    ) {
+        // Signed-in providers list models with the same token they answer with.
+        let auth = credential_headers(home, home, slug).await?;
+        for (name, value) in auth["headers"].as_object().into_iter().flatten() {
+            if let Some(value) = value.as_str() {
+                req = req.header(name.as_str(), value);
+            }
+        }
+    }
+    let data = provider_json(req).await?;
     let mut models = data["data"]
         .as_array()
         .or_else(|| data["models"].as_array())
@@ -656,7 +756,92 @@ async fn live_models(home: &Path, p: &Value) -> Result<Vec<String>> {
         .collect::<Vec<_>>();
     models.sort();
     models.dedup();
-    Ok(models)
+    Ok((models, json!({})))
+}
+async fn codex_models(home: &Path, base: &str) -> Result<(Vec<String>, Value)> {
+    let auth = credential_headers(home, home, "openai-codex").await?;
+    let bearer = string(&auth["headers"], "authorization");
+    let mut req = client()?
+        .get(format!(
+            "{}/models?client_version={CODEX_CLIENT_VERSION}",
+            base.trim_end_matches('/')
+        ))
+        .header("authorization", bearer);
+    if let Some(account) = bearer
+        .strip_prefix("Bearer ")
+        .and_then(jwt_claims)
+        .and_then(|claims| {
+            claims["https://api.openai.com/auth"]["chatgpt_account_id"]
+                .as_str()
+                .map(str::to_owned)
+        })
+    {
+        req = req.header("chatgpt-account-id", account);
+    }
+    let data = provider_json(req).await?;
+    let mut ids = vec![];
+    let mut levels = json!({});
+    for model in data["models"].as_array().into_iter().flatten() {
+        let Some(id) = model["slug"].as_str() else {
+            continue;
+        };
+        if model["visibility"].as_str().is_some_and(|v| v != "list") {
+            continue;
+        }
+        ids.push(id.to_owned());
+        if let Some(supported) = model["supported_reasoning_levels"].as_array() {
+            let efforts = supported
+                .iter()
+                .filter_map(|level| level["effort"].as_str())
+                .map(|effort| if effort == "none" { "off" } else { effort })
+                .collect::<Vec<_>>();
+            levels[id] = json!(
+                crate::pi::THINKING_LEVELS
+                    .iter()
+                    .filter(|level| efforts.contains(level))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+    let path = home.join(LIVE_LEVELS);
+    let mut saved = read_json(&path).unwrap_or_else(|_| json!({}));
+    saved["openai-codex"] = levels.clone();
+    write_json(&path, &saved)?;
+    Ok((ids, levels))
+}
+fn strings(value: &Value) -> Option<Vec<String>> {
+    value.as_array().map(|items| {
+        items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    })
+}
+/// The thinking levels a model accepts: what both Pi and the provider support,
+/// else whichever of them knows the model. `None` means unknown.
+fn reasoning_levels(
+    cache: &Value,
+    cfg: &Value,
+    provider: &str,
+    id: &str,
+    live: &Value,
+) -> Option<Vec<String>> {
+    let pi = pi_entry(provider).and_then(|entry| strings(&entry["levels"][id]));
+    match (pi, strings(&live[id])) {
+        (Some(pi), Some(live)) => {
+            let both = pi
+                .iter()
+                .filter(|level| live.contains(level))
+                .cloned()
+                .collect::<Vec<_>>();
+            // Pi runs a model it knows with its own levels.
+            Some(if both.is_empty() { pi } else { both })
+        }
+        (Some(levels), None) | (None, Some(levels)) => Some(levels),
+        (None, None) => (metadata(cache, cfg, provider, id)["reasoning"] == false)
+            .then(|| vec!["off".to_owned()]),
+    }
 }
 pub async fn model_options(home: &Path, p: &Value) -> Result<Value> {
     let cfg = common::read_config(home)?;
@@ -672,21 +857,33 @@ pub async fn model_options(home: &Path, p: &Value) -> Result<Value> {
         };
         let mut source = "catalog";
         let mut error = None;
-        if (p["refresh"] == true || (models.is_empty() && !string(p, "provider").is_empty()))
-            && configured
-            && (string(p, "provider").is_empty()
-                || canonical_provider(string(p, "provider")) == slug)
+        let mut levels = Value::Null;
+        // Choosing a provider asks it for its current list when that list holds
+        // only models an agent can run: Codex's plan list, a dedicated models URL,
+        // or a provider with no catalog of its own. Others use the pinned catalog
+        // unless asked to refresh.
+        let requested = canonical_provider(string(p, "provider"));
+        let listed = slug == "openai-codex"
+            || !string(provider, "models_url").is_empty()
+            || provider["models"].as_array().is_none_or(Vec::is_empty);
+        if configured
+            && (requested.is_empty() || requested == slug)
+            && (p["refresh"] == true || (!requested.is_empty() && listed))
         {
             match live_models(home, provider).await {
-                Ok(m) if !m.is_empty() => {
+                Ok((m, live)) if !m.is_empty() => {
                     models = m;
+                    levels = live;
                     source = "live"
                 }
                 Ok(_) => {}
                 Err(e) => error = Some(e.message),
             }
         }
+        // The current model stays selectable when discovery fails, not when the
+        // provider answered without it.
         if configured
+            && source != "live"
             && current == slug
             && let Some(model) = cfg["model"]["default"].as_str().filter(|id| !id.is_empty())
             && !models.iter().any(|id| id == model)
@@ -708,6 +905,9 @@ pub async fn model_options(home: &Path, p: &Value) -> Result<Value> {
         if let Some(error) = error {
             row["error"] = json!(error)
         }
+        if levels.is_object() {
+            row["levels"] = levels
+        }
         rows.push(row);
     }
     for provider in custom_profiles(&cfg) {
@@ -721,13 +921,16 @@ pub async fn model_options(home: &Path, p: &Value) -> Result<Value> {
             models.push(json!(model));
         }
         let mut error = None;
-        if p["refresh"] == true
-            && (string(p, "provider").is_empty()
-                || canonical_provider(string(p, "provider")) == slug
-                || canonical_provider(string(p, "provider")) == format!("custom:{slug}"))
-        {
+        let requested = canonical_provider(string(p, "provider"));
+        if if requested.is_empty() {
+            p["refresh"] == true
+        } else {
+            requested == slug || requested == format!("custom:{slug}")
+        } {
             match live_models(home, &provider).await {
-                Ok(ids) if !ids.is_empty() => models = ids.into_iter().map(Value::from).collect(),
+                Ok((ids, _)) if !ids.is_empty() => {
+                    models = ids.into_iter().map(Value::from).collect()
+                }
                 Err(e) => error = Some(e.message),
                 _ => {}
             }
@@ -756,13 +959,6 @@ pub async fn model_options(home: &Path, p: &Value) -> Result<Value> {
 }
 pub async fn list_models(home: &Path, p: &Value) -> Result<Value> {
     let slug = canonical_provider(string(p, "provider"));
-    let curated = catalog()["curated"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|m| slug.is_empty() || canonical_provider(string(m, "provider")) == slug)
-        .cloned()
-        .collect::<Vec<_>>();
     let mut options = p.clone();
     if !options.is_object() {
         options = json!({})
@@ -772,10 +968,12 @@ pub async fn list_models(home: &Path, p: &Value) -> Result<Value> {
     }
     let options = model_options(home, &options).await?;
     let cache = read_json(&home.join("models_dev_cache.json")).unwrap_or_else(|_| json!({}));
+    let saved_levels = read_json(&home.join(LIVE_LEVELS)).unwrap_or_else(|_| json!({}));
     let cfg = common::read_config(home)?;
     let mut all = vec![];
     let mut live = false;
     let mut errors = vec![];
+    let mut listed = HashMap::new();
     for row in options["providers"].as_array().unwrap() {
         let provider = string(row, "slug");
         if !slug.is_empty()
@@ -800,10 +998,41 @@ pub async fn list_models(home: &Path, p: &Value) -> Result<Value> {
         if ids.is_empty() {
             ids = catalog_models(provider)
         }
-        for id in ids {
-            all.push(model_row(&cache, &cfg, provider, &id))
+        let levels = if row["levels"].is_object() {
+            &row["levels"]
+        } else {
+            &saved_levels[provider]
+        };
+        for id in &ids {
+            all.push(model_row(&cache, &cfg, provider, id, levels))
+        }
+        if row["source"] == "live" {
+            listed.insert(provider.to_owned(), (ids, levels.clone()));
         }
     }
+    // A recommendation the provider no longer lists cannot be chosen.
+    let curated = catalog()["curated"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| {
+            let provider = canonical_provider(string(m, "provider"));
+            if !slug.is_empty() && provider != slug {
+                return None;
+            }
+            let levels = match listed.get(&provider) {
+                Some((ids, _)) if !ids.iter().any(|id| id == string(m, "id")) => return None,
+                Some((_, levels)) => levels,
+                None => &saved_levels[&provider],
+            };
+            let mut row = m.clone();
+            if let Some(levels) = reasoning_levels(&cache, &cfg, &provider, string(m, "id"), levels)
+            {
+                row["reasoning_levels"] = json!(levels)
+            }
+            Some(row)
+        })
+        .collect::<Vec<_>>();
     all.sort_by_key(|v| string(v, "label").to_lowercase());
     let mut output = json!({"curated":curated,"all_source":if all.is_empty(){"none"}else if live{"mixed"}else{"catalog"},"all":all});
     if !errors.is_empty() {
@@ -983,41 +1212,9 @@ fn prepare_pi_config_locked(
     }
     write_json(&agent_dir.join("auth.json"), &auth)?;
     let mut providers = json!({});
-    // Providers Pi implements natively retain their own transport and model metadata.
-    const NATIVE: &[&str] = &[
-        "openai",
-        "openai-codex",
-        "anthropic",
-        "google",
-        "google-vertex",
-        "amazon-bedrock",
-        "github-copilot",
-        "openrouter",
-        "xai",
-        "deepseek",
-        "fireworks",
-        "huggingface",
-        "kimi-coding",
-        "moonshotai",
-        "moonshotai-cn",
-        "minimax",
-        "minimax-cn",
-        "nvidia",
-        "opencode",
-        "opencode-go",
-        "vercel-ai-gateway",
-        "xiaomi",
-        "zai",
-        "groq",
-        "cerebras",
-        "mistral",
-    ];
-    // Snapshot of ids and transports from the pinned Pi SDK; built-in metadata stays intact.
-    static PI_CATALOG: OnceLock<Value> = OnceLock::new();
-    let pi_catalog = PI_CATALOG.get_or_init(|| {
-        serde_json::from_str(include_str!("pi_catalog.json")).expect("valid pinned Pi catalog")
-    });
+    let pi_catalog = pi_catalog();
     let cache = read_json(&home.join("models_dev_cache.json")).unwrap_or_else(|_| json!({}));
+    let live_levels = read_json(&home.join(LIVE_LEVELS)).unwrap_or_else(|_| json!({}));
     for p in profiles() {
         let slug = string(p, "name");
         let pi = pi_provider(slug);
@@ -1079,7 +1276,7 @@ fn prepare_pi_config_locked(
             .into_iter()
             .map(|id| {
                 let meta = metadata(&cache, &cfg, slug, &id);
-                json!({
+                let mut model = json!({
                     "id": id,
                     "name": id,
                     "reasoning": meta["reasoning"].as_bool().unwrap_or(false),
@@ -1095,7 +1292,23 @@ fn prepare_pi_config_locked(
                     },
                     "contextWindow": meta["limit"]["context"].as_u64().unwrap_or(32768),
                     "maxTokens": meta["limit"]["output"].as_u64().unwrap_or(8192)
-                })
+                });
+                // A model newer than the pinned Pi takes the levels its provider reported.
+                if let Some(levels) = strings(&live_levels[slug][&id]) {
+                    model["reasoning"] = json!(levels.iter().any(|level| level != "off"));
+                    model["thinkingLevelMap"] = crate::pi::THINKING_LEVELS
+                        .iter()
+                        .filter_map(|&level| {
+                            let supported = levels.iter().any(|l| l == level);
+                            match (level, supported) {
+                                (_, false) => Some((level.to_owned(), Value::Null)),
+                                ("xhigh" | "max", true) => Some((level.to_owned(), json!(level))),
+                                _ => None,
+                            }
+                        })
+                        .collect();
+                }
+                model
             })
             .collect::<Vec<_>>();
         let api = if native {
@@ -1688,6 +1901,10 @@ fn grant_refresh_lock(path: PathBuf) -> std::sync::Arc<tokio::sync::Mutex<()>> {
 }
 pub async fn request_auth(home: &Path, bot: &str, provider: &str) -> Result<Value> {
     common::identifier(bot)?;
+    credential_headers(home, &home.join("profiles").join(bot), provider).await
+}
+/// Request headers for a provider, from the bot's own credentials or the daemon's.
+async fn credential_headers(home: &Path, profile_home: &Path, provider: &str) -> Result<Value> {
     let slug = canonical_provider(provider);
     if !matches!(
         slug.as_str(),
@@ -1704,10 +1921,9 @@ pub async fn request_auth(home: &Path, bot: &str, provider: &str) -> Result<Valu
         ));
     }
     let epoch = disabled[format!("__epoch_{slug}")].as_u64().unwrap_or(0);
-    let profile_home = home.join("profiles").join(bot);
     let p = profile(&slug)?;
     let root_cfg = common::read_config(home)?;
-    let profile_cfg = common::read_config(&profile_home)?;
+    let profile_cfg = common::read_config(profile_home)?;
     let inline = [&profile_cfg, &root_cfg].into_iter().find_map(|cfg| {
         if canonical_provider(string(&cfg["model"], "provider")) == slug {
             cfg["model"]["api_key"]
@@ -1718,18 +1934,18 @@ pub async fn request_auth(home: &Path, bot: &str, provider: &str) -> Result<Valu
             None
         }
     });
-    if let Some(key) = inline.or(key(&profile_home, p)?).or(key(home, p)?) {
+    if let Some(key) = inline.or(key(profile_home, p)?).or(key(home, p)?) {
         return Ok(if slug == "anthropic" {
             json!({"headers":{"x-api-key":key,"authorization":null}})
         } else {
             json!({"headers":{"authorization":format!("Bearer {key}")}})
         });
     }
-    let profile_state = oauth(&profile_home, &slug)?;
+    let profile_state = oauth(profile_home, &slug)?;
     let credential_home = if !string(&profile_state, "access_token").is_empty()
         || profile_state["tokens"].is_object()
     {
-        profile_home.as_path()
+        profile_home
     } else {
         home
     };
@@ -2220,6 +2436,33 @@ pub fn xai_configured(home: &Path, bot: &str) -> Result<bool> {
 #[cfg(test)]
 mod migration_tests {
     use super::*;
+    #[test]
+    fn pickers_list_pinned_pi_models_with_the_levels_they_accept() {
+        assert!(
+            catalog_models("openai-codex")
+                .iter()
+                .any(|id| id == "gpt-6.1-sol")
+        );
+        let none = json!({});
+        let levels =
+            |provider, id, live: &Value| reasoning_levels(&none, &none, provider, id, live);
+        assert_eq!(
+            levels("opencode-go", "glm-5.3-flash", &none).unwrap(),
+            ["low", "high", "max"]
+        );
+        // Codex reports its levels; Pi's extra "minimal" alias is not one of them.
+        let live =
+            json!({"gpt-6.1-sol":["low","medium","high","xhigh","max"],"gpt-7":["low","high"]});
+        assert_eq!(
+            levels("openai-codex", "gpt-6.1-sol", &live).unwrap(),
+            ["low", "medium", "high", "xhigh", "max"]
+        );
+        assert_eq!(
+            levels("openai-codex", "gpt-7", &live).unwrap(),
+            ["low", "high"]
+        );
+        assert_eq!(levels("opencode-go", "unknown-model", &none), None);
+    }
     #[test]
     fn reads_credential_pool_and_hexbot_anthropic_login_without_changing_imports() {
         let home = tempfile::tempdir().unwrap();

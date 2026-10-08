@@ -19,7 +19,7 @@ import {
   botsList,
   connectorsList,
   connectorsSetup,
-  modelsList,
+  providerModels,
   providersList,
   sectionsCreate,
   settingsGet,
@@ -38,7 +38,7 @@ import { BOT_TEMPLATES } from '../lib/bot-templates'
 import { type DaemonProgress, getBridge, hasLocalRuntime, isElectron } from '../lib/bridge'
 import { cn } from '../lib/cn'
 import { connectTo, setLocalDaemonPort } from '../lib/connection'
-import { REASONING_LEVELS } from '../lib/reasoning'
+import { reasoningOptions, runningLevel } from '../lib/reasoning'
 import type {
   Bot,
   Connector,
@@ -574,20 +574,18 @@ interface ModelChoice {
 async function loadModelChoices(providers: Provider[]): Promise<ModelChoice[]> {
   const lists = await Promise.all(
     providers.map(provider =>
-      modelsList(provider.id)
-        .then(result => ({ provider, result }))
-        .catch(() => ({ provider, result: { all: [], curated: [] } }))
+      providerModels(provider.id)
+        .then(models => ({ models, provider }))
+        .catch(() => ({ models: [] as ModelOption[], provider }))
     )
   )
 
-  return lists.flatMap(({ provider, result }) => {
-    const models: ModelOption[] = result.curated.length ? result.curated : result.all
-
-    return models.map(model => ({
+  return lists.flatMap(({ models, provider }) =>
+    models.map(model => ({
       label: `${provider.label} · ${model.label}`,
       value: `${provider.id}/${model.id}`
     }))
-  })
+  )
 }
 
 /** The daemon's cap on About you (`hexbot.memory.USER_CAP`). */
@@ -1000,21 +998,31 @@ function BotStep({
   const [reasoning, setReasoning] = useState<null | ReasoningEffort>(null)
   const [model, setModel] = useState(() => defaultModel?.split('/').slice(1).join('/') ?? '')
   const [busy, setBusy] = useState(false)
+  const chosen = models.find(item => item.id === model)
 
   useEffect(() => {
     if (!provider) {
       return
     }
 
-    void modelsList(provider)
-      .then(result => {
-        const list = result.curated.length ? result.curated : result.all
+    // A slower answer for a provider no longer chosen is dropped.
+    let current = true
+    void providerModels(provider)
+      .then(list => {
+        if (!current) {
+          return
+        }
+
         setModels(list)
         setModel(current =>
           list.some(item => item.id === current) ? current : (list[0]?.id ?? '')
         )
       })
-      .catch(reason => onError(String(reason)))
+      .catch(reason => current && onError(String(reason)))
+
+    return () => {
+      current = false
+    }
   }, [onError, provider])
 
   const pickTemplate = (id: string) => {
@@ -1051,7 +1059,7 @@ function BotStep({
         name,
         persona: persona.trim(),
         provider,
-        ...(reasoning ? { reasoning_effort: reasoning } : {}),
+        ...(reasoning ? { reasoning_effort: runningLevel(reasoning, chosen) } : {}),
         title: title.trim()
       })
 
@@ -1151,7 +1159,12 @@ function BotStep({
           <span className="font-medium">Provider</span>
           <Select
             label="Provider"
-            onValueChange={setProvider}
+            onValueChange={value => {
+              // The old provider's models must not be created with the new provider.
+              setModels([])
+              setModel('')
+              setProvider(value)
+            }}
             options={configured.map(item => ({ label: item.label, value: item.id }))}
             value={provider}
           />
@@ -1173,8 +1186,8 @@ function BotStep({
           <Select
             label="Reasoning"
             onValueChange={value => setReasoning(value as ReasoningEffort)}
-            options={REASONING_LEVELS}
-            value={reasoning ?? 'medium'}
+            options={reasoningOptions(chosen)}
+            value={runningLevel(reasoning ?? 'medium', chosen)}
           />
         </label>
       </div>

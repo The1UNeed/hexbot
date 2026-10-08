@@ -617,9 +617,17 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
         _ => Err(Error::new(-32601, "method not found")),
     }
 }
+/// Writes a bot's profile. Sections still on its previous model move with it,
+/// under the same lock so concurrent updates move them in order.
 fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
     let _skills = crate::skills::read_lock()?;
     let writer = common::config_writer()?;
+    // Only a patch that names a model field moves sections; any other edit
+    // leaves an inherited deployment model alone.
+    let moves = ["provider", "model", "reasoning_effort"]
+        .iter()
+        .any(|key| p.get(*key).is_some());
+    let before = section_model(home, name)?;
     let dir = profile(home, name)?;
     let mut cfg = config(home, name)?;
     if cfg["model"].is_string() {
@@ -731,6 +739,10 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
             .unwrap_or(Value::Null);
     }
     writer.write(&dir, &cfg)?;
+    let after = section_model(home, name)?;
+    if moves && before != after {
+        runtime_store::follow_bot_model(home, name, &before, &after)?;
+    }
     if let Some(v) = p["persona"].as_str() {
         let path = dir.join("SOUL.md");
         safe(home, &path)?;
@@ -893,6 +905,21 @@ fn write_bot_columns(tx: &rusqlite::Transaction, name: &str, p: &Value) -> Resul
         }
     }
     Ok(())
+}
+/// The provider, model and thinking level a new section of this bot starts with.
+fn section_model(home: &Path, name: &str) -> Result<Value> {
+    let mut model = config(home, name)?["model"].clone();
+    if model.is_null() {
+        model = common::read_config(home)?["model"].clone();
+    }
+    if model.is_string() {
+        model = json!({"default":model});
+    }
+    Ok(json!({
+        "provider": model["provider"],
+        "model": model["default"],
+        "reasoning_effort": model["reasoning_effort"]
+    }))
 }
 fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     let name = required(p, "name")?;

@@ -24,9 +24,11 @@ Treat provider keys like passwords. Do not paste them into a chat, a bot persona
 
 ## Choose a model
 
-Each bot has a provider and model. The picker combines a short curated list with models reported by configured providers. A section can also carry a temporary model override.
+Each bot has a provider and model. The picker lists only providers you have set up, with a short curated list on top. For OpenAI Codex, OpenRouter and local servers it shows the models the provider offers right now; other providers use the catalog that ships with Hexbot. A section can also carry a temporary model override.
 
-Each bot also has a reasoning level, from Off to Max, in its Model settings. Higher levels think longer before answering and use more tokens. The default is Medium. A model uses the closest level it supports, and models without reasoning ignore it. Choose it when you create a bot, so the bot's first section starts at that level. A new level applies to new sections; open sections keep the level they started with.
+Each bot also has a reasoning level in its Model settings. The list shows only the levels the chosen model supports, for example Low, High and Max for GLM-5.3 Flash. Higher levels think longer before answering and use more tokens. The default is Medium, or the next level up the model supports. Choose it when you create a bot, so the bot's first section starts at that level.
+
+A new model or level applies from the next message in every section still on the previous one. The first reply after a switch rereads the conversation without the provider's prompt cache, so it costs more than usual.
 
 LM Studio lists the models available at its local `/v1/models` endpoint when you open its model picker. Start LM Studio's server before choosing a model. If discovery fails, the daemon's current configured model stays in the list.
 

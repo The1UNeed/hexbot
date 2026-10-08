@@ -1,48 +1,91 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Select } from '../../components/ui/select'
-import { modelsList } from '../../lib/api'
-import { REASONING_LEVELS } from '../../lib/reasoning'
+import { providerModels } from '../../lib/api'
+import { reasoningOptions, runningLevel } from '../../lib/reasoning'
 import type { Bot, ModelOption, ReasoningEffort } from '../../lib/types'
 import { useSettings } from '../../stores/settings'
 
 import { errorText, Group, Heading, Row, type SaveBot } from './shared'
 
 export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
-  const [models, setModels] = useState<{ all: ModelOption[]; curated: ModelOption[] }>({
-    all: [],
-    curated: []
+  const [loaded, setLoaded] = useState<{ list: ModelOption[]; provider: string }>({
+    list: [],
+    provider: ''
   })
 
   const [error, setError] = useState<string | null>(null)
   const providerRows = useSettings(state => state.providers)
   const refreshProviders = useSettings(state => state.refreshProviders)
+
   useEffect(() => {
-    void modelsList()
-      .then(setModels)
-      .catch(cause => setError(errorText(cause)))
+    void refreshProviders()
+  }, [refreshProviders])
 
-    if (!providerRows.length) {
-      void refreshProviders()
+  // Each provider is asked for its current list; the daemon falls back to its catalog.
+  useEffect(() => {
+    const provider = bot.provider
+
+    if (!provider || provider === loaded.provider) {
+      return
     }
-  }, [providerRows.length, refreshProviders])
-  const providerLabel = (id: string) => providerRows.find(row => row.id === id)?.label ?? id
 
-  const ordered = useMemo(() => {
-    const ids = new Set(models.curated.map(item => `${item.provider}:${item.id}`))
+    let current = true
+    setError(null)
+    void providerModels(provider)
+      .then(list => current && setLoaded({ list, provider }))
+      .catch(cause => current && setError(errorText(cause)))
 
-    return [
-      ...models.curated.map(item => ({ ...item, label: `Recommended · ${item.label}` })),
-      ...models.all.filter(item => !ids.has(`${item.provider}:${item.id}`))
-    ]
-  }, [models])
+    return () => {
+      current = false
+    }
+  }, [bot.provider, loaded.provider])
 
-  const providers = [
-    ...new Set(ordered.map(item => item.provider).filter((item): item is string => Boolean(item)))
-  ]
+  const listed = bot.provider === loaded.provider ? loaded.list : []
 
-  const visible = ordered.filter(item => !bot.provider || item.provider === bot.provider)
-  const current = visible.find(item => item.id === bot.model)
+  // The bot's own model stays visible even when the provider's list leaves it out.
+  const models =
+    bot.model && bot.provider === loaded.provider && !listed.some(item => item.id === bot.model)
+      ? [...listed, { id: bot.model, label: bot.model, provider: bot.provider }]
+      : listed
+
+  // Only providers with a key or sign-in; the bot's own stays listed so it reads correctly.
+  const providers = providerRows.filter(row => row.configured || row.id === bot.provider)
+
+  // Only the latest provider choice may save; an earlier, slower one is dropped.
+  const latestSwitch = useRef(0)
+
+  const switchProvider = async (provider: string) => {
+    const request = ++latestSwitch.current
+
+    try {
+      const list = await providerModels(provider)
+
+      if (request !== latestSwitch.current) {
+        return
+      }
+
+      const model = list.find(item => item.id === bot.model) ?? list[0]
+      const label = providerRows.find(row => row.id === provider)?.label ?? provider
+
+      // A provider without a model to run would leave the bot on another provider's model.
+      if (!model) {
+        setError(`${label} lists no models right now. The bot stays where it is.`)
+
+        return
+      }
+
+      setLoaded({ list, provider })
+      await onSave({ model: model.id, provider })
+    } catch (cause) {
+      if (request === latestSwitch.current) {
+        setError(errorText(cause))
+      }
+    }
+  }
+
+  const current = models.find(item => item.id === bot.model)
+  const level = runningLevel(bot.reasoning_effort ?? 'medium', current)
 
   const detail = (text: string) => (
     <span className="text-[length:var(--text-secondary)] text-muted">{text}</span>
@@ -54,17 +97,14 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
         Model
       </Heading>
       <div className="space-y-8">
-        <Group>
+        <Group footer="Changes apply from the next message, in every section still on this model.">
           <Row
             control={
               <div className="w-[min(280px,42vw)]">
                 <Select
                   label="Provider"
-                  onValueChange={provider => void onSave({ provider })}
-                  options={providers.map(provider => ({
-                    label: providerLabel(provider),
-                    value: provider
-                  }))}
+                  onValueChange={provider => void switchProvider(provider)}
+                  options={providers.map(row => ({ label: row.label, value: row.id }))}
                   placeholder="Choose a provider"
                   value={bot.provider ?? undefined}
                 />
@@ -77,27 +117,17 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
               <div className="w-[min(280px,42vw)]">
                 <Select
                   label="Model"
-                  onValueChange={model => {
-                    // The same id can exist under several providers; keep the chosen one.
-                    const found =
-                      visible.find(item => item.id === model) ??
-                      ordered.find(item => item.id === model)
-
-                    void onSave({
-                      model,
-                      ...(found?.provider ? { provider: found.provider } : {})
-                    })
-                  }}
-                  options={visible.map(item => ({ label: item.label, value: item.id }))}
+                  onValueChange={model => void onSave({ model, provider: bot.provider ?? undefined })}
+                  options={models.map(item => ({ label: item.label, value: item.id }))}
                   placeholder="Choose a model"
-                  value={bot.model ?? undefined}
+                  value={current ? current.id : undefined}
                 />
               </div>
             }
             title="Model"
           />
         </Group>
-        <Group footer="Higher levels think longer and use more tokens. Each model uses the closest level it supports. Applies to new sections.">
+        <Group footer="Higher levels think longer and use more tokens. The list shows the levels this model supports.">
           <Row
             control={
               <div className="w-[min(280px,42vw)]">
@@ -106,8 +136,8 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
                   onValueChange={value =>
                     void onSave({ reasoning_effort: value as ReasoningEffort })
                   }
-                  options={REASONING_LEVELS}
-                  value={bot.reasoning_effort ?? 'medium'}
+                  options={reasoningOptions(current)}
+                  value={level}
                 />
               </div>
             }

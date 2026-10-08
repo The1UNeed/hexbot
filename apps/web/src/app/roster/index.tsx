@@ -20,7 +20,7 @@ import { RoomCluster } from '../../components/ui/room-cluster'
 import { Select } from '../../components/ui/select'
 import { StatusDot, StatusTag } from '../../components/ui/status-dot'
 import { Title } from '../../components/ui/title'
-import { modelsList, sectionsMarkRead } from '../../lib/api'
+import { providerModels, sectionsMarkRead } from '../../lib/api'
 import { useApprovalModes } from '../../lib/approval-modes'
 import {
   avatarPng,
@@ -32,7 +32,7 @@ import {
 import { toHandle } from '../../lib/bot-handle'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
-import { REASONING_LEVELS } from '../../lib/reasoning'
+import { reasoningOptions, runningLevel } from '../../lib/reasoning'
 import { toMillis } from '../../lib/time'
 import type {
   Bot,
@@ -455,18 +455,28 @@ export function RosterColumn() {
       return
     }
 
-    void modelsList(newBot.provider)
-      .then(result => {
-        const list = result.curated.length ? result.curated : result.all
+    // A slower answer for a provider no longer chosen is dropped.
+    let current = true
+    void providerModels(newBot.provider)
+      .then(list => {
+        if (!current) {
+          return
+        }
+
         setNewModels(list)
         setNewBot(value => ({
           ...value,
           model: list.some(item => item.id === value.model) ? value.model : (list[0]?.id ?? '')
         }))
       })
-      .catch(() => setNewModels([]))
+      .catch(() => current && setNewModels([]))
+
+    return () => {
+      current = false
+    }
   }, [newBot.provider])
 
+  const newModel = newModels.find(item => item.id === newBot.model)
   const [focused, setFocused] = useState<string | null>(null)
   const root = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -814,7 +824,9 @@ export function RosterColumn() {
                   model: newBot.model,
                   name: handle,
                   provider: newBot.provider,
-                  ...(newBot.reasoning ? { reasoning_effort: newBot.reasoning } : {}),
+                  ...(newBot.reasoning
+                    ? { reasoning_effort: runningLevel(newBot.reasoning, newModel) }
+                    : {}),
                   ...(avatar ? { avatar } : {})
                 })
               )
@@ -846,7 +858,11 @@ export function RosterColumn() {
               <Field label="Provider">
                 <Select
                   label="Provider"
-                  onValueChange={provider => setNewBot(value => ({ ...value, provider }))}
+                  onValueChange={provider => {
+                    // The old provider's models must not be created with the new provider.
+                    setNewModels([])
+                    setNewBot(value => ({ ...value, model: '', provider }))
+                  }}
                   options={configuredProviders.map(item => ({ label: item.label, value: item.id }))}
                   placeholder="Provider"
                   value={newBot.provider || undefined}
@@ -867,15 +883,15 @@ export function RosterColumn() {
                   onValueChange={reasoning =>
                     setNewBot(value => ({ ...value, reasoning: reasoning as ReasoningEffort }))
                   }
-                  options={REASONING_LEVELS}
-                  value={newBot.reasoning ?? 'medium'}
+                  options={reasoningOptions(newModel)}
+                  value={runningLevel(newBot.reasoning ?? 'medium', newModel)}
                 />
               </Field>
             </div>
           ) : (
             <p className="flex items-center gap-2 text-[length:var(--text-secondary)] text-muted">
               <span className="min-w-0 truncate">
-                Runs on {newModels.find(item => item.id === newBot.model)?.label ?? newBot.model}
+                Runs on {newModel?.label ?? newBot.model}
               </span>
               <button
                 className="shrink-0 underline-offset-2 hover:text-foreground hover:underline"

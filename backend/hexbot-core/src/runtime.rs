@@ -75,6 +75,16 @@ struct Live {
     event_gate: Mutex<()>,
     attachment_gate: AsyncMutex<()>,
     permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
+    /// Provider, model and thinking level the Pi process runs with.
+    model: Mutex<Value>,
+}
+/// The part of a section's options that picks its model.
+fn model_choice(options: &Value) -> Value {
+    json!([
+        options["provider"],
+        options["model"],
+        options["reasoning_effort"]
+    ])
 }
 pub struct Runtime {
     home: PathBuf,
@@ -171,31 +181,7 @@ impl Runtime {
             let Ok(guard) = lock.try_lock_owned() else {
                 continue;
             };
-            let has_children = self
-                .children
-                .lock()
-                .unwrap()
-                .values()
-                .any(|c| c.row["parent"] == s.stored && c.row["status"] == "running");
-            {
-                let mut tasks = s.requests.lock().unwrap();
-                while tasks.try_join_next().is_some() {}
-            }
-            let mut sessions = self.sessions.lock().unwrap();
-            let _gate = s.event_gate.lock().unwrap();
-            let mut state = s.state.lock().unwrap();
-            if !has_children
-                && !state.busy
-                && !state.closed
-                && state.pending.is_empty()
-                && state.attachments.is_empty()
-                && state.refs.is_empty()
-                && state.unsaved.is_empty()
-                && state.last_activity < before
-                && s.requests.lock().unwrap().is_empty()
-            {
-                state.closed = true;
-                sessions.remove(&s.stored);
+            if self.retire_quiet(&s, before) {
                 expired.push((s.clone(), guard));
                 // Under capacity pressure retire only the least recently used bot.
                 if before == f64::INFINITY {
@@ -204,16 +190,69 @@ impl Runtime {
             }
         }
         for (s, _) in &expired {
-            crate::provider_acp::cancel(&self.home, &s.stored).await;
-            Self::cancel_dialogs(s).await;
-            crate::native_tools::close_session(&self.home, &s.stored).await;
-            if let Err(error) = s.process.shutdown().await {
-                eprintln!("Could not stop section {}: {error}", s.stored);
-            }
-            s.permit.lock().unwrap().take();
-            self.events.forget(&s.owner, &s.id);
+            self.stop_retired(s).await;
         }
         Ok(expired.len())
+    }
+    /// Marks a section closed and takes it out of the map when nothing in it is
+    /// still running or unsaved and it was last used before `before`. The
+    /// caller holds its open lock and then stops it with `stop_retired`.
+    fn retire_quiet(&self, s: &Arc<Live>, before: f64) -> bool {
+        let has_children = self
+            .children
+            .lock()
+            .unwrap()
+            .values()
+            .any(|c| c.row["parent"] == s.stored && c.row["status"] == "running");
+        {
+            let mut tasks = s.requests.lock().unwrap();
+            while tasks.try_join_next().is_some() {}
+        }
+        let mut sessions = self.sessions.lock().unwrap();
+        let _gate = s.event_gate.lock().unwrap();
+        let mut state = s.state.lock().unwrap();
+        if has_children
+            || state.busy
+            || state.closed
+            || !state.pending.is_empty()
+            || !state.attachments.is_empty()
+            || !state.refs.is_empty()
+            || !state.unsaved.is_empty()
+            || state.last_activity >= before
+            || !s.requests.lock().unwrap().is_empty()
+        {
+            return false;
+        }
+        state.closed = true;
+        sessions.remove(&s.stored);
+        true
+    }
+    /// Stops the process of a section already marked closed and out of the map.
+    async fn stop_retired(&self, s: &Live) {
+        crate::provider_acp::cancel(&self.home, &s.stored).await;
+        Self::cancel_dialogs(s).await;
+        crate::native_tools::close_session(&self.home, &s.stored).await;
+        if let Err(error) = s.process.shutdown().await {
+            eprintln!("Could not stop section {}: {error}", s.stored);
+        }
+        s.permit.lock().unwrap().take();
+        self.events.forget(&s.owner, &s.id);
+    }
+    /// True when the section's saved model differs from the one its process runs.
+    fn model_changed(&self, s: &Live) -> Result<bool> {
+        let saved: Option<String> = store::open(&self.home)?
+            .query_row(
+                "SELECT options FROM native_sessions WHERE stored_id=?",
+                [&s.stored],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(saved) = saved else {
+            return Ok(false);
+        };
+        let saved: Value =
+            serde_json::from_str(&saved).map_err(|e| Error::new(5200, e.to_string()))?;
+        Ok(model_choice(&saved) != *s.model.lock().unwrap())
     }
     fn emit(&self, s: &Live, kind: &str, mut payload: Value) {
         // A card names its bot and section, so a client that does not list the section (a
@@ -333,8 +372,14 @@ impl Runtime {
         locks.insert(stored.into(), Arc::downgrade(&lock));
         lock
     }
+    /// Opens a section to read or control it; a running process stays as it is.
     async fn open_session(&self, owner: &str, bot: &str, stored: &str) -> Result<Arc<Live>> {
-        self.open_session_with_tools(owner, bot, stored, None, None)
+        self.open_session_with_tools(owner, bot, stored, None, None, false)
+            .await
+    }
+    /// Opens a section to give it input, first moving it to its bot's new model.
+    async fn open_for_input(&self, owner: &str, bot: &str, stored: &str) -> Result<Arc<Live>> {
+        self.open_session_with_tools(owner, bot, stored, None, None, true)
             .await
     }
     async fn open_session_with_tools(
@@ -344,6 +389,7 @@ impl Runtime {
         stored: &str,
         restricted: Option<&[&str]>,
         overrides: Option<&Value>,
+        input: bool,
     ) -> Result<Arc<Live>> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(Error::new(5201, "daemon is shutting down"));
@@ -376,7 +422,7 @@ impl Runtime {
             };
         let lock = self.open_lock(stored);
         let _guard = lock.lock().await;
-        self.open_session_locked(owner, bot, stored, restricted, overrides)
+        self.open_session_locked(owner, bot, stored, restricted, overrides, input)
             .await
     }
     async fn open_session_locked(
@@ -386,6 +432,7 @@ impl Runtime {
         stored: &str,
         restricted: Option<&[&str]>,
         overrides: Option<&Value>,
+        input: bool,
     ) -> Result<Arc<Live>> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(Error::new(5201, "daemon is shutting down"));
@@ -396,12 +443,18 @@ impl Runtime {
             common::bot_session_access(&self.home, owner, bot, stored)?;
         }
         store::session_dir(&self.home, stored)?;
-        if let Some(s) = self.sessions.lock().unwrap().get(stored).cloned() {
+        let running = self.sessions.lock().unwrap().get(stored).cloned();
+        if let Some(s) = running {
             if s.owner != owner {
                 return Err(Error::new(4302, "not the owner"));
             }
-            s.state.lock().unwrap().last_activity = common::now();
-            return Ok(s);
+            // A new model starts a new process on the same conversation and
+            // live ID. A section that is still working switches next time.
+            if !(input && self.model_changed(&s)? && self.retire_quiet(&s, f64::INFINITY)) {
+                s.state.lock().unwrap().last_activity = common::now();
+                return Ok(s);
+            }
+            self.stop_retired(&s).await;
         }
         let permit = match self.capacity.clone().try_acquire_owned() {
             Ok(permit) => Ok(permit),
@@ -822,6 +875,7 @@ impl Runtime {
             permit: Mutex::new(Some(permit)),
             settled,
             tools: options["tools"].as_array().cloned().unwrap_or_default(),
+            model: Mutex::new(model_choice(&options)),
         });
         {
             let mut sessions = self.sessions.lock().unwrap();
@@ -1087,9 +1141,11 @@ impl Runtime {
             }
         }
     }
+    /// Callers share the live ID with room viewers before running, so a section
+    /// moves to its bot's new model here rather than mid-turn.
     pub async fn ensure_hidden(&self, owner: &str, bot: &str, stored: &str) -> Result<String> {
         common::bot_session_access(&self.home, owner, bot, stored)?;
-        Ok(self.open_session(owner, bot, stored).await?.id.clone())
+        Ok(self.open_for_input(owner, bot, stored).await?.id.clone())
     }
     pub async fn run_hidden_job(
         &self,
@@ -1107,8 +1163,15 @@ impl Runtime {
         let restricted = options["enabled_tools"]
             .as_array()
             .map(|v| v.iter().filter_map(Value::as_str).collect::<Vec<_>>());
-        self.open_session_with_tools(owner, bot, stored, restricted.as_deref(), Some(options))
-            .await?;
+        self.open_session_with_tools(
+            owner,
+            bot,
+            stored,
+            restricted.as_deref(),
+            Some(options),
+            true,
+        )
+        .await?;
         let result = self.run_hidden(owner, bot, stored, text).await;
         if let Err(error) = self.close_stored(owner, stored).await {
             eprintln!("Could not close background bot {stored}: {}", error.message);
@@ -1134,7 +1197,7 @@ impl Runtime {
         )? {
             return Err(Error::new(4202, "restricted sessions must be fresh"));
         }
-        self.open_session_with_tools(owner, bot, stored, Some(allowed_tools), None)
+        self.open_session_with_tools(owner, bot, stored, Some(allowed_tools), None, true)
             .await?;
         let result = self.run_hidden(owner, bot, stored, text).await;
         if let Err(error) = self.close_stored(owner, stored).await {
@@ -1162,7 +1225,7 @@ impl Runtime {
         hops: Option<Arc<AtomicUsize>>,
     ) -> Result<String> {
         common::bot_session_access(&self.home, owner, bot, stored)?;
-        let s = self.open_session(owner, bot, stored).await?;
+        let s = self.open_for_input(owner, bot, stored).await?;
         let mut settled = s.settled.subscribe();
         let before = *settled.borrow();
         let finished = tokio::time::timeout(deadline, async {
@@ -1458,7 +1521,12 @@ impl Runtime {
             if method == "hexbot.bots.introduce" && p["name"] != bot {
                 return Err(Error::new(4204, "bot does not match section"));
             }
-            let s = self.open_session(caller, &bot, stored).await?;
+            // An introduction is the section's first input.
+            let s = if method == "hexbot.bots.introduce" {
+                self.open_for_input(caller, &bot, stored).await?
+            } else {
+                self.open_session(caller, &bot, stored).await?
+            };
             let messages = store::history(&self.home, stored)?;
             let summary = store::summary(&self.home, stored)?;
             section["live_session_id"] = json!(s.id);
@@ -1512,7 +1580,16 @@ impl Runtime {
                 .collect::<Vec<_>>();
             return Ok(json!({"sessions":sessions}));
         }
-        let s = self.live(caller, required(p, "session_id")?).await?;
+        let mut s = self.live(caller, required(p, "session_id")?).await?;
+        // New input moves a section to its bot's new model; reads and controls
+        // keep the process that is running.
+        if matches!(
+            method,
+            "prompt.submit" | "image.attach_bytes" | "pdf.attach" | "file.attach"
+        ) && self.model_changed(&s)?
+        {
+            s = self.open_for_input(caller, &s.bot, &s.stored).await?;
+        }
         match method {
             "prompt.submit" => {
                 let result = self
@@ -1626,6 +1703,7 @@ impl Runtime {
                     "UPDATE native_sessions SET options=? WHERE stored_id=?",
                     params![options.to_string(), s.stored],
                 )?;
+                *s.model.lock().unwrap() = model_choice(&options);
                 self.emit(
                     &s,
                     "session.info",
@@ -1835,7 +1913,7 @@ impl Runtime {
             }
             // Existing sections retain their frozen tools.
             let parent = self
-                .open_session_locked(owner, bot, stored, None, None)
+                .open_session_locked(owner, bot, stored, None, None, true)
                 .await?;
             drop(guard);
             self.submit(&parent, text, true, true, None).await
@@ -3825,6 +3903,82 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         assert_eq!(mode("off", "alice"), "smart");
     }
     #[tokio::test]
+    async fn sections_follow_a_new_bot_model_from_the_next_message() {
+        let (home, runtime, _) = setup();
+        let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+        store::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES('job','alice','owl','frozen',?)",
+                [json!({"provider":"openai","model":"cheap","reasoning_effort":null}).to_string()],
+            )
+            .unwrap();
+        crate::catalog::call(
+            home.path(),
+            "alice",
+            "hexbot.bots.update",
+            &json!({"name":"owl","provider":"anthropic","model":"claude-fable-5-1","reasoning_effort":"high"}),
+        )
+        .unwrap()
+        .unwrap();
+        // Reads keep the running process; the next input restarts it.
+        assert!(Arc::ptr_eq(
+            &s,
+            &runtime.live("alice", &s.id).await.unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            &s,
+            &runtime.open_session("alice", "owl", "first").await.unwrap()
+        ));
+        let reopened = runtime
+            .open_for_input("alice", "owl", "first")
+            .await
+            .unwrap();
+        assert!(!Arc::ptr_eq(&s, &reopened));
+        assert_eq!(reopened.id, s.id);
+        let log = fs::read_to_string(home.path().join("processes.jsonl")).unwrap();
+        let args = serde_json::from_str::<Value>(log.lines().last().unwrap()).unwrap()["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(args.contains("--model claude-fable-5-1 --provider anthropic"));
+        assert!(args.contains("--thinking high"));
+        let job: String = store::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT options FROM native_sessions WHERE stored_id='job'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let job = serde_json::from_str::<Value>(&job).unwrap();
+        assert_eq!(job["model"], "cheap");
+        assert!(job["reasoning_effort"].is_null());
+        let again = runtime
+            .open_for_input("alice", "owl", "first")
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(&reopened, &again));
+        crate::catalog::call(
+            home.path(),
+            "alice",
+            "profiles.configure",
+            &json!({"name":"owl","model":"claude-opus-5-5"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(!Arc::ptr_eq(
+            &again,
+            &runtime
+                .open_for_input("alice", "owl", "first")
+                .await
+                .unwrap()
+        ));
+    }
+    #[tokio::test]
     async fn settings_are_live_and_children_inherit_parent_policy() {
         let (home, runtime, _) = setup();
         let s = runtime.open_session("alice", "owl", "first").await.unwrap();
@@ -3874,6 +4028,7 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
                 "child",
                 None,
                 Some(&json!({"parent_session":"first"})),
+                false,
             )
             .await
             .unwrap();
