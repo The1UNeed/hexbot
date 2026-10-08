@@ -94,7 +94,7 @@ describe('onboarding', () => {
     })
   })
 
-  it('saves the name before About you, so a failed rename asks again', async () => {
+  it('saves the name first, and keeps About you unsaved if that fails', async () => {
     const call = vi.fn((method: string) =>
       method === 'hexbot.users.me.set'
         ? Promise.reject(new Error('connection lost'))

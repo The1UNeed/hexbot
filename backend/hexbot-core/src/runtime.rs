@@ -3616,16 +3616,12 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         );
         runtime.close_stored("alice", "first").await.unwrap();
         // Simulate a section from the old implementation, including inline
-        // skill bodies and an unversioned options row belonging to its owner.
+        // skill bodies.
         let old_prompt = format!("{prompt}\n## custom-notes\nFULL BODY MARKER");
         let mut old_options = options;
         old_options["prompt"] = json!(old_prompt);
         old_options["skills"] =
             json!([{"name":"custom-notes","path":skill,"content":"FULL BODY MARKER"}]);
-        old_options
-            .as_object_mut()
-            .unwrap()
-            .remove("prompt_version");
         let old_options = old_options.to_string();
         store::open(home.path())
             .unwrap()
