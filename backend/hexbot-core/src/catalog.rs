@@ -622,6 +622,11 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
 fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
     let _skills = crate::skills::read_lock()?;
     let writer = common::config_writer()?;
+    // Only a patch that names a model field moves sections; any other edit
+    // leaves an inherited deployment model alone.
+    let moves = ["provider", "model", "reasoning_effort"]
+        .iter()
+        .any(|key| p.get(*key).is_some());
     let before = section_model(home, name)?;
     let dir = profile(home, name)?;
     let mut cfg = config(home, name)?;
@@ -735,7 +740,7 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
     }
     writer.write(&dir, &cfg)?;
     let after = section_model(home, name)?;
-    if before != after {
+    if moves && before != after {
         runtime_store::follow_bot_model(home, name, &before, &after)?;
     }
     if let Some(v) = p["persona"].as_str() {

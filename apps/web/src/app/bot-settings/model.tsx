@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Select } from '../../components/ui/select'
 import { providerModels } from '../../lib/api'
@@ -46,9 +46,19 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   // Only providers with a key or sign-in; the bot's own stays listed so it reads correctly.
   const providers = providerRows.filter(row => row.configured || row.id === bot.provider)
 
+  // Only the latest provider choice may save; an earlier, slower one is dropped.
+  const latestSwitch = useRef(0)
+
   const switchProvider = async (provider: string) => {
+    const request = ++latestSwitch.current
+
     try {
       const list = await providerModels(provider)
+
+      if (request !== latestSwitch.current) {
+        return
+      }
+
       const model = list.find(item => item.id === bot.model) ?? list[0]
       const label = providerRows.find(row => row.id === provider)?.label ?? provider
 
