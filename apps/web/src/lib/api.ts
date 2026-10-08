@@ -33,7 +33,7 @@ import type {
   SkillInfo,
   Usage
 } from './types'
-import type { CurrentUser, UsageSummary, User } from './types'
+import type { CurrentUser, UsageSummary } from './types'
 
 /** Raw history row as projected by Hexbot `session.history`. */
 export interface HistoryRow {
@@ -246,19 +246,6 @@ export function roomsRemoveMember(id: string, bot: string): Promise<{ room: Room
   return rpcCall<{ room: Room }>('hexbot.rooms.remove_member', { bot, id })
 }
 
-export function roomsAddPerson(id: string, user: string) {
-  return rpcCall<{ room: Room }>('hexbot.rooms.add_member', { id, user })
-}
-
-export function roomsPeople(id: string) {
-  return rpcCall<{ users: Pick<User, 'id' | 'display_name'>[] }>('hexbot.rooms.people', { id })
-}
-
-/** The owner removes a person; any other member removes themselves to leave. */
-export function roomsRemovePerson(id: string, user: string): Promise<{ room: Room }> {
-  return rpcCall<{ room: Room }>('hexbot.rooms.remove_member', { id, user })
-}
-
 export function roomsSend(
   id: string,
   text: string,
@@ -342,18 +329,10 @@ export const connectRegisterPoll = (deviceCode: string) =>
 export const connectDisconnect = () => rpcCall<Record<string, unknown>>('hexbot.connect.disconnect')
 
 export const usersMe = () => rpcCall<CurrentUser>('hexbot.users.me')
-export const usersList = () => rpcCall<{ users: User[] }>('hexbot.users.list')
-export const usersInvite = (displayName: string, role: 'admin' | 'member' = 'member') =>
-  rpcCall<{ user: User; code: string; expires_at: number }>('hexbot.users.invite', {
-    display_name: displayName,
-    role
-  })
-export const usersUpdate = (
-  id: string,
-  patch: Partial<Pick<User, 'display_name' | 'role' | 'disabled' | 'limits'>>
-) => rpcCall<{ user: User }>('hexbot.users.update', { id, ...patch })
-export const usageSummary = (user?: string) =>
-  rpcCall<UsageSummary>('hexbot.usage.summary', user ? { user } : {})
+/** The name you go by in rooms and on this daemon. */
+export const usersMeSet = (displayName: string) =>
+  rpcCall<CurrentUser>('hexbot.users.me.set', { display_name: displayName })
+export const usageSummary = () => rpcCall<UsageSummary>('hexbot.usage.summary')
 
 // ---------------------------------------------------------------------------
 // Sections

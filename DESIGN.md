@@ -54,7 +54,7 @@ more freedom and more capability than a hosted product can offer.
 
 - An @-mentioned bot responds. An optional per-room main bot responds when
   nobody is mentioned. With neither, bots stay silent.
-- Humans and the main bot can add members mid-conversation.
+- The owner and the main bot can add members mid-conversation.
 - When the main bot fans out to several bots, replies post as they finish,
   then the main bot takes one collecting turn.
 - A bot tagging a human puts the room into a waiting state with a
@@ -62,8 +62,8 @@ more freedom and more capability than a hosted product can offer.
 - Limits, set in system config with per-room override: eight bot turns per
   human turn, a per-bot daily token budget, a per-room budget per human turn.
   When a limit trips the room posts a notice and stops.
-- Usage comes from the core's `session_model_usage` table, attributed to the
-  inviter in rooms and to the owner in direct messages, on the admin's keys.
+- Usage comes from the core's `session_model_usage` table and the native
+  runtime's usage rows, all on the owner's keys.
 
 ### Bots talking to bots
 
@@ -102,9 +102,7 @@ more freedom and more capability than a hosted product can offer.
   folders. Scheduled scripts must stay in the bot scripts folder or
   workspace.
 - Bypass: no prompts, no sandbox, no credential checks. A bot can read and
-  change anything the daemon's OS user can, including provider keys, so only
-  the admin may choose it; the daemon rejects it for a member's bot or room
-  and runs such a bot in Auto.
+  change anything the daemon's OS user can, including provider keys.
 - Without an OS sandbox (Linux where bubblewrap fails its startup probe)
   Hexbot warns, Settings shows a notice, Manual and Auto ask before every
   shell command and code run, and scheduled scripts run only in Bypass.
@@ -125,7 +123,7 @@ more freedom and more capability than a hosted product can offer.
   approvals). Computer use is off until enabled. Self-authored skills are on,
   with a transcript notice. Bundled and user-shared skills form one library,
   enabled for every bot unless disabled globally or for that bot. Bots write
-  private skills; an admin can share their own bot's skills into the library.
+  private skills; the owner can share a bot's skills into the library.
   A bot owner can edit its private skills and grants.
 - Tools run on the host in a shared workspace at `~/Hexbot`. Per-bot working
   directories come with the roster milestone.
@@ -206,12 +204,18 @@ more freedom and more capability than a hosted product can offer.
 - The native `hexbot` CLI provides `serve`, `setup`, `service`, `status`,
   `pair`, `bots`, `rooms`, `devices`, `connect` and `send`. Legacy core administration commands are not included.
 
-## 6. Multi-user (later)
+## 6. One person per daemon
 
-- Owner ids on bots, rooms, sections, messages and memory from day one.
-- One shared daemon per household. The admin owns provider keys and limits.
-  Members get their own bots and rooms. Owners can mark bots shareable.
-  Per-user budgets and a usage view for the admin.
+- A daemon belongs to one person. There are no invites, roles or other
+  accounts on it; every device paired to it is that person's. Get Started
+  asks for their name, and rooms show it on their messages.
+- One person may run several daemons, or reach several through Hex Connect
+  accounts, and switches between them in the app (Full or Client).
+- Rooms with other people go through Hex Connect: each person keeps their
+  own daemon, and the room spans them. Not built yet.
+- Owner ids stay on bots, rooms, sections, messages and memory. Earlier
+  builds had invited members; upgrading folds what they made into the owner
+  and revokes their devices.
 
 ## 7. Milestones
 
@@ -228,6 +232,6 @@ more freedom and more capability than a hosted product can offer.
    messages, activity list, usage view.
 4. Live computer view, dreaming, activity graph, room memory, bundled vector
    memory.
-5. Multi-user.
+5. One person per daemon (earlier: multi-user, since removed).
 6. Packaging and release: Homebrew, .deb polish, beta channel,
    opt-in crash reports, public repo.

@@ -7,7 +7,6 @@ import type { Bot, Room } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useRooms } from '../../stores/rooms'
-import { useUsers } from '../../stores/users'
 
 import { RoomSettingsPanel } from './index'
 
@@ -43,7 +42,6 @@ const room = (members: string[], people: string[] = []): Room => ({
 describe('room settings', () => {
   beforeEach(() => {
     navigate.mockReset()
-    useUsers.setState({ current: null, supported: false, users: [] })
     useBots.setState({
       byName: {
         scout: { avatar: null, display_name: 'Scout', name: 'scout', title: 'Research' } as Bot,
@@ -52,15 +50,11 @@ describe('room settings', () => {
     })
   })
 
-  it('names bots from member rows when the member cannot read their profiles', () => {
-    const shared = room(['scout'], ['local', 'bob'])
-    shared.members[0]!.display_name = 'Scout'
+  it('names bots from member rows when their profiles are not loaded', () => {
+    const one = room(['scout'])
+    one.members[0]!.display_name = 'Scout'
     useBots.setState({ byName: {} })
-    useUsers.setState({
-      current: { display_name: 'Bob', id: 'bob', role: 'member' },
-      supported: true
-    })
-    render(<RoomSettingsPanel room={shared} />)
+    render(<RoomSettingsPanel room={one} />)
     expect(screen.getAllByTestId('room-member')[0]).toHaveTextContent('Scout')
   })
 
@@ -107,203 +101,25 @@ describe('room settings', () => {
     expect(useRooms.getState().byId.r1).toBeUndefined()
   })
 
-  it('shows members without controls to a human member who is not the owner', () => {
-    const two = room(['scout', 'writer'])
+  it('gives you every control, with no people or leave options', () => {
+    const two = room(['scout', 'writer'], ['local'])
     useRooms.setState({ byId: { r1: two }, eventsByRoom: {}, liveTurnsByRoom: {}, order: ['r1'] })
-    useUsers.setState({ current: { display_name: 'Bob', id: 'bob', role: 'member' } })
-    const { unmount } = render(<RoomSettingsPanel room={two} />)
-    expect(screen.getAllByTestId('room-member')).toHaveLength(2)
-    expect(screen.getByRole('note')).toHaveTextContent(
-      'Only the person who created this room can change its name, members and settings.'
-    )
-
-    for (const name of ['Remove', 'Make main', 'Add bot', 'Add person', 'Delete']) {
-      expect(screen.queryByRole('button', { name })).toBeNull()
-    }
-
-    expect(screen.queryByLabelText('Room name')).toBeNull()
-    expect(screen.queryByText('Approval mode')).toBeNull()
-    unmount()
-    useUsers.setState({ current: { display_name: 'Local', id: 'local', role: 'admin' } })
     render(<RoomSettingsPanel room={two} />)
-    expect(screen.queryByRole('note')).toBeNull()
-    expect(screen.getByRole('button', { name: 'Delete' })).toBeVisible()
+    expect(screen.getByText('2 bots and you.')).toBeVisible()
+    expect(screen.getAllByTestId('room-member')).toHaveLength(2)
     expect(screen.getByLabelText('Room name')).toBeVisible()
-  })
+    expect(screen.getByText('Approval mode')).toBeVisible()
 
-  it('shows no owner controls and no note while the current user is unknown', () => {
-    const two = room(['scout', 'writer'])
-    useUsers.setState({ current: null, supported: null })
-    render(<RoomSettingsPanel room={two} />)
-    expect(screen.getAllByTestId('room-member')).toHaveLength(2)
+    for (const name of ['Add bot', 'Delete']) {
+      expect(screen.getByRole('button', { name })).toBeVisible()
+    }
 
-    for (const name of ['Remove', 'Make main', 'Add bot', 'Add person', 'Delete', 'Leave']) {
+    for (const name of ['Add person', 'Leave']) {
       expect(screen.queryByRole('button', { name })).toBeNull()
     }
 
-    expect(screen.queryByRole('note')).toBeNull()
-    expect(screen.queryByLabelText('Room name')).toBeNull()
-  })
-
-  it('lets the owner remove a person after a second click, but not themselves', async () => {
-    const shared = room(['scout'], ['local', 'bob'])
-    useRooms.setState({
-      byId: { r1: shared },
-      eventsByRoom: {},
-      liveTurnsByRoom: {},
-      order: ['r1']
-    })
-    useUsers.setState({
-      current: { display_name: 'Local', id: 'local', role: 'admin' },
-      supported: true,
-      users: [
-        { display_name: 'Local', id: 'local', role: 'admin' },
-        { display_name: 'Bob', id: 'bob', role: 'member' }
-      ]
-    })
-    const call = vi.fn(() => Promise.resolve({ room: room(['scout'], ['local']) }))
-    setActiveRpc({ call } as never)
-    render(<RoomSettingsPanel room={shared} />)
-    expect(screen.getByText('People')).toBeVisible()
-    // One bot row, then the people.
-    const rows = screen.getAllByTestId('room-member').slice(1)
-    expect(rows).toHaveLength(2)
-    expect(rows[0]).toHaveTextContent('Owner')
-    expect(within(rows[0]!).queryByRole('button', { name: 'Remove' })).toBeNull()
-    fireEvent.click(within(rows[1]!).getByRole('button', { name: 'Remove' }))
-    expect(call).not.toHaveBeenCalled()
-    const confirm = screen.getByRole('alertdialog')
-    expect(confirm).toHaveTextContent(
-      'Remove Bob from this room? They can no longer read or post in it.'
-    )
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Remove' }))
-
-    await waitFor(() =>
-      expect(call).toHaveBeenCalledWith('hexbot.rooms.remove_member', { id: 'r1', user: 'bob' })
-    )
-    expect(screen.queryByRole('button', { name: 'Leave' })).toBeNull()
-  })
-
-  it('lets the owner add a person back when only the owner remains', async () => {
-    const alone = room(['scout'], ['local', 'bob'])
-    alone.members.find(member => member.member_id === 'bob')!.left_at = 1
-    const added = room(['scout'], ['local', 'bob'])
-    useRooms.setState({ byId: { r1: alone }, order: ['r1'] })
-    useUsers.setState({
-      current: { display_name: 'Local', id: 'local', role: 'admin' },
-      supported: true,
-      users: [
-        { display_name: 'Local', id: 'local', role: 'admin' },
-        { display_name: 'Bob', id: 'bob', role: 'member' },
-        { display_name: 'Disabled', id: 'disabled', role: 'member', disabled_at: 1 }
-      ]
-    })
-    const call = vi.fn(() => Promise.resolve({ room: added }))
-    setActiveRpc({ call } as never)
-    const { rerender } = render(<RoomSettingsPanel room={alone} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Add person' }))
-    expect(screen.queryByRole('menuitem', { name: 'Local' })).toBeNull()
-    expect(screen.queryByRole('menuitem', { name: 'Disabled' })).toBeNull()
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Bob' }))
-    await waitFor(() => expect(useRooms.getState().byId.r1).toEqual(added))
-    expect(call).toHaveBeenCalledWith('hexbot.rooms.add_member', { id: 'r1', user: 'bob' })
-    rerender(<RoomSettingsPanel room={added} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Add person' }))
-    expect(screen.queryByRole('menuitem', { name: 'Bob' })).toBeNull()
-    expect(screen.getByRole('menuitem', { name: 'Everyone is already a member' })).toHaveAttribute(
-      'aria-disabled',
-      'true'
-    )
-  })
-
-  it('loads the people directory for an owner who is not an admin', async () => {
-    const owned = { ...room(['scout'], ['bob']), owner_id: 'bob' }
-    useUsers.setState({
-      current: { display_name: 'Bob', id: 'bob', role: 'member' },
-      supported: true,
-      users: []
-    })
-
-    const call = vi.fn((method: string) =>
-      Promise.resolve(
-        method === 'hexbot.rooms.people'
-          ? {
-              users: [
-                { id: 'local', display_name: 'Local' },
-                { id: 'bob', display_name: 'Bob' }
-              ]
-            }
-          : { room: { ...owned, members: room(['scout'], ['bob', 'local']).members } }
-      )
-    )
-
-    setActiveRpc({ call } as never)
-    render(<RoomSettingsPanel room={owned} />)
-    await waitFor(() => expect(call).toHaveBeenCalledWith('hexbot.rooms.people', { id: 'r1' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Add person' }))
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Local' }))
-    await waitFor(() =>
-      expect(call).toHaveBeenCalledWith('hexbot.rooms.add_member', { id: 'r1', user: 'local' })
-    )
-  })
-
-  it('hides People on a daemon with one person, as without accounts', () => {
-    const solo = room(['scout'], ['local'])
-    useUsers.setState({
-      current: { display_name: 'Local', id: 'local', role: 'admin' },
-      supported: true,
-      users: [{ display_name: 'Local', id: 'local', role: 'admin' }]
-    })
-    render(<RoomSettingsPanel room={solo} />)
-    expect(screen.getByText('Bots')).toBeVisible()
-    expect(screen.getByText('1 bot and you.')).toBeVisible()
     expect(screen.queryByText('People')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Add person' })).toBeNull()
-  })
-
-  it('names the people in the room for a member who cannot list users', () => {
-    const shared = room(['scout'], ['local', 'bob'])
-    shared.members = shared.members.map(member =>
-      member.member_kind === 'human'
-        ? { ...member, display_name: member.member_id === 'local' ? 'Alice' : 'Bob' }
-        : member
-    )
-    useUsers.setState({
-      current: { display_name: 'Bob', id: 'bob', role: 'member' },
-      supported: true,
-      users: []
-    })
-    render(<RoomSettingsPanel room={shared} />)
-    expect(screen.getByText('1 bot and 2 people.')).toBeVisible()
-    const rows = screen.getAllByTestId('room-member').slice(1)
-    expect(rows[0]).toHaveTextContent('AliceOwner')
-    expect(rows[1]).toHaveTextContent('BobYou')
-  })
-
-  it('lets a member leave the room and forgets it', async () => {
-    const shared = room(['scout'], ['local', 'bob'])
-    useRooms.setState({
-      byId: { r1: shared },
-      eventsByRoom: {},
-      liveTurnsByRoom: {},
-      order: ['r1']
-    })
-    useUsers.setState({
-      current: { display_name: 'Bob', id: 'bob', role: 'member' },
-      supported: true
-    })
-    const call = vi.fn(() => Promise.resolve({ room: room(['scout'], ['local']) }))
-    setActiveRpc({ call } as never)
-    render(<RoomSettingsPanel room={shared} />)
-    expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Leave' }))
-    expect(call).not.toHaveBeenCalled()
-    expect(screen.getByText('Leave this room? You can no longer read or post in it.')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Leave room' }))
-
-    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/' }))
-    expect(call).toHaveBeenCalledWith('hexbot.rooms.remove_member', { id: 'r1', user: 'bob' })
-    expect(useRooms.getState().byId.r1).toBeUndefined()
+    expect(screen.queryByRole('note')).toBeNull()
   })
 
   it('deletes the room only after the name is typed back', async () => {

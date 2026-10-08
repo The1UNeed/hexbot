@@ -2,8 +2,8 @@ import { render, screen } from '@testing-library/react'
 
 import type { Bot, RoomEvent } from '../../lib/types'
 import { useBots } from '../../stores/bots'
+import { useMe } from '../../stores/me'
 import { useRooms } from '../../stores/rooms'
-import { useUsers } from '../../stores/users'
 
 import { ComposerShell } from './composer'
 import { RoomEventRow } from './room'
@@ -43,9 +43,9 @@ describe('composer status', () => {
 })
 
 describe('room transcript', () => {
-  it('names bots from member rows when their profiles belong to someone else', () => {
+  it('names bots from member rows when their profiles are not loaded', () => {
     useBots.setState({ byName: {} })
-    useUsers.setState({ current: { display_name: 'Bob', id: 'bob', role: 'member' }, users: [] })
+    useMe.setState({ me: { display_name: 'Bob', id: 'bob' } })
     useRooms.setState({
       byId: {
         r: {
@@ -105,10 +105,15 @@ describe('room transcript', () => {
     expect(screen.getByRole('alert')).toHaveClass('text-danger')
   })
 
-  it('names the person who left, not whoever removed them', () => {
-    useUsers.setState({
-      current: { display_name: 'Alice', id: 'alice', role: 'admin' },
-      users: [{ display_name: 'Bob', id: 'bob', role: 'member' }]
+  it('names the person who left an earlier room, not whoever removed them', () => {
+    useMe.setState({ me: { display_name: 'Alice', id: 'alice' } })
+    useRooms.setState({
+      byId: {
+        r: {
+          id: 'r',
+          members: [{ display_name: 'Bob', member_id: 'bob', member_kind: 'human' }]
+        } as never
+      }
     })
 
     render(
@@ -137,8 +142,8 @@ describe('room transcript', () => {
     seq
   })
 
-  it('names other people from the room for a member, and keeps your own bubble', () => {
-    useUsers.setState({ current: { display_name: 'Bob', id: 'bob', role: 'member' }, users: [] })
+  it('names people from an earlier shared transcript, and keeps your own bubble', () => {
+    useMe.setState({ me: { display_name: 'Bob', id: 'bob' } })
     useRooms.setState({
       byId: {
         r: {
@@ -168,8 +173,8 @@ describe('room transcript', () => {
     expect(joined).toHaveTextContent('Carol joined the room')
   })
 
-  it('shows every message as yours without user accounts', () => {
-    useUsers.setState({ current: null, supported: false, users: [] })
+  it('shows every message as yours before your name loads', () => {
+    useMe.setState({ me: null })
     render(<RoomEventRow event={message('local', 1)} />)
     expect(screen.getByTestId('room-event')).toHaveClass('flex-row-reverse')
     expect(screen.getByTestId('room-event')).toHaveTextContent(/^from local$/)

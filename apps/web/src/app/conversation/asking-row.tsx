@@ -14,7 +14,7 @@ import { uiActions } from '../../stores/ui'
 
 import { type Ask, askLabel, asks } from './steps'
 
-/** The face of a teammate whose name a room member is not told. */
+/** The face of a teammate whose name the call did not carry. */
 const TEAMMATE_FACE: AvatarStyle = { color: 'gray', shape: 'round' }
 
 /** How many times to look a running ask's thread up before giving up on its live reply. */
@@ -28,7 +28,7 @@ const MARKS = /[*_`>#]+/g
  * The thread is looked up once the ask runs, and again while it is still
  * unknown when a section changes (the thread was just created) or a session
  * appears (the target's session just started, so the thread now names it).
- * Nothing is shown when the lookup is refused (a room member) or fails.
+ * Nothing is shown when the lookup is refused or fails.
  */
 function useLiveReply(ask: Ask, sender: null | string): { streaming: boolean; text: string } {
   const wanted = ask.status === 'running' && Boolean(ask.target && sender)
@@ -85,8 +85,8 @@ const doneClass =
  * are full size with "Research is asking Writer", and Writer's reply shows
  * under that line as it streams. Done, the row settles to two small faces
  * still glancing at each other and "Writer helped". Opens the private
- * conversation between the two bots. A room member sees the ask without
- * its arguments: "Research is asking a teammate", nothing to open.
+ * conversation between the two bots. A call that came without its
+ * arguments reads "Research is asking a teammate", with nothing to open.
  */
 function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
   const target = useBot(ask.target)

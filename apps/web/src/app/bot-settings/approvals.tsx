@@ -1,4 +1,4 @@
-import { useApprovalModes } from '../../lib/approval-modes'
+import { APPROVAL_MODES } from '../../lib/approval-modes'
 import type { Bot } from '../../lib/types'
 
 import { ChoiceRow, dividerClass, Group, Heading, type SaveBot } from './shared'
@@ -12,7 +12,7 @@ export function ApprovalsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
       label: 'Inherit',
       value: 'inherit' as const
     },
-    ...useApprovalModes(current)
+    ...APPROVAL_MODES
   ]
 
   return (

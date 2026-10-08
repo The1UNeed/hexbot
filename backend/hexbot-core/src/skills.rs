@@ -308,7 +308,7 @@ pub fn set_enabled(home: &Path, bot: Option<&str>, name: &str, enabled: bool) ->
 
 /// All human writes to the shared library pass this boundary.
 fn library_writer(home: &Path, caller: &str) -> Result<()> {
-    common::admin(home, caller)
+    common::user(home, caller).map(drop)
 }
 
 fn skill_content(skill: &Skill) -> Result<Value> {

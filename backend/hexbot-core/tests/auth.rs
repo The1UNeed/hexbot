@@ -10,22 +10,14 @@ fn rpc(
     auth::call(home, caller, method, &params).expect("auth method")
 }
 #[test]
-fn invitations_permissions_disable_and_reenable() {
+fn devices_belong_to_the_owner_and_invites_are_gone() {
     let home = tempfile::tempdir().unwrap();
     let h = home.path();
-    let invite = rpc(
-        h,
-        "local",
-        "hexbot.users.invite",
-        json!({"display_name":"  Guest  "}),
-    )
-    .unwrap();
-    let uid = invite["user"]["id"].as_str().unwrap();
-    assert_eq!(invite["user"]["display_name"], "Guest");
+    let code = auth::new_code(h, "local").unwrap();
     let device = auth::redeem_code_from(
         h,
-        invite["code"].as_str().unwrap(),
-        "Guest phone",
+        code["code"].as_str().unwrap(),
+        "Phone",
         "browser",
         "local",
         None,
@@ -34,88 +26,28 @@ fn invitations_permissions_disable_and_reenable() {
     let token = device["device_token"].as_str().unwrap();
     assert_eq!(
         auth::verify_token(h, token).unwrap().unwrap()["owner_id"],
-        uid
+        "local"
     );
+    for method in [
+        "hexbot.users.list",
+        "hexbot.users.invite",
+        "hexbot.users.update",
+    ] {
+        assert!(
+            auth::call(h, "local", method, &json!({})).is_none(),
+            "{method}"
+        );
+    }
     assert_eq!(
-        rpc(h, uid, "hexbot.users.list", json!({}))
-            .unwrap_err()
-            .code,
-        4301
-    );
-    assert_eq!(
-        rpc(
-            h,
-            uid,
-            "hexbot.users.invite",
-            json!({"display_name":"Attacker","role":"admin"})
-        )
-        .unwrap_err()
-        .code,
-        4301
-    );
-    let local_token = auth::local_token(h).unwrap();
-    let local_device = auth::verify_token(h, &local_token).unwrap().unwrap();
-    assert_eq!(
-        rpc(
-            h,
-            uid,
-            "hexbot.devices.revoke",
-            json!({"id":local_device["id"]})
-        )
-        .unwrap_err()
-        .code,
-        4302
-    );
-    assert_eq!(
-        rpc(h, uid, "hexbot.devices.list", json!({"all":true}))
-            .unwrap_err()
-            .code,
-        4301
-    );
-    assert_eq!(
-        rpc(h, uid, "hexbot.devices.list", json!({})).unwrap()["devices"]
+        rpc(h, "local", "hexbot.devices.list", json!({})).unwrap()["devices"]
             .as_array()
             .unwrap()
             .len(),
         1
     );
-    let pending = auth::new_code(h, uid).unwrap();
     rpc(
         h,
         "local",
-        "hexbot.users.update",
-        json!({"id":uid,"disabled":true}),
-    )
-    .unwrap();
-    assert!(auth::verify_token(h, token).unwrap().is_none());
-    assert_eq!(
-        auth::redeem_code_from(
-            h,
-            pending["code"].as_str().unwrap(),
-            "Disabled",
-            "browser",
-            "local",
-            None
-        )
-        .unwrap_err()
-        .code,
-        4231
-    );
-    assert_eq!(
-        rpc(h, uid, "hexbot.users.me", json!({})).unwrap_err().code,
-        4302
-    );
-    rpc(
-        h,
-        "local",
-        "hexbot.users.update",
-        json!({"id":uid,"disabled":false}),
-    )
-    .unwrap();
-    assert!(auth::verify_token(h, token).unwrap().is_some());
-    rpc(
-        h,
-        uid,
         "hexbot.devices.revoke",
         json!({"id":device["device_id"]}),
     )
@@ -124,7 +56,7 @@ fn invitations_permissions_disable_and_reenable() {
     assert_eq!(
         rpc(
             h,
-            uid,
+            "local",
             "hexbot.devices.revoke",
             json!({"id":device["device_id"]})
         )
@@ -288,53 +220,41 @@ fn local_token_is_private_persistent_and_recovers() {
     );
 }
 #[test]
-fn user_validation_and_last_seen() {
+fn renaming_yourself_and_last_seen() {
     let home = tempfile::tempdir().unwrap();
     let h = home.path();
     let token = auth::local_token(h).unwrap();
-    for bad in [json!(true), json!(-1), json!(1.5), json!("10")] {
+    assert_eq!(
+        rpc(h, "local", "hexbot.users.me", json!({})).unwrap(),
+        json!({"id":"local","display_name":"Admin"})
+    );
+    for (bad, code) in [
+        (json!({}), 4200),
+        (json!({"display_name":"   "}), 4200),
+        (json!({"display_name":"x".repeat(65)}), 4202),
+        (json!({"display_name":"Alex","role":"member"}), 4201),
+    ] {
         assert_eq!(
-            rpc(
-                h,
-                "local",
-                "hexbot.users.update",
-                json!({"id":"local","limits":{"daily_tokens":bad}})
-            )
-            .unwrap_err()
-            .code,
-            4202
+            rpc(h, "local", "hexbot.users.me.set", bad)
+                .unwrap_err()
+                .code,
+            code
         );
     }
     assert_eq!(
         rpc(
             h,
             "local",
-            "hexbot.users.update",
-            json!({"id":"local","extra":true})
+            "hexbot.users.me.set",
+            json!({"display_name":"  Alex  "})
         )
-        .unwrap_err()
-        .code,
-        4201
+        .unwrap(),
+        json!({"id":"local","display_name":"Alex"})
     );
     assert_eq!(
-        rpc(
-            h,
-            "local",
-            "hexbot.users.update",
-            json!({"id":"absent","display_name":"Name"})
-        )
-        .unwrap_err()
-        .code,
-        4204
+        rpc(h, "local", "hexbot.users.me", json!({})).unwrap()["display_name"],
+        "Alex"
     );
-    let updated = rpc(
-        h,
-        "local",
-        "hexbot.users.update",
-        json!({"id":"local","limits":{"daily_tokens":null}}),
-    )
-    .unwrap();
-    assert_eq!(updated["user"]["limits"], json!({"daily_tokens":null}));
     db::open(h)
         .unwrap()
         .execute("UPDATE devices SET last_seen_at=0", [])
@@ -451,133 +371,6 @@ fn concurrent_grants_spend_once_and_disabled_owner_rolls_back() {
         .unwrap(),
         0
     );
-}
-
-#[test]
-fn last_active_admin_cannot_be_disabled_or_demoted() {
-    let home = tempfile::tempdir().unwrap();
-    db::migrate(home.path()).unwrap();
-    for patch in [json!({"role":"member"}), json!({"disabled":true})] {
-        let mut p = patch;
-        p["id"] = json!("local");
-        assert_eq!(
-            rpc(home.path(), "local", "hexbot.users.update", p)
-                .unwrap_err()
-                .code,
-            4202
-        );
-        let user = rpc(home.path(), "local", "hexbot.users.me", json!({})).unwrap();
-        assert_eq!(user["role"], "admin");
-    }
-    let invited = rpc(
-        home.path(),
-        "local",
-        "hexbot.users.invite",
-        json!({"display_name":"Second admin","role":"admin"}),
-    )
-    .unwrap();
-    let other = invited["user"]["id"].as_str().unwrap();
-    rpc(
-        home.path(),
-        "local",
-        "hexbot.users.update",
-        json!({"id":other,"disabled":true}),
-    )
-    .unwrap();
-    assert!(
-        rpc(
-            home.path(),
-            "local",
-            "hexbot.users.update",
-            json!({"id":"local","role":"member"})
-        )
-        .is_err()
-    );
-    rpc(
-        home.path(),
-        "local",
-        "hexbot.users.update",
-        json!({"id":other,"disabled":false}),
-    )
-    .unwrap();
-    rpc(
-        home.path(),
-        "local",
-        "hexbot.users.update",
-        json!({"id":"local","role":"member"}),
-    )
-    .unwrap();
-    assert!(
-        rpc(
-            home.path(),
-            other,
-            "hexbot.users.update",
-            json!({"id":other,"disabled":true})
-        )
-        .is_err()
-    );
-    rpc(
-        home.path(),
-        other,
-        "hexbot.users.update",
-        json!({"id":"local","role":"admin"}),
-    )
-    .unwrap();
-    rpc(
-        home.path(),
-        other,
-        "hexbot.users.update",
-        json!({"id":other,"disabled":true}),
-    )
-    .unwrap();
-}
-
-#[test]
-fn concurrent_admin_demotions_leave_one_active_admin() {
-    let home = tempfile::tempdir().unwrap();
-    db::migrate(home.path()).unwrap();
-    let invited = rpc(
-        home.path(),
-        "local",
-        "hexbot.users.invite",
-        json!({"display_name":"Second admin","role":"admin"}),
-    )
-    .unwrap();
-    let other = invited["user"]["id"].as_str().unwrap();
-    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let tasks: Vec<_> = ["local", other]
-        .into_iter()
-        .map(|id| {
-            let id = id.to_owned();
-            let home = home.path().to_owned();
-            let barrier = barrier.clone();
-            std::thread::spawn(move || {
-                barrier.wait();
-                rpc(
-                    &home,
-                    &id,
-                    "hexbot.users.update",
-                    json!({"id":id,"role":"member"}),
-                )
-            })
-        })
-        .collect();
-    assert_eq!(
-        tasks
-            .into_iter()
-            .filter_map(|task| task.join().unwrap().ok())
-            .count(),
-        1
-    );
-    let count: i64 = db::open(home.path())
-        .unwrap()
-        .query_row(
-            "SELECT COUNT(*) FROM users WHERE role='admin' AND disabled_at IS NULL",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(count, 1);
 }
 
 #[test]

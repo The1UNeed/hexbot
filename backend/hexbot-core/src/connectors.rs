@@ -255,7 +255,7 @@ pub fn pi_mcp_servers(home: &Path, bot: &str, names: &[Value]) -> Result<Vec<Val
         let description = entry.get("description").cloned();
         let entry = expand_config(entry, &env);
         if validate_mcp_security(&entry).is_err() {
-            result.push(json!({"name":name,"error":format!("Connected tool {name} has invalid settings. Ask an admin to check it.")}));
+            result.push(json!({"name":name,"error":format!("Connected tool {name} has invalid settings. Check it in bot settings.")}));
             continue;
         }
         let keys: &[&str] = if entry["url"].is_string() {
@@ -801,7 +801,7 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
             Ok(json!({"connector":get(home,Some(bot),id)?}))
         }
         "hexbot.connectors.setup" => {
-            admin(home, caller)?;
+            user(home, caller)?;
             let s = spec(required(p, "id")?)?;
             if bot_only && bot.is_none() {
                 return Err(Error::new(4200, "bot_only needs a bot"));
@@ -876,7 +876,7 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
             Ok(json!({"connector":get(home,bot,id)?,"test":result}))
         }
         "hexbot.connectors.clear" => {
-            admin(home, caller)?;
+            user(home, caller)?;
             let s = spec(required(p, "id")?)?;
             if bot_only && bot.is_none() {
                 return Err(Error::new(4200, "bot_only needs a bot"));
@@ -923,7 +923,7 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
             Ok(json!({"connector":get(home,bot,id)?}))
         }
         "hexbot.connectors.add_mcp" => {
-            admin(home, caller)?;
+            user(home, caller)?;
             let (name, entry) = validate_mcp(p)?;
             write_all(home, "mcp_servers", &name, entry)?;
             db::open(home)?.execute(
@@ -933,7 +933,7 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
             Ok(json!({"connector":get(home,None,&format!("mcp:{name}"))?}))
         }
         "hexbot.connectors.remove_mcp" => {
-            admin(home, caller)?;
+            user(home, caller)?;
             let name = required(p, "name")?;
             if read_config(home)?["mcp_servers"].get(name).is_none() {
                 return Err(Error::new(4213, format!("unknown MCP server: {name}")));

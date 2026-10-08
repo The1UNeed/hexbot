@@ -879,53 +879,6 @@ async fn reopening_a_section_replays_the_approval_it_is_waiting_on() {
     while let Ok(event) = events.try_recv() {
         assert_ne!(event.frame["params"]["type"], "approval.request");
     }
-    // Room members see the bot wait for the owner, then work again.
-    hub.share("alice", &id, vec!["bob".into()], "Alice");
-    let mut events = hub.subscribe();
-    let mut seen_by_bob = async || {
-        tokio::time::timeout(Duration::from_secs(3), async {
-            loop {
-                if let Some(frame) = events.recv().await.unwrap().frame_for("bob") {
-                    break frame["params"].clone();
-                }
-            }
-        })
-        .await
-        .unwrap()
-    };
-    runtime
-        .event(
-            &s,
-            json!({
-                "type": "extension_ui_request",
-                "id": "pi-2",
-                "method": "select",
-                "title": format!("__HEXBOT_APPROVAL__{}", json!({"tool":"bash","command":"pwd"})),
-                "options": ["once", "deny"]
-            }),
-        )
-        .unwrap();
-    let waiting = seen_by_bob().await;
-    assert_eq!(waiting["type"], "status.update");
-    assert_eq!(
-        waiting["payload"],
-        json!({"kind":"waiting","text":"Waiting for Alice"})
-    );
-    runtime
-        .call(
-            "alice",
-            "approval.respond",
-            &json!({"session_id":id,"request_id":"pi-2","choice":"deny"}),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-    let resumed = seen_by_bob().await;
-    assert_eq!(resumed["type"], "status.update");
-    assert_eq!(
-        resumed["payload"],
-        json!({"kind":"working","text":"Working"})
-    );
     runtime.shutdown().await;
 }
 
@@ -1681,13 +1634,6 @@ fn team_prompt_uses_descriptions_owner_scope_toolsets_order_and_limit() {
             .unwrap()
             .contains("Other bots see you as: no description yet")
     );
-    assert!(
-        !runtime
-            .session_prompt(&row, "bob", "owl", &home.workspace())
-            .unwrap()
-            .0
-            .contains("# Team")
-    );
     for n in 0..25 {
         conn.execute("INSERT INTO bots(name,owner_id,description,last_activity_at) VALUES(?,'alice','Helps',3)", [format!("helper{n:02}")]).unwrap();
     }
@@ -2188,45 +2134,43 @@ async fn connected_approvals_require_a_visible_section_and_nested_calls_survive_
 fn connected_tool_notices_name_the_bot_in_plain_words() {
     use super::connected_tools_notice as notice;
     assert_eq!(
-        notice("Fox", "MCP servers need attention:\n  github: needs sign-in\n  linear: failed: timeout\nRun /mcp to fix.", false).unwrap(),
-        "Fox can't reach github, linear. Ask an admin to check them.\ngithub: needs sign-in\nlinear: failed: timeout"
+        notice("Fox", "MCP servers need attention:\n  github: needs sign-in\n  linear: failed: timeout\nRun /mcp to fix.").unwrap(),
+        "Fox can't reach github, linear. Check them in bot settings.\ngithub: needs sign-in\nlinear: failed: timeout"
     );
     assert_eq!(
-        notice("Fox", "MCP tools are only reachable from the codemode or tool_search tool, but neither is active; they cannot be called.", true).unwrap(),
+        notice("Fox", "MCP tools are only reachable from the codemode or tool_search tool, but neither is active; they cannot be called.").unwrap(),
         "Fox can't use connected tools in this section. Start a new section to use them."
     );
     assert_eq!(
         notice(
             "Fox",
-            "Connected tool github has invalid settings. Ask an admin to check it.",
-            true
+            "Connected tool github has invalid settings. Check it in bot settings."
         )
         .unwrap(),
         "Fox can't use github. Its settings are invalid. Check it in bot settings."
     );
     assert_eq!(
-        notice("Fox", "Connected tool github: bad config", false).unwrap(),
-        "Fox can't use github. Ask an admin to check it.\nbad config"
+        notice("Fox", "Connected tool github: bad config").unwrap(),
+        "Fox can't use github. Check it in bot settings.\nbad config"
     );
     assert_eq!(
         notice(
             "Fox",
-            "Connected tools are unavailable: Daemon request interrupted",
-            true
+            "Connected tools are unavailable: Daemon request interrupted"
         )
         .unwrap(),
         "Fox can't use connected tools right now. Try again in the next message.\nDaemon request interrupted"
     );
     assert_eq!(
-        notice("Fox", "MCP failed to load: boom", true).unwrap(),
+        notice("Fox", "MCP failed to load: boom").unwrap(),
         "Fox can't load connected tools. Check them in bot settings.\nboom"
     );
-    assert!(notice("Fox", "Something else", true).is_none());
+    assert!(notice("Fox", "Something else").is_none());
     for raw in [
         "MCP servers need attention:\n  a: failed\nRun /mcp to fix.",
         "MCP failed to load: x",
     ] {
-        let text = notice("Fox", raw, true).unwrap();
+        let text = notice("Fox", raw).unwrap();
         assert!(!text.contains("MCP") && !text.contains("/mcp"), "{text}");
     }
 }

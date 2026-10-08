@@ -21,11 +21,9 @@ import {
   providerModels,
   usageSummary,
   userMemoryGet,
-  userMemorySet,
-  usersInvite,
-  usersUpdate
+  userMemorySet
 } from '../../lib/api'
-import { useApprovalModes } from '../../lib/approval-modes'
+import { APPROVAL_MODES } from '../../lib/approval-modes'
 import {
   defaultDeviceName,
   getBridge,
@@ -41,6 +39,7 @@ import type { DaemonInfo, ModelOption, PairingCode, Provider } from '../../lib/t
 import { daemonBehind } from '../../lib/version-skew'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
+import { useMe } from '../../stores/me'
 import { useSettings } from '../../stores/settings'
 import { type ThemePreference, useUi } from '../../stores/ui'
 import {
@@ -49,9 +48,8 @@ import {
   updateDaemon,
   useUpdates
 } from '../../stores/updates'
-import { useUsers } from '../../stores/users'
 import { MemoryEditor } from '../bot-settings/memory'
-import { ChoiceRow, dividerClass, Group, Heading, Row, rowFieldClass } from '../bot-settings/shared'
+import { ChoiceRow, dividerClass, Group, Heading, Row } from '../bot-settings/shared'
 import { ConfirmUpdate, installTarget } from '../confirm-update'
 
 import { ArchiveSettings } from './archive'
@@ -63,7 +61,6 @@ export const SETTINGS_TABS = [
   'connect',
   'memory',
   'archive',
-  'users',
   'usage',
   'approvals',
   'appearance',
@@ -115,7 +112,6 @@ export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
       {tab === 'connect' && <ConnectSettings />}
       {tab === 'memory' && <MemorySettings />}
       {tab === 'archive' && <ArchiveSettings />}
-      {tab === 'users' && <UsersSettings />}
       {tab === 'usage' && <UsageSettings />}
       {tab === 'approvals' && <ApprovalsSettings />}
       {tab === 'appearance' && <AppearanceSettings />}
@@ -129,8 +125,10 @@ export function MemorySettings() {
   const settings = useSettings(state => state.settings)
   const refresh = useSettings(state => state.refresh)
   const patch = useSettings(state => state.patch)
+  const me = useMe(state => state.me)
   const [about, setAbout] = useState<Awaited<ReturnType<typeof userMemoryGet>> | null>(null)
   const [aboutError, setAboutError] = useState<string | null>(null)
+  const [nameError, setNameError] = useState<string | null>(null)
   useEffect(() => {
     void refresh()
     void userMemoryGet()
@@ -138,12 +136,48 @@ export function MemorySettings() {
       .catch(cause => setAboutError(errorText(cause)))
   }, [refresh])
 
+  const rename = (value: string) => {
+    const name = value.trim()
+
+    if (!name || name === me?.display_name) {
+      return
+    }
+
+    setNameError(null)
+    void useMe
+      .getState()
+      .rename(name)
+      .catch(cause => setNameError(errorText(cause)))
+  }
+
   return (
     <>
       <Heading description="About you goes to every bot you own. Each bot keeps its own memory in its settings.">
         Memory
       </Heading>
       <div className="space-y-8">
+        {me ? (
+          <div>
+            <Group title="You">
+              <Row
+                control={
+                  <Input
+                    aria-label="Your name"
+                    className="w-48"
+                    defaultValue={me.display_name}
+                    key={me.display_name}
+                    maxLength={64}
+                    onBlur={event => rename(event.target.value)}
+                    onKeyDown={event => event.key === 'Enter' && event.currentTarget.blur()}
+                  />
+                }
+                description="Shown on your messages in rooms."
+                title="Name"
+              />
+            </Group>
+            {nameError ? <ErrorLine>{nameError}</ErrorLine> : null}
+          </div>
+        ) : null}
         <div>
           <p className="mb-2 px-1 text-[length:var(--text-meta)] font-medium text-muted">
             About you
@@ -407,117 +441,6 @@ export function ConnectSettings() {
       {status?.registered && status.identity_error ? (
         <ErrorLine>{connectStatusMessage(status.identity_error, true)}</ErrorLine>
       ) : null}
-    </>
-  )
-}
-
-export function UsersSettings() {
-  const current = useUsers(state => state.current)
-  const users = useUsers(state => state.users)
-  const refresh = useUsers(state => state.refresh)
-  const network = useSettings(state => state.network)
-  const refreshNetwork = useSettings(state => state.refreshNetwork)
-  const [name, setName] = useState('')
-  const [invite, setInvite] = useState<{ code: string; expires_at: number } | null>(null)
-  useEffect(() => {
-    void Promise.all([refresh(), refreshNetwork()])
-  }, [refresh, refreshNetwork])
-
-  if (current?.role !== 'admin') {
-    return <p className="text-muted">Only administrators can manage users.</p>
-  }
-
-  return (
-    <>
-      <Heading description="Invite the people in your household and set their daily token budgets.">
-        Users
-      </Heading>
-      <div className="space-y-8">
-        <Group title="Invite">
-          <form
-            className="flex items-center gap-2 px-4 py-2.5"
-            onSubmit={event => {
-              event.preventDefault()
-              void usersInvite(name).then(result => {
-                setInvite(result)
-                setName('')
-                void refresh()
-              })
-            }}
-          >
-            <Input
-              aria-label="New user name"
-              className={rowFieldClass}
-              onChange={event => setName(event.target.value)}
-              placeholder="Display name"
-              value={name}
-            />
-            <Button disabled={!name.trim()} size="sm" type="submit" variant="primary">
-              Invite
-            </Button>
-          </form>
-          {invite ? (
-            <div className="px-4 py-4 text-center">
-              <p className="text-[length:var(--text-secondary)] text-muted">
-                Pairing code for the new user's device
-              </p>
-              <p className="mt-2 font-mono text-[28px] tracking-[0.2em]">{invite.code}</p>
-              {network?.addresses[0] ? (
-                <a
-                  className="mt-2 inline-block break-all text-[length:var(--text-secondary)] text-accent hover:underline"
-                  href={`hexbot://pair?host=${encodeURIComponent(network.addresses[0])}&port=${network.port}#code=${encodeURIComponent(invite.code)}`}
-                >
-                  Open pairing link
-                </a>
-              ) : null}
-            </div>
-          ) : null}
-        </Group>
-        <Group footer="A budget is tokens per day. Leave it empty for no limit." title="People">
-          {users.map(user => (
-            <div
-              className="grid min-h-[52px] grid-cols-[1fr_120px_auto] items-center gap-3 px-4 py-2"
-              key={user.id}
-            >
-              <Input
-                aria-label={`Name for ${user.display_name}`}
-                className={rowFieldClass}
-                defaultValue={user.display_name}
-                onBlur={event =>
-                  event.target.value !== user.display_name &&
-                  void usersUpdate(user.id, { display_name: event.target.value }).then(() =>
-                    refresh()
-                  )
-                }
-              />
-              <Input
-                aria-label={`Daily token budget for ${user.display_name}`}
-                className="h-[32px] text-[length:var(--text-secondary)]"
-                defaultValue={user.limits?.daily_tokens ?? ''}
-                min="0"
-                onBlur={event =>
-                  void usersUpdate(user.id, {
-                    limits: { daily_tokens: event.target.value ? Number(event.target.value) : null }
-                  }).then(() => refresh())
-                }
-                placeholder="No limit"
-                type="number"
-              />
-              <Button
-                onClick={() =>
-                  void usersUpdate(user.id, {
-                    disabled: !(user.disabled_at ?? user.disabled)
-                  }).then(() => refresh())
-                }
-                size="sm"
-                variant="ghost"
-              >
-                {user.disabled_at || user.disabled ? 'Enable' : 'Disable'}
-              </Button>
-            </div>
-          ))}
-        </Group>
-      </div>
     </>
   )
 }
@@ -1234,7 +1157,6 @@ export function ApprovalsSettings(): React.JSX.Element {
   const settings = useSettings(state => state.settings)
   const refresh = useSettings(state => state.refresh)
   const patch = useSettings(state => state.patch)
-  const modes = useApprovalModes(settings?.approval_mode)
   const [info, setInfo] = useState<DaemonInfo | undefined>(undefined)
   useEffect(() => {
     void refresh()
@@ -1264,7 +1186,7 @@ export function ApprovalsSettings(): React.JSX.Element {
       ) : null}
       <Group title="Mode">
         <div aria-label="Approval mode" className={dividerClass} role="radiogroup">
-          {modes.map(mode => (
+          {APPROVAL_MODES.map(mode => (
             <ChoiceRow
               checked={settings?.approval_mode === mode.value}
               description={mode.description}

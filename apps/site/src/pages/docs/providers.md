@@ -8,7 +8,7 @@ Hexbot runs the agent. Model providers run the models. You bring provider creden
 
 ## Add a provider
 
-Open Settings, Providers and choose a provider. On a shared daemon, an admin manages these credentials.
+Open Settings, Providers and choose a provider.
 
 - **Subscription** providers, including ChatGPT or Codex, SuperGrok, and Nous Portal, sign you in through your browser. Follow the provider's sign-in page and enter the displayed code if it asks for one.
 - **API key** providers take a key from your account with them. Hexbot saves the key for the daemon. A saved key does not guarantee that your account can use every model in the list; send a short test message after choosing one.
@@ -61,7 +61,7 @@ Providers commonly charge for input and output tokens. Tool results, conversatio
 
 Hexbot does not add a fee to provider requests. Your provider dashboard is the source of truth for invoices and quotas.
 
-Rooms, private teammate exchanges, delegated subtasks, scheduled jobs, and dreaming can all make additional model requests. Settings, Usage reports token counts and estimated costs. An admin can set [user and bot budgets](/docs/multi-user/#budgets-and-usage); estimates may differ from provider invoices.
+Rooms, private teammate exchanges, delegated subtasks, scheduled jobs, and dreaming can all make additional model requests. Settings, Usage reports token counts and estimated costs; estimates may differ from provider invoices. Room limits and a daily budget for each bot cap what rooms spend.
 
 ## If a provider fails
 

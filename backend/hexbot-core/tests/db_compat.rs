@@ -418,3 +418,101 @@ fn bot_thread_backfill_uses_first_sender_keeps_renamed_sections_and_is_idempoten
         db::SCHEMA_VERSION
     );
 }
+
+#[test]
+fn upgrading_folds_invited_people_into_the_owner_once() {
+    let home = TempDir::new().unwrap();
+    let h = home.path();
+    db::migrate(h).unwrap();
+    let conn = db::open(h).unwrap();
+    conn.execute_batch(
+        "UPDATE schema_version SET version=12;
+         INSERT INTO users(id,display_name,role,created_at) VALUES ('bob','Bob','member',0);
+         INSERT INTO bots(name,owner_id,approval_mode) VALUES ('owl','local','off'),('fox','bob','off');
+         INSERT INTO sections(id,bot,owner_id) VALUES ('mine','owl','local'),('his','fox','bob');
+         INSERT INTO devices(id,name,token_hash,owner_id) VALUES ('phone','Phone','a','local'),('his-phone','Phone','b','bob');
+         INSERT INTO pairing_codes(code_hash,created_at,expires_at,user_id) VALUES ('code',0,9999999999,'bob');
+         INSERT INTO rooms(id,name,owner_id,approval_mode) VALUES ('ours','Ours','local',NULL),('his-room','His','bob','off');
+         INSERT INTO room_members(room_id,member_kind,member_id,added_by) VALUES ('ours','human','local','local'),('ours','human','bob','local'),('his-room','human','bob','bob'),('his-room','human','local','bob'),('his-room','bot','fox','bob');",
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE room_members SET left_at=1 WHERE room_id='his-room' AND member_id='local'",
+        [],
+    )
+    .unwrap();
+    hexbot_core::runtime_store::open(h)
+        .unwrap()
+        .execute_batch("INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES ('his','bob','fox','');")
+        .unwrap();
+    fs::create_dir_all(h.join("users/local")).unwrap();
+    fs::write(
+        h.join("users/local/user.md"),
+        "Name: Alex\nWhat I do: Design",
+    )
+    .unwrap();
+    db::migrate(h).unwrap();
+    let one = |sql: &str| -> String { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    assert_eq!(
+        one("SELECT display_name FROM users WHERE id='local'"),
+        "Alex"
+    );
+    for table in ["bots", "sections", "rooms"] {
+        assert_eq!(
+            count(&format!(
+                "SELECT COUNT(*) FROM {table} WHERE owner_id<>'local'"
+            )),
+            0,
+            "{table}"
+        );
+    }
+    // Members could never choose Bypass, so their bot and room keep Auto.
+    assert_eq!(
+        one("SELECT approval_mode FROM bots WHERE name='fox'"),
+        "smart"
+    );
+    assert_eq!(
+        one("SELECT approval_mode FROM bots WHERE name='owl'"),
+        "off"
+    );
+    assert_eq!(
+        one("SELECT approval_mode FROM rooms WHERE id='his-room'"),
+        "smart"
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM room_members WHERE member_kind='human' AND left_at IS NULL"),
+        2
+    );
+    assert_eq!(
+        count(
+            "SELECT COUNT(*) FROM room_members WHERE member_kind='human' AND member_id='local' AND left_at IS NULL"
+        ),
+        2
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM devices WHERE revoked_at IS NULL"),
+        1
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM pairing_codes WHERE used_at IS NULL"),
+        0
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM users WHERE disabled_at IS NULL"),
+        1
+    );
+    let owner: String = hexbot_core::runtime_store::open(h)
+        .unwrap()
+        .query_row(
+            "SELECT owner FROM native_sessions WHERE stored_id='his'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(owner, "local");
+    // Later migrations never fold again.
+    conn.execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES ('carol','Carol','member',0); INSERT INTO bots(name,owner_id) VALUES ('ant','carol');").unwrap();
+    db::migrate(h).unwrap();
+    assert_eq!(one("SELECT owner_id FROM bots WHERE name='ant'"), "carol");
+}

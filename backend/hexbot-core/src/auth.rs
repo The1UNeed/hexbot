@@ -1,7 +1,7 @@
 //! User identity and revocable device credentials compatible with Hexbot storage.
 use crate::{
     Error, Result,
-    common::{self, admin, now, required, rows, user},
+    common::{self, now, required, rows, user},
     db,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -130,7 +130,7 @@ pub fn daemon_name() -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "Hexbot".into())
 }
-/// Main maps the pinned cloud owner to the local admin. Spend and mint atomically.
+/// Main maps the pinned cloud owner to the daemon's owner. Spend and mint atomically.
 pub fn redeem_verified_grant(
     home: &Path,
     name: &str,
@@ -280,25 +280,11 @@ pub fn local_token(home: &Path) -> Result<String> {
     tx.commit()?;
     Ok(token.to_owned())
 }
-fn shape_user(mut row: Value) -> Value {
-    row["limits"] = common::json_field(&row["limits_json"]);
-    row.as_object_mut().expect("row").remove("limits_json");
-    row
-}
-fn get_user(conn: &Connection, id: &str) -> Result<Value> {
-    rows(conn, "SELECT * FROM users WHERE id=?", &[&id])?
-        .into_iter()
-        .next()
-        .map(shape_user)
-        .ok_or_else(|| Error::new(4204, format!("user not found: {id}")))
-}
 pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result<Value>> {
     if !matches!(
         method,
         "hexbot.users.me"
-            | "hexbot.users.list"
-            | "hexbot.users.invite"
-            | "hexbot.users.update"
+            | "hexbot.users.me.set"
             | "hexbot.devices.list"
             | "hexbot.devices.revoke"
             | "hexbot.pairing.code"
@@ -309,135 +295,39 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
         db::migrate(home)?;
         let current = user(home, caller)?;
         match method {
-            "hexbot.users.me" => Ok(
-                json!({"id":current["id"],"display_name":current["display_name"],"role":current["role"]}),
-            ),
-            "hexbot.users.list" => {
-                admin(home, caller)?;
-                Ok(
-                    json!({"users": rows(&db::open(home)?,"SELECT * FROM users ORDER BY created_at,id",&[])?.into_iter().map(shape_user).collect::<Vec<_>>()}),
-                )
+            "hexbot.users.me" => {
+                Ok(json!({"id":current["id"],"display_name":current["display_name"]}))
             }
-            "hexbot.users.invite" => {
-                admin(home, caller)?;
-                let name = required(p, "display_name")?.trim();
-                if name.is_empty() {
-                    return Err(Error::new(4200, "missing parameter: display_name"));
-                }
-                let role = p.get("role").unwrap_or(&Value::Null);
-                let role = if role.is_null() && p.get("role").is_none() {
-                    "member"
-                } else {
-                    role.as_str().unwrap_or("")
-                };
-                if !matches!(role, "admin" | "member") {
-                    return Err(Error::new(4202, "role must be admin or member"));
-                }
-                let id = common::id();
-                let mut conn = db::open(home)?;
-                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                tx.execute("INSERT INTO users(id,display_name,role,limits_json,created_at) VALUES (?,?,?,'{}',?)",params![id,name,role,now()])?;
-                let mut result = create_code(&tx, &id, true)?;
-                result["user"] = get_user(&tx, &id)?;
-                tx.commit()?;
-                Ok(result)
-            }
-            "hexbot.users.update" => {
-                admin(home, caller)?;
-                let id = required(p, "id")?;
+            "hexbot.users.me.set" => {
                 if let Some(map) = p.as_object() {
                     for key in map.keys() {
-                        if !["id", "display_name", "role", "disabled", "limits"]
-                            .contains(&key.as_str())
-                        {
+                        if key != "display_name" {
                             return Err(Error::new(4201, format!("unknown parameter: {key}")));
                         }
                     }
                 }
-                if let Some(role) = p.get("role")
-                    && role != "admin"
-                    && role != "member"
-                {
-                    return Err(Error::new(4202, "role must be admin or member"));
+                let name = required(p, "display_name")?.trim();
+                if name.is_empty() {
+                    return Err(Error::new(4200, "missing parameter: display_name"));
                 }
-                if let Some(limits) = p.get("limits") {
-                    if !limits.is_object() {
-                        return Err(Error::new(4202, "limits must be an object"));
-                    }
-                    if let Some(value) = limits.get("daily_tokens")
-                        && !value.is_null()
-                        && value.as_u64().is_none()
-                    {
-                        return Err(Error::new(
-                            4202,
-                            "daily_tokens must be a non-negative integer or null",
-                        ));
-                    }
+                if name.chars().count() > 64 {
+                    return Err(Error::new(
+                        4202,
+                        "display_name is longer than 64 characters",
+                    ));
                 }
-                if p.get("display_name").is_some_and(|v| !v.is_string()) {
-                    return Err(Error::new(4202, "display_name must be a string"));
-                }
-                let mut conn = db::open(home)?;
-                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                let caller_active: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM users WHERE id=? AND role='admin' AND disabled_at IS NULL)",
-                    [caller], |r| r.get(0),
+                db::open(home)?.execute(
+                    "UPDATE users SET display_name=? WHERE id=?",
+                    params![name, caller],
                 )?;
-                if !caller_active {
-                    return Err(Error::new(4301, "admin required"));
-                }
-                for key in ["display_name", "role"] {
-                    if let Some(value) = p.get(key) {
-                        tx.execute(
-                            &format!("UPDATE users SET {key}=? WHERE id=?"),
-                            params![value.as_str(), id],
-                        )?;
-                    }
-                }
-                if let Some(value) = p.get("disabled") {
-                    let disabled = if truthy(value) { Some(now()) } else { None };
-                    tx.execute(
-                        "UPDATE users SET disabled_at=? WHERE id=?",
-                        params![disabled, id],
-                    )?;
-                }
-                if let Some(value) = p.get("limits") {
-                    tx.execute(
-                        "UPDATE users SET limits_json=? WHERE id=?",
-                        params![value.to_string(), id],
-                    )?;
-                }
-                let updated = get_user(&tx, id)?;
-                let active_admin: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM users WHERE role='admin' AND disabled_at IS NULL)",
-                    [],
-                    |r| r.get(0),
-                )?;
-                if !active_admin {
-                    return Err(Error::new(4202, "At least one active admin is required"));
-                }
-                tx.commit()?;
-                Ok(json!({"user":updated}))
+                Ok(json!({"id":current["id"],"display_name":name}))
             }
             "hexbot.devices.list" => {
-                let all = p.get("all").is_some_and(truthy);
-                if all {
-                    admin(home, caller)?;
-                }
-                let conn = db::open(home)?;
-                let mut devices = if all {
-                    rows(
-                        &conn,
-                        "SELECT id,name,platform,created_at,last_seen_at FROM devices WHERE revoked_at IS NULL ORDER BY created_at DESC",
-                        &[],
-                    )?
-                } else {
-                    rows(
-                        &conn,
-                        "SELECT id,name,platform,created_at,last_seen_at FROM devices WHERE revoked_at IS NULL AND owner_id=? ORDER BY created_at DESC",
-                        &[&caller],
-                    )?
-                };
+                let mut devices = rows(
+                    &db::open(home)?,
+                    "SELECT id,name,platform,created_at,last_seen_at FROM devices WHERE revoked_at IS NULL AND owner_id=? ORDER BY created_at DESC",
+                    &[&caller],
+                )?;
                 for device in &mut devices {
                     device["current"] = json!(false);
                 }
@@ -468,25 +358,11 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                 tx.commit()?;
                 Ok(json!({"revoked":true}))
             }
-            "hexbot.pairing.code" => {
-                admin(home, caller)?;
-                new_code(home, caller)
-            }
+            "hexbot.pairing.code" => new_code(home, caller),
             _ => unreachable!(),
         }
     })())
 }
-fn truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(v) => *v,
-        Value::Number(v) => v.as_f64() != Some(0.),
-        Value::String(v) => !v.is_empty(),
-        Value::Array(v) => !v.is_empty(),
-        Value::Object(v) => !v.is_empty(),
-    }
-}
-
 #[cfg(test)]
 mod hostname_tests {
     use super::*;

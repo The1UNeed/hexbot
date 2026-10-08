@@ -49,6 +49,7 @@ import type {
 } from '../lib/types'
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
+import { useMe } from '../stores/me'
 import { introduceBot } from '../stores/sections'
 import { type LastSection, uiActions } from '../stores/ui'
 
@@ -631,11 +632,17 @@ export function AboutStep({
   const patch = (field: keyof AboutYou) => (event: { target: { value: string } }) =>
     setAbout(current => ({ ...current, [field]: event.target.value }))
 
-  const save = async (value: string) => {
+  const save = async (value: string, name = '') => {
     setBusy(true)
 
     try {
       await userMemorySet(value)
+
+      // The name you give here is the one rooms show.
+      if (name) {
+        await useMe.getState().rename(name)
+      }
+
       onContinue()
     } catch (reason) {
       onError(String(reason))
@@ -693,7 +700,7 @@ export function AboutStep({
           className={PILL}
           data-testid="onboarding-about-continue"
           disabled={!about.name.trim() || text.length > ABOUT_CAP}
-          onClick={() => void save(text)}
+          onClick={() => void save(text, about.name.trim())}
           variant="primary"
         >
           Continue

@@ -119,21 +119,21 @@ describe('rooms reducer', () => {
     expect(useRooms.getState().liveTurnsByRoom['room-1']).toEqual({})
   })
 
-  it('drops a room you were removed from, and when the daemon says you are not a member', async () => {
+  it('drops a deleted room, and one the daemon no longer shows you', async () => {
     const room = { id: 'room-1', members: [], name: 'Lab' } as unknown as Room
     useRooms.setState({ byId: { 'room-1': room, 'room-2': { ...room, id: 'room-2' } } })
 
     const call = vi.fn(() =>
-      Promise.reject(new JsonRpcGatewayError('not a room member', { code: 4302 }))
+      Promise.reject(new JsonRpcGatewayError('not the owner', { code: 4302 }))
     )
 
     setActiveRpc({ call } as never)
 
-    routeEvent({ payload: { id: 'room-1', removed: true }, type: 'hexbot.rooms.changed' } as never)
+    routeEvent({ payload: { deleted: true, id: 'room-1' }, type: 'hexbot.rooms.changed' } as never)
     expect(useRooms.getState().byId['room-1']).toBeUndefined()
     expect(call).not.toHaveBeenCalled()
 
-    // Removed while offline: the room is gone on the next load, and read marks
+    // Deleted while offline: the room is gone on the next load, and read marks
     // never surface as unhandled errors.
     await useRooms.getState().markRead('room-2', 3)
     expect(useRooms.getState().byId['room-2']).toBeUndefined()

@@ -13,21 +13,14 @@ fn home() -> tempfile::TempDir {
 }
 
 #[tokio::test]
-async fn registration_errors_and_admin_authorization_are_real() {
+async fn registration_errors_and_authorization_are_real() {
     let mock = Mock::new().await;
     let home = home();
     mock.configure(home.path());
-    db::open(home.path())
-        .unwrap()
-        .execute(
-            "INSERT INTO users VALUES ('member','Member','member','{}',0,NULL)",
-            [],
-        )
-        .unwrap();
     assert_eq!(
         services::call(
             home.path(),
-            "member",
+            "missing",
             "hexbot.connect.register_start",
             &json!({})
         )
@@ -35,7 +28,7 @@ async fn registration_errors_and_admin_authorization_are_real() {
         .unwrap()
         .unwrap_err()
         .code,
-        4301
+        4302
     );
     let started = services::call(
         home.path(),

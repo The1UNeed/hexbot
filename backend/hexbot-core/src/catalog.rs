@@ -35,7 +35,6 @@ const FIELDS: &[&str] = &[
     "reasoning_effort",
     "avatar",
     "dream_enabled",
-    "shareable",
     "tools",
     "skills",
     "notify",
@@ -84,12 +83,9 @@ fn write_yaml(home: &Path, path: &Path, value: &Value) -> Result<()> {
     crate::common::write_yaml(path, value)
 }
 
-fn bot_row(home: &Path, caller: &str, name: &str, all: bool) -> Result<Value> {
+fn bot_row(home: &Path, caller: &str, name: &str) -> Result<Value> {
     identifier(name)?;
     user(home, caller)?;
-    if all {
-        admin(home, caller)?;
-    }
     let row = rows(
         &db::open(home)?,
         "SELECT * FROM bots WHERE name=?",
@@ -98,9 +94,7 @@ fn bot_row(home: &Path, caller: &str, name: &str, all: bool) -> Result<Value> {
     .into_iter()
     .next()
     .ok_or_else(|| Error::new(4205, format!("bot not found: {name}")))?;
-    if !all {
-        owner(home, caller, row["owner_id"].as_str().unwrap_or(""))?;
-    }
+    owner(home, caller, row["owner_id"].as_str().unwrap_or(""))?;
     Ok(row)
 }
 fn section_row(home: &Path, caller: &str, id: &str) -> Result<Value> {
@@ -195,17 +189,13 @@ pub fn section(home: &Path, caller: &str, id: &str) -> Result<Value> {
 }
 fn list_sections(home: &Path, caller: &str, p: &Value) -> Result<Vec<Value>> {
     user(home, caller)?;
-    let all = p["all"].as_bool().unwrap_or(false);
-    if all {
-        admin(home, caller)?;
-    }
     let bot = p["bot"].as_str();
     let archived = p["include_archived"].as_bool().unwrap_or(false);
     let threads = p["include_threads"] == true;
     rows(
         &db::open(home)?,
-        "SELECT * FROM sections WHERE (? OR owner_id=?) AND (? IS NULL OR bot=?) AND (? OR archived_at IS NULL) AND (? OR peer_bot IS NULL) ORDER BY updated_at DESC,id ASC",
-        &[&all, &caller, &bot, &bot, &archived, &threads],
+        "SELECT * FROM sections WHERE owner_id=? AND (? IS NULL OR bot=?) AND (? OR archived_at IS NULL) AND (? OR peer_bot IS NULL) ORDER BY updated_at DESC,id ASC",
+        &[&caller, &bot, &bot, &archived, &threads],
     )?
     .into_iter()
     .map(|r| shape_section(home, r))
@@ -320,14 +310,10 @@ fn display_name(name: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-fn shape_bot(home: &Path, caller: &str, row: Value, all: bool) -> Result<Value> {
+fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
     let name = row["name"].as_str().unwrap_or("");
     let cfg = config(home, name)?;
-    let sections = list_sections(
-        home,
-        caller,
-        &json!({"bot":name,"include_archived":true,"all":all}),
-    )?;
+    let sections = list_sections(home, caller, &json!({"bot":name,"include_archived":true}))?;
     let recent = sections
         .iter()
         .filter(|s| s["archived_at"].is_null() && s["title"] != "Dreams")
@@ -408,7 +394,6 @@ fn shape_bot(home: &Path, caller: &str, row: Value, all: bool) -> Result<Value> 
         "tools": tools,
         "available_tools": available.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
         "dream_enabled": row["dream_enabled"].as_i64().unwrap_or(1) != 0,
-        "shareable": row["shareable"].as_i64().unwrap_or(0) != 0,
         "notify": row["notify"].as_i64().unwrap_or(1) != 0,
         "approval_mode": row["approval_mode"].as_str().unwrap_or("inherit"),
         "workdir": row["workdir"],
@@ -430,7 +415,7 @@ fn shape_bot(home: &Path, caller: &str, row: Value, all: bool) -> Result<Value> 
     }))
 }
 pub fn bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
-    shape_bot(home, caller, bot_row(home, caller, name, false)?, false)
+    shape_bot(home, caller, bot_row(home, caller, name)?)
 }
 fn validate_patch(home: &Path, p: &Value) -> Result<()> {
     let object = p
@@ -441,7 +426,7 @@ fn validate_patch(home: &Path, p: &Value) -> Result<()> {
             return Err(Error::new(4201, format!("unknown bot field: {key}")));
         }
         match key.as_str() {
-            "notify" | "dream_enabled" | "shareable" if !value.is_boolean() => {
+            "notify" | "dream_enabled" if !value.is_boolean() => {
                 return Err(Error::new(4202, format!("{key} must be a boolean")));
             }
             "approval_mode"
@@ -513,7 +498,7 @@ pub fn enabled_skills(home: &Path, name: &str) -> Result<Vec<Value>> {
 }
 fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Value> {
     let name = required(p, "name")?;
-    let row = bot_row(home, caller, name, false)?;
+    let row = bot_row(home, caller, name)?;
     match method {
         "profiles.describe" => {
             let cfg = config(home, name)?;
@@ -767,7 +752,6 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
 fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     user(home, caller)?;
     validate_patch(home, p)?;
-    bypass_allowed(home, caller, p)?;
     let name = required(p, "name")?;
     if name.len() > 64
         || !name
@@ -866,7 +850,6 @@ fn write_bot_columns(tx: &rusqlite::Transaction, name: &str, p: &Value) -> Resul
         "title",
         "description",
         "dream_enabled",
-        "shareable",
         "notify",
         "approval_mode",
         "workdir",
@@ -923,9 +906,8 @@ fn section_model(home: &Path, name: &str) -> Result<Value> {
 }
 fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     let name = required(p, "name")?;
-    bot_row(home, caller, name, false)?;
+    bot_row(home, caller, name)?;
     validate_patch(home, p)?;
-    bypass_allowed(home, caller, p)?;
     configure(home, name, p)?;
     let mut conn = db::open(home)?;
     let tx = conn.transaction()?;
@@ -989,24 +971,17 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
         "hexbot.bots.create" => create_bot(home, caller, p),
         "hexbot.bots.update" => update_bot(home, caller, p),
         "hexbot.bots.get" => {
-            let all = p["all"].as_bool().unwrap_or(false);
-            Ok(
-                json!({"bot":shape_bot(home,caller,bot_row(home,caller,required(p,"name")?,all)?,all)?}),
-            )
+            Ok(json!({"bot":shape_bot(home,caller,bot_row(home,caller,required(p,"name")?)?)?}))
         }
         "hexbot.bots.list" => {
             user(home, caller)?;
-            let all = p["all"].as_bool().unwrap_or(false);
-            if all {
-                admin(home, caller)?;
-            }
             let bots = rows(
                 &db::open(home)?,
-                "SELECT * FROM bots WHERE (? OR owner_id=?) ORDER BY last_activity_at DESC,name ASC",
-                &[&all, &caller],
+                "SELECT * FROM bots WHERE owner_id=? ORDER BY last_activity_at DESC,name ASC",
+                &[&caller],
             )?
             .into_iter()
-            .map(|r| shape_bot(home, caller, r, all))
+            .map(|r| shape_bot(home, caller, r))
             .collect::<Result<Vec<_>>>()?;
             Ok(json!({"bots":bots}))
         }

@@ -14,19 +14,19 @@ import type { UpdateState } from '../../lib/bridge'
 import { pairWithDaemon } from '../../lib/connection'
 import type { DaemonInfo } from '../../lib/types'
 import { useConnection } from '../../stores/connection'
+import { useMe } from '../../stores/me'
 import { useSettings } from '../../stores/settings'
 import { useUpdates } from '../../stores/updates'
-import { useUsers } from '../../stores/users'
 
 import {
   AboutSettings,
   AppearanceSettings,
   ApprovalsSettings,
   ConnectSettings,
+  MemorySettings,
   NetworkSettings,
   ProvidersSettings,
-  UpdatesSettings,
-  UsersSettings
+  UpdatesSettings
 } from './index'
 
 vi.mock('../../lib/api', async importOriginal => ({
@@ -231,7 +231,7 @@ describe('settings', () => {
     await waitFor(() => expect(revokeDevice).toHaveBeenCalledExactlyOnceWith('other'))
   })
 
-  it('maps Auto approvals to smart and offers Bypass to the admin only', () => {
+  it('maps Auto approvals to smart and offers Bypass', () => {
     const patch = vi.fn().mockResolvedValue(undefined)
     useSettings.setState({
       patch,
@@ -246,17 +246,9 @@ describe('settings', () => {
         workspace_dir: ''
       }
     })
-    useUsers.setState({
-      current: { display_name: 'Ana', id: 'ana', role: 'member' } as never,
-      supported: true
-    })
-    const { unmount } = render(<ApprovalsSettings />)
-    expect(screen.queryByRole('radio', { name: /^Bypass/ })).toBeNull()
+    render(<ApprovalsSettings />)
     fireEvent.click(screen.getByRole('radio', { name: /^Auto/ }))
     expect(patch).toHaveBeenCalledWith({ approval_mode: 'smart' })
-    unmount()
-    useUsers.setState({ current: { display_name: 'Ana', id: 'ana', role: 'admin' } as never })
-    render(<ApprovalsSettings />)
     fireEvent.click(screen.getByRole('radio', { name: /^Bypass/ }))
     expect(patch).toHaveBeenCalledWith({ approval_mode: 'off' })
     expect(screen.queryByText(/approver model/i)).toBeNull()
@@ -542,16 +534,16 @@ describe('settings', () => {
     }
   })
 
-  it('gates user management to administrators', () => {
-    useUsers.setState({
-      current: { display_name: 'Member', id: 'u1', role: 'member' },
-      refresh: vi.fn().mockResolvedValue(undefined),
-      supported: true,
-      users: []
-    })
-    render(<UsersSettings />)
-    expect(screen.getByText('Only administrators can manage users.')).toBeVisible()
-    expect(screen.queryByRole('button', { name: 'Invite' })).not.toBeInTheDocument()
+  it('renames you from the Memory page', () => {
+    const rename = vi.fn().mockResolvedValue(undefined)
+    useSettings.setState({ refresh: vi.fn().mockResolvedValue(undefined) })
+    useMe.setState({ me: { display_name: 'Admin', id: 'local' }, rename })
+    render(<MemorySettings />)
+    const name = screen.getByLabelText('Your name')
+    fireEvent.blur(name, { target: { value: 'Admin' } })
+    expect(rename).not.toHaveBeenCalled()
+    fireEvent.blur(name, { target: { value: '  Alex ' } })
+    expect(rename).toHaveBeenCalledWith('Alex')
   })
 
   it('lists open source licenses with GitHub links and returns to About', async () => {

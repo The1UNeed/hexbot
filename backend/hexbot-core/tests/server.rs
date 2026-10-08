@@ -504,19 +504,8 @@ async fn websocket_rpc_errors_notifications_and_current_device_shape() {
 }
 
 #[tokio::test]
-async fn provider_key_changes_refresh_tool_availability_for_every_user() {
+async fn provider_key_changes_refresh_tool_availability() {
     let fixture = Fixture::new(false).await;
-    db::open(&fixture.home)
-        .unwrap()
-        .execute(
-            "INSERT INTO users VALUES ('member','Member','member','{}',0,NULL)",
-            [],
-        )
-        .unwrap();
-    let member = support::mint_device(&fixture.home, "Member", "test", "member").unwrap();
-    let mut member_socket = fixture
-        .socket(member["device_token"].as_str().unwrap())
-        .await;
     let mut admin = fixture.socket(&fixture.token).await;
     for (id, method, params) in [
         (
@@ -550,13 +539,8 @@ async fn provider_key_changes_refresh_tool_availability_for_every_user() {
                 saw_event = true;
             }
         }
-        assert_eq!(
-            frame(&mut member_socket).await["params"]["type"],
-            "hexbot.bots.changed"
-        );
     }
     admin.close(None).await.unwrap();
-    member_socket.close(None).await.unwrap();
     fixture.shutdown().await;
 }
 
@@ -575,16 +559,6 @@ async fn websocket_mutation_events_owner_isolation_and_flat_replay() {
         .socket(member["device_token"].as_str().unwrap())
         .await;
     let mut admin = fixture.socket(&fixture.token).await;
-    assert_eq!(
-        request(
-            &mut member_socket,
-            "denied",
-            "hexbot.settings.get",
-            json!({})
-        )
-        .await["error"]["code"],
-        4301
-    );
     admin.send(Message::Text(json!({"jsonrpc":"2.0","id":"memory","method":"hexbot.memory.user.set","params":{"text":"User-authored text"}}).to_string().into())).await.unwrap();
     let mut saw_event = false;
     let mut saw_response = false;
@@ -1077,17 +1051,12 @@ if(c.type==='steer' && pending){reply(pending);pending=null;emit({type:'message_
 }
 
 #[tokio::test]
-async fn daemon_home_is_only_returned_to_admins() {
+async fn daemon_info_reports_home_and_sandbox() {
     let fixture = Fixture::new(false).await;
-    db::open(&fixture.home).unwrap().execute("INSERT INTO users(id,display_name,role,created_at) VALUES('info-member','Member','member',0)", []).unwrap();
-    let member = support::mint_device(&fixture.home, "Member", "test", "info-member").unwrap();
-    let mut socket = fixture
-        .socket(member["device_token"].as_str().unwrap())
-        .await;
-    let info = request(&mut socket, "member-info", "hexbot.info", json!({})).await;
-    assert_eq!(info["result"]["home"], "");
+    let mut socket = fixture.socket(&fixture.token).await;
+    let info = request(&mut socket, "info", "hexbot.info", json!({})).await;
+    assert_eq!(info["result"]["home"], json!(fixture.home));
     assert!(info["result"]["install_id"].is_string());
-    // The sandbox state is reported to every user, so Settings can show it.
     let sandbox = &info["result"]["sandbox"];
     if cfg!(target_os = "macos") {
         assert_eq!(sandbox, "sandbox-exec");
@@ -1095,12 +1064,6 @@ async fn daemon_home_is_only_returned_to_admins() {
         assert!(sandbox.is_null() || sandbox == "bubblewrap", "{sandbox}");
     }
     assert_eq!(info["result"]["auth_required"], true);
-    socket.close(None).await.unwrap();
-    let mut socket = fixture.socket(&fixture.token).await;
-    assert_eq!(
-        request(&mut socket, "admin-info", "hexbot.info", json!({})).await["result"]["home"],
-        json!(fixture.home)
-    );
     socket.close(None).await.unwrap();
     fixture.shutdown().await;
 }

@@ -7,8 +7,8 @@ import { useRooms } from '../stores/rooms'
 import type { Room } from './types'
 
 /**
- * A room, loaded on mount, and a trip home once the daemon says it is gone
- * (deleted, or you were removed or left). `open` loads the room with its log
+ * A room, loaded on mount, and a trip home once the daemon says it is gone.
+ * `open` loads the room with its log
  * for the conversation. `refresh` fetches only a room the list does not have,
  * and again on reconnect. While the daemon cannot be reached nothing leaves.
  */

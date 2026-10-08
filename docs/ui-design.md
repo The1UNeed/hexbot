@@ -266,7 +266,7 @@ nested inside a card and no row carries more than one line of explanation.
   chat lands here.
 - Tabs in three groups: Profile, Soul, Model; Abilities (Memory, Tools,
   Connectors, Skills); Manage (Approvals, Sections, Advanced).
-- Tabs: Profile (face, name, label, description, Shareable), Soul
+- Tabs: Profile (face, name, label, description), Soul
   (full-height editor, template menu with a confirm, word count), Model
   (configured providers only, the provider's model list with the
   curated models on top, reasoning levels the model supports, context and
@@ -274,7 +274,7 @@ nested inside a card and no row carries more than one line of explanation.
   shared and links to Settings, Memory), Tools (switches grouped as
   Computer, Senses, Working with others, plus the working directory),
   Connectors (below), Skills (installed skills with switches, grouped by
-  category), Approvals (Inherit, Manual, Auto, and Bypass for the admin),
+  category), Approvals (Inherit, Manual, Auto, and Bypass),
   Sections (open and
   archived, with archive and delete), Advanced (Delete bot with the
   type-the-name confirmation).
@@ -323,8 +323,9 @@ nested inside a card and no row carries more than one line of explanation.
 ### Settings (the shared shell, global tabs)
 
 Tabs in four groups: Models (Providers, Usage), Devices (Network, Hex
-Connect, Users), You (Memory, Archive, Approvals, Appearance), App (Updates,
-About).
+Connect), You (Memory, Archive, Approvals, Appearance), App (Updates,
+About). A daemon belongs to one person, so there is no Users tab; Memory
+starts with your name, the one Get Started asked for.
 
 - Providers: a search pill, then "Connected" and "More providers" cards,
   one row per provider with its state and one control ("Add key", "Sign
@@ -340,7 +341,7 @@ About).
   jumps between groups. Each row shows the bot's face, title, bot, message
   count, first message, and the archive date; hovering shows Open and Restore.
 - Approvals: "Choose when Hexbot asks before a bot acts. Bots and rooms can
-  override it." Modes Manual, Auto, and Bypass (admin only), one row each;
+  override it." Modes Manual, Auto, and Bypass, one row each;
   a notice when the daemon has no OS sandbox.
 - Appearance: theme System, Light, Dark.
 - Updates: current version, channel, check now.

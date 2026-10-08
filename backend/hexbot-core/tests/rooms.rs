@@ -120,66 +120,33 @@ async fn main_bot_stays_out_of_messages_for_another_bot() {
         vec!["fox"]
     );
 }
-#[tokio::test]
-async fn human_members_read_post_and_hear_events_but_only_the_owner_changes_the_room() {
+#[test]
+fn only_the_owner_reads_or_changes_a_room() {
     let h = setup();
-    let room = call(
-        &h,
-        "create",
-        json!({"name":"Room","members":["owl","bob"],"main_bot":"owl"}),
-    )["room"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let room = create(&h);
     let bob = |method: &str, p: Value| {
         rooms::call(h.path(), "bob", &format!("hexbot.rooms.{method}"), &p).unwrap()
     };
-    assert_eq!(bob("list", json!({})).unwrap()["rooms"][0]["id"], room);
-    assert_eq!(bob("get", json!({"id":room})).unwrap()["room"]["id"], room);
-    let sent = bob("send", json!({"id":room,"text":"hello from Bob"})).unwrap();
-    assert_eq!(sent["event"]["actor_id"], "bob");
-    let seq = sent["event"]["seq"].as_i64().unwrap();
-    bob("mark_read", json!({"id":room,"seq":seq})).unwrap();
-    assert!(
-        bob("log", json!({"id":room})).unwrap()["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|e| e["payload"]["text"] == "hello from Bob")
-    );
+    assert_eq!(bob("list", json!({})).unwrap()["rooms"], json!([]));
     for (method, p) in [
+        ("get", json!({"id":room})),
+        ("log", json!({"id":room})),
+        ("send", json!({"id":room,"text":"hello"})),
+        ("mark_read", json!({"id":room,"seq":1})),
         ("update", json!({"id":room,"name":"Mine"})),
-        ("add_member", json!({"id":room,"bot":"fox"})),
+        ("add_member", json!({"id":room,"bot":"private"})),
         ("archive", json!({"id":room})),
     ] {
         assert_eq!(bob(method, p).unwrap_err().code, 4302, "{method}");
     }
-    // Bob wakes the room, the bot runs as its owner, and both humans see the reply.
-    let runner = Arc::new(Fake::default());
-    runner.replies("owl", &["Hi Bob"]);
-    let hub = EventHub::new();
-    let mut events = hub.subscribe();
-    let engine = Arc::new(RoomEngine::with_runner(
-        h.path().into(),
-        runner.clone(),
-        hub,
-    ));
-    engine.notify("bob", &room).await.unwrap();
-    let mut heard = HashSet::new();
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        while heard.len() < 2 {
-            let event = events.recv().await.unwrap();
-            if event.frame["params"]["payload"]["event"]["kind"] == "message.bot" {
-                heard.insert(event.owner);
-            }
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(heard, HashSet::from(["alice".into(), "bob".into()]));
-    assert_eq!(rooms::audience(h.path(), &room).unwrap().len(), 2);
-    assert_eq!(*runner.owners.lock().unwrap(), vec!["alice"]);
-    engine.shutdown().await;
+    let people = call(&h, "get", json!({"id":room}))["room"]["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["member_kind"] == "human")
+        .map(|m| m["member_id"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(people, [json!("alice")]);
 }
 #[test]
 fn transcript_limits_memory_and_collecting() {
@@ -326,20 +293,6 @@ async fn a_room_reply_keeps_the_teammates_its_bot_asked() {
         reply["payload"]["asks"],
         json!([{"to":"fox","section_id":"fox-thread"}])
     );
-    // Another person in the room sees the reply, not the owner's private threads.
-    call(&h, "add_member", json!({"id":room,"user":"bob"}));
-    let seen = rooms::call(h.path(), "bob", "hexbot.rooms.log", &json!({"id":room}))
-        .unwrap()
-        .unwrap();
-    let reply = seen["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|e| e["kind"] == "message.bot")
-        .unwrap()
-        .clone();
-    assert_eq!(reply["payload"]["text"], "Fox helped.");
-    assert!(reply["payload"].get("asks").is_none());
 }
 #[tokio::test]
 async fn limits_failures_and_pass_are_durable() {
@@ -494,15 +447,15 @@ async fn concurrent_fanout_reserves_turn_budget_before_models_run() {
 }
 
 #[tokio::test]
-async fn native_usage_enforces_daily_budget_including_cached_tokens() {
+async fn bot_daily_budget_counts_cached_native_tokens() {
     let h = setup();
     let room = create(&h);
     let runner = Arc::new(Fake::default());
     db::open(h.path())
         .unwrap()
         .execute(
-            "UPDATE users SET limits_json=? WHERE id='alice'",
-            [r#"{"daily_tokens":10}"#],
+            "INSERT INTO settings(key,value) VALUES ('bot_daily_token_budget','10')",
+            [],
         )
         .unwrap();
     hexbot_core::runtime_store::project_seeded(
@@ -527,7 +480,8 @@ async fn native_usage_enforces_daily_budget_including_cached_tokens() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|e| e["kind"] == "limit.tripped" && e["payload"]["limit"] == "daily_tokens")
+            .any(|e| e["kind"] == "limit.tripped"
+                && e["payload"]["limit"] == "bot_daily_token_budget")
     );
 }
 

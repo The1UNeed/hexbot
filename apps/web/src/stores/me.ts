@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
-import { usageSummary, usersList, usersMe } from '../lib/api'
-import type { CurrentUser, User } from '../lib/types'
+import { usageSummary, usersMe, usersMeSet } from '../lib/api'
+import type { CurrentUser } from '../lib/types'
 
 function unknownMethod(error: unknown): boolean {
   const value = error as { code?: number; message?: string }
@@ -12,23 +12,20 @@ function unknownMethod(error: unknown): boolean {
   )
 }
 
-interface UsersState {
-  current: CurrentUser | null
-  users: User[]
-  supported: boolean | null
+interface MeState {
+  /** You, the person this daemon belongs to. */
+  me: CurrentUser | null
   usageSupported: boolean | null
   refresh: () => Promise<void>
+  rename: (displayName: string) => Promise<void>
 }
 
-export const useUsers = create<UsersState>(set => ({
-  current: null,
-  users: [],
-  supported: null,
+export const useMe = create<MeState>(set => ({
+  me: null,
   usageSupported: null,
   async refresh() {
     try {
-      const current = await usersMe()
-      const result = current.role === 'admin' ? await usersList() : { users: [] }
+      const me = await usersMe()
       let usageSupported = true
 
       try {
@@ -37,11 +34,14 @@ export const useUsers = create<UsersState>(set => ({
         usageSupported = !unknownMethod(error)
       }
 
-      set({ current, supported: true, usageSupported, users: result.users ?? [] })
+      set({ me, usageSupported })
     } catch (error) {
       if (unknownMethod(error)) {
-        set({ current: null, supported: false, usageSupported: false, users: [] })
+        set({ me: null, usageSupported: false })
       }
     }
+  },
+  async rename(displayName) {
+    set({ me: await usersMeSet(displayName) })
   }
 }))

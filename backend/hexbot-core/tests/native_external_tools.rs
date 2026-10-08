@@ -127,7 +127,6 @@ async fn call(home: &Path, bot: &str, name: &str, args: Value) -> hexbot_core::R
         home,
         if bot == "owl" { "alice" } else { "bob" },
         bot,
-        "fixture-section",
         name,
         args,
     )
@@ -623,70 +622,14 @@ async fn external_tool_disablement_and_active_identity_are_enforced() {
 }
 
 #[tokio::test]
-async fn external_tools_require_ownership_or_active_shared_room_session() {
+async fn external_tools_require_ownership() {
     let mock = Mock::new().await;
     let home = setup(&mock.base);
-    let denied = native_external_tools::call(
-        home.path(),
-        "bob",
-        "owl",
-        "fake-session",
-        "ha_list_entities",
-        json!({}),
-    )
-    .await
-    .unwrap()
-    .unwrap_err();
+    let denied =
+        native_external_tools::call(home.path(), "bob", "owl", "ha_list_entities", json!({}))
+            .await
+            .unwrap()
+            .unwrap_err();
     assert_eq!(denied.code, 4302);
     assert!(mock.calls().is_empty());
-    db::open(home.path()).unwrap().execute_batch("UPDATE bots SET shareable=1 WHERE name='owl';INSERT INTO rooms(id,name,owner_id) VALUES('room','Shared','bob');INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room','owl','shared-session');INSERT INTO room_members(room_id,member_kind,member_id) VALUES('room','bot','owl');").unwrap();
-    assert_eq!(
-        native_external_tools::call(
-            home.path(),
-            "bob",
-            "owl",
-            "fake-session",
-            "ha_list_entities",
-            json!({})
-        )
-        .await
-        .unwrap()
-        .unwrap_err()
-        .code,
-        4302
-    );
-    mock.reply("GET", "/api/states", json!([]));
-    let result = native_external_tools::call(
-        home.path(),
-        "bob",
-        "owl",
-        "shared-session",
-        "ha_list_entities",
-        json!({}),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(result["result"]["count"], 0);
-    assert_eq!(mock.calls()[0].authorization, "Bearer owl-ha-key");
-    db::open(home.path())
-        .unwrap()
-        .execute("UPDATE room_members SET left_at=1 WHERE room_id='room'", [])
-        .unwrap();
-    assert_eq!(
-        native_external_tools::call(
-            home.path(),
-            "bob",
-            "owl",
-            "shared-session",
-            "ha_list_entities",
-            json!({})
-        )
-        .await
-        .unwrap()
-        .unwrap_err()
-        .code,
-        4302
-    );
-    assert_eq!(mock.calls().len(), 1);
 }

@@ -84,23 +84,6 @@ fn lifecycle_preserves_memory_and_reopens_archived_sections() {
         memory.get_bot("alice", "research-owl").unwrap()["memory_md"],
         "Durable memory"
     );
-    // Bypass reads the admin's provider keys, so a member cannot choose it.
-    assert_eq!(
-        catalog::call(
-            h,
-            "alice",
-            "hexbot.bots.update",
-            &json!({"name":"research-owl","approval_mode":"off"}),
-        )
-        .unwrap()
-        .unwrap_err()
-        .code,
-        4301
-    );
-    db::open(h)
-        .unwrap()
-        .execute("UPDATE users SET role='admin' WHERE id='alice'", [])
-        .unwrap();
     let updated = call(
         h,
         "alice",
@@ -161,7 +144,7 @@ fn lifecycle_preserves_memory_and_reopens_archived_sections() {
     );
 }
 #[test]
-fn owner_checks_cover_reads_writes_and_admin_listing() {
+fn owner_checks_cover_reads_writes_and_listing() {
     let home = setup();
     let h = home.path();
     let created = create(h);
@@ -191,19 +174,10 @@ fn owner_checks_cover_reads_writes_and_admin_listing() {
         call(h, "bob", "hexbot.bots.list", json!({}))["bots"],
         json!([])
     );
+    // Asking for everyone's bots still lists only the caller's.
     assert_eq!(
-        call(h, "local", "hexbot.bots.list", json!({"all":true}))["bots"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert_eq!(
-        catalog::call(h, "bob", "hexbot.bots.list", &json!({"all":true}))
-            .unwrap()
-            .unwrap_err()
-            .code,
-        4301
+        call(h, "bob", "hexbot.bots.list", json!({"all":true}))["bots"],
+        json!([])
     );
     db::open(h)
         .unwrap()
@@ -634,11 +608,10 @@ fn create_persists_every_accepted_field() {
         home.path(),
         "alice",
         "hexbot.bots.create",
-        json!({"name":"quiet-owl","dream_enabled":false,"shareable":true,"notify":false,"approval_mode":"manual","workdir":workdir.path(),"tools":["files","files"]}),
+        json!({"name":"quiet-owl","dream_enabled":false,"notify":false,"approval_mode":"manual","workdir":workdir.path(),"tools":["files","files"]}),
     );
     let bot = &created["bot"];
     assert_eq!(bot["dream_enabled"], false);
-    assert_eq!(bot["shareable"], true);
     assert_eq!(bot["notify"], false);
     assert_eq!(bot["approval_mode"], "manual");
     assert_eq!(bot["workdir"], json!(workdir.path()));

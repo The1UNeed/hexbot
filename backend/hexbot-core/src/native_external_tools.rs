@@ -65,7 +65,6 @@ pub async fn call(
     home: &Path,
     owner: &str,
     bot: &str,
-    stored: &str,
     name: &str,
     args: Value,
 ) -> Option<Result<Value>> {
@@ -82,7 +81,7 @@ pub async fn call(
     }
     Some(
         async {
-            common::bot_session_access(home, owner, bot, stored)?;
+            common::bot_owner(home, owner, bot)?;
             if !connectors::tool_available(home, bot, name)? {
                 return Err(Error::new(4302, "Tool is disabled or unconfigured"));
             }

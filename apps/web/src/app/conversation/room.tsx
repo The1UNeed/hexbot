@@ -15,9 +15,9 @@ import { toMillis } from '../../lib/time'
 import type { Bot, RoomEvent, RoomMember, RoomTurn } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { connectorsActions } from '../../stores/connectors'
+import { useMe } from '../../stores/me'
 import { roomFailure, roomStatus, useRooms } from '../../stores/rooms'
 import { useTranscripts } from '../../stores/transcripts'
-import { useUsers } from '../../stores/users'
 
 import { AskingRow, AskRows } from './asking-row'
 import { ClarifyCard } from './clarify-card'
@@ -54,15 +54,9 @@ export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh
   )
 
   const memberKind = event.payload.bot ? 'bot' : event.payload.user ? 'human' : event.actor_kind
+  const me = useMe(state => state.me)
 
-  const person = useUsers(state =>
-    memberId
-      ? (state.users.find(user => user.id === memberId) ??
-        (state.current?.id === memberId ? state.current : undefined))
-      : undefined
-  )
-
-  // Members read names off the room without the owner's bot or user catalog.
+  // The room's member rows keep names of bots and people who have since left.
   const memberName = useRooms(state =>
     memberId
       ? state.byId[event.room_id]?.members.find(
@@ -71,12 +65,10 @@ export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh
       : undefined
   )
 
-  const currentId = useUsers(state => state.current?.id)
-
   const member =
     useBots(state => (memberId ? state.byName[memberId]?.display_name : undefined)) ??
     memberName ??
-    person?.display_name ??
+    (me && memberId === me.id ? me.display_name : undefined) ??
     memberId
 
   const system = ['member.added', 'member.left', 'note'].includes(event.kind)
@@ -139,7 +131,7 @@ export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh
 
   // Your messages are the right-hand bubble; other people speak like the bots.
   // Without user accounts (or before you are known) every message is yours.
-  const mine = event.kind === 'message.user' && (!currentId || event.actor_id === currentId)
+  const mine = event.kind === 'message.user' && (!me || event.actor_id === me.id)
   const name = member
   // The teammates this bot asked during its turn, kept with its reply.
   const asked = event.kind === 'message.bot' ? storedAsks(event.payload.asks) : []
