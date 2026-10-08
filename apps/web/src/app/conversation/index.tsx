@@ -34,7 +34,7 @@ import type {
   BotStatus,
   ClarifyRequest
 } from '../../lib/types'
-import { useBot } from '../../stores/bots'
+import { useBot, useBots } from '../../stores/bots'
 import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
 import {
@@ -892,6 +892,7 @@ function BotConversation() {
   const params = useParams({ strict: false }) as { bot?: string; section?: string }
   const navigate = useNavigate()
   const bot = useBot(params.bot ?? null)
+  const botsLoaded = useBots(state => state.loaded)
   const section = useSection(params.section ?? null)
   const liveId = useLiveSessionId(params.section ?? null)
   const transcript = useTranscript(liveId)
@@ -1087,6 +1088,16 @@ function BotConversation() {
         () => void sectionsActions().settleTitle(section.id)
       )
     }
+  }
+
+  // The bot was deleted, here or on another device: no face, prompts, or composer for it.
+  if (botsLoaded && !bot) {
+    return (
+      <div className="hex-rise grid h-full place-content-center gap-1 bg-background p-8 text-center">
+        <h2 className="text-[length:var(--text-title)] font-semibold">This bot no longer exists</h2>
+        <p className="text-muted">Choose another bot, or create a new one.</p>
+      </div>
+    )
   }
 
   const name = bot?.display_name ?? params.bot ?? 'Bot'
