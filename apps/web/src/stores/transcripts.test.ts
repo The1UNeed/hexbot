@@ -20,6 +20,18 @@ describe('transcript reducer', () => {
     actions.messageComplete('s')
     expect(useTranscripts.getState().bySession.s?.status).toBeNull()
   })
+  it('leaves settled questions to the history it opens and keeps one still waiting', () => {
+    const actions = useTranscripts.getState()
+    actions.clarifyRequest('s', { question: 'Answered?', request_id: 'a' })
+    actions.answerClarify('s', 'a', 'a', 'Yes')
+    actions.clarifyRequest('s', { question: 'Expired?', request_id: 'b' })
+    actions.clarifyExpire('s', 'b')
+    actions.clarifyRequest('s', { question: 'Waiting?', request_id: 'c' })
+    actions.open('s', 'sec', [])
+    expect(
+      useTranscripts.getState().bySession.s?.clarifies.map(clarify => clarify.requestId)
+    ).toEqual(['c'])
+  })
   it('opens on a delta and does not duplicate streamed interim text', () => {
     const actions = useTranscripts.getState()
     actions.messageDelta('s', 'hello')

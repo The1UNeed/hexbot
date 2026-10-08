@@ -98,6 +98,88 @@ describe('history projection', () => {
 
     expect(memoryMarks(message!)).toEqual([{ kind: 'memory', text: 'Likes tea.' }])
   })
+
+  it('brings back each answered question under the message that asked it', () => {
+    const ask = (id: string, args: object) => ({
+      role: 'assistant',
+      tool_calls: [
+        { function: { arguments: JSON.stringify(args), name: 'clarify' }, id, type: 'function' }
+      ]
+    })
+
+    const messages = messagesFromHistory([
+      { ...ask('c1', { choices: ['Research', 'Writing'], question: 'What for?' }), text: 'Hi.' },
+      { name: 'clarify', role: 'tool', text: 'Research', tool_call_id: 'c1', tool_id: 'c1' },
+      {
+        ...ask('c2', {
+          questions: [
+            { choices: ['Short', 'Long'], question: 'How long?' },
+            { multi_select: true, question: 'Which topics?' }
+          ]
+        }),
+        text: 'Got it.'
+      },
+      {
+        name: 'clarify',
+        role: 'tool',
+        text: '{"q1":"Short","q2":"[\\"AI\\",\\"Money\\"]"}',
+        tool_call_id: 'c2',
+        tool_id: 'c2'
+      },
+      { ...ask('c3', { question: 'Anything else?' }), text: 'Noted.' },
+      {
+        name: 'clarify',
+        role: 'tool',
+        text: 'The question was cancelled.',
+        tool_call_id: 'c3',
+        tool_id: 'c3'
+      },
+      { role: 'assistant', text: 'Done.' }
+    ] as Parameters<typeof messagesFromHistory>[0])
+
+    // Each question ends its message, as it does live, so its card sits between.
+    expect(messages.map(message => message.text)).toEqual(['Hi.', 'Got it.', 'Noted.', 'Done.'])
+    expect(messages[0]?.clarifies).toEqual([
+      {
+        answers: { c1: 'Research' },
+        expired: undefined,
+        questions: [
+          { choices: ['Research', 'Writing'], multiSelect: false, question: 'What for?' }
+        ],
+        receivedAt: 0,
+        requestId: 'c1',
+        sessionId: ''
+      }
+    ])
+    expect(messages[1]?.clarifies?.[0]).toMatchObject({
+      answers: { q1: 'Short', q2: '["AI","Money"]' },
+      questions: [
+        { question: 'How long?', questionId: 'q1' },
+        { multiSelect: true, question: 'Which topics?', questionId: 'q2' }
+      ]
+    })
+    expect(messages[1]?.clarifies?.[0]?.expired).toBeUndefined()
+    expect(messages[2]?.clarifies?.[0]).toMatchObject({ answers: {}, expired: true })
+    expect(messages[3]?.clarifies).toBeUndefined()
+  })
+
+  it('leaves a question still waiting to the live card', () => {
+    const [message] = messagesFromHistory([
+      {
+        role: 'assistant',
+        text: 'Hi.',
+        tool_calls: [
+          {
+            function: { arguments: '{"question":"What for?"}', name: 'clarify' },
+            id: 'c1',
+            type: 'function'
+          }
+        ]
+      }
+    ] as Parameters<typeof messagesFromHistory>[0])
+
+    expect(message?.clarifies).toBeUndefined()
+  })
 })
 
 it('restores nested code steps with their parent, arguments, duration and errors', () => {

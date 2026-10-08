@@ -174,7 +174,9 @@ the roster slides in as a drawer.
   and a field for the user's own answer. One click answers a single-choice
   question; multi-select and typed answers confirm with Done. An answered
   card collapses to the chosen line with a check. The card survives a
-  reload (the daemon replays the pending question when the section opens).
+  reload: the daemon replays a pending question when the section opens,
+  and answered cards come back from the section's history, each under the
+  message that asked it.
 - Errors: a Stopped card with the message and a retry action; one card per
   failure, even when the gateway and the daemon both report it.
 

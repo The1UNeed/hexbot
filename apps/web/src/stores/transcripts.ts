@@ -11,7 +11,7 @@
 
 import { create } from 'zustand'
 
-import { approvalReceived, nextMessageId, sectionsTouch } from '../lib/api'
+import { approvalReceived, clarifyQuestions, nextMessageId, sectionsTouch } from '../lib/api'
 import { getBridge } from '../lib/bridge'
 import { toMillis } from '../lib/time'
 import type {
@@ -220,6 +220,10 @@ function replaceMessage(
  */
 const SPINNER_LINE = /^[^a-z]*[a-z]+\.\.\.$/i
 
+/** A question the bot still waits on: not every answer is in and it has not expired. */
+export const clarifyWaiting = (clarify: ClarifyRequest) =>
+  !clarify.expired && Object.keys(clarify.answers).length < clarify.questions.length
+
 /**
  * Ends the message the bot is writing: its words become a finished part, and
  * whatever it writes next starts a new bubble.
@@ -332,14 +336,15 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         }
 
         // Cards that arrived while the snapshot was loading (a replayed
-        // question, an approval) outlive the swap.
+        // question, an approval) outlive the swap. Settled questions are in
+        // the snapshot's messages, where they were asked.
         return {
           bySession: {
             ...state.bySession,
             [sessionId]: {
               ...emptyTranscript(sessionId, sectionId),
               approvals: existing?.approvals ?? [],
-              clarifies: existing?.clarifies ?? [],
+              clarifies: (existing?.clarifies ?? []).filter(clarifyWaiting),
               messages,
               status: existing?.status ?? null
             }
@@ -648,20 +653,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     clarifyRequest(sessionId, payload, options = {}) {
       const requestId = String(payload.request_id ?? nextMessageId('cl'))
 
-      const questions = payload.questions?.length
-        ? payload.questions.map(item => ({
-            choices: item.choices ?? [],
-            multiSelect: Boolean(item.multi_select),
-            question: item.question,
-            questionId: item.qid
-          }))
-        : [
-            {
-              choices: payload.choices ?? [],
-              multiSelect: Boolean(payload.multi_select),
-              question: payload.question ?? ''
-            }
-          ]
+      const questions = clarifyQuestions(payload)
 
       let added = false
 

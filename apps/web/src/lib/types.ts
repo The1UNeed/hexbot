@@ -284,6 +284,11 @@ export interface Message {
    */
   activity?: string
   attachments: Attachment[]
+  /**
+   * Questions this message asked, restored from history and already settled.
+   * Live questions are cards on the transcript instead.
+   */
+  clarifies?: ClarifyRequest[]
   createdAt: number
   /** Inline error row attached to this message (`error` event). */
   error?: string

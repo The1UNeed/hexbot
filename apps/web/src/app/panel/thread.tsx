@@ -1,5 +1,5 @@
 import { ChevronsRight } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 
 import { Avatar } from '../../components/ui/avatar'
 import { SkeletonLines } from '../../components/ui/skeleton'
@@ -10,7 +10,7 @@ import type { Bot, Message } from '../../lib/types'
 import { useBot } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { sectionsActions, useLiveSessionId } from '../../stores/sections'
-import { useTranscript, useTranscripts } from '../../stores/transcripts'
+import { clarifyWaiting, useTranscript, useTranscripts } from '../../stores/transcripts'
 import { type ThreadRef, uiActions, useUi } from '../../stores/ui'
 import { ApprovalCard, bubbleClass, CardRow, Markdown } from '../conversation'
 import { AskingRow } from '../conversation/asking-row'
@@ -229,6 +229,23 @@ export function ThreadPanel({ thread }: { thread: ThreadRef }): React.JSX.Elemen
   }, [close])
 
   const live = transcript?.messages.filter(item => item.streaming || tail.includes(item.id)) ?? []
+
+  // A settled question the history read brought back shows where it was asked,
+  // not again at the foot. One still waiting always shows.
+  const restored = new Set(
+    loaded.kind === 'ready'
+      ? loaded.messages.flatMap(message =>
+          (message.clarifies ?? []).flatMap(clarify => clarify.questions.map(item => item.question))
+        )
+      : []
+  )
+
+  const asking =
+    transcript?.clarifies.filter(
+      clarify =>
+        clarifyWaiting(clarify) || !clarify.questions.every(item => restored.has(item.question))
+    ) ?? []
+
   const liveText = live.at(-1)?.text
 
   useEffect(() => {
@@ -236,12 +253,18 @@ export function ThreadPanel({ thread }: { thread: ThreadRef }): React.JSX.Elemen
   }, [loaded, liveText])
 
   const row = (message: Message) => (
-    <ThreadMessage
-      bot={message.role === 'assistant' ? receiver : sender}
-      key={message.id}
-      message={message}
-      name={message.role === 'assistant' ? receiverName : senderName}
-    />
+    <Fragment key={message.id}>
+      <ThreadMessage
+        bot={message.role === 'assistant' ? receiver : sender}
+        message={message}
+        name={message.role === 'assistant' ? receiverName : senderName}
+      />
+      {message.clarifies?.map(clarify => (
+        <CardRow bot={receiver} key={clarify.requestId}>
+          <ClarifyCard clarify={clarify} />
+        </CardRow>
+      ))}
+    </Fragment>
   )
 
   return (
@@ -292,7 +315,7 @@ export function ThreadPanel({ thread }: { thread: ThreadRef }): React.JSX.Elemen
             {loaded.kind === 'ready' ? loaded.messages.map(row) : null}
             {live.map(row)}
             {/* The owner answers the receiving bot here: threads have no other view. */}
-            {transcript?.clarifies.map(clarify => (
+            {asking.map(clarify => (
               <CardRow bot={receiver} key={clarify.requestId}>
                 <ClarifyCard clarify={clarify} />
               </CardRow>
