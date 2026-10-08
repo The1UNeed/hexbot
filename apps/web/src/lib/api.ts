@@ -474,6 +474,14 @@ export function modelsList(provider?: string): Promise<ModelList> {
   return rpcCall<ModelList>('hexbot.models.list', provider ? { provider } : {})
 }
 
+/** Every model a provider lists right now, recommended ones first. */
+export async function providerModels(provider: string): Promise<ModelOption[]> {
+  const { all, curated } = await modelsList(provider)
+  const recommended = new Set(curated.map(item => item.id))
+
+  return [...curated, ...all.filter(item => !recommended.has(item.id))]
+}
+
 /** Raw Hexbot picker payload; `hexbot.models.list` is the projected form. */
 export function modelOptions(): Promise<Record<string, unknown>> {
   return rpcCall<Record<string, unknown>>('model.options')

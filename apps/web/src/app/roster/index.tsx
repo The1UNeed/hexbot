@@ -20,7 +20,7 @@ import { RoomCluster } from '../../components/ui/room-cluster'
 import { Select } from '../../components/ui/select'
 import { StatusDot, StatusTag } from '../../components/ui/status-dot'
 import { Title } from '../../components/ui/title'
-import { modelsList, sectionsMarkRead } from '../../lib/api'
+import { providerModels, sectionsMarkRead } from '../../lib/api'
 import { useApprovalModes } from '../../lib/approval-modes'
 import {
   avatarPng,
@@ -32,7 +32,7 @@ import {
 import { toHandle } from '../../lib/bot-handle'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
-import { REASONING_LEVELS } from '../../lib/reasoning'
+import { reasoningOptions, runningLevel } from '../../lib/reasoning'
 import { toMillis } from '../../lib/time'
 import type {
   Bot,
@@ -455,9 +455,8 @@ export function RosterColumn() {
       return
     }
 
-    void modelsList(newBot.provider)
-      .then(result => {
-        const list = result.curated.length ? result.curated : result.all
+    void providerModels(newBot.provider)
+      .then(list => {
         setNewModels(list)
         setNewBot(value => ({
           ...value,
@@ -467,6 +466,7 @@ export function RosterColumn() {
       .catch(() => setNewModels([]))
   }, [newBot.provider])
 
+  const newModel = newModels.find(item => item.id === newBot.model)
   const [focused, setFocused] = useState<string | null>(null)
   const root = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -814,7 +814,9 @@ export function RosterColumn() {
                   model: newBot.model,
                   name: handle,
                   provider: newBot.provider,
-                  ...(newBot.reasoning ? { reasoning_effort: newBot.reasoning } : {}),
+                  ...(newBot.reasoning
+                    ? { reasoning_effort: runningLevel(newBot.reasoning, newModel) }
+                    : {}),
                   ...(avatar ? { avatar } : {})
                 })
               )
@@ -867,15 +869,15 @@ export function RosterColumn() {
                   onValueChange={reasoning =>
                     setNewBot(value => ({ ...value, reasoning: reasoning as ReasoningEffort }))
                   }
-                  options={REASONING_LEVELS}
-                  value={newBot.reasoning ?? 'medium'}
+                  options={reasoningOptions(newModel)}
+                  value={runningLevel(newBot.reasoning ?? 'medium', newModel)}
                 />
               </Field>
             </div>
           ) : (
             <p className="flex items-center gap-2 text-[length:var(--text-secondary)] text-muted">
               <span className="min-w-0 truncate">
-                Runs on {newModels.find(item => item.id === newBot.model)?.label ?? newBot.model}
+                Runs on {newModel?.label ?? newBot.model}
               </span>
               <button
                 className="shrink-0 underline-offset-2 hover:text-foreground hover:underline"

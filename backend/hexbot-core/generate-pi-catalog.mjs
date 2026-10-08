@@ -1,6 +1,7 @@
 // Run after npm ci --prefix backend/pi-runtime --ignore-scripts.
 import { readFile, writeFile } from 'node:fs/promises';
 import { MODELS } from '../pi-runtime/node_modules/@earendil-works/pi-ai/dist/models.generated.js';
+import { getSupportedThinkingLevels } from '../pi-runtime/node_modules/@earendil-works/pi-ai/dist/models.js';
 
 const runtime = JSON.parse(await readFile(new URL('../pi-runtime/package.json', import.meta.url), 'utf8'));
 const version = runtime.devDependencies['@earendil-works/pi-ai'];
@@ -11,5 +12,7 @@ if (version !== installed.version || version !== runtime.dependencies['@earendil
 const providers = Object.fromEntries(Object.entries(MODELS).filter(([, models]) => Object.keys(models).length).map(([provider, models]) => [provider, {
   api: Object.values(models)[0].api,
   models: Object.keys(models),
+  // The thinking levels Pi accepts for each model, in Pi's order.
+  levels: Object.fromEntries(Object.entries(models).map(([id, model]) => [id, getSupportedThinkingLevels(model)])),
 }]));
 await writeFile(new URL('./src/pi_catalog.json', import.meta.url), JSON.stringify({ version, providers }));

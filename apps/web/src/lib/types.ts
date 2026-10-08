@@ -105,7 +105,7 @@ export interface Bot {
   owner_id: string
   persona: string
   provider: null | string
-  /** How hard the model thinks in new sections; null means Pi's default, medium. */
+  /** How hard the model thinks; null means Pi's default, medium. */
   reasoning_effort?: null | ReasoningEffort
   sections_recent: Section[]
   sections_total: number
@@ -316,6 +316,8 @@ export interface ModelOption {
   label: string
   output_cost?: number
   provider: null | string
+  /** Levels the model accepts, in order; absent when unknown. */
+  reasoning_levels?: ReasoningEffort[]
 }
 
 export interface NetworkInfo {

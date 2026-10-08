@@ -106,12 +106,15 @@ null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
 that bot's terminal. Only the admin may set `off`: the daemon refuses it for
 a member's bot or room with "Only the admin can choose Bypass." and runs a
 member's bot in Auto if `off` was stored earlier.
-`reasoning_effort` is the Pi thinking level a new section starts with: `off`,
-`minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, stored as
-`model.reasoning_effort` in the profile's `config.yaml`. Null means Pi's
-default, `medium`; Pi clamps a level the model lacks to the closest one it
-has. Open sections keep the level they started with, so their cached prefix
-stays valid. A scheduled job's own `reasoning_effort` wins over the bot's.
+`reasoning_effort` is the bot's Pi thinking level: `off`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, or `max`, stored as `model.reasoning_effort` in
+the profile's `config.yaml`. Null means Pi's default, `medium`; Pi rounds a
+level the model lacks up to the next one it has, else down. Changing
+`provider`, `model` or `reasoning_effort` moves every section of the bot still
+on the previous value; each one restarts its Pi process on the same
+conversation and live ID before its next message. Switching models costs the
+cached prefix once. A section on something else, like a scheduled job with
+its own model or `reasoning_effort`, keeps it.
 `workdir` and the `workspace_dir` setting are refused (4202) when they resolve
 inside the Hexbot home, symlinks included.
 
@@ -504,14 +507,20 @@ arguments and status, not full nested result bodies; its record is bounded.
   Disconnect removes the provider from those copies, including bots that are idle.
 - `hexbot.models.list {provider?, include_unconfigured?, refresh?}` →
   `{curated: [Model], all: [Model], all_source, error?}` with
-  `Model = {provider, id, label, context?, input_cost?, output_cost?}`,
-  built from `model.options`. `provider` accepts the friendly aliases
+  `Model = {provider, id, label, context?, input_cost?, output_cost?, reasoning_levels?}`,
+  built from `model.options`. Naming a configured provider asks it for its
+  current list (OpenAI Codex through its `/models` endpoint with the
+  ChatGPT sign-in), falling back to the pinned Pi catalog and the profile
+  list. `reasoning_levels` are the thinking levels both Pi and the provider
+  accept, in Pi's order, or whichever of them knows the model; it is absent
+  when neither does. Levels a provider reports for a model newer than the
+  pinned Pi are kept in `live_model_levels.json` and given to Pi. A
+  recommended model the provider no longer lists is left out of `curated`. `provider` accepts the friendly aliases
   `openai` (→ `openai-api`), `chatgpt` (→ `openai-codex`), `claude`,
   `grok`, `glm`. `include_unconfigured` defaults to true when the named
   provider has no credentials; `model.options` returns empty skeleton rows
   for those, so `all` then falls back to the core's offline curated catalog
   and `all_source` reports `model.options | catalog | mixed | none`.
-  A named, configured provider with no offline catalog is queried automatically.
   LM Studio uses its OpenAI-compatible `/v1/models` endpoint. Unfiltered reads
   query providers only with `refresh: true`. The current configured model remains
   selectable if discovery fails, and `error` reports the failure.

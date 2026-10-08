@@ -894,12 +894,32 @@ fn write_bot_columns(tx: &rusqlite::Transaction, name: &str, p: &Value) -> Resul
     }
     Ok(())
 }
+/// The provider, model and thinking level a new section of this bot starts with.
+fn section_model(home: &Path, name: &str) -> Result<Value> {
+    let mut model = config(home, name)?["model"].clone();
+    if model.is_null() {
+        model = common::read_config(home)?["model"].clone();
+    }
+    if model.is_string() {
+        model = json!({"default":model});
+    }
+    Ok(json!({
+        "provider": model["provider"],
+        "model": model["default"],
+        "reasoning_effort": model["reasoning_effort"]
+    }))
+}
 fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     let name = required(p, "name")?;
     bot_row(home, caller, name, false)?;
     validate_patch(home, p)?;
     bypass_allowed(home, caller, p)?;
+    let before = section_model(home, name)?;
     configure(home, name, p)?;
+    let after = section_model(home, name)?;
+    if before != after {
+        runtime_store::follow_bot_model(home, name, &before, &after)?;
+    }
     let mut conn = db::open(home)?;
     let tx = conn.transaction()?;
     write_bot_columns(&tx, name, p)?;

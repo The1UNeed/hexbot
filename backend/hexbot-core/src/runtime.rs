@@ -75,6 +75,12 @@ struct Live {
     event_gate: Mutex<()>,
     attachment_gate: AsyncMutex<()>,
     permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
+    /// Provider, model and thinking level the Pi process runs with.
+    model: Mutex<Value>,
+}
+/// The part of a section's options that picks its model.
+fn model_choice(options: &Value) -> Value {
+    json!([options["provider"], options["model"], options["reasoning_effort"]])
 }
 pub struct Runtime {
     home: PathBuf,
@@ -136,6 +142,9 @@ impl Runtime {
             .cloned();
         if let Some(s) = existing {
             common::bot_session_access(&self.home, caller, &s.bot, &s.stored)?;
+            if self.model_changed(&s)? {
+                return self.open_session(caller, &s.bot, &s.stored).await;
+            }
             s.state.lock().unwrap().last_activity = common::now();
             return Ok(s);
         }
@@ -171,31 +180,7 @@ impl Runtime {
             let Ok(guard) = lock.try_lock_owned() else {
                 continue;
             };
-            let has_children = self
-                .children
-                .lock()
-                .unwrap()
-                .values()
-                .any(|c| c.row["parent"] == s.stored && c.row["status"] == "running");
-            {
-                let mut tasks = s.requests.lock().unwrap();
-                while tasks.try_join_next().is_some() {}
-            }
-            let mut sessions = self.sessions.lock().unwrap();
-            let _gate = s.event_gate.lock().unwrap();
-            let mut state = s.state.lock().unwrap();
-            if !has_children
-                && !state.busy
-                && !state.closed
-                && state.pending.is_empty()
-                && state.attachments.is_empty()
-                && state.refs.is_empty()
-                && state.unsaved.is_empty()
-                && state.last_activity < before
-                && s.requests.lock().unwrap().is_empty()
-            {
-                state.closed = true;
-                sessions.remove(&s.stored);
+            if self.retire_quiet(&s, before) {
                 expired.push((s.clone(), guard));
                 // Under capacity pressure retire only the least recently used bot.
                 if before == f64::INFINITY {
@@ -204,16 +189,69 @@ impl Runtime {
             }
         }
         for (s, _) in &expired {
-            crate::provider_acp::cancel(&self.home, &s.stored).await;
-            Self::cancel_dialogs(s).await;
-            crate::native_tools::close_session(&self.home, &s.stored).await;
-            if let Err(error) = s.process.shutdown().await {
-                eprintln!("Could not stop section {}: {error}", s.stored);
-            }
-            s.permit.lock().unwrap().take();
-            self.events.forget(&s.owner, &s.id);
+            self.stop_retired(s).await;
         }
         Ok(expired.len())
+    }
+    /// Marks a section closed and takes it out of the map when nothing in it is
+    /// still running or unsaved and it was last used before `before`. The
+    /// caller holds its open lock and then stops it with `stop_retired`.
+    fn retire_quiet(&self, s: &Arc<Live>, before: f64) -> bool {
+        let has_children = self
+            .children
+            .lock()
+            .unwrap()
+            .values()
+            .any(|c| c.row["parent"] == s.stored && c.row["status"] == "running");
+        {
+            let mut tasks = s.requests.lock().unwrap();
+            while tasks.try_join_next().is_some() {}
+        }
+        let mut sessions = self.sessions.lock().unwrap();
+        let _gate = s.event_gate.lock().unwrap();
+        let mut state = s.state.lock().unwrap();
+        if has_children
+            || state.busy
+            || state.closed
+            || !state.pending.is_empty()
+            || !state.attachments.is_empty()
+            || !state.refs.is_empty()
+            || !state.unsaved.is_empty()
+            || state.last_activity >= before
+            || !s.requests.lock().unwrap().is_empty()
+        {
+            return false;
+        }
+        state.closed = true;
+        sessions.remove(&s.stored);
+        true
+    }
+    /// Stops the process of a section already marked closed and out of the map.
+    async fn stop_retired(&self, s: &Live) {
+        crate::provider_acp::cancel(&self.home, &s.stored).await;
+        Self::cancel_dialogs(s).await;
+        crate::native_tools::close_session(&self.home, &s.stored).await;
+        if let Err(error) = s.process.shutdown().await {
+            eprintln!("Could not stop section {}: {error}", s.stored);
+        }
+        s.permit.lock().unwrap().take();
+        self.events.forget(&s.owner, &s.id);
+    }
+    /// True when the section's saved model differs from the one its process runs.
+    fn model_changed(&self, s: &Live) -> Result<bool> {
+        let saved: Option<String> = store::open(&self.home)?
+            .query_row(
+                "SELECT options FROM native_sessions WHERE stored_id=?",
+                [&s.stored],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(saved) = saved else {
+            return Ok(false);
+        };
+        let saved: Value =
+            serde_json::from_str(&saved).map_err(|e| Error::new(5200, e.to_string()))?;
+        Ok(model_choice(&saved) != *s.model.lock().unwrap())
     }
     fn emit(&self, s: &Live, kind: &str, mut payload: Value) {
         // A card names its bot and section, so a client that does not list the section (a
@@ -396,12 +434,18 @@ impl Runtime {
             common::bot_session_access(&self.home, owner, bot, stored)?;
         }
         store::session_dir(&self.home, stored)?;
-        if let Some(s) = self.sessions.lock().unwrap().get(stored).cloned() {
+        let running = self.sessions.lock().unwrap().get(stored).cloned();
+        if let Some(s) = running {
             if s.owner != owner {
                 return Err(Error::new(4302, "not the owner"));
             }
-            s.state.lock().unwrap().last_activity = common::now();
-            return Ok(s);
+            // A new model starts a new process on the same conversation and
+            // live ID. A section that is still working switches next time.
+            if !(self.model_changed(&s)? && self.retire_quiet(&s, f64::INFINITY)) {
+                s.state.lock().unwrap().last_activity = common::now();
+                return Ok(s);
+            }
+            self.stop_retired(&s).await;
         }
         let permit = match self.capacity.clone().try_acquire_owned() {
             Ok(permit) => Ok(permit),
@@ -822,6 +866,7 @@ impl Runtime {
             permit: Mutex::new(Some(permit)),
             settled,
             tools: options["tools"].as_array().cloned().unwrap_or_default(),
+            model: Mutex::new(model_choice(&options)),
         });
         {
             let mut sessions = self.sessions.lock().unwrap();
@@ -1626,6 +1671,7 @@ impl Runtime {
                     "UPDATE native_sessions SET options=? WHERE stored_id=?",
                     params![options.to_string(), s.stored],
                 )?;
+                *s.model.lock().unwrap() = model_choice(&options);
                 self.emit(
                     &s,
                     "session.info",
@@ -3823,6 +3869,50 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         db.execute_batch("UPDATE users SET disabled_at=1 WHERE id='alice'")
             .unwrap();
         assert_eq!(mode("off", "alice"), "smart");
+    }
+    #[tokio::test]
+    async fn sections_follow_a_new_bot_model_from_the_next_message() {
+        let (home, runtime, _) = setup();
+        let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+        store::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES('job','alice','owl','frozen',?)",
+                [json!({"provider":"openai","model":"cheap"}).to_string()],
+            )
+            .unwrap();
+        crate::catalog::call(
+            home.path(),
+            "alice",
+            "hexbot.bots.update",
+            &json!({"name":"owl","provider":"anthropic","model":"claude-fable-5-1","reasoning_effort":"high"}),
+        )
+        .unwrap()
+        .unwrap();
+        let reopened = runtime.live("alice", &s.id).await.unwrap();
+        assert!(!Arc::ptr_eq(&s, &reopened));
+        assert_eq!(reopened.id, s.id);
+        let log = fs::read_to_string(home.path().join("processes.jsonl")).unwrap();
+        let args = serde_json::from_str::<Value>(log.lines().last().unwrap()).unwrap()["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(args.contains("--model claude-fable-5-1 --provider anthropic"));
+        assert!(args.contains("--thinking high"));
+        let job: String = store::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT options FROM native_sessions WHERE stored_id='job'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&job).unwrap()["model"], "cheap");
+        let again = runtime.live("alice", &s.id).await.unwrap();
+        assert!(Arc::ptr_eq(&reopened, &again));
     }
     #[tokio::test]
     async fn settings_are_live_and_children_inherit_parent_policy() {
