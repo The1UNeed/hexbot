@@ -9,6 +9,8 @@ import { useShallow } from 'zustand/react/shallow'
 import { botsCreate, botsDelete, botsGet, botsList, botsUpdate } from '../lib/api'
 import type { Bot, BotCreateInput, BotUpdatePatch, Section } from '../lib/types'
 
+import { uiActions } from './ui'
+
 export interface BotsState {
   byName: Record<string, Bot>
   create: (input: BotCreateInput) => Promise<{ bot: Bot; section: Section }>
@@ -82,6 +84,12 @@ export const useBots = create<BotsState>((set, get) => ({
 
   async remove(name) {
     await botsDelete(name)
+
+    // `/` reopens the last section; one of this bot's would show a bot that is gone.
+    if (uiActions().lastSection?.bot === name) {
+      uiActions().setLastSection(null)
+    }
+
     set(state => {
       const byName = { ...state.byName }
       delete byName[name]
