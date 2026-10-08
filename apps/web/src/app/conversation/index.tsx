@@ -1005,15 +1005,18 @@ function BotConversation() {
   const shown = messages.slice(-visible)
 
   // Messages, question cards and approval cards in the order they happened.
-  // Restored history carries no times and stays first.
+  // Restored history carries no times and stays first, each question it
+  // asked right under the message that asked it.
   const timeline = useMemo(() => {
     const items: TimelineItem[] = [
-      ...shown.map((message, index) => ({
-        at: message.createdAt > 0 ? toMillis(message.createdAt) : 0,
-        index,
-        kind: 'message' as const,
-        message
-      })),
+      ...shown.flatMap((message, index) => {
+        const at = message.createdAt > 0 ? toMillis(message.createdAt) : 0
+
+        return [
+          { at, index, kind: 'message' as const, message },
+          ...(message.clarifies ?? []).map(clarify => ({ at, clarify, kind: 'clarify' as const }))
+        ]
+      }),
       ...clarifies.map(clarify => ({ at: clarify.receivedAt, clarify, kind: 'clarify' as const })),
       ...approvals.map(approval => ({
         approval,

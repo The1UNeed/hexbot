@@ -2,7 +2,7 @@ import { Check } from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '../../components/ui/button'
-import { clarifyRespond } from '../../lib/api'
+import { clarifyAnswered, clarifyRespond } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import type { ClarifyQuestion, ClarifyRequest } from '../../lib/types'
 import { transcriptActions } from '../../stores/transcripts'
@@ -184,16 +184,20 @@ export function ClarifyCard({ clarify }: { clarify: ClarifyRequest }) {
       className="hex-bubble grid min-w-0 max-w-[min(85%,40rem)] flex-1 gap-4 rounded-[20px] bg-bubble px-4 py-3"
       data-testid="clarify-card"
     >
-      {clarify.questions.map(question => (
-        <Question
-          answer={clarify.answers[question.questionId ?? clarify.requestId]}
-          frozen={Boolean(clarify.expired) || busy}
-          key={question.questionId ?? question.question}
-          onAnswer={value => void answer(question, value)}
-          question={question}
-        />
-      ))}
-      {clarify.expired && Object.keys(clarify.answers).length < clarify.questions.length ? (
+      {clarify.questions.map(question => {
+        const key = question.questionId ?? clarify.requestId
+
+        return (
+          <Question
+            answer={Object.hasOwn(clarify.answers, key) ? clarify.answers[key] : undefined}
+            frozen={Boolean(clarify.expired) || busy}
+            key={question.questionId ?? question.question}
+            onAnswer={value => void answer(question, value)}
+            question={question}
+          />
+        )
+      })}
+      {clarify.expired && !clarifyAnswered(clarify) ? (
         <p className="text-[length:var(--text-secondary)] text-muted">
           The bot stopped waiting. Reply in the message field instead.
         </p>

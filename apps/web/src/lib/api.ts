@@ -11,6 +11,8 @@ import type {
   Bot,
   BotCreateInput,
   BotUpdatePatch,
+  ClarifyQuestion,
+  ClarifyRequest,
   ClarifyRequestPayload,
   Connector,
   ConnectorTest,
@@ -711,6 +713,88 @@ function parseArguments(text: string): unknown {
   }
 }
 
+/** The questions of a `clarify.request` payload, or of the tool call that made it. */
+export function clarifyQuestions(payload: ClarifyRequestPayload): ClarifyQuestion[] {
+  if (payload.questions?.length) {
+    return payload.questions.map((item, index) => ({
+      choices: item.choices ?? [],
+      multiSelect: Boolean(item.multi_select),
+      question: item.question,
+      // The daemon numbers a batch the same way when the model left ids out.
+      questionId: typeof item.qid === 'string' && item.qid ? item.qid : `q${index + 1}`
+    }))
+  }
+
+  return [
+    {
+      choices: payload.choices ?? [],
+      multiSelect: Boolean(payload.multi_select),
+      question: payload.question ?? ''
+    }
+  ]
+}
+
+/**
+ * A question the bot asked, rebuilt from its `clarify` call and the answer
+ * the tool returned: one answer as text, a batch as a JSON object by id.
+ * A question nobody answered comes back expired.
+ */
+function clarifyFromHistory(
+  requestId: string,
+  args: unknown,
+  row: HistoryRow
+): ClarifyRequest | null {
+  // The tool only fails before it asks: the user never saw the question.
+  if (!args || typeof args !== 'object' || row.is_error === true) {
+    return null
+  }
+
+  const questions = clarifyQuestions(args as ClarifyRequestPayload)
+
+  if (!questions.some(item => item.question)) {
+    return null
+  }
+
+  const result = typeof row.text === 'string' ? row.text : ''
+  let answers: Record<string, string> = {}
+
+  // The private extension's reply when the question was cancelled.
+  if (result && result !== 'The question was cancelled.') {
+    if (questions[0]?.questionId) {
+      try {
+        const parsed: unknown = JSON.parse(result)
+
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          answers = Object.fromEntries(
+            Object.entries(parsed).map(([qid, answer]) => [qid, String(answer)])
+          )
+        }
+      } catch {
+        // Not a batch answer; the card shows as expired.
+      }
+    } else {
+      answers = { [requestId]: result }
+    }
+  }
+
+  const clarify: ClarifyRequest = {
+    answers,
+    questions,
+    receivedAt: 0,
+    requestId,
+    // Settled: the card never answers, so it needs no live session.
+    sessionId: ''
+  }
+
+  return clarifyAnswered(clarify) ? clarify : { ...clarify, expired: true }
+}
+
+/** Every question has its answer; questions sharing an id share one. */
+export const clarifyAnswered = (clarify: ClarifyRequest) =>
+  clarify.questions.every(item =>
+    Object.hasOwn(clarify.answers, item.questionId ?? clarify.requestId)
+  )
+
 /**
  * Turn the Hexbot `session.history` projection into transcript messages.
  * Tool rows fold into the assistant message that precedes them, matching how
@@ -771,6 +855,9 @@ export function messagesFromHistory(
         toolId: String(row.tool_id ?? row.row_id ?? nextMessageId('t'))
       }
 
+      const clarify =
+        call.name === 'clarify' ? clarifyFromHistory(call.toolId, call.args, row) : null
+
       const calls = [
         call,
         ...(row.nested_calls?.calls ?? []).map(nested => ({
@@ -787,9 +874,14 @@ export function messagesFromHistory(
 
       if (target && target.role === 'assistant') {
         target.toolCalls.push(...calls)
+
+        if (clarify) {
+          target.clarifies = [...(target.clarifies ?? []), clarify]
+        }
       } else {
         messages.push({
           attachments: [],
+          clarifies: clarify ? [clarify] : undefined,
           createdAt: 0,
           id: nextMessageId(),
           role: 'assistant',
@@ -811,7 +903,13 @@ export function messagesFromHistory(
 
     // Hexbot stores one turn as assistant(tool calls) → tool rows → assistant(text).
     // That is one turn with one work line; each message is its own bubble.
-    if (role === 'assistant' && previous?.role === 'assistant' && previous.toolCalls.length) {
+    // A question ends the message, as it does live, so its card sits between.
+    if (
+      role === 'assistant' &&
+      previous?.role === 'assistant' &&
+      previous.toolCalls.length &&
+      !previous.clarifies?.length
+    ) {
       if (previous.text.trim()) {
         previous.parts = [...(previous.parts ?? []), previous.text]
       }
