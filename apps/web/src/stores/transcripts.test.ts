@@ -27,6 +27,15 @@ describe('transcript reducer', () => {
     actions.clarifyRequest('s', { question: 'Expired?', request_id: 'b' })
     actions.clarifyExpire('s', 'b')
     actions.clarifyRequest('s', { question: 'Waiting?', request_id: 'c' })
+    // Two questions sharing an id share one answer.
+    actions.clarifyRequest('s', {
+      questions: [
+        { qid: 'q', question: 'Why?' },
+        { qid: 'q', question: 'How?' }
+      ],
+      request_id: 'd'
+    })
+    actions.answerClarify('s', 'd', 'q', 'Because')
     actions.open('s', 'sec', [])
     expect(
       useTranscripts.getState().bySession.s?.clarifies.map(clarify => clarify.requestId)

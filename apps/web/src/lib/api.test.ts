@@ -228,6 +228,34 @@ describe('history projection', () => {
     expect(message?.clarifies?.[0]?.expired).toBeUndefined()
   })
 
+  it('keeps a batch unanswered when an id names an inherited property', () => {
+    const [message] = messagesFromHistory([
+      {
+        role: 'assistant',
+        text: 'Hi.',
+        tool_calls: [
+          {
+            function: {
+              arguments: '{"questions":[{"qid":"constructor","question":"Why?"}]}',
+              name: 'clarify'
+            },
+            id: 'c1',
+            type: 'function'
+          }
+        ]
+      },
+      {
+        name: 'clarify',
+        role: 'tool',
+        text: 'The question was cancelled.',
+        tool_call_id: 'c1',
+        tool_id: 'c1'
+      }
+    ] as Parameters<typeof messagesFromHistory>[0])
+
+    expect(message?.clarifies?.[0]).toMatchObject({ answers: {}, expired: true })
+  })
+
   it('leaves a question still waiting to the live card', () => {
     const [message] = messagesFromHistory([
       {

@@ -11,7 +11,13 @@
 
 import { create } from 'zustand'
 
-import { approvalReceived, clarifyQuestions, nextMessageId, sectionsTouch } from '../lib/api'
+import {
+  approvalReceived,
+  clarifyAnswered,
+  clarifyQuestions,
+  nextMessageId,
+  sectionsTouch
+} from '../lib/api'
 import { getBridge } from '../lib/bridge'
 import { toMillis } from '../lib/time'
 import type {
@@ -222,7 +228,7 @@ const SPINNER_LINE = /^[^a-z]*[a-z]+\.\.\.$/i
 
 /** A question the bot still waits on: not every answer is in and it has not expired. */
 export const clarifyWaiting = (clarify: ClarifyRequest) =>
-  !clarify.expired && Object.keys(clarify.answers).length < clarify.questions.length
+  !clarify.expired && !clarifyAnswered(clarify)
 
 /**
  * Ends the message the bot is writing: its words become a finished part, and

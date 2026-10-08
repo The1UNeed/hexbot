@@ -769,16 +769,23 @@ function clarifyFromHistory(
     }
   }
 
-  return {
+  const clarify: ClarifyRequest = {
     answers,
-    expired: questions.some(item => !((item.questionId ?? requestId) in answers)) || undefined,
     questions,
     receivedAt: 0,
     requestId,
     // Settled: the card never answers, so it needs no live session.
     sessionId: ''
   }
+
+  return clarifyAnswered(clarify) ? clarify : { ...clarify, expired: true }
 }
+
+/** Every question has its answer; questions sharing an id share one. */
+export const clarifyAnswered = (clarify: ClarifyRequest) =>
+  clarify.questions.every(item =>
+    Object.hasOwn(clarify.answers, item.questionId ?? clarify.requestId)
+  )
 
 /**
  * Turn the Hexbot `session.history` projection into transcript messages.
