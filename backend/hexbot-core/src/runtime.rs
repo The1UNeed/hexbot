@@ -3888,7 +3888,7 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
             .unwrap()
             .execute(
                 "INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES('job','alice','owl','frozen',?)",
-                [json!({"provider":"openai","model":"cheap"}).to_string()],
+                [json!({"provider":"openai","model":"cheap","reasoning_effort":null}).to_string()],
             )
             .unwrap();
         crate::catalog::call(
@@ -3925,10 +3925,9 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(&job).unwrap()["model"],
-            "cheap"
-        );
+        let job = serde_json::from_str::<Value>(&job).unwrap();
+        assert_eq!(job["model"], "cheap");
+        assert!(job["reasoning_effort"].is_null());
         let again = runtime.open_session("alice", "owl", "first").await.unwrap();
         assert!(Arc::ptr_eq(&reopened, &again));
         crate::catalog::call(

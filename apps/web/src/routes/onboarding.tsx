@@ -1005,14 +1005,24 @@ function BotStep({
       return
     }
 
+    // A slower answer for a provider no longer chosen is dropped.
+    let current = true
     void providerModels(provider)
       .then(list => {
+        if (!current) {
+          return
+        }
+
         setModels(list)
         setModel(current =>
           list.some(item => item.id === current) ? current : (list[0]?.id ?? '')
         )
       })
-      .catch(reason => onError(String(reason)))
+      .catch(reason => current && onError(String(reason)))
+
+    return () => {
+      current = false
+    }
   }, [onError, provider])
 
   const pickTemplate = (id: string) => {

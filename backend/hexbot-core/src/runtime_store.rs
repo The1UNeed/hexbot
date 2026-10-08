@@ -169,9 +169,9 @@ pub fn delete(home: &Path, stored: &str) -> Result<()> {
     }
     Ok(())
 }
-/// Sections still on a bot's previous provider and model, or thinking level,
-/// move with the bot from their next message. A section that runs something
-/// else, like a scheduled job with its own model, keeps it.
+/// Sections still on a bot's previous provider and model move with the bot from
+/// their next message, and take its new thinking level if they had its old one.
+/// A section on another model, like a scheduled job with its own, keeps both.
 pub fn follow_bot_model(home: &Path, bot: &str, before: &Value, after: &Value) -> Result<()> {
     let conn = open(home)?;
     let rows = conn
@@ -183,10 +183,12 @@ pub fn follow_bot_model(home: &Path, bot: &str, before: &Value, after: &Value) -
     for (stored, raw) in rows {
         let mut options: Value =
             serde_json::from_str(&raw).map_err(|e| crate::Error::new(5200, e.to_string()))?;
+        // Only a section on the bot's previous model follows the bot at all.
+        if (&options["provider"], &options["model"]) != (&before["provider"], &before["model"]) {
+            continue;
+        }
         let mut moved = false;
-        if (&before["provider"], &before["model"]) != (&after["provider"], &after["model"])
-            && (&options["provider"], &options["model"]) == (&before["provider"], &before["model"])
-        {
+        if (&before["provider"], &before["model"]) != (&after["provider"], &after["model"]) {
             options["provider"] = after["provider"].clone();
             options["model"] = after["model"].clone();
             moved = true;

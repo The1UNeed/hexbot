@@ -455,15 +455,25 @@ export function RosterColumn() {
       return
     }
 
+    // A slower answer for a provider no longer chosen is dropped.
+    let current = true
     void providerModels(newBot.provider)
       .then(list => {
+        if (!current) {
+          return
+        }
+
         setNewModels(list)
         setNewBot(value => ({
           ...value,
           model: list.some(item => item.id === value.model) ? value.model : (list[0]?.id ?? '')
         }))
       })
-      .catch(() => setNewModels([]))
+      .catch(() => current && setNewModels([]))
+
+    return () => {
+      current = false
+    }
   }, [newBot.provider])
 
   const newModel = newModels.find(item => item.id === newBot.model)
