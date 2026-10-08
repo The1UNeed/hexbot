@@ -51,7 +51,7 @@ import {
 import { useUsers } from '../../stores/users'
 import { MemoryEditor } from '../bot-settings/memory'
 import { ChoiceRow, dividerClass, Group, Heading, Row, rowFieldClass } from '../bot-settings/shared'
-import { ConfirmUpdate, updateNow, updateTarget } from '../confirm-update'
+import { ConfirmUpdate, installTarget } from '../confirm-update'
 
 import { ArchiveSettings } from './archive'
 import { OPEN_SOURCE } from './licenses'
@@ -1505,7 +1505,11 @@ export function UpdatesSettings(): React.JSX.Element {
                     {action === 'download' || action === 'install' ? (
                       <Button
                         disabled={busy}
-                        onClick={() => setConfirming(true)}
+                        onClick={() =>
+                          action === 'install'
+                            ? setConfirming(true)
+                            : run(() => bridge.updater.download())
+                        }
                         size="sm"
                         variant="primary"
                       >
@@ -1557,8 +1561,8 @@ export function UpdatesSettings(): React.JSX.Element {
         {bridge ? (
           <ConfirmUpdate
             onClose={() => setConfirming(false)}
-            onConfirm={() => run(() => updateNow(bridge))}
-            version={confirming ? updateTarget(app) : null}
+            onConfirm={() => run(() => bridge.updater.install())}
+            version={confirming ? installTarget(app) : null}
           />
         ) : null}
         <DaemonUpdates appVersion={bridge?.version ?? null} />
