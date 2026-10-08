@@ -183,8 +183,11 @@ pub fn follow_bot_model(home: &Path, bot: &str, before: &Value, after: &Value) -
     for (stored, raw) in rows {
         let mut options: Value =
             serde_json::from_str(&raw).map_err(|e| crate::Error::new(5200, e.to_string()))?;
-        // Only a section on the bot's previous model follows the bot at all.
-        if (&options["provider"], &options["model"]) != (&before["provider"], &before["model"]) {
+        // Only a section on the bot's previous model follows the bot at all. A
+        // delegated task keeps its parent section's frozen choice.
+        if !options["parent_session"].is_null()
+            || (&options["provider"], &options["model"]) != (&before["provider"], &before["model"])
+        {
             continue;
         }
         let mut moved = false;

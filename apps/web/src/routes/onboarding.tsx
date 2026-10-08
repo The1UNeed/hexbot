@@ -1159,7 +1159,11 @@ function BotStep({
           <span className="font-medium">Provider</span>
           <Select
             label="Provider"
-            onValueChange={setProvider}
+            onValueChange={value => {
+              // The old provider's model must not be created with the new provider.
+              setModel('')
+              setProvider(value)
+            }}
             options={configured.map(item => ({ label: item.label, value: item.id }))}
             value={provider}
           />
