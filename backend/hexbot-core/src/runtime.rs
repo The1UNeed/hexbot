@@ -1017,18 +1017,19 @@ impl Runtime {
     /// The section's prompt as the open path would build it now. The extension
     /// asks at compaction, the one moment the history cache is already lost, so
     /// a long section picks up its bot's current soul, memory and About you.
-    /// Returns `{text}` when the prompt changed and null when it is
+    /// Returns `{text}` when the live prompt differs and null when it is
     /// byte-identical or the row was frozen under another layout (its fixed
     /// lines, guidance or tool names). Tools never change, so only the bot's
     /// name, soul, memory, About you, teammates and skill catalog can.
-    fn refresh_prompt(&self, s: &Live) -> Result<Value> {
+    fn refresh_prompt(&self, s: &Live, current: &str) -> Result<Value> {
+        use sha2::{Digest, Sha256};
         let conn = store::open(&self.home)?;
         let (stored, raw): (String, String) = conn.query_row(
             "SELECT prompt,options FROM native_sessions WHERE stored_id=? AND owner=?",
             params![s.stored, s.owner],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        let mut options: Value =
+        let options: Value =
             serde_json::from_str(&raw).map_err(|e| Error::new(5200, e.to_string()))?;
         // An untagged row was frozen by an older layout, with inline skills and
         // its own tools; a rebuilt prompt would not match them. Nor is a row
@@ -1065,16 +1066,22 @@ impl Runtime {
         prompt.push_str(&connected_tools_block(
             options["mcpServers"].as_array().map_or(&[], Vec::as_slice),
         ));
-        if prompt == stored {
-            return Ok(Value::Null);
+        if prompt != stored {
+            // Update only our keys: a concurrent model switch owns its keys.
+            conn.execute(
+                "UPDATE native_sessions SET prompt=?,options=json_set(options,'$.prompt',?,'$.skills',json(?)) WHERE stored_id=?",
+                params![prompt, prompt, json!(skills).to_string(), s.stored],
+            )?;
         }
-        options["prompt"] = json!(prompt);
-        options["skills"] = json!(skills);
-        conn.execute(
-            "UPDATE native_sessions SET prompt=?,options=? WHERE stored_id=?",
-            params![prompt, options.to_string(), s.stored],
-        )?;
-        Ok(json!({"text":prompt}))
+        // The row may already contain a proposal the extension never received
+        // or could not apply. Keep returning it until the live hash matches.
+        Ok(
+            if format!("{:x}", Sha256::digest(prompt.as_bytes())) == current {
+                Value::Null
+            } else {
+                json!({"text":prompt})
+            },
+        )
     }
     async fn submit(
         &self,
@@ -1785,18 +1792,9 @@ impl Runtime {
                 }
                 Self::command(&s, json!({"type":"set_model","provider":target["provider"],"modelId":target["id"]})).await?;
                 let conn = store::open(&self.home)?;
-                let data: String = conn.query_row(
-                    "SELECT options FROM native_sessions WHERE stored_id=?",
-                    [&s.stored],
-                    |r| r.get(0),
-                )?;
-                let mut options: Value =
-                    serde_json::from_str(&data).map_err(|e| Error::new(5200, e.to_string()))?;
-                options["model"] = target["id"].clone();
-                options["provider"] = target["provider"].clone();
                 conn.execute(
-                    "UPDATE native_sessions SET options=? WHERE stored_id=?",
-                    params![options.to_string(), s.stored],
+                    "UPDATE native_sessions SET options=json_set(options,'$.model',json(?),'$.provider',json(?)) WHERE stored_id=?",
+                    params![target["id"].to_string(), target["provider"].to_string(), s.stored],
                 )?;
                 self.emit(
                     &s,
@@ -2641,7 +2639,7 @@ impl Runtime {
             "hexbot_todo_context" => {
                 Ok(json!({"text":crate::native_product_tools::todo_context(&self.home,&s.stored)?}))
             }
-            "hexbot_session_prompt" => self.refresh_prompt(s),
+            "hexbot_session_prompt" => self.refresh_prompt(s, common::required(args, "current")?),
             "delegate_task" => self.delegate(s, args).await,
             "message_bot" => {
                 self.require_toolset(s, "hexbot", name)?;
@@ -2903,7 +2901,7 @@ impl Runtime {
                     );
                 }
                 Ok(
-                    json!({"soul":fs::read_to_string(path).unwrap_or_default(),"cap":4000,"saved":args["text"].is_string(),"note":"Changes apply to new sections, and to a long section when it next compacts. Tell the user what changed."}),
+                    json!({"soul":fs::read_to_string(path).unwrap_or_default(),"cap":4000,"saved":args["text"].is_string(),"note":"Changes apply to new sections. Compatible existing sections refresh after compaction when the next request starts a new run. Tell the user what changed."}),
                 )
             }
             _ => {
@@ -4377,82 +4375,8 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         assert!(quoted.contains("quoted heading"));
         runtime.close_stored("bob", "shared").await.unwrap();
         common::atomic_write(&home.path().join("profiles/owl/SOUL.md"), b"Changed again").unwrap();
-        let shared = runtime.open_session("bob", "owl", "shared").await.unwrap();
-        assert_eq!(frozen("shared").0, quoted);
-        // At compaction the prompt is rebuilt once, by the open path's rules:
-        // the shared bot still gets no About you.
-        let fresh = runtime
-            .tool(&shared, "hexbot_session_prompt", &json!({}))
-            .await
-            .unwrap();
-        let (rebuilt, rebuilt_options) = frozen("shared");
-        assert_eq!(fresh["text"], rebuilt);
-        assert_ne!(rebuilt, quoted);
-        assert!(rebuilt.contains("# Soul\nChanged again"));
-        assert!(rebuilt.contains("quoted heading"));
-        assert!(!rebuilt.contains("Bob likes tea"));
-        assert!(!rebuilt.contains("Private owner facts"));
-        assert_eq!(rebuilt_options["prompt"], rebuilt);
-        assert_eq!(rebuilt_options["prompt_version"], PROMPT_VERSION);
-        // Nothing changed since: the prompt stays byte-identical.
-        assert_eq!(
-            runtime
-                .tool(&shared, "hexbot_session_prompt", &json!({}))
-                .await
-                .unwrap(),
-            Value::Null
-        );
-        assert_eq!(frozen("shared"), (rebuilt.clone(), rebuilt_options));
-        // Between compactions the rebuilt prompt is frozen like the first one.
-        common::atomic_write(
-            &home.path().join("profiles/owl/SOUL.md"),
-            b"Changed once more",
-        )
-        .unwrap();
-        runtime.close_stored("bob", "shared").await.unwrap();
         runtime.open_session("bob", "owl", "shared").await.unwrap();
-        assert_eq!(frozen("shared").0, rebuilt);
-        // The owner's own section keeps its About you when rebuilt.
-        let first = runtime.open_session("alice", "owl", "first").await.unwrap();
-        let fresh = runtime
-            .tool(&first, "hexbot_session_prompt", &json!({}))
-            .await
-            .unwrap();
-        assert!(
-            fresh["text"]
-                .as_str()
-                .unwrap()
-                .contains("# Soul\nChanged once more")
-        );
-        assert!(
-            fresh["text"]
-                .as_str()
-                .unwrap()
-                .contains("# About the user\nPrivate owner facts")
-        );
-        assert_eq!(frozen("first").0, fresh["text"]);
-        // A row frozen by an older layout keeps its prompt through compaction.
-        let (old, mut old_options) = frozen("first");
-        old_options
-            .as_object_mut()
-            .unwrap()
-            .remove("prompt_version");
-        store::open(home.path())
-            .unwrap()
-            .execute(
-                "UPDATE native_sessions SET options=? WHERE stored_id='first'",
-                [old_options.to_string()],
-            )
-            .unwrap();
-        common::atomic_write(&home.path().join("profiles/owl/SOUL.md"), b"Changed last").unwrap();
-        assert_eq!(
-            runtime
-                .tool(&first, "hexbot_session_prompt", &json!({}))
-                .await
-                .unwrap(),
-            Value::Null
-        );
-        assert_eq!(frozen("first"), (old, old_options));
+        assert_eq!(frozen("shared").0, quoted);
         runtime.shutdown().await;
     }
     /// Tool rows reach clients under the names and previews they label, live and restored.

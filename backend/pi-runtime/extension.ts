@@ -1,4 +1,5 @@
 /** Hexbot's frozen session tools and approval bridge. Pi owns the agent loop. */
+import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync } from 'node:fs';
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
@@ -104,11 +105,11 @@ export default function hexbot(pi: any) {
   };
   let live = config;
   let primary: any;
-  // The system prompt is frozen with the section, with one exception: at
-  // compaction, when the history cache is already lost, the daemon rebuilds it
-  // so a long section picks up its bot's current soul, memory and About you.
-  // The tool declarations never change, so their cached prefix survives.
+  // Pi 1.0.1 holds its forced prompt for the whole run. Only adopt a rebuilt
+  // prompt if the first request after compaction starts a new run. A resumed
+  // request caches the old prompt again, so discard the replacement then.
   let prompt = config.prompt;
+  let pendingPrompt: string | undefined;
   const refresh = async (ctx: any) => { live = {...config, ...await bridge(ctx, 'hexbot_session_settings')}; };
   // Resolve credentials in memory on the first prompt. RPC cannot answer a
   // bridge request during session_start, before its stdin reader is attached.
@@ -348,6 +349,7 @@ export default function hexbot(pi: any) {
   });
 
   pi.on('before_provider_request', async (event: any, ctx: any) => {
+    pendingPrompt = undefined;
     const provider = ctx.model?.provider ?? config.provider;
     if (!['qwen-oauth', 'nous', 'openrouter', 'kimi-coding', 'kimi-coding-cn', 'moonshotai', 'moonshotai-cn', 'deepseek', 'zai', 'minimax', 'minimax-cn', 'minimax-oauth', 'custom', 'ollama'].includes(provider)) return;
     const raw = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({name: 'hexbot_provider_request', args: {provider, model: ctx.model?.id, thinking: pi.getThinkingLevel(), payload: event.payload}}));
@@ -372,20 +374,28 @@ export default function hexbot(pi: any) {
     const model = ctx.modelRegistry.find(live.provider, live.model) ?? primary;
     if (model && (ctx.model?.provider !== model.provider || ctx.model?.id !== model.id)) await pi.setModel(model);
     fallbackUsed = false; iterations = 0; limitReached = false;
+
+    if (pendingPrompt !== undefined) {
+      prompt = pendingPrompt;
+      pendingPrompt = undefined;
+    }
+
     return {systemPrompt: prompt};
   });
   pi.on('session_compact', async (_event: any, ctx: any) => {
+    pendingPrompt = undefined;
     // The todo list and the prompt are two requests; one failing or empty
     // never stops the other.
     try {
       const todo = await bridge(ctx, 'hexbot_todo_context');
       if (todo?.text) pi.sendMessage({customType: 'hexbot_todo', content: todo.text, display: false});
     } catch {}
-    // Null means the prompt is unchanged. A failed request keeps the prompt the
-    // section had, which is what every turn before this one used.
+    // Compare with the live prompt, not the persisted proposal: delivery may
+    // have failed last time, or a mid-run request discarded the replacement.
     try {
-      const fresh = await bridge(ctx, 'hexbot_session_prompt');
-      if (typeof fresh?.text === 'string' && fresh.text) prompt = fresh.text;
+      const current = createHash('sha256').update(prompt).digest('hex');
+      const fresh = await bridge(ctx, 'hexbot_session_prompt', {current});
+      if (typeof fresh?.text === 'string' && fresh.text) pendingPrompt = fresh.text;
     } catch {}
   });
   pi.on('agent_before_settle', async (event: any, ctx: any) => {

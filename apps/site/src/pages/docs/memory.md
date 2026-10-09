@@ -8,7 +8,7 @@ Each bot has its own soul and memory. About you is shared by all of your bots, a
 
 ## Soul
 
-A bot's soul is who it is: how it behaves and speaks. You edit it in the bot's settings under Soul. The bot may edit it too, when you ask it to change or when it learns how you want it to work, and it tells you when it does. A change to the soul applies from the next section you start, and in a long section from the next time Hexbot compacts it.
+A bot's soul is who it is: how it behaves and speaks. You edit it in the bot's settings under Soul. The bot may edit it too, when you ask it to change or when it learns how you want it to work, and it tells you when it does. A change to the soul applies from the next section you start. Long sections can also pick it up after compaction, as described below.
 
 ## Memory
 
@@ -26,7 +26,7 @@ Whenever a bot writes to its memory, its notes, or its soul during a conversatio
 
 Hexbot includes a bot's own memory in its starting prompt, rather than another bot's notes. Each bot also has searchable history over its own sections and the rooms it belongs to. Starting a new section gives the conversation a new context window without erasing that history. These ownership rules do not isolate local files from enabled file and terminal tools; see [Multi-user](/docs/multi-user/) before sharing a daemon.
 
-A new section reads the current soul, memory, and About you text into its starting context. Existing sections keep their cached starting context until Hexbot compacts them; a long section reads the current text then. After editing these settings, start a new section when you need the bot to begin with the updated text right away. In-conversation memory edits remain part of the conversation that made them.
+A new section reads the current soul, memory, and About you text into its starting context. Sections started with prompt refresh support can read the current text after compaction, provided the next model request starts a new run. If the bot continues its current run first, the section keeps its prompt until another compaction. Older sections keep their starting prompt, as do sections whose fixed guidance or tool layout no longer matches after an update. After editing these settings, start a new section when you need the bot to begin with the updated text right away. In-conversation memory edits remain part of the conversation that made them.
 
 Archiving a section hides it from the active list. Deleting a section removes the conversation and its history. The bot's memory and notes stay as they are; edit them yourself if something should go. Treat deletion as permanent. Deleting a bot deletes its notes with it.
 

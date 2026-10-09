@@ -151,26 +151,28 @@ it also installs over SSH when nobody is signed in at the screen.
   started with.
 - A conversation keeps its system prompt, skill catalog and tool definitions
   across turns and daemon restarts. Skill bodies and grants resolve live. Runtime settings outside the prompt may
-  resolve live. The one exception is compaction (automatic or `/compact`):
-  the extension's `session_compact` handler asks the daemon for the section's
-  prompt over the bridge (`hexbot_session_prompt`), the daemon rebuilds it
-  with the same `session_prompt` path and rules as at section open (no About
-  you for a shared bot in another user's room, skills by name, the frozen
-  connected server namespaces), and stores and returns it only when the text
-  differs; otherwise null and nothing changes. The next turn sends the new
-  prompt. Tool declarations never change, so for Anthropic-style requests
-  (tools, then system, then messages, each with its own cache breakpoint)
-  the tools prefix stays cached and the cost is one cache write of the
-  system prompt per compaction that changed it, on top of the compacted
-  history Pi rewrites anyway. A rebuilt prompt must match the section's
-  frozen tool schemas, so each row carries `prompt_layout`, a hash of the
-  prompt's fixed lines, `HEXBOT_GUIDANCE` and the frozen tool names; the
-  team block lists teammates when `message_bot` is among those tools. A row
-  whose tag is not the current one, or without the current
-  `prompt_version` tag, was frozen under another layout and is never
-  rebuilt: only the bot's name, soul, memory, About you, teammates and
-  skill catalog ever change. Guidance and tool changes still reach new
-  sections only.
+  resolve live. The one exception follows compaction, automatic or `/compact`:
+  the extension asks the daemon for a rebuilt prompt over the bridge
+  (`hexbot_session_prompt`), sending the SHA-256 hash of its live prompt.
+  The daemon uses the section-open rules, skills by name and frozen connected
+  server namespaces. It stores a changed proposal and returns it whenever
+  the live hash differs, even if an earlier response was interrupted.
+  Updates touch only the prompt and skill catalog, preserving model settings.
+  The extension stages the proposal until `before_agent_start`. If a provider
+  request comes first, it discards the proposal: Pi 1.0.1 keeps its forced
+  prompt through a run, including automatic compaction and continuation.
+  The next ordinary turn must not rewrite a prefix that continuation cached.
+  Manual compaction and compaction before a new prompt can refresh before the
+  new run's first request. Otherwise refresh waits for another compaction.
+  Tool declarations never change. A prompt refresh therefore rewrites the
+  system prefix only alongside the compacted history, preserving the tools
+  prefix where the provider caches it separately.
+  Only sections started with this feature carry the required `prompt_layout`
+  and `prompt_version` tags. The layout hashes fixed lines, guidance and frozen
+  tool names; the team block follows those frozen tools. A missing or outdated
+  tag disables refresh, including after an update changes the fixed guidance.
+  Only the bot's name, soul, memory, About you, teammates and skill catalog
+  can change. Guidance and tool changes still reach new sections only.
   Native live session IDs remain distinct from stored section IDs.
 - HTTP cookies, pairing, device revocation, JSON-RPC names, error objects,
   owner-scoped events, replay sequence numbers, and replay epochs preserve the
@@ -248,8 +250,9 @@ New prompts contain only skill names and descriptions, with an instruction to
 load bodies through `skill_view`. Read-only `skill_view` and `skills_list` are
 available without the authoring toolset and enforce current grants on every
 call. `skill_manage` still requires the skills toolset. Skill body edits are
-live. Existing sections retain their exact prompt and options, including old
-inline skill bodies. The existing About you privacy repair is unchanged.
+live. Older sections retain their exact prompt and options, including old
+inline skill bodies. Compatible sections refresh their catalog at the
+compaction boundary described above. The existing About you privacy repair is unchanged.
 
 Pi starts with `--no-skills` and receives no `--skill` paths. Pi 1.0.1 accepts
 explicit skill paths even with `--no-skills`; its `/skill:name` commands load

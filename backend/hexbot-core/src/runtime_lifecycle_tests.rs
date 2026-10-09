@@ -69,6 +69,119 @@ fn age(runtime: &Runtime) {
         s.state.lock().unwrap().last_activity = 0.;
     }
 }
+fn prompt_hash(prompt: &str) -> Value {
+    use sha2::{Digest, Sha256};
+    json!({"current":format!("{:x}", Sha256::digest(prompt.as_bytes()))})
+}
+
+#[tokio::test]
+async fn compaction_prompt_retries_interrupted_delivery_and_preserves_other_options() {
+    let (home, runtime, _) = setup();
+    fs::create_dir_all(home.path().join("users/alice")).unwrap();
+    fs::write(home.path().join("users/alice/user.md"), "Likes tea").unwrap();
+    let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+    let conn = store::open(home.path()).unwrap();
+    let saved = || -> (String, Value) {
+        conn.query_row(
+            "SELECT prompt,options FROM native_sessions WHERE stored_id='first'",
+            [],
+            |r| {
+                let raw: String = r.get(1)?;
+                Ok((r.get(0)?, serde_json::from_str(&raw).unwrap()))
+            },
+        )
+        .unwrap()
+    };
+    let (original, options) = saved();
+    let request = prompt_hash(&original);
+    assert_eq!(
+        runtime
+            .tool(&s, "hexbot_session_prompt", &request)
+            .await
+            .unwrap(),
+        Value::Null
+    );
+    fs::write(home.path().join("profiles/owl/SOUL.md"), "Changed soul").unwrap();
+    fs::create_dir_all(home.path().join("profiles/owl/memories")).unwrap();
+    fs::write(
+        home.path().join("profiles/owl/memories/MEMORY.md"),
+        "New memory",
+    )
+    .unwrap();
+    // Ordinary opens do not rebuild the prompt.
+    runtime.open_session("alice", "owl", "first").await.unwrap();
+    assert_eq!(saved(), (original.clone(), options.clone()));
+    conn.execute("UPDATE native_sessions SET options=json_set(options,'$.model','switched','$.provider','custom','$.unrelated',42) WHERE stored_id='first'", []).unwrap();
+    // The daemon persists its proposal, but the bridge is interrupted before
+    // the extension receives it. Its next compaction still sends the old hash.
+    let lost = runtime
+        .tool(&s, "hexbot_session_prompt", &request)
+        .await
+        .unwrap();
+    let (rebuilt, refreshed_options) = saved();
+    assert_eq!(lost["text"], rebuilt);
+    assert!(rebuilt.contains("# Soul\nChanged soul"));
+    assert!(rebuilt.contains("# Memory\nNew memory"));
+    assert!(rebuilt.contains("# About the user\nLikes tea"));
+    assert_eq!(refreshed_options["prompt"], rebuilt);
+    assert_eq!(refreshed_options["tools"], options["tools"]);
+    assert_eq!(refreshed_options["model"], "switched");
+    assert_eq!(refreshed_options["provider"], "custom");
+    assert_eq!(refreshed_options["unrelated"], 42);
+    // Unchanged proposals and matching live prompts need no database write.
+    conn.execute_batch("CREATE TRIGGER reject_prompt_rewrite BEFORE UPDATE ON native_sessions BEGIN SELECT RAISE(ABORT,'unexpected rewrite'); END;").unwrap();
+    assert_eq!(
+        runtime
+            .tool(&s, "hexbot_session_prompt", &request)
+            .await
+            .unwrap(),
+        lost
+    );
+    let applied = prompt_hash(&rebuilt);
+    assert_eq!(
+        runtime
+            .tool(&s, "hexbot_session_prompt", &applied)
+            .await
+            .unwrap(),
+        Value::Null
+    );
+    assert_eq!(saved(), (rebuilt.clone(), refreshed_options.clone()));
+    conn.execute_batch("DROP TRIGGER reject_prompt_rewrite")
+        .unwrap();
+    // Repair storage even when the live prompt already matches the rebuild.
+    conn.execute("UPDATE native_sessions SET prompt=?,options=json_set(options,'$.prompt',?) WHERE stored_id='first'", params![original, original]).unwrap();
+    assert_eq!(
+        runtime
+            .tool(&s, "hexbot_session_prompt", &applied)
+            .await
+            .unwrap(),
+        Value::Null
+    );
+    assert_eq!(saved(), (rebuilt.clone(), refreshed_options));
+    // Old sections without either compatibility tag never refresh.
+    for key in ["prompt_version", "prompt_layout"] {
+        conn.execute(
+            "UPDATE native_sessions SET options=json_remove(options,?) WHERE stored_id='first'",
+            [format!("$.{key}")],
+        )
+        .unwrap();
+        let before = saved();
+        fs::write(home.path().join("profiles/owl/SOUL.md"), "Changed again").unwrap();
+        assert_eq!(
+            runtime
+                .tool(&s, "hexbot_session_prompt", &applied)
+                .await
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(saved(), before);
+        conn.execute("UPDATE native_sessions SET options=json_set(options,?,json(?)) WHERE stored_id='first'", params![format!("$.{key}"), options[key].to_string()]).unwrap();
+    }
+    runtime.close_stored("alice", "first").await.unwrap();
+    runtime.open_session("alice", "owl", "first").await.unwrap();
+    assert_eq!(saved().0, rebuilt);
+    runtime.shutdown().await;
+}
 #[cfg(unix)]
 fn assert_exited(process: &Value) {
     let pid = process["pid"].as_i64().unwrap() as libc::pid_t;
@@ -837,7 +950,11 @@ async fn mcp_names_and_prompt_are_frozen_without_credentials_or_discovery() {
         .clone();
     fs::write(home.path().join("profiles/owl/SOUL.md"), "Refreshed soul").unwrap();
     let fresh = runtime
-        .tool(&s, "hexbot_session_prompt", &json!({}))
+        .tool(
+            &s,
+            "hexbot_session_prompt",
+            &prompt_hash(prompt.as_str().unwrap()),
+        )
         .await
         .unwrap();
     let text = fresh["text"].as_str().unwrap();
@@ -2170,7 +2287,7 @@ async fn team_prompt_stays_frozen_across_profile_changes_and_restart() {
         .unwrap()
         .clone();
     let rebuilt = restarted
-        .tool(&first, "hexbot_session_prompt", &json!({}))
+        .tool(&first, "hexbot_session_prompt", &prompt_hash(&before))
         .await
         .unwrap();
     let text = rebuilt["text"].as_str().unwrap();
@@ -2195,9 +2312,17 @@ async fn team_prompt_stays_frozen_across_profile_changes_and_restart() {
         "tools:\n  enabled_toolsets: [hexbot]\n",
     )
     .unwrap();
+    let second_prompt = processes(home.path()).last().unwrap()["config"]["prompt"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     fs::write(home.path().join("profiles/owl/SOUL.md"), "A new soul").unwrap();
     let rebuilt = restarted
-        .tool(&second, "hexbot_session_prompt", &json!({}))
+        .tool(
+            &second,
+            "hexbot_session_prompt",
+            &prompt_hash(&second_prompt),
+        )
         .await
         .unwrap();
     let text = rebuilt["text"].as_str().unwrap();
@@ -2230,7 +2355,11 @@ async fn team_prompt_stays_frozen_across_profile_changes_and_restart() {
     fs::write(home.path().join("profiles/owl/SOUL.md"), "A newer soul").unwrap();
     assert_eq!(
         restarted
-            .tool(&second, "hexbot_session_prompt", &json!({}))
+            .tool(
+                &second,
+                "hexbot_session_prompt",
+                &prompt_hash(&second_prompt)
+            )
             .await
             .unwrap(),
         Value::Null
