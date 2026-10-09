@@ -965,11 +965,13 @@ pub fn reconcile(home: &Path, bot: &str, stored: &str, owner: &str) -> Result<()
     Ok(())
 }
 fn entry_timestamp(entry: &Value) -> f64 {
+    parsed_entry_timestamp(entry).unwrap_or_else(common::now)
+}
+fn parsed_entry_timestamp(entry: &Value) -> Option<f64> {
     entry["timestamp"]
         .as_str()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .map(|d| d.timestamp_millis() as f64 / 1000.0)
-        .unwrap_or_else(common::now)
 }
 /// Read a conversation for recovery: a torn final record is backed up and cut
 /// so the next Pi append starts on a clean line. Only call this before the
@@ -1093,6 +1095,20 @@ pub fn compaction_summaries(home: &Path, stored: &str, since: f64) -> Result<Vec
         .join("runtime/sessions")
         .join(stored)
         .join("conversation.jsonl");
+    let metadata = match fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => return Err(error.into()),
+    };
+    // A recent compaction requires a recent append. Leave idle files unread.
+    if metadata
+        .modified()
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .is_some_and(|at| at.as_secs_f64() < since)
+    {
+        return Ok(vec![]);
+    }
     let bytes = match fs::read(&path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
@@ -1105,7 +1121,7 @@ pub fn compaction_summaries(home: &Path, stored: &str, since: f64) -> Result<Vec
         .filter(|entry| entry["type"] == "compaction")
         .filter(|entry| entry["id"].as_str().is_some_and(|id| active.contains(id)))
         .filter_map(|entry| {
-            let at = entry_timestamp(entry);
+            let at = parsed_entry_timestamp(entry)?;
             let summary = entry["summary"].as_str()?;
             (at >= since).then(|| (at, summary.to_owned()))
         })
