@@ -11,7 +11,8 @@ page is the procedure and the one-time setup. Modelled on T3 Code's
 - `preflight` picks the channel, checks that a stable tag matches
   `apps/desktop/package.json` (a manual stable run takes the version from
   that file and refuses one that is already tagged), computes the nightly
-  version, and stops a scheduled nightly when `main` has not moved.
+  version, refuses an empty `HEXBOT_UPDATE_SIGNING_KEY` before builds or tag
+  creation, and stops a scheduled nightly when `main` has not moved.
 - `check` runs `ci.yml`: Rust/Pi, Rust installer tests and clippy on macOS and
   Linux, POSIX bootstrap syntax and ShellCheck, service handoff, web, desktop,
   site, Connect, and the desktop script tests. Windowed installer typecheck
@@ -91,8 +92,9 @@ handoff removes the old Python environment and source copies. A small forwarding
 script can remain at the old launchd path until the app reloads the service.
 Bootstrap rewrites old launchd/systemd definitions and removes the venv PATH.
 
-Native manifests are signed like install manifests (see "Update signing"); the
-handoff refuses one without a valid signature.
+Native manifests are signed like install manifests (see "Update signing"). The
+handoff checks that signature after the legacy updater has downloaded and run
+the unsigned handoff source package. That first download still trusts HTTPS.
 
 Native staging and the dev runner share the pins in
 `apps/desktop/src/main/backend/tools.ts`. They verify ripgrep 15.2.0 and fd
@@ -218,37 +220,71 @@ bad release is fixed by cutting the next one.
 
 ### Update signing
 
-Every manifest a client verifies carries an Ed25519 signature from the release
+Install and native daemon manifests carry Ed25519 signatures from the release
 key: `daemon/native/<version>/<target>/manifest.json.sig` beside each native
 manifest, and `install/<version>/<track>.json.sig` for the install manifest.
-The install manifest's signature sits at the immutable versioned path, so
-replacing `install/<track>.json` never races it. The installer engine, the
-daemon's native updater, and the Python handoff refuse a manifest without a
-valid signature; the signed checksums then pin every package. Anyone who
-controls the update origin, its TLS, or `HEXBOT_UPDATE_URL` cannot ship a build
-without the key.
+The install signature uses an immutable versioned path, so replacing
+`install/<track>.json` never races it. The installer engine and native daemon
+updater refuse manifests without a trusted signature. The Python handoff also
+checks the native manifest, subject to the source-package limitation below.
+Signed checksums pin the packages downloaded through these paths. Controlling
+the update origin alone cannot replace packages accepted by an already-trusted
+installer or native updater.
 
-The public keys are `packaging/update-signing-key.pub` (raw Ed25519, base64,
-one per line), compiled into the Rust binaries and copied into
-`backend/python-handoff/hexbot/update_signature.py`; a release script test keeps
-the copies equal. The private key is the `HEXBOT_UPDATE_SIGNING_KEY` secret, a
-PKCS#8 PEM. The `Sign the update manifests` step signs with it and checks each
-signature against the committed public key, so a mismatched secret fails the
-release before anything is uploaded. The post-publish check verifies the
-published signatures again.
+Signed JSON uses artifact paths relative to the selected update base. An HTTPS
+mirror selected with `HEXBOT_UPDATE_URL` serves the same bytes and signatures,
+including when the base has a path prefix. Artifact URLs and redirects must
+stay on that origin. The unsigned bootstrap `.txt` index keeps absolute URLs.
+The installer refuses versions below its receipt's version on the same track,
+including Update or repair. Fresh installs and explicit track changes may
+install an older version.
+
+Not covered by these manifest signatures:
+
+- Electron's `.yml` app feeds. macOS app updates rely on code signing;
+  Linux AppImage updates use checksums only.
+- `install.sh`, its `.txt` index, and the initial installer download. These
+  trust HTTPS to the site and update server.
+- `daemon/hexbot-src-<version>.tar.gz`, the legacy Python handoff source
+  package. The legacy updater executes this unsigned package before its
+  native-manifest verifier runs. A later native signature check cannot
+  authenticate that earlier download.
+
+The public keys are `packaging/update-signing-key.pub`, raw Ed25519 keys in
+base64, one per line. Rust binaries compile them in; the handoff keeps a copy
+in `backend/python-handoff/hexbot/update_signature.py`. A test checks parity.
+Each non-empty `.sig` line is one base64 Ed25519 signature of the exact
+manifest bytes. A verifier accepts any line signed by a trusted key.
+
+`HEXBOT_UPDATE_SIGNING_KEY` is the required PKCS#8 PEM secret.
+`HEXBOT_UPDATE_SIGNING_KEY_NEXT` is an optional second PEM for key rotation.
+The signer writes one line per configured key and checks each against the
+committed public keys before upload. A missing primary secret fails preflight;
+a mismatched key fails signing. The post-publish check verifies signatures again.
 
 ```sh
 gh secret set HEXBOT_UPDATE_SIGNING_KEY < hexbot-update-signing-key.pem
 ```
 
-Keep the PEM offline after storing it. To replace the key, run
-`node scripts/desktop/update-signing.mjs generate NEW-KEY.pem`, which adds the
-new public key as a second line; copy it into `update_signature.py` and release
-with the old secret, so installed builds learn the new key from an update they
-can verify. Once that release has reached users, switch the secret to the new
-PEM and remove the old public key. Debug builds also trust a public test key
-(`TEST_KEY` in `backend/hexbot-core/src/update_signature.rs`) so tests and
-`apps/installer`'s fake update server can sign; release builds never do.
+Keep the PEMs offline after storing them. To rotate a key:
+
+1. Run `node scripts/desktop/update-signing.mjs generate NEW-KEY.pem` to add
+   the new public key. Copy it into `update_signature.py` too.
+2. Keep the old PEM in `HEXBOT_UPDATE_SIGNING_KEY` and store the new PEM in
+   `HEXBOT_UPDATE_SIGNING_KEY_NEXT`. Publish with both signatures so clients
+   trusting either key can update, even if they skip releases.
+3. Continue dual signing for as long as any supported version trusts only
+   the old key. One bridge release reaching some users is not a retirement
+   condition. Document a supported-versions cutoff and an explicit reinstall
+   route for older versions before retiring the old key.
+4. Once that cutoff takes effect, move the new PEM to the primary secret,
+   clear the optional secret, and remove the old public key from both copies.
+   Versions below the cutoff that only trust the old key will need a current
+   installer; they cannot verify new releases directly.
+
+Debug builds also trust the public `TEST_KEY` in
+`backend/hexbot-core/src/update_signature.rs` for tests and the fake update
+server. Release builds never trust it or include the test signing helper.
 
 ### Apple signing and notarization
 
