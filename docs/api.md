@@ -253,6 +253,11 @@ The daemon enforces unattended approval rules and script workspace restrictions.
 The mobile app displays the last status, error and up to 12,000 characters of output
 stored on the daemon. Jobs do not send push notifications.
 
+Scheduled jobs and their delegates cannot call `message_bot`. Jobs use Auto
+when the bot's approval mode is Bypass; Manual remains Manual. Scheduled
+scripts require OS isolation in every mode. Memory writes become proposals
+for the next dream, and soul writes are refused. See [Dreaming](dreaming.md).
+
 ### Rooms
 
 Room shape: `{id, name, owner_id, main_bot, approval_mode, limits,

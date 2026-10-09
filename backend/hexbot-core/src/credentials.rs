@@ -283,18 +283,18 @@ pub fn warn_unavailable_isolation() {
     static WARN: std::sync::Once = std::sync::Once::new();
     WARN.call_once(|| {
         eprintln!(
-            "Hexbot has no OS sandbox on this system (bubblewrap is missing or cannot start). Shell commands and scripts can read any file you can. Manual and Auto ask before every shell command and code run, and scheduled scripts run only in Bypass. Install bubblewrap and restart the daemon to restore isolation."
+            "Hexbot has no OS sandbox on this system (bubblewrap is missing or cannot start). Shell commands and scripts can read any file you can. Manual and Auto ask before every shell command and code run, and scheduled scripts refuse to run. Install bubblewrap and restart the daemon to restore isolation."
         )
     });
 }
-/// Unattended scripts assume the sandbox; without one only Off runs them.
-pub fn require_isolation(mode: &str) -> Result<()> {
-    if mode == "off" || isolation_available() {
+/// Unattended scripts always require OS isolation.
+pub fn require_isolation() -> Result<()> {
+    if isolation_available() {
         return Ok(());
     }
     Err(Error::new(
         4302,
-        "No OS sandbox is available, so scheduled scripts do not run in Manual or Auto approval mode. Install bubblewrap and restart the daemon, or set approval mode to Bypass.",
+        "No OS sandbox is available, so scheduled scripts cannot run. Install bubblewrap and restart the daemon.",
     ))
 }
 fn quoted(path: impl AsRef<str>) -> String {
@@ -1118,10 +1118,8 @@ mod tests {
         }
     }
     #[test]
-    fn scheduled_scripts_need_a_sandbox_unless_off() {
-        assert!(require_isolation("off").is_ok());
-        assert_eq!(require_isolation("manual").is_ok(), isolation_available());
-        assert_eq!(require_isolation("smart").is_ok(), isolation_available());
+    fn scheduled_scripts_always_need_a_sandbox() {
+        assert_eq!(require_isolation().is_ok(), isolation_available());
     }
     #[cfg(target_os = "macos")]
     #[tokio::test]
