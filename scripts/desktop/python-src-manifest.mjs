@@ -7,7 +7,8 @@ export const handoffFiles = [
   'uv.lock',
   'hexbot/__init__.py',
   'hexbot/cli.py',
-  'hexbot/native_transition.py'
+  'hexbot/native_transition.py',
+  'hexbot/update_signature.py'
 ]
 
 export async function stagePythonSource(repositoryRoot, destination, { nativeTransitionVersion } = {}) {
