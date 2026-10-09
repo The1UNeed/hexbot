@@ -219,19 +219,21 @@ fn artifacts_come_from_the_configured_server_and_redirects_cannot_leave_it() {
     let publish = |m: &Manifest| publish(temp.path(), "stable", m);
     let mut engine = engine(temp.path());
     engine.base_url = server.base.clone();
-    for location in [
-        format!("{}/client.AppImage", server.base),
-        "client.AppImage".into(),
-        "/client.AppImage".into(),
-    ] {
-        manifest
+    // Old manifests omit path; new manifests retain a canonical URL for old clients.
+    for path in [None, Some("client.AppImage".to_string())] {
+        let artifact = manifest
             .targets
             .get_mut("linux-x86_64")
             .unwrap()
             .client
             .as_mut()
-            .unwrap()
-            .url = location;
+            .unwrap();
+        artifact.url = if path.is_some() {
+            "https://updates.hexbot.app/client.AppImage".into()
+        } else {
+            format!("{}/client.AppImage", server.base)
+        };
+        artifact.path = path;
         publish(&manifest);
         engine
             .apply(InstallOption::Client, Track::Stable, &mut |_| {})
@@ -248,18 +250,51 @@ fn artifacts_come_from_the_configured_server_and_redirects_cannot_leave_it() {
     }
     for location in [
         "",
-        "https://attacker.example/client.AppImage",
+        "../client.AppImage",
+        "a/../client.AppImage",
+        "./client.AppImage",
+        "/client.AppImage",
+        "%2e%2e/client.AppImage",
+        "a/%2Fclient.AppImage",
+        "a\\..\\client.AppImage",
         "//attacker.example/client.AppImage",
+        "https://updates.hexbot.app/client.AppImage",
         "ftp://updates.hexbot.app/client.AppImage",
+        "client.AppImage?query",
+        "client.AppImage#fragment",
+        " client.AppImage",
+        "a//client.AppImage",
     ] {
-        manifest
+        let artifact = manifest
             .targets
             .get_mut("linux-x86_64")
             .unwrap()
             .client
             .as_mut()
+            .unwrap();
+        // A valid legacy URL must not rescue an invalid signed path.
+        artifact.url = format!("{}/client.AppImage", server.base);
+        artifact.path = Some(location.into());
+        publish(&manifest);
+        assert!(
+            fetch_manifest(&server.base, Track::Stable).is_err(),
+            "{location}"
+        );
+    }
+    for location in [
+        "client.AppImage",
+        "//attacker.example/client.AppImage",
+        "https://attacker.example/client.AppImage",
+    ] {
+        let artifact = manifest
+            .targets
+            .get_mut("linux-x86_64")
             .unwrap()
-            .url = location.into();
+            .client
+            .as_mut()
+            .unwrap();
+        artifact.url = location.into();
+        artifact.path = None;
         publish(&manifest);
         assert!(fetch_manifest(&server.base, Track::Stable).is_err());
     }
@@ -270,14 +305,15 @@ fn artifacts_come_from_the_configured_server_and_redirects_cannot_leave_it() {
         mirror.join("client.AppImage"),
     )
     .unwrap();
-    manifest
+    let artifact = manifest
         .targets
         .get_mut("linux-x86_64")
         .unwrap()
         .client
         .as_mut()
-        .unwrap()
-        .url = "client.AppImage".into();
+        .unwrap();
+    artifact.url = "https://updates.hexbot.app/client.AppImage".into();
+    artifact.path = Some("client.AppImage".into());
     common::publish(&mirror, "stable", &manifest);
     engine.base_url = format!("{}/mirror/", server.base);
     engine

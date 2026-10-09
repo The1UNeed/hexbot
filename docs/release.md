@@ -231,10 +231,13 @@ Signed checksums pin the packages downloaded through these paths. Controlling
 the update origin alone cannot replace packages accepted by an already-trusted
 installer or native updater.
 
-Signed JSON uses artifact paths relative to the selected update base. An HTTPS
-mirror selected with `HEXBOT_UPDATE_URL` serves the same bytes and signatures,
-including when the base has a path prefix. Artifact URLs and redirects must
-stay on that origin. The unsigned bootstrap `.txt` index keeps absolute URLs.
+Signed JSON keeps each artifact's absolute `url` for already-published clients
+and adds a relative `path`. New clients prefer `path`, resolving it against
+`HEXBOT_UPDATE_URL`, including any base path prefix. Without `path`, they use
+`url` with the original same-origin checks. Paths cannot contain traversal or
+URL syntax. An HTTPS mirror serves the same manifest bytes and signatures;
+downloads and redirects must stay on its origin. The unsigned bootstrap `.txt`
+index keeps absolute URLs.
 The installer refuses versions below its receipt's version on the same track,
 including Update or repair. Fresh installs and explicit track changes may
 install an older version.
@@ -259,8 +262,9 @@ manifest bytes. A verifier accepts any line signed by a trusted key.
 `HEXBOT_UPDATE_SIGNING_KEY` is the required PKCS#8 PEM secret.
 `HEXBOT_UPDATE_SIGNING_KEY_NEXT` is an optional second PEM for key rotation.
 The signer writes one line per configured key and checks each against the
-committed public keys before upload. A missing primary secret fails preflight;
-a mismatched key fails signing. The post-publish check verifies signatures again.
+committed public keys before upload. A missing primary secret fails preflight
+when a build is needed; a mismatched key fails signing. The post-publish check
+verifies signatures again.
 
 ```sh
 gh secret set HEXBOT_UPDATE_SIGNING_KEY < hexbot-update-signing-key.pem

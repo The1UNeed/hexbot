@@ -13,7 +13,8 @@ export async function makeNativeUpdate(bundle, output) {
   await mkdir(directory, { recursive: true })
   const filename = `hexbot-native-${metadata.version}-${target}.tar.gz`
   const manifest = await createNativeArchive(bundle, join(directory, filename))
-  manifest.url = [...path, filename].join('/')
+  manifest.path = [...path, filename].join('/')
+  manifest.url = `https://updates.hexbot.app/${manifest.path}`
   await writeFile(join(directory, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
   return { directory, filename, manifest }
 }
