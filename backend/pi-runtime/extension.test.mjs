@@ -5,7 +5,8 @@ import {createServer} from 'node:net';
 import {once} from 'node:events';
 import {tmpdir, homedir} from 'node:os';
 import {join, dirname} from 'node:path';
-import {SessionManager} from '@earendil-works/pi-coding-agent';
+import {SessionManager, buildSessionProjection, compact, createAgentSession, DefaultResourceLoader, SettingsManager} from '@earendil-works/pi-coding-agent';
+import {prepareCompaction} from './node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js';
 import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, sanitizeSearchResult, hostWriteTier, escapeMcpValues} from './extension.ts';
 
 // These gates assume the OS sandbox is in place, as it always is on macOS. On
@@ -646,106 +647,189 @@ test('resource reads stop when their server is revoked or changed, without askin
   assert.match((await f.handlers.tool_call(read, f.ctx)).reason, /removed or disabled/);
 });
 
-// Old tool output is cleared once, shortly before Pi would compact. The
-// conversation is Pi's own in-memory session, so the drafts the handler returns
-// go through Pi's context_edit validation and projection.
+// Use Pi's real preparation, summarizer and session projection. Only the
+// compaction input may change; the retained tail and stored history must not.
 const user = text => ({role:'user', content:text, timestamp:1});
 const assistant = call => ({role:'assistant', content: call ? [{type:'toolCall', id:call, name:call, arguments:{}}] : [{type:'text', text:'Done.'}],
   api:'test', provider:'test', model:'primary', usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}, stopReason: call ? 'toolUse' : 'stop', timestamp:1});
-const result = (tool, chars) => ({role:'toolResult', toolCallId:tool, toolName:tool, content:[{type:'text', text:'x'.repeat(chars)}], isError:false, timestamp:1});
-function conversation(messages) {
-  const manager = SessionManager.inMemory('/tmp');
-  const ids = {};
-  for (const message of messages) {
-    const id = manager.appendMessage(message);
-    if (message.role === 'toolResult') ids[message.toolName] = id;
-  }
-  const turn = (f, tokens, entries = []) => f.handlers.turn_end({message:{stopReason:'stop'}, entries, context:{contextEntries: manager.buildSessionProjection().entries}}, {...f.ctx, getContextUsage:() => ({tokens, contextWindow:32768, percent:tokens / 32768 * 100})});
-  const visible = () => Object.fromEntries(manager.buildSessionProjection().entries.filter(e => e.sourceEntry.type === 'message' && e.sourceEntry.message.role === 'toolResult').map(e => [e.sourceEntry.message.toolName, e.messages[0].content[0].text.length]));
-  return {manager, ids, turn, visible};
-}
-function trimFixture(t, compaction) {
-  // The settings are read when the extension loads, so the file comes first.
-  const agentDir = mkdtempSync(join(tmpdir(), 'hexbot-agent-'));
-  t.after(() => rmSync(agentDir, {recursive:true, force:true}));
-  if (compaction) writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({theme:'dark', compaction}));
-  const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = agentDir;
-  t.after(() => { if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; });
-  return {...fixture(t), agentDir};
-}
-// Reserve 8,192 for this model: Pi compacts at 24,576 of 32,768, so the trim
-// line is 21,299 and a trim must land under 17,203.
-const overrides = {enabled:true, reserveTokens:16384, keepRecentTokens:20000, modelOverrides:{'test/primary':{reserveTokens:8192, keepRecentTokens:8192}}};
-// Four user messages. Only read and web_extract are old, large, and not verbatim.
-const history = [result('early', 20000), user('Look through the project'),
-  assistant('read'), result('read', 20000), assistant('clarify'), result('clarify', 8000), assistant('bash'), result('bash', 800),
-  assistant('memory'), result('memory', 8000), assistant('web_extract'), result('web_extract', 16000), assistant('skill_view'), result('skill_view', 8000), assistant(),
-  user('Go on'), assistant('grep'), result('grep', 16000), assistant(),
-  user('And the rest'), assistant('ls'), result('ls', 16000), assistant(),
+const result = (tool, chars = 8000) => ({role:'toolResult', toolCallId:tool, toolName:tool, content:[{type:'text', text:tool + ': ' + 'x'.repeat(chars)}], isError:false, timestamp:1});
+const protectedTools = ['clarify', 'memory', 'hexbot_soul', 'todo', 'todo_list', 'message_bot', 'skill_view', 'delegate_task'];
+const nested = (id, names, complete = true) => ({...result('codemode'), toolCallId:id,
+  nestedCalls:{complete,calls:names.map(name => ({id:`${id}/${name}`,name,status:'ok',arguments:{}}))}});
+const history = [result('early'), user('Look through the project'),
+  assistant('read'), result('read', 20000), assistant('bash'), result('bash', 80),
+  ...protectedTools.flatMap(name => [assistant(name), result(name)]),
+  ...protectedTools.flatMap(name => [assistant(`nested-${name}`), nested(`nested-${name}`, ['read', name])]),
+  assistant('nested-read'), nested('nested-read', ['read']),
+  assistant('incomplete'), nested('incomplete', ['read'], false),
+  assistant('legacy'), {...result('codemode'),toolCallId:'legacy'}, assistant(),
+  user('Go on'), assistant('grep'), result('grep'), assistant(),
+  user('And the rest'), assistant('ls'), result('ls'), assistant(),
   user('Thanks'), assistant()];
+function conversation(messages = history) {
+  const manager = SessionManager.inMemory('/tmp');
+  for (const message of messages) manager.appendMessage(structuredClone(message));
+  return manager;
+}
+function boundary(manager, reason = 'threshold', keepRecentTokens = 100) {
+  const branchEntries = manager.getBranch();
+  const preparation = prepareCompaction(branchEntries, {enabled:true,reserveTokens:8192,keepRecentTokens});
+  assert.ok(preparation);
+  return {branchEntries,preparation,reason,signal:new AbortController().signal};
+}
+const toolResults = messages => Object.fromEntries(messages.filter(m => m.role === 'toolResult').map(m => [m.toolCallId,m]));
 
-test('crossing the trim line clears old tool output once and keeps protected results', async t => {
-  const f = trimFixture(t, overrides);
-  const c = conversation(history);
-  assert.equal(await c.turn(f, 15000), undefined);
-  assert.equal(await c.turn(f, 21000), undefined);
-  const before = structuredClone(c.manager.getEntry(c.ids.read));
-  const reply = await c.turn(f, 21500, [{type:'custom', customType:'other'}]);
-  assert.deepEqual(reply.entries.map(e => e.type), ['custom', 'context_edit', 'context_edit']);
-  assert.deepEqual(reply.entries.slice(1).map(e => e.targetId), [c.ids.read, c.ids.web_extract]);
-  for (const edit of reply.entries.slice(1)) c.manager.appendContextEdit(edit.targetId, edit.replacement);
-  const visible = c.visible();
-  assert.ok(visible.read < 200 && visible.web_extract < 200, JSON.stringify(visible));
-  assert.deepEqual([visible.early, visible.clarify, visible.bash, visible.memory, visible.skill_view, visible.grep, visible.ls], [20000, 8000, 800, 8000, 8000, 16000, 16000]);
-  assert.match(c.manager.buildSessionProjection().messages.find(m => m.role === 'toolResult' && m.toolName === 'read').content[0].text, /20,000 characters.*cleared/);
-  assert.deepEqual(c.manager.getEntry(c.ids.read), before);
-  // Still over the line: nothing more until usage drops and crosses again.
-  assert.equal(await c.turn(f, 22000), undefined);
-  assert.equal(await c.turn(f, 12000), undefined);
-  // Four more user messages: grep, ls and the new find result are now behind the third most recent.
-  for (const message of [user('Find the tests'), assistant('find'), result('find', 20000), assistant(), user('ok'), assistant(), user('ok'), assistant(), user('ok'), assistant()]) c.ids[message.toolName] = c.manager.appendMessage(message);
-  assert.deepEqual((await c.turn(f, 22000)).entries.map(e => e.targetId), [c.ids.grep, c.ids.ls, c.ids.find]);
+test('ordinary turns never rewrite context, even near or over the compaction threshold', async t => {
+  const f = fixture(t), manager = conversation();
+  const before = structuredClone(manager.buildSessionProjection());
+  for (const tokens of [15000, 21500, 24576, 30000]) {
+    assert.equal(await f.handlers.turn_end({message:assistant(),entries:[],context:{contextEntries:before.entries}},
+      {...f.ctx,getContextUsage:()=>({tokens,contextWindow:32768})}), undefined);
+  }
+  assert.deepEqual(manager.buildSessionProjection(), before);
+  assert.equal(f.handlers.context, undefined);
 });
-test('a long run under one user message is never trimmed, and its results age by user messages', async t => {
-  const f = trimFixture(t, overrides);
-  const rounds = [user('Look through everything')];
-  for (let i = 0; i < 12; i++) rounds.push(assistant('read'), {...result('read', 20000), toolName:`read${i}`, toolCallId:`read${i}`});
-  rounds.push(assistant());
-  const c = conversation(rounds);
-  // Pi ends a turn after every tool round; the bot is still using these reads.
-  assert.equal(await c.turn(f, 23000), undefined);
-  for (const message of [user('Go on'), assistant(), user('And then'), assistant()]) c.manager.appendMessage(message);
-  assert.equal(await c.turn(f, 23000), undefined, 'the third most recent user message is the first one');
-  c.manager.appendMessage(user('Thanks')); c.manager.appendMessage(assistant());
-  assert.equal((await c.turn(f, 23000)).entries.length, 12);
+
+for (const reason of ['threshold', 'overflow', 'manual']) {
+  test(`${reason} compaction clears old summary input once and preserves direct and nested protected results`, async t => {
+    const f = fixture(t), manager = conversation(), event = boundary(manager, reason);
+    const stored = structuredClone(manager.getBranch());
+    const before = structuredClone(event.preparation);
+    const allBefore = toolResults([...before.messagesToSummarize,...before.turnPrefixMessages]);
+    assert.equal(await f.handlers.session_before_compact(event, f.ctx), undefined);
+    const allAfter = toolResults([...event.preparation.messagesToSummarize,...event.preparation.turnPrefixMessages]);
+    for (const [id,message] of Object.entries(allBefore)) {
+      if (['read','nested-read'].includes(id)) {
+        assert.match(allAfter[id].content[0].text, /omitted from compaction input/);
+        assert.ok(allAfter[id].content[0].text.length < 200);
+      } else assert.deepEqual(allAfter[id], message, id);
+    }
+    assert.ok(allAfter.read && allAfter['nested-read']);
+    for (const name of protectedTools) assert.ok(allAfter[name] && allAfter[`nested-${name}`]);
+    const once = structuredClone(event.preparation);
+    await f.handlers.session_before_compact(event, f.ctx);
+    assert.deepEqual(event.preparation, once);
+    assert.deepEqual(manager.getBranch(), stored, 'preparation must never mutate stored message objects');
+    for (const key of ['firstKeptEntryId','tokensBefore','fileOps','settings','isSplitTurn']) {
+      assert.deepEqual(event.preparation[key], before[key], key);
+    }
+  });
+}
+
+test('the last three user turns and a long single task keep their tool output in compaction input', async t => {
+  const f = fixture(t);
+  for (const users of [1, 2, 3]) {
+    const messages = [user('Read everything'),assistant('read'),result('read', 20000),assistant()];
+    for (let i = 1; i < users; i++) messages.push(user('Keep going'),assistant());
+    const event = boundary(conversation(messages));
+    const before = structuredClone(event.preparation);
+    await f.handlers.session_before_compact(event, f.ctx);
+    assert.deepEqual(event.preparation, before);
+  }
 });
-test('no trim when it would not bring usage well under the compaction point, and the check stays armed', async t => {
-  const f = trimFixture(t, overrides);
-  const c = conversation([user('Hi'), assistant('read'), result('read', 20000), assistant(), user('Go on'), assistant(), user('More'), assistant()]);
-  // read is since the third most recent user message, so nothing can be cleared.
-  assert.equal(await c.turn(f, 23000), undefined);
-  c.manager.appendMessage(user('And')); c.manager.appendMessage(assistant());
-  assert.equal(await c.turn(f, 23000), undefined, 'clearing 5,000 tokens from 23,000 stays over 17,203');
-  assert.deepEqual((await c.turn(f, 21500)).entries.map(e => e.targetId), [c.ids.read]);
+
+test('split-turn input stays intact when the split belongs to a recent user turn', async t => {
+  const f = fixture(t), manager = conversation();
+  manager.appendMessage(user('A new task'));
+  manager.appendMessage(assistant('first')); manager.appendMessage(result('first', 20000));
+  manager.appendMessage(assistant('second')); manager.appendMessage(result('second', 20000));
+  manager.appendMessage(assistant());
+  const event = boundary(manager, 'threshold', 100);
+  assert.equal(event.preparation.isSplitTurn, true);
+  const prefix = structuredClone(event.preparation.turnPrefixMessages);
+  assert.ok(prefix.some(m => m.role === 'toolResult'));
+  await f.handlers.session_before_compact(event, f.ctx);
+  assert.deepEqual(event.preparation.turnPrefixMessages, prefix);
 });
-test('the trim line follows the global reserve when the model has no override', async t => {
-  const f = trimFixture(t, {...overrides, modelOverrides:{}});
-  const c = conversation(history);
-  // Compaction at 16,384, the line at 13,107.
-  assert.equal(await c.turn(f, 13000), undefined);
-  assert.equal((await c.turn(f, 13500)).entries.length, 2);
-  const g = trimFixture(t, {...overrides, enabled:false});
-  assert.equal(await conversation(history).turn(g, 30000), undefined);
-  // A reserve larger than the window cannot put the point under half of it.
-  const h = trimFixture(t, {...overrides, modelOverrides:{'test/primary':{reserveTokens:30000}}});
-  assert.equal(await conversation(history).turn(h, 12000), undefined);
-  assert.equal((await conversation(history).turn(h, 13500)).entries.length, 2);
+
+test('Pi summarises the cleared input, then persists one compaction and keeps its prefix stable across turns and reload', async t => {
+  const f = fixture(t), manager = conversation();
+  const event = boundary(manager);
+  const stored = structuredClone(manager.getBranch());
+  const tailIndex = stored.findIndex(e => e.id === event.preparation.firstKeptEntryId);
+  const tail = stored.slice(tailIndex).filter(e => e.type === 'message').map(e => e.message);
+  await f.handlers.session_before_compact(event, f.ctx);
+  const requests = [];
+  const summary = await compact(event.preparation, {maxTokens:4096}, 'test', undefined, undefined, event.signal, undefined,
+    (_model, context, options) => {
+      requests.push({context,options});
+      return {result:async()=>({...assistant(),content:[{type:'text',text:'Summary of the conversation.'}]})};
+    });
+  const text = JSON.stringify(requests.map(r => r.context));
+  assert.match(text, /omitted from compaction input/);
+  assert.ok(!text.includes(result('read', 20000).content[0].text));
+  for (const name of protectedTools) assert.ok(text.includes(result(name).content[0].text.slice(0, 2000)), name);
+  for (const request of requests) assert.equal(request.options.cacheRetention, 'none');
+  manager.appendCompaction(summary.summary,summary.firstKeptEntryId,summary.tokensBefore,summary.details,false,summary.usage);
+  assert.deepEqual(manager.getBranch().slice(0,stored.length), stored);
+  const prefix = structuredClone(manager.buildSessionProjection().messages);
+  assert.deepEqual(prefix.slice(-tail.length), tail);
+  for (let i = 0; i < 4; i++) {
+    manager.appendMessage(user(`Next ${i}`)); manager.appendMessage(assistant());
+    assert.equal(await f.handlers.turn_end({message:assistant()},f.ctx),undefined);
+    assert.deepEqual(manager.buildSessionProjection().messages.slice(0,prefix.length),prefix);
+  }
+  assert.deepEqual(buildSessionProjection(JSON.parse(JSON.stringify(manager.getBranch()))).messages, manager.buildSessionProjection().messages);
+  assert.equal(manager.getBranch().filter(e => e.type === 'compaction').length, 1);
+  assert.equal(manager.getBranch().filter(e => e.type === 'context_edit').length, 0);
+  const next = boundary(manager, 'threshold', 1);
+  assert.equal(next.preparation.previousSummary,summary.summary);
+  await f.handlers.session_before_compact(next,f.ctx);
+  assert.equal(next.preparation.previousSummary,summary.summary);
 });
-test('the compaction settings are the ones this process started with', async t => {
-  const f = trimFixture(t, overrides);
-  // The daemon rewrites the file for a later section; Pi keeps what it loaded.
-  writeFileSync(join(f.agentDir, 'settings.json'), JSON.stringify({compaction:{...overrides, modelOverrides:{}}}));
-  const c = conversation(history);
-  assert.equal(await c.turn(f, 13500), undefined);
-  assert.equal((await c.turn(f, 21500)).entries.length, 2);
+
+test('aborted compaction and a fresh preparation after failure leave the live prefix intact', async t => {
+  const f = fixture(t), manager = conversation(), event = boundary(manager);
+  const before = structuredClone(event.preparation);
+  const stored = structuredClone(manager.getBranch());
+  event.signal = AbortSignal.abort();
+  await f.handlers.session_before_compact(event, f.ctx);
+  assert.deepEqual(event.preparation,before);
+  await f.handlers.session_before_compact(boundary(manager), f.ctx);
+  assert.deepEqual(boundary(manager).preparation,before);
+  assert.deepEqual(manager.getBranch(),stored);
 });
+
+// Exercise the installed AgentSession too: the hook must reach Pi's actual
+// threshold/manual/overflow paths, and Pi alone must commit the checkpoint.
+for (const reason of ['threshold', 'manual', 'overflow']) {
+  test(`real Pi ${reason} compaction uses the hook and commits the summary`, async t => {
+    const f = fixture(t), manager = conversation();
+    const agentDir = join(f.home, 'pi'); mkdirSync(agentDir);
+    writeFileSync(join(agentDir, 'models.json'), JSON.stringify({providers:{test:{
+      baseUrl:'http://127.0.0.1:1',api:'openai-completions',apiKey:'test',models:[{
+        id:'primary',name:'Fixture',reasoning:false,input:['text'],contextWindow:32768,maxTokens:4096,
+        cost:{input:0,output:0,cacheRead:0,cacheWrite:0}
+      }]}}}));
+    const settingsManager = SettingsManager.inMemory({compaction:{enabled:true,reserveTokens:8192,keepRecentTokens:100}});
+    const loader = new DefaultResourceLoader({cwd:f.home,agentDir,settingsManager,
+      extensionFactories:[hexbot],noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true});
+    await loader.reload();
+    const {session} = await createAgentSession({cwd:f.home,agentDir,sessionManager:manager,settingsManager,resourceLoader:loader,noTools:'all'});
+    t.after(()=>session.dispose());
+    await session.bindExtensions({uiContext:f.ctx.ui,onError:error=>assert.fail(JSON.stringify(error))});
+    const before = structuredClone(manager.getBranch());
+    const requests = [], events = [];
+    session.subscribe(event=>events.push(event));
+    if (reason === 'manual') {
+      session.agent.streamFunction = () => ({result:async()=>({...assistant(),stopReason:'length'})});
+      await assert.rejects(session.compact(), /token cap.*incomplete/i);
+      assert.deepEqual(manager.getBranch(),before, 'failed summary must not change the prefix');
+    }
+    session.agent.streamFunction = (_model,context) => {
+      requests.push(context);
+      return {result:async()=>({...assistant(),content:[{type:'text',text:'A real Pi checkpoint.'}]})};
+    };
+    if (reason === 'manual') await session.compact();
+    else await session._runAutoCompaction(reason, false);
+    assert.ok(requests.length > 0);
+    const text = JSON.stringify(requests);
+    assert.match(text,/omitted from compaction input/);
+    assert.ok(!text.includes(result('read',20000).content[0].text.slice(0,2000)));
+    for (const name of protectedTools) assert.ok(text.includes(result(name).content[0].text.slice(0,2000)),name);
+    assert.deepEqual(manager.getBranch().slice(0,before.length),before);
+    assert.equal(manager.getBranch().filter(e=>e.type === 'compaction').length,1);
+    assert.equal(manager.getBranch().filter(e=>e.type === 'context_edit').length,0);
+    assert.ok(events.some(e=>e.type === 'compaction_end' && e.result && !e.errorMessage));
+  });
+}

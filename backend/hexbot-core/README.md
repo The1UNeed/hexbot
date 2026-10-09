@@ -119,27 +119,28 @@ it also installs over SSH when nobody is signed in at the screen.
   small built-in model such as `openai/gpt-4` compacts at 6,144 tokens rather
   than never. A running Pi keeps the settings it loaded at start, so the
   daemon leaves an unchanged file alone.
-- Shortly before Pi would compact, the private extension clears old tool
-  output instead (`extension.ts`, `turn_end`). When Pi's context estimate
-  passes the compaction point minus a tenth of the window, tool results from
-  before the third most recent user message and over about 1,000 characters
-  are replaced in model context by a one-line note saying the output was
-  cleared; the call and its arguments stay, and so do results of `clarify`,
-  `memory`, `hexbot_soul`, `todo`, `message_bot`, `skill_view` and
-  `delegate_task`, and anything before the first user message. Results are
-  kept by user messages, not assistant rounds, because Pi ends a turn after
-  every tool round and a long run is still using its reads. The edits are Pi
-  `context_edit` entries in `conversation.jsonl`:
-  they change only what the model sees from then on, never the displayed
-  history (`reconcile` skips them), billing, or the summaries dreaming reads.
-  One trim per crossing of the line, so the cached prefix is rewritten once
-  rather than every request; it happens only when it would bring usage under
-  70% of the compaction point, otherwise compaction runs as before. Right
-  after a trim the meter's `tokens` is Pi's size estimate of the edited
-  context until the next reply measures it. The extension reads the
-  compaction key of `settings.json` once when it loads, as Pi does, so its
-  line, Pi's compaction and the meter follow the settings this process
-  started with.
+- At Pi's compaction boundary, the private extension clears old tool output
+  from the summarizer's input (`extension.ts`, `session_before_compact`). This
+  applies to threshold, overflow and manual compaction. Results from before
+  the third most recent user message and over about 1,000 characters become
+  a short omission note. The call and its arguments stay available, as do
+  results of `clarify`, `memory`, `hexbot_soul`, `todo`, `todo_list`,
+  `message_bot`, `skill_view` and `delegate_task`. Protected calls made through
+  `codemode` stay available too; incomplete nested-call records and codemode
+  results without a record are kept conservatively. Anything before the first
+  user message and the last three user turns stays intact.
+  Pi still summarises at its normal boundary, with the same cut point and
+  retained tail. Protection means exclusion from clearing, not a promise that
+  a generated summary preserves every word. Pi also applies its standard
+  2,000-character tool-result limit when serializing summary input. The
+  extension replaces objects only in Pi's summary preparation, never stored
+  messages or live context,
+  and writes no `context_edit` entries. Failed or cancelled compaction leaves
+  the prefix intact. After a successful compaction, the new prefix stays
+  fixed across later turns. Displayed history and billing are unchanged;
+  dreaming reads the resulting summaries as before. This reduces the old tool
+  output sent to the summarizer; it does not defer summarisation or guarantee
+  token or cost savings.
 - A conversation keeps its system prompt, skill catalog and tool definitions
   across turns and daemon restarts. Skill bodies and grants resolve live. Runtime settings outside the prompt may
   resolve live.

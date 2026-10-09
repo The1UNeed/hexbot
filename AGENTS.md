@@ -21,7 +21,10 @@ Three facts shape most decisions:
   The existing frontend contract stays in `apps/`.
 - **Prompt caching is sacred.** A section is one persistent Pi session
   that reuses a cached prefix every turn. Do not mutate past context, swap
-  toolsets, or rebuild the system prompt mid-conversation.
+  toolsets, or rebuild the system prompt mid-conversation. The narrow exception:
+  when Pi compacts a section, the private extension may clear old tool output
+  from the summarizer's input. Stored messages and the retained conversation
+  stay intact; only Pi's completed compaction replaces the cached history.
 - **One product, two packages, three channels.** Full package (app plus
   daemon) and client-only package (app alone) are build-time editions
   (`HEXBOT_EDITION`). The installer offers them as Full and Client, plus
