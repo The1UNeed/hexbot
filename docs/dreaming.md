@@ -33,9 +33,17 @@ The native scheduler and digest builder live in
   memory cap as an edit, so a proposal the dream could never apply is
   refused at once. The tool result tells the bot the change waits for its
   next dream. A bot keeps at most 100 pending proposals; older ones are
-  dropped unread. Reviewed proposals are kept 30 days. The soul tool reads
+  dropped unread. Reviewed proposals expire after 30 days; inserting a proposal
+  or completing a bot dream removes expired rows. The soul tool reads
   in a job's session but refuses to write: soul changes need the user, in a
   section, and the dream never writes the soul either.
+- Jobs and their delegates run in Auto when the bot is set to Bypass; Manual
+  stays Manual. File tools and the shell/code sandbox protect memory and soul
+  from direct writes. Scheduled scripts, including monitor scripts and jobs
+  without an agent, require OS isolation even in Bypass.
+- Jobs and their delegates cannot use `message_bot`. Delivery reuses the
+  recipient's ordinary section, whose writes would bypass the job's proposal
+  rule. Results stay local; use the memory tool for proposals when available.
 - The next bot dream (not a room dream) puts pending proposals in the digest
   as `proposals`, newest first, at most 20 and at most 10,000 bytes, counted
   against the 60,000-byte budget; a proposal that does not fit is skipped

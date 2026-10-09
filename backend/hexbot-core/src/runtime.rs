@@ -2000,6 +2000,13 @@ impl Runtime {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
         let mode = session_approval(&db, &settings, &stored, mode.as_deref(), &owner, &s.owner)?;
+        // Unattended jobs and their delegates keep the workspace sandbox even
+        // when the bot uses Bypass. Read the root's marker, not the child's.
+        let mode = if mode == "off" && saved["job"].is_string() {
+            "smart"
+        } else {
+            mode
+        };
         let own = own_options.expect("section configuration");
         saved["model"] = own["model"].clone();
         saved["provider"] = own["provider"].clone();
@@ -2471,6 +2478,14 @@ impl Runtime {
             "delegate_task" => self.delegate(s, args).await,
             "message_bot" => {
                 self.require_toolset(s, "hexbot", name)?;
+                // Delivery reuses the recipient's ordinary section. Do not let
+                // a job relay writes through a section without its restrictions.
+                if self.session_settings(s)?["job"].is_string() {
+                    return Err(Error::new(
+                        4302,
+                        "Scheduled jobs and their delegates cannot message other bots. Save the result locally and propose memory through the memory tool.",
+                    ));
+                }
                 let to = required(args, "to")?.to_owned();
                 let text = required(args, "text")?.to_owned();
                 let (stored, message_id, hops) = self.prepare_delivery(s, &to, &text)?;

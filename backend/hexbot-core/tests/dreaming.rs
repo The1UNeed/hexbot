@@ -234,6 +234,8 @@ async fn concurrent_dreams_are_rejected_and_shutdown_records_failure() {
 #[tokio::test]
 async fn cron_crud_run_now_and_owner_isolation() {
     let home = setup();
+    fs::write(home.path().join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: test-model\ntools:\n  enabled_toolsets: [terminal]\n").unwrap();
     let hub = EventHub::new();
     let mut receiver = hub.subscribe();
     let runtime =
@@ -273,6 +275,10 @@ async fn cron_crud_run_now_and_owner_isolation() {
         .unwrap();
     let complete = event(&mut receiver, "hexbot.scheduled.changed").await;
     assert_eq!(complete["job"]["last_status"], "success");
+    let prompt = fs::read_to_string(home.path().join("prompts.log")).unwrap();
+    assert!(prompt.contains("If the memory tool is available"));
+    assert!(prompt.contains("If the soul tool is available"));
+    assert!(prompt.contains("cannot message other bots"));
     assert_eq!(complete["job"]["enabled"], false);
     dreams
         .tool_call("alice", "owl", &json!({"action":"resume","job_id":id}))
@@ -353,7 +359,10 @@ async fn scheduler_runs_each_bot_and_room_once_per_local_day() {
 async fn imports_legacy_jobs_once_and_runs_scripts_without_an_agent() {
     let home = setup();
     let conn = db::open(home.path()).unwrap();
-    // Scripts need Off or an OS sandbox; hosts without bubblewrap have neither.
+    // Even Bypass jobs require the OS sandbox.
+    if !hexbot_core::credentials::isolation_available() {
+        return;
+    }
     conn.execute("UPDATE bots SET approval_mode='off' WHERE name='owl'", [])
         .unwrap();
     conn.execute(
@@ -399,6 +408,9 @@ async fn imports_legacy_jobs_once_and_runs_scripts_without_an_agent() {
 
 #[tokio::test]
 async fn monitors_skip_unchanged_output_and_one_shots_disable_after_firing() {
+    if !hexbot_core::credentials::isolation_available() {
+        return;
+    }
     let home = setup();
     db::open(home.path())
         .unwrap()
@@ -740,13 +752,27 @@ fn digest_skips_the_dreams_section_and_tool_results() {
         json!({"role":"assistant","text":"The page says the meeting moved","timestamp":202}),
     )
     .unwrap();
+    db::open(h).unwrap().execute("INSERT INTO sections(id,bot,owner_id,title) VALUES ('legacy-chat','owl','alice','Old chat')", []).unwrap();
+    let legacy = rusqlite::Connection::open(h.join("profiles/owl/state.db")).unwrap();
+    legacy.execute_batch("CREATE TABLE sessions(id TEXT,session_key TEXT);
+        CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,timestamp REAL,active INTEGER,tool_name TEXT);
+        INSERT INTO sessions VALUES ('physical','legacy-chat');
+        INSERT INTO messages VALUES
+            (1,'physical','tool','Legacy teammate reply',200,1,'message_bot'),
+            (2,'physical','tool','Legacy fetched page',201,1,'web_extract'),
+            (3,'physical','tool','Inactive teammate reply',202,0,'message_bot'),
+            (4,'physical','tool','Old teammate reply',99,1,'message_bot');").unwrap();
     let digest = dreaming::build_digest(h, "owl", 100.0, None).unwrap();
     let text = digest.to_string();
     assert!(text.contains("user: Read this page for me"));
     assert!(text.contains("assistant: The page says the meeting moved"));
     assert!(!text.contains("fetched page body"));
     assert!(!text.contains("Yesterday I learned"));
-    assert_eq!(digest["sections"].as_array().unwrap().len(), 1);
+    assert!(text.contains("Legacy teammate reply"));
+    assert!(!text.contains("Legacy fetched page"));
+    assert!(!text.contains("Inactive teammate reply"));
+    assert!(!text.contains("Old teammate reply"));
+    assert_eq!(digest["sections"].as_array().unwrap().len(), 2);
     assert_eq!(digest["omitted_conversations"], 0);
 }
 
@@ -760,9 +786,9 @@ fn digest_skips_a_proposal_that_does_not_fit_instead_of_stopping() {
         dreaming::propose_memory(h, "alice", "owl", "job-1", "add", &json!({"text":text})).unwrap();
     };
     propose("Small and old".into());
-    // Five of these are more than 10,000 bytes together, so the oldest one
-    // does not fit once the four newer ones are in.
-    for n in 0..5 {
+    // Twenty of these are more than 10,000 bytes together, so the older ones
+    // do not fit once the four newest ones are in. Scan beyond twenty candidates.
+    for n in 0..20 {
         propose(format!("{n}{}", "x".repeat(2150)));
     }
     let digest = dreaming::build_digest(h, "owl", 0.0, None).unwrap();
@@ -773,8 +799,8 @@ fn digest_skips_a_proposal_that_does_not_fit_instead_of_stopping() {
         .map(|p| p["text"].as_str().unwrap())
         .collect();
     assert_eq!(texts.len(), 5);
-    assert!(texts[0].starts_with('4'));
-    assert!(texts[3].starts_with('1'));
+    assert!(texts[0].starts_with("19"));
+    assert!(texts[3].starts_with("16"));
     assert!(!texts.iter().any(|t| t.starts_with('0')));
     assert_eq!(texts[4], "Small and old");
     assert!(digest.to_string().len() < 60_000);

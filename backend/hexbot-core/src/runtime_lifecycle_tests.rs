@@ -2376,3 +2376,105 @@ fn connected_tool_notices_name_the_bot_in_plain_words() {
         assert!(!text.contains("MCP") && !text.contains("/mcp"), "{text}");
     }
 }
+
+#[tokio::test]
+async fn jobs_and_nested_delegates_cap_bypass_and_refuse_bot_relays() {
+    let (home, runtime, _) = setup();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "tools:\n  enabled_toolsets: [hexbot]\n",
+    )
+    .unwrap();
+    let db = db::open(home.path()).unwrap();
+    db.execute("UPDATE bots SET approval_mode='off'", [])
+        .unwrap();
+    let job = runtime
+        .open_session_with_tools(
+            "alice",
+            "owl",
+            "job-root",
+            None,
+            Some(&json!({"job":"job-1"})),
+        )
+        .await
+        .unwrap();
+    let child = runtime
+        .open_session_with_tools(
+            "alice",
+            "owl",
+            "job-child",
+            None,
+            Some(&json!({"parent_session":"job-root"})),
+        )
+        .await
+        .unwrap();
+    let grandchild = runtime
+        .open_session_with_tools(
+            "alice",
+            "owl",
+            "job-grandchild",
+            None,
+            Some(&json!({"parent_session":"job-child"})),
+        )
+        .await
+        .unwrap();
+    let section = runtime.open_session("alice", "owl", "first").await.unwrap();
+    assert_eq!(
+        runtime.session_settings(&section).unwrap()["approvalMode"],
+        "off"
+    );
+    for session in [&job, &child, &grandchild] {
+        let live = runtime.session_settings(session).unwrap();
+        assert_eq!(live["approvalMode"], "smart");
+        assert_eq!(live["job"], "job-1");
+        for wait in [true, false] {
+            let error = runtime
+                .tool(
+                    session,
+                    "message_bot",
+                    &json!({"to":"cat","text":"Remember this","wait":wait}),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, 4302);
+            assert!(error.message.contains("cannot message other bots"));
+        }
+        assert!(
+            runtime
+                .tool(
+                    session,
+                    "memory",
+                    &json!({"action":"add","text":"Likes tea"})
+                )
+                .await
+                .unwrap()["proposed"]
+                .as_bool()
+                .unwrap()
+        );
+    }
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM bot_messages", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM sections WHERE peer_bot IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    // A live policy change must preserve Manual without rewriting saved options.
+    db.execute("UPDATE bots SET approval_mode='manual'", [])
+        .unwrap();
+    for session in [&job, &child, &grandchild] {
+        assert_eq!(
+            runtime.session_settings(session).unwrap()["approvalMode"],
+            "manual"
+        );
+    }
+    runtime.shutdown().await;
+}

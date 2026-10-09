@@ -223,6 +223,11 @@ roster shows only the title.
   `memory_before` is the memory it replaced, so it can be undone in turn.
   Broadcasts `hexbot.dreaming.changed`.
 
+Scheduled jobs and their delegates cannot call `message_bot`. Jobs use Auto
+when the bot's approval mode is Bypass; Manual remains Manual. Scheduled
+scripts require OS isolation in every mode. Memory writes become proposals
+for the next dream, and soul writes are refused. See [Dreaming](dreaming.md).
+
 ### Rooms
 
 Room shape: `{id, name, owner_id, main_bot, approval_mode, limits,

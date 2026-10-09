@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync, realpathSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {once} from 'node:events';
 import {tmpdir, homedir} from 'node:os';
@@ -643,4 +643,26 @@ test('resource reads stop when their server is revoked or changed, without askin
   assert.equal(await f.handlers.tool_call({...read,input:{server:'other',uri:'other://a'}}, f.ctx), undefined);
   delete f.settings.mcpState.demo;
   assert.match((await f.handlers.tool_call(read, f.ctx)).reason, /removed or disabled/);
+});
+
+// Rust caps a job's live policy at Auto even if its frozen config says Bypass.
+// Exercise that live policy at the file gate and the shell execution boundary.
+test('a job capped at Auto protects memory and soul even with frozen Bypass', {skip: process.platform !== 'darwin'}, async t => {
+  const f = fixture(t, 'smart', ['file', 'terminal'], {approvalMode:'off', job:'job-1', canAsk:false});
+  const work = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-job-work-')));
+  t.after(() => rmSync(work, {recursive:true, force:true}));
+  f.settings.cwd = work;
+  mkdirSync(join(f.home, 'profiles/owl/memories'), {recursive:true});
+  for (const file of ['profiles/owl/memories/MEMORY.md', 'profiles/owl/SOUL.md']) {
+    const path = join(f.home, file);
+    writeFileSync(path, 'Original');
+    for (const name of ['write', 'edit']) {
+      const denied = await f.run(name, {path, content:'Changed', oldText:'Original', newText:'Changed'});
+      assert.equal(denied.block, true);
+      assert.match(denied.reason, /protected/);
+    }
+    const result = await f.run('bash', {command:`printf Changed > '${path}'`});
+    assert.equal(result.isError, true);
+    assert.equal(readFileSync(path, 'utf8'), 'Original');
+  }
 });

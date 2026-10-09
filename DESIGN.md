@@ -112,7 +112,7 @@ more freedom and more capability than a hosted product can offer.
   and runs such a bot in Auto.
 - Without an OS sandbox (Linux where bubblewrap fails its startup probe)
   Hexbot warns, Settings shows a notice, Manual and Auto ask before every
-  shell command and code run, and scheduled scripts run only in Bypass.
+  shell command and code run, and scheduled scripts refuse to run.
 - Connected tools in new sections use Pi's built-in MCP through codemode.
   The section freezes server namespaces and tool declarations. Manual asks for
   every connected-tool call. Auto asks unless the server marks the tool read-only;

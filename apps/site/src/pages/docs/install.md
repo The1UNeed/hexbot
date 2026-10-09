@@ -168,7 +168,7 @@ Install a deb package with your usual package manager:
 sudo apt install "./Hexbot-<version>-linux-amd64.deb"
 ```
 
-The deb package depends on `bubblewrap`; with the AppImage or Headless, install it yourself (`sudo apt install bubblewrap`). Hexbot uses it to keep shell commands, Python code, and scheduled scripts inside the workspace and away from your credentials. Without it, Manual and Auto ask before every shell command and code run, scheduled scripts run only in Bypass, and Settings, Approvals shows a notice. Restart the daemon after installing it (`hexbot service restart` on Headless). See [Approvals](/docs/approvals/).
+The deb package depends on `bubblewrap`; with the AppImage or Headless, install it yourself (`sudo apt install bubblewrap`). Hexbot uses it to keep shell commands, Python code, and scheduled scripts inside the workspace and away from your credentials. Without it, Manual and Auto ask before every shell command and code run, scheduled scripts refuse to run, and Settings, Approvals shows a notice. Restart the daemon after installing it (`hexbot service restart` on Headless). See [Approvals](/docs/approvals/).
 
 ### Ubuntu 24.04 and later
 

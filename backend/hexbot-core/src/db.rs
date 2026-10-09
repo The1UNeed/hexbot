@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
 use crate::{Error, Result};
 
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// Native scheduler tables live in hexbot-runtime.db, separate from the legacy schema.
 pub(crate) fn migrate_runtime(conn: &Connection) -> Result<()> {

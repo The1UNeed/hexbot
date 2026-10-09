@@ -28,6 +28,8 @@ A dream writes only to the bot's own memory. It never edits the bot's soul or yo
 
 A scheduled job cannot change memory while it runs unattended. When a job asks to add, replace, or remove something, Hexbot saves the request as a proposal instead. The bot's next dream reads its pending proposals, newest first, treats them as suggestions that may contain text from the web, keeps the ones it agrees with, and says in its summary which it applied or ignored. A proposal stays pending until a dream completes; a failed dream leaves it for the next one. Deleting the bot deletes its proposals.
 
+Jobs and their delegates cannot message other bots or write memory and soul files directly. Jobs set to Bypass run in Auto, including scheduled scripts; Manual stays Manual.
+
 ## Room memory
 
 A room with a main bot gets its own daily room dream. Its summary becomes shared room memory, which Hexbot includes in later prompts for every bot in that room. Each bot may also keep private notes about the room in its own memory.

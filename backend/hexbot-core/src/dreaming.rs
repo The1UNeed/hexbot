@@ -146,7 +146,7 @@ fn pending_proposals(conn: &rusqlite::Connection, bot: &str) -> Result<Vec<Value
     for row in common::rows(
         conn,
         "SELECT id,job_id,action,args_json,created_at FROM memory_proposals WHERE bot=? AND consumed_at IS NULL ORDER BY created_at DESC,rowid DESC LIMIT ?",
-        &[&bot, &(PROPOSAL_COUNT_CAP as i64)],
+        &[&bot, &(PROPOSAL_BACKLOG as i64)],
     )? {
         let args = common::json_field(&row["args_json"]);
         let mut proposal = json!({
@@ -167,6 +167,9 @@ fn pending_proposals(conn: &rusqlite::Connection, bot: &str) -> Result<Vec<Value
         }
         used += size;
         proposals.push(proposal);
+        if proposals.len() == PROPOSAL_COUNT_CAP {
+            break;
+        }
     }
     Ok(proposals)
 }
@@ -183,6 +186,10 @@ fn consume_proposals(home: &Path, bot: &str, dream: &str, ids: &[&str]) -> Resul
             params![now, dream, id, bot],
         )?;
     }
+    tx.execute(
+        "DELETE FROM memory_proposals WHERE consumed_at<?",
+        [now - PROPOSAL_RETENTION],
+    )?;
     tx.commit()?;
     Ok(())
 }
@@ -251,9 +258,13 @@ pub fn build_digest(home: &Path, bot: &str, since: f64, room: Option<&str>) -> R
                 if let Some(session) = session {
                     for message in common::rows(
                         store,
-                        "SELECT role,content,timestamp FROM messages WHERE session_id=? AND active=1 AND COALESCE(timestamp,0)>=? AND role<>'tool' ORDER BY id",
+                        "SELECT * FROM messages WHERE session_id=? AND active=1 AND COALESCE(timestamp,0)>=? ORDER BY id",
                         &[&session, &since],
                     )? {
+                        // SELECT * also supports older stores without tool_name.
+                        if message["role"] == "tool" && message["tool_name"] != "message_bot" {
+                            continue;
+                        }
                         let content = message["content"]
                             .as_str()
                             .map(str::to_owned)
@@ -834,7 +845,7 @@ impl Dreaming {
         match record_dream(&self.home, id, bot, room, status, &output) {
             Ok(record) => {
                 if status == "complete"
-                    && !reviewed.is_empty()
+                    && room.is_none()
                     && let Err(error) = consume_proposals(
                         &self.home,
                         bot,
@@ -1200,14 +1211,12 @@ impl Dreaming {
         let artifacts = self.home.join("profiles").join(bot).join("artifacts");
         fs::create_dir_all(&artifacts)?;
         let conn = db::open(&self.home)?;
-        let (mode, owner): (Option<String>, String) = conn
-            .query_row(
-                "SELECT approval_mode,owner_id FROM bots WHERE name=?",
-                [bot],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
+        let mode: Option<String> = conn
+            .query_row("SELECT approval_mode FROM bots WHERE name=?", [bot], |r| {
+                r.get(0)
+            })
             .optional()?
-            .unwrap_or_default();
+            .flatten();
         let mode = mode
             .filter(|m| matches!(m.as_str(), "manual" | "smart" | "off"))
             .unwrap_or_else(|| {
@@ -1216,26 +1225,21 @@ impl Dreaming {
                     .and_then(|s| s["approval_mode"].as_str().map(str::to_owned))
                     .unwrap_or_else(|| "manual".to_owned())
             });
-        // Only the admin's bots run in Bypass, as in their sections.
-        let bypass = mode == "off" && crate::runtime::owner_is_admin(&conn, &owner)?;
-        crate::credentials::require_isolation(if bypass { "off" } else { "smart" })?;
-        // A script runs in the sandbox the bot's commands get: read-only in
-        // Manual, the workspace in Auto, none in Bypass.
+        // Scheduled work is capped at Auto, including scripts without an agent
+        // and monitor scripts. Missing OS isolation must fail closed.
+        crate::credentials::require_isolation()?;
+        // Manual remains read-only; Auto and Bypass use the workspace sandbox.
         let confine = if mode == "manual" {
             crate::credentials::Confine::ReadOnly
         } else {
             crate::credentials::Confine::Workspace
         };
-        let mut command = if bypass {
-            tokio::process::Command::new(&program)
-        } else {
-            crate::credentials::isolated_command(
-                &self.home,
-                &program,
-                &[workspace, artifacts],
-                confine,
-            )?
-        };
+        let mut command = crate::credentials::isolated_command(
+            &self.home,
+            &program,
+            &[workspace, artifacts],
+            confine,
+        )?;
         if matches!(
             path.extension().and_then(|s| s.to_str()),
             Some("sh" | "bash" | "py")
@@ -1383,7 +1387,7 @@ impl Dreaming {
             prompt.push_str(&format!("\n\nFor this run only:\n{extra}"));
         }
         prompt.push_str(
-            "\n\nThis is an autonomous scheduled job. Finish with the result; do not ask the user questions. Output is saved locally.",
+            "\n\nThis is an autonomous scheduled job. Finish with the result; do not ask the user questions. Output is saved locally. You and your delegates cannot message other bots. Bypass runs as Auto here; Manual stays Manual.",
         );
         // The memory tool reads here, every write becomes a proposal, and the
         // soul tool refuses writes (runtime.rs).
@@ -1420,12 +1424,12 @@ impl Dreaming {
         }
         if memory_tool {
             prompt.push_str(
-                " Your memory tool reads as usual here; add, replace, set, and remove are saved as proposals for your next dream, which decides what to keep.",
+                " If the memory tool is available, it reads as usual here; add, replace, set, and remove are saved as proposals for your next dream, which decides what to keep.",
             );
         }
         if soul_tool {
             prompt.push_str(
-                " Your soul tool only reads here; soul changes need the user, in a section.",
+                " If the soul tool is available, it only reads here; soul changes need the user, in a section.",
             );
         }
         self.runtime
@@ -1788,6 +1792,68 @@ impl Drop for ScriptProcess {
 #[cfg(all(test, unix))]
 mod interpreter_tests {
     use super::*;
+    #[test]
+    fn completed_dream_prunes_reviewed_proposals_without_new_proposals() {
+        let home = common::TestHome::new();
+        db::migrate(home.path()).unwrap();
+        let conn = db::open(home.path()).unwrap();
+        let now = common::now();
+        for (id, consumed) in [
+            ("expired", Some(now - PROPOSAL_RETENTION - 1.0)),
+            ("recent", Some(now)),
+            ("pending", None),
+        ] {
+            conn.execute("INSERT INTO memory_proposals(id,bot,owner_id,job_id,action,created_at,consumed_at) VALUES (?,'owl','local','job','add',0,?)",
+                params![id, consumed]).unwrap();
+        }
+        consume_proposals(home.path(), "owl", "dream", &[]).unwrap();
+        let ids: Vec<String> = conn
+            .prepare("SELECT id FROM memory_proposals ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(ids, ["pending", "recent"]);
+    }
+
+    #[tokio::test]
+    async fn bypass_scheduled_scripts_cannot_write_memory_or_soul() {
+        let home = common::TestHome::new();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO bots(name,owner_id,approval_mode) VALUES('owl','local','off')",
+                [],
+            )
+            .unwrap();
+        let profile = home.path().join("profiles/owl");
+        fs::create_dir_all(profile.join("scripts")).unwrap();
+        fs::create_dir_all(profile.join("memories")).unwrap();
+        let workspace = home.workspace();
+        fs::create_dir_all(&workspace).unwrap();
+        let events = EventHub::new();
+        let runtime = Runtime::new(home.path().into(), events.clone(), "unused".into()).unwrap();
+        let scheduler = Dreaming::new(home.path().into(), runtime, events);
+        for file in ["memories/MEMORY.md", "SOUL.md"] {
+            let target = profile.join(file);
+            fs::write(&target, "Original").unwrap();
+            fs::write(
+                profile.join("scripts/write.sh"),
+                format!("echo changed > '{}'", target.display()),
+            )
+            .unwrap();
+            assert!(
+                scheduler
+                    .script("owl", "write.sh", workspace.to_str())
+                    .await
+                    .is_err()
+            );
+            assert_eq!(fs::read_to_string(target).unwrap(), "Original");
+        }
+    }
+
     #[tokio::test]
     async fn scheduled_script_uses_section_workspace_for_validation_and_execution() {
         let home = common::TestHome::new();
@@ -1806,6 +1872,15 @@ mod interpreter_tests {
         let events = EventHub::new();
         let runtime = Runtime::new(home.path().into(), events.clone(), "unused".into()).unwrap();
         let scheduler = Dreaming::new(home.path().into(), runtime, events);
+        if !crate::credentials::isolation_available() {
+            assert!(
+                scheduler
+                    .script("owl", script.to_str().unwrap(), workdir.to_str())
+                    .await
+                    .is_err()
+            );
+            return;
+        }
         assert_eq!(
             scheduler
                 .script("owl", script.to_str().unwrap(), workdir.to_str())
@@ -1867,6 +1942,10 @@ mod interpreter_tests {
         let events = EventHub::new();
         let runtime = Runtime::new(home.path().into(), events.clone(), "unused".into()).unwrap();
         let scheduler = Dreaming::new(home.path().into(), runtime, events);
+        if !crate::credentials::isolation_available() {
+            assert!(scheduler.script("owl", "job.py", None).await.is_err());
+            return;
+        }
         assert_eq!(
             scheduler.script("owl", "job.py", None).await.unwrap(),
             "managed-interpreter"

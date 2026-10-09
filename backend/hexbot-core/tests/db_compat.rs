@@ -441,3 +441,32 @@ fn bot_thread_backfill_uses_first_sender_keeps_renamed_sections_and_is_idempoten
         db::SCHEMA_VERSION
     );
 }
+
+#[test]
+fn version_13_upgrades_to_14_and_preserves_proposals_on_repeat() {
+    let home = legacy_home(11);
+    let conn = db::open(home.path()).unwrap();
+    // Version 13 belongs to the preceding one-person migration. Its gate is
+    // independent; this migration must accept 13 and advance to 14.
+    conn.execute("UPDATE schema_version SET version=13", [])
+        .unwrap();
+    db::migrate(home.path()).unwrap();
+    assert_eq!(db::SCHEMA_VERSION, 14);
+    conn.execute("INSERT INTO memory_proposals(id,bot,owner_id,job_id,action,created_at) VALUES ('p','scout','local','job','add',1)", []).unwrap();
+    db::migrate(home.path()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT version FROM schema_version", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        14
+    );
+    assert_eq!(
+        conn.query_row("SELECT id FROM memory_proposals", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "p"
+    );
+    conn.execute("UPDATE schema_version SET version=15", [])
+        .unwrap();
+    assert!(db::migrate(home.path()).is_err());
+}
