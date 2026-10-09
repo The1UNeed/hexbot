@@ -88,6 +88,7 @@ function seed(calls: ToolCall[], streaming: boolean) {
             toolCalls: calls
           }
         ],
+        context: null,
         sessionId: 's',
         status: null,
         streamingMessageId: streaming ? 'm' : null,

@@ -164,6 +164,28 @@ fn write_pi_settings(agent_dir: &Path, providers: &Value) -> Result<()> {
     settings["compaction"] = compaction;
     write_json(&path, &settings)
 }
+/// The `compaction` key of the bot's Pi `settings.json` as `write_pi_settings`
+/// left it. A Pi process keeps the settings it loaded at start, so the runtime
+/// reads this once when it starts a section's process and keeps it with the
+/// session, rather than reading a file a later section may have rewritten.
+pub fn compaction_settings(agent_dir: &Path) -> Value {
+    read_json(&agent_dir.join("settings.json"))
+        .map(|settings| settings["compaction"].clone())
+        .unwrap_or_default()
+}
+/// Where Pi compacts a section running `provider/model` with a `window` of
+/// tokens under these `compaction` settings: the window minus the reserve
+/// `write_pi_settings` gave that model, so the meter clients draw agrees with
+/// what Pi does. A model without an override takes the global value. Keep
+/// zero and negative thresholds: Pi triggers when tokens exceed this value,
+/// even when the configured reserve does not fit the model window.
+pub fn compaction_point(compaction: &Value, provider: &str, model: &str, window: u64) -> i128 {
+    let reserve = compaction["modelOverrides"][format!("{provider}/{model}")]["reserveTokens"]
+        .as_u64()
+        .or_else(|| compaction["reserveTokens"].as_u64())
+        .unwrap_or(COMPACTION_RESERVE_TOKENS);
+    i128::from(window) - i128::from(reserve)
+}
 fn key(home: &Path, p: &Value) -> Result<Option<String>> {
     let disabled = read_json(&home.join("providers-disabled.json"))?;
     if disabled[string(p, "name")] == true {
@@ -2472,6 +2494,25 @@ mod migration_tests {
         server.abort();
     }
     #[test]
+    fn compaction_point_matches_pis_strict_threshold() {
+        let compaction = json!({
+            "reserveTokens": 16384,
+            "modelOverrides": {"custom/small": {"reserveTokens": 2048}}
+        });
+        // Pi 1.0.1 shouldCompact uses tokens > window - reserveTokens.
+        for (model, window, expected) in [
+            ("small", 8192, 6144),
+            ("wide", 200000, 183616),
+            ("retained", 20000, 3616),
+            ("retained", 8192, -8192),
+            ("retained", 16384, 0),
+        ] {
+            let point = compaction_point(&compaction, "custom", model, window);
+            assert_eq!(point, expected);
+        }
+        assert_eq!(compaction_point(&Value::Null, "x", "y", 8192), -8192);
+    }
+    #[test]
     fn pi_settings_scale_compaction_to_each_window_and_keep_foreign_keys() {
         assert_eq!(compaction_budget(1_000_000), (16384, 20000));
         assert_eq!(compaction_budget(65536), (16384, 16384));
@@ -2555,5 +2596,30 @@ mod migration_tests {
         fs::write(&path, &bytes).unwrap();
         prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
         assert_eq!(fs::read(&path).unwrap(), bytes);
+        // The meter's compaction point comes from the same key: a listed model
+        // uses its override, a native small model its scaled one, a wide model
+        // the global reserve, even if that reserve exceeds the window.
+        let compaction = compaction_settings(&dir);
+        assert_eq!(compaction_point(&compaction, "custom", "small", 8192), 6144);
+        assert_eq!(
+            compaction_point(&compaction, "custom", "wide", 200000),
+            183616
+        );
+        assert_eq!(compaction_point(&compaction, "openai", "gpt-4", 8192), 6144);
+        assert_eq!(
+            compaction_point(&compaction, "anthropic", "claude-opus-5", 200000),
+            183616
+        );
+        assert_eq!(
+            compaction_point(&compaction, "custom", "small", 1000),
+            -1048
+        );
+        assert_eq!(
+            compaction_point(&compaction, "anthropic", "claude-opus-5", 20000),
+            3616
+        );
+        let missing = compaction_settings(&home.path().join("missing"));
+        assert!(missing.is_null());
+        assert_eq!(compaction_point(&missing, "x", "y", 100000), 83616);
     }
 }

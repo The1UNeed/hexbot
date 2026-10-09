@@ -57,6 +57,7 @@ import { uiActions, useUi } from '../../stores/ui'
 import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
+import { ContextMeter } from './context-meter'
 import { MemoryMarks } from './memory-marks'
 import { RoomConversation } from './room'
 import { visualsOf } from './visual'
@@ -1093,7 +1094,7 @@ function BotConversation() {
 
   return (
     <div
-      className="relative h-full min-h-0 overflow-hidden bg-background"
+      className="@container relative h-full min-h-0 overflow-hidden bg-background"
       onDragOver={event => event.preventDefault()}
       onDrop={event => {
         event.preventDefault()
@@ -1271,7 +1272,7 @@ function BotConversation() {
                 ? `${name}, ${section.title}`
                 : name
             }
-            className="hex-glass hex-glass-press hex-focus hex-no-drag pointer-events-auto flex h-9 max-w-[min(100%,30rem)] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5"
+            className="hex-glass hex-glass-press hex-focus hex-no-drag pointer-events-auto flex h-9 max-w-[min(100%_-_7rem,30rem)] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5 @min-[54rem]:max-w-[min(100%_-_12.5rem,30rem)]"
             onClick={() => togglePanel()}
             title={panelOpen ? 'Hide details' : 'Show details'}
             type="button"
@@ -1300,6 +1301,7 @@ function BotConversation() {
         <ConnectedToolsNotice sectionId={params.section ?? ''} />
       </header>
       <div className="hex-no-drag absolute top-2.5 right-3 z-30 flex items-center gap-1.5">
+        <ContextMeter context={transcript?.context} />
         <Menu
           items={[
             { label: 'Rename', onSelect: () => setEditing(true) },

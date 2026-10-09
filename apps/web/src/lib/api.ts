@@ -14,6 +14,7 @@ import type {
   ClarifyRequestPayload,
   Connector,
   ConnectorTest,
+  ContextUsage,
   DaemonInfo,
   DaemonUpdateStatus,
   Device,
@@ -378,6 +379,8 @@ export function sectionsCreate(bot: string, title?: string): Promise<{ section: 
 }
 
 export interface SectionOpened {
+  /** How full the section's context is; see `ContextUsage`. */
+  context?: ContextUsage
   messages: HistoryRow[]
   /** A clarify question the bot is still waiting on (same shape as the event, plus locked answers). */
   pending_clarify?: ClarifyRequestPayload & { answers?: Record<string, string> }

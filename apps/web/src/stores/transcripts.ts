@@ -20,6 +20,7 @@ import type {
   Attachment,
   ClarifyRequest,
   ClarifyRequestPayload,
+  ContextUsage,
   Message,
   SessionInfo,
   StatusLine,
@@ -45,6 +46,8 @@ export interface Transcript {
   approvals: ApprovalRequest[]
   /** Questions the bot asked through the clarify tool, oldest first. */
   clarifies: ClarifyRequest[]
+  /** The context meter; null until the daemon has reported it. */
+  context: null | ContextUsage
   /** Inline error rows are also pushed as messages; this is the header copy. */
   error: null | string
   info: null | SessionInfo
@@ -139,6 +142,7 @@ export interface TranscriptsState {
   open: (sessionId: string, sectionId: string, messages: Message[]) => void
   reasoningDelta: (sessionId: string, text: string) => void
   resolveApproval: (sessionId: string, requestId: string, choice: ApprovalChoice) => void
+  sessionContext: (sessionId: string, context: ContextUsage) => void
   sessionInfo: (sessionId: string, info: SessionInfo) => void
   sessionUsage: (sessionId: string, usage: Usage) => void
   setSectionId: (sessionId: string, sectionId: string) => void
@@ -180,6 +184,7 @@ export function emptyTranscript(sessionId: string, sectionId?: string): Transcri
   return {
     approvals: [],
     clarifies: [],
+    context: null,
     error: null,
     info: null,
     messages: [],
@@ -340,6 +345,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
               ...emptyTranscript(sessionId, sectionId),
               approvals: existing?.approvals ?? [],
               clarifies: existing?.clarifies ?? [],
+              context: existing?.context ?? null,
               messages,
               status: existing?.status ?? null
             }
@@ -733,6 +739,20 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
     sessionUsage(sessionId, usage) {
       update(sessionId, transcript => ({ ...transcript, usage }))
+    },
+
+    sessionContext(sessionId, context) {
+      update(sessionId, transcript => {
+        // The daemon measures each report in its own task; one that finished
+        // late must not overwrite a newer one.
+        const held = transcript.context?.seq
+
+        if (held != null && context.seq != null && context.seq < held) {
+          return transcript
+        }
+
+        return { ...transcript, context }
+      })
     },
 
     errorEvent(sessionId, message, detail) {
