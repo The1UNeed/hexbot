@@ -9,11 +9,13 @@ import { Menu } from '../../components/ui/menu'
 import { activeBots, RoomCluster } from '../../components/ui/room-cluster'
 import { Select } from '../../components/ui/select'
 import { settingsPageClass } from '../../components/ui/settings-shell'
+import { roomsLeave } from '../../lib/api'
 import { APPROVAL_MODES } from '../../lib/approval-modes'
 import { avatarSrc } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import type { Bot, BotApprovalMode, Room } from '../../lib/types'
 import { useBots } from '../../stores/bots'
+import { useMe } from '../../stores/me'
 import { useRooms } from '../../stores/rooms'
 import { errorText, Group, Heading, Row, rowFieldClass } from '../bot-settings/shared'
 
@@ -182,6 +184,8 @@ function DeleteRoom({ onDelete, room }: { onDelete: () => Promise<void>; room: R
 export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
   const bots = useBots(state => state.byName)
   const navigate = useNavigate()
+  const me = useMe(state => state.me)
+  const owned = room.owner_id === me?.id
   const [name, setName] = useState(room.name)
   const [turns, setTurns] = useState(String(room.limits.bot_turns_per_human_turn ?? ''))
   const [budget, setBudget] = useState(String(room.limits.budget_tokens_per_human_turn ?? ''))
@@ -236,116 +240,142 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
           <Heading description={roomSummary(members.length)}>{room.name}</Heading>
         </div>
       </div>
-      <Group title="Room">
-        <label className="grid min-h-[52px] grid-cols-[112px_1fr] items-center gap-4 px-4 py-2">
-          <span className="text-muted">Name</span>
-          <Input
-            aria-label="Room name"
-            className={rowFieldClass}
-            onBlur={() =>
-              name.trim() && name.trim() !== room.name && void save({ name: name.trim() })
-            }
-            onChange={event => setName(event.target.value)}
-            onKeyDown={event => event.key === 'Enter' && event.currentTarget.blur()}
-            value={name}
-          />
-        </label>
-      </Group>
-      <Group title="Bots">
-        {members.map(member => (
-          <MemberRow
-            bot={bots[member.member_id]}
-            isMain={room.main_bot === member.member_id}
-            key={member.member_id}
-            last={members.length === 1}
-            name={member.display_name ?? member.member_id}
-            onMakeMain={() => save({ main_bot: member.member_id })}
-            onRemove={() => remove(member.member_id)}
-          />
-        ))}
-        <div className="flex min-h-[48px] items-center justify-between gap-3 px-4 py-2">
-          <span className="text-[length:var(--text-secondary)] text-muted">
-            {room.main_bot
-              ? 'The main bot answers when nobody is mentioned.'
-              : 'Without a main bot, only mentioned bots answer.'}
-          </span>
-          <Menu
-            items={
-              addable.length
-                ? addable.map(bot => ({
-                    label: bot.display_name,
-                    onSelect: () =>
-                      void rooms()
-                        .addMember(room.id, bot.name)
-                        .catch(c => setError(errorOf(c)))
-                  }))
-                : [{ disabled: true, label: 'Every bot is already a member' }]
-            }
-            trigger={
-              <Button icon={<Plus size={14} />} size="sm" variant="pill">
-                Add bot
-              </Button>
-            }
-          />
-        </div>
-      </Group>
-      <Group title="Turns">
-        <Row
-          control={
-            <div className="w-40">
-              <Select
-                label="Room approval mode"
-                onValueChange={value => void save({ approval_mode: value as BotApprovalMode })}
-                options={[
-                  { label: 'Inherit', value: 'inherit' },
-                  ...APPROVAL_MODES.map(({ label, value }) => ({ label, value }))
-                ]}
-                value={room.approval_mode ?? 'inherit'}
+      {owned ? (
+        <>
+          <Group title="Room">
+            <label className="grid min-h-[52px] grid-cols-[112px_1fr] items-center gap-4 px-4 py-2">
+              <span className="text-muted">Name</span>
+              <Input
+                aria-label="Room name"
+                className={rowFieldClass}
+                onBlur={() =>
+                  name.trim() && name.trim() !== room.name && void save({ name: name.trim() })
+                }
+                onChange={event => setName(event.target.value)}
+                onKeyDown={event => event.key === 'Enter' && event.currentTarget.blur()}
+                value={name}
+              />
+            </label>
+          </Group>
+          <Group title="Bots">
+            {members.map(member => (
+              <MemberRow
+                bot={bots[member.member_id]}
+                isMain={room.main_bot === member.member_id}
+                key={member.member_id}
+                last={members.length === 1}
+                name={member.display_name ?? member.member_id}
+                onMakeMain={() => save({ main_bot: member.member_id })}
+                onRemove={() => remove(member.member_id)}
+              />
+            ))}
+            <div className="flex min-h-[48px] items-center justify-between gap-3 px-4 py-2">
+              <span className="text-[length:var(--text-secondary)] text-muted">
+                {room.main_bot
+                  ? 'The main bot answers when nobody is mentioned.'
+                  : 'Without a main bot, only mentioned bots answer.'}
+              </span>
+              <Menu
+                items={
+                  addable.length
+                    ? addable.map(bot => ({
+                        label: bot.display_name,
+                        onSelect: () =>
+                          void rooms()
+                            .addMember(room.id, bot.name)
+                            .catch(c => setError(errorOf(c)))
+                      }))
+                    : [{ disabled: true, label: 'Every bot is already a member' }]
+                }
+                trigger={
+                  <Button icon={<Plus size={14} />} size="sm" variant="pill">
+                    Add bot
+                  </Button>
+                }
               />
             </div>
-          }
-          description="How tool actions in this room get approved. Inherit uses each bot's own mode."
-          title="Approval mode"
-        />
-        <Row
-          control={
-            <Input
-              aria-label="Bot turns per human turn"
-              className="w-24 text-right"
-              min="1"
-              onBlur={() => void saveLimits()}
-              onChange={event => setTurns(event.target.value)}
-              type="number"
-              value={turns}
+          </Group>
+          <Group title="Turns">
+            <Row
+              control={
+                <div className="w-40">
+                  <Select
+                    label="Room approval mode"
+                    onValueChange={value => void save({ approval_mode: value as BotApprovalMode })}
+                    options={[
+                      { label: 'Inherit', value: 'inherit' },
+                      ...APPROVAL_MODES.map(({ label, value }) => ({ label, value }))
+                    ]}
+                    value={room.approval_mode ?? 'inherit'}
+                  />
+                </div>
+              }
+              description="How tool actions in this room get approved. Inherit uses each bot's own mode."
+              title="Approval mode"
             />
-          }
-          description="How many bot replies one of your messages can set off."
-          title="Bot turns"
-        />
-        <Row
-          control={
-            <Input
-              aria-label="Token budget per human turn"
-              className="w-32 text-right"
-              min="1"
-              onBlur={() => void saveLimits()}
-              onChange={event => setBudget(event.target.value)}
-              placeholder="No limit"
-              type="number"
-              value={budget}
+            <Row
+              control={
+                <Input
+                  aria-label="Bot turns per human turn"
+                  className="w-24 text-right"
+                  min="1"
+                  onBlur={() => void saveLimits()}
+                  onChange={event => setTurns(event.target.value)}
+                  type="number"
+                  value={turns}
+                />
+              }
+              description="How many bot replies one of your messages can set off."
+              title="Bot turns"
             />
-          }
-          description="Tokens the bots may spend answering one of your messages."
-          title="Token budget"
-        />
-      </Group>
-      <DeleteRoom
-        onDelete={async () => {
-          await rooms().remove(room.id)
-          await navigate({ to: '/' })
-        }}
-        room={room}
-      />
+            <Row
+              control={
+                <Input
+                  aria-label="Token budget per human turn"
+                  className="w-32 text-right"
+                  min="1"
+                  onBlur={() => void saveLimits()}
+                  onChange={event => setBudget(event.target.value)}
+                  placeholder="No limit"
+                  type="number"
+                  value={budget}
+                />
+              }
+              description="Tokens the bots may spend answering one of your messages."
+              title="Token budget"
+            />
+          </Group>
+          <DeleteRoom
+            onDelete={async () => {
+              await rooms().remove(room.id)
+              await navigate({ to: '/' })
+            }}
+            room={room}
+          />
+        </>
+      ) : me ? (
+        <Group title="Membership">
+          <Row
+            control={
+              <Button
+                onClick={() =>
+                  void roomsLeave(room.id, me.id)
+                    .then(async () => {
+                      rooms().drop(room.id)
+                      await navigate({ to: '/' })
+                    })
+                    .catch(cause => setError(errorOf(cause)))
+                }
+                size="sm"
+              >
+                Leave
+              </Button>
+            }
+            description="The room and its transcript stay with its owner."
+            title="Leave room"
+          />
+        </Group>
+      ) : null}
       {error ? (
         <p className="text-[length:var(--text-secondary)] text-danger" role="alert">
           {error}

@@ -410,6 +410,8 @@ export interface Settings {
 
 /** The one person a daemon belongs to. */
 export interface CurrentUser {
+  /** Absent on daemons without display-name editing. */
+  can_rename?: boolean
   id: string
   display_name: string
 }

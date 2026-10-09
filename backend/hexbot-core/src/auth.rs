@@ -299,7 +299,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             // `role` and `users.list` keep apps older than 0.1.6 offering the
             // owner's controls, Bypass included.
             "hexbot.users.me" => Ok(
-                json!({"id":current["id"],"display_name":current["display_name"],"role":"admin"}),
+                json!({"id":current["id"],"display_name":current["display_name"],"role":"admin","can_rename":true}),
             ),
             "hexbot.users.list" => Ok(
                 json!({"users":[{"id":current["id"],"display_name":current["display_name"],"role":"admin"}]}),
@@ -326,7 +326,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                     "UPDATE users SET display_name=? WHERE id=?",
                     params![name, caller],
                 )?;
-                Ok(json!({"id":current["id"],"display_name":name}))
+                Ok(json!({"id":current["id"],"display_name":name,"can_rename":true}))
             }
             "hexbot.devices.list" => {
                 let mut devices = rows(

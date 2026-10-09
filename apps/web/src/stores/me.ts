@@ -3,7 +3,7 @@ import { create } from 'zustand'
 import { usageSummary, usersMe, usersMeSet } from '../lib/api'
 import type { CurrentUser } from '../lib/types'
 
-function unknownMethod(error: unknown): boolean {
+export function unknownMethod(error: unknown): boolean {
   const value = error as { code?: number; message?: string }
 
   return (

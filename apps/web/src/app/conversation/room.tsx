@@ -65,10 +65,12 @@ export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh
       : undefined
   )
 
+  const botName = useBots(state => (memberId ? state.byName[memberId]?.display_name : undefined))
+
   const member =
-    useBots(state => (memberId ? state.byName[memberId]?.display_name : undefined)) ??
+    (me && memberKind === 'human' && memberId === me.id ? me.display_name : undefined) ??
+    (memberKind === 'bot' ? botName : undefined) ??
     memberName ??
-    (me && memberId === me.id ? me.display_name : undefined) ??
     memberId
 
   const system = ['member.added', 'member.left', 'note'].includes(event.kind)

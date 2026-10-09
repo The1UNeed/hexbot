@@ -537,13 +537,24 @@ describe('settings', () => {
   it('renames you from the Memory page', () => {
     const rename = vi.fn().mockResolvedValue(undefined)
     useSettings.setState({ refresh: vi.fn().mockResolvedValue(undefined) })
-    useMe.setState({ me: { display_name: 'Admin', id: 'local' }, rename })
+    useMe.setState({ me: { can_rename: true, display_name: 'Admin', id: 'local' }, rename })
     render(<MemorySettings />)
     const name = screen.getByLabelText('Your name')
     fireEvent.blur(name, { target: { value: 'Admin' } })
     expect(rename).not.toHaveBeenCalled()
-    fireEvent.blur(name, { target: { value: '  Alex ' } })
+    fireEvent.change(name, { target: { value: '   ' } })
+    fireEvent.blur(name)
+    expect(name).toHaveValue('Admin')
+    expect(rename).not.toHaveBeenCalled()
+    fireEvent.change(name, { target: { value: '  Alex ' } })
+    fireEvent.blur(name)
     expect(rename).toHaveBeenCalledWith('Alex')
+  })
+
+  it('hides the name editor on older daemons', () => {
+    useMe.setState({ me: { display_name: 'Admin', id: 'local' } })
+    render(<MemorySettings />)
+    expect(screen.queryByLabelText('Your name')).toBeNull()
   })
 
   it('lists open source licenses with GitHub links and returns to About', async () => {

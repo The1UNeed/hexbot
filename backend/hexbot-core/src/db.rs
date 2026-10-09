@@ -178,7 +178,8 @@ pub fn migrate(home: &Path) -> Result<()> {
         "INSERT OR IGNORE INTO users(id,display_name,role,limits_json,created_at) VALUES ('local','Admin','admin','{}',?)",
         [now],
     )?;
-    if previous.is_some_and(|version| version < ONE_PERSON_VERSION) {
+    #[allow(clippy::unnecessary_map_or)]
+    if previous.map_or(true, |version| version < ONE_PERSON_VERSION) {
         name_from_about_you(&transaction, home)?;
         fold_people(&transaction, home, now)?;
     }
@@ -222,6 +223,7 @@ fn fold_people(connection: &Connection, home: &Path, now: f64) -> Result<()> {
     if others == 0 {
         return Ok(());
     }
+    preserve_approval_modes(connection)?;
     // The runtime database commits first; rerunning this fold is harmless.
     let mut runtime = crate::runtime_store::open(home)?;
     let tx = runtime.transaction()?;
@@ -231,11 +233,8 @@ fn fold_people(connection: &Connection, home: &Path, now: f64) -> Result<()> {
          UPDATE native_usage SET owner_id='local' WHERE owner_id<>'local';",
     )?;
     tx.commit()?;
-    // Members could never choose Bypass, so their bots and rooms keep Auto.
     connection.execute_batch(
-        "UPDATE bots SET approval_mode='smart' WHERE approval_mode='off' AND owner_id<>'local';
-         UPDATE rooms SET approval_mode='smart' WHERE approval_mode='off' AND owner_id<>'local';
-         UPDATE bots SET owner_id='local' WHERE owner_id<>'local';
+        "UPDATE bots SET owner_id='local' WHERE owner_id<>'local';
          UPDATE sections SET owner_id='local' WHERE owner_id<>'local';
          UPDATE rooms SET owner_id='local' WHERE owner_id<>'local';
          UPDATE dreams SET owner_id='local' WHERE owner_id<>'local';
@@ -268,6 +267,103 @@ fn fold_people(connection: &Connection, home: &Path, now: f64) -> Result<()> {
     connection.execute(
         "UPDATE users SET role='admin',disabled_at=NULL,limits_json='{}' WHERE id='local'",
         [],
+    )?;
+    Ok(())
+}
+
+/// Preserve the old owner caps before folding ownership. Room overrides used to
+/// be bounded by a shared bot's own mode; pin the room to its strictest old mode
+/// if folding would relax any bot. This can tighten its other bots too.
+fn preserve_approval_modes(connection: &Connection) -> Result<()> {
+    let global: Option<String> = connection
+        .query_row(
+            "SELECT value FROM settings WHERE key='approval_mode'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let global = global
+        .and_then(|value| serde_json::from_str::<String>(&value).ok())
+        .unwrap_or_else(|| "smart".into());
+    let rank = |mode: &str| match mode {
+        "off" => 0,
+        "smart" => 1,
+        _ => 2,
+    };
+    let resolve = |mode: &str| rank(if mode == "inherit" { &global } else { mode });
+    let mut rooms = connection.prepare(
+        "SELECT r.id,r.owner_id,r.approval_mode,
+                COALESCE(u.role='admin' AND u.disabled_at IS NULL,0)
+         FROM rooms r LEFT JOIN users u ON u.id=r.owner_id",
+    )?;
+    let rooms = rooms.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Option<String>>(2)?,
+            r.get::<_, bool>(3)?,
+        ))
+    })?;
+    for room in rooms {
+        let (id, owner, mode, admin) = room?;
+        let override_mode = mode.as_deref().filter(|mode| *mode != "inherit").map(rank);
+        let mut bots = connection.prepare(
+            "SELECT b.owner_id,b.approval_mode,
+                    COALESCE(u.role='admin' AND u.disabled_at IS NULL,0)
+             FROM bots b LEFT JOIN users u ON u.id=b.owner_id
+             WHERE b.name IN (SELECT member_id FROM room_members
+                              WHERE room_id=? AND member_kind='bot'
+                              UNION SELECT bot FROM room_sessions WHERE room_id=?)",
+        )?;
+        let bots = bots.query_map([&id, &id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, bool>(2)?,
+            ))
+        })?;
+        let mut strictest = override_mode.unwrap_or(0);
+        let mut relaxes = false;
+        for bot in bots {
+            let (bot_owner, bot_mode, bot_admin) = bot?;
+            let before_bot = resolve(&bot_mode);
+            let before = match override_mode {
+                Some(mode) if owner == bot_owner => mode,
+                Some(mode) => mode.max(before_bot),
+                None => before_bot,
+            };
+            let before = if before == 0 && (!admin || !bot_admin) {
+                1
+            } else {
+                before
+            };
+            let after_bot = if before_bot == 0 && !bot_admin {
+                1
+            } else {
+                before_bot
+            };
+            let after = override_mode.unwrap_or(after_bot);
+            strictest = strictest.max(before);
+            relaxes |= after < before;
+        }
+        // Preserve an explicit member Bypass cap even in an empty room.
+        if override_mode == Some(0) && !admin {
+            strictest = strictest.max(1);
+            relaxes = true;
+        }
+        if relaxes {
+            connection.execute(
+                "UPDATE rooms SET approval_mode=? WHERE id=?",
+                [["off", "smart", "manual"][strictest], &id],
+            )?;
+        }
+    }
+    connection.execute(
+        "UPDATE bots SET approval_mode='smart'
+         WHERE (approval_mode='off' OR (approval_mode='inherit' AND ?='off'))
+         AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id=bots.owner_id
+                         AND u.role='admin' AND u.disabled_at IS NULL)",
+        [&global],
     )?;
     Ok(())
 }

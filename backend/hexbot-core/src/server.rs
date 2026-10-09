@@ -598,7 +598,14 @@ impl App {
             "hexbot.memory.user.changed".to_string()
         } else if matches!(
             group,
-            "bots" | "sections" | "rooms" | "connectors" | "network" | "connect" | "dreaming"
+            "bots"
+                | "sections"
+                | "rooms"
+                | "connectors"
+                | "network"
+                | "connect"
+                | "dreaming"
+                | "users"
         ) {
             format!("hexbot.{group}.changed")
         } else {

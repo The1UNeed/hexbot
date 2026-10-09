@@ -126,6 +126,8 @@ export function MemorySettings() {
   const refresh = useSettings(state => state.refresh)
   const patch = useSettings(state => state.patch)
   const me = useMe(state => state.me)
+  const [nameDraft, setNameDraft] = useState(me?.display_name ?? '')
+  useEffect(() => setNameDraft(me?.display_name ?? ''), [me?.display_name])
   const [about, setAbout] = useState<Awaited<ReturnType<typeof userMemoryGet>> | null>(null)
   const [aboutError, setAboutError] = useState<string | null>(null)
   const [nameError, setNameError] = useState<string | null>(null)
@@ -156,7 +158,7 @@ export function MemorySettings() {
         Memory
       </Heading>
       <div className="space-y-8">
-        {me ? (
+        {me?.can_rename ? (
           <div>
             <Group title="You">
               <Row
@@ -164,11 +166,15 @@ export function MemorySettings() {
                   <Input
                     aria-label="Your name"
                     className="w-48"
-                    defaultValue={me.display_name}
-                    key={me.display_name}
                     maxLength={64}
-                    onBlur={event => rename(event.target.value)}
+                    onBlur={event => {
+                      const value = event.target.value.trim() || me.display_name
+                      setNameDraft(value)
+                      rename(value)
+                    }}
+                    onChange={event => setNameDraft(event.target.value)}
                     onKeyDown={event => event.key === 'Enter' && event.currentTarget.blur()}
+                    value={nameDraft}
                   />
                 }
                 description="Shown on your messages in rooms."

@@ -24,6 +24,7 @@ import type { GatewayEvent } from '@hermes/shared'
 
 import { useBots } from '../stores/bots'
 import { useConnectors } from '../stores/connectors'
+import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
 import { useSections } from '../stores/sections'
 import { useSettings } from '../stores/settings'
@@ -128,6 +129,11 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
     case 'hexbot.bots.changed':
       effects.refreshBots()
+
+      return
+
+    case 'hexbot.users.changed':
+      void useMe.getState().refresh()
 
       return
 

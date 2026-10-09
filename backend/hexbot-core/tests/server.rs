@@ -2233,3 +2233,31 @@ async fn connect_identity_is_public_host_bound_and_validates_nonces() {
     }
     fixture.shutdown().await;
 }
+
+#[tokio::test]
+async fn renaming_notifies_other_owner_clients_only() {
+    let fixture = Fixture::new(false).await;
+    let mut first = fixture.socket(&fixture.token).await;
+    let mut second = fixture.socket(&fixture.token).await;
+    let mut events = fixture.app.events.subscribe();
+    let renamed = request(
+        &mut first,
+        "rename",
+        "hexbot.users.me.set",
+        json!({"display_name":"Alex"}),
+    )
+    .await;
+    assert_eq!(renamed["result"]["display_name"], "Alex");
+    let event = events.recv().await.unwrap();
+    assert_eq!(event.frame["params"]["type"], "hexbot.users.changed");
+    assert!(event.visible_to("local"));
+    assert!(!event.visible_to("other"));
+    let event = frame(&mut second).await;
+    assert_eq!(event["params"]["type"], "hexbot.users.changed");
+    let me = request(&mut second, "me", "hexbot.users.me", json!({})).await;
+    assert_eq!(me["result"]["display_name"], "Alex");
+    assert_eq!(me["result"]["can_rename"], true);
+    first.close(None).await.unwrap();
+    second.close(None).await.unwrap();
+    fixture.shutdown().await;
+}

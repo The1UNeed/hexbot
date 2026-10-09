@@ -200,9 +200,8 @@ roster shows only the title.
 
 - `hexbot.memory.user.get {}` → `{text, cap: 2000, updated_at}`. The caller's
   About you text, injected as the plugin prompt section
-  `hexbot.about-you` into every session of a bot they own. Shared bot sessions
-  saved with the room owner's About you before this restriction rebuild their
-  prompt once on reopen, preserving their saved tools and options.
+  `hexbot.about-you` into new sessions. Existing sections retain their saved
+  prompt, including About you, after ownership is folded.
 - `hexbot.memory.user.set {text}` → same as get. Broadcasts
   `hexbot.memory.user.changed`.
 - `hexbot.memory.bot.get {bot}` → `{memory_md, cap: 2200}`
@@ -434,8 +433,8 @@ New sections list skill descriptions and load bodies through `skill_view`.
 `skill_view` and `skills_list` check live grants without requiring the authoring
 toolset. `skill_manage` still requires that toolset and writes only private
 skills; deleting an inherited skill disables it for that bot. Existing sections
-keep their stored prompts and tool definitions. The existing repair of leaked
-About you text in unversioned shared sections remains in place.
+keep their stored prompts and tool definitions. The former shared-session
+About you repair is removed because every section now belongs to the owner.
 
 New sections freeze connected server names and reach tools through Pi's codemode.
 Saved sections keep their frozen Rust bridge tools, including SSE. New sections
@@ -588,13 +587,17 @@ A daemon belongs to one person. Earlier builds let an admin invite others;
 upgrading folds their bots, sections and rooms into the owner, revokes their
 devices, and removes the invite and update methods.
 
-- `hexbot.users.me {}` → `{id, display_name, role}`. The name Get Started asks
-  for; rooms show it on your messages. `role` is always `admin`.
+- `hexbot.users.me {}` → `{id, display_name, role, can_rename: true}`.
+  The name Get Started asks for; rooms show it on your messages. `role` is
+  always `admin`.
 - `hexbot.users.list {}` → `{users: [{id, display_name, role}]}`, only you.
   Kept with `role` so apps older than 0.1.6 still offer Bypass and the other
   owner controls.
-- `hexbot.users.me.set {display_name}` → `{id, display_name}`. The name is
-  trimmed, nonempty (4200) and at most 64 characters (4202).
+- Renaming broadcasts owner-scoped `hexbot.users.changed`; clients refresh
+  `hexbot.users.me`. Older daemons omit `can_rename`, so clients hide the editor
+  and Get Started falls back to saving About you on an unknown-method error.
+- `hexbot.users.me.set {display_name}` → `{id, display_name, can_rename: true}`.
+  The name is trimmed, nonempty (4200) and at most 64 characters (4202).
 - `hexbot.usage.summary {since?}` → `{input_tokens, output_tokens,
   estimated_cost_usd, by_bot}`.
 

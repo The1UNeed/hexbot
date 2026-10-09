@@ -305,6 +305,19 @@ describe('approvals and questions in a room', () => {
 })
 
 describe('room history', () => {
+  it('prefers your renamed identity over stale room member names', () => {
+    useMe.setState({ me: { display_name: 'Alex', id: 'local' } })
+    useRooms.setState({ byId: { r1: { id: 'r1', members: [
+      { member_kind: 'human', member_id: 'local', display_name: 'Admin' }
+    ] } as Room } })
+    render(<RoomEventRow event={{
+      actor_id: 'local', actor_kind: 'human', kind: 'member.added',
+      payload: { member_id: 'local', member_kind: 'human' }, room_id: 'r1', seq: 1
+    } as never} />)
+    expect(screen.getByText(/Alex/)).toBeVisible()
+    expect(screen.queryByText(/Admin/)).toBeNull()
+  })
+
   it('keeps the teammates a bot asked with its reply, and opens their conversation', () => {
     useBots.setState({
       byName: {

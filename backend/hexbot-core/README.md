@@ -74,10 +74,11 @@ it also installs over SSH when nobody is signed in at the screen.
 
 ## Storage and compatibility
 
-- `hexbot.db` keeps schema v12, IDs, ownership, rooms, sections, and settings.
-  Migrations use captured legacy schema fixtures for starting versions 1–11
+- `hexbot.db` keeps schema v13, IDs, ownership, rooms, sections, and settings.
+  Migrations use captured legacy schema fixtures for starting versions 1–12
   and check that rows survive upgrades and repeated runs. Version 12 adds
-  `devices.jkt` for optional device proof-key binding.
+  `devices.jkt` for optional device proof-key binding. Version 13 folds former
+  accounts into the owner while preserving bot and room approval restrictions.
 - Memory stays in `profiles/<bot>/memories/MEMORY.md`, soul in `SOUL.md`, and
   About you in `users/<id>/user.md`. Deleting a section leaves bot memory alone.
 - `hexbot-runtime.db` stores native transcript projections, usage, and frozen
@@ -171,7 +172,8 @@ load bodies through `skill_view`. Read-only `skill_view` and `skills_list` are
 available without the authoring toolset and enforce current grants on every
 call. `skill_manage` still requires the skills toolset. Skill body edits are
 live. Existing sections retain their exact prompt and options, including old
-inline skill bodies. The existing About you privacy repair is unchanged.
+inline skill bodies. The former shared-session About you repair is no longer
+needed after ownership is folded. Saved prompts remain unchanged.
 
 Pi starts with `--no-skills` and receives no `--skill` paths. Pi 1.0.1 accepts
 explicit skill paths even with `--no-skills`; its `/skill:name` commands load

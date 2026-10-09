@@ -115,6 +115,22 @@ describe('onboarding', () => {
     expect(call).not.toHaveBeenCalledWith('hexbot.memory.user.set', expect.anything())
   })
 
+  it('saves legacy About you when the daemon has no rename method', async () => {
+    const call = vi.fn((method: string) => method === 'hexbot.users.me.set'
+      ? Promise.reject({ code: -32601, message: 'Unknown method' })
+      : Promise.resolve({ cap: 2000, text: 'Name: Alex', updated_at: 1 }))
+
+    setActiveRpc({ call } as never)
+    const onContinue = vi.fn()
+    const onError = vi.fn()
+    render(<AboutStep onContinue={onContinue} onError={onError} />)
+    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Alex' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    await waitFor(() => expect(onContinue).toHaveBeenCalledOnce())
+    expect(call).toHaveBeenCalledWith('hexbot.memory.user.set', { text: 'Name: Alex' })
+    expect(onError).not.toHaveBeenCalled()
+  })
+
   it('records a skip so the init page is not asked again', async () => {
     const call = vi.fn(() => Promise.resolve({ cap: 2000, text: '', updated_at: 1 }))
     setActiveRpc({ call } as never)

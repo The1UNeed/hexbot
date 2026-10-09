@@ -114,7 +114,7 @@ Tabs, in order:
    current free-text "Attach a skill" field goes away.
 8. **Approvals.** Inherit the daemon default, or override to Manual,
    Auto, or Bypass for this bot, with the same descriptions as global
-   Settings. Bypass is offered to the admin only.
+   Settings. The owner can choose Bypass.
 9. **Sections.** As today, with room for the last-active time and
    archived sections in their own group.
 10. **Advanced.** Daily token budget, and Delete bot with the

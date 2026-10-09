@@ -246,6 +246,10 @@ export function roomsRemoveMember(id: string, bot: string): Promise<{ room: Room
   return rpcCall<{ room: Room }>('hexbot.rooms.remove_member', { bot, id })
 }
 
+/** Only offered when a legacy daemon returns a room owned by someone else. */
+export const roomsLeave = (id: string, user: string) =>
+  rpcCall('hexbot.rooms.remove_member', { id, user })
+
 export function roomsSend(
   id: string,
   text: string,

@@ -222,7 +222,7 @@ fn renaming_yourself_and_last_seen() {
     let token = auth::local_token(h).unwrap();
     assert_eq!(
         rpc(h, "local", "hexbot.users.me", json!({})).unwrap(),
-        json!({"id":"local","display_name":"Admin","role":"admin"})
+        json!({"id":"local","display_name":"Admin","role":"admin","can_rename":true})
     );
     // Apps older than 0.1.6 list users when the role is admin.
     assert_eq!(
@@ -250,7 +250,7 @@ fn renaming_yourself_and_last_seen() {
             json!({"display_name":"  Alex  "})
         )
         .unwrap(),
-        json!({"id":"local","display_name":"Alex"})
+        json!({"id":"local","display_name":"Alex","can_rename":true})
     );
     assert_eq!(
         rpc(h, "local", "hexbot.users.me", json!({})).unwrap()["display_name"],

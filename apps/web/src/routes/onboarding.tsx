@@ -49,7 +49,7 @@ import type {
 } from '../lib/types'
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
-import { useMe } from '../stores/me'
+import { unknownMethod, useMe } from '../stores/me'
 import { introduceBot } from '../stores/sections'
 import { type LastSection, uiActions } from '../stores/ui'
 
@@ -641,7 +641,13 @@ export function AboutStep({
       // The name you give here is the one rooms show. It goes first: once
       // About you is saved, Get Started counts as done and is not shown again.
       if (name) {
-        await useMe.getState().rename(name)
+        try {
+          await useMe.getState().rename(name)
+        } catch (error) {
+          if (!unknownMethod(error)) {
+            throw error
+          }
+        }
       }
 
       await userMemorySet(value)

@@ -6,6 +6,7 @@ import { setActiveRpc } from '../../lib/rpc'
 import type { Bot, Room } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
+import { useMe } from '../../stores/me'
 import { useRooms } from '../../stores/rooms'
 
 import { RoomSettingsPanel } from './index'
@@ -42,6 +43,7 @@ const room = (members: string[], people: string[] = []): Room => ({
 describe('room settings', () => {
   beforeEach(() => {
     navigate.mockReset()
+    useMe.setState({ me: { display_name: 'Alex', id: 'local' } })
     useBots.setState({
       byName: {
         scout: { avatar: null, display_name: 'Scout', name: 'scout', title: 'Research' } as Bot,
@@ -122,6 +124,26 @@ describe('room settings', () => {
     expect(screen.queryByRole('note')).toBeNull()
   })
 
+  it('keeps Leave and hides owner controls for a legacy member', async () => {
+    const legacy = room(['scout'], ['local', 'bob'])
+    useMe.setState({ me: { display_name: 'Bob', id: 'bob' } })
+    useRooms.setState({ byId: { r1: legacy }, order: ['r1'] })
+    const call = vi.fn().mockResolvedValue({ left: true })
+    setActiveRpc({ call } as never)
+    render(<RoomSettingsPanel room={legacy} />)
+    expect(screen.queryByLabelText('Room name')).toBeNull()
+    expect(screen.queryByText('Approval mode')).toBeNull()
+
+    for (const name of ['Add bot', 'Remove', 'Delete', 'Make main']) {
+      expect(screen.queryByRole('button', { name })).toBeNull()
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: 'Leave' }))
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/' }))
+    expect(call).toHaveBeenCalledWith('hexbot.rooms.remove_member', { id: 'r1', user: 'bob' })
+    expect(useRooms.getState().byId.r1).toBeUndefined()
+  })
+
   it('deletes the room only after the name is typed back', async () => {
     const one = room(['scout'])
     useRooms.setState({ byId: { r1: one }, eventsByRoom: {}, liveTurnsByRoom: {}, order: ['r1'] })
@@ -142,6 +164,7 @@ describe('room settings', () => {
 describe('a room settings deep link', () => {
   beforeEach(() => {
     navigate.mockReset()
+    useMe.setState({ me: { display_name: 'Alex', id: 'local' } })
     useRooms.setState({ byId: {}, eventsByRoom: {}, liveTurnsByRoom: {}, order: [] })
   })
 

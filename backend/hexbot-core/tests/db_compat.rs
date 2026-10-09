@@ -35,6 +35,18 @@ fn legacy_home(version: i64) -> TempDir {
             }
         }
     }
+    // Native v12 additions, independent of the current migration constants.
+    if version == 12 {
+        connection
+            .execute_batch(
+                "ALTER TABLE bots ADD COLUMN auto_description TEXT;
+            ALTER TABLE bots ADD COLUMN auto_description_key TEXT;
+            ALTER TABLE devices ADD COLUMN jkt TEXT;
+            ALTER TABLE sections ADD COLUMN peer_bot TEXT;
+            ALTER TABLE bot_messages ADD COLUMN source_section TEXT;",
+            )
+            .unwrap();
+    }
     connection
         .execute("INSERT INTO schema_version VALUES (?)", [version])
         .unwrap();
@@ -107,10 +119,10 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
 }
 
 #[test]
-fn all_python_versions_upgrade_without_losing_rows() {
+fn all_legacy_versions_upgrade_without_losing_rows() {
     let python_v11 = legacy_home(11);
     let reference = Connection::open(python_v11.path().join("hexbot.db")).unwrap();
-    for version in 1..=11 {
+    for version in 1..=12 {
         let home = legacy_home(version);
         db::migrate(home.path()).unwrap();
         db::migrate(home.path()).unwrap();
@@ -515,4 +527,194 @@ fn upgrading_folds_invited_people_into_the_owner_once() {
     conn.execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES ('carol','Carol','member',0); INSERT INTO bots(name,owner_id) VALUES ('ant','carol');").unwrap();
     db::migrate(h).unwrap();
     assert_eq!(one("SELECT owner_id FROM bots WHERE name='ant'"), "carol");
+}
+
+#[test]
+fn fold_preserves_bot_modes_resolving_inheritance_and_admin_caps() {
+    for global in ["off", "manual", "smart"] {
+        let home = legacy_home(12);
+        let conn = db::open(home.path()).unwrap();
+        conn.execute_batch(
+            "INSERT INTO users(id,display_name,role,created_at) VALUES
+            ('bob','Bob','member',0),('admin','Admin','admin',0);
+            INSERT INTO bots(name,owner_id,approval_mode) VALUES
+            ('inherited','bob','inherit'),('bypass','bob','off'),
+            ('manual','bob','manual'),('auto','bob','smart'),('admin-bot','admin','off');",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO settings VALUES ('approval_mode',?)",
+            [serde_json::json!(global).to_string()],
+        )
+        .unwrap();
+        db::migrate(home.path()).unwrap();
+        for (bot, expected) in [
+            (
+                "inherited",
+                if global == "off" { "smart" } else { "inherit" },
+            ),
+            ("bypass", "smart"),
+            ("manual", "manual"),
+            ("auto", "smart"),
+            ("admin-bot", "off"),
+        ] {
+            let mode: String = conn
+                .query_row("SELECT approval_mode FROM bots WHERE name=?", [bot], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(mode, expected, "{bot}, daemon {global}");
+        }
+        db::migrate(home.path()).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT owner_id FROM bots WHERE name='inherited'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "local"
+        );
+    }
+}
+
+#[test]
+fn fold_preserves_shared_room_restrictions() {
+    // room owner, room mode, bot owner, bot mode, daemon mode, pinned room mode
+    for (owner, mode, bot_owner, bot_mode, global, expected) in [
+        ("bob", None, "local", "off", "smart", Some("smart")),
+        (
+            "bob",
+            Some("inherit"),
+            "local",
+            "inherit",
+            "off",
+            Some("smart"),
+        ),
+        ("bob", Some("off"), "local", "off", "smart", Some("smart")),
+        (
+            "local",
+            Some("off"),
+            "bob",
+            "manual",
+            "smart",
+            Some("manual"),
+        ),
+        ("local", Some("off"), "bob", "smart", "smart", Some("smart")),
+        (
+            "local",
+            Some("off"),
+            "bob",
+            "inherit",
+            "manual",
+            Some("manual"),
+        ),
+        (
+            "local",
+            Some("smart"),
+            "bob",
+            "manual",
+            "smart",
+            Some("manual"),
+        ),
+        (
+            "bob",
+            Some("off"),
+            "local",
+            "manual",
+            "smart",
+            Some("manual"),
+        ),
+        ("bob", None, "bob", "inherit", "manual", None),
+        (
+            "local",
+            Some("off"),
+            "local",
+            "manual",
+            "smart",
+            Some("off"),
+        ),
+    ] {
+        let home = legacy_home(12);
+        let conn = db::open(home.path()).unwrap();
+        conn.execute_batch(
+            "INSERT INTO users(id,display_name,role,created_at) VALUES
+            ('local','Owner','admin',0),('bob','Bob','member',0);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO settings VALUES ('approval_mode',?)",
+            [serde_json::json!(global).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO bots(name,owner_id,approval_mode) VALUES ('bot',?,?)",
+            [bot_owner, bot_mode],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO rooms(id,name,owner_id,approval_mode) VALUES ('room','Room',?,?)",
+            rusqlite::params![owner, mode],
+        )
+        .unwrap();
+        conn.execute_batch("INSERT INTO room_members(room_id,member_kind,member_id,added_by) VALUES ('room','bot','bot','local');").unwrap();
+        db::migrate(home.path()).unwrap();
+        let after: Option<String> = conn
+            .query_row("SELECT approval_mode FROM rooms WHERE id='room'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            after.as_deref(),
+            expected,
+            "room {owner}/{mode:?}, bot {bot_owner}/{bot_mode}, daemon {global}"
+        );
+        db::migrate(home.path()).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT approval_mode FROM rooms WHERE id='room'", [], |r| r
+                .get::<_, Option<String>>(0))
+                .unwrap(),
+            after
+        );
+    }
+}
+
+#[test]
+fn pinning_inherited_room_does_not_relax_its_other_manual_bots() {
+    let home = legacy_home(12);
+    let conn = db::open(home.path()).unwrap();
+    conn.execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES
+        ('local','Owner','admin',0),('bob','Bob','member',0);
+        INSERT INTO bots(name,owner_id,approval_mode) VALUES ('bypass','local','off'),('manual','local','manual');
+        INSERT INTO rooms(id,name,owner_id) VALUES ('room','Room','bob');
+        INSERT INTO room_members(room_id,member_kind,member_id,added_by) VALUES
+        ('room','bot','bypass','bob'),('room','bot','manual','bob');").unwrap();
+    db::migrate(home.path()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT approval_mode FROM rooms WHERE id='room'", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "manual"
+    );
+}
+
+#[test]
+fn empty_schema_version_still_folds_legacy_accounts() {
+    let home = legacy_home(12);
+    let conn = db::open(home.path()).unwrap();
+    conn.execute_batch(
+        "DELETE FROM schema_version;
+        INSERT INTO users(id,display_name,role,created_at) VALUES ('bob','Bob','member',0);
+        UPDATE bots SET owner_id='bob',approval_mode='off';",
+    )
+    .unwrap();
+    db::migrate(home.path()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT owner_id,approval_mode FROM bots", [], |r| Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?
+        )))
+        .unwrap(),
+        ("local".into(), "smart".into())
+    );
 }

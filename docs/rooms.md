@@ -5,6 +5,24 @@ section 2. A daemon belongs to one person, so a room has one human, its
 owner; rooms with people on other daemons will go through Hex Connect. The native room engine lives in `backend/hexbot-core/src/rooms.rs`
 and uses a persistent Pi session for each room bot.
 
+## Upgrading from multi-user builds
+
+Former accounts' bots, sections and rooms become the owner's. Their devices
+are signed out. Bots that were capped to Auto because their owner was a member
+stay on Auto, including bots inheriting daemon Bypass. Inherited Manual stays
+inherited. If folding ownership would relax a room bot's approval mode, the
+migration pins that room to the strictest mode it previously required. This
+can also tighten the other bots in that room. The owner can change it later.
+
+Former members' private sections on the owner's shared bots now follow those
+bots' modes, including Bypass. Their old per-person Bypass cap is not preserved.
+Saved prompts and transcripts are kept. Old room messages keep former members'
+names; the owner's messages use their current display name.
+
+When a new app connects to an older daemon, rooms owned by someone else show
+Leave instead of owner controls. Get Started still saves the name in About you;
+the separate name editor requires a daemon that advertises `can_rename`.
+
 ## Data model (hexbot.db)
 
 - `rooms(id, name, owner_id, main_bot null, approval_mode null,
