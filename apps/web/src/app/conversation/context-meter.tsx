@@ -14,7 +14,7 @@ export function formatTokens(tokens: number): string {
     return `${short(tokens / 1000)}k`
   }
 
-  if (tokens < 1_000_000) {
+  if (tokens < 999_500) {
     return `${Math.round(tokens / 1000)}k`
   }
 
@@ -34,7 +34,10 @@ function describe(amount: string, compactAt: null | number, compacting: boolean,
     return amount
   }
 
-  const point = `${amount} Older messages are summarised at ${formatTokens(compactAt)}.`
+  const point =
+    compactAt < 0
+      ? `${amount} Older messages are summarised at any context size because the reserve exceeds the window.`
+      : `${amount} Older messages are summarised above ${formatTokens(compactAt)} tokens.`
 
   return high
     ? `${point} Start a new section soon. Long sections make the bot slower and less accurate.`
@@ -42,7 +45,7 @@ function describe(amount: string, compactAt: null | number, compacting: boolean,
 }
 
 export interface MeterReading {
-  /** The pill's text: the percentage, "Compacting" while older messages are summarised, or "Context" while recounting. */
+  /** The pill's text: the percentage, "Summarising" while older messages are summarised, or "Context" while recounting. */
   label: string
   /** The plain numbers, shown on hover and read by assistive tech. */
   detail: string
@@ -78,10 +81,10 @@ export function readContext(context: ContextUsage | null | undefined): MeterRead
   }
 
   const compactPercent =
-    compactAt != null ? Math.min(100, Math.round((compactAt / window) * 100)) : null
+    compactAt != null ? Math.min(100, Math.max(0, Math.round((compactAt / window) * 100))) : null
 
   if (tokens == null) {
-    const label = compacting ? 'Compacting' : 'Context'
+    const label = compacting ? 'Summarising' : 'Context'
 
     const detail = compacting
       ? 'Older messages are being summarised now.'
@@ -90,7 +93,7 @@ export function readContext(context: ContextUsage | null | undefined): MeterRead
     return {
       compactPercent,
       compacting,
-      description: `${compacting ? 'Context, compacting' : 'Context'}. ${detail}`,
+      description: `${compacting ? 'Context, summarising' : 'Context'}. ${detail}`,
       detail,
       high: false,
       label,
@@ -109,12 +112,12 @@ export function readContext(context: ContextUsage | null | undefined): MeterRead
     high
   )
 
-  const label = compacting ? 'Compacting' : `${percent}%`
+  const label = compacting ? 'Summarising' : `${percent}%`
 
   return {
     compactPercent,
     compacting,
-    description: `Context ${compacting ? `${percent}%, compacting` : label}. ${detail}`,
+    description: `Context ${compacting ? `${percent}%, summarising` : label}. ${detail}`,
     detail,
     high,
     label,

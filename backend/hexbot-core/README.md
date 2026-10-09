@@ -108,8 +108,9 @@ it also installs over SSH when nobody is signed in at the screen.
   later for every model instead of at half of a 32k window. The context meter
   clients draw (`hexbot.sections.open` and `session.usage`, `docs/api.md`)
   takes its `compact_at` from this key as the section's Pi process loaded it
-  at start, so it always matches what that process does. A model with no known window (an empty models.dev
-  cache, a custom or local server, an OpenRouter model missing from the
+  at start, including zero or negative thresholds if its reserve does not fit
+  the window. Pi triggers above that threshold. A model with no known window
+  (an empty models.dev cache, a custom or local server, an OpenRouter model missing from the
   catalog) is assumed to have 32,768 tokens and compacts near 24,500; set
   `model_overrides.<provider>.<model>.context_window` (or
   `model_overrides.<provider>._default.context_window`) in `config.yaml` to
