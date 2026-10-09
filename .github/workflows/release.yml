@@ -70,14 +70,6 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 26
-      - name: Require the update signing key
-        env:
-          HEXBOT_UPDATE_SIGNING_KEY: ${{ secrets.HEXBOT_UPDATE_SIGNING_KEY }}
-        run: |
-          if [ -z "$HEXBOT_UPDATE_SIGNING_KEY" ]; then
-            echo '::error::HEXBOT_UPDATE_SIGNING_KEY is not set. See docs/release.md, "Update signing".'
-            exit 1
-          fi
       - id: resolve
         name: Resolve the channel and version
         env:
@@ -115,6 +107,16 @@ jobs:
           if [[ "$channel" == stable && "$GITHUB_REF" != refs/tags/* ]] &&
             git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
             echo "::error::$tag already exists. Set the next version with scripts/desktop/set-version.mjs and commit it first."
+            exit 1
+          fi
+
+      - name: Require the update signing key
+        if: steps.resolve.outputs.build == 'true'
+        env:
+          HEXBOT_UPDATE_SIGNING_KEY: ${{ secrets.HEXBOT_UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$HEXBOT_UPDATE_SIGNING_KEY" ]; then
+            echo '::error::HEXBOT_UPDATE_SIGNING_KEY is not set. See docs/release.md, "Update signing".'
             exit 1
           fi
 

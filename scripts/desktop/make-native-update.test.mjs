@@ -20,7 +20,14 @@ test('native updater manifests use Rust targets and checksummed relocatable arch
     assert.equal(result.manifest.target, 'macos-aarch64')
     assert.equal(result.manifest.entrypoint, 'hexbot')
     assert.equal(result.manifest.format, 'tar.gz')
-    assert.equal(result.manifest.url, `daemon/native/1.2.3-nightly.20260924.1/macos-aarch64/${result.filename}`)
+    assert.equal(result.manifest.path, `daemon/native/1.2.3-nightly.20260924.1/macos-aarch64/${result.filename}`)
+    // Published daemons use Url::parse(url), then service_url/same_origin.
+    // Parse without a base so a relative url fails exactly as it does there.
+    const legacyUrl = new URL(result.manifest.url)
+    assert.equal(legacyUrl.protocol, 'https:')
+    assert.equal(legacyUrl.origin, 'https://updates.hexbot.app')
+    for (const field of ['username', 'password', 'search', 'hash']) assert.equal(legacyUrl[field], '')
+    assert.equal(result.manifest.url, `https://updates.hexbot.app/${result.manifest.path}`)
     assert.equal(result.manifest.sha256, createHash('sha256').update(await readFile(join(result.directory, result.filename))).digest('hex'))
   } finally { await rm(root, { recursive: true, force: true }) }
 })

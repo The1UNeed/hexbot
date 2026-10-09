@@ -25,6 +25,12 @@ the Hexbot release key. Nothing was installed." The existing installation stays
 in place. A missing signature file can instead appear as a download error.
 Retry later; if it persists, report the error and version to the maintainer.
 
+For HTTPS mirrors, `HEXBOT_UPDATE_URL` selects the base URL. Signed manifests
+keep an absolute `url` for older clients and add a relative `path` that new
+clients prefer. Copy manifests, signatures, and packages without changing the
+signed files. New clients resolve `path` under the mirror's base path; manifests
+without it still use `url`. Downloads must stay on the configured origin.
+
 These signatures do not cover Electron's app update feeds, the initial installer
 download, or the legacy Python handoff source package. macOS app updates rely on
 code signing; Linux AppImage updates use checksums only. The legacy source

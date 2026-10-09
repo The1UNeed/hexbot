@@ -571,17 +571,22 @@ fn same_origin(base: &str, target: &str) -> Result<()> {
     Ok(())
 }
 /// Resolve signed artifact paths against this daemon's update server.
-fn artifact_url(base: &str, location: &str) -> Result<Url> {
+fn artifact_url(base: &str, manifest: &Value) -> Result<Url> {
     let root = service_url(&format!("{}/", base.trim_end_matches('/')))?;
-    if location.trim().is_empty() {
-        return Err(Error::new(5243, "invalid native update URL"));
-    }
-    let url = root
-        .join(location.trim())
-        .map_err(|_| Error::new(5243, "invalid native update URL"))?;
+    let url = if manifest.get("path").is_some() {
+        let path = common::required(manifest, "path")?;
+        if !crate::update_path::valid(path) {
+            return Err(Error::new(5243, "invalid native update path"));
+        }
+        root.join(path)
+            .map_err(|_| Error::new(5243, "invalid native update path"))?
+    } else {
+        service_url(common::required(manifest, "url")?)?
+    };
     same_origin(base, url.as_str())?;
     Ok(url)
 }
+
 async fn object(
     method: Method,
     url: &str,
@@ -1965,7 +1970,7 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
         .map(|executable| native_manifest(&executable, &crate::version()))
         .unwrap_or_else(|_| json!({}));
     require_newer_native_build(&manifest, &current)?;
-    let url = artifact_url(&base, common::required(&manifest, "url")?)?;
+    let url = artifact_url(&base, &manifest)?;
     let digest = common::required(&manifest, "sha256")?;
     if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::new(5243, "invalid native update checksum"));
@@ -2355,20 +2360,52 @@ mod native_version_tests {
     #[test]
     fn native_archives_are_fetched_from_the_configured_update_server() {
         let path = "daemon/native/1.2.3/linux-x86_64/bundle.tar.gz";
+        let canonical = format!("https://updates.hexbot.app/{path}");
         for base in ["https://mirror.example", "https://mirror.example/hexbot/"] {
             let expected = format!("{}/{path}", base.trim_end_matches('/'));
-            assert_eq!(artifact_url(base, path).unwrap().as_str(), expected);
-            assert_eq!(artifact_url(base, &expected).unwrap().as_str(), expected);
+            let manifest = json!({"url": canonical, "path": path});
+            assert_eq!(artifact_url(base, &manifest).unwrap().as_str(), expected);
+            // No path: preserve the old absolute URL and same-origin rules.
+            assert_eq!(
+                artifact_url(base, &json!({"url": expected}))
+                    .unwrap()
+                    .as_str(),
+                expected
+            );
+            assert!(artifact_url(base, &json!({"url": canonical})).is_err());
             for location in [
                 "",
+                "../binary",
+                "a/../binary",
+                "./binary",
+                "/binary",
+                "%2e%2e/binary",
+                "a/%2Fbinary",
+                "a\\..\\binary",
+                "https://mirror.example/binary",
+                "//mirror.example/binary",
                 "https://attacker.example/binary",
                 "//attacker.example/binary",
                 "http://mirror.example/binary",
                 "https://user@mirror.example/binary",
+                "binary?query",
+                "binary#fragment",
+                " binary",
+                "a//binary",
             ] {
-                assert!(artifact_url(base, location).is_err());
+                assert!(
+                    artifact_url(base, &json!({"url": expected, "path": location})).is_err(),
+                    "{location}"
+                );
+            }
+            for location in [
+                "binary",
+                "//mirror.example/binary",
+                "https://attacker.example/binary",
+            ] {
+                assert!(artifact_url(base, &json!({"url": location})).is_err());
             }
         }
-        assert!(artifact_url("http://mirror.example", "binary").is_err());
+        assert!(artifact_url("http://mirror.example", &json!({"path": path})).is_err());
     }
 }

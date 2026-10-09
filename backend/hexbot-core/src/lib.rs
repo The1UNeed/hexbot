@@ -34,6 +34,7 @@ pub mod setup;
 pub mod skills;
 pub mod system_service;
 pub mod team;
+mod update_path;
 pub mod update_signature;
 
 pub fn version() -> String {

@@ -32,7 +32,7 @@ class NativeTransitionTests(unittest.TestCase):
         self.version = "1.2.3"
         self.manifest = {
             "version": self.version, "target": "linux-x86_64", "format": "tar.gz",
-            "entrypoint": "hexbot", "url": "bundle.tar.gz",
+            "entrypoint": "hexbot", "url": "https://updates.example/bundle.tar.gz",
         }
         self.addCleanup(patch.stopall)
         patch.dict(os.environ, {"HEXBOT_HOME": str(self.home), "HEXBOT_UPDATE_URL": "https://updates.example"}).start()
@@ -191,6 +191,7 @@ class NativeTransitionTests(unittest.TestCase):
         transition.install(self.home, self.version, download=download, keys=(old,))
 
     def test_relative_archive_paths_work_under_a_mirror_prefix(self):
+        self.manifest["path"] = "bundle.tar.gz"
         requested = []
         def download(url, destination, limit):
             requested.append(url)
@@ -198,6 +199,27 @@ class NativeTransitionTests(unittest.TestCase):
         with patch.dict(os.environ, {"HEXBOT_UPDATE_URL": "https://mirror.example/hexbot/"}):
             transition.install(self.home, self.version, download=download, keys=(TEST_KEY,))
         self.assertEqual(requested[-1], "https://mirror.example/hexbot/bundle.tar.gz")
+
+    def test_invalid_paths_never_fall_back_to_the_valid_absolute_url(self):
+        for path in (
+            "", "../bundle.tar.gz", "a/../bundle.tar.gz", "./bundle.tar.gz", "/bundle.tar.gz",
+            "%2e%2e/bundle.tar.gz", "a/%2Fbundle.tar.gz", "a\\..\\bundle.tar.gz",
+            "https://updates.example/bundle.tar.gz", "//updates.example/bundle.tar.gz",
+            "//attacker.example/bundle.tar.gz", "ftp://updates.example/bundle.tar.gz",
+            "bundle.tar.gz?query", "bundle.tar.gz#fragment", " bundle.tar.gz", "a//bundle.tar.gz", None,
+        ):
+            with self.subTest(path=path):
+                self.manifest["path"] = path
+                with self.assertRaisesRegex(ValueError, "Invalid native archive path"):
+                    self.install()
+                self.assertFalse((self.home / "runtime/native-executable").exists())
+
+    def test_legacy_urls_must_be_absolute_and_on_the_update_origin(self):
+        for url in ("bundle.tar.gz", "//updates.example/bundle.tar.gz", "https://attacker.example/bundle.tar.gz"):
+            with self.subTest(url=url):
+                self.manifest["url"] = url
+                with self.assertRaisesRegex(ValueError, "update server origin"):
+                    self.install()
 
     def test_unsafe_archives_are_rejected_before_activation(self):
         for entry in [

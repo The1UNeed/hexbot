@@ -93,6 +93,7 @@ pub fn app_artifact_for_track(
     }
     let bytes = fs::read(&path).unwrap();
     Artifact {
+        path: None,
         url: format!("{base}/{file}.{extension}"),
         sha256: None,
         sha512: Some(STANDARD.encode(Sha512::digest(&bytes))),
@@ -161,6 +162,7 @@ esac
     tar.into_inner().unwrap().finish().unwrap();
     let bytes = fs::read(&archive).unwrap();
     Artifact {
+        path: None,
         url: format!("{base}/native.tar.gz"),
         sha256: Some(format!("{:x}", Sha256::digest(&bytes))),
         sha512: None,

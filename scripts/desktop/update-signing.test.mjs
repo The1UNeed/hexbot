@@ -66,10 +66,14 @@ test('two signature lines support clients trusting either rotation key', t => {
   assert.throws(() => signUpdates(root, { channel: 'nightly', version: '1.2.3', key: [old, next], expected: raw(old) }), /does not match/)
 })
 
-test('release preflight refuses an empty signing secret with the signer message', () => {
+test('release preflight checks the signing secret only after resolving a build', () => {
   const workflow = readFileSync(new URL('../../.github/workflows/release.yml', import.meta.url), 'utf8')
   const preflight = workflow.split('  check:')[0]
-  const script = preflight.match(/- name: Require the update signing key[\s\S]*?run: \|\n([\s\S]*?)(?=      - id:)/)[1].replace(/^          /gm, '')
+  const step = preflight.slice(preflight.indexOf('      - name: Require the update signing key'))
+  assert.ok(preflight.indexOf('      - id: resolve') < preflight.indexOf(step))
+  assert.match(step, /if: steps\.resolve\.outputs\.build == 'true'/)
+  assert.match(workflow, /needs: preflight\n    if: needs\.preflight\.outputs\.build == 'true'/)
+  const script = step.match(/run: \|\n([\s\S]*)/)[1].replace(/^          /gm, '')
   const result = spawnSync('bash', ['-c', script], { env: { ...process.env, HEXBOT_UPDATE_SIGNING_KEY: '' }, encoding: 'utf8' })
   assert.equal(result.status, 1)
   assert.ok(result.stdout.includes('HEXBOT_UPDATE_SIGNING_KEY is not set. See docs/release.md, "Update signing".'))

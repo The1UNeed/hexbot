@@ -4,6 +4,8 @@ mod detect;
 mod install_ownership;
 mod safety;
 mod types;
+#[path = "../../hexbot-core/src/update_path.rs"]
+mod update_path;
 #[path = "../../hexbot-core/src/update_signature.rs"]
 pub mod update_signature;
 
@@ -134,12 +136,16 @@ fn https_origin(base: &str) -> Result<reqwest::Url> {
 }
 
 /// Resolve signed artifact paths against the selected update server.
-fn artifact_url(base: &str, location: &str) -> Result<reqwest::Url> {
+fn artifact_url(base: &str, artifact: &Artifact) -> Result<reqwest::Url> {
     let root = https_origin(&format!("{}/", base.trim_end_matches('/')))?;
-    if location.trim().is_empty() {
-        return fail("The install manifest names an invalid artifact.");
-    }
-    let url = root.join(location.trim())?;
+    let url = if let Some(path) = &artifact.path {
+        if !update_path::valid(path) {
+            return fail("The install manifest names an invalid artifact path.");
+        }
+        root.join(path)?
+    } else {
+        reqwest::Url::parse(&artifact.url)?
+    };
     https_origin(url.as_str())?;
     if url.origin() != root.origin() {
         return fail("Every artifact URL must have the same origin as the update URL.");
@@ -159,7 +165,7 @@ fn validate_artifacts(base: &str, manifest: &Manifest) -> Result<()> {
         .into_iter()
         .flatten()
         {
-            artifact_url(base, &artifact.url)?;
+            artifact_url(base, artifact)?;
         }
     }
     Ok(())
@@ -767,7 +773,7 @@ fn download_file(
     progress: &mut ProgressCallback<'_>,
 ) -> Result<()> {
     let mut response = client(base)?
-        .get(artifact_url(base, &artifact.url)?)
+        .get(artifact_url(base, artifact)?)
         .send()?
         .error_for_status()?;
     let mut file = fs::File::create(path)?;

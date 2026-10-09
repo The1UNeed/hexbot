@@ -136,7 +136,7 @@ full/mac/arm64/Hexbot-<v>-mac-arm64.zip|.dmg
 full/mac/x64/...
 full/linux/x64/latest-linux.yml, nightly-linux.yml, Hexbot-<v>-linux-x64.AppImage|.deb
 client/...                          the same for HexbotClient-*
-daemon/native/<v>/<target>/manifest.json   native archive path, version, target and SHA-256
+daemon/native/<v>/<target>/manifest.json   native archive url/path, version, target and SHA-256
 daemon/native/<v>/<target>/manifest.json.sig   immutable release signatures
 daemon/native/<v>/<target>/hexbot-native-<v>-<target>.tar.gz
 daemon/hexbot-src-<v>.tar.gz               handoff for existing Python services
@@ -193,8 +193,11 @@ its machine. The daemon says how, through `update_capability` in
   version. It switches `runtime/native-executable` and restarts. Targets are `macos-aarch64`, `macos-x86_64` and `linux-x86_64`.
   It retains the active runtime and its predecessor, protecting any older
   runtime still used by a running daemon. `HEXBOT_UPDATE_URL` selects an HTTPS
-  mirror. Signed artifact paths resolve relative to that base, including its
-  path prefix, and downloads and redirects must stay on the same origin.
+  mirror. Signed manifests retain an absolute `url` for older clients and add
+  a relative `path`. New clients prefer `path`, resolved against that base and
+  its path prefix; without `path`, they use the absolute `url`. Traversal and
+  URL syntax in `path` are rejected. Downloads and redirects must stay on the
+  configured origin.
   Copy the manifests, versioned signatures, and artifacts without rewriting
   the signed bytes. Existing Python services use the historical source feed,
   published with every release, to install this native runtime and hand over

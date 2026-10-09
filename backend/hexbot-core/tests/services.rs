@@ -456,7 +456,7 @@ async fn native_update_child() {
     *mock.data.binary.lock().await = binary.to_vec();
     // The manifest names the archive as published; the daemon downloads that
     // path from its own update server (here the mock), so a mirror works.
-    *mock.data.manifest.lock().await = json!({"version":"9.8.7","builtAt":1,"target":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH),"url":"binary","sha256":format!("{:x}",Sha256::digest(binary))});
+    *mock.data.manifest.lock().await = json!({"version":"9.8.7","builtAt":1,"target":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH),"url":"https://updates.hexbot.app/binary","path":"binary","sha256":format!("{:x}",Sha256::digest(binary))});
     // Whoever controls the update origin cannot publish without the release key.
     *mock.data.unsigned.lock().await = true;
     services::call(

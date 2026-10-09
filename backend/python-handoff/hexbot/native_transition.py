@@ -125,12 +125,20 @@ def install(home: Path, version: str, *, download=_download, keys=update_signatu
             "version": version, "target": target, "format": "tar.gz", "entrypoint": "hexbot"
         }.items()):
             raise ValueError("Native manifest does not match requested runtime")
-        location = manifest.get("url", "")
-        if not isinstance(location, str) or not location.strip():
-            raise ValueError("Invalid native archive URL")
-        url = urllib.parse.urljoin(f"{base}/", location)
+        if "path" in manifest:
+            path = manifest["path"]
+            if (not isinstance(path, str)
+                    or any(not (c.isascii() and (c.isalnum() or c in "-._/")) for c in path)
+                    or any(part in ("", ".", "..") for part in path.split("/"))):
+                raise ValueError("Invalid native archive path")
+            url = urllib.parse.urljoin(f"{base}/", path)
+        else:
+            url = manifest.get("url", "")
+            if not isinstance(url, str) or not url.strip():
+                raise ValueError("Invalid native archive URL")
         parsed = urllib.parse.urlparse(url)
-        if parsed.scheme != "https" or parsed.netloc != origin.netloc:
+        if (parsed.scheme != "https" or parsed.netloc != origin.netloc
+                or parsed.username or parsed.password or parsed.query or parsed.fragment):
             raise ValueError("Native archive must use the update server origin")
         archive = staging / "bundle.tar.gz"
         download(url, archive, MAX_ARCHIVE)

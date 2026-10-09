@@ -65,12 +65,15 @@ test('install manifests cover every option, target and track with verified metad
       assert.equal(entry.installer.sha256, hash(target, 'sha256', 'hex'))
       assert.equal(entry.installer.size, target.length)
       assert.ok(entry.installerApp.url.endsWith(os === 'mac' ? '.dmg' : '.AppImage'))
-      for (const option of Object.values(entry)) assert.ok(!option.url.startsWith('/') && !option.url.includes('://'))
+      for (const option of Object.values(entry)) {
+        assert.ok(!option.path.startsWith('/') && !option.path.includes('://'))
+        assert.equal(option.url, `https://mirror.example/updates/${option.path}`)
+      }
     }
     assert.deepEqual(JSON.parse(await readFile(join(root, `install/${channel}.json`), 'utf8')), manifest)
     assert.equal(await readFile(join(root, `install/${channel}.txt`), 'utf8'), targets.map(([target]) => {
       const installer = manifest.targets[target].installer
-      return `${target} ${installer.sha256} https://mirror.example/updates/${installer.url}\n`
+      return `${target} ${installer.sha256} ${installer.url}\n`
     }).join(''))
   }
   assert.equal(appId('dev'), 'app.hexbot.desktop.dev')
@@ -125,15 +128,38 @@ test('native metadata must include the base URL path prefix', async t => {
   await assert.rejects(makeInstallManifest(root, { ...options, baseUrl: 'https://mirror.example/updates/' }), /Invalid native archive URL/)
 })
 
-test('relative native metadata produces identical signed JSON for any mirror base', async t => {
+test('new manifests satisfy the published installer absolute-URL validation', async t => {
+  const { root, options } = await fixture(t)
+  const manifest = await makeInstallManifest(root, options)
+  // origin/main validate_origins parses each artifact.url without a base,
+  // then compares its origin. Older clients ignore the extra path field.
+  const base = new URL('https://updates.hexbot.app')
+  for (const entries of Object.values(manifest.targets)) {
+    for (const artifact of Object.values(entries)) {
+      const url = new URL(artifact.url)
+      assert.equal(url.protocol, 'https:')
+      assert.equal(url.origin, base.origin)
+      assert.equal(artifact.url, `${base.origin}/${artifact.path}`)
+      assert.equal(new URL(artifact.path, 'https://mirror.example/updates/').href,
+        `https://mirror.example/updates/${artifact.path}`)
+    }
+  }
+})
+
+test('native path takes precedence when preparing a mirror install manifest', async t => {
   const { root, options } = await fixture(t)
   for (const [target] of targets) {
     const path = join(root, `daemon/native/${options.version}/${target}/manifest.json`)
     const metadata = JSON.parse(await readFile(path, 'utf8'))
-    metadata.url = metadata.url.replace('https://updates.hexbot.app/', '')
+    metadata.path = metadata.url.replace('https://updates.hexbot.app/', '')
     await writeFile(path, JSON.stringify(metadata))
   }
   const canonical = await makeInstallManifest(root, options)
   const mirror = await makeInstallManifest(root, { ...options, baseUrl: 'https://mirror.example/updates/' })
-  assert.deepEqual(mirror, canonical)
+  for (const [target, entries] of Object.entries(canonical.targets)) {
+    for (const [option, artifact] of Object.entries(entries)) {
+      assert.equal(mirror.targets[target][option].path, artifact.path)
+      assert.equal(mirror.targets[target][option].url, `https://mirror.example/updates/${artifact.path}`)
+    }
+  }
 })
