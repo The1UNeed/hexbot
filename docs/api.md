@@ -18,7 +18,7 @@ data model. The native transport and event projection live in
 | bot model | profile `model` + `provider` |
 | avatar | profile asset `avatar` |
 | bot memory | profile `memories/MEMORY.md` (the core `USER.md` target is off) |
-| history search | in-memory FTS5 index over the bot's sections, kept in the daemon and refreshed section by section as history changes (`native_history_versions` in `hexbot-runtime.db`) |
+| history search | in-memory FTS5 index over the bot's sections, refreshed as history changes (`native_history_versions` in `hexbot-runtime.db`); the asking section is excluded from results and BM25 statistics; cache budget counts retained JSON and allocated SQLite pages |
 | About you | `~/.hexbot/users/<owner_id>/user.md`, injected every turn by the hexbot plugin |
 
 ## Core methods the client calls directly

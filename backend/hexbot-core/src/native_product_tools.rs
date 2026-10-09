@@ -675,8 +675,7 @@ fn manage_skills(home: &Path, bot: &str, p: &Value) -> Result<Value> {
 
 /// A section as history search sees it, with the row values and history version
 /// it was read at, so a refresh can tell whether it needs reading again. `bytes`
-/// is what it costs to keep: the text twice (the messages and the FTS5 copy)
-/// plus the per-message objects.
+/// estimates the retained JSON and object overhead; SQLite pages count separately.
 struct RecallSession {
     id: String,
     title: String,
@@ -685,6 +684,8 @@ struct RecallSession {
     archived: Option<f64>,
     version: i64,
     messages: Vec<Value>,
+    // Inclusive FTS rowid range: the title followed by eligible messages.
+    rowids: (i64, i64),
     bytes: usize,
 }
 impl RecallSession {
@@ -715,13 +716,14 @@ struct RecallKey {
 }
 /// Least recently used first. An index is taken out while a search refreshes and
 /// uses it, so two searches for the same key at once each build their own; the
-/// last one put back wins, and both are correct.
+/// last one put back replaces any earlier entry for that key. Each search
+/// checks database versions independently.
 static INDEXES: Mutex<Vec<(RecallKey, RecallIndex)>> = Mutex::new(Vec::new());
 const INDEX_LIMIT: usize = 8;
-/// What the kept indexes may take together, by each session's `bytes` estimate.
+/// Budget for retained JSON, object overhead, and allocated SQLite pages.
+/// In-flight searches and transient query allocations are outside this budget.
 const INDEX_BYTES: usize = 256 << 20;
-/// What one kept message costs beyond its text: the JSON object with its seven
-/// keys and values, the row in the FTS5 table, and the list slot.
+/// Estimated object and list overhead beyond each message's serialized JSON.
 const MESSAGE_BYTES: usize = 512;
 
 static SECTIONS_READ: AtomicU64 = AtomicU64::new(0);
@@ -739,15 +741,31 @@ fn take_index(key: &RecallKey) -> Option<RecallIndex> {
     let at = cache.iter().position(|(k, _)| k == key)?;
     Some(cache.remove(at).1)
 }
-fn store_index(key: RecallKey, index: RecallIndex) {
+impl RecallIndex {
+    fn estimated_bytes(&self) -> Result<usize> {
+        let pages: usize = self
+            .index
+            .query_row("PRAGMA page_count", [], |r| r.get(0))?;
+        let page_size: usize = self.index.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+        Ok(pages * page_size + self.sessions.iter().map(|s| s.bytes).sum::<usize>())
+    }
+}
+fn store_index(key: RecallKey, index: RecallIndex) -> Result<()> {
+    // A single oversized index must not evict other bots' useful entries.
+    if index.estimated_bytes()? > INDEX_BYTES {
+        return Ok(());
+    }
     let mut cache = INDEXES.lock().unwrap_or_else(|e| e.into_inner());
+    cache.retain(|(k, _)| k != &key);
     cache.push((key, index));
-    let bytes = |index: &RecallIndex| index.sessions.iter().map(|s| s.bytes).sum::<usize>();
     while cache.len() > INDEX_LIMIT
-        || cache.iter().map(|(_, i)| bytes(i)).sum::<usize>() > INDEX_BYTES
+        || cache.iter().try_fold(0, |bytes, (_, index)| {
+            index.estimated_bytes().map(|size| bytes + size)
+        })? > INDEX_BYTES
     {
         cache.remove(0);
     }
+    Ok(())
 }
 /// The legacy database and its WAL, which only a purge touches; any change rebuilds.
 fn legacy_stamp(path: &Path) -> Result<Option<Vec<(std::time::SystemTime, u64)>>> {
@@ -826,10 +844,12 @@ fn read_session(
         }
     }
     let title = text(section, "title").to_owned();
-    let bytes = title.len() * 2
+    let bytes = id.len()
+        + title.len()
+        + std::mem::size_of::<RecallSession>()
         + messages
             .iter()
-            .map(|m| text(m, "content").len() * 2 + MESSAGE_BYTES)
+            .map(|m| m.to_string().len() + MESSAGE_BYTES)
             .sum::<usize>();
     Ok(RecallSession {
         id: id.to_owned(),
@@ -839,18 +859,20 @@ fn read_session(
         archived: section["archived_at"].as_f64(),
         version,
         messages,
+        rowids: (0, 0),
         bytes,
     })
 }
 fn index_session(
     index: &Connection,
-    session: &RecallSession,
+    session: &mut RecallSession,
     roles: &BTreeSet<&str>,
 ) -> Result<()> {
     let mut insert = index.prepare_cached(
         "INSERT INTO recall(content,session_id,message_index,time) VALUES(?,?,?,?)",
     )?;
     insert.execute(params![session.title, session.id, -1i64, session.updated])?;
+    let first = index.last_insert_rowid();
     for (midx, message) in session.messages.iter().enumerate() {
         let role = if message["role"] == "toolResult" {
             "tool"
@@ -866,14 +888,28 @@ fn index_session(
             ])?;
         }
     }
+    session.rowids = (first, index.last_insert_rowid());
+    Ok(())
+}
+fn delete_session(index: &Connection, session: &RecallSession) -> Result<()> {
+    index.execute(
+        "DELETE FROM recall WHERE rowid BETWEEN ? AND ?",
+        params![session.rowids.0, session.rowids.1],
+    )?;
     Ok(())
 }
 /// The index for `key`, brought up to date. Every section's row and history
 /// version are compared on each call; only sections that changed, appeared, or
-/// went away touch the FTS5 table, so the result is what a rebuild would give.
+/// went away touch the FTS5 table. The asking section keeps its old rows and
+/// version until another section searches; answer removes it before ranking.
 /// A deleted section loses its row in `sections` in the same transaction that
 /// removes it, so its messages stop being searchable at the next query.
-fn recall(home: &Path, key: &RecallKey, roles: &BTreeSet<&str>) -> Result<RecallIndex> {
+fn recall(
+    home: &Path,
+    key: &RecallKey,
+    roles: &BTreeSet<&str>,
+    excluded: &str,
+) -> Result<RecallIndex> {
     let sections = common::rows(
         &db::open(home)?,
         "SELECT * FROM sections WHERE owner_id=? AND bot=? ORDER BY updated_at DESC,id ASC",
@@ -913,21 +949,27 @@ fn recall(home: &Path, key: &RecallKey, roles: &BTreeSet<&str>) -> Result<Recall
     let tx = index.index.transaction()?;
     for section in &sections {
         let id = text(section, "id");
+        if id == excluded {
+            if let Some(session) = kept.remove(id) {
+                index.sessions.push(session);
+            }
+            continue;
+        }
         let version = runtime_store::history_version(&conn, id)?;
         match kept.remove(id) {
             Some(session) if session.unchanged(section, version) => {
                 index.sessions.push(session);
                 continue;
             }
-            Some(_) => tx.execute("DELETE FROM recall WHERE session_id=?", [id])?,
-            None => 0,
+            Some(session) => delete_session(&tx, &session)?,
+            None => (),
         };
-        let session = read_session(&conn, legacy_db.as_ref(), section, version)?;
-        index_session(&tx, &session, roles)?;
+        let mut session = read_session(&conn, legacy_db.as_ref(), section, version)?;
+        index_session(&tx, &mut session, roles)?;
         index.sessions.push(session);
     }
-    for id in kept.keys() {
-        tx.execute("DELETE FROM recall WHERE session_id=?", [id])?;
+    for session in kept.values() {
+        delete_session(&tx, session)?;
     }
     tx.commit()?;
     Ok(index)
@@ -971,16 +1013,17 @@ fn search_sessions(home: &Path, owner: &str, bot: &str, current: &str, p: &Value
         bot: target.to_owned(),
         roles: roles.iter().copied().collect::<Vec<_>>().join(","),
     };
-    let index = recall(home, &key, &roles)?;
-    let result = answer(&index, target, p, if target == bot { current } else { "" });
-    store_index(key, index);
+    let excluded = if target == bot { current } else { "" };
+    let mut index = recall(home, &key, &roles, excluded)?;
+    let result = answer(&mut index, target, p, excluded);
+    store_index(key, index)?;
     result
 }
 /// The answer for one asking section: the index minus `excluded`, the section
 /// whose history is already in the asking bot's context. Read from the same
 /// kept rows every section of the bot shares, it is what a rebuild without
 /// that section would give.
-fn answer(index: &RecallIndex, target: &str, p: &Value, excluded: &str) -> Result<Value> {
+fn answer(index: &mut RecallIndex, target: &str, p: &Value, excluded: &str) -> Result<Value> {
     let sessions = index
         .sessions
         .iter()
@@ -1066,6 +1109,27 @@ fn answer(index: &RecallIndex, target: &str, p: &Value, excluded: &str) -> Resul
             .collect::<Vec<_>>();
         return Ok(json!({"success":true,"mode":"browse","count":results.len(),"results":results}));
     }
+    // Removing the asking section from FTS also removes its BM25 corpus counts.
+    // finish rolls back and releases the savepoint even when MATCH fails.
+    let savepoint = index.index.savepoint()?;
+    let result = (|| {
+        if let Some(session) = index.sessions.iter().find(|s| s.id == excluded) {
+            delete_session(&savepoint, session)?;
+        }
+        answer_matches(&savepoint, &sessions, target, p, query, limit, window)
+    })();
+    savepoint.finish()?;
+    result
+}
+fn answer_matches(
+    connection: &Connection,
+    sessions: &[&RecallSession],
+    target: &str,
+    p: &Value,
+    query: &str,
+    limit: usize,
+    window: usize,
+) -> Result<Value> {
     // Ties end in the order a rebuild inserts: newest section first, then its
     // messages, so a refreshed index and a fresh one rank alike.
     let order = match text(p, "sort") {
@@ -1077,7 +1141,7 @@ fn answer(index: &RecallIndex, target: &str, p: &Value, excluded: &str) -> Resul
         .iter()
         .map(|s| (s.id.as_str(), s))
         .collect::<HashMap<_, _>>();
-    let mut stmt = index.index.prepare(&format!(
+    let mut stmt = connection.prepare(&format!(
         "SELECT session_id,message_index FROM recall WHERE recall MATCH ? ORDER BY {order}"
     ))?;
     let rows = stmt
@@ -1222,4 +1286,207 @@ pub async fn call(
             ))
         }),
     )
+}
+
+#[cfg(test)]
+mod history_index_tests {
+    use super::*;
+
+    fn session(id: &str, contents: &[&str]) -> RecallSession {
+        RecallSession {
+            id: id.to_owned(),
+            title: id.to_owned(),
+            started: 1.0,
+            updated: 2.0,
+            archived: None,
+            version: 1,
+            messages: contents
+                .iter()
+                .enumerate()
+                .map(|(i, content)| json!({"id":i,"role":"user","content":content}))
+                .collect(),
+            rowids: (0, 0),
+            bytes: 0,
+        }
+    }
+    fn build(mut sessions: Vec<RecallSession>) -> RecallIndex {
+        let index = Connection::open_in_memory().unwrap();
+        index.execute_batch("CREATE VIRTUAL TABLE recall USING fts5(content,session_id UNINDEXED,message_index UNINDEXED,time UNINDEXED)").unwrap();
+        for session in &mut sessions {
+            index_session(&index, session, &BTreeSet::from(["user"])).unwrap();
+        }
+        RecallIndex {
+            sessions,
+            legacy: None,
+            index,
+        }
+    }
+    fn scores(index: &Connection) -> Vec<(String, f64)> {
+        index.prepare("SELECT session_id,bm25(recall) FROM recall WHERE recall MATCH 'alpha OR beta' ORDER BY bm25(recall),session_id,message_index")
+            .unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap().collect::<rusqlite::Result<_>>().unwrap()
+    }
+
+    #[test]
+    fn excluded_section_has_exact_rebuild_ranking_and_scores() {
+        // One long alpha document and twenty short ones both flip A/B ranking
+        // if the asking section contributes to BM25 corpus statistics.
+        let repeated = "alpha ".repeat(20);
+        for active in [vec![repeated.as_str()], vec!["alpha"; 20]] {
+            let mut cached = build(vec![
+                session("A", &["alpha alpha"]),
+                session("B", &["beta"]),
+                session("current", &active),
+            ]);
+            // This oracle never inserts the asking section, or uses exclusion.
+            let fresh = build(vec![
+                session("A", &["alpha alpha"]),
+                session("B", &["beta"]),
+            ]);
+            let expected = scores(&fresh.index);
+            assert_eq!(
+                expected
+                    .iter()
+                    .map(|(id, _)| id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["A", "B"]
+            );
+            let before = scores(&cached.index);
+            assert_eq!(
+                before
+                    .iter()
+                    .filter(|(id, _)| id != "current")
+                    .map(|(id, _)| id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["B", "A"]
+            );
+            for sort in ["", "newest", "oldest"] {
+                let args = json!({"query":"alpha OR beta","sort":sort,"detail":"full"});
+                let sessions = fresh.sessions.iter().collect::<Vec<_>>();
+                let oracle =
+                    answer_matches(&fresh.index, &sessions, "owl", &args, "alpha OR beta", 3, 5)
+                        .unwrap();
+                assert_eq!(
+                    answer(&mut cached, "owl", &args, "current").unwrap(),
+                    oracle
+                );
+                assert!(cached.index.is_autocommit());
+                assert_eq!(scores(&cached.index), before);
+            }
+            let range = cached.sessions[2].rowids;
+            let savepoint = cached.index.savepoint().unwrap();
+            savepoint
+                .execute(
+                    "DELETE FROM recall WHERE rowid BETWEEN ? AND ?",
+                    params![range.0, range.1],
+                )
+                .unwrap();
+            assert_eq!(scores(&savepoint), expected);
+            savepoint.finish().unwrap();
+            assert_eq!(scores(&cached.index), before);
+            assert_eq!(
+                answer(
+                    &mut cached,
+                    "owl",
+                    &json!({"query":"\"unterminated"}),
+                    "current"
+                )
+                .unwrap_err()
+                .code,
+                4200
+            );
+            assert!(cached.index.is_autocommit());
+            assert_eq!(scores(&cached.index), before);
+        }
+    }
+
+    #[test]
+    fn retained_native_and_legacy_tool_calls_count_toward_budget() {
+        let home = tempfile::tempdir().unwrap();
+        let conn = runtime_store::open(home.path()).unwrap();
+        let calls = json!([{"name":"write","arguments":{"text":"x".repeat(8 << 20)}}]);
+        runtime_store::append(
+            home.path(),
+            "native",
+            json!({"role":"assistant","tool_calls":calls}),
+        )
+        .unwrap();
+        let section = json!({"id":"native","title":"Native"});
+        let native = read_session(&conn, None, &section, 1).unwrap();
+        assert_eq!(shaped(&native.messages[0], None)["tool_calls"], calls);
+        assert!(native.bytes > (8 << 20) + MESSAGE_BYTES);
+        let legacy = Connection::open_in_memory().unwrap();
+        legacy.execute_batch("CREATE TABLE sessions(id TEXT,session_key TEXT); CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,tool_calls TEXT); INSERT INTO sessions VALUES('legacy','legacy');").unwrap();
+        legacy
+            .execute(
+                "INSERT INTO messages VALUES(1,'legacy','assistant','',?)",
+                [calls.to_string()],
+            )
+            .unwrap();
+        let legacy = read_session(&conn, Some(&legacy), &json!({"id":"legacy"}), 0).unwrap();
+        assert!(legacy.bytes > (8 << 20) + MESSAGE_BYTES);
+    }
+
+    #[test]
+    fn allocated_sqlite_pages_count_after_history_is_deleted() {
+        let content = "large searchable history ".repeat(350_000);
+        let mut index = build(vec![
+            session("large", &[&content]),
+            session("small", &["survivor"]),
+        ]);
+        let large = index.sessions.remove(0);
+        assert_eq!(large.rowids, (1, 2));
+        assert_eq!(index.sessions[0].rowids, (3, 4));
+        delete_session(&index.index, &large).unwrap();
+        assert_eq!(
+            index
+                .index
+                .query_row("SELECT count(*) FROM recall", [], |r| r.get::<_, usize>(0))
+                .unwrap(),
+            2
+        );
+        let allocated = index.estimated_bytes().unwrap();
+        let fresh = build(vec![session("small", &["survivor"])]);
+        assert!(allocated > 8 << 20);
+        assert!(allocated > fresh.estimated_bytes().unwrap());
+        let pages: usize = index
+            .index
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .unwrap();
+        let page_size: usize = index
+            .index
+            .query_row("PRAGMA page_size", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(allocated, pages * page_size);
+    }
+
+    #[test]
+    fn cache_replaces_duplicate_keys_and_preserves_other_entries_on_oversize() {
+        fn key(bot: &str) -> RecallKey {
+            RecallKey {
+                home: PathBuf::from("cache-test"),
+                owner: "local".to_owned(),
+                bot: bot.to_owned(),
+                roles: "user".to_owned(),
+            }
+        }
+        forget_history_indexes();
+        store_index(key("owl"), build(vec![session("old", &["alpha"])])).unwrap();
+        store_index(key("fox"), build(vec![session("other", &["beta"])])).unwrap();
+        // Two concurrent misses can return independently; the last replaces old.
+        store_index(key("owl"), build(vec![session("new", &["alpha"])])).unwrap();
+        {
+            let cache = INDEXES.lock().unwrap();
+            assert_eq!(cache.len(), 2);
+            assert_eq!(cache[0].0.bot, "fox");
+            assert_eq!(cache[1].1.sessions[0].id, "new");
+        }
+        let mut oversized = build(vec![session("huge", &["alpha"])]);
+        oversized.sessions[0].bytes = INDEX_BYTES;
+        store_index(key("owl"), oversized).unwrap();
+        let retained = take_index(&key("owl")).unwrap();
+        assert_eq!(retained.sessions[0].id, "new");
+        assert!(take_index(&key("fox")).is_some());
+        assert!(INDEXES.lock().unwrap().is_empty());
+    }
 }

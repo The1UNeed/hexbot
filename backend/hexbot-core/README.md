@@ -106,14 +106,22 @@ it also installs over SSH when nobody is signed in at the screen.
   displayed history: a message row, or the journal link that orders it or
   hides it on another branch. History search (`session_search`) keeps an
   in-memory FTS5 index per bot, owner, and role filter, shared by every
-  section of the bot (the asking section is left out when a query is
-  answered), at most eight and about 256 MB in all, estimated as the text
-  twice plus 512 bytes a message, and on every query compares each
-  section's row and version with what it indexed, re-reading only sections
-  that changed, appeared, or went away. A hit answers in the time of the
-  FTS5 query alone; a deleted section is gone from results at the next
-  query because its `sections` row is, and `delete` drops its version row
-  with the rest of its history.
+  section of the bot. Refresh skips the asking section until another section
+  searches. For a full-text query, a savepoint temporarily deletes the asking
+  section's rowid range before MATCH and BM25 ranking, then rolls back and
+  releases it even on an invalid expression. Its text cannot affect ranking.
+  Index refresh and removal of deleted sections use the same rowid ranges.
+  The cache retains at most eight indexes within a 256 MiB estimated budget:
+  all retained message JSON, including tool-call arguments, plus 512 bytes a
+  message for object overhead, section metadata, and SQLite's allocated
+  `page_count * page_size`, including pages left after history deletion.
+  This estimate is not a process memory limit; in-flight searches, temporary
+  results, and other SQLite allocations are outside it. An oversized index is
+  answered but not retained, without evicting other indexes. Concurrent searches
+  can build separately; the last returned entry replaces the same cache key.
+  Every query checks section metadata and history versions; unchanged eligible
+  sections require no transcript reads. A deleted section disappears at the
+  next query, and `delete` drops its version row with the rest of its history.
 - Settled Pi processes retire after 15 idle minutes. Session IDs remain valid;
   a later RPC resumes the durable session. Staged files and pending questions
   prevent retirement. Replay retention is bounded by session count and bytes.
