@@ -86,6 +86,14 @@ it also installs over SSH when nobody is signed in at the screen.
   records proposals instead, and its soul tool only reads. The memory tool's
   `add`, `append`, and `replace` end each entry with the month it was learned
   (`[YYYY-MM]`); `set` and the app write text as given (`docs/dreaming.md`).
+  Daily notes are one file a day in `memories/notes/YYYY-MM-DD.md`, 4,000
+  characters a day, written by the tool's `note` action and read with
+  `read {notes}`, never injected, read by the dream before transcripts, and
+  removed when older than 30 days on reads, listings, appends, and dreams.
+  Appending returns a compact confirmation; only an explicit read returns
+  the day's text. The editor checks the text it loaded before saving or
+  deleting a day. Scheduled jobs propose notes under the 4,000-character
+  day cap; proposed memory changes use the bot's memory cap.
 - `hexbot-runtime.db` stores native transcript projections, usage, and frozen
   session options. Pi keeps its conversation JSONL under the native session
   directory. Existing Python `state.db` history is imported once, including

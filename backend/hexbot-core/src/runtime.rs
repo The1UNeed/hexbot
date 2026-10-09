@@ -976,7 +976,7 @@ impl Runtime {
             String::new()
         };
         let prompt = format!(
-            "You are {}, a Hexbot bot. Use your tools to complete the user's requests. Conversations persist. Keep private information within this user's conversations.\n\n# Soul\n{}\n\n# Memory\n{}{}\n\nUse the memory tool for durable notes. Use hexbot_soul to change your persona and tell the user when you do. Never modify the user's About you text.",
+            "You are {}, a Hexbot bot. Use your tools to complete the user's requests. Conversations persist. Keep private information within this user's conversations.\n\n# Soul\n{}\n\n# Memory\n{}{}\n\nUse the memory tool for memory and daily notes. Use hexbot_soul to change your persona and tell the user when you do. Never modify the user's About you text.",
             botrow["display_name"].as_str().unwrap_or(bot),
             soul,
             memory,
@@ -2631,7 +2631,7 @@ impl Runtime {
                     && let Some(job) = self.session_settings(s)?["job"].as_str()
                 {
                     let text = match action {
-                        "add" | "append" | "set" => required(args, "text")?,
+                        "add" | "append" | "set" | "note" => required(args, "text")?,
                         "replace" => {
                             required(args, "old_text")?;
                             args["text"].as_str().unwrap_or("")
@@ -2643,7 +2643,11 @@ impl Runtime {
                         _ => return Err(Error::new(4202, "unknown memory action")),
                     };
                     check_memory_edit("", text)?;
-                    memory.check_bot_fits(&bot_owner, &s.bot, text)?;
+                    if action == "note" {
+                        crate::memory::check_note_fits(text)?;
+                    } else {
+                        memory.check_bot_fits(&bot_owner, &s.bot, text)?;
+                    }
                     let kept = ["text", "old_text"]
                         .into_iter()
                         .filter_map(|k| args[k].as_str().map(|v| (k.to_owned(), json!(v))))
@@ -2663,7 +2667,26 @@ impl Runtime {
                 // written and stamped when the dream applies it through this
                 // same arm. `set` is written as given.
                 match action {
-                    "read" => memory.get_bot(&bot_owner, &s.bot),
+                    "read" => match args["notes"]
+                        .as_str()
+                        .filter(|spec| !spec.trim().is_empty())
+                    {
+                        Some(spec) => {
+                            let (from, to) = crate::memory::parse_note_range(
+                                spec,
+                                crate::memory::local_today(),
+                            )?;
+                            memory.get_notes(&bot_owner, &s.bot, from, to)
+                        }
+                        None => memory.get_bot(&bot_owner, &s.bot),
+                    },
+                    // A note is dated by its file, so it carries no month stamp.
+                    "note" => memory.add_note(
+                        &bot_owner,
+                        &s.bot,
+                        required(args, "text")?,
+                        check_memory_edit,
+                    ),
                     "add" | "append" => {
                         let text = crate::memory::stamp_entries(
                             required(args, "text")?,
@@ -3339,7 +3362,7 @@ fn base_tools() -> Vec<Value> {
         }),
         json!({
             "name": "memory",
-            "description": "Read and maintain your private persistent memory. About you belongs to the user and cannot be edited.",
+            "description": "Read and maintain your private persistent memory, and keep short daily notes. About you belongs to the user and cannot be edited.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3351,11 +3374,14 @@ fn base_tools() -> Vec<Value> {
                             "append",
                             "replace",
                             "set",
-                            "remove"
-                        ]
+                            "remove",
+                            "note"
+                        ],
+                        "description": "read, add, append, replace, set and remove work on memory; note appends text to today's notes"
                     },
                     "text": { "type": "string" },
-                    "old_text": { "type": "string" }
+                    "old_text": { "type": "string" },
+                    "notes": { "type": "string", "description": "With read: return notes instead of memory for today, yesterday, a day (YYYY-MM-DD) or a range of up to 7 days (YYYY-MM-DD..YYYY-MM-DD)" }
                 },
                 "required": ["action"]
             }
@@ -3462,7 +3488,7 @@ fn show_html(home: &Path, stored: &str, args: &Value) -> Result<Value> {
 #[rustfmt::skip]
 const HEXBOT_GUIDANCE: &str = r###"# Hexbot
 You are one of the user's bots in Hexbot, a desktop app. Each bot has a face, a model, skills, its own soul and its own memory. You talk with the user in sections (conversations) and in rooms (group chats with the user and other bots).
-Three texts shape you. Your soul, above, is who you are; the user edits it, and so may you with hexbot_soul when the user asks you to change or you learn how they want you to work — read it first, write the complete text, and say what you changed. About you is the user's own note about themselves; only they write it. Your memory is what you have learned: short entries you write with the memory tool as you go, tidied by your daily dream when dreaming is on. Each entry you add or replace gets the month on the end, so you can see how old a fact is. It is short on purpose; keep it dense.
+Three texts shape you. Your soul, above, is who you are; the user edits it, and so may you with hexbot_soul when the user asks you to change or you learn how they want you to work — read it first, write the complete text, and say what you changed. About you is the user's own note about themselves; only they write it. Your memory is what you have learned: short entries you write with the memory tool as you go, tidied by your daily dream when dreaming is on. Each entry you add or replace gets the month on the end, so you can see how old a fact is. It is short on purpose; keep it dense. You also keep daily notes with the memory tool's note action: at a natural pause, not after every message, note what happened that is worth remembering; notes stay out of your prompt, you can read them back by day, and your dream folds what lasts into memory.
 
 # Acting and asking
 Read, search, organise and work inside your own files and sections freely. Ask before anything that leaves this computer or reaches a person outside Hexbot — messaging or emailing them, posting, paying, deleting what cannot be recovered — unless the user already told you to in this section, or their approval setting says not to ask. Do the work first, so what you ask the user to approve is concrete. Asking is not free: when a request has an obvious reading, take it, and ask only when the answer changes what you would do. No unsolicited warnings or disclaimers.

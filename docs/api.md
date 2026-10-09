@@ -227,6 +227,20 @@ context of its own; the meter belongs to bot sections.
   `hexbot.memory.user.changed`.
 - `hexbot.memory.bot.get {bot}` → `{memory_md, cap: 2200}`
 - `hexbot.memory.bot.set {bot, memory_md}` → same as get.
+- `hexbot.memory.notes.list {bot}` → `{days: [{date, text}], today, cap:
+  4000, retention_days: 30}`. The bot's daily notes, newest day first, each
+  `date` a local day of the daemon as `YYYY-MM-DD`; `today` is the daemon's
+  current day, so a client in another timezone labels Today and Yesterday
+  as the daemon files them. Owner only.
+- `hexbot.memory.notes.set {bot, date, text, expected?}` → `{date, text,
+  cap}` writes one day as given; an empty `text` removes the day. Future
+  dates return 4202. With `expected`, the text the editor loaded, a changed
+  day returns 4209. The app merges appended lines or keeps the draft on
+  other conflicts.
+- `hexbot.memory.notes.delete {bot, date, expected?}` → `{date, deleted: true}`.
+  With `expected`, deletion returns 4209 if the day has changed; the file stays.
+  Notes are written by the bot through its `memory` tool (`note`, and `read`
+  with `notes`); see `docs/dreaming.md`.
 
 ### Dreaming
 
@@ -320,7 +334,7 @@ plugin toolset, `hexbot-soul`, which is never written to
 `profiles.configure {soul}` and broadcasts `hexbot.bots.changed`; it reaches
 new sections only, since a running section's prompt is frozen. The chat
 shows a "Soul updated" mark under the bubble, as it shows "Memory updated"
-for the builtin memory tool.
+for the builtin memory tool and "Note added" for its `note` action.
 
 The `hexbot_rename_section {title}` tool (toolset `hexbot-section`, kept on
 the same way) renames the section the bot is speaking in, up to 60

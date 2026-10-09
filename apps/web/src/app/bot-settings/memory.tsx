@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '../../components/ui/button'
 import { SkeletonLines } from '../../components/ui/skeleton'
@@ -8,11 +8,16 @@ import { Textarea } from '../../components/ui/textarea'
 import {
   botMemoryGet,
   botMemorySet,
+  type BotNotes,
+  botNotesDelete,
+  botNotesList,
+  botNotesSet,
   type Dream,
   dreamingList,
   dreamingRestore,
   dreamingRunNow,
-  dreamingStatus
+  dreamingStatus,
+  NOTES_CHANGED
 } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import type { Bot } from '../../lib/types'
@@ -30,16 +35,21 @@ import {
   type SaveBot
 } from './shared'
 
-/** One capped memory text with a counter. Used for About you and a bot's memory. */
+/** One capped memory text with a counter. Used for About you, a bot's memory and a day of notes. */
 export function MemoryEditor({
+  actions,
   cap,
+  disabled = false,
   label,
   onSave,
   placeholder,
   rows = 6,
   value
 }: {
+  /** Sits left of Save: a Delete button, for a text that can go as a whole. */
+  actions?: React.ReactNode
   cap: number
+  disabled?: boolean
   label: string
   onSave: (value: string) => Promise<void>
   placeholder?: string
@@ -49,15 +59,30 @@ export function MemoryEditor({
   const [draft, setDraft] = useState(value)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => setDraft(value), [value])
-  const tooLong = draft.length > cap
+  const [saving, setSaving] = useState(false)
+  const pending = useRef(false)
+  const length = [...draft].length
+  const tooLong = length > cap
   const dirty = draft !== value
 
   const save = () => {
+    if (pending.current || disabled) {
+      return
+    }
+
     if (tooLong) {
       return setError(`Keep this to ${cap} characters or fewer.`)
     }
 
-    void onSave(draft).catch(cause => setError(errorText(cause)))
+    pending.current = true
+    setSaving(true)
+    setError(null)
+    void onSave(draft)
+      .catch(cause => setError(errorText(cause)))
+      .finally(() => {
+        pending.current = false
+        setSaving(false)
+      })
   }
 
   return (
@@ -66,6 +91,7 @@ export function MemoryEditor({
         <Textarea
           aria-label={label}
           className="rounded-none bg-transparent px-4 py-3 hover:bg-transparent focus-visible:bg-transparent"
+          disabled={disabled || saving}
           onChange={event => {
             setDraft(event.target.value)
             setError(null)
@@ -79,13 +105,16 @@ export function MemoryEditor({
         <span
           className={cn('text-[length:var(--text-meta)]', tooLong ? 'text-danger' : 'text-muted')}
         >
-          {draft.length} / {cap}
+          {length} / {cap}
         </span>
-        {dirty ? (
-          <Button onClick={save} size="sm" variant="primary">
-            Save
-          </Button>
-        ) : null}
+        <span className="flex items-center gap-2">
+          {actions}
+          {dirty ? (
+            <Button disabled={disabled || saving} onClick={save} size="sm" variant="primary">
+              Save
+            </Button>
+          ) : null}
+        </span>
       </div>
       {error ? (
         <span className="block px-1 text-[length:var(--text-meta)] text-danger" role="alert">
@@ -96,7 +125,11 @@ export function MemoryEditor({
   )
 }
 
-export function MemoryTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
+export function MemoryTab(props: { bot: Bot; onSave: SaveBot }) {
+  return <BotMemoryTab key={props.bot.name} {...props} />
+}
+
+function BotMemoryTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const botName = bot.name
   const [memory, setMemory] = useState<Awaited<ReturnType<typeof botMemoryGet>> | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -133,6 +166,7 @@ export function MemoryTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
             <SkeletonLines label="Loading memory" />
           )}
         </div>
+        <NotesBlock bot={botName} />
         <Group>
           <Row
             control={
@@ -154,6 +188,284 @@ export function MemoryTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           onSave={onSave}
         />
       </div>
+    </div>
+  )
+}
+
+/** A note day as the daemon files it, `YYYY-MM-DD`, for a local date. */
+export function noteDay(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, '0')
+
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+/** A note day as a local date; a date with a time and no zone is read as local time. */
+const dayDate = (date: string) => new Date(`${date}T00:00:00`)
+
+/**
+ * "Today", "Yesterday", or the day itself, with the year only when it is not
+ * this one. `today` is the daemon's day, so a client in another timezone
+ * names the days as the daemon files them.
+ */
+export function noteDayLabel(date: string, today: string): string {
+  const now = dayDate(today)
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
+
+  if (date === today) {
+    return 'Today'
+  }
+
+  if (date === noteDay(yesterday)) {
+    return 'Yesterday'
+  }
+
+  return dayDate(date).toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    weekday: 'short',
+    ...(date.slice(0, 4) === today.slice(0, 4) ? {} : { year: 'numeric' })
+  })
+}
+
+const noteCount = (text: string) => text.split('\n').filter(line => line.trim()).length
+
+/** The question before a day of notes goes. */
+export function deleteNotesQuestion(date: string, today: string): string {
+  const label = noteDayLabel(date, today)
+
+  return label === 'Today' || label === 'Yesterday'
+    ? `Delete ${label.toLowerCase()}'s notes?`
+    : `Delete the notes for ${label}?`
+}
+
+/**
+ * The bot's notes by day: a card listing the days, newest first, and one
+ * editor for the chosen day. The dream folds what lasts into memory.
+ */
+export function NotesBlock({ bot }: { bot: string }) {
+  return <BotNotesBlock bot={bot} key={bot} />
+}
+
+function BotNotesBlock({ bot }: { bot: string }) {
+  const [notes, setNotes] = useState<BotNotes | null>(null)
+  const [chosen, setChosen] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const generation = useRef(0)
+  const pending = useRef(false)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    const request = ++generation.current
+    setError(null)
+    void botNotesList(bot)
+      .then(result => {
+        if (request !== generation.current) {
+          return
+        }
+
+        setNotes(result)
+        setChosen(result.days[0]?.date ?? null)
+      })
+      .catch(cause => {
+        if (request === generation.current) {
+          setError(errorText(cause))
+        }
+      })
+
+    return () => {
+      generation.current += 1
+    }
+  }, [bot])
+
+  const days = notes?.days ?? []
+  const day = days.find(entry => entry.date === chosen) ?? days[0]
+  const today = notes?.today ?? noteDay(new Date())
+
+  /** Keep the list in step after a save or a delete; an empty day is gone. */
+  const update = (date: string, text: string | null) => {
+    if (!notes) {
+      return
+    }
+
+    const next = notes.days.flatMap(entry =>
+      entry.date !== date ? [entry] : text?.trim() ? [{ ...entry, text }] : []
+    )
+
+    setNotes({ ...notes, days: next })
+    setChosen(next.some(entry => entry.date === date) ? date : (next[0]?.date ?? null))
+  }
+
+  /** Only merge new lines after the exact boundary used by the bot's append. */
+  const save = async (date: string, loaded: string, value: string) => {
+    if (pending.current) {
+      return
+    }
+
+    pending.current = true
+    setBusy(true)
+    setError(null)
+    const request = generation.current
+    const active = () => request === generation.current
+
+    try {
+      try {
+        await botNotesSet(bot, date, value, loaded)
+
+        if (active()) {
+          update(date, value)
+        }
+      } catch (cause) {
+        if (!active()) {
+          return
+        }
+
+        if ((cause as { code?: unknown }).code !== NOTES_CHANGED) {
+          throw cause
+        }
+
+        const fresh = await botNotesList(bot)
+
+        if (!active()) {
+          return
+        }
+
+        const current = fresh.days.find(entry => entry.date === date)?.text ?? ''
+
+        if (current === value) {
+          update(date, current)
+
+          return
+        }
+
+        const boundary = `${loaded.trimEnd()}\n`
+
+        if (!current.startsWith(boundary)) {
+          throw new Error('Notes changed elsewhere. Your draft is kept. Copy it before reloading.')
+        }
+
+        const appended = current.slice(boundary.length)
+        const merged = [value.trimEnd(), appended].filter(Boolean).join('\n')
+        await botNotesSet(bot, date, merged, current)
+
+        if (active()) {
+          update(date, merged)
+        }
+      }
+    } catch (cause) {
+      if (active()) {
+        throw cause
+      }
+    } finally {
+      pending.current = false
+
+      if (active()) {
+        setBusy(false)
+      }
+    }
+  }
+
+  const remove = async (date: string, expected: string) => {
+    if (pending.current || !window.confirm(deleteNotesQuestion(date, today))) {
+      return
+    }
+
+    pending.current = true
+    setBusy(true)
+    setError(null)
+    const request = generation.current
+
+    try {
+      await botNotesDelete(bot, date, expected)
+
+      if (request === generation.current) {
+        update(date, null)
+      }
+    } catch (cause) {
+      if (request === generation.current) {
+        setError(errorText(cause))
+      }
+    } finally {
+      pending.current = false
+
+      if (request === generation.current) {
+        setBusy(false)
+      }
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <Group
+        description={`Short notes the bot keeps each day. When dreaming is on, each dream keeps what lasts in memory. Days older than ${notes?.retention_days ?? 30} days are removed.`}
+        title="Notes"
+      >
+        {error ? (
+          <p className="px-4 py-3 text-[length:var(--text-secondary)] text-danger" role="alert">
+            {error}
+          </p>
+        ) : null}
+        {!notes ? (
+          <div className="px-4 py-3">
+            <SkeletonLines label="Loading notes" lines={2} />
+          </div>
+        ) : days.length === 0 ? (
+          <Row title="No notes yet" />
+        ) : (
+          <div aria-label="Days with notes" role="group">
+            {days.map(entry => {
+              const count = noteCount(entry.text)
+              const selected = entry.date === day?.date
+
+              return (
+                <button
+                  aria-pressed={selected}
+                  className={cn(
+                    'flex min-h-[52px] w-full items-center gap-4 px-4 py-2.5 text-left outline-none transition-colors focus-visible:bg-foreground/[0.04]',
+                    selected
+                      ? 'bg-foreground/[0.05] text-foreground'
+                      : 'text-muted hover:bg-foreground/[0.03] hover:text-foreground'
+                  )}
+                  disabled={busy}
+                  key={entry.date}
+                  onClick={() => setChosen(entry.date)}
+                  type="button"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[length:var(--text-body)]">
+                      {noteDayLabel(entry.date, today)}
+                    </span>
+                    <span className="mt-0.5 block text-[length:var(--text-secondary)] text-muted">
+                      {count} {count === 1 ? 'note' : 'notes'}
+                    </span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </Group>
+      {notes && day ? (
+        <MemoryEditor
+          actions={
+            <Button
+              disabled={busy}
+              onClick={() => void remove(day.date, day.text)}
+              size="sm"
+              variant="ghost"
+            >
+              Delete
+            </Button>
+          }
+          cap={notes.cap}
+          disabled={busy}
+          key={day.date}
+          label={`Notes for ${noteDayLabel(day.date, today)}`}
+          onSave={value => save(day.date, day.text, value)}
+          rows={5}
+          value={day.text}
+        />
+      ) : null}
     </div>
   )
 }

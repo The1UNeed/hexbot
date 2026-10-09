@@ -61,6 +61,23 @@ export interface BotMemory {
   memory_md: string
 }
 
+/** One day of a bot's notes: the local day it was filed under and its text. */
+export interface BotNotesDay {
+  date: string
+  text: string
+}
+
+/**
+ * A bot's notes by day, newest first. `today` is the daemon's current local
+ * day, the one its files are named by. Days older than `retention_days` are removed.
+ */
+export interface BotNotes {
+  cap: number
+  days: BotNotesDay[]
+  retention_days: number
+  today: string
+}
+
 /** The About you text: written by the user, read by every one of their bots. */
 export interface UserMemory {
   cap: number
@@ -433,6 +450,35 @@ export function botMemoryGet(bot: string): Promise<BotMemory> {
 
 export function botMemorySet(bot: string, memoryMd: string): Promise<BotMemory> {
   return rpcCall<BotMemory>('hexbot.memory.bot.set', { bot, memory_md: memoryMd })
+}
+
+export function botNotesList(bot: string): Promise<BotNotes> {
+  return rpcCall<BotNotes>('hexbot.memory.notes.list', { bot })
+}
+
+/** The daemon refuses a notes write when the day changed since `expected` was loaded. */
+export const NOTES_CHANGED = 4209
+
+/**
+ * Write one day's notes as given; an empty text removes the day. `expected`
+ * is the text the editor loaded: the daemon answers NOTES_CHANGED instead of
+ * writing over a note the bot added since.
+ */
+export function botNotesSet(
+  bot: string,
+  date: string,
+  text: string,
+  expected?: string
+): Promise<BotNotesDay> {
+  return rpcCall<BotNotesDay>('hexbot.memory.notes.set', { bot, date, expected, text })
+}
+
+export function botNotesDelete(
+  bot: string,
+  date: string,
+  expected: string
+): Promise<{ deleted: boolean }> {
+  return rpcCall<{ deleted: boolean }>('hexbot.memory.notes.delete', { bot, date, expected })
 }
 
 // ---------------------------------------------------------------------------
