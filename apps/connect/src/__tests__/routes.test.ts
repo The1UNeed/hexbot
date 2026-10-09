@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryStore } from "@/lib/store";
+import { MemoryStore, REGISTRATION_CLAIM_LEASE_MS } from "@/lib/store";
 import { FakeTunnelProvider, tunnelName } from "@/lib/tunnels";
 import { setRuntimeForTests } from "@/lib/runtime";
 import { hashToken, randomToken } from "@/lib/tokens";
@@ -30,6 +30,92 @@ async function registration() {
 
 describe("registration lifecycle", () => {
   it("starts, approves, returns credentials once, then reports consumption", async () => { const { started } = await registration(); const firstResponse = await poll(request("/api/register/poll", { device_code: started.device_code })); expect(firstResponse.status).toBe(200); const first = await firstResponse.json(); expect(first).toMatchObject({ status: "approved", slug: expect.any(String), daemon_token: expect.stringMatching(/^hxd_/), tunnel_token: expect.any(String) }); expect(first).toMatchObject({ owner_id: store.users[0].id, issuer: "https://connect.hexbot.app", keys: [expect.objectContaining({ kty: "EC", crv: "P-256" })] }); expect(store.daemons[0].tokenHash).toBe(hashToken(first.daemon_token)); expect(JSON.stringify(store)).not.toContain(first.daemon_token); expect(JSON.stringify(store)).not.toContain(first.tunnel_token); const second = await poll(request("/api/register/poll", { device_code: started.device_code })); expect(second.status).toBe(410); expect((await second.json()).error).toBe("consumed"); });
+});
+
+/** Holds the next tunnel creation open: `entered` resolves once an approval is inside it, `release` lets it finish. */
+function holdTunnelCreation() {
+  let release!: () => void; let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }); const inside = new Promise<void>(resolve => { entered = resolve; });
+  const create = tunnels.create.bind(tunnels);
+  vi.spyOn(tunnels, "create").mockImplementationOnce(async slug => { entered(); await gate; return create(slug); });
+  return { entered: inside, release };
+}
+const startRegistration = async () => (await start(request("/api/register/start", { daemon_name: "Home", platform: "linux" }))).json();
+
+describe("overlapping approvals of one user code", () => {
+  it("let one account win and leave one daemon and one tunnel", async () => {
+    const started = await startRegistration();
+    const hold = holdTunnelCreation();
+    const first = approve(request("/api/register/approve", { user_code: started.user_code }));
+    await hold.entered;
+    // The second approval runs to completion while the first still waits for its tunnel.
+    const second = await approve(request("/api/register/approve", { user_code: started.user_code }));
+    expect(second.status).toBe(409); expect((await second.json()).error).toBe("already_approved");
+    hold.release();
+    expect((await first).status).toBe(200);
+    expect(store.daemons).toHaveLength(1); expect(tunnels.create).toHaveBeenCalledTimes(1);
+    expect(store.registrations[0].daemonId).toBe(store.daemons[0].id);
+  });
+  it("gives the claim back when the tunnel cannot be created", async () => {
+    const started = await startRegistration();
+    vi.spyOn(tunnels, "create").mockRejectedValueOnce(new Error("cloudflare down"));
+    await expect(approve(request("/api/register/approve", { user_code: started.user_code }))).rejects.toThrow("cloudflare down");
+    expect(store.registrations[0].approvedAt).toBeNull();
+    expect((await approve(request("/api/register/approve", { user_code: started.user_code }))).status).toBe(200);
+  });
+  it("revokes the daemon and deletes its tunnel when the approval cannot be recorded", async () => {
+    const started = await startRegistration();
+    vi.spyOn(store, "approveRegistration").mockRejectedValueOnce(new Error("database down"));
+    await expect(approve(request("/api/register/approve", { user_code: started.user_code }))).rejects.toThrow("database down");
+    const [dead] = store.daemons; expect(dead.revokedAt).not.toBeNull(); expect(dead.tunnelId).toBe(""); expect(tunnels.deleted).toEqual([expect.any(String)]);
+    expect(store.registrations[0]).toMatchObject({ approvedAt: null, userId: null, daemonId: null });
+    const retried = await approve(request("/api/register/approve", { user_code: started.user_code })); expect(retried.status).toBe(200);
+    const listed = await store.listDaemons(store.users[0].id, true); expect(listed).toHaveLength(1); expect(listed[0].id).toBe((await retried.json()).daemon_id);
+  });
+});
+
+describe("a claim whose approval died before it recorded a daemon", () => {
+  const claimAgo = (ms: number) => { const row = store.registrations[0]; expect(row.daemonId).toBeNull(); row.approvedAt = new Date(row.approvedAt!.getTime() - ms); };
+  it("blocks a retry while its lease lasts", async () => {
+    const started = await startRegistration();
+    vi.spyOn(store, "approveRegistration").mockRejectedValueOnce(new Error("database down"));
+    vi.spyOn(store, "releaseRegistration").mockResolvedValueOnce(undefined);
+    await expect(approve(request("/api/register/approve", { user_code: started.user_code }))).rejects.toThrow("database down");
+    claimAgo(REGISTRATION_CLAIM_LEASE_MS - 1000);
+    expect((await approve(request("/api/register/approve", { user_code: started.user_code }))).status).toBe(409);
+  });
+  it("lets a retry take it over after the lease", async () => {
+    const started = await startRegistration();
+    vi.spyOn(store, "approveRegistration").mockRejectedValueOnce(new Error("database down"));
+    vi.spyOn(store, "releaseRegistration").mockResolvedValueOnce(undefined);
+    await expect(approve(request("/api/register/approve", { user_code: started.user_code }))).rejects.toThrow("database down");
+    claimAgo(REGISTRATION_CLAIM_LEASE_MS + 1000);
+    const retried = await approve(request("/api/register/approve", { user_code: started.user_code })); expect(retried.status).toBe(200);
+    expect(store.registrations[0].daemonId).toBe((await retried.json()).daemon_id);
+  });
+  it("makes a slow original lose to the account that took the claim over", async () => {
+    const started = await startRegistration();
+    const hold = holdTunnelCreation();
+    const slow = approve(request("/api/register/approve", { user_code: started.user_code }));
+    await hold.entered; claimAgo(REGISTRATION_CLAIM_LEASE_MS + 1000);
+    const retried = await approve(request("/api/register/approve", { user_code: started.user_code })); expect(retried.status).toBe(200);
+    const winner = (await retried.json()).daemon_id;
+    hold.release();
+    await expect(slow).rejects.toThrow("registration not claimed");
+    expect(store.registrations[0]).toMatchObject({ daemonId: winner, userId: store.users[0].id });
+    const loser = store.daemons.find(x => x.id !== winner)!; expect(loser.revokedAt).not.toBeNull(); expect(loser.tunnelId).toBe("");
+    expect(await store.listDaemons(store.users[0].id, true)).toEqual([expect.objectContaining({ id: winner, revokedAt: null })]);
+  });
+});
+
+describe("a revoke that lands while the poll fetches the tunnel token", () => {
+  it("wins: the poll reports denied and mints no daemon token", async () => {
+    const { started } = await registration(); const before = store.daemons[0].tokenHash;
+    const token = tunnels.connectorToken.bind(tunnels);
+    vi.spyOn(tunnels, "connectorToken").mockImplementation(async id => { await store.revokeDaemon(store.daemons[0].id, new Date()); return token(id); });
+    expect(await (await poll(request("/api/register/poll", { device_code: started.device_code }))).json()).toEqual({ status: "denied" });
+    expect(store.daemons[0].tokenHash).toBe(before);
+  });
 });
 
 describe("registration of a daemon revoked before it polls", () => {

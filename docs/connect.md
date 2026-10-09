@@ -183,7 +183,17 @@ per minute per running app instance, when a registration is created.
    {daemon_name, platform}` → `{device_code, user_code, verify_url,
    interval}` and prints the URL and the eight-character code. The app does
    the same through `hexbot.connect.register_start`.
-2. The user opens the URL, signs in with Clerk, approves the code.
+2. The user opens the URL, signs in with Clerk, approves the code. One
+   user code approves exactly one daemon: the approval claims the
+   registration before it creates the tunnel and the daemon row, so a second
+   approval of the same code, from any account, gets `409 already_approved`.
+   The claim is a lease of two minutes, longer than the route's
+   `maxDuration` of one minute; if the approval died before it recorded its
+   daemon, approving the code again after the lease takes the claim over.
+   Every later write names the claim it belongs to, so a late write from
+   the original approval loses and revokes the daemon it made. When an
+   approval fails after creating a daemon or a tunnel, it revokes that
+   daemon and deletes the tunnel before it reports the error.
 3. The daemon polls `POST /api/register/poll {device_code, public_key}` until it gets
    `{daemon_token, daemon_id, slug, tunnel_token, tunnel_hostname, owner_id,
    issuer, keys}`. Connect creates the Cloudflare tunnel at
@@ -191,6 +201,8 @@ per minute per running app instance, when a registration is created.
    `<slug>.<CONNECT_DOMAIN>` with a slug of 64 random bits.
    A new daemon retries without `public_key` if older Connect rejects the new
    field with `400 invalid_request`.
+   A revoke that lands while the poll runs wins: the poll answers
+   `{status: "denied"}` and mints no daemon token.
 4. The daemon stores the tokens, the owner, the issuer, the pinned signing keys,
    in `~/.hexbot/connect.json` (0600), and its private identity key in
    `~/.hexbot/connect-identity.key` (0600). On every `hexbot serve` the daemon

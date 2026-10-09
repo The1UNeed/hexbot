@@ -18,7 +18,7 @@ On the machine that runs your bots, run:
 hexbot connect
 ```
 
-It prints an address and an eight-character code. Open the address, sign in, and approve the code. The daemon stores its Connect credentials in `~/.hexbot/connect.json`, starts its tunnel whenever `hexbot serve` runs, and reports in every five minutes. Give the daemon a different name with `hexbot connect --name "Studio Mac"`. On a [Headless](/docs/install/#headless) daemon, run it over SSH; Connect does not need "Allow other devices".
+It prints an address and an eight-character code. Open the address, sign in, and approve the code. A code approves one daemon; approving it a second time says it is already approved. If approving stalls, try again after two minutes or run `hexbot connect` again for a new code. Revoking the daemon while it is still registering wins: the daemon gets no credentials. The daemon stores its Connect credentials in `~/.hexbot/connect.json`, starts its tunnel whenever `hexbot serve` runs, and reports in every five minutes. Give the daemon a different name with `hexbot connect --name "Studio Mac"`. On a [Headless](/docs/install/#headless) daemon, run it over SSH; Connect does not need "Allow other devices".
 
 The daemon downloads a pinned, checksum-verified `cloudflared` binary for its tunnel.
 
