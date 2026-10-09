@@ -63,6 +63,7 @@ fn client(base: &str) -> Result<Client> {
 
 pub fn default_track(base: &str) -> Result<Track> {
     const ERROR: &str = "Could not reach the update server. Check your connection and try again.";
+    https_origin(base)?;
     let response = client(base)?
         .get(format!(
             "{}/install/stable.json",
@@ -110,7 +111,7 @@ pub fn fetch_manifest(base: &str, track: Track) -> Result<Manifest> {
     }
     let manifest: Manifest = serde_json::from_slice(&bytes)?;
     manifest.validate(&version())?;
-    validate_origins(base, &manifest)?;
+    validate_artifacts(base, &manifest)?;
     if manifest.channel != track {
         return fail("The install manifest has the wrong track.");
     }
@@ -124,14 +125,29 @@ fn https_origin(base: &str) -> Result<reqwest::Url> {
     if !(url.scheme() == "https" || url.scheme() == "http" && loopback)
         || !url.username().is_empty()
         || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
     {
         return fail("The update URL must use HTTPS.");
     }
     Ok(url)
 }
 
-fn validate_origins(base: &str, manifest: &Manifest) -> Result<()> {
-    let base = https_origin(base)?;
+/// Resolve signed artifact paths against the selected update server.
+fn artifact_url(base: &str, location: &str) -> Result<reqwest::Url> {
+    let root = https_origin(&format!("{}/", base.trim_end_matches('/')))?;
+    if location.trim().is_empty() {
+        return fail("The install manifest names an invalid artifact.");
+    }
+    let url = root.join(location.trim())?;
+    https_origin(url.as_str())?;
+    if url.origin() != root.origin() {
+        return fail("Every artifact URL must have the same origin as the update URL.");
+    }
+    Ok(url)
+}
+
+fn validate_artifacts(base: &str, manifest: &Manifest) -> Result<()> {
     for artifacts in manifest.targets.values() {
         for artifact in [
             &artifacts.headless,
@@ -143,9 +159,7 @@ fn validate_origins(base: &str, manifest: &Manifest) -> Result<()> {
         .into_iter()
         .flatten()
         {
-            if reqwest::Url::parse(&artifact.url)?.origin() != base.origin() {
-                return fail("Every artifact URL must have the same origin as the update URL.");
-            }
+            artifact_url(base, &artifact.url)?;
         }
     }
     Ok(())
@@ -306,6 +320,26 @@ impl Installer {
         Ok(())
     }
 
+    /// A signed manifest stays valid after the next release replaces it, so a
+    /// replayed old one must not move an install back on its own track. A fresh
+    /// install and a track change may install an older version.
+    fn refuse_downgrade(&self, manifest: &Manifest) -> Result<()> {
+        let Some(receipt) = read_receipt(&self.paths.receipt())? else {
+            return Ok(());
+        };
+        if receipt.channel != manifest.channel {
+            return Ok(());
+        }
+        let installed = semver::Version::parse(&receipt.version)?;
+        let offered = semver::Version::parse(&manifest.version)?;
+        if offered.cmp_precedence(&installed).is_lt() {
+            return fail(format!(
+                "The update server offers Hexbot {offered}, older than the installed {installed}. Nothing was installed."
+            ));
+        }
+        Ok(())
+    }
+
     fn write_receipt(&self, receipt: &Receipt) -> Result<()> {
         archive::write_atomic(&self.paths.receipt(), &serde_json::to_vec_pretty(receipt)?)
     }
@@ -318,7 +352,8 @@ impl Installer {
     ) -> Result<InstallResult> {
         self.paths.validate()?;
         manifest.validate(&version())?;
-        validate_origins(&self.base_url, manifest)?;
+        validate_artifacts(&self.base_url, manifest)?;
+        self.refuse_downgrade(manifest)?;
         if option == InstallOption::Headless {
             self.preflight_ownership()?;
         }
@@ -732,7 +767,7 @@ fn download_file(
     progress: &mut ProgressCallback<'_>,
 ) -> Result<()> {
     let mut response = client(base)?
-        .get(&artifact.url)
+        .get(artifact_url(base, &artifact.url)?)
         .send()?
         .error_for_status()?;
     let mut file = fs::File::create(path)?;

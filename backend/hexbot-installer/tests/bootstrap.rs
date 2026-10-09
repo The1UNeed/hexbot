@@ -325,7 +325,10 @@ fn bootstrap_follows_no_redirects_and_refuses_plain_http() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("installer index"));
     assert!(foreign.requests.lock().unwrap().is_empty());
-    for base in ["http://updates.example.test", "https://user@updates.example.test"] {
+    for base in [
+        "http://updates.example.test",
+        "https://user@updates.example.test",
+    ] {
         let output = run(base);
         assert!(!output.status.success());
         assert!(

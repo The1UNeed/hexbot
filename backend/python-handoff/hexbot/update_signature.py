@@ -78,7 +78,11 @@ _G = (_GX, _GY, 1, _GX * _GY % _P)
 
 
 def verify(manifest: bytes, signature: bytes, keys=RELEASE_KEYS) -> bool:
-    """True when `signature` (base64, as in a .sig file) signs exactly `manifest`."""
+    """Accept any non-empty .sig line signed by a trusted key."""
+    return any(_verify_line(manifest, line.strip(), keys) for line in signature.splitlines() if line.strip())
+
+
+def _verify_line(manifest: bytes, signature: bytes, keys) -> bool:
     try:
         signature = base64.b64decode(signature.strip(), validate=True)
     except (binascii.Error, ValueError):

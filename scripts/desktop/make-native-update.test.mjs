@@ -20,7 +20,7 @@ test('native updater manifests use Rust targets and checksummed relocatable arch
     assert.equal(result.manifest.target, 'macos-aarch64')
     assert.equal(result.manifest.entrypoint, 'hexbot')
     assert.equal(result.manifest.format, 'tar.gz')
-    assert.equal(result.manifest.url, `https://updates.hexbot.app/daemon/native/1.2.3-nightly.20260924.1/macos-aarch64/${result.filename}`)
+    assert.equal(result.manifest.url, `daemon/native/1.2.3-nightly.20260924.1/macos-aarch64/${result.filename}`)
     assert.equal(result.manifest.sha256, createHash('sha256').update(await readFile(join(result.directory, result.filename))).digest('hex'))
   } finally { await rm(root, { recursive: true, force: true }) }
 })

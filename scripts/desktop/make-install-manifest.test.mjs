@@ -61,16 +61,16 @@ test('install manifests cover every option, target and track with verified metad
       assert.equal(entry.full.appId, channel === 'stable' ? 'app.hexbot.desktop' : 'app.hexbot.desktop.nightly')
       assert.equal(entry.client.appId, channel === 'stable' ? 'app.hexbot.client' : 'app.hexbot.client.nightly')
       assert.equal(entry.headless.format, 'tar.gz')
-      assert.equal(entry.headless.manifest, `https://mirror.example/updates/daemon/native/${version}/${target}/manifest.json`)
+      assert.equal(entry.headless.manifest, `daemon/native/${version}/${target}/manifest.json`)
       assert.equal(entry.installer.sha256, hash(target, 'sha256', 'hex'))
       assert.equal(entry.installer.size, target.length)
       assert.ok(entry.installerApp.url.endsWith(os === 'mac' ? '.dmg' : '.AppImage'))
-      for (const option of Object.values(entry)) assert.ok(option.url.startsWith('https://mirror.example/updates/'))
+      for (const option of Object.values(entry)) assert.ok(!option.url.startsWith('/') && !option.url.includes('://'))
     }
     assert.deepEqual(JSON.parse(await readFile(join(root, `install/${channel}.json`), 'utf8')), manifest)
     assert.equal(await readFile(join(root, `install/${channel}.txt`), 'utf8'), targets.map(([target]) => {
       const installer = manifest.targets[target].installer
-      return `${target} ${installer.sha256} ${installer.url}\n`
+      return `${target} ${installer.sha256} https://mirror.example/updates/${installer.url}\n`
     }).join(''))
   }
   assert.equal(appId('dev'), 'app.hexbot.desktop.dev')
@@ -123,4 +123,17 @@ test('the CLI parses options around the update root and rejects typos', async t 
 test('native metadata must include the base URL path prefix', async t => {
   const { root, options } = await fixture(t)
   await assert.rejects(makeInstallManifest(root, { ...options, baseUrl: 'https://mirror.example/updates/' }), /Invalid native archive URL/)
+})
+
+test('relative native metadata produces identical signed JSON for any mirror base', async t => {
+  const { root, options } = await fixture(t)
+  for (const [target] of targets) {
+    const path = join(root, `daemon/native/${options.version}/${target}/manifest.json`)
+    const metadata = JSON.parse(await readFile(path, 'utf8'))
+    metadata.url = metadata.url.replace('https://updates.hexbot.app/', '')
+    await writeFile(path, JSON.stringify(metadata))
+  }
+  const canonical = await makeInstallManifest(root, options)
+  const mirror = await makeInstallManifest(root, { ...options, baseUrl: 'https://mirror.example/updates/' })
+  assert.deepEqual(mirror, canonical)
 })

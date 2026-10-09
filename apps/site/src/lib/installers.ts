@@ -34,8 +34,11 @@ export function readManifest(manifest: unknown, track: Track): Installers | null
   const builds: InstallerBuild[] = []
   for (const [target, key, name, pill] of targets) {
     const app = m.targets?.[target]?.installerApp
-    if (typeof app?.url !== 'string' || !app.url.startsWith('https://')) continue
-    builds.push({ key, name, pill, url: app.url, ...(typeof app.size === 'number' ? { size: app.size } : {}) })
+    if (typeof app?.url !== 'string' || !app.url.trim()) continue
+    let url: URL
+    try { url = new URL(app.url, `${updates}/`) } catch { continue }
+    if (url.origin !== new URL(updates).origin || url.username || url.password) continue
+    builds.push({ key, name, pill, url: url.href, ...(typeof app.size === 'number' ? { size: app.size } : {}) })
   }
   return builds.length ? { track, version: m.version, builds } : null
 }
