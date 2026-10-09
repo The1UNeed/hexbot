@@ -422,6 +422,50 @@ fn added_entries_are_stamped_per_line_and_kept_when_already_stamped() {
         "[2024-05] early [2026-10]\nv[2024-5] [2026-10]\n[2024-05]. [2026-10]"
     );
     assert_eq!(stamp_entries("", "2026-10"), "");
+    // Code fences and rules are markup, not entries.
+    assert_eq!(
+        stamp_entries("```sh\nls\n```\n---\n--\n- - -", "2026-10"),
+        "```sh\nls [2026-10]\n```\n---\n-- [2026-10]\n- - -"
+    );
+    let markup = "  ## Work\n  ```rust\n  ```\n~~~sh\n~~~\n***\n_ _ _\n  - - -  ";
+    assert_eq!(stamp_entries(markup, "2026-10"), markup);
+    assert_eq!(
+        crate::memory::restamp_span(markup, 0..markup.len(), "2026-10"),
+        markup
+    );
+}
+
+#[test]
+fn removals_drop_a_line_left_with_only_a_bullet_and_a_stamp() {
+    use crate::memory::{drop_emptied_line, restamp_span};
+    let text = "- Likes tea. [2024-05]\n-  [2026-10]\n* [2024-05] [2026-10]\n\nLast";
+    // "-  [2026-10]" is what removing "Prefers tabs" leaves; the line goes.
+    assert_eq!(
+        drop_emptied_line(text, 25),
+        "- Likes tea. [2024-05]\n* [2024-05] [2026-10]\n\nLast"
+    );
+    // Doubled stamps count as a stamp; a blank line counts as empty.
+    assert_eq!(
+        drop_emptied_line(text, 38),
+        "- Likes tea. [2024-05]\n-  [2026-10]\n\nLast"
+    );
+    assert_eq!(
+        drop_emptied_line(text, 58),
+        "- Likes tea. [2024-05]\n-  [2026-10]\n* [2024-05] [2026-10]\nLast"
+    );
+    // A line with words left keeps its stamp; the last line takes the
+    // newline before it; a lone line leaves nothing.
+    assert_eq!(drop_emptied_line(text, 2), text);
+    assert_eq!(
+        drop_emptied_line("Likes tea.\n [2026-10]", 11),
+        "Likes tea."
+    );
+    assert_eq!(drop_emptied_line("- [2026-10]", 0), "");
+    // An empty replacement is a removal and does the same.
+    assert_eq!(
+        restamp_span("Keep\n-  [2026-10]\nKeep", 7..7, "2026-10"),
+        "Keep\nKeep"
+    );
 }
 
 #[test]
