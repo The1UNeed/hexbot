@@ -4521,6 +4521,12 @@ fn guarded_file_path(
     if mode == "off" {
         return Ok((target, false));
     }
+    if write && crate::credentials::git_write_protected(&target, writable)? {
+        return Err(Error::new(
+            4302,
+            "Git metadata is read-only. Use an approved full_access command.",
+        ));
+    }
     let root = resolve(home)?;
     // Manual asks before every change, Auto before one outside the workspace.
     let mut ask = write
@@ -4561,6 +4567,7 @@ fn guarded_file_path(
                             v.to_owned()
                         };
                         v.starts_with(".env")
+                            || v.ends_with(".git")
                             || [".git", "node_modules", ".ssh"].contains(&v.as_str())
                     })
                 }))
@@ -4577,6 +4584,46 @@ fn guarded_file_path(
 #[cfg(test)]
 mod file_bridge_tests {
     use super::*;
+    #[test]
+    fn file_bridge_protects_linked_and_bare_git_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let home = root.join("home");
+        let work = root.join("work");
+        for path in [
+            &home,
+            &work,
+            &root.join("metadata"),
+            &root.join("common"),
+            &work.join("bare.git"),
+        ] {
+            fs::create_dir_all(path).unwrap();
+        }
+        fs::write(work.join(".git"), "gitdir: ../metadata\n").unwrap();
+        fs::write(root.join("metadata/commondir"), "../common\n").unwrap();
+        for mode in ["manual", "smart"] {
+            for path in [
+                root.join("metadata/hooks/pre-commit"),
+                root.join("common/config"),
+                work.join("bare.git/config"),
+            ] {
+                assert!(
+                    guarded_file_path(&home, &path, true, mode, std::slice::from_ref(&work))
+                        .is_err()
+                );
+            }
+            assert!(
+                guarded_file_path(
+                    &home,
+                    &work.join("notes"),
+                    true,
+                    mode,
+                    std::slice::from_ref(&work)
+                )
+                .is_ok()
+            );
+        }
+    }
     #[test]
     fn bridge_file_checks_follow_the_mode_and_resolve_links() {
         let temp = tempfile::tempdir().unwrap();
@@ -4686,13 +4733,13 @@ mod file_bridge_tests {
                 assert!(denied.unwrap_err().to_string().contains("private"));
                 // Credential stores are private to reads too.
                 assert!(guarded_file_path(&home, &user.join(".netrc"), false, mode, &[]).is_err());
-                // A shell profile asks even inside the workspace.
+                // A shell profile asks even when explicitly writable.
                 let (_, ask) = guarded_file_path(
                     &home,
                     &user.join(".zshrc"),
                     true,
                     mode,
-                    std::slice::from_ref(&user),
+                    std::slice::from_ref(&user.join(".zshrc")),
                 )
                 .unwrap();
                 assert!(ask, "{mode}");

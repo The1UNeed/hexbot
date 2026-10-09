@@ -40,19 +40,40 @@ redaction, and pattern checks do not provide equivalent containment.
   with private network and process namespaces and masked credential paths.
   Writable roots include the working directory, daemon-selected artifact and
   attachment folders, and temporary folders. On macOS these include shared `/tmp`.
-  Git's own folders (`.git`) stay read-only inside them, so a sandboxed
-  command cannot plant a hook or config that runs on your next commit; a bot
-  commits, inits, or clones with an approved `full_access` command. Project
-  secrets such as `.env`, keychains, and browser profiles (cookies, saved
-  passwords) are unreadable. Apple Events are refused, so a command cannot
+  Existing Git metadata (`.git`, linked `gitdir`/`commondir` targets and bare
+  `*.git` directories) stays read-only within the scan limits below. A bot
+  changes protected metadata with an approved `full_access` command. Project
+  secrets such as `.env` and `.envrc`, keychains, and browser profiles with
+  cookies and saved passwords are unreadable and unwritable. Apple Events are refused, so a command cannot
   drive Finder or another app. Other files outside the workspace can still be
   read.
 - Manual uses a read-only shell/code sandbox and asks before file changes.
-  Approved code can write only its own output folder in the Hexbot home.
+  Approved `execute_code` runs can write their own output folder in the Hexbot
+  home. Manual scheduled scripts cannot write artifacts or workspace files.
 - An approved `full_access` shell command leaves the workspace restrictions.
   The base credential-path and Hexbot-home protections still apply. Review both
   the command and its reason before granting more access.
 - Bypass removes prompts and sandboxing and is available only to the admin.
+
+macOS also matches Git and secret filenames created during a command. It
+blocks renaming protected files and browser stores, and pins the scanned
+ancestors of secrets and Git metadata and the ancestors of browser stores so
+renaming a folder cannot expose their contents. Browser rules include the
+Google parent folder, Chrome Beta/unstable, and Snap and Flatpak profiles.
+Tracked hooks such as `.husky` remain writable and their edits appear in
+`git status`. Review those changes before running them.
+
+Linux protects repositories and secret files that exist when a command starts.
+Repositories created during a command are **not protected** on Linux. The scan
+visits workspace and output roots breadth-first, including read-only workspaces
+in Manual, through three nested folders. It resolves `.env` symlinks and Git
+pointers, and skips dependency/runtime folders listed in `credential-policy.json`
+plus shared temporary roots. Repositories and secrets beyond these limits are
+not covered by the Linux scan. If more than 1,000 directories need scanning,
+the command does not run and reports that it needs an approved `full_access`
+retry. It does not silently use a partial scan. The same bounded scan resolves
+linked Git directories for macOS and file-tool writes; macOS filename rules
+still apply beyond the scan depth. File tools refuse protected Git writes.
 
 macOS fails closed when its sandbox cannot start. On Linux, if bubblewrap is
 missing or unusable, Hexbot reports the missing isolation and Auto and Manual

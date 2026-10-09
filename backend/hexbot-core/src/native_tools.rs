@@ -1205,10 +1205,7 @@ async fn execute_code(
     let mut kernel = kernel.lock().await;
     let sandbox = match CODE_SANDBOX.try_with(Clone::clone) {
         Ok(sandbox) => sandbox,
-        Err(_) => (
-            Some(crate::credentials::Confine::No),
-            workdir(home, bot)?,
-        ),
+        Err(_) => (Some(crate::credentials::Confine::No), workdir(home, bot)?),
     };
     // A mode or workspace change takes effect on the next run: the worker
     // restarts in the new sandbox.
@@ -1227,11 +1224,12 @@ async fn execute_code(
         let python = python.as_str();
         let mut command = match sandbox.0 {
             None => Command::new(python),
-            Some(confine) => crate::credentials::isolated_command(
+            Some(confine) => crate::credentials::isolated_command_with_outputs(
                 home,
                 python,
                 &[sandbox.1.clone(), artifacts_dir(home, bot)?],
                 confine,
+                &[artifacts_dir(home, bot)?],
             )?,
         };
         desktop_environment(&mut command);

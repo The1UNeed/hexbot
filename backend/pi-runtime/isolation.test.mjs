@@ -154,19 +154,18 @@ test('an unusable bubblewrap is probed once and commands fall back to approval g
 
 test('bubblewrap binds the home read-only and only reopens the requested output directories', async t => {
   const {execFileSync} = await import('node:child_process');
-  const {chmodSync, realpathSync} = await import('node:fs');
+  const {realpathSync} = await import('node:fs');
   const home=mkdtempSync(join(tmpdir(),'hexbot-bwrap-bind-'));
   t.after(()=>rmSync(home,{recursive:true,force:true}));
   const workspace=join(home,'workspace'), outputs=join(home,'profiles/owl/artifacts');
   for (const dir of [workspace,outputs,join(home,'desktop-data')]) mkdirSync(dir,{recursive:true});
   for (const name of ['connect-identity.key', 'profiles/owl/connect-identity.key']) writeFileSync(join(home,name),'secret');
-  const executable=join(home,'bwrap'); writeFileSync(executable,'#!/bin/sh\ncase "$*" in *"/usr/bin/env true") exit 0;; *) exit 1;; esac\n'); chmodSync(executable,0o755);
   const user=join(home,'user'); mkdirSync(join(user,'.ssh/nested'),{recursive:true});
   const policy = JSON.parse(readFileSync(new URL('./credential-policy.json', import.meta.url), 'utf8'));
   for (const local of policy.write.deny) { const file = join(user, local); mkdirSync(join(file, '..'), {recursive:true}); writeFileSync(file, 'keep'); }
   for (const file of ['known_hosts','config','id_ed25519.pub','nested/id_ed25519','github','deploy_key','authorized_keys']) writeFileSync(join(user,'.ssh',file),'fixture');
   const moduleUrl=new URL('./isolation.ts',import.meta.url).href;
-  const script=`Object.defineProperty(process,'platform',{value:'linux'}); const {isolatedCommand}=await import(${JSON.stringify(moduleUrl)}); console.log(isolatedCommand('true',${JSON.stringify(home)},[${JSON.stringify(outputs)}]));`;
+  const script=`Object.defineProperty(process,'platform',{value:'linux'}); const {bwrapArguments}=await import(${JSON.stringify(moduleUrl)}); console.log(bwrapArguments(${JSON.stringify(home)},[${JSON.stringify(outputs)}]).map(arg => "'" + arg + "'").join(' '));`;
   const command=execFileSync(process.execPath,['--input-type=module','-e',script],{env:{...process.env,HOME:user,PATH:home},encoding:'utf8'});
   assert.ok(command.includes(`'--ro-bind' '${home}' '${home}'`));
   for (const name of ['connect-identity.key', 'profiles/owl/connect-identity.key']) assert.ok(command.includes(`'--ro-bind' '/dev/null' '${join(home,name)}'`), name);
@@ -286,16 +285,15 @@ test('macOS Auto and Manual refuse network listeners; approved full access permi
 
 test('bubblewrap confines a workspace command to its folders without a network', async t => {
   const {execFileSync} = await import('node:child_process');
-  const {chmodSync, realpathSync} = await import('node:fs');
+  const {realpathSync} = await import('node:fs');
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-bwrap-confine-')));
   t.after(() => rmSync(home, {recursive:true, force:true}));
   const user = join(home, 'user'), workspace = join(home, 'work');
   for (const dir of [user, workspace]) mkdirSync(dir, {recursive:true});
   writeFileSync(join(user, '.zshrc'), 'keep');
-  const executable = join(home, 'bwrap'); writeFileSync(executable, '#!/bin/sh\ncase "$*" in *"/usr/bin/env true") exit 0;; *) exit 1;; esac\n'); chmodSync(executable, 0o755);
   const moduleUrl = new URL('./isolation.ts', import.meta.url).href;
   const outputs = join(home, 'hexbot/profiles/owl/artifacts'); mkdirSync(outputs, {recursive:true});
-  const command = workspace => execFileSync(process.execPath, ['--input-type=module', '-e', `Object.defineProperty(process,'platform',{value:'linux'}); const {isolatedCommand}=await import(${JSON.stringify(moduleUrl)}); console.log(isolatedCommand('true',${JSON.stringify(join(home, 'hexbot'))},[${JSON.stringify(outputs)}],${JSON.stringify(workspace)}));`], {env:{...process.env, HOME:user, PATH:home}, encoding:'utf8'});
+  const command = workspace => execFileSync(process.execPath, ['--input-type=module', '-e', `Object.defineProperty(process,'platform',{value:'linux'}); const {bwrapArguments}=await import(${JSON.stringify(moduleUrl)}); console.log(bwrapArguments(${JSON.stringify(join(home, 'hexbot'))},[${JSON.stringify(outputs)}],${JSON.stringify(workspace)}).map(arg => "'" + arg + "'").join(' '));`], {env:{...process.env, HOME:user, PATH:home}, encoding:'utf8'});
   const confined = command([workspace]);
   assert.ok(confined.includes(`'--new-session' '--unshare-pid' '--unshare-net' '--ro-bind' '/' '/' '--dev' '/dev' '--proc' '/proc' '--tmpfs' '/run' '--tmpfs' '/tmp'`));
   // Host sockets under /tmp (X11, agents) stay hidden even though /tmp is part of every workspace.
@@ -361,14 +359,13 @@ test('every sandbox level refuses Apple Events', {skip:process.platform !== 'dar
 
 test('bubblewrap keeps existing git folders read-only and masks project secrets in the workspace', async t => {
   const {execFileSync} = await import('node:child_process');
-  const {chmodSync, realpathSync} = await import('node:fs');
+  const {realpathSync} = await import('node:fs');
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-bwrap-git-')));
   t.after(() => rmSync(root, {recursive:true, force:true}));
   const user = join(root, 'user'), work = join(root, 'work');
   for (const dir of [user, join(root, 'hexbot'), join(work, '.git'), join(work, 'a/b/.git'), join(work, 'a/b/c/d/.git'), join(work, 'node_modules/x/.git'), join(user, '.mozilla')]) mkdirSync(dir, {recursive:true});
   for (const file of ['.env', 'a/.env.production', '.env.example']) writeFileSync(join(work, file), 'x');
-  const executable = join(root, 'bwrap'); writeFileSync(executable, '#!/bin/sh\ncase "$*" in *"/usr/bin/env true") exit 0;; *) exit 1;; esac\n'); chmodSync(executable, 0o755);
-  const command = workspace => execFileSync(process.execPath, ['--input-type=module', '-e', `Object.defineProperty(process,'platform',{value:'linux'}); const {isolatedCommand}=await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); console.log(isolatedCommand('true',${JSON.stringify(join(root, 'hexbot'))},[],${JSON.stringify(workspace)}));`], {env:{...process.env, HOME:user, PATH:root}, encoding:'utf8'});
+  const command = workspace => execFileSync(process.execPath, ['--input-type=module', '-e', `Object.defineProperty(process,'platform',{value:'linux'}); const {bwrapArguments}=await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); console.log(bwrapArguments(${JSON.stringify(join(root, 'hexbot'))},[],${JSON.stringify(workspace)}).map(arg => "'" + arg + "'").join(' '));`], {env:{...process.env, HOME:user, PATH:root}, encoding:'utf8'});
   const confined = command([work]);
   for (const git of ['.git', 'a/b/.git']) assert.ok(confined.includes(`'--ro-bind' '${join(work, git)}' '${join(work, git)}'`), git);
   // The search stops a few levels down and skips dependency trees.
@@ -378,4 +375,60 @@ test('bubblewrap keeps existing git folders read-only and masks project secrets 
   assert.ok(confined.includes(`'--tmpfs' '${join(user, '.mozilla')}' '--remount-ro' '${join(user, '.mozilla')}'`));
   const base = command(undefined);
   assert.ok(!base.includes(join(work, '.git')) && !base.includes(join(user, '.mozilla')));
+});
+
+test('secret and Git scans include read-only roots, symlink targets, linked worktrees and bare repositories', async t => {
+  const {realpathSync, symlinkSync} = await import('node:fs');
+  const {workspaceProtected, bwrapArguments} = await import('./isolation.ts');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-scan-')));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const home = join(base, 'home'), work = join(base, 'work'), metadata = join(base, 'metadata'), common = join(base, 'common');
+  for (const path of [home, work, metadata, common, join(work, 'bare.git/hooks')]) mkdirSync(path, {recursive:true});
+  writeFileSync(join(work, '.git'), 'gitdir: ../metadata\n');
+  writeFileSync(join(metadata, 'commondir'), '../common\n');
+  writeFileSync(join(base, 'secret'), 'dummy'); symlinkSync('../secret', join(work, '.env'));
+  writeFileSync(join(work, '.envrc'), 'dummy');
+  writeFileSync(join(work, 'notes.git'), 'ordinary file, not a gitdir pointer');
+  writeFileSync(join(work, '.env.example'), 'example');
+  assert.ok(workspaceProtected([join(work, 'bare.git')]).git.includes(join(work, 'bare.git')));
+  const scan = workspaceProtected([work]);
+  for (const path of [join(work, '.git'), metadata, common, join(work, 'bare.git')]) assert.ok(scan.git.includes(path), path);
+  for (const path of [join(work, '.env'), join(base, 'secret'), join(work, '.envrc')]) assert.ok(scan.secrets.includes(path), path);
+  assert.ok(!scan.secrets.includes(join(work, '.env.example')));
+  const args = bwrapArguments(home, [], [], [work]);
+  const triples = args.map((_, i) => args.slice(i, i + 3).join('|'));
+  for (const path of scan.git) assert.ok(triples.includes(`--ro-bind|${path}|${path}`), path);
+  for (const path of scan.secrets) assert.ok(triples.includes(`--ro-bind|/dev/null|${path}`), path);
+  assert.ok(!args.includes('--bind'), 'Manual must never open writable roots');
+  // An exact budget processes the last folder completely. One more folder fails closed.
+  mkdirSync(join(work, 'a')); mkdirSync(join(work, 'z'));
+  writeFileSync(join(work, 'z/.env'), 'dummy'); mkdirSync(join(work, 'z/.git'));
+  assert.ok(workspaceProtected([work], 3).secrets.includes(join(work, 'z/.env')));
+  mkdirSync(join(work, 'a/deep'));
+  assert.throws(() => workspaceProtected([work], 3), /budget.*approval/);
+  for (let i = 0; i < 1001; i++) mkdirSync(join(work, 'a', String(i)));
+  assert.throws(() => bwrapArguments(home, [], [work]), /budget.*approval/);
+});
+
+test('macOS refuses secret renames, browser ancestor renames and linked Git writes', {skip:process.platform !== 'darwin'}, async t => {
+  const {execFileSync} = await import('node:child_process');
+  const {realpathSync} = await import('node:fs');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-rename-')));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const home = join(base, 'hexbot'), user = join(base, 'user'), work = join(base, 'work');
+  for (const path of [home, user, work, join(base, 'metadata/hooks'), join(base, 'common/hooks'), join(work, 'bare.git/hooks'), join(work, 'nested')]) mkdirSync(path, {recursive:true});
+  writeFileSync(join(work, '.git'), 'gitdir: ../metadata\n');
+  writeFileSync(join(base, 'metadata/commondir'), '../common\n');
+  for (const name of ['.env', '.envrc', 'nested/.env']) writeFileSync(join(work, name), 'dummy');
+  const stores = ['Library/Application Support/Google/Chrome Beta/Default', '.config/google-chrome-unstable/Default', 'snap/firefox/common/.mozilla/firefox/test', '.var/app/com.brave.Browser/config/BraveSoftware/Default'];
+  for (const store of stores) { mkdirSync(join(user, store), {recursive:true}); writeFileSync(join(user, store, 'Cookies'), 'dummy'); }
+  const denied = [
+    'mv .env moved && cat moved', 'echo x >> .env', 'rm .env', 'mv nested moved', 'cat .envrc',
+    `echo x > '${base}/metadata/hooks/pre-commit'`, `echo x > '${base}/common/hooks/pre-commit'`,
+    `mv '${base}/metadata' '${base}/moved'`, 'echo x > bare.git/hooks/pre-commit',
+    ...stores.flatMap(store => [`cat '${join(user, store, 'Cookies')}'`, `echo x >> '${join(user, store, 'Cookies')}'`, `rm '${join(user, store, 'Cookies')}'`, `mv '${join(user, store)}' '${user}/moved'`]),
+    `mv '${user}/Library/Application Support' '${user}/moved'`, `mv '${user}/.var' '${user}/moved'`,
+  ];
+  const script = `const {sandboxProfile}=await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); const {spawnSync}=await import('node:child_process'); const profile=sandboxProfile(${JSON.stringify(home)},[],${JSON.stringify([base])}); for(const command of ${JSON.stringify(denied)}) { const r=spawnSync('/usr/bin/sandbox-exec',['-p',profile,'/bin/bash','-c',command],{cwd:${JSON.stringify(work)},encoding:'utf8'}); if(r.status===0 || /sandbox_(init|apply)/.test(r.stderr)) throw Error(command+' '+r.stderr); } const r=spawnSync('/usr/bin/sandbox-exec',['-p',profile,'/bin/bash','-c','echo ok > notes; cat notes'],{cwd:${JSON.stringify(work)},encoding:'utf8'}); if(r.stdout!=='ok\\n') throw Error(r.stderr);`;
+  execFileSync(process.execPath, ['--input-type=module', '-e', script], {env:{...process.env,HOME:user}});
 });

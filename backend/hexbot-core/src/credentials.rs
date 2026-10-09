@@ -5,7 +5,7 @@
 use crate::{Error, Result};
 use serde::Deserialize;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
     ffi::OsString,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
@@ -377,8 +377,10 @@ const DEVICES: [&str; 5] = [
 struct Confinement {
     writable: Vec<PathBuf>,
     config: Vec<PathBuf>,
+    protected: WorkspaceProtected,
+    readable: Vec<PathBuf>,
 }
-fn confine(workspace: &[PathBuf]) -> Result<Confinement> {
+fn confine(workspace: &[PathBuf], search: &[PathBuf]) -> Result<Confinement> {
     let mut writable: Vec<PathBuf> = vec![];
     for path in workspace
         .iter()
@@ -402,7 +404,20 @@ fn confine(workspace: &[PathBuf]) -> Result<Confinement> {
             }
         }
     }
-    Ok(Confinement { writable, config })
+    Ok(Confinement {
+        writable,
+        config,
+        protected: workspace_protected(search, WORKSPACE_DIRS)?,
+        readable: search
+            .iter()
+            .filter_map(|p| std::fs::canonicalize(p).ok())
+            .fold(vec![], |mut paths, p| {
+                if !paths.contains(&p) {
+                    paths.push(p);
+                }
+                paths
+            }),
+    })
 }
 fn real_root(path: &Path) -> std::io::Result<PathBuf> {
     match std::fs::canonicalize(path) {
@@ -438,7 +453,16 @@ fn denied_writes() -> Result<Vec<PathBuf>> {
 /// Manual and Auto and to the file tools; an approved full-access command may
 /// read them.
 fn read_denied() -> Vec<PathBuf> {
-    let mut denied: Vec<PathBuf> = vec![];
+    type ReadCache = HashMap<OsString, (Instant, Vec<PathBuf>)>;
+    static CACHE: OnceLock<Mutex<ReadCache>> = OnceLock::new();
+    let user = std::env::var_os("HOME").unwrap_or_default();
+    let mut cache = CACHE.get_or_init(Default::default).lock().unwrap();
+    if let Some((at, paths)) = cache.get(&user)
+        && at.elapsed() < Duration::from_secs(5)
+    {
+        return paths.clone();
+    }
+    let mut denied = vec![];
     for root in policy()
         .read_deny
         .iter()
@@ -451,6 +475,7 @@ fn read_denied() -> Vec<PathBuf> {
             }
         }
     }
+    cache.insert(user, (Instant::now(), denied.clone()));
     denied
 }
 /// Inside the workspace sandbox git's own folders are read-only, as in Codex: a
@@ -462,47 +487,120 @@ fn read_denied() -> Vec<PathBuf> {
 const WORKSPACE_DEPTH: usize = 3;
 const WORKSPACE_DIRS: usize = 1000;
 fn git_dir_regex() -> String {
-    format!("(^|/){}(/|$)", regex_escape(".git"))
+    format!("{}(/|$)", regex_escape(".git"))
 }
-fn workspace_protected(roots: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    fn walk(
-        dir: &Path,
-        depth: usize,
-        budget: &mut usize,
-        git: &mut Vec<PathBuf>,
-        secrets: &mut Vec<PathBuf>,
-    ) {
-        if *budget == 0 {
-            return;
+const SCAN_REASON: &str = "The workspace safety scan exceeded its directory budget. This command needs approval: retry with full_access and a reason.";
+#[derive(Default)]
+struct WorkspaceProtected {
+    git: Vec<PathBuf>,
+    secrets: Vec<PathBuf>,
+}
+fn add_path(paths: &mut Vec<PathBuf>, path: &Path) -> Result<()> {
+    for path in [path.to_owned(), real_root(path)?] {
+        if !paths.contains(&path) {
+            paths.push(path);
         }
-        *budget -= 1;
-        let mut list: Vec<_> = entries(dir).collect();
+    }
+    Ok(())
+}
+fn git_metadata(git: &mut Vec<PathBuf>, path: &Path) -> Result<()> {
+    add_path(git, path)?;
+    if path.is_file() {
+        let text = std::fs::read_to_string(path)?;
+        let pointer = text
+            .lines()
+            .find_map(|line| line.strip_prefix("gitdir:"))
+            .ok_or_else(|| {
+                Error::new(
+                    5240,
+                    "Invalid .git file; use an approved full_access command.",
+                )
+            })?;
+        let dir = real_root(&path.parent().unwrap().join(pointer.trim()))?;
+        add_path(git, &dir)?;
+        let common = dir.join("commondir");
+        if common.exists() {
+            add_path(
+                git,
+                &real_root(&dir.join(std::fs::read_to_string(common)?.trim()))?,
+            )?;
+        }
+    }
+    Ok(())
+}
+fn workspace_protected(roots: &[PathBuf], limit: usize) -> Result<WorkspaceProtected> {
+    let mut protected = WorkspaceProtected::default();
+    let mut queue = VecDeque::new();
+    let mut seen = HashSet::new();
+    for root in roots
+        .iter()
+        .filter(|root| *root != Path::new("/tmp") && **root != std::env::temp_dir())
+    {
+        let dir = real_root(root)?;
+        if dir
+            .file_name()
+            .is_some_and(|name| folded(Path::new(name)).to_string_lossy().ends_with(".git"))
+        {
+            git_metadata(&mut protected.git, &dir)?;
+        }
+        for parent in dir.ancestors().filter(|p| p.parent().is_some()) {
+            let marker = parent.join(".git");
+            if marker.exists() {
+                git_metadata(&mut protected.git, &marker)?;
+            }
+        }
+        queue.push_back((dir, 0));
+    }
+    while let Some((dir, depth)) = queue.pop_front() {
+        if seen.contains(&dir) {
+            continue;
+        }
+        if seen.len() >= limit {
+            return Err(Error::new(5240, SCAN_REASON));
+        }
+        seen.insert(dir.clone());
+        let mut list: Vec<_> = entries(&dir).collect();
         list.sort_by_key(|entry| entry.file_name());
         for entry in list {
             let path = entry.path();
             let name = entry.file_name();
-            let kind = entry.file_type().ok();
-            if folded(Path::new(&name)) == Path::new(".git") {
-                git.push(path);
-            } else if kind.is_some_and(|t| t.is_file()) && secret_file_name(&name.to_string_lossy())
+            let name = name.to_string_lossy();
+            let git_name = folded(Path::new(name.as_ref()));
+            if git_name == Path::new(".git")
+                || (git_name.to_string_lossy().ends_with(".git") && path.is_dir())
             {
-                secrets.push(path);
-            } else if kind.is_some_and(|t| t.is_dir())
+                git_metadata(&mut protected.git, &path)?;
+            } else if secret_file_name(&name) && !path.is_dir() {
+                add_path(&mut protected.secrets, &path)?;
+            } else if entry.file_type().is_ok_and(|kind| kind.is_dir())
                 && depth < WORKSPACE_DEPTH
                 && !policy()
                     .skip
                     .iter()
-                    .any(|skip| folded(Path::new(&name)) == folded(Path::new(skip)))
+                    .any(|skip| folded(Path::new(name.as_ref())) == folded(Path::new(skip)))
             {
-                walk(&path, depth + 1, budget, git, secrets);
+                queue.push_back((path, depth + 1));
             }
         }
     }
-    let (mut git, mut secrets, mut budget) = (vec![], vec![], WORKSPACE_DIRS);
-    for root in roots.iter().filter(|root| *root != Path::new("/tmp")) {
-        walk(root, 0, &mut budget, &mut git, &mut secrets);
+    Ok(protected)
+}
+pub(crate) fn git_write_protected(path: &Path, roots: &[PathBuf]) -> Result<bool> {
+    Ok(workspace_protected(roots, WORKSPACE_DIRS)?
+        .git
+        .iter()
+        .any(|root| under(path, root)))
+}
+fn path_ancestors(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut ancestors = vec![];
+    for path in paths {
+        for dir in path.ancestors().skip(1).filter(|p| p.parent().is_some()) {
+            if !ancestors.iter().any(|p| p == dir) {
+                ancestors.push(dir.to_owned());
+            }
+        }
     }
-    (git, secrets)
+    ancestors
 }
 /// Renaming an ancestor would carry a nested store (~/.config/gh) out from under
 /// its rule, so the directories between the home and a store cannot be renamed
@@ -527,7 +625,16 @@ fn store_ancestors(denied: &[PathBuf]) -> Vec<PathBuf> {
     }
     ancestors
 }
+#[cfg(test)]
 fn layout(home: &Path, writable: &[PathBuf], workspace: Option<&[PathBuf]>) -> Result<Layout> {
+    layout_scanned(home, writable, workspace, workspace.unwrap_or_default())
+}
+fn layout_scanned(
+    home: &Path,
+    writable: &[PathBuf],
+    workspace: Option<&[PathBuf]>,
+    search: &[PathBuf],
+) -> Result<Layout> {
     let mut roots = vec![home.to_owned(), std::fs::canonicalize(home)?];
     roots.dedup();
     let writable = writable
@@ -540,7 +647,9 @@ fn layout(home: &Path, writable: &[PathBuf], workspace: Option<&[PathBuf]>) -> R
         paths: secret_paths(home),
         writable,
         denied: denied_writes()?,
-        confine: workspace.map(confine).transpose()?,
+        confine: workspace
+            .map(|workspace| confine(workspace, search))
+            .transpose()?,
     })
 }
 fn sandbox_profile(layout: &Layout) -> String {
@@ -637,7 +746,14 @@ fn sandbox_profile(layout: &Layout) -> String {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        let browsers = read_denied()
+        let secret_paths = confine.protected.secrets.iter().map(|p| format!("(subpath {})", quoted(p.to_string_lossy()))).collect::<Vec<_>>().join(" ");
+        let browser_roots = read_denied();
+        let locked = confine.protected.git.iter().map(|p| format!("(subpath {})", quoted(p.to_string_lossy()))).collect::<Vec<_>>().join(" ");
+        let mut protected = browser_roots.clone();
+        protected.extend(confine.protected.git.clone());
+        protected.extend(confine.protected.secrets.clone());
+        let parents = path_ancestors(&protected).iter().map(|p| format!("(literal {})", quoted(p.to_string_lossy()))).collect::<Vec<_>>().join(" ");
+        let browsers = browser_roots
             .iter()
             .map(|p| {
                 let path = quoted(p.to_string_lossy());
@@ -658,7 +774,7 @@ fn sandbox_profile(layout: &Layout) -> String {
         );
         let git = quoted(sandbox_regex(&git_dir_regex()));
         format!(
-            "(deny network-inbound)(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-read* {stores} {browsers} {secret})(deny file-write* (require-not (require-any {inside})))(deny file-write* {config})(deny file-write* (regex {git}))"
+            "(deny network-inbound)(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-read* {stores} {browsers} {secret} {secret_paths})(deny file-write* (require-not (require-any {inside})))(deny file-write* {config})(deny file-write* {browsers} {secret} {secret_paths} {locked})(deny file-write-unlink {parents})(deny file-write* (regex {git}))"
         )
     });
     // Apple Events would let a program drive Finder or another app outside the sandbox.
@@ -705,6 +821,13 @@ fn bwrap_arguments(layout: &Layout) -> Vec<OsString> {
         .filter(|p| *p != Path::new("/tmp"))
     {
         args.extend(["--bind".into(), path.into(), path.into()]);
+    }
+    if let Some(confine) = &layout.confine {
+        for path in &confine.readable {
+            if !confine.writable.iter().any(|root| path.starts_with(root)) {
+                args.extend(["--ro-bind".into(), path.into(), path.into()]);
+            }
+        }
     }
     for root in &layout.roots {
         args.extend(["--ro-bind".into(), root.into(), root.into()]);
@@ -754,11 +877,10 @@ fn bwrap_arguments(layout: &Layout) -> Vec<OsString> {
                 args.extend(["--ro-bind".into(), "/dev/null".into(), path.into()]);
             }
         }
-        let (git, secrets) = workspace_protected(&confine.writable);
-        for path in git {
-            args.extend(["--ro-bind".into(), path.clone().into(), path.into()]);
+        for path in confine.protected.git.iter().filter(|p| p.exists()) {
+            args.extend(["--ro-bind".into(), path.into(), path.into()]);
         }
-        for path in secrets {
+        for path in &confine.protected.secrets {
             args.extend(["--ro-bind".into(), "/dev/null".into(), path.into()]);
         }
     }
@@ -810,8 +932,7 @@ pub enum Confine {
     /// Codex's workspace sandbox, with `writable` and the temp folders writable (Auto).
     Workspace,
     /// The workspace sandbox with the workspace and temp folders read-only
-    /// (Manual). Only the daemon's output folders in the Hexbot home, where the
-    /// code runtime saves its output, stay writable.
+    /// (Manual). Output exceptions must be granted explicitly by the caller.
     ReadOnly,
 }
 /// A sandboxed command.
@@ -821,6 +942,16 @@ pub fn isolated_command(
     writable: &[PathBuf],
     confine: Confine,
 ) -> Result<tokio::process::Command> {
+    isolated_command_with_outputs(home, program, writable, confine, &[])
+}
+/// Only approved execute_code calls grant an output exception in Manual mode.
+pub(crate) fn isolated_command_with_outputs(
+    home: &Path,
+    program: &str,
+    writable: &[PathBuf],
+    confine: Confine,
+    approved_outputs: &[PathBuf],
+) -> Result<tokio::process::Command> {
     let workspace: Vec<PathBuf> = match confine {
         Confine::No => vec![],
         Confine::Workspace => writable
@@ -828,16 +959,17 @@ pub fn isolated_command(
             .cloned()
             .chain([std::env::temp_dir(), PathBuf::from("/tmp")])
             .collect(),
-        Confine::ReadOnly => writable
+        Confine::ReadOnly => approved_outputs
             .iter()
             .filter(|path| under(path, home))
             .cloned()
             .collect(),
     };
-    let layout = layout(
+    let layout = layout_scanned(
         home,
         writable,
         (confine != Confine::No).then_some(workspace.as_slice()),
+        writable,
     )?;
     let mut command = if cfg!(target_os = "macos") {
         let mut command = tokio::process::Command::new("/usr/bin/sandbox-exec");
@@ -1101,6 +1233,178 @@ mod tests {
             &policy().home[1..]
         )))));
     }
+    #[test]
+    fn scan_is_breadth_first_bounded_and_masks_read_only_secrets() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().canonicalize().unwrap();
+        let home = root.join("home");
+        let work = root.join("work");
+        for path in [
+            &home,
+            &work,
+            &work.join("a"),
+            &work.join("z/.git"),
+            &work.join("bare.git/hooks"),
+            &root.join("metadata"),
+            &root.join("common"),
+        ] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::write(work.join(".git"), "gitdir: ../metadata\n").unwrap();
+        std::fs::write(root.join("metadata/commondir"), "../common\n").unwrap();
+        std::fs::write(work.join("z/.env"), "dummy").unwrap();
+        std::fs::write(work.join(".envrc"), "dummy").unwrap();
+        std::fs::write(
+            work.join("notes.git"),
+            "ordinary file, not a gitdir pointer",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            std::fs::write(root.join("secret"), "dummy").unwrap();
+            std::os::unix::fs::symlink("../secret", work.join(".env")).unwrap();
+        }
+        let bare = work.join("bare.git");
+        assert!(
+            workspace_protected(std::slice::from_ref(&bare), 3)
+                .unwrap()
+                .git
+                .contains(&bare)
+        );
+        let scan = workspace_protected(std::slice::from_ref(&work), 3).unwrap();
+        assert!(scan.secrets.contains(&work.join("z/.env")));
+        for path in [
+            work.join(".git"),
+            work.join("bare.git"),
+            root.join("metadata"),
+            root.join("common"),
+        ] {
+            assert!(scan.git.contains(&path));
+        }
+        let layout = layout_scanned(&home, &[], Some(&[]), std::slice::from_ref(&work)).unwrap();
+        let args = bwrap_arguments(&layout);
+        assert!(!args.iter().any(|arg| arg == "--bind"));
+        for path in scan.secrets {
+            assert!(
+                args.windows(3)
+                    .any(|w| w[0] == "--ro-bind" && w[1] == "/dev/null" && w[2] == path)
+            );
+        }
+        #[cfg(unix)]
+        assert!(
+            args.windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1] == "/dev/null" && w[2] == root.join("secret"))
+        );
+        std::fs::create_dir(work.join("a/deep")).unwrap();
+        assert!(workspace_protected(std::slice::from_ref(&work), 3).is_err());
+        for i in 0..1001 {
+            std::fs::create_dir(work.join("a").join(i.to_string())).unwrap();
+        }
+        assert!(layout_scanned(&home, &[], Some(&[]), &[work]).is_err());
+    }
+
+    #[tokio::test]
+    async fn sandbox_blocks_secret_moves_and_linked_git_writes() {
+        if !isolation_available() {
+            return;
+        }
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().canonicalize().unwrap();
+        let home = root.join("home");
+        let work = root.join("work");
+        for path in [
+            &home,
+            &work,
+            &work.join("nested"),
+            &work.join("bare.git/hooks"),
+            &root.join("metadata/hooks"),
+            &root.join("common/hooks"),
+        ] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::write(work.join(".git"), "gitdir: ../metadata\n").unwrap();
+        std::fs::write(root.join("metadata/commondir"), "../common\n").unwrap();
+        std::fs::write(work.join(".env"), "dummy").unwrap();
+        std::fs::write(work.join("nested/.env"), "dummy").unwrap();
+        let script = "mv .env moved && exit 10; echo x >> .env && exit 11; rm .env && exit 12; echo x > ../metadata/hooks/pre-commit && exit 13; echo x > ../common/hooks/pre-commit && exit 14; echo x > bare.git/hooks/pre-commit && exit 15; echo ok > notes; cat notes";
+        let output = isolated_command(
+            &home,
+            "/bin/bash",
+            std::slice::from_ref(&root),
+            Confine::Workspace,
+        )
+        .unwrap()
+        .args(["-c", script])
+        .current_dir(&work)
+        .output()
+        .await
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"ok\n");
+        let outputs = home.join("profiles/owl/artifacts");
+        std::fs::create_dir_all(&outputs).unwrap();
+        let script = format!("echo artifact > '{}'", outputs.join("result").display());
+        let output = isolated_command(
+            &home,
+            "/bin/bash",
+            &[work.clone(), outputs.clone()],
+            Confine::ReadOnly,
+        )
+        .unwrap()
+        .args(["-c", &script])
+        .output()
+        .await
+        .unwrap();
+        assert!(!output.status.success());
+        let output = isolated_command_with_outputs(
+            &home,
+            "/bin/bash",
+            &[work.clone(), outputs.clone()],
+            Confine::ReadOnly,
+            &[outputs],
+        )
+        .unwrap()
+        .args(["-c", &script])
+        .output()
+        .await
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = isolated_command(
+            &home,
+            "/bin/cat",
+            std::slice::from_ref(&work),
+            Confine::ReadOnly,
+        )
+        .unwrap()
+        .arg(work.join("notes"))
+        .output()
+        .await
+        .unwrap();
+        assert_eq!(
+            output.stdout,
+            b"ok\n",
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for mode in [Confine::ReadOnly, Confine::Workspace] {
+            let output = isolated_command(&home, "/bin/cat", std::slice::from_ref(&work), mode)
+                .unwrap()
+                .arg(work.join(".env"))
+                .output()
+                .await
+                .unwrap();
+            assert!(!String::from_utf8_lossy(&output.stdout).contains("dummy"));
+        }
+    }
+
     /// The extension builds the same sandbox for Pi's bash tool from the same policy.
     #[test]
     fn sandbox_policy_matches_the_extension() {
@@ -1124,6 +1428,12 @@ mod tests {
         let workspace = [base.path().join("work"), outputs.clone()];
         std::fs::create_dir_all(workspace[0].join(".git/hooks")).unwrap();
         std::fs::create_dir_all(workspace[0].join("app")).unwrap();
+        std::fs::create_dir_all(workspace[0].join("linked")).unwrap();
+        std::fs::create_dir_all(workspace[0].join("bare.git/hooks")).unwrap();
+        std::fs::create_dir_all(base.path().join("metadata")).unwrap();
+        std::fs::create_dir_all(base.path().join("common")).unwrap();
+        std::fs::write(workspace[0].join("linked/.git"), "gitdir: ../../metadata\n").unwrap();
+        std::fs::write(base.path().join("metadata/commondir"), "../common\n").unwrap();
         std::fs::write(workspace[0].join("app/.env"), "secret").unwrap();
         std::fs::write(workspace[0].join(".env.example"), "example").unwrap();
         let confined = super::layout(
@@ -1132,7 +1442,7 @@ mod tests {
             Some(&workspace),
         )
         .unwrap();
-        let script = "const {sandboxProfile, bwrapArguments} = await import(process.argv[1]); const [home, work, ...outputs] = process.argv.slice(2); const workspace = [work, outputs[1]]; console.log(JSON.stringify({profile: sandboxProfile(home, outputs), bwrap: bwrapArguments(home, outputs), confined: sandboxProfile(home, outputs, workspace), confinedBwrap: bwrapArguments(home, outputs, workspace)}));";
+        let script = "const {sandboxProfile, bwrapArguments} = await import(process.argv[1]); const [home, work, ...outputs] = process.argv.slice(2); const workspace = [work, outputs[1]]; console.log(JSON.stringify({profile: sandboxProfile(home, outputs), bwrap: bwrapArguments(home, outputs), confined: sandboxProfile(home, outputs, workspace), confinedBwrap: bwrapArguments(home, outputs, workspace), manual: sandboxProfile(home, outputs, [], workspace), manualBwrap: bwrapArguments(home, outputs, [], workspace)}));";
         let output = std::process::Command::new("node")
             .args(["--input-type=module", "-e", script, "--"])
             .arg(concat!(
@@ -1172,6 +1482,24 @@ mod tests {
             .map(|v| v.as_str().unwrap().into())
             .collect();
         assert_eq!(confined_bwrap, bwrap_arguments(&confined));
+        let manual = layout_scanned(
+            &home,
+            &[attachments.clone(), outputs],
+            Some(&[]),
+            &workspace,
+        )
+        .unwrap();
+        assert_eq!(
+            extension["manual"].as_str().unwrap(),
+            sandbox_profile(&manual)
+        );
+        let manual_bwrap: Vec<OsString> = extension["manualBwrap"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().into())
+            .collect();
+        assert_eq!(manual_bwrap, bwrap_arguments(&manual));
         let work = workspace[0].canonicalize().unwrap();
         assert!(confined_bwrap.windows(3).any(|w| w[0] == "--ro-bind"
             && w[1] == work.join(".git").as_os_str()

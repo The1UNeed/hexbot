@@ -116,8 +116,8 @@ test('credential file symlinks cannot disguise protected names', t => {
 test('project secrets and browser stores are private to the file tools; examples and venvs are not', async t => {
   const f=fixture(t,'smart',['file']);
   const work=mkdtempSync(join(tmpdir(),'hexbot-project-'));t.after(()=>rmSync(work,{recursive:true,force:true}));
-  for (const name of ['.env','.env.local','.ENV.production']) { writeFileSync(join(work,name),'secret'); assert.equal(credentialPath(join(work,name),f.home),true,name); }
-  for (const name of ['.env.example','.env.sample','.envrc','env.txt']) { writeFileSync(join(work,name),'ok'); assert.equal(credentialPath(join(work,name),f.home),false,name); }
+  for (const name of ['.env','.envrc','.env.local','.env.production']) { writeFileSync(join(work,name),'secret'); assert.equal(credentialPath(join(work,name),f.home),true,name); }
+  for (const name of ['.env.example','.env.sample','env.txt']) { writeFileSync(join(work,name),'ok'); assert.equal(credentialPath(join(work,name),f.home),false,name); }
   mkdirSync(join(work,'.env')+'-dir'); mkdirSync(join(work,'venv/.env'),{recursive:true});
   assert.equal(credentialPath(join(work,'venv/.env'),f.home),false);
   for (const store of ['Library/Keychains/login.keychain-db','Library/Application Support/Google/Chrome/Default/Cookies','.mozilla/firefox/x/logins.json'])
@@ -656,4 +656,31 @@ test('resource reads stop when their server is revoked or changed, without askin
   assert.equal(await f.handlers.tool_call({...read,input:{server:'other',uri:'other://a'}}, f.ctx), undefined);
   delete f.settings.mcpState.demo;
   assert.match((await f.handlers.tool_call(read, f.ctx)).reason, /removed or disabled/);
+});
+
+test('file writes protect gitdir and commondir targets outside the worktree and bare repositories', async t => {
+  const {writeDenial} = await import('./extension.ts');
+  const {mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync} = await import('node:fs');
+  const {tmpdir} = await import('node:os');
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-git-files-')));
+  t.after(() => rmSync(root, {recursive:true, force:true}));
+  const work = join(root, 'work'), home = join(root, 'home');
+  for (const path of [work, home, join(root, 'metadata'), join(root, 'common'), join(work, 'bare.git'), join(work, 'subdir')]) mkdirSync(path, {recursive:true});
+  writeFileSync(join(work, '.git'), 'gitdir: ../metadata\n');
+  writeFileSync(join(root, 'metadata/commondir'), '../common\n');
+  for (const path of ['metadata/hooks/pre-commit', 'common/config', 'work/bare.git/config']) assert.match(writeDenial(join(root, path), join(work, 'subdir'), home), /protected|read-only/);
+  assert.equal(writeDenial(join(work, 'notes'), work, home), undefined);
+});
+
+test('an exhausted safety scan blocks the command and requires an approved full-access retry', async t => {
+  const f = fixture(t, 'smart', ['terminal']);
+  const work = mkdtempSync(join(tmpdir(), 'hexbot-budget-'));
+  t.after(() => rmSync(work, {recursive:true, force:true}));
+  f.settings.cwd = work;
+  for (let i = 0; i < 1001; i++) mkdirSync(join(work, String(i)));
+  assert.match((await f.gate('bash', {command:'echo harmless'})).reason, /budget.*approval/);
+  assert.equal(f.choices.length, 0);
+  f.ctx.choice = 'once';
+  assert.equal(await f.gate('bash', {command:'echo harmless', full_access:true, reason:'The safety scan exceeded its budget.'}), undefined);
+  assert.match(f.choices[0].reason, /outside the sandbox/);
 });

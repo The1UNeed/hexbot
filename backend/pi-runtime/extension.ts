@@ -3,7 +3,7 @@ import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync } from 'n
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
-import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName} from './isolation.ts';
+import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, workspaceProtected} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -210,6 +210,10 @@ export default function hexbot(pi: any) {
           ask = {key: 'shell:unsandboxed', command: event.input.command, reason: 'Hexbot has no OS sandbox on this system, so this command can read and change any file you can. Install bubblewrap and restart the daemon to restore isolation.'};
         }
       }
+      if (event.toolName === 'bash' && levelFor(event.input) === 'confined' && isolationAvailable()) {
+        try { workspaceProtected([cwd, ...live.outputDirs ?? []]); }
+        catch (error: any) { return {block: true, reason: error.message}; }
+      }
       if (browser) ask = {key: 'browser_console', command: event.input.expression, reason: 'This runs code in a web page.'};
       if (!ask || sessionAllowed.has(ask.key)) return;
       if (mcp && live.canAsk === false) return {block: true, reason: 'This connected tool needs approval. Run it in a visible section.'};
@@ -231,7 +235,7 @@ export default function hexbot(pi: any) {
   };
   // The user's own commands and the code runtime's terminal have no full_access.
   const spawnFor = (level: Level, command: string) => level === 'none' ? command :
-    isolatedCommand(command, live.home, live.outputDirs, level === 'confined' ? workspace() : undefined);
+    isolatedCommand(command, live.home, live.outputDirs, level === 'confined' ? workspace() : undefined, [live.cwd ?? config.cwd, ...live.outputDirs ?? []]);
   const sandboxNote = () => live.approvalMode === 'manual'
     ? '[The command ran in the read-only sandbox, without internet access. If it failed for that reason, run it again with full_access and a reason.]'
     : `[The command ran in the sandbox, without internet access and with writes only in ${live.cwd ?? config.cwd}, its output folders, and temporary folders. If it failed for that reason, run it again with full_access and a reason.]`;
@@ -247,8 +251,8 @@ export default function hexbot(pi: any) {
     if (!enabled(name)) continue;
     wrapped.add(name);
     const bypass = () => live.approvalMode === 'off';
-    const options = (level: Level = 'confined') => name === 'bash' ? {spawnHook: (c: any) => level === 'none' ? c : {...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)}} :
-      name === 'grep' && !bypass() ? {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: (path: string) => credentialPath(path, live.home) ? '' : readFileSync(path, 'utf8')}} : {};
+    const options = (level: Level = 'confined', denied = readDenied()) => name === 'bash' ? {spawnHook: (c: any) => level === 'none' ? c : {...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)}} :
+      name === 'grep' && !bypass() ? {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: (path: string) => credentialPath(path, live.home, denied) ? '' : readFileSync(path, 'utf8')}} : {};
     const tool = factory(config.cwd, options());
     const definition = name === 'bash' ? {
       description: tool.description + ' Commands may run in a sandbox that blocks internet access and writes outside the workspace. When a command needs either, set full_access and give a reason.',
@@ -289,11 +293,13 @@ export default function hexbot(pi: any) {
         if (denial) throw new Error(denial);
       }
       args = {...args, path};
+      // Reuse the same read-deny roots for every candidate and the output filter.
+      const denied = readDenied();
       // Avoid streaming unfiltered search output.
-      const result = await factory(cwd, options()).execute(id, args, signal, ['grep', 'find', 'ls'].includes(name) ? undefined : update);
+      const result = await factory(cwd, options('confined', denied)).execute(id, args, signal, ['grep', 'find', 'ls'].includes(name) ? undefined : update);
       if (['grep', 'find', 'ls'].includes(name)) {
         const base = statSync(path).isDirectory() ? path : dirname(path);
-        return sanitizeSearchResult(result, name, base, live.home);
+        return sanitizeSearchResult(result, name, base, live.home, denied);
       }
       return result;
     }});
@@ -380,13 +386,13 @@ export default function hexbot(pi: any) {
 
 // Filenames can contain grep's line delimiters too (for example owl-2-beta).
 // Check every possible path prefix, including text nested in truncation details.
-export function sanitizeSearchResult(value: any, name: string, base: string, home: string): any {
+export function sanitizeSearchResult(value: any, name: string, base: string, home: string, denied = readDenied()): any {
   if (typeof value === 'string') return value.split('\n').filter(line => {
     const paths = name === 'grep' ? [...line.matchAll(/(:\d+:|-\d+-)/g)].map(match => line.slice(0, match.index)) : [line.replace(/\/$/, '')];
-    return !paths.some(path => credentialPath(resolve(base, path), home) || credentialPath(canonicalPath(path, base), home));
+    return !paths.some(path => credentialPath(resolve(base, path), home, denied) || credentialPath(canonicalPath(path, base), home, denied));
   }).join('\n');
-  if (Array.isArray(value)) return value.map(part => sanitizeSearchResult(part, name, base, home));
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, part]) => [key, sanitizeSearchResult(part, name, base, home)]));
+  if (Array.isArray(value)) return value.map(part => sanitizeSearchResult(part, name, base, home, denied));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, part]) => [key, sanitizeSearchResult(part, name, base, home, denied)]));
   return value;
 }
 
@@ -416,13 +422,13 @@ export function canonicalPath(path: string, cwd: string, depth = 0): string {
   return current;
 }
 const under = (path: string, root: string) => fold(path) === fold(root) || fold(path).startsWith(fold(root) + sep);
-export function credentialPath(path: string, home: string): boolean {
+export function credentialPath(path: string, home: string, denied = readDenied()): boolean {
   const lexical = resolve(path);
   path = canonicalPath(path, process.cwd());
-  if (lexical !== path && credentialName(lexical, home)) return true;
-  return credentialName(path, home);
+  if (lexical !== path && credentialName(lexical, home, denied)) return true;
+  return credentialName(path, home, denied);
 }
-function credentialName(path: string, home: string): boolean {
+function credentialName(path: string, home: string, denied: string[]): boolean {
   for (const ssh of [join(homedir(), '.ssh'), canonicalPath(join(homedir(), '.ssh'), process.cwd())]) {
     if (under(path, ssh) && (fold(dirname(path)) !== fold(ssh) || privateKeyName(basename(path)))) return true;
   }
@@ -435,7 +441,7 @@ function credentialName(path: string, home: string): boolean {
     const store = policyRoot(entry);
     return under(path, store) || under(path, canonicalPath(store, process.cwd()));
   })) return true;
-  if (readDenied().some(store => under(path, store))) return true;
+  if (denied.some(store => under(path, store))) return true;
   const name = basename(path);
   if (secretFileName(name)) {
     try { if (!statSync(path).isDirectory()) return true; } catch { return true; }
@@ -461,8 +467,9 @@ export function hostWriteTier(input: string, cwd: string, fileTool = false): 'de
   }
 }
 // Inside the home only the daemon-chosen output folders are writable, never the cwd.
-function writeDenial(input: string, cwd: string, home: string, outputs: string[] = []): string | undefined {
+export function writeDenial(input: string, cwd: string, home: string, outputs: string[] = []): string | undefined {
   const path = canonicalPath(input, cwd);
+  if (workspaceProtected([cwd, ...outputs]).git.some(root => under(path, root))) return 'Git metadata is read-only. Use an approved full_access command.';
   if (protectedPath(path, home, outputs)) return 'This path is protected. Use the soul or memory tool for bot notes.';
   if (hostWriteTier(input, cwd, true) === 'deny') return NEVER_WRITTEN;
 }
@@ -476,7 +483,7 @@ function protectedHomePath(path: string, home: string, writable: string[]): bool
 }
 export function protectedPath(path: string, home: string, writable: string[] = []): boolean {
   path = canonicalPath(path, process.cwd());
-  return protectedHomePath(path, home, writable) || path.split(sep).some(part => fold(part).startsWith('.env') || ['.git', 'node_modules', '.ssh'].includes(fold(part)));
+  return protectedHomePath(path, home, writable) || path.split(sep).some(part => fold(part).startsWith('.env') || fold(part).endsWith('.git') || ['.git', 'node_modules', '.ssh'].includes(fold(part)));
 }
 export function shellEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   // Explicit inheritance prevents unfamiliar connector keys and runtime injection
