@@ -5,7 +5,7 @@ description: Build the Hexbot Expo app for iPhone and Android and connect to you
 ---
 
 The Expo app in `apps/mobile` runs on iOS and Android. Its controls cover bots,
-threads, group chats, approvals, models, memory, scheduled jobs, users and paired
+threads, rooms, approvals, models, memory, scheduled jobs and paired
 devices.
 Bots run on your daemon's computer while your phone is asleep.
 
@@ -32,7 +32,8 @@ provides development, internal preview and production build profiles.
 Enable local connections on your daemon. Open Settings, Devices on an
 existing client, or run `hexbot pair` on that computer. Enter its LAN or
 Tailscale address and the one-time code on your phone. A `hexbot://pair` link
-opens the installed app. Allow the iPhone's local network permission.
+opens the installed app with the address filled in. Check the host shown above
+Pair and tap to confirm. Allow the iPhone's local network permission.
 
 Use the computer's reachable address rather than `localhost` on a physical
 phone. Pairing works independently of Hex Connect.
@@ -56,13 +57,14 @@ separate conversation with its own context. Tap the model under New
 conversation to pick the bot's model and thinking level. Existing threads
 following its defaults also change when idle; threads with overrides keep them.
 
-Groups shows one group chat at a time, with a switcher when you have several.
-The daemon calls them rooms. Daemon shows what your bots are doing now and
+Rooms shows one room at a time, with a switcher when you have several. Daemon shows what your bots are doing now and
 opens settings, models, connectors, skills, jobs, About you, usage, bot
-activity, people, devices, network, Hex Connect and updates. Settings and
-editors open as cards over the screen you came from. The daemon enforces owner
-and admin permissions on every action.
+activity, devices, network, Hex Connect and updates. Settings and
+editors open as cards over the screen you came from. One person owns the daemon; paired devices access that person’s bots and rooms.
 
-A job's output stays on the daemon. The app does not provide push notifications
+Job details show the last status, error and up to 12,000 characters of output
+saved on the daemon. Attachments can be sent without text. The app asks the bot
+to review the files and keeps attachment chips until the send succeeds. Older
+daemons show an update notice for unavailable attachment or job controls. The app does not provide push notifications
 or computer power controls. For development checks and native simulator flows,
 see `apps/mobile/README.md` and `docs/testing.md` in the repository.

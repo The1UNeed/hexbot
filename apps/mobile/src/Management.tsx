@@ -23,13 +23,42 @@ import {
   type Device,
   type Room,
   type Rpc,
-  type Section,
-  type User
+  type Section
 } from './core/types'
+import { avatarSrc } from './core/avatar'
 import { pickFile } from './core/pickFile'
 import type { useMobile } from './core/useMobile'
 export type Panel = {
-  kind: string
+  kind:
+    | 'about'
+    | 'activity'
+    | 'bot'
+    | 'bot-create'
+    | 'connect'
+    | 'connector'
+    | 'connectors'
+    | 'devices'
+    | 'dreams'
+    | 'job'
+    | 'job-create'
+    | 'jobs'
+    | 'mcp'
+    | 'memory'
+    | 'network'
+    | 'provider'
+    | 'providers'
+    | 'room'
+    | 'room-create'
+    | 'rooms'
+    | 'section'
+    | 'sections'
+    | 'settings'
+    | 'skill'
+    | 'skill-create'
+    | 'skills'
+    | 'tools'
+    | 'updates'
+    | 'usage'
   bot?: Bot
   room?: Room
   data?: Record<string, unknown>
@@ -48,7 +77,7 @@ const modeHelp: Record<string, string> = {
   smart:
     'Works freely in the workspace. Commands run in a sandbox with no network; anything outside the workspace asks first.',
   manual: 'Reads freely. Every file change and command asks first.',
-  off: 'No prompts and no sandbox. Only admins can choose it.'
+  off: 'No prompts and no sandbox.'
 }
 /** What each tool lets a bot do, as the web app words it. */
 const TOOLS: { key: string; label: string; description: string }[] = [
@@ -109,7 +138,7 @@ export function Management({
   onNavigate,
   mobile,
   onSaved,
-  onOpenGroup
+  onOpenRoom
 }: {
   panel: Panel | null
   onClose: () => void
@@ -119,7 +148,7 @@ export function Management({
   onNavigate: (p: Panel, draft?: Values) => void
   mobile: ReturnType<typeof useMobile>
   onSaved?: () => void
-  onOpenGroup?: (room: Room) => void
+  onOpenRoom?: (room: Room) => void
 }) {
   const theme = useTheme()
   const [rows, setRows] = useState<RowData[]>([])
@@ -135,7 +164,6 @@ export function Management({
   const panelLoading = loading || loadedPanel !== panel
   const epoch = useRef(0)
   const rpc: Rpc = mobile.rpc
-  const admin = mobile.user?.role === 'admin'
   // Cards keep a snapshot; read the latest copy so a card returned to is current.
   const bot = panel?.bot
     ? (mobile.bots.find(b => b.name === panel.bot!.name) ?? panel.bot)
@@ -157,17 +185,9 @@ export function Management({
       onSaved?.()
       if (close) (onBack ?? onClose)()
       else if (
-        [
-          'sections',
-          'devices',
-          'users',
-          'skills',
-          'jobs',
-          'dreams',
-          'network',
-          'usage',
-          'updates'
-        ].includes(kind)
+        ['sections', 'devices', 'skills', 'jobs', 'dreams', 'network', 'usage', 'updates'].includes(
+          kind
+        )
       )
         await load()
     } catch (e) {
@@ -217,8 +237,7 @@ export function Management({
             approval_mode: bot.approval_mode ?? 'inherit',
             workdir: bot.workdir ?? '',
             dream_enabled: bot.dream_enabled,
-            notify: bot.notify ?? true,
-            shareable: bot.shareable
+            notify: bot.notify ?? true
           }
         break
       case 'memory': {
@@ -262,10 +281,6 @@ export function Management({
             budget_tokens_per_human_turn: str(room.limits.budget_tokens_per_human_turn)
           }
         break
-      case 'room-people':
-        data = (await rpc<{ users: User[] }>('hexbot.rooms.people', { id: room?.id }))
-          .users as unknown as RowData[]
-        break
       case 'providers':
         data = (await rpc<{ providers: RowData[] }>('hexbot.providers.list')).providers
         break
@@ -281,20 +296,6 @@ export function Management({
       case 'devices':
         data = (await rpc<{ devices: Device[] }>('hexbot.devices.list'))
           .devices as unknown as RowData[]
-        break
-      case 'users':
-        data = (await rpc<{ users: User[] }>('hexbot.users.list')).users as unknown as RowData[]
-        break
-      case 'user':
-        fields = {
-          display_name: str(panel?.data?.display_name),
-          role: str(panel?.data?.role ?? 'member'),
-          daily_tokens: str((panel?.data?.limits as RowData)?.daily_tokens),
-          disabled: !!panel?.data?.disabled_at
-        }
-        break
-      case 'invite':
-        fields = { display_name: '', role: 'member' }
         break
       case 'usage':
         detail = await rpc('hexbot.usage.summary')
@@ -455,9 +456,9 @@ export function Management({
     />
   )
   const keepDraft = ['bot', 'bot-create'].includes(kind) ? values : undefined
-  const navigate = (next: string, data?: RowData) =>
+  const navigate = (next: Panel['kind'], data?: RowData) =>
     onNavigate({ kind: next, bot, room, data }, keepDraft)
-  const row = (title: string, next: string, subtitle?: string, data?: RowData) => (
+  const row = (title: string, next: Panel['kind'], subtitle?: string, data?: RowData) => (
     <Row
       key={next}
       title={title}
@@ -485,7 +486,7 @@ export function Management({
     />
   )
   const chooseMode = (key: string, inherit = true) => {
-    const options = modes.filter(m => (inherit || m.id !== 'inherit') && (admin || m.id !== 'off'))
+    const options = modes.filter(m => inherit || m.id !== 'inherit')
     const selected = str(values[key]) || (inherit ? 'inherit' : 'smart')
     return (
       <Group title="Approvals" footer={modeHelp[selected]}>
@@ -514,11 +515,11 @@ export function Management({
             default_model: values.default_model || null,
             fallback_model: values.fallback_model || null,
             bot_daily_token_budget: num(values.bot_daily_token_budget),
-            room_bot_turns_per_human_turn: num(values.room_bot_turns_per_human_turn) ?? 8,
+            room_bot_turns_per_human_turn: num(values.room_bot_turns_per_human_turn),
             room_budget_tokens_per_human_turn: num(values.room_budget_tokens_per_human_turn)
           }
         })
-      content = admin ? (
+      content = (
         <>
           {chooseMode('approval_mode', false)}
           <Group title="Models" footer="Provider/model, such as anthropic/claude-sonnet-5.">
@@ -531,8 +532,8 @@ export function Management({
           <Group title="Budgets" footer="Leave a budget empty for no limit.">
             <View style={styles.inset}>
               {field('bot_daily_token_budget', 'Daily tokens for each bot')}
-              {field('room_bot_turns_per_human_turn', 'Bot replies per group message')}
-              {field('room_budget_tokens_per_human_turn', 'Tokens per group message')}
+              {field('room_bot_turns_per_human_turn', 'Bot replies per room message')}
+              {field('room_budget_tokens_per_human_turn', 'Tokens per room message')}
             </View>
           </Group>
           <Group
@@ -550,10 +551,7 @@ export function Management({
             </View>
           </Group>
         </>
-      ) : (
-        <Text tone="muted">A daemon admin manages approvals, models, budgets and dreaming.</Text>
       )
-      if (!admin) save = undefined
       break
     case 'bot-create':
     case 'bot':
@@ -572,8 +570,7 @@ export function Management({
                 approval_mode: values.approval_mode,
                 workdir: values.workdir || null,
                 dream_enabled: values.dream_enabled,
-                notify: values.notify,
-                shareable: values.shareable
+                notify: values.notify
               }
             : {})
         }
@@ -588,7 +585,7 @@ export function Management({
         <>
           <View style={[styles.identity, { backgroundColor: theme.surface }]}>
             <BotFace
-              imageUri={bot?.avatar ? `data:${bot.avatar.mime};base64,${bot.avatar.data}` : null}
+              imageUri={avatarSrc(bot?.avatar)}
               name={str(values.display_name) || str(values.name) || 'New bot'}
               size={88}
             />
@@ -706,10 +703,7 @@ export function Management({
                 {row('Dreaming history', 'dreams')}
                 {row('Scheduled jobs', 'jobs')}
               </Group>
-              <Group title="Sharing and alerts">
-                {toggle('shareable', 'Share with other users')}
-                {toggle('notify', 'Notify me')}
-              </Group>
+              <Group title="Notifications">{toggle('notify', 'Notify me')}</Group>
               <Group>
                 {action('Clear stopped status', () =>
                   rpc('hexbot.bots.clear_status', { name: bot.name })
@@ -831,8 +825,8 @@ export function Management({
               testID={`managed-room-${r.id}`}
               chevron
               onPress={() =>
-                onOpenGroup && !r.archived_at
-                  ? onOpenGroup(r as unknown as Room)
+                onOpenRoom && !r.archived_at
+                  ? onOpenRoom(r as unknown as Room)
                   : onNavigate({ kind: 'room', room: r as unknown as Room })
               }
             />
@@ -842,161 +836,110 @@ export function Management({
       break
     case 'room-create':
     case 'room': {
-      const isOwner = !room || room.owner_id === mobile.user?.id
-      save = isOwner
-        ? async () => {
-            const members = mobile.bots
-              .filter(b => values[`member-${b.name}`] === true)
-              .map(b => b.name)
-            const result = await rpc<{ room: Room }>(
-              room ? 'hexbot.rooms.update' : 'hexbot.rooms.create',
-              {
-                ...(room
-                  ? {
-                      id: room.id,
-                      limits: {
-                        bot_turns_per_human_turn: num(values.bot_turns_per_human_turn),
-                        budget_tokens_per_human_turn: num(values.budget_tokens_per_human_turn)
-                      },
-                      approval_mode: values.approval_mode
-                    }
-                  : { members }),
-                name: values.name,
-                main_bot: values.main_bot || null
-              }
-            )
-            if (!room) await mobile.openRoom(result.room)
-            return result
+      save = async () => {
+        const members = mobile.bots
+          .filter(b => values[`member-${b.name}`] === true)
+          .map(b => b.name)
+        const result = await rpc<{ room: Room }>(
+          room ? 'hexbot.rooms.update' : 'hexbot.rooms.create',
+          {
+            ...(room
+              ? {
+                  id: room.id,
+                  limits: {
+                    bot_turns_per_human_turn: num(values.bot_turns_per_human_turn),
+                    budget_tokens_per_human_turn: num(values.budget_tokens_per_human_turn)
+                  },
+                  approval_mode: values.approval_mode
+                }
+              : { members }),
+            name: values.name,
+            main_bot: values.main_bot || null
           }
-        : undefined
+        )
+        if (!room) await mobile.openRoom(result.room)
+        return result
+      }
       content = (
         <>
-          {isOwner ? (
+          {field('name', 'Room name')}
+          <Group
+            title="Main bot"
+            footer="Answers when nobody is mentioned. Mention a bot with @ to ask it directly."
+          >
+            {[{ name: '', display_name: 'No main bot' }, ...mobile.bots].map(b => (
+              <ChoiceRow
+                key={b.name || 'none'}
+                title={b.display_name}
+                testID={`main-bot-${b.name || 'none'}`}
+                selected={str(values.main_bot) === b.name}
+                onPress={() => set('main_bot', b.name)}
+              />
+            ))}
+          </Group>
+          <Group title="Bots">
+            {mobile.bots.map(b => {
+              const joined =
+                room?.members.some(
+                  m => m.member_kind === 'bot' && m.member_id === b.name && !m.left_at
+                ) ?? values[`member-${b.name}`] === true
+              return (
+                <SwitchRow
+                  key={b.name}
+                  title={b.display_name}
+                  testID={`member-${b.name}`}
+                  value={joined}
+                  disabled={busy || mobile.connection !== 'connected'}
+                  leading={<BotFace name={b.display_name} size={28} />}
+                  onValueChange={enabled =>
+                    room
+                      ? void run(async () => {
+                          const updated = await rpc<{ room: Room }>(
+                            enabled ? 'hexbot.rooms.add_member' : 'hexbot.rooms.remove_member',
+                            { id: room.id, bot: b.name }
+                          )
+                          onNavigate({ kind: 'room', room: updated.room })
+                        })
+                      : set(`member-${b.name}`, enabled)
+                  }
+                />
+              )
+            })}
+          </Group>
+          {room ? (
             <>
-              {field('name', 'Group name')}
-              <Group
-                title="Main bot"
-                footer="Answers when nobody is mentioned. Mention a bot with @ to ask it directly."
-              >
-                {[{ name: '', display_name: 'No main bot' }, ...mobile.bots].map(b => (
-                  <ChoiceRow
-                    key={b.name || 'none'}
-                    title={b.display_name}
-                    testID={`main-bot-${b.name || 'none'}`}
-                    selected={str(values.main_bot) === b.name}
-                    onPress={() => set('main_bot', b.name)}
-                  />
-                ))}
+              {chooseMode('approval_mode')}
+              <Group title="Budgets" footer="Leave a budget empty to use the daemon setting.">
+                <View style={styles.inset}>
+                  {field('bot_turns_per_human_turn', 'Bot replies per message')}
+                  {field('budget_tokens_per_human_turn', 'Tokens per message')}
+                </View>
               </Group>
-              <Group title="Bots">
-                {mobile.bots.map(b => {
-                  const joined =
-                    room?.members.some(
-                      m => m.member_kind === 'bot' && m.member_id === b.name && !m.left_at
-                    ) ?? values[`member-${b.name}`] === true
-                  return (
-                    <SwitchRow
-                      key={b.name}
-                      title={b.display_name}
-                      testID={`member-${b.name}`}
-                      value={joined}
-                      disabled={busy || mobile.connection !== 'connected'}
-                      leading={<BotFace name={b.display_name} size={28} />}
-                      onValueChange={enabled =>
-                        room
-                          ? void run(async () => {
-                              const updated = await rpc<{ room: Room }>(
-                                enabled ? 'hexbot.rooms.add_member' : 'hexbot.rooms.remove_member',
-                                { id: room.id, bot: b.name }
-                              )
-                              onNavigate({ kind: 'room', room: updated.room })
-                            })
-                          : set(`member-${b.name}`, enabled)
-                      }
-                    />
-                  )
-                })}
-              </Group>
-              {room ? (
-                <>
-                  {chooseMode('approval_mode')}
-                  <Group title="Budgets" footer="Leave a budget empty to use the daemon setting.">
-                    <View style={styles.inset}>
-                      {field('bot_turns_per_human_turn', 'Bot replies per message')}
-                      {field('budget_tokens_per_human_turn', 'Tokens per message')}
-                    </View>
-                  </Group>
-                  <Group>
-                    {row('People', 'room-people')}
-                    {action(room.archived_at ? 'Restore group' : 'Archive group', async () => {
-                      await rpc(
-                        room.archived_at ? 'hexbot.rooms.unarchive' : 'hexbot.rooms.archive',
-                        { id: room.id }
-                      )
-                      mobile.back()
-                      onClose()
-                    })}
-                    {action(
-                      'Delete group',
-                      async () => {
-                        await rpc('hexbot.rooms.delete', { id: room.id })
-                        mobile.back()
-                        onClose()
-                      },
-                      true,
-                      'This deletes this group and its history.'
-                    )}
-                  </Group>
-                </>
-              ) : null}
-            </>
-          ) : (
-            <Group>
-              {action(
-                'Leave group',
-                async () => {
-                  await rpc('hexbot.rooms.remove_member', { id: room!.id, user: mobile.user?.id })
+              <Group>
+                {action(room.archived_at ? 'Restore room' : 'Archive room', async () => {
+                  await rpc(room.archived_at ? 'hexbot.rooms.unarchive' : 'hexbot.rooms.archive', {
+                    id: room.id
+                  })
                   mobile.back()
                   onClose()
-                },
-                true
-              )}
-            </Group>
-          )}
+                })}
+                {action(
+                  'Delete room',
+                  async () => {
+                    await rpc('hexbot.rooms.delete', { id: room.id })
+                    mobile.back()
+                    onClose()
+                  },
+                  true,
+                  'This deletes this room and its history.'
+                )}
+              </Group>
+            </>
+          ) : null}
         </>
       )
       break
     }
-    case 'room-people':
-      content = (
-        <Group>
-          {rows.map(person => {
-            const joined =
-              room?.members.some(
-                m => m.member_kind === 'human' && m.member_id === person.id && !m.left_at
-              ) ?? false
-            return (
-              <SwitchRow
-                key={str(person.id)}
-                title={str(person.display_name)}
-                testID={`person-${person.id}`}
-                value={joined}
-                disabled={person.id === room?.owner_id || busy}
-                onValueChange={enabled =>
-                  void run(async () => {
-                    const updated = await rpc<{ room: Room }>(
-                      enabled ? 'hexbot.rooms.add_member' : 'hexbot.rooms.remove_member',
-                      { id: room?.id, user: person.id }
-                    )
-                    onNavigate({ kind: 'room-people', room: updated.room })
-                  })
-                }
-              />
-            )
-          })}
-        </Group>
-      )
-      break
     case 'providers':
       content = (
         <Group>
@@ -1018,44 +961,40 @@ export function Management({
       content = (
         <>
           <Text>{str(panel?.data?.label)}</Text>
-          {admin ? (
-            <>
-              {field('key', 'API key', false, undefined, true)}
-              <Group>
-                {action('Save API key', () =>
-                  rpc('hexbot.providers.set_key', { provider, key: values.key })
-                )}
-                {action('Sign in', async () => {
-                  const login = await rpc('hexbot.providers.login_start', { provider })
-                  setExtra(login)
-                  if (login.message) setNotice(str(login.message))
-                  if (login.url) await Linking.openURL(str(login.url))
-                })}
-                {extra.login_id ? (
-                  <>
-                    {extra.code ? <Text selectable>{str(extra.code)}</Text> : null}
-                    {action('Check sign-in', async () => {
-                      const login = await rpc('hexbot.providers.login_poll', {
-                        login_id: extra.login_id
-                      })
-                      setNotice(str(login.message || login.status))
-                      setExtra({ ...extra, ...login })
-                    })}
-                    {action('Cancel sign-in', () =>
-                      rpc('hexbot.providers.login_cancel', { login_id: extra.login_id })
-                    )}
-                  </>
-                ) : null}
-                {action(
-                  'Disconnect provider',
-                  () => rpc('hexbot.providers.clear_key', { provider }),
-                  true
-                )}
-              </Group>
-            </>
-          ) : (
-            <Text tone="muted">A daemon admin manages provider credentials.</Text>
-          )}
+          <>
+            {field('key', 'API key', false, undefined, true)}
+            <Group>
+              {action('Save API key', () =>
+                rpc('hexbot.providers.set_key', { provider, key: values.key })
+              )}
+              {action('Sign in', async () => {
+                const login = await rpc('hexbot.providers.login_start', { provider })
+                setExtra(login)
+                if (login.message) setNotice(str(login.message))
+                if (login.url) await Linking.openURL(str(login.url))
+              })}
+              {extra.login_id ? (
+                <>
+                  {extra.code ? <Text selectable>{str(extra.code)}</Text> : null}
+                  {action('Check sign-in', async () => {
+                    const login = await rpc('hexbot.providers.login_poll', {
+                      login_id: extra.login_id
+                    })
+                    setNotice(str(login.message || login.status))
+                    setExtra({ ...extra, ...login })
+                  })}
+                  {action('Cancel sign-in', () =>
+                    rpc('hexbot.providers.login_cancel', { login_id: extra.login_id })
+                  )}
+                </>
+              ) : null}
+              {action(
+                'Disconnect provider',
+                () => rpc('hexbot.providers.clear_key', { provider }),
+                true
+              )}
+            </Group>
+          </>
         </>
       )
       break
@@ -1116,63 +1055,6 @@ export function Management({
         </Group>
       )
       break
-    case 'users':
-      content = (
-        <Group>
-          {row('Invite person', 'invite')}
-          {rows.map(u => (
-            <Row
-              key={str(u.id)}
-              title={str(u.display_name)}
-              subtitle={u.disabled_at ? 'Disabled' : str(u.role)}
-              testID={`user-${u.id}`}
-              chevron
-              onPress={() => navigate('user', u)}
-            />
-          ))}
-        </Group>
-      )
-      break
-    case 'user':
-    case 'invite':
-      save = () =>
-        rpc(kind === 'invite' ? 'hexbot.users.invite' : 'hexbot.users.update', {
-          display_name: values.display_name,
-          role: values.role,
-          ...(kind === 'user'
-            ? {
-                id: panel?.data?.id,
-                disabled: values.disabled,
-                limits: { daily_tokens: num(values.daily_tokens) }
-              }
-            : {})
-        }).then(result => {
-          if (result.code) setNotice(`Pairing code: ${result.code}`)
-          return result
-        })
-      content = (
-        <>
-          {field('display_name', 'Display name')}
-          <Group>
-            {['member', 'admin'].map(role => (
-              <ChoiceRow
-                key={role}
-                title={role === 'admin' ? 'Admin' : 'Member'}
-                testID={`role-${role}`}
-                selected={values.role === role}
-                onPress={() => set('role', role)}
-              />
-            ))}
-          </Group>
-          {kind === 'user' ? (
-            <>
-              {field('daily_tokens', 'Daily token budget')}
-              {toggle('disabled', 'Disable user')}
-            </>
-          ) : null}
-        </>
-      )
-      break
     case 'usage':
       content = (
         <Group>
@@ -1189,7 +1071,7 @@ export function Management({
     case 'connectors':
       content = (
         <Group>
-          {admin ? row('Add MCP server', 'mcp') : null}
+          {row('Add MCP server', 'mcp')}
           {rows.map(c => (
             <Row
               key={str(c.id)}
@@ -1221,21 +1103,19 @@ export function Management({
               ))}
             </Group>
           ) : null}
-          {admin
-            ? c.fields
-                .filter(f => !f.provider || f.provider === values.provider)
-                .map(f =>
-                  field(
-                    f.key,
-                    f.label,
-                    false,
-                    [f.help, f.set ? 'Already saved. Leave empty to keep it.' : '']
-                      .filter(Boolean)
-                      .join(' '),
-                    f.secret
-                  )
-                )
-            : null}
+          {c.fields
+            .filter(f => !f.provider || f.provider === values.provider)
+            .map(f =>
+              field(
+                f.key,
+                f.label,
+                false,
+                [f.help, f.set ? 'Already saved. Leave empty to keep it.' : '']
+                  .filter(Boolean)
+                  .join(' '),
+                f.secret
+              )
+            )}
           <Group>
             {bot ? (
               <SwitchRow
@@ -1250,20 +1130,18 @@ export function Management({
                 }
               />
             ) : null}
-            {admin
-              ? action('Save credentials', () =>
-                  rpc('hexbot.connectors.setup', {
-                    id: c.id,
-                    provider: values.provider || undefined,
-                    ...(bot ? { bot: bot.name } : {}),
-                    values: Object.fromEntries(
-                      c.fields
-                        .filter(f => values[f.key] !== undefined && values[f.key] !== '')
-                        .map(f => [f.key, values[f.key]])
-                    )
-                  })
+            {action('Save credentials', () =>
+              rpc('hexbot.connectors.setup', {
+                id: c.id,
+                provider: values.provider || undefined,
+                ...(bot ? { bot: bot.name } : {}),
+                values: Object.fromEntries(
+                  c.fields
+                    .filter(f => values[f.key] !== undefined && values[f.key] !== '')
+                    .map(f => [f.key, values[f.key]])
                 )
-              : null}
+              })
+            )}
             {action('Test connector', async () => {
               const result = await rpc('hexbot.connectors.test', {
                 id: c.id,
@@ -1271,14 +1149,8 @@ export function Management({
               })
               setNotice(str(result.message))
             })}
-            {admin
-              ? action(
-                  'Clear credentials',
-                  () => rpc('hexbot.connectors.clear', { id: c.id }),
-                  true
-                )
-              : null}
-            {admin && c.mcp
+            {action('Clear credentials', () => rpc('hexbot.connectors.clear', { id: c.id }), true)}
+            {c.mcp
               ? action(
                   'Remove MCP server',
                   () => rpc('hexbot.connectors.remove_mcp', { name: c.mcp?.name }),
@@ -1327,7 +1199,7 @@ export function Management({
     case 'skills':
       content = (
         <Group>
-          {admin || bot ? row('Create skill', 'skill-create') : null}
+          {row('Create skill', 'skill-create')}
           {rows.map(s => (
             <View key={str(s.name)}>
               <Row
@@ -1337,23 +1209,21 @@ export function Management({
                 chevron
                 onPress={() => navigate('skill', s)}
               />
-              {admin || bot ? (
-                <SwitchRow
-                  title={`Enable ${s.name}`}
-                  testID={`enable-skill-${s.name}`}
-                  value={s.enabled === true}
-                  disabled={busy || mobile.connection !== 'connected'}
-                  onValueChange={enabled =>
-                    void run(() =>
-                      rpc(bot ? 'hexbot.skills.set_for_bot' : 'hexbot.skills.set_global', {
-                        name: s.name,
-                        ...(bot ? { bot: bot.name } : {}),
-                        enabled
-                      })
-                    )
-                  }
-                />
-              ) : null}
+              <SwitchRow
+                title={`Enable ${s.name}`}
+                testID={`enable-skill-${s.name}`}
+                value={s.enabled === true}
+                disabled={busy || mobile.connection !== 'connected'}
+                onValueChange={enabled =>
+                  void run(() =>
+                    rpc(bot ? 'hexbot.skills.set_for_bot' : 'hexbot.skills.set_global', {
+                      name: s.name,
+                      ...(bot ? { bot: bot.name } : {}),
+                      enabled
+                    })
+                  )
+                }
+              />
             </View>
           ))}
         </Group>
@@ -1361,24 +1231,21 @@ export function Management({
       break
     case 'skill':
     case 'skill-create':
-      save =
-        admin || bot
-          ? () =>
-              rpc('hexbot.skills.save', {
-                name: values.name,
-                content: values.content,
-                category: values.category || '',
-                ...(bot ? { bot: bot.name } : {})
-              })
-          : undefined
+      save = () =>
+        rpc('hexbot.skills.save', {
+          name: values.name,
+          content: values.content,
+          category: values.category || '',
+          ...(bot ? { bot: bot.name } : {})
+        })
       content = (
         <>
           {kind === 'skill-create' ? field('name', 'Skill name') : null}
           {field('category', 'Category')}
           {field('content', 'Skill instructions', true)}
-          {kind === 'skill' && (admin || bot) ? (
+          {kind === 'skill' ? (
             <Group>
-              {bot && admin
+              {bot
                 ? action('Share skill to library', () =>
                     rpc('hexbot.skills.share', { name: values.name, bot: bot.name })
                   )
@@ -1540,7 +1407,28 @@ export function Management({
           {field('reasoning_effort', 'Reasoning effort')}
           {field('skills', 'Skills', false, 'Comma-separated skill names.')}
           {field('repeat', 'Number of runs', false, 'Leave empty to repeat indefinitely.')}
-          <Text tone="muted">Job output is saved on the daemon.</Text>
+          {kind === 'job' ? (
+            <Group title="Last run">
+              <Row
+                testID="job-last-status"
+                title="Status"
+                meta={str(panel?.data?.last_status) || 'Not run yet'}
+              />
+              {panel?.data?.last_error ? (
+                <Text selectable tone="danger">
+                  {str(panel.data.last_error)}
+                </Text>
+              ) : null}
+              {panel?.data?.last_output ? (
+                <Text selectable>
+                  {str(panel.data.last_output).slice(0, 12000)}
+                  {str(panel.data.last_output).length > 12000
+                    ? '\nOutput truncated. Read the full output on the daemon.'
+                    : ''}
+                </Text>
+              ) : null}
+            </Group>
+          ) : null}
           {kind === 'job' ? (
             <Group>
               {action(panel?.data?.enabled ? 'Pause job' : 'Resume job', async () => {
@@ -1594,17 +1482,13 @@ export function Management({
     tools: 'Tools',
     sections: 'Threads',
     section: 'Thread',
-    rooms: 'All groups',
-    'room-create': 'New group',
-    room: room?.name ?? 'Group',
-    'room-people': 'People',
+    rooms: 'All rooms',
+    'room-create': 'New room',
+    room: room?.name ?? 'Room',
     providers: 'Models',
     provider: str(panel?.data?.label),
     network: 'Network and pairing',
     devices: 'Paired devices',
-    users: 'People',
-    user: 'Edit person',
-    invite: 'Invite person',
     usage: 'Usage',
     connectors: 'Connectors',
     connector: str(panel?.data?.name),
@@ -1623,12 +1507,11 @@ export function Management({
   const empty: Record<string, string> = {
     sections: 'No threads yet.',
     devices: 'No paired devices.',
-    users: 'Nobody else yet. Invite a person to share this daemon.',
     skills: 'No skills yet.',
     jobs: 'No scheduled jobs yet.',
     activity: 'No messages between bots yet.',
     dreams: 'No dreams yet.',
-    rooms: 'No groups yet.'
+    rooms: 'No rooms yet.'
   }
   return (
     <Layer
@@ -1640,10 +1523,10 @@ export function Management({
       action={
         save && !panelLoading
           ? {
-              label: kind === 'bot-create' ? 'Create' : kind === 'invite' ? 'Invite' : 'Save',
+              label: kind === 'bot-create' ? 'Create' : 'Save',
               busy,
               disabled: mobile.connection !== 'connected',
-              onPress: () => void run(save!, !['invite', 'user'].includes(kind))
+              onPress: () => void run(save!, true)
             }
           : undefined
       }

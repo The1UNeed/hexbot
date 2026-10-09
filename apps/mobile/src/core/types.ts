@@ -1,10 +1,8 @@
 // Reuse the daemon's wire contract without bundling the web app.
 export type {
-  Bot,
   Section,
   Room,
   RoomEvent,
-  CurrentUser,
   DaemonInfo,
   Settings,
   Device,
@@ -13,9 +11,11 @@ export type {
   Connector,
   SkillInfo,
   NetworkInfo,
-  User,
   UsageSummary
 } from '../../../web/src/lib/types'
+import type { Bot as WireBot, CurrentUser as WireUser } from '../../../web/src/lib/types'
+export type Bot = Omit<WireBot, 'shareable'>
+export type CurrentUser = Omit<WireUser, 'role'>
 export interface SavedDaemon {
   id: string
   name: string
@@ -45,9 +45,14 @@ export interface ChatTool {
 }
 export interface ChatMessage {
   id: string
+  /** `system` is a notice in the transcript, such as a failed room turn. */
   role: 'user' | 'assistant' | 'system'
   text: string
+  /** The bot or person who spoke, by id; rooms use it for the face and name. */
   sender?: string
+  /** A person's name when they are not you, from the room's member list. */
+  senderName?: string
+  tone?: 'danger' | 'neutral'
   streaming?: boolean
   createdAt?: number
   tools?: ChatTool[]
@@ -65,8 +70,8 @@ export interface PendingQuestion {
   sessionId: string
   questions: { id: string; text: string; choices: string[]; multiSelect: boolean }[]
 }
-export interface ChatState {
-  messages: ChatMessage[]
+/** What one live session is doing right now; it empties when the turn ends. */
+export interface TurnState {
   streaming: string
   interim: string[]
   busy: boolean
@@ -75,6 +80,16 @@ export interface ChatState {
   approvals: PendingApproval[]
   questions: PendingQuestion[]
   error: string | null
+}
+/** A bot's turn in a room, kept apart so bots working at once do not mix. */
+export interface RoomTurnState extends TurnState {
+  bot: string
+  sessionId: string
+}
+export interface ChatState extends TurnState {
+  messages: ChatMessage[]
+  /** Room turns in flight by live session id. A section keeps its own turn in the top-level fields. */
+  turns: Record<string, RoomTurnState>
 }
 export type Rpc = <T = Record<string, unknown>>(
   method: string,

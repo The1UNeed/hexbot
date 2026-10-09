@@ -24,7 +24,7 @@ Hexbot currently supports local delivery only. Do not rely on a reminder appeari
 
 ## Manage jobs
 
-In the mobile app, open Daemons, Scheduled jobs to create, edit, pause, resume, run or remove jobs. Bot settings also shows that bot's jobs. The desktop and browser clients can manage jobs through chat. Ask the bot to:
+In the mobile app, open Daemon, Jobs to create, edit, pause, resume, run or remove jobs. Bot settings also shows that bot's jobs. The desktop and browser clients can manage jobs through chat. Ask the bot to:
 
 - List its jobs, including paused jobs, and their next run times.
 - Update a job's prompt or schedule.

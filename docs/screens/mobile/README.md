@@ -1,6 +1,6 @@
 # Hexbot mobile screenshots
 
-Captured from the Expo development app on 2026-10-08 with the current JavaScript
+Captured from the Expo development app on 2026-10-08 with that revision’s JavaScript
 bundle. iOS uses an iPhone 17 Pro simulator running iOS 26.5. Android uses an
 arm64 emulator running Android 16, API 36. These are running app screens.
 The model menu image comes from the web integration check after aligning the
@@ -16,9 +16,9 @@ checks also covered management panels and sandboxed visuals.
 | --- | --- | --- |
 | ![iOS connection](ios-connect.png) | ![iOS bot feed](ios-bots.png) | ![iOS threads](ios-threads.png) |
 
-| Chat | Groups | Model menu |
+| Chat | Rooms | Model menu |
 | --- | --- | --- |
-| ![iOS chat](ios-chat.png) | ![iOS group chat](ios-groups.png) | ![Web preview supported reasoning choices](web-model-menu.png) |
+| ![iOS chat](ios-chat.png) | ![iOS room chat](ios-groups.png) | ![Web preview supported reasoning choices](web-model-menu.png) |
 
 | Daemon switcher | Profile in dark appearance |
 | --- | --- |
@@ -32,3 +32,13 @@ See [the mobile README](../../../apps/mobile/README.md) and
 [testing instructions](../../testing.md) to reproduce the checks. CI uploads
 the web integration screenshots and report as the `mobile-evidence` artifact.
 Physical devices and production Hex Connect sign-in remain manual checks.
+
+The original captures predate the Rooms label and removal of multi-user controls.
+Retake screens showing the bottom tab bar, the room view, and bot profile settings.
+Any earlier People, invite, role or room-people captures are obsolete.
+
+Browser captures from the revised smoke test on 2026-10-09, at iPhone size:
+
+| Rooms | Daemon controls |
+| --- | --- |
+| ![Rooms tab](web-rooms.png) | ![Daemon controls for one person](web-daemon.png) |

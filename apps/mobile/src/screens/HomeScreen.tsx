@@ -36,11 +36,23 @@ import {
 } from '../ui'
 import type { BotSummary, ConnectionState, DaemonOverview, RoomSummary } from './types'
 
-export type HomeTab = 'bots' | 'daemon' | 'groups'
+export type HomeTab = 'bots' | 'daemon' | 'rooms'
 
 /** One of the daemon's areas, opened on a front card. */
 export interface DaemonArea {
-  key: string
+  key:
+    | 'settings'
+    | 'providers'
+    | 'connectors'
+    | 'skills'
+    | 'jobs'
+    | 'about'
+    | 'usage'
+    | 'activity'
+    | 'devices'
+    | 'network'
+    | 'connect'
+    | 'updates'
   label: string
   detail?: string | null
   icon: IconName
@@ -56,30 +68,30 @@ export interface HomeScreenProps {
 
   bots: BotSummary[]
   onOpenBot: (id: string) => void
-  /** Opens where a busy bot is working or waiting, such as its thread or group. */
+  /** Opens where a busy bot is working or waiting, such as its thread or room. */
   onOpenPulse?: (id: string) => void
   /** Long press on a bot, such as opening its profile. */
   onBotLongPress?: (id: string) => void
   onNewBot?: () => void
 
-  groups: RoomSummary[]
-  /** The group shown in the Groups tab. */
-  groupId?: string | null
-  onSelectGroup: (id: string) => void
-  onNewGroup?: () => void
-  onOpenGroupSettings?: (id: string) => void
-  /** Opens every group, archived ones included. */
-  onOpenAllGroups?: () => void
-  /** The open group's conversation, drawn by the parent. */
-  groupChat?: ReactNode
+  rooms: RoomSummary[]
+  /** The room shown in the Rooms tab. */
+  roomId?: string | null
+  onSelectRoom: (id: string) => void
+  onNewRoom?: () => void
+  onOpenRoomSettings?: (id: string) => void
+  /** Opens every room, archived ones included. */
+  onOpenAllRooms?: () => void
+  /** The open room's conversation, drawn by the parent. */
+  roomChat?: ReactNode
 
   daemon: DaemonOverview | null
   /** Opens the list of saved daemons to switch between. */
   onSwitchDaemon: () => void
   areas: DaemonArea[]
-  onOpenArea: (key: string) => void
+  onOpenArea: (key: DaemonArea['key']) => void
   /** Signed-in person on this daemon. */
-  user?: { name: string; role: string } | null
+  user?: { name: string } | null
   onReconnect?: () => void
   onPairAgain?: () => void
   onDisconnect?: () => void
@@ -106,7 +118,7 @@ function matches(query: string, ...fields: (null | string | undefined)[]) {
   return !needle || fields.some(field => field?.toLowerCase().includes(needle))
 }
 
-/** Bots, Groups and Daemon under one glass tab bar. */
+/** Bots, Rooms and Daemon under one glass tab bar. */
 export function HomeScreen(props: HomeScreenProps) {
   const { bots, daemon, onTabChange, tab } = props
   const keyboard = useKeyboardVisible()
@@ -114,7 +126,7 @@ export function HomeScreen(props: HomeScreenProps) {
 
   return (
     <Screen
-      avoidKeyboard={tab === 'groups'}
+      avoidKeyboard={tab === 'rooms'}
       background={tab === 'daemon' ? 'grouped' : 'background'}
       testID="home-screen"
     >
@@ -148,9 +160,9 @@ export function HomeScreen(props: HomeScreenProps) {
         </View>
       ) : null}
       {tab === 'bots' ? <BotsTab {...props} /> : null}
-      {tab === 'groups' ? <GroupsTab {...props} /> : null}
+      {tab === 'rooms' ? <RoomsTab {...props} /> : null}
       {tab === 'daemon' ? <DaemonTab {...props} /> : null}
-      {keyboard && tab === 'groups' ? null : (
+      {keyboard && tab === 'rooms' ? null : (
         <TabBar
           items={[
             {
@@ -163,8 +175,8 @@ export function HomeScreen(props: HomeScreenProps) {
             {
               icon: 'people-outline',
               iconSelected: 'people',
-              key: 'groups',
-              label: 'Groups'
+              key: 'rooms',
+              label: 'Rooms'
             },
             { icon: 'desktop-outline', iconSelected: 'desktop', key: 'daemon', label: 'Daemon' }
           ]}
@@ -406,56 +418,55 @@ function BotPost({
   )
 }
 
-function GroupsTab({
-  groupChat,
-  groupId,
-  groups,
+function RoomsTab({
+  roomChat,
+  roomId,
+  rooms,
   loading,
-  onNewGroup,
-  onOpenAllGroups,
-  onOpenGroupSettings,
-  onSelectGroup
+  onNewRoom,
+  onOpenAllRooms,
+  onOpenRoomSettings,
+  onSelectRoom
 }: HomeScreenProps) {
   const theme = useTheme()
-  const active = groups
-    .filter(group => !group.archived || group.id === groupId)
+  const active = rooms
+    .filter(room => !room.archived || room.id === roomId)
     .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
-  const archived = groups.filter(group => group.archived).length
-  const current = groups.find(group => group.id === groupId)
+  const archived = rooms.filter(room => room.archived).length
+  const current = rooms.find(room => room.id === roomId)
 
   return (
-    <View style={styles.fill} testID="groups-view">
+    <View style={styles.fill} testID="rooms-view">
       <View style={styles.groupsHead}>
         <View style={styles.groupsTitle}>
           <Text accessibilityRole="header" style={styles.fill} variant="title">
-            {current?.name ?? 'Groups'}
+            {current?.name ?? 'Rooms'}
           </Text>
-          {current && onOpenGroupSettings ? (
+          {current && onOpenRoomSettings ? (
             <IconButton
               accessibilityLabel={`${current.name} members and settings`}
               icon="people-outline"
               iconSize={22}
-              onPress={() => onOpenGroupSettings(current.id)}
-              testID="group-settings"
+              onPress={() => onOpenRoomSettings(current.id)}
+              testID="room-settings"
               variant="glass"
             />
           ) : null}
-          {onNewGroup ? (
+          {onNewRoom ? (
             <IconButton
-              accessibilityLabel="New group"
+              accessibilityLabel="New room"
               icon="add"
-              onPress={onNewGroup}
-              testID="groups-new"
+              onPress={onNewRoom}
+              testID="rooms-new"
               variant="glass"
             />
           ) : null}
         </View>
         {current ? (
           <Text numberOfLines={1} tone="muted" variant="footnote">
-            {[
-              current.members.map(member => member.name).join(', ') || 'No bots yet',
-              current.people && current.people > 1 ? `${current.people} people` : 'you'
-            ].join(' and ')}
+            {[current.members.map(member => member.name).join(', ') || 'No bots yet', 'you'].join(
+              ' and '
+            )}
           </Text>
         ) : null}
         {active.length > 1 || archived > 0 ? (
@@ -464,17 +475,17 @@ function GroupsTab({
             contentContainerStyle={styles.chips}
             horizontal
             showsHorizontalScrollIndicator={false}
-            testID="group-chips"
+            testID="room-chips"
           >
-            {active.map(group => {
-              const selected = group.id === groupId
+            {active.map(room => {
+              const selected = room.id === roomId
               return (
                 <Pressable
-                  accessibilityLabel={group.name}
+                  accessibilityLabel={room.name}
                   accessibilityRole="tab"
                   accessibilityState={{ selected }}
-                  key={group.id}
-                  onPress={() => onSelectGroup(group.id)}
+                  key={room.id}
+                  onPress={() => onSelectRoom(room.id)}
                   style={({ pressed }) => [
                     styles.groupChip,
                     {
@@ -482,29 +493,29 @@ function GroupsTab({
                       opacity: pressed ? 0.7 : 1
                     }
                   ]}
-                  testID={`group-chip-${group.id}`}
+                  testID={`room-chip-${room.id}`}
                 >
-                  <RoomFace members={group.members} name={group.name} size={24} />
+                  <RoomFace members={room.members} name={room.name} size={24} />
                   <Text
                     maxFontSizeMultiplier={1.3}
                     numberOfLines={1}
                     style={{ color: selected ? theme.onInk : theme.text }}
                     variant="subhead"
                   >
-                    {group.name}
+                    {room.name}
                   </Text>
                 </Pressable>
               )
             })}
-            {archived > 0 && onOpenAllGroups ? (
+            {archived > 0 && onOpenAllRooms ? (
               <Pressable
                 accessibilityRole="button"
-                onPress={onOpenAllGroups}
+                onPress={onOpenAllRooms}
                 style={({ pressed }) => [
                   styles.groupChip,
                   { borderColor: theme.hairline, borderWidth: 1, opacity: pressed ? 0.7 : 1 }
                 ]}
-                testID="groups-archived"
+                testID="rooms-archived"
               >
                 <Ionicons color={theme.muted} name="archive-outline" size={16} />
                 <Text tone="muted" variant="subhead">
@@ -517,18 +528,18 @@ function GroupsTab({
       </View>
       <View style={[styles.rule, { backgroundColor: theme.hairline }]} />
       {current ? (
-        groupChat
+        roomChat
       ) : loading ? null : (
         <EmptyState
           action={
-            onNewGroup ? (
-              <Button label="Start a group" onPress={onNewGroup} testID="groups-empty-create" />
+            onNewRoom ? (
+              <Button label="Start a room" onPress={onNewRoom} testID="rooms-empty-create" />
             ) : null
           }
-          face={{ face: { color: 'teal', shape: 'cloud' }, name: 'Group' }}
-          message="A group is one chat with you, other people and any number of bots."
-          testID="groups-empty"
-          title="No groups yet"
+          face={{ face: { color: 'teal', shape: 'cloud' }, name: 'Room' }}
+          message="A room is one chat with you and any number of bots."
+          testID="rooms-empty"
+          title="No rooms yet"
         />
       )}
     </View>
@@ -753,7 +764,7 @@ function DaemonTab({
       {user || onDisconnect ? (
         <View style={styles.footer}>
           <Text numberOfLines={1} style={styles.fill} tone="muted" variant="footnote">
-            {user ? `Signed in as ${user.name}, ${user.role}` : ''}
+            {user ? `Signed in as ${user.name}` : ''}
           </Text>
           {onDisconnect ? (
             <Button

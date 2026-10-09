@@ -5,7 +5,11 @@ export async function pickFile(type: string | string[] = '*/*', maxBytes = 45 * 
   const result = await DocumentPicker.getDocumentAsync({ type, copyToCacheDirectory: true })
   if (result.canceled) return null
   const asset = result.assets[0]
-  if ((asset.size ?? 0) > maxBytes)
+  const file = Platform.OS === 'web' ? null : new File(asset.uri)
+  const size = asset.size ?? asset.file?.size ?? file?.size
+  if (size == null || !Number.isFinite(size) || size < 0)
+    throw new Error('Could not check this file’s size.')
+  if (size > maxBytes)
     throw new Error(`Choose a file smaller than ${Math.round(maxBytes / 1024 / 1024)} MiB.`)
   const base64 =
     Platform.OS === 'web'
@@ -16,7 +20,7 @@ export async function pickFile(type: string | string[] = '*/*', maxBytes = 45 * 
           if (asset.file) reader.readAsDataURL(asset.file)
           else reject(new Error('Could not read this file.'))
         })
-      : await new File(asset.uri).base64()
+      : await file!.base64()
   const bytes =
     Math.floor((base64.length * 3) / 4) - (base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0)
   if (bytes > maxBytes) throw new Error('This file exceeds the size limit.')

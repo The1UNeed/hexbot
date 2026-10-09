@@ -37,8 +37,6 @@ export interface DaemonSheetProps {
 
   approvalMode: ApprovalMode
   onApprovalModeChange?: (mode: ApprovalMode) => void
-  /** Bypass is for admins only. */
-  canBypass?: boolean
   lanEnabled?: boolean
   onLanChange?: (enabled: boolean) => void
   dreamingEnabled?: boolean
@@ -107,7 +105,6 @@ export function DaemonSheet(props: DaemonSheetProps) {
 
 function General({
   approvalMode,
-  canBypass,
   daemon,
   dreamingEnabled,
   lanEnabled,
@@ -131,19 +128,17 @@ function General({
         footer="Bots can still ask before anything risky in Auto and Manual."
         title="Approvals"
       >
-        {MODES.filter(mode => mode.key !== 'off' || canBypass || approvalMode === 'off').map(
-          mode => (
-            <ChoiceRow
-              disabled={!onApprovalModeChange || (mode.key === 'off' && !canBypass)}
-              key={mode.key}
-              onPress={() => onApprovalModeChange?.(mode.key)}
-              selected={approvalMode === mode.key}
-              subtitle={mode.detail}
-              testID={`daemon-sheet-mode-${mode.key}`}
-              title={mode.title}
-            />
-          )
-        )}
+        {MODES.map(mode => (
+          <ChoiceRow
+            disabled={!onApprovalModeChange}
+            key={mode.key}
+            onPress={() => onApprovalModeChange?.(mode.key)}
+            selected={approvalMode === mode.key}
+            subtitle={mode.detail}
+            testID={`daemon-sheet-mode-${mode.key}`}
+            title={mode.title}
+          />
+        ))}
       </Group>
 
       {onLanChange || onDreamingChange ? (

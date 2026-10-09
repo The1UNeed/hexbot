@@ -30,8 +30,6 @@ export interface RoomSummary {
   name: string
   /** Bot members, in join order; the first four draw the room's face. */
   members: FaceSource[]
-  /** People in the group, you included. */
-  people?: number
   preview?: string | null
   updatedAt?: number | null
   status?: BotStatus
@@ -119,7 +117,7 @@ export type ChatItem =
   | {
       kind: 'message'
       id: string
-      role: 'bot' | 'user'
+      role: 'bot' | 'human' | 'user'
       text: string
       /** Who spoke, in rooms. Bot sections can leave it out. */
       author?: FaceSource

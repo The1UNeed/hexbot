@@ -14,6 +14,8 @@ import {
 import { pair } from './transport'
 import { parsePairing, normalizeOrigin } from './links'
 import { emptyChat, historyMessages, reduceChat } from './chat'
+import { reduceRoom, restoreRoom, roomChat } from './room-chat'
+import { attachmentPrompt } from './chat-send'
 import type {
   Bot,
   Section,
@@ -23,7 +25,6 @@ import type {
   DaemonInfo,
   Settings,
   SavedDaemon,
-  ChatMessage,
   Rpc
 } from './types'
 export type ChatRoute =
@@ -35,6 +36,8 @@ export function useMobile() {
   const [connection, setConnection] = useState<MobileConnectionState>('offline')
   const [error, setError] = useState<string | null>(null)
   const [bots, setBots] = useState<Bot[]>([])
+  const botsRef = useRef(bots)
+  botsRef.current = bots
   const [rooms, setRooms] = useState<Room[]>([])
   const [sections, setSections] = useState<Section[]>([])
   const [info, setInfo] = useState<DaemonInfo | null>(null)
@@ -46,7 +49,6 @@ export function useMobile() {
   const session = useRef<MobileSession | null>(null)
   const routeRef = useRef<ChatRoute | null>(null)
   const liveId = useRef<string | null>(null)
-  const roomSessions = useRef(new Set<string>())
   const roomEvents = useRef<RoomEvent[]>([])
   const loadingEvents = useRef<GatewayEvent[] | null>(null)
   const openSequence = useRef(0)
@@ -56,7 +58,19 @@ export function useMobile() {
     const current = session.current
     if (!current || current.client.connectionState !== 'open')
       throw new Error('Connect to a daemon first.')
-    const value = await current.client.request(method, params)
+    let value: unknown
+    try {
+      value = await current.client.request(method, params)
+    } catch (error) {
+      if (
+        (method === 'attachments.clear' || method.startsWith('hexbot.jobs.')) &&
+        /unknown method|method not found|unsupported method|not implemented/i.test(errorText(error))
+      )
+        throw new Error(
+          'This daemon is older than this app. Update the daemon to use attachment and job controls.'
+        )
+      throw error
+    }
     if (session.current !== current)
       throw new Error('The selected daemon changed. Retry on this daemon.')
     return value as never
@@ -110,20 +124,10 @@ export function useMobile() {
         )
           return
         roomEvents.current = events
-        roomSessions.current = new Set(
-          (room.turns ?? []).flatMap(t => (t.live_session_id ? [t.live_session_id] : []))
-        )
-        const messages = events
-          .filter(e => e.kind === 'message.user' || e.kind === 'message.bot')
-          .map((e): ChatMessage => ({
-            id: `room-${e.seq}`,
-            role: e.kind === 'message.user' ? 'user' : 'assistant',
-            text: String(e.payload.text ?? ''),
-            sender: e.actor_id ?? undefined
-          }))
         const buffered = loadingEvents.current ?? []
         loadingEvents.current = null
-        setChat(c => ({ ...c, messages, busy: roomSessions.current.size > 0 }))
+        setChat(restoreRoom(room, events))
+        routeRef.current = { kind: 'room', room }
         // Replayed approvals and events received during history loading go through the same reducer.
         for (const event of buffered) eventRef.current(event)
         const updated = { kind: 'room' as const, room }
@@ -201,63 +205,44 @@ export function useMobile() {
       }
       if (!target) return
       if (target.kind === 'room') {
-        if (p.room_id === target.room.id && event.type === 'hexbot.rooms.turn') {
-          if (typeof p.live_session_id === 'string') {
-            if (p.status === 'running' || p.status === 'working' || p.status === 'waiting')
-              roomSessions.current.add(p.live_session_id)
-            else roomSessions.current.delete(p.live_session_id)
-          }
-          setChat(c => ({
-            ...c,
-            busy: roomSessions.current.size > 0,
-            activity:
-              typeof p.bot === 'string' && (p.status === 'running' || p.status === 'working')
-                ? `${p.bot} is working`
-                : ''
-          }))
-        }
         if (p.room_id === target.room.id && event.type === 'hexbot.rooms.event') {
           const incoming = p.event as RoomEvent
           if (!incoming || roomEvents.current.some(e => e.seq === incoming.seq)) return
           roomEvents.current.push(incoming)
-          if (incoming.kind === 'message.bot' || incoming.kind === 'message.user') {
-            const m: ChatMessage = {
-              id: `room-${incoming.seq}`,
-              role: incoming.kind === 'message.user' ? 'user' : 'assistant',
-              text: String(incoming.payload.text ?? ''),
-              sender: incoming.actor_id ?? undefined
-            }
-            setChat(c => ({ ...c, messages: [...c.messages, m], streaming: '', interim: [] }))
-          }
-          if (incoming.kind === 'waiting.human' || incoming.kind === 'turn.failed')
-            setChat(c => ({
-              ...c,
-              busy: false,
-              activity:
-                incoming.kind === 'turn.failed'
-                  ? String(incoming.payload.text ?? 'The room turn stopped.')
-                  : ''
-            }))
           void rpc('hexbot.rooms.mark_read', { id: target.room.id, seq: incoming.seq }).catch(
             () => {}
           )
         }
-        if (!event.session_id || !roomSessions.current.has(event.session_id)) return
-        // Durable room messages arrive on hexbot.rooms.event, so do not append twice.
-        if (event.type === 'message.complete') {
-          setChat(c => ({ ...c, streaming: '', interim: [], activity: '' }))
-          return
-        }
-      } else if (!event.session_id || event.session_id !== liveId.current) return
-      setChat(c => reduceChat(c, event))
-      if (event.type === 'approval.request' && typeof p.request_id === 'string')
-        void rpc('approval.received', {
-          session_id: event.session_id,
-          request_id: p.request_id
-        }).catch(() => {})
+        setChat(c =>
+          reduceRoom(
+            c,
+            event,
+            target.room,
+            id => botsRef.current.find(b => b.name === id)?.display_name || id
+          )
+        )
+      } else {
+        if (!event.session_id || event.session_id !== liveId.current) return
+        setChat(c => reduceChat(c, event))
+      }
     },
     [rpc]
   )
+  const acknowledgedApprovals = useRef(new Set<string>())
+  useEffect(() => {
+    const visible = new Set<string>()
+    for (const pending of chat.approvals) {
+      const key = `${active?.id}:${connection}:${pending.sessionId}:${pending.requestId}`
+      visible.add(key)
+      if (acknowledgedApprovals.current.has(key)) continue
+      void rpc('approval.received', {
+        session_id: pending.sessionId,
+        request_id: pending.requestId
+      }).catch(() => acknowledgedApprovals.current.delete(key))
+    }
+    // Other room sessions can stream while a card waits; acknowledge it once per connection.
+    acknowledgedApprovals.current = visible
+  }, [chat.approvals, connection, active?.id, rpc])
   const eventRef = useRef(onEvent)
   eventRef.current = onEvent
   const activate = useCallback(
@@ -277,7 +262,6 @@ export function useMobile() {
       loadingEvents.current = null
       routeRef.current = null
       liveId.current = null
-      roomSessions.current.clear()
       setRoute(null)
       setChat(emptyChat())
       const next = new MobileSession(
@@ -375,7 +359,6 @@ export function useMobile() {
     routeRef.current = { kind: 'room', room }
     setRoute(routeRef.current)
     setChat(emptyChat())
-    roomSessions.current.clear()
     try {
       await syncRoom(room.id)
     } catch (e) {
@@ -384,9 +367,10 @@ export function useMobile() {
       setLoading(false)
     }
   }
-  const send = async (text: string) => {
+  const send = async (input: string, hasAttachments = false) => {
+    const text = attachmentPrompt(input, hasAttachments)
     const target = routeRef.current
-    if (!target || !text.trim()) return
+    if (!target || !text) throw new Error('Enter a message or attach a file.')
     const messageId = Crypto.randomUUID()
     setChat(c => ({
       ...c,
@@ -407,7 +391,7 @@ export function useMobile() {
       setChat(c => ({
         ...c,
         messages: c.messages.filter(m => m.id !== messageId),
-        busy: false,
+        busy: target.kind === 'room' && Object.keys(c.turns).length > 0,
         error: errorText(e)
       }))
       throw e
@@ -422,7 +406,21 @@ export function useMobile() {
     const pending = chat.approvals.find(a => a.requestId === requestId)
     if (!pending) return
     await rpc('approval.respond', { session_id: pending.sessionId, request_id: requestId, choice })
-    setChat(c => ({ ...c, approvals: c.approvals.filter(a => a.requestId !== requestId) }))
+    setChat(c => {
+      if (!c.turns[pending.sessionId])
+        return { ...c, approvals: c.approvals.filter(a => a.requestId !== requestId) }
+      const turn = c.turns[pending.sessionId]
+      return roomChat({
+        ...c,
+        turns: {
+          ...c.turns,
+          [pending.sessionId]: {
+            ...turn,
+            approvals: turn.approvals.filter(a => a.requestId !== requestId)
+          }
+        }
+      })
+    })
   }
   const answer = async (requestId: string, questionId: string, answer: string) => {
     const pending = chat.questions.find(q => q.requestId === requestId)
@@ -433,17 +431,21 @@ export function useMobile() {
       question_id: questionId,
       answer
     })
-    setChat(c => ({
-      ...c,
-      questions: c.questions
+    setChat(c => {
+      const turn = c.turns[pending.sessionId]
+      const questions = (turn ?? c).questions
         .map(q =>
           q.requestId === requestId
             ? { ...q, questions: q.questions.filter(question => question.id !== questionId) }
             : q
         )
         .filter(q => q.questions.length)
-    }))
+      return turn
+        ? roomChat({ ...c, turns: { ...c.turns, [pending.sessionId]: { ...turn, questions } } })
+        : { ...c, questions }
+    })
   }
+
   return {
     saved,
     active,
@@ -478,7 +480,6 @@ export function useMobile() {
       routeRef.current = null
       setRoute(null)
       liveId.current = null
-      roomSessions.current.clear()
     },
     disconnect: () => {
       session.current?.stop()

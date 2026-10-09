@@ -6,6 +6,10 @@ import { StatusBar } from 'expo-status-bar'
 import * as ExpoLinking from 'expo-linking'
 import * as WebBrowser from 'expo-web-browser'
 import * as Crypto from 'expo-crypto'
+import { avatarSrc } from './src/core/avatar'
+import { imageMime } from './src/core/chat-send'
+import { daemonBehind } from './src/core/version-skew'
+import { version as appVersion } from '../desktop/package.json'
 import { pickFile } from './src/core/pickFile'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import {
@@ -61,7 +65,7 @@ const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const ms = (seconds: number | null | undefined) => (seconds == null ? undefined : seconds * 1000)
 const faceOf = (b: Bot): FaceSource => ({
   name: b.display_name,
-  imageUri: b.avatar ? `data:${b.avatar.mime};base64,${b.avatar.data}` : null
+  imageUri: avatarSrc(b.avatar)
 })
 // The daemon's placeholder name for an untitled section; the app calls it a thread.
 const threadTitle = (s: Section) =>
@@ -138,7 +142,7 @@ function MobileApp() {
   const tabInset = useTabBarInset()
   const [tab, setTab] = useState<HomeTab>('bots')
   const [botPage, setBotPage] = useState<string | null>(null)
-  const [groupId, setGroupId] = useState<string | null>(null)
+  const [roomId, setRoomId] = useState<string | null>(null)
   const [addDaemon, setAddDaemon] = useState(false)
   const [panels, setPanels] = useState<Panel[]>([])
   const [sectionsOpen, setSectionsOpen] = useState(false)
@@ -235,10 +239,6 @@ function MobileApp() {
         setDemo(false)
         setInitialLink(url)
         setAddDaemon(true)
-        // A pairing link is the user's one-time authorization to this daemon.
-        await mobileRef.current.pairing(url, '')
-        setAddDaemon(false)
-        setInitialLink('')
       }
       if (parsed.hostname === 'bot') {
         const name = parsed.searchParams.get('name')
@@ -287,12 +287,12 @@ function MobileApp() {
   useEffect(() => {
     if (routeBot) setBotPage(routeBot)
   }, [routeBot])
-  // A group that opens anywhere, such as right after it is created, shows in Groups.
+  // A room that opens anywhere, such as right after it is created, shows in Rooms.
   const routeRoom = route?.kind === 'room' ? route.room.id : null
   useEffect(() => {
     if (routeRoom) {
-      setGroupId(routeRoom)
-      setTab('groups')
+      setRoomId(routeRoom)
+      setTab('rooms')
       setBotPage(null)
     }
   }, [routeRoom])
@@ -301,27 +301,27 @@ function MobileApp() {
     setSectionsOpen(false)
     setSwitcherOpen(false)
     setBotPage(null)
-    setGroupId(null)
+    setRoomId(null)
   }, [mobile.active?.id])
-  const liveGroups = mobile.rooms.filter(r => !r.archived_at)
-  const selectedGroup = mobile.rooms.find(r => r.id === groupId)
-  // Groups shows one group at a time; start with the most recent.
+  const liveRooms = mobile.rooms.filter(r => !r.archived_at)
+  const selectedRoom = mobile.rooms.find(r => r.id === roomId)
+  // Rooms shows one room at a time; start with the most recent.
   useEffect(() => {
-    if (demo || selectedGroup) return
-    const latest = [...liveGroups].sort((a, b) => b.last_activity_at - a.last_activity_at)[0]
-    if (latest) setGroupId(latest.id)
-  }, [demo, selectedGroup, liveGroups.length])
+    if (demo || selectedRoom) return
+    const latest = [...liveRooms].sort((a, b) => b.last_activity_at - a.last_activity_at)[0]
+    if (latest) setRoomId(latest.id)
+  }, [demo, selectedRoom, liveRooms.length])
   useEffect(() => {
     const m = mobileRef.current
-    if (tab !== 'groups' || demo || botPage || m.connection !== 'connected') return
+    if (tab !== 'rooms' || demo || botPage || m.connection !== 'connected') return
     if (m.route?.kind === 'section') return
-    if (m.route?.kind === 'room' && m.route.room.id === groupId) return
-    const room = m.rooms.find(r => r.id === groupId)
+    if (m.route?.kind === 'room' && m.route.room.id === roomId) return
+    const room = m.rooms.find(r => r.id === roomId)
     if (room) void m.openRoom(room)
-  }, [tab, groupId, demo, botPage, mobile.connection])
+  }, [tab, roomId, demo, botPage, mobile.connection])
   const changeTab = (next: HomeTab) => {
     if (uploading) return
-    if (next !== 'groups' && mobile.route?.kind === 'room') mobile.back()
+    if (next !== 'rooms' && mobile.route?.kind === 'room') mobile.back()
     setTab(next)
   }
   useEffect(() => {
@@ -406,9 +406,7 @@ function MobileApp() {
     if (!sessionId) throw new Error('Open this thread again before attaching a file.')
     const asset = await pickFile()
     if (!asset) return
-    const image = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(
-      asset.mimeType ?? ''
-    )
+    const image = imageMime(asset.name, asset.mimeType)
     const pdf = asset.mimeType === 'application/pdf' || asset.name.toLowerCase().endsWith('.pdf')
     if (image && asset.bytes > 25 * 1024 * 1024)
       throw new Error('Choose an image smaller than 25 MiB.')
@@ -490,7 +488,6 @@ function MobileApp() {
         const b = botByName(m.member_id)
         return b ? [faceOf(b)] : []
       }),
-    people: r.members.filter(m => m.member_kind === 'human' && !m.left_at).length,
     updatedAt: ms(r.last_activity_at),
     archived: !!r.archived_at
   }))
@@ -512,14 +509,13 @@ function MobileApp() {
           platform: mobile.info?.platform
         }
       : null
-  const admin = mobile.user?.role === 'admin'
   const areas: DaemonArea[] = demo
     ? []
     : [
         {
           key: 'settings',
           label: 'Settings',
-          detail: admin ? 'Approvals' : 'Admin only',
+          detail: 'Approvals',
           icon: 'options-outline'
         },
         { key: 'providers', label: 'Models', detail: 'Providers', icon: 'hardware-chip-outline' },
@@ -534,25 +530,20 @@ function MobileApp() {
         { key: 'about', label: 'About you', detail: 'Bots read it', icon: 'person-outline' },
         { key: 'usage', label: 'Usage', detail: 'Tokens, cost', icon: 'stats-chart-outline' },
         { key: 'activity', label: 'Activity', detail: 'Bot to bot', icon: 'pulse-outline' },
-        ...(admin
-          ? ([
-              { key: 'users', label: 'People', detail: 'Invite, roles', icon: 'people-outline' },
-              {
-                key: 'devices',
-                label: 'Devices',
-                detail: 'Paired',
-                icon: 'phone-portrait-outline'
-              },
-              { key: 'network', label: 'Network', detail: 'Pairing codes', icon: 'wifi-outline' },
-              { key: 'connect', label: 'Hex Connect', detail: 'Remote', icon: 'cloud-outline' },
-              {
-                key: 'updates',
-                label: 'Updates',
-                detail: mobile.info?.version ?? null,
-                icon: 'download-outline'
-              }
-            ] satisfies DaemonArea[])
-          : [])
+        {
+          key: 'devices',
+          label: 'Devices',
+          detail: 'Paired',
+          icon: 'phone-portrait-outline'
+        },
+        { key: 'network', label: 'Network', detail: 'Pairing codes', icon: 'wifi-outline' },
+        { key: 'connect', label: 'Hex Connect', detail: 'Remote', icon: 'cloud-outline' },
+        {
+          key: 'updates',
+          label: 'Updates',
+          detail: mobile.info?.version ?? null,
+          icon: 'download-outline'
+        }
       ]
   const toolView = (t: ChatTool): ToolActivity => ({
     id: t.id,
@@ -567,46 +558,83 @@ function MobileApp() {
     status: t.status
   })
   const visuals = new Map<string, { title: string; html: string }>()
-  const items: ChatItem[] = mobile.chat.messages.flatMap(m => [
-    ...(m.tools?.length
-      ? [{ kind: 'tools' as const, id: `tools-${m.id}`, tools: m.tools.map(toolView) }]
-      : []),
-    ...(m.tools ?? [])
-      .filter(t => t.name === 'hexbot_show_html' && t.status === 'ok')
-      .flatMap((t, i) => {
-        const args = parseArgs(t.args) as { title?: string; html?: string } | null
-        if (typeof args?.html !== 'string') return []
-        const id = `visual-${m.id}-${i}`
-        visuals.set(id, { title: args.title || 'Visual', html: args.html })
-        return [
-          { kind: 'visual' as const, id, title: args.title || 'Visual', index: visuals.size - 1 }
+  const items: ChatItem[] = mobile.chat.messages.flatMap((m): ChatItem[] =>
+    m.role === 'system'
+      ? [{ kind: 'notice', id: m.id, text: m.text, tone: m.tone }]
+      : [
+          ...(m.tools?.length
+            ? [{ kind: 'tools' as const, id: `tools-${m.id}`, tools: m.tools.map(toolView) }]
+            : []),
+          ...(m.tools ?? [])
+            .filter(t => t.name === 'hexbot_show_html' && t.status === 'ok')
+            .flatMap((t, i) => {
+              const args = parseArgs(t.args) as { title?: string; html?: string } | null
+              if (typeof args?.html !== 'string') return []
+              const id = `visual-${m.id}-${i}`
+              visuals.set(id, { title: args.title || 'Visual', html: args.html })
+              return [
+                {
+                  kind: 'visual' as const,
+                  id,
+                  title: args.title || 'Visual',
+                  index: visuals.size - 1
+                }
+              ]
+            }),
+          {
+            kind: 'message',
+            id: m.id,
+            role:
+              m.role === 'user'
+                ? route?.kind !== 'room' || m.sender === mobile.user?.id
+                  ? 'user'
+                  : 'human'
+                : 'bot',
+            text: m.text,
+            author:
+              m.role === 'user'
+                ? { name: m.senderName || 'Former member' }
+                : m.sender && botByName(m.sender)
+                  ? faceOf(botByName(m.sender)!)
+                  : undefined
+          }
         ]
-      }),
-    {
-      kind: 'message',
-      id: m.id,
-      role: m.role === 'user' ? 'user' : 'bot',
-      text: m.text,
-      author: m.sender && botByName(m.sender) ? faceOf(botByName(m.sender)!) : undefined
-    }
-  ])
-  if (mobile.chat.tools.length)
-    items.push({
-      kind: 'tools',
-      id: 'live-tools',
-      tools: mobile.chat.tools.map(toolView)
-    })
-  mobile.chat.interim.forEach((text, i) =>
-    items.push({ kind: 'message', id: `interim-${i}`, role: 'bot', text })
   )
-  if (mobile.chat.streaming)
-    items.push({
-      kind: 'message',
-      id: 'streaming',
-      role: 'bot',
-      text: mobile.chat.streaming,
-      streaming: true
-    })
+  const liveTurns =
+    route?.kind === 'room'
+      ? Object.values(mobile.chat.turns)
+      : [{ ...mobile.chat, sessionId: 'section', bot: route?.bot.name ?? '' }]
+  for (const turn of liveTurns) {
+    const bot = botByName(turn.bot)
+    const author = bot ? faceOf(bot) : { name: turn.bot }
+    if (turn.tools.length)
+      items.push({ kind: 'tools', id: `tools-${turn.sessionId}`, tools: turn.tools.map(toolView) })
+    turn.interim.forEach((text, i) =>
+      items.push({
+        kind: 'message',
+        id: `${turn.sessionId}-interim-${i}`,
+        role: 'bot',
+        text,
+        author
+      })
+    )
+    if (turn.streaming)
+      items.push({
+        kind: 'message',
+        id: `${turn.sessionId}-streaming`,
+        role: 'bot',
+        text: turn.streaming,
+        streaming: true,
+        author
+      })
+    if (turn.error)
+      items.push({
+        kind: 'notice',
+        id: `${turn.sessionId}-error`,
+        text: turn.error,
+        tone: 'danger'
+      })
+  }
   mobile.chat.approvals.forEach(a =>
     items.push({
       kind: 'approval',
@@ -656,8 +684,22 @@ function MobileApp() {
   const send = (text: string) => {
     const pending = mobile.chat.questions[0]
     if (pending?.questions[0]) {
-      act(() => mobile.answer(pending.requestId, pending.questions[0].id, text))
-      setDraft('')
+      if (attachmentData.current.size) {
+        const q = pending.questions[0]
+        setQuestion({
+          requestId: pending.requestId,
+          questionId: q.id,
+          text: q.text,
+          choices: q.choices,
+          multiSelect: q.multiSelect
+        })
+        setQuestionAnswer(text)
+        return
+      }
+      act(async () => {
+        await mobile.answer(pending.requestId, pending.questions[0].id, text)
+        setDraft('')
+      })
       return
     }
     const previous = draft
@@ -678,7 +720,7 @@ function MobileApp() {
           sessionId !== mobileRef.current.liveSessionId()
         )
           throw new Error('The conversation changed. Open it again before sending.')
-        await mobile.send(text)
+        await mobile.send(text, attachmentData.current.size > 0)
         setAttachments([])
         attachmentData.current.clear()
       } catch (e) {
@@ -691,7 +733,7 @@ function MobileApp() {
   }
   const renderMessageText: ChatScreenProps['renderMessageText'] = item =>
     item.text ? <MarkdownText text={item.text} user={item.role === 'user'} /> : null
-  // Everything a conversation needs, for a bot thread and for the open group alike.
+  // Everything a conversation needs, for a bot thread and for the open room alike.
   const conversation = {
     items,
     renderMessageText,
@@ -899,8 +941,8 @@ function MobileApp() {
           const b = botByName(id)
           const detail = b?.status_detail
           if (b && detail?.room_id && mobile.rooms.some(r => r.id === detail.room_id)) {
-            setGroupId(detail.room_id)
-            changeTab('groups')
+            setRoomId(detail.room_id)
+            changeTab('rooms')
             return
           }
           const s = detail?.section_id && mobile.sections.find(s => s.id === detail.section_id)
@@ -916,17 +958,17 @@ function MobileApp() {
               }
         }
         onNewBot={demo ? undefined : () => setPanels([{ kind: 'bot-create' }])}
-        groups={demo ? [] : rooms}
-        groupId={groupId}
-        onSelectGroup={id => setGroupId(id)}
-        onNewGroup={demo ? undefined : () => setPanels([{ kind: 'room-create' }])}
-        onOpenGroupSettings={id => {
+        rooms={demo ? [] : rooms}
+        roomId={roomId}
+        onSelectRoom={id => setRoomId(id)}
+        onNewRoom={demo ? undefined : () => setPanels([{ kind: 'room-create' }])}
+        onOpenRoomSettings={id => {
           const r = mobile.rooms.find(r => r.id === id)
           if (r) setPanels([{ kind: 'room', room: r }])
         }}
-        onOpenAllGroups={() => setPanels([{ kind: 'rooms' }])}
-        groupChat={
-          route?.kind === 'room' && route.room.id === groupId ? (
+        onOpenAllRooms={() => setPanels([{ kind: 'rooms' }])}
+        roomChat={
+          route?.kind === 'room' && route.room.id === roomId ? (
             <ChatBody
               {...conversation}
               title={route.room.name}
@@ -944,7 +986,7 @@ function MobileApp() {
         onSwitchDaemon={() => setSwitcherOpen(true)}
         areas={areas}
         onOpenArea={key => setPanels([{ kind: key }])}
-        user={mobile.user ? { name: mobile.user.display_name, role: mobile.user.role } : null}
+        user={mobile.user ? { name: mobile.user.display_name } : null}
         onReconnect={() =>
           act(async () => {
             await mobile.retry()
@@ -993,6 +1035,12 @@ function MobileApp() {
         ) : null}
         <StatusBar style={theme.scheme === 'dark' ? 'light' : 'dark'} />
         {screen}
+        {mobile.active && daemonBehind(appVersion, mobile.info?.version ?? null) ? (
+          <Banner
+            message="This daemon is older than this app. Update it for attachment and job controls."
+            testID="version-skew"
+          />
+        ) : null}
         {mobile.loading && mobile.active ? (
           <View pointerEvents="none" style={{ position: 'absolute', top: 70, alignSelf: 'center' }}>
             <ActivityIndicator />
@@ -1075,11 +1123,11 @@ function MobileApp() {
         onBack={panels.length > 1 ? () => setPanels(stack => stack.slice(0, -1)) : undefined}
         onNavigate={navigate}
         mobile={mobile}
-        onOpenGroup={room => {
+        onOpenRoom={room => {
           setPanels([])
-          setGroupId(room.id)
+          setRoomId(room.id)
           setBotPage(null)
-          changeTab('groups')
+          changeTab('rooms')
         }}
       />
       <ThreadSwitcher
@@ -1203,6 +1251,7 @@ function MobileApp() {
             if (question)
               act(async () => {
                 await mobile.answer(question.requestId, question.questionId, questionAnswer)
+                if (draft.trim() === questionAnswer.trim()) setDraft('')
                 setQuestion(null)
                 setQuestionAnswer('')
               })
@@ -1213,6 +1262,9 @@ function MobileApp() {
           {question ? (
             <>
               <Text>{question.text}</Text>
+              {attachments.length ? (
+                <Text tone="muted">Your attached files will stay here for the next message.</Text>
+              ) : null}
               <Group>
                 {question.choices.map(choice => (
                   <Row

@@ -7,7 +7,7 @@ Transparency use solid controls. Lists and messages use solid backgrounds.
 
 ## Layout
 
-Three tabs: Bots, Groups and Daemon. Bots is a feed of bot posts. A bot opens
+Three tabs: Bots, Rooms and Daemon. Bots is a feed of bot posts. A bot opens
 its thread page, and a thread opens the chat. Settings, bot profiles, tool
 steps and visuals open as front cards (`src/ui/Layer.tsx`) that leave the
 screen below in view. The daemon name above Bots switches daemons. The model
@@ -34,7 +34,8 @@ On a physical phone, use the daemon computer's LAN or Tailscale address rather
 than `localhost`. Enable local connections on the daemon and allow iOS local
 network access. Get a code through Settings, Devices on a paired client or
 `hexbot pair` on the daemon computer. Paste the address and code or a pairing
-link. `hexbot://pair` opens the installed app.
+link. `hexbot://pair` opens the installed app with the address filled in. Check the
+host shown above Pair and tap to confirm.
 
 Hex Connect uses the system browser at `connect.hexbot.app`. Sign in, then
 choose an online registered daemon. The app validates the callback state,
@@ -45,33 +46,39 @@ when Connect supplies one, and exchanges the grant directly with that daemon.
 
 | Area | Mobile controls |
 | --- | --- |
-| Bots | Feed with role and description; create, edit, delete, soul, picture, model and thinking level, tools, approvals, workspace, sharing, notifications and dreaming |
+| Bots | Feed with role and description; create, edit, delete, soul, picture, model and thinking level, tools, approvals, workspace, notifications and dreaming |
 | Threads | Each bot's page lists its threads (sections); new, rename, archive, restore and delete; switch threads from the chat title |
 | Conversations | Streamed chat, stop, file/image/PDF attachments, Markdown, tool steps with their results, visuals, questions and approvals |
-| Groups | Rooms in one tab: chat, stop, switch groups, bot and human members, main bot, budgets, approvals, archive, restore, leave and delete |
+| Rooms | Rooms in one tab: chat, stop, switch rooms, bot membership, main bot, budgets, approvals, archive, restore and delete |
 | Memory | Edit each bot's memory and your About you text; inspect dreaming and restore memory |
 | Models | Provider API keys and device sign-in, model selection, daemon defaults and fallback model |
 | Jobs | Create, edit, pause, resume, run and delete; schedule, prompt, script, workspace, model, reasoning, skills and run count |
 | Daemon | Settings, usage, bot activity, connectors and MCP servers, skill library, LAN pairing, Hex Connect and available daemon updates |
-| People and devices | Invite, edit roles and budgets, disable users, list and revoke devices, switch or forget saved daemons |
+| Devices | List and revoke paired devices, switch or forget saved daemons |
 
-The daemon enforces owner and admin permissions. An admin can choose Bypass;
-a member cannot. Soul and tool changes apply to new sections. Model and thinking
+One person owns the daemon and can choose Auto, Manual or Bypass approvals. Soul and tool changes apply to new sections. Model and thinking
 changes also move existing threads that follow the bot's previous defaults when
 idle. Threads with their own overrides keep them. Jobs use the daemon's
-timezone and save their output there. Push notifications and computer power
+timezone and save their output there. Job details show the last status, error
+and up to 12,000 characters of output. Push notifications and computer power
 controls are outside this app's scope.
 
 Credentials and the device proof key use Expo SecureStore. Connection names and
 addresses use AsyncStorage. The browser preview holds credentials only in memory.
 A revoked phone returns to pairing. Backgrounding closes the socket while the
-daemon continues working; foregrounding restores history and pending dialogs.
+daemon continues working; foregrounding restores history and pending dialogs
+for active turns. Rooms keep each bot’s streaming text, tools and pending cards
+separate. Failed turns and budget limits appear in the room history.
 
-Attachments stay on the phone until Send. Failed uploads can be retried without
+Attachments stay on the phone until Send. Sending files without text uses
+"Please review the attached files." Chips clear only after the daemon accepts
+the message. Answer bot questions before sending attached files; the files stay
+ready for the next message. Failed uploads can be retried without
 resending attachments that already reached the daemon. Removing an uploaded,
 unsubmitted attachment clears the staged batch before re-uploading those kept.
 This uses the new `attachments.clear` RPC. Scheduled job controls use the new
-owner-scoped `hexbot.jobs.*` RPCs; use a daemon built from this checkout for both.
+owner-scoped `hexbot.jobs.*` RPCs; use a daemon built from this checkout for both. The app shows an update notice
+for older daemons and explains when either RPC is unavailable.
 
 Bot visuals open in an isolated WebView or a sandboxed iframe, with the same CDN
 and network restrictions as the browser client's visuals. Native visuals have

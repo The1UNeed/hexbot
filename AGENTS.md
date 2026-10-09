@@ -66,6 +66,7 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 | `backend/python-handoff/` | Minimal service handoff to the native daemon | all |
 | `backend/hexbot-installer/` | Installer engine (standalone crate) and the terminal installer `hexbot-install` | stable, nightly |
 | `apps/web/` | React bundle (Vite, Tailwind). Used by the app and served to browsers | all |
+| `apps/mobile/` | Expo app for iOS and Android, connecting to an existing daemon | all |
 | `apps/desktop/` | Electron shell, updater, runtime bootstrap, three electron-builder configs: base, full, client | all |
 | `apps/installer/` | Hexbot Installer, the windowed installer (Tauri) on the installer engine | stable, nightly |
 | `apps/shared/` | `@hermes/shared`. `apps/web` imports its gateway client and event types | all |
@@ -148,6 +149,7 @@ cargo clippy --locked --manifest-path backend/hexbot-installer/Cargo.toml --all-
 node --test backend/pi-runtime/*.test.mjs
 uv sync --project backend/python-handoff --extra dev --locked
 backend/python-handoff/.venv/bin/pytest backend/python-handoff/tests -q
+pnpm mobile:check
 pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint
 pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run
 pnpm --filter ./apps/installer run typecheck && pnpm --filter ./apps/installer run test --run && pnpm --filter ./apps/installer run lint

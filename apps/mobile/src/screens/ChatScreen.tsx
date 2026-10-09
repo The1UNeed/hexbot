@@ -295,7 +295,7 @@ export function ChatBody(
       {archived ? (
         <View style={[styles.archived, { paddingBottom: bottom }]} testID="chat-archived">
           <Text style={styles.archivedText} tone="muted" variant="callout">
-            {room ? 'This group is archived.' : 'This thread is archived.'}
+            {room ? 'This room is archived.' : 'This thread is archived.'}
           </Text>
           {props.onUnarchive ? (
             <Button
@@ -375,7 +375,7 @@ function TranscriptEntry({
           item={entry}
           onLongPress={props.onMessageLongPress}
           renderText={props.renderMessageText}
-          showAuthor={room && entry.role === 'bot' && !run}
+          showAuthor={room && entry.role !== 'user' && !run}
         />
       )
     }
@@ -408,7 +408,7 @@ function MessageBubble({
     >
       {showAuthor && item.author ? (
         <View style={styles.author}>
-          <BotFace {...item.author} size={20} />
+          {item.role === 'bot' ? <BotFace {...item.author} size={20} /> : null}
           <Text tone="muted" variant="caption">
             {item.author.name}
           </Text>

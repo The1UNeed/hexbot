@@ -18,6 +18,7 @@ import {
   Text,
   useTheme
 } from '../ui'
+import { parsePairing, normalizeOrigin } from '../core/links'
 import type { DaemonEntry } from './types'
 
 export type PairingInput =
@@ -78,7 +79,14 @@ export function ConnectionScreen({
   const [link, setLink] = useState(initialLink)
   const codeInput = useRef<TextInput>(null)
   const busy = pending !== null
-  const ready = mode === 'code' ? address.trim() !== '' && code.trim() !== '' : link.trim() !== ''
+  let host = ''
+  try {
+    const origin = mode === 'link' ? parsePairing(link)?.origin : normalizeOrigin(address)
+    if (origin) host = new URL(origin).host
+  } catch {
+    /* Invalid input stays editable until it identifies a daemon. */
+  }
+  const ready = !!host && (mode === 'link' || code.trim() !== '')
 
   const submit = () => {
     if (!ready || busy) {
@@ -299,6 +307,7 @@ export function ConnectionScreen({
                 value={link}
               />
             )}
+            {host ? <Text testID="pairing-host">Pair with {host}</Text> : null}
             <Button
               busy={pending === 'pair'}
               busyLabel="Pairing…"

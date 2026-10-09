@@ -1,7 +1,6 @@
 import type { GatewayEvent } from '@hermes/shared'
-import type { ChatMessage, ChatState, ChatTool } from './types'
-export const emptyChat = (): ChatState => ({
-  messages: [],
+import type { ChatMessage, ChatState, ChatTool, TurnState } from './types'
+export const emptyTurn = (): TurnState => ({
   streaming: '',
   interim: [],
   busy: false,
@@ -11,6 +10,7 @@ export const emptyChat = (): ChatState => ({
   questions: [],
   error: null
 })
+export const emptyChat = (): ChatState => ({ ...emptyTurn(), messages: [], turns: {} })
 const textContent = (raw: unknown): string =>
   typeof raw === 'string'
     ? raw

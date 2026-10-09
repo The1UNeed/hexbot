@@ -244,7 +244,8 @@ broadcast `hexbot.jobs.changed`.
 - `hexbot.jobs.run {bot, job_id}` starts the job without waiting for its schedule.
 
 The daemon enforces unattended approval rules and script workspace restrictions.
-The mobile app displays output stored on the daemon; jobs do not send push notifications.
+The mobile app displays the last status, error and up to 12,000 characters of output
+stored on the daemon. Jobs do not send push notifications.
 
 ### Rooms
 

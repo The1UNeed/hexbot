@@ -28,7 +28,9 @@
 
 ## Mobile
 
-`pnpm mobile:check` runs the Expo app's TypeScript, lint and protocol tests.
+`pnpm mobile:check` runs the Expo app's TypeScript, lint, protocol and chat-state tests.
+Room regressions cover simultaneous turns, reconnect cleanup, failure and limit
+notices, and former members' names. File tests cover size checks before reads.
 `pnpm --filter @hexbot/mobile run export` bundles iOS, Android and web.
 
 For the integration test:
@@ -43,7 +45,8 @@ pnpm --filter @hexbot/mobile run smoke -- --static
 
 The test serves the exported Expo web app at iPhone size, pairs a device with
 DPoP, and uses the real Rust daemon and pinned Pi with a local streaming model.
-It checks chat, rooms, soul, isolated memory, About you, scheduled jobs,
+It checks chat, attachment-only sends, unlimited room turn budgets, rooms, soul,
+isolated memory, About you, scheduled jobs,
 disconnect, reconnect and history. It writes screenshots and a JSON report to a
 new temporary directory. `HEXBOT_MOBILE_ARTIFACTS` selects an output directory.
 It creates and removes its own daemon home and workspace.

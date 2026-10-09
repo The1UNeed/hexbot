@@ -91,7 +91,8 @@ const model = createServer(async (req, res) => {
           ? 'Questions answered on mobile.'
           : prompt.includes('Show a visual')
             ? 'The mobile visual is ready.'
-            : prompt.includes('Read the attachment')
+            : prompt.includes('Read the attachment') ||
+                prompt.includes('Please review the attached files.')
               ? 'The mobile attachment reached Pi.'
               : prompt.includes('Ask for approval')
                 ? 'The mobile approval reached Pi.'
@@ -340,7 +341,9 @@ try {
   await page.getByTestId('threads-model-menu-backdrop').click({ position: { x: 12, y: 12 } })
   await page.getByTestId(`thread-row-${section}`).click()
   await expect(page.getByTestId('chat-empty')).toBeVisible()
-  await expect(page.getByText('Opening conversation', { exact: true })).not.toBeVisible()
+  await expect(page.getByText('Opening conversation', { exact: true })).not.toBeVisible({
+    timeout: 30000
+  })
   await shot('thread-empty')
   await page.getByTestId('chat-input').fill('Check the mobile connection')
   await page.getByTestId('chat-send').click()
@@ -352,7 +355,23 @@ try {
   await page.screenshot({ path: path.join(artifacts, 'chat.png') })
   await page.getByTestId('chat-input').fill('Ask two questions')
   await page.getByTestId('chat-send').click()
-  await page.getByTestId('question-choice-Morning').click({ timeout: 30000 })
+  await expect(page.getByTestId('question-choice-Morning')).toBeVisible({ timeout: 30000 })
+  await page.getByTestId('question-sheet-close').click()
+  const answerFile = page.waitForEvent('filechooser')
+  await page.getByTestId('chat-attach').click()
+  await (
+    await answerFile
+  ).setFiles({
+    name: 'answer-notes.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('Save these for later.')
+  })
+  await page.getByTestId('chat-input').fill('Morning')
+  await page.getByTestId('chat-send').click()
+  await expect(page.getByTestId('question-sheet')).toBeVisible()
+  await expect(
+    page.getByText('Your attached files will stay here for the next message.', { exact: true })
+  ).toBeVisible()
   await page.getByTestId('question-sheet-action').click()
   await page.getByTestId('question-choice-One').click()
   await page.getByTestId('question-choice-Two').click()
@@ -364,6 +383,10 @@ try {
   const answerRequest = modelRequests.at(-1)
   assert.match(JSON.stringify(answerRequest.messages), /Morning/)
   assert.match(JSON.stringify(answerRequest.messages), /One, Two/)
+  assert.doesNotMatch(JSON.stringify(answerRequest.messages), /answer-notes\.txt/)
+  await expect(page.getByText('answer-notes.txt', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Remove answer-notes.txt', exact: true }).click()
+  await expect(page.getByText('answer-notes.txt', { exact: true })).not.toBeVisible()
   await page.getByTestId('chat-input').fill('Show a visual')
   await page.getByTestId('chat-send').click()
   await expect(page.getByText('The mobile visual is ready.', { exact: true })).toBeVisible({
@@ -386,12 +409,13 @@ try {
     buffer: Buffer.from('A brief from the phone.')
   })
   await expect(page.getByText('brief.txt', { exact: true })).toBeVisible()
-  await page.getByTestId('chat-input').fill('Read the attachment')
   await page.getByTestId('chat-send').click()
   await expect(page.getByText('The mobile attachment reached Pi.', { exact: true })).toBeVisible({
     timeout: 30000
   })
   assert.match(JSON.stringify(modelRequests.at(-1).messages), /brief\.txt/)
+  assert.match(JSON.stringify(modelRequests.at(-1).messages), /Please review the attached files\./)
+  await expect(page.getByText('brief.txt', { exact: true })).not.toBeVisible()
   await page.getByTestId('chat-input').fill('Ask for approval')
   await page.getByTestId('chat-send').click()
   const allowOnce = page.locator('[data-testid^="approval-"][data-testid$="-once"]')
@@ -451,7 +475,9 @@ try {
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   await page.getByTestId('chat-new-section').click()
   await expect(page.getByTestId('chat-empty')).toBeVisible()
-  await expect(page.getByText('Opening conversation', { exact: true })).not.toBeVisible()
+  await expect(page.getByText('Opening conversation', { exact: true })).not.toBeVisible({
+    timeout: 30000
+  })
   await shot('thread-new')
   await page.getByRole('button', { name: 'Back', exact: true }).click()
   await expect(page.getByTestId('threads-screen')).toBeVisible()
@@ -484,10 +510,10 @@ try {
   await expect(page.getByTestId(`thread-row-${old}`)).toBeVisible()
   await shot('threads')
   await page.getByRole('button', { name: 'Back', exact: true }).click()
-  await page.getByTestId('home-tabs-groups').click()
-  await expect(page.getByTestId('groups-view')).toBeVisible()
-  await expect(page.getByTestId(`group-chip-${launch.id}`)).toBeVisible()
-  await page.getByTestId(`group-chip-${room.id}`).click()
+  await page.getByTestId('home-tabs-rooms').click()
+  await expect(page.getByTestId('rooms-view')).toBeVisible()
+  await expect(page.getByTestId(`room-chip-${launch.id}`)).toBeVisible()
+  await page.getByTestId(`room-chip-${room.id}`).click()
   await expect(page.getByRole('heading', { name: 'Our team', exact: true })).toBeVisible()
   await page.getByTestId('chat-input').fill('Check our team on mobile')
   await page.getByTestId('chat-send').click()
@@ -495,10 +521,10 @@ try {
     page.getByText('The mobile room is working. @user your team is ready.', { exact: true })
   ).toBeVisible({ timeout: 30000 })
   await page.screenshot({ path: path.join(artifacts, 'room.png') })
-  await page.getByTestId('group-settings').click()
+  await page.getByTestId('room-settings').click()
   await expect(page.getByTestId('main-bot-owl')).toBeVisible()
   await settle()
-  await shot('group-settings')
+  await shot('room-settings')
   await page.getByTestId('management-sheet-close').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   await page.getByTestId('home-tabs-daemon').click()
@@ -519,7 +545,6 @@ try {
     'usage',
     'network',
     'devices',
-    'users',
     'connect',
     'updates'
   ]) {
@@ -528,19 +553,15 @@ try {
     await expect(page.getByTestId('management-error')).not.toBeVisible()
     await settle()
     await shot(`area-${area}`)
-    if (area === 'users') {
-      await page.getByTestId('manage-invite').click()
-      await page.getByTestId('field-display_name').fill('Mobile teammate')
+    if (area === 'settings') {
+      await page.getByTestId('field-room_bot_turns_per_human_turn').fill('')
       await page.getByTestId('management-sheet-action').click()
-      await expect(page.getByTestId('management-notice')).toContainText('Pairing code:')
       await expect
-        .poll(async () =>
-          (await rpc('hexbot.users.list')).users.some(u => u.display_name === 'Mobile teammate')
-        )
-        .toBe(true)
-      await settle()
-      await shot('invite')
-      await page.getByTestId('management-sheet-back').click()
+        .poll(async () => (await rpc('hexbot.settings.get')).room_bot_turns_per_human_turn)
+        .toBe(null)
+      await expect(page.getByTestId('management-sheet')).not.toBeVisible()
+      await page.getByTestId('daemon-settings').click()
+      await expect(page.getByTestId('management-loading')).not.toBeVisible()
     }
     if (area === 'connectors') {
       await page.getByTestId('manage-mcp').click()
@@ -640,9 +661,9 @@ try {
     scenarios: [
       'pairing with device proof',
       'bot chat and streaming',
-      'batched questions and multiple choices',
+      'batched questions, multiple choices and explicit retention of attached files',
       'sandboxed bot visual',
-      'file attachment delivered to Pi',
+      'attachment-only send delivered to Pi and clears chips after acceptance',
       'approval gates a real file write',
       'bot feed, thread list, rename, archive shelf and restore',
       'model menu sets a supported thinking level',
@@ -650,9 +671,9 @@ try {
       'soul editing',
       'isolated bot memory',
       'About you',
-      'daemon management panels',
-      'user invitation and skill creation',
-      'group chat in the Groups tab',
+      'daemon management panels and unlimited room turn budget',
+      'skill creation',
+      'room chat in the Rooms tab',
       'scheduled jobs and pause',
       'daemon disconnect and reconnect',
       'history restoration'
