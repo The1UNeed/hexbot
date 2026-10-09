@@ -473,8 +473,12 @@ export function botNotesSet(
   return rpcCall<BotNotesDay>('hexbot.memory.notes.set', { bot, date, expected, text })
 }
 
-export function botNotesDelete(bot: string, date: string): Promise<{ deleted: boolean }> {
-  return rpcCall<{ deleted: boolean }>('hexbot.memory.notes.delete', { bot, date })
+export function botNotesDelete(
+  bot: string,
+  date: string,
+  expected: string
+): Promise<{ deleted: boolean }> {
+  return rpcCall<{ deleted: boolean }>('hexbot.memory.notes.delete', { bot, date, expected })
 }
 
 // ---------------------------------------------------------------------------

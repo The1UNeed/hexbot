@@ -119,7 +119,9 @@ impl MemoryStore {
     /// Append a note to today's file while excluding other bot writers.
     /// `check` sees the day's current text and the result, like a memory
     /// edit. The day is capped so a note never grows past what a dream
-    /// can read; the error says so in words the bot can act on.
+    /// can read; the error says so in words the bot can act on. The result
+    /// is a confirmation with the day's length, not the day's text: a note
+    /// costs the conversation nothing it did not already say.
     pub fn add_note(
         &self,
         caller: &str,
@@ -154,8 +156,15 @@ impl MemoryStore {
             ));
         }
         self.write(&relative, &updated)?;
-        prune_notes(&self.home, bot, today)?;
-        Ok(json!({"date": today.to_string(), "notes_md": updated, "cap": NOTE_DAY_CAP}))
+        self.housekeep(bot);
+        Ok(json!({"date": today.to_string(), "noted": true, "length": length, "cap": NOTE_DAY_CAP}))
+    }
+
+    /// Retention runs whenever notes are touched, not only when a dream
+    /// runs, so a bot with dreaming off sheds its old days too. It is
+    /// housekeeping: a failure never fails the call that triggered it.
+    fn housekeep(&self, bot: &str) {
+        let _ = prune_notes(&self.home, bot, local_today());
     }
 
     /// Notes for the days `from..=to`, oldest first; days without notes are left out.
@@ -167,6 +176,7 @@ impl MemoryStore {
         to: NaiveDate,
     ) -> Result<Value> {
         self.require_bot(caller, bot)?;
+        self.housekeep(bot);
         let mut notes = vec![];
         for date in from.iter_days().take_while(|date| *date <= to) {
             let text = read_optional(&self.path(&note_path(bot, date))?)?;
@@ -184,6 +194,7 @@ impl MemoryStore {
     /// the daemon files them.
     pub fn list_notes(&self, caller: &str, bot: &str) -> Result<Value> {
         self.require_bot(caller, bot)?;
+        self.housekeep(bot);
         let mut days = vec![];
         for date in note_days(&self.home, bot)?.into_iter().rev() {
             let text = read_optional(&self.path(&note_path(bot, date))?)?;
@@ -199,7 +210,8 @@ impl MemoryStore {
     /// The user's edit of one day, written as given; an empty text removes
     /// the day. With `expected`, the text the editor loaded, the edit is
     /// refused when the day has changed since, so a note the bot added in
-    /// the meantime is not written over.
+    /// the meantime is not written over. Notes can only be filed for days
+    /// up to today.
     pub fn set_notes(
         &self,
         caller: &str,
@@ -213,15 +225,14 @@ impl MemoryStore {
             .map_err(|_| Error::new(5200, "memory write lock poisoned"))?;
         self.require_bot(caller, bot)?;
         check_cap(text, NOTE_DAY_CAP, "notes")?;
-        let relative = note_path(bot, date);
-        if let Some(expected) = expected
-            && read_optional(&self.path(&relative)?)? != expected
-        {
+        if date > local_today() {
             return Err(Error::new(
-                4209,
-                "The bot added to this day's notes since you opened it. Reloaded; try again.",
+                4202,
+                "Notes are kept for today and earlier days only.",
             ));
         }
+        let relative = note_path(bot, date);
+        self.check_expected(&relative, expected)?;
         if text.trim().is_empty() {
             remove_optional(&self.path(&relative)?)?;
         } else {
@@ -230,13 +241,37 @@ impl MemoryStore {
         Ok(json!({"date": date.to_string(), "text": text, "cap": NOTE_DAY_CAP}))
     }
 
-    pub fn delete_notes(&self, caller: &str, bot: &str, date: NaiveDate) -> Result<Value> {
+    /// Remove one day. With `expected`, the text the client showed, the
+    /// deletion is refused when the day has changed since, as an edit is.
+    pub fn delete_notes(
+        &self,
+        caller: &str,
+        bot: &str,
+        date: NaiveDate,
+        expected: Option<&str>,
+    ) -> Result<Value> {
         let _guard = BOT_WRITES
             .lock()
             .map_err(|_| Error::new(5200, "memory write lock poisoned"))?;
         self.require_bot(caller, bot)?;
-        remove_optional(&self.path(&note_path(bot, date))?)?;
+        let relative = note_path(bot, date);
+        self.check_expected(&relative, expected)?;
+        remove_optional(&self.path(&relative)?)?;
         Ok(json!({"date": date.to_string(), "deleted": true}))
+    }
+
+    /// A client that says what it loaded only changes a day that still
+    /// reads the same; the bot may have added a note in the meantime.
+    fn check_expected(&self, relative: &Path, expected: Option<&str>) -> Result<()> {
+        if let Some(expected) = expected
+            && read_optional(&self.path(relative)?)? != expected
+        {
+            return Err(Error::new(
+                4209,
+                "This day's notes changed since you opened them.",
+            ));
+        }
+        Ok(())
     }
 
     fn require_user(&self, owner: &str) -> Result<()> {
@@ -334,22 +369,7 @@ impl MemoryStore {
     /// The home must be private to the daemon; this is not an OS sandbox against
     /// another process concurrently replacing its directory tree.
     fn path(&self, relative: &Path) -> Result<PathBuf> {
-        let mut path = self.home.canonicalize()?;
-        for component in relative.components() {
-            let Component::Normal(name) = component else {
-                return Err(Error::new(4202, "invalid memory path"));
-            };
-            path.push(name);
-            match fs::symlink_metadata(&path) {
-                Ok(meta) if meta.file_type().is_symlink() => {
-                    return Err(Error::new(4202, "symlinks are not allowed in memory paths"));
-                }
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Ok(path)
+        safe_path(&self.home, relative)
     }
 
     fn write(&self, relative: &Path, text: &str) -> Result<()> {
@@ -442,6 +462,31 @@ pub fn parse_note_range(spec: &str, today: NaiveDate) -> Result<(NaiveDate, Naiv
     Ok((from, to))
 }
 
+/// `relative` under `home` with no symlink on the way, so a link planted in a
+/// profile cannot point memory or notes at a file outside it.
+fn safe_path(home: &Path, relative: &Path) -> Result<PathBuf> {
+    let mut path = home.canonicalize()?;
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(Error::new(4202, "invalid memory path"));
+        };
+        path.push(name);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(Error::new(4202, "symlinks are not allowed in memory paths"));
+            }
+            Ok(_) => {}
+            // An overlong path cannot name a file either. Discovery treats
+            // it as absent; an attempted read or write still reports the I/O error.
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    || error.raw_os_error() == Some(libc::ENAMETOOLONG) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(path)
+}
+
 fn notes_dir(bot: &str) -> PathBuf {
     bot_path(bot).join("memories/notes")
 }
@@ -451,18 +496,22 @@ fn note_path(bot: &str, date: NaiveDate) -> PathBuf {
 }
 
 /// Days with a notes file, oldest first. Only regular files named like a day
-/// count; anything else in the folder is ignored and never touched.
+/// count; anything else in the folder is ignored and never touched, and a
+/// folder reached through a link is no notes folder at all.
 fn note_days(home: &Path, bot: &str) -> Result<Vec<NaiveDate>> {
     check_identifier(bot)?;
     let mut days = vec![];
-    let dir = home.join(notes_dir(bot));
+    let dir = safe_path(home, &notes_dir(bot))?;
     if !dir.is_dir() {
         return Ok(days);
     }
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
+        match entry.file_type() {
+            Ok(kind) if kind.is_file() => {}
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
         }
         let name = entry.file_name();
         if let Some(day) = name
@@ -485,7 +534,7 @@ pub fn notes_from(home: &Path, bot: &str, from: NaiveDate) -> Result<Vec<(NaiveD
         if date < from {
             continue;
         }
-        let text = read_optional(&home.join(note_path(bot, date)))?;
+        let text = read_optional(&safe_path(home, &note_path(bot, date))?)?;
         if !text.trim().is_empty() {
             notes.push((date, text));
         }
@@ -494,16 +543,24 @@ pub fn notes_from(home: &Path, bot: &str, from: NaiveDate) -> Result<Vec<(NaiveD
 }
 
 /// Delete note files older than NOTE_RETENTION_DAYS before `today` and return
-/// their days. Nothing but those files is removed.
+/// their days. Nothing but those files is removed. Two callers pruning at
+/// once (a dream and a section) each find the file gone and carry on.
 pub fn prune_notes(home: &Path, bot: &str, today: NaiveDate) -> Result<Vec<NaiveDate>> {
     let mut removed = vec![];
     for date in note_days(home, bot)? {
         if (today - date).num_days() > NOTE_RETENTION_DAYS {
-            fs::remove_file(home.join(note_path(bot, date)))?;
+            remove_optional(&safe_path(home, &note_path(bot, date))?)?;
             removed.push(date);
         }
     }
     Ok(removed)
+}
+
+/// A note a scheduled job proposes must fit a day on its own, as a memory
+/// proposal must fit the memory cap, so the dream is never handed one it
+/// could not write.
+pub fn check_note_fits(text: &str) -> Result<()> {
+    check_cap(text, NOTE_DAY_CAP, "proposed notes")
 }
 
 /// Entries a bot adds carry the month they were learned, so a dream can tell

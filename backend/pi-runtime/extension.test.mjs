@@ -6,7 +6,7 @@ import {once} from 'node:events';
 import {tmpdir, homedir} from 'node:os';
 import {join, dirname} from 'node:path';
 import {SessionManager} from '@earendil-works/pi-coding-agent';
-import hexbot, {canonicalPath, credentialPath, privatePath, protectedPath, shellEnvironment, sanitizeSearchResult, hostWriteTier, escapeMcpValues} from './extension.ts';
+import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, sanitizeSearchResult, hostWriteTier, escapeMcpValues} from './extension.ts';
 
 // These gates assume the OS sandbox is in place, as it always is on macOS. On
 // Linux the probe looks for bwrap on PATH, so a stand-in that passes the probe
@@ -94,48 +94,6 @@ test('ls and grep filter credentials and symlink targets from their output', asy
   assert.doesNotMatch(JSON.stringify(ls),/auth.json|alias.txt/);assert.match(JSON.stringify(ls),/safe.txt/);
   const grep=await f.run('grep',{path:f.home,pattern:'needle'});
   assert.doesNotMatch(JSON.stringify(grep),/secret|auth.json|alias.txt/);assert.match(JSON.stringify(grep),/safe needle/);
-});
-// A shared bot in someone else's room: the daemon marks the session a guest.
-// Its owner's memory and notes, and every About you, are then out of reach of
-// the file tools, through links too, while its soul and the rest stay readable.
-function ownerFiles(home) {
-  mkdirSync(join(home, 'profiles/owl/memories/notes'), {recursive:true});
-  mkdirSync(join(home, 'users/alice'), {recursive:true});
-  writeFileSync(join(home, 'profiles/owl/memories/MEMORY.md'), 'memory needle');
-  writeFileSync(join(home, 'profiles/owl/memories/notes/2026-10-07.md'), 'note needle');
-  writeFileSync(join(home, 'users/alice/user.md'), 'about needle');
-  writeFileSync(join(home, 'profiles/owl/SOUL.md'), 'soul needle');
-  symlinkSync(join(home, 'profiles/owl/memories/notes/2026-10-07.md'), join(home, 'alias.md'));
-  symlinkSync(join(home, 'profiles/owl/memories'), join(home, 'profiles/owl/elsewhere'));
-}
-const PRIVATE = ['profiles/owl/memories/MEMORY.md', 'profiles/owl/memories/notes/2026-10-07.md', 'profiles/owl/memories/notes', 'profiles/owl/memories', 'users/alice/user.md', 'alias.md', 'profiles/owl/elsewhere/MEMORY.md', 'profiles/owl/elsewhere/notes/2026-10-07.md'];
-test('a shared bot in someone else\'s room cannot read its owner\'s memory, notes or any About you', async t => {
-  const f = fixture(t, 'smart', ['file'], {guest:true});
-  ownerFiles(f.home);
-  for (const path of PRIVATE) {
-    assert.equal(privatePath(join(f.home, path), f.home), true, path);
-    for (const tool of ['read', 'ls', 'grep', 'find']) assert.match((await f.gate(tool, {path:join(f.home, path), pattern:'needle'}))?.reason ?? '', /private to its owner/, `${tool} ${path}`);
-    await assert.rejects(f.swap('read', {path:join(f.home, 'profiles/owl/SOUL.md')}, {path:join(f.home, path)}), /private to its owner/, path);
-  }
-  for (const path of ['profiles/owl/SOUL.md', 'profiles/owl', 'users/alice', 'profiles/owl/memories.txt']) assert.equal(privatePath(join(f.home, path), f.home), false, path);
-  assert.equal(await f.gate('read', {path:join(f.home, 'profiles/owl/SOUL.md')}), undefined);
-  assert.match(JSON.stringify(await f.run('read', {path:join(f.home, 'profiles/owl/SOUL.md')})), /soul needle/);
-  const grep = JSON.stringify(await f.run('grep', {path:f.home, pattern:'needle'}));
-  assert.doesNotMatch(grep, /memory needle|note needle|about needle|alias|elsewhere/);
-  assert.match(grep, /soul needle/);
-  const find = JSON.stringify(await f.run('find', {path:f.home, pattern:'*.md'}));
-  assert.doesNotMatch(find, /MEMORY|2026-10-07|user\.md|alias|elsewhere/);
-  assert.match(find, /SOUL/);
-  const ls = JSON.stringify(await f.run('ls', {path:join(f.home, 'profiles/owl')}));
-  assert.doesNotMatch(ls, /memories|elsewhere/);
-  assert.match(ls, /SOUL/);
-});
-test('the owner\'s own sections read memory, notes and About you as before', async t => {
-  const f = fixture(t, 'smart', ['file']);
-  ownerFiles(f.home);
-  for (const path of PRIVATE) assert.equal(await f.gate('read', {path:join(f.home, path)}), undefined, path);
-  assert.match(JSON.stringify(await f.run('read', {path:join(f.home, 'profiles/owl/memories/notes/2026-10-07.md')})), /note needle/);
-  assert.match(JSON.stringify(await f.run('grep', {path:f.home, pattern:'needle'})), /note needle/);
 });
 test('each new turn restores primary and uses live fallback without changing prompt', async t => {
   const f=fixture(t);

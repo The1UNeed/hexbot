@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '../../components/ui/button'
 import { SkeletonLines } from '../../components/ui/skeleton'
@@ -39,6 +39,7 @@ import {
 export function MemoryEditor({
   actions,
   cap,
+  disabled = false,
   label,
   onSave,
   placeholder,
@@ -48,6 +49,7 @@ export function MemoryEditor({
   /** Sits left of Save: a Delete button, for a text that can go as a whole. */
   actions?: React.ReactNode
   cap: number
+  disabled?: boolean
   label: string
   onSave: (value: string) => Promise<void>
   placeholder?: string
@@ -57,15 +59,30 @@ export function MemoryEditor({
   const [draft, setDraft] = useState(value)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => setDraft(value), [value])
-  const tooLong = draft.length > cap
+  const [saving, setSaving] = useState(false)
+  const pending = useRef(false)
+  const length = [...draft].length
+  const tooLong = length > cap
   const dirty = draft !== value
 
   const save = () => {
+    if (pending.current || disabled) {
+      return
+    }
+
     if (tooLong) {
       return setError(`Keep this to ${cap} characters or fewer.`)
     }
 
-    void onSave(draft).catch(cause => setError(errorText(cause)))
+    pending.current = true
+    setSaving(true)
+    setError(null)
+    void onSave(draft)
+      .catch(cause => setError(errorText(cause)))
+      .finally(() => {
+        pending.current = false
+        setSaving(false)
+      })
   }
 
   return (
@@ -74,6 +91,7 @@ export function MemoryEditor({
         <Textarea
           aria-label={label}
           className="rounded-none bg-transparent px-4 py-3 hover:bg-transparent focus-visible:bg-transparent"
+          disabled={disabled || saving}
           onChange={event => {
             setDraft(event.target.value)
             setError(null)
@@ -87,12 +105,12 @@ export function MemoryEditor({
         <span
           className={cn('text-[length:var(--text-meta)]', tooLong ? 'text-danger' : 'text-muted')}
         >
-          {draft.length} / {cap}
+          {length} / {cap}
         </span>
         <span className="flex items-center gap-2">
           {actions}
           {dirty ? (
-            <Button onClick={save} size="sm" variant="primary">
+            <Button disabled={disabled || saving} onClick={save} size="sm" variant="primary">
               Save
             </Button>
           ) : null}
@@ -107,7 +125,11 @@ export function MemoryEditor({
   )
 }
 
-export function MemoryTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
+export function MemoryTab(props: { bot: Bot; onSave: SaveBot }) {
+  return <BotMemoryTab key={props.bot.name} {...props} />
+}
+
+function BotMemoryTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const botName = bot.name
   const [memory, setMemory] = useState<Awaited<ReturnType<typeof botMemoryGet>> | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -221,19 +243,39 @@ export function deleteNotesQuestion(date: string, today: string): string {
  * editor for the chosen day. The dream folds what lasts into memory.
  */
 export function NotesBlock({ bot }: { bot: string }) {
+  return <BotNotesBlock bot={bot} key={bot} />
+}
+
+function BotNotesBlock({ bot }: { bot: string }) {
   const [notes, setNotes] = useState<BotNotes | null>(null)
   const [chosen, setChosen] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  const generation = useRef(0)
+  const pending = useRef(false)
+  const [busy, setBusy] = useState(false)
+
   useEffect(() => {
-    setNotes(null)
-    setChosen(null)
+    const request = ++generation.current
+    setError(null)
     void botNotesList(bot)
       .then(result => {
+        if (request !== generation.current) {
+          return
+        }
+
         setNotes(result)
         setChosen(result.days[0]?.date ?? null)
       })
-      .catch(cause => setError(errorText(cause)))
+      .catch(cause => {
+        if (request === generation.current) {
+          setError(errorText(cause))
+        }
+      })
+
+    return () => {
+      generation.current += 1
+    }
   }, [bot])
 
   const days = notes?.days ?? []
@@ -254,46 +296,102 @@ export function NotesBlock({ bot }: { bot: string }) {
     setChosen(next.some(entry => entry.date === date) ? date : (next[0]?.date ?? null))
   }
 
-  /**
-   * Save what the editor loaded against. When the bot added a note to the day
-   * in the meantime, the daemon refuses: the new lines are kept under the
-   * edit and saved together. Any other change reloads the day and says so.
-   */
+  /** Only merge new lines after the exact boundary used by the bot's append. */
   const save = async (date: string, loaded: string, value: string) => {
-    try {
-      await botNotesSet(bot, date, value, loaded)
-      update(date, value)
-    } catch (cause) {
-      if ((cause as { code?: unknown }).code !== NOTES_CHANGED) {
-        throw cause
-      }
-
-      const fresh = await botNotesList(bot)
-      const current = fresh.days.find(entry => entry.date === date)?.text ?? ''
-
-      const appended = current.startsWith(loaded.trimEnd())
-        ? current.slice(loaded.trimEnd().length).trim()
-        : null
-
-      if (appended === null) {
-        setNotes(fresh)
-        throw cause
-      }
-
-      const merged = [value.trimEnd(), appended].filter(Boolean).join('\n')
-      await botNotesSet(bot, date, merged, current)
-      setNotes({ ...fresh, days: fresh.days.map(entry => (entry.date === date ? { ...entry, text: merged } : entry)) })
-    }
-  }
-
-  const remove = (date: string) => {
-    if (!window.confirm(deleteNotesQuestion(date, today))) {
+    if (pending.current) {
       return
     }
 
-    void botNotesDelete(bot, date)
-      .then(() => update(date, null))
-      .catch(cause => setError(errorText(cause)))
+    pending.current = true
+    setBusy(true)
+    setError(null)
+    const request = generation.current
+    const active = () => request === generation.current
+
+    try {
+      try {
+        await botNotesSet(bot, date, value, loaded)
+
+        if (active()) {
+          update(date, value)
+        }
+      } catch (cause) {
+        if (!active()) {
+          return
+        }
+
+        if ((cause as { code?: unknown }).code !== NOTES_CHANGED) {
+          throw cause
+        }
+
+        const fresh = await botNotesList(bot)
+
+        if (!active()) {
+          return
+        }
+
+        const current = fresh.days.find(entry => entry.date === date)?.text ?? ''
+
+        if (current === value) {
+          update(date, current)
+
+          return
+        }
+
+        const boundary = `${loaded.trimEnd()}\n`
+
+        if (!current.startsWith(boundary)) {
+          throw new Error('Notes changed elsewhere. Your draft is kept. Copy it before reloading.')
+        }
+
+        const appended = current.slice(boundary.length)
+        const merged = [value.trimEnd(), appended].filter(Boolean).join('\n')
+        await botNotesSet(bot, date, merged, current)
+
+        if (active()) {
+          update(date, merged)
+        }
+      }
+    } catch (cause) {
+      if (active()) {
+        throw cause
+      }
+    } finally {
+      pending.current = false
+
+      if (active()) {
+        setBusy(false)
+      }
+    }
+  }
+
+  const remove = async (date: string, expected: string) => {
+    if (pending.current || !window.confirm(deleteNotesQuestion(date, today))) {
+      return
+    }
+
+    pending.current = true
+    setBusy(true)
+    setError(null)
+    const request = generation.current
+
+    try {
+      await botNotesDelete(bot, date, expected)
+
+      if (request === generation.current) {
+        update(date, null)
+      }
+    } catch (cause) {
+      if (request === generation.current) {
+        setError(errorText(cause))
+      }
+    } finally {
+      pending.current = false
+
+      if (request === generation.current) {
+        setBusy(false)
+      }
+    }
   }
 
   return (
@@ -306,7 +404,8 @@ export function NotesBlock({ bot }: { bot: string }) {
           <p className="px-4 py-3 text-[length:var(--text-secondary)] text-danger" role="alert">
             {error}
           </p>
-        ) : !notes ? (
+        ) : null}
+        {!notes ? (
           <div className="px-4 py-3">
             <SkeletonLines label="Loading notes" lines={2} />
           </div>
@@ -327,6 +426,7 @@ export function NotesBlock({ bot }: { bot: string }) {
                       ? 'bg-foreground/[0.05] text-foreground'
                       : 'text-muted hover:bg-foreground/[0.03] hover:text-foreground'
                   )}
+                  disabled={busy}
                   key={entry.date}
                   onClick={() => setChosen(entry.date)}
                   type="button"
@@ -348,11 +448,17 @@ export function NotesBlock({ bot }: { bot: string }) {
       {notes && day ? (
         <MemoryEditor
           actions={
-            <Button onClick={() => remove(day.date)} size="sm" variant="ghost">
+            <Button
+              disabled={busy}
+              onClick={() => void remove(day.date, day.text)}
+              size="sm"
+              variant="ghost"
+            >
               Delete
             </Button>
           }
           cap={notes.cap}
+          disabled={busy}
           key={day.date}
           label={`Notes for ${noteDayLabel(day.date, today)}`}
           onSave={value => save(day.date, day.text, value)}

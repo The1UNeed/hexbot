@@ -2609,12 +2609,12 @@ fn connected_tool_notices_name_the_bot_in_plain_words() {
 }
 
 /// A section's `note` appends to today's notes file, unstamped and scanned
-/// like a memory edit; `read` with `notes` returns days. A scheduled job's
-/// note is a proposal, like its other writes. A shared bot in someone else's
-/// room cannot read its owner's notes there, as it gets no About you, and
-/// its writes come back without the owner's text.
+/// like a memory edit, and answers with a confirmation rather than the day's
+/// text; `read` with `notes` returns days. A scheduled job's note is a
+/// proposal, like its other writes, checked against the day cap rather than
+/// the memory cap.
 #[tokio::test]
-async fn notes_are_written_by_sections_proposed_by_jobs_and_private_in_shared_rooms() {
+async fn notes_are_written_by_sections_and_proposed_by_jobs() {
     let (home, runtime, _) = setup();
     let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
     crate::memory::fix_today(today);
@@ -2627,16 +2627,21 @@ async fn notes_are_written_by_sections_proposed_by_jobs_and_private_in_shared_ro
         )
         .await
         .unwrap();
-    assert_eq!(noted["date"], today.to_string());
-    assert_eq!(noted["cap"], 4000);
-    runtime
-        .tool(
-            &section,
-            "memory",
-            &json!({"action":"note","text":"Alex wants the short opening."}),
-        )
-        .await
-        .unwrap();
+    assert_eq!(
+        noted,
+        json!({"date": today.to_string(), "noted": true, "length": 52, "cap": 4000})
+    );
+    assert_eq!(
+        runtime
+            .tool(
+                &section,
+                "memory",
+                &json!({"action":"note","text":"Alex wants the short opening."}),
+            )
+            .await
+            .unwrap()["length"],
+        82
+    );
     let file = home
         .path()
         .join(format!("profiles/owl/memories/notes/{today}.md"));
@@ -2740,90 +2745,53 @@ async fn notes_are_written_by_sections_proposed_by_jobs_and_private_in_shared_ro
             .len(),
         1
     );
-    db::open(home.path())
-        .unwrap()
-        .execute_batch(
-            "UPDATE bots SET shareable=1;INSERT INTO sections(id,bot,owner_id,title) VALUES('shared','owl','bob','Shared');INSERT INTO rooms(id,name,owner_id) VALUES('shared-room','Shared','bob');INSERT INTO room_members(room_id,member_kind,member_id) VALUES('shared-room','bot','owl');INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('shared-room','owl','shared');",
+    // A proposed note must fit a day, not the memory cap, which is smaller.
+    assert_eq!(
+        runtime
+            .tool(
+                &job,
+                "memory",
+                &json!({"action":"note","text":"n".repeat(3000)})
+            )
+            .await
+            .unwrap()["proposed"],
+        true
+    );
+    let too_long = runtime
+        .tool(
+            &job,
+            "memory",
+            &json!({"action":"note","text":"n".repeat(4001)}),
         )
-        .unwrap();
-    let shared = runtime.open_session("bob", "owl", "shared").await.unwrap();
-    let private = runtime
-        .tool(&shared, "memory", &json!({"action":"read","notes":"today"}))
         .await
         .unwrap_err();
-    assert_eq!(private.code, 4302);
-    assert!(private.message.contains("private to the bot's owner"));
-    // Memory itself is in the shared bot's prompt already, so it still reads.
+    assert_eq!(too_long.code, 4221);
+    assert!(
+        too_long.message.starts_with("proposed notes"),
+        "{}",
+        too_long.message
+    );
     assert_eq!(
         runtime
-            .tool(&shared, "memory", &json!({"action":"read"}))
+            .tool(
+                &job,
+                "memory",
+                &json!({"action":"add","text":"n".repeat(3000)})
+            )
             .await
-            .unwrap()["memory_md"],
-        ""
+            .unwrap_err()
+            .code,
+        4221
     );
-    // A note from the shared room is filed, but the day's other notes stay
-    // with the owner: the reply is a confirmation, not the file.
-    let noted = runtime
-        .tool(
-            &shared,
-            "memory",
-            &json!({"action":"note","text":"Bob asked for the room summary on Fridays."}),
+    assert_eq!(
+        common::rows(
+            &db::open(home.path()).unwrap(),
+            "SELECT action FROM memory_proposals",
+            &[],
         )
-        .await
-        .unwrap();
-    assert_eq!(
-        noted,
-        json!({"date": today.to_string(), "cap": 4000, "saved": true})
+        .unwrap()
+        .len(),
+        2
     );
-    assert!(
-        fs::read_to_string(&file)
-            .unwrap()
-            .ends_with("Bob asked for the room summary on Fridays.")
-    );
-    // Memory writes work there, and none echoes the memory back.
-    for args in [
-        json!({"action":"add","text":"Bob's room meets on Fridays."}),
-        json!({"action":"append","text":"Bob likes short summaries."}),
-        json!({"action":"replace","old_text":"short summaries","text":"one-line summaries"}),
-        json!({"action":"remove","text":"Bob likes one-line summaries."}),
-        json!({"action":"set","text":"Bob's room meets on Fridays."}),
-    ] {
-        let written = runtime.tool(&shared, "memory", &args).await.unwrap();
-        assert_eq!(written, json!({"cap": 2200, "saved": true}), "{args}");
-    }
-    assert_eq!(
-        fs::read_to_string(home.path().join("profiles/owl/memories/MEMORY.md")).unwrap(),
-        "Bob's room meets on Fridays."
-    );
-    // The owner's own section sees the text as before.
-    assert!(
-        runtime
-            .tool(
-                &section,
-                "memory",
-                &json!({"action":"add","text":"Alex is in Wellington."})
-            )
-            .await
-            .unwrap()["memory_md"]
-            .as_str()
-            .unwrap()
-            .contains("Alex is in Wellington")
-    );
-    assert!(
-        runtime
-            .tool(
-                &section,
-                "memory",
-                &json!({"action":"note","text":"A second note."})
-            )
-            .await
-            .unwrap()["notes_md"]
-            .as_str()
-            .unwrap()
-            .contains("A second note.")
-    );
-    // The extension learns it is a guest from the live settings.
-    assert_eq!(runtime.session_settings(&shared).unwrap()["guest"], true);
-    assert_eq!(runtime.session_settings(&section).unwrap()["guest"], false);
     runtime.shutdown().await;
 }

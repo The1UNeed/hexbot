@@ -12,12 +12,9 @@ the provider keys. Owner ids exist on every row from milestone 1.
   only their owner's.
 - `bots.shareable` lets other members add that bot to their rooms. A shared
   bot in someone else's room keeps its owner's memory and skills but reads
-  no About you at all, neither its owner's nor the room owner's; its memory
-  tool refuses notes and returns no memory text from writes there, and its
-  file tools refuse its owner's memory and notes and every About you,
-  outside Bypass. The room section and its usage are attributed to the
-  inviter. The room cannot loosen the bot's approval mode below what its
-  owner configured.
+  no About you at all, neither its owner's nor the room owner's; the room
+  section and its usage are attributed to the inviter. The room cannot
+  loosen the bot's approval mode below what its owner configured.
 - Only the admin can choose Bypass. Bypass runs tools with no sandbox and no
   credential checks, so a bot in that mode can read the admin's provider
   keys and every other file under the Hexbot home. The daemon refuses `off`

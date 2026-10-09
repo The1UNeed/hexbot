@@ -33,6 +33,8 @@ const PROPOSAL_BACKLOG: usize = 100;
 const PROPOSAL_RETENTION: f64 = 30.0 * 86_400.0;
 /// Daily notes in one digest: at most this many serialized bytes, newest days
 /// first. They come out of the same budget as transcripts and before them.
+/// The newest day always goes in, cut to its newest part when it is over
+/// the cap on its own, as a day of long characters can be.
 const NOTES_CAP: usize = 16_000;
 pub struct Dreaming {
     home: PathBuf,
@@ -139,20 +141,51 @@ fn recent_notes(home: &Path, bot: &str, since: f64) -> Result<Vec<Value>> {
         .single()
         .map_or(chrono::NaiveDate::MIN, |at| at.date_naive());
     let mut notes = vec![];
-    let mut used = 0;
+    let mut used = 2;
     for (date, text) in crate::memory::notes_from(home, bot, from)?
         .into_iter()
         .rev()
     {
-        let entry = json!({"date": date.to_string(), "text": cap(&text, crate::memory::NOTE_DAY_CAP as usize)});
-        used += entry.to_string().len() + 1;
-        if used > NOTES_CAP {
-            break;
+        let mut text = cap(&text, crate::memory::NOTE_DAY_CAP as usize);
+        let entry = |text: &str| json!({"date": date.to_string(), "text": text});
+        let mut size = entry(&text).to_string().len() + 1;
+        if used + size > NOTES_CAP {
+            if !notes.is_empty() {
+                break;
+            }
+            // Bytes, not characters, fill the digest: shrink the newest day
+            // to the part of it that fits rather than drop every day.
+            while used + size > NOTES_CAP {
+                let count = text.chars().count();
+                let keep = (count * (NOTES_CAP - used) / size).max(64);
+                if keep >= count {
+                    break;
+                }
+                text = cap(&text, keep);
+                size = entry(&text).to_string().len() + 1;
+            }
         }
-        notes.push(entry);
+        used += size;
+        notes.push(entry(&text));
     }
     notes.reverse();
     Ok(notes)
+}
+/// When the last successful bot dream started: the notes it had in view end
+/// there, not when it finished. A dream that starts before midnight and
+/// finishes after it would otherwise skip a note written in between, since
+/// the next dream's transcripts start where this one finished.
+fn notes_watermark(conn: &rusqlite::Connection, bot: &str, since: f64) -> Result<f64> {
+    // Memory restorations also use complete rows, with identical start and
+    // finish times. They read no digest and must not advance this watermark.
+    let started: Option<f64> = conn
+        .query_row(
+            "SELECT started_at FROM dreams WHERE bot=? AND room_id IS NULL AND status='complete' AND finished_at > started_at ORDER BY finished_at DESC LIMIT 1",
+            params![bot],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(started.map_or(since, |started| started.min(since)))
 }
 fn last_finished(home: &Path, bot: &str, room: Option<&str>) -> Result<f64> {
     Ok(db::open(home)?.query_row("SELECT COALESCE(MAX(finished_at),0) FROM dreams WHERE bot=? AND room_id IS ? AND status='complete'",params![bot,room],|r|r.get(0))?)
@@ -248,8 +281,9 @@ fn consume_proposals(home: &Path, bot: &str, dream: &str, ids: &[&str]) -> Resul
 /// Another bot's reply through message_bot is speech, so it stays.
 /// A section Pi compacted since the last dream also carries those summaries
 /// as `compactions`, so a long day is not judged by its last messages alone.
-/// The bot's daily notes since the last dream come as `notes` and are kept
-/// before any transcript: they are the day already condensed.
+/// The bot's daily notes from the day the last successful dream started
+/// come as `notes` and are kept before any transcript: they are the day
+/// already condensed.
 pub fn build_digest(home: &Path, bot: &str, since: f64, room: Option<&str>) -> Result<Value> {
     common::identifier(bot)?;
     let conn = db::open(home)?;
@@ -258,7 +292,7 @@ pub fn build_digest(home: &Path, bot: &str, since: f64, room: Option<&str>) -> R
     let mut notes = vec![];
     if room.is_none() {
         proposals = pending_proposals(&conn, bot)?;
-        notes = recent_notes(home, bot, since)?;
+        notes = recent_notes(home, bot, notes_watermark(&conn, bot, since)?)?;
         let legacy_path = home.join("profiles").join(bot).join("state.db");
         let legacy = if legacy_path.exists() {
             Some(rusqlite::Connection::open_with_flags(
@@ -1655,7 +1689,7 @@ impl Dreaming {
                 validate_job(&self.home, &job)?;
                 self.save_job(owner, bot, &job)?;
                 Ok(
-                    json!({"success":true,"job":job,"note":"Output is saved locally; it is not delivered into this conversation. The job can read memory and the soul but not write them: memory changes it asks for wait as proposals for your next dream, and soul changes need the user."}),
+                    json!({"success":true,"job":job,"note":"Output is saved locally; it is not delivered into this conversation. The job can read memory, notes and the soul but not write them: memory changes and notes it asks for wait as proposals for your next dream, and soul changes need the user."}),
                 )
             }
             action @ ("update" | "pause" | "resume" | "remove" | "run") => {
@@ -1826,7 +1860,7 @@ pub fn tool_descriptor() -> Value {
     json!({
         "name": "cronjob_manage",
         "label": "Scheduled jobs",
-        "description": "Create and manage local scheduled jobs. Actions: create, list, update, pause, resume, remove, run. Jobs run in a fresh session. Output is saved locally. A job can read memory and the soul but not write them: memory changes it asks for are saved as proposals that your next dream reviews, and soul changes need the user.",
+        "description": "Create and manage local scheduled jobs. Actions: create, list, update, pause, resume, remove, run. Jobs run in a fresh session. Output is saved locally. A job can read memory, notes and the soul but not write them: memory changes and notes it asks for are saved as proposals that your next dream reviews, and soul changes need the user.",
         "parameters": {
             "type": "object",
             "properties": {

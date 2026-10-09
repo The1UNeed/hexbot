@@ -111,7 +111,7 @@ describe('notes', () => {
   // still calls the daemon's files Today and Yesterday.
   const today = '2026-10-07'
 
-  it('names days in the user\'s words, by the daemon\'s day', () => {
+  it("names days in the user's words, by the daemon's day", () => {
     expect(noteDayLabel('2026-10-07', today)).toBe('Today')
     expect(noteDayLabel('2026-10-06', today)).toBe('Yesterday')
     expect(noteDayLabel('2026-10-03', today)).toMatch(/Sat/)
@@ -168,13 +168,15 @@ describe('notes', () => {
       })
     )
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled())
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     expect(confirm).toHaveBeenCalledWith("Delete yesterday's notes?")
     await waitFor(() =>
       expect(call).toHaveBeenCalledWith('hexbot.memory.notes.delete', {
         bot: 'scout',
-        date: '2026-10-06'
+        date: '2026-10-06',
+        expected: 'Set up the export, twice.'
       })
     )
     await waitFor(() => expect(screen.queryByRole('button', { name: /Yesterday/ })).toBeNull())
@@ -197,7 +199,7 @@ describe('notes', () => {
       }),
       'hexbot.memory.notes.set': params => {
         if (params.expected !== stored) {
-          throw Object.assign(new Error('The bot added to this day\'s notes since you opened it.'), {
+          throw Object.assign(new Error("The bot added to this day's notes since you opened it."), {
             code: 4209
           })
         }
@@ -229,15 +231,17 @@ describe('notes', () => {
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
 
-    // A change that is not an appended note reloads the day and says so.
+    // A rewrite must leave the user's draft intact.
     stored = 'Rewritten elsewhere.'
     fireEvent.change(screen.getByLabelText('Notes for Today'), {
       target: { value: 'Set up the export pipeline, again.' }
     })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent(/since you opened it/)
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Your draft is kept/)
     await waitFor(() =>
-      expect(screen.getByLabelText('Notes for Today')).toHaveValue('Rewritten elsewhere.')
+      expect(screen.getByLabelText('Notes for Today')).toHaveValue(
+        'Set up the export pipeline, again.'
+      )
     )
     setActiveRpc(null)
   })

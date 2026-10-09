@@ -50,31 +50,36 @@ The native scheduler and digest builder live in
   file after the same injection scan as a memory edit; lines carry no month
   stamp, since the file is the date. `read` with `notes` (`today`,
   `yesterday`, a day, or a range of up to seven days) returns those days
-  instead of memory. Notes never enter a prompt. A shared bot in someone
-  else's room cannot read its owner's notes there, as it gets no About you;
-  its memory writes there answer with a confirmation rather than the text,
-  and the extension's file tools refuse the bot's `memories/` folder and
-  every About you in that session (`guest` in the live settings).
+  instead of memory. Notes are never injected into a section's prompt.
+  Appending returns the date, length, cap, and `noted: true`, without
+  repeating the day's text in the conversation.
   Nothing else indexes them; a day or a range is the way to find one.
-- The bot dream (not a room dream) reads the notes from the day of the last
-  successful dream on as `notes: [{date, text}]`, oldest first, at most
-  16,000 bytes with the newest days kept, counted against the 60,000-byte
-  budget before any transcript: a day's notes are already that day
+- The bot dream (not a room dream) reads notes from the day its last
+  successful dream started, as `notes: [{date, text}]`, oldest first, at most
+  16,000 serialized bytes with the newest days kept. If the newest day alone
+  exceeds that budget, its newest part is kept. Notes count against the
+  60,000-byte budget before any transcript: a day's notes are already that day
   condensed. The prompt adds one clause: read them first, fold the durable
   facts and lessons into memory, notes are not memory. Before building the
-  digest the dream deletes note files older than 30 days; only files named
-  like a day are touched. The Memory tab shows notes by day; the user can
-  edit or delete a day there, and `hexbot.memory.notes.set` writes text as
-  given. Deleting a section leaves notes alone, like memory; deleting the
+  digest the dream deletes note files older than 30 days; reads, listings,
+  and appends also prune them, even with dreaming off. Pruning failures
+  never fail a saved append. Only regular files named like a day are touched,
+  and linked directories are refused. Using the previous dream's start day
+  keeps late notes eligible when a dream finishes after midnight. The Memory
+  tab shows notes by day; the user can edit or delete a day there, and
+  `hexbot.memory.notes.set` writes text as given. Saves and deletions accept `expected` and refuse stale text. The
+  editor merges only new lines after the exact append boundary and keeps
+  the user's draft on other conflicts. Future dates are refused on writes.
+  Deleting a section leaves notes alone, like memory; deleting the
   bot deletes them with the profile.
 - Scheduled jobs do not write memory or notes. In a job's session, and in
   any delegate under it, the memory tool reads as usual, but `add`,
   `append`, `replace`, `set`, `remove`, and `note` are saved as rows in
   `memory_proposals` (bot, owner, job id, action, arguments, created_at)
-  after the same injection scan and memory cap as an edit, so a proposal the
-  dream could never apply is refused at once. The tool result tells the bot
-  the change waits for its next dream. A bot keeps at most 100 pending
-  proposals; older ones are dropped unread. Reviewed proposals are kept 30
+  after the same injection scan as an edit. Notes use the 4,000-character
+  day cap; memory proposals use the bot's memory cap. An oversized proposal
+  is refused at once. The tool result tells the bot the change waits for
+  its next dream. A bot keeps at most 100 pending proposals; older ones are dropped unread. Reviewed proposals are kept 30
   days. The soul tool reads in a job's session but refuses to write: soul
   changes need the user, in a section, and the dream never writes the soul
   either.
@@ -114,5 +119,5 @@ The native scheduler and digest builder live in
 A room dream curates the main bot's private memory, then produces a
 shared summary of at most 3,000 characters. Private user facts must stay out
 of that summary. The result is stored in `room_memory` and injected into
-members' room prompt headers. Members keep their own private notes about
-the room in their bot memory.
+members' room prompt headers. Bots keep durable facts about the room in
+their own memory.

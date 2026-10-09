@@ -1206,3 +1206,66 @@ async fn dream_reads_notes_and_prunes_old_days() {
     dreams.shutdown().await;
     runtime.shutdown().await;
 }
+
+#[test]
+fn digest_keeps_the_newest_note_day_even_when_serialized_text_exceeds_the_budget() {
+    let home = setup();
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
+    for character in ["😀", "\u{0001}"] {
+        note(home.path(), "owl", today.pred_opt().unwrap(), "Earlier day");
+        note(
+            home.path(),
+            "owl",
+            today,
+            &format!("{}Newest note", character.repeat(3989)),
+        );
+        let digest = dreaming::build_digest(home.path(), "owl", 0.0, None).unwrap();
+        let notes = digest["notes"].as_array().unwrap();
+        let newest = notes.last().unwrap();
+        assert_eq!(newest["date"], today.to_string());
+        assert!(newest["text"].as_str().unwrap().ends_with("Newest note"));
+        assert!(digest["notes"].to_string().len() <= 16_000);
+        assert!(digest.to_string().len() <= 60_000);
+    }
+}
+
+#[test]
+fn a_dream_crossing_midnight_leaves_late_notes_for_the_next_digest() {
+    let home = setup();
+    let h = home.path();
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
+    let at = |day: chrono::NaiveDate, hour, minute| {
+        Local
+            .from_local_datetime(&day.and_hms_opt(hour, minute, 0).unwrap())
+            .earliest()
+            .unwrap()
+            .timestamp() as f64
+    };
+    let start = at(day, 23, 59);
+    let finish = at(day.succ_opt().unwrap(), 0, 1);
+    // The first digest predates the append. Its successful dream finishes tomorrow.
+    assert_eq!(
+        dreaming::build_digest(h, "owl", 0.0, None).unwrap()["notes"],
+        json!([])
+    );
+    note(h, "owl", day, "Appended after the digest was built");
+    db::open(h).unwrap().execute(
+        "INSERT INTO dreams(id,bot,started_at,finished_at,status,summary,owner_id) VALUES ('midnight','owl',?,?,'complete','','alice')",
+        rusqlite::params![start, finish],
+    ).unwrap();
+    // A later failed dream and room dream must not move the bot's notes watermark.
+    db::open(h).unwrap().execute(
+        "INSERT INTO dreams(id,bot,room_id,started_at,finished_at,status,summary,owner_id) VALUES ('failed','owl',NULL,?,?,'failed','','alice'), ('room','owl','room',?,?,'complete','','alice')",
+        rusqlite::params![finish, finish + 60.0, finish, finish + 60.0],
+    ).unwrap();
+    // Restoring memory writes a complete log row but does not read notes.
+    db::open(h).unwrap().execute(
+        "INSERT INTO dreams(id,bot,started_at,finished_at,status,summary,owner_id) VALUES ('restore','owl',?,?, 'complete','Restored memory','alice')",
+        rusqlite::params![finish + 120.0, finish + 120.0],
+    ).unwrap();
+    let digest = dreaming::build_digest(h, "owl", finish, None).unwrap();
+    assert_eq!(
+        digest["notes"],
+        json!([{"date":day.to_string(),"text":"Appended after the digest was built"}])
+    );
+}

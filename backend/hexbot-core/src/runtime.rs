@@ -2123,9 +2123,6 @@ impl Runtime {
         );
         saved["cwd"] = json!(common::resolve_workdir(&self.home, configured)?);
         saved["home"] = json!(self.home);
-        // A shared bot in someone else's room: the extension keeps its file
-        // tools out of memory, notes and About you files (`privatePath`).
-        saved["guest"] = json!(owner != s.owner);
         // Hash expanded entries, not just YAML: credential edits revoke old clients too.
         if let Some(names) = own["mcpServers"].as_array() {
             let servers = crate::connectors::pi_mcp_servers(&self.home, &s.bot, names)?;
@@ -2646,7 +2643,11 @@ impl Runtime {
                         _ => return Err(Error::new(4202, "unknown memory action")),
                     };
                     check_memory_edit("", text)?;
-                    memory.check_bot_fits(&bot_owner, &s.bot, text)?;
+                    if action == "note" {
+                        crate::memory::check_note_fits(text)?;
+                    } else {
+                        memory.check_bot_fits(&bot_owner, &s.bot, text)?;
+                    }
                     let kept = ["text", "old_text"]
                         .into_iter()
                         .filter_map(|k| args[k].as_str().map(|v| (k.to_owned(), json!(v))))
@@ -2660,25 +2661,16 @@ impl Runtime {
                         &Value::Object(kept),
                     );
                 }
-                // A shared bot in someone else's room keeps its owner's memory
-                // and notes out of that room: notes are never read there, and a
-                // write comes back without the text it changed (memory itself is
-                // in the prompt already, so a plain read stays).
-                let guest = s.owner != bot_owner;
                 // Added and replaced entries carry the month they were learned.
                 // The daemon stamps them here so the month does not depend on
                 // the model following a format; a job's proposal is stored as
                 // written and stamped when the dream applies it through this
                 // same arm. `set` is written as given.
-                let mut result = match action {
+                match action {
                     "read" => match args["notes"]
                         .as_str()
                         .filter(|spec| !spec.trim().is_empty())
                     {
-                        Some(_) if guest => Err(Error::new(
-                            4302,
-                            "Notes are private to the bot's owner and stay out of shared rooms.",
-                        )),
                         Some(spec) => {
                             let (from, to) = crate::memory::parse_note_range(
                                 spec,
@@ -2736,16 +2728,7 @@ impl Runtime {
                         })
                     }
                     _ => Err(Error::new(4202, "unknown memory action")),
-                }?;
-                if guest
-                    && action != "read"
-                    && let Some(fields) = result.as_object_mut()
-                {
-                    fields.remove("memory_md");
-                    fields.remove("notes_md");
-                    fields.insert("saved".into(), json!(true));
                 }
-                Ok(result)
             }
             "hexbot_turn_limit" => {
                 s.state.lock().unwrap().error = Some(format!(

@@ -233,11 +233,12 @@ context of its own; the meter belongs to bot sections.
   current day, so a client in another timezone labels Today and Yesterday
   as the daemon files them. Owner only.
 - `hexbot.memory.notes.set {bot, date, text, expected?}` → `{date, text,
-  cap}` writes one day as given; an empty `text` removes the day. With
-  `expected`, the text the editor loaded, the write is refused with 4209
-  when the day has changed since (the bot added a note), so a client
-  reloads instead of writing over it.
-- `hexbot.memory.notes.delete {bot, date}` → `{date, deleted: true}`.
+  cap}` writes one day as given; an empty `text` removes the day. Future
+  dates return 4202. With `expected`, the text the editor loaded, a changed
+  day returns 4209. The app merges appended lines or keeps the draft on
+  other conflicts.
+- `hexbot.memory.notes.delete {bot, date, expected?}` → `{date, deleted: true}`.
+  With `expected`, deletion returns 4209 if the day has changed; the file stays.
   Notes are written by the bot through its `memory` tool (`note`, and `read`
   with `notes`); see `docs/dreaming.md`.
 

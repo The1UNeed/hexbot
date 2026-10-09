@@ -49,9 +49,10 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Turn**: one user message and everything the bots do in response. The room turn engine (`backend/hexbot-core/src/rooms.rs`) decides who speaks.
 - **Soul**: a bot's persona, the `SOUL.md` in its profile. The user and the bot both edit it; the bot says so when it does.
 - **Visual**: an interactive HTML page (chart, table, diagram, mockup) a bot shows in a section with `hexbot_show_html`. It sits in a bubble above the bot's final reply, in a sandboxed frame, and can open beside the chat as a tab. Not available in rooms.
-- **Memory**: a bot's own notes, the `MEMORY.md` in its profile. The bot writes it during chat, dreaming curates it, the user can edit it. Deleting a section removes its history and leaves memory alone.
+- **Notes**: a bot's daily record in `memories/notes/YYYY-MM-DD.md`. The bot appends during conversations; dreaming folds what lasts into memory. The user can edit or delete a day. Days older than 30 days are removed when notes are read, listed, appended, or a dream runs.
+- **Memory**: a bot's durable facts, preferences, and lessons, the `MEMORY.md` in its profile. The bot writes it during chat, dreaming curates it, the user can edit it. Deleting a section removes its history and leaves memory alone.
 - **About you**: one text per user, written only by the user and read by every bot they own (`users/<id>/user.md`).
-- **Dreaming**: a bot's daily pass over that day's conversations that folds what matters into its memory.
+- **Dreaming**: a bot's daily pass over recent notes and conversations that folds what matters into its memory.
 - **Auto mode**: the default approval mode. Bots work freely inside the workspace; shell commands run in an OS sandbox with no network, and anything outside the workspace asks first. The daemon calls it `smart`. The other modes are Manual (read-only sandbox, every file change asks) and Bypass (no prompts and no sandbox, admin only; the daemon calls it `off`).
 - **Pairing**: connecting an app to a daemon with a one-time code or link over LAN. Never depends on Connect.
 - **Hex Connect**: the optional cloud service at connect.hexbot.app (Clerk auth, Cloudflare tunnels) for reaching a daemon from outside the LAN. Brokers identity and a hostname; chat traffic never passes through it.

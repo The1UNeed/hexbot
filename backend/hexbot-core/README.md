@@ -89,12 +89,11 @@ it also installs over SSH when nobody is signed in at the screen.
   Daily notes are one file a day in `memories/notes/YYYY-MM-DD.md`, 4,000
   characters a day, written by the tool's `note` action and read with
   `read {notes}`, never injected, read by the dream before transcripts, and
-  deleted after 30 days. A shared bot in someone else's room is a guest
-  there (`guest` in its live settings): its memory tool refuses notes and
-  answers writes with a confirmation instead of the text, and the private
-  extension's file tools refuse `memories/` and every `users/<id>/user.md`,
-  through links too, outside Bypass. The sandbox for shell commands hides
-  credential files only.
+  removed when older than 30 days on reads, listings, appends, and dreams.
+  Appending returns a compact confirmation; only an explicit read returns
+  the day's text. The editor checks the text it loaded before saving or
+  deleting a day. Scheduled jobs propose notes under the 4,000-character
+  day cap; proposed memory changes use the bot's memory cap.
 - `hexbot-runtime.db` stores native transcript projections, usage, and frozen
   session options. Pi keeps its conversation JSONL under the native session
   directory. Existing Python `state.db` history is imported once, including

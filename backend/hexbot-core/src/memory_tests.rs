@@ -479,6 +479,9 @@ fn notes_append_to_today_cap_the_day_and_read_by_date() {
         .unwrap();
     assert_eq!(noted["date"], today.to_string());
     assert_eq!(noted["cap"], NOTE_DAY_CAP);
+    assert_eq!(noted["noted"], true);
+    assert_eq!(noted["length"], "Looked at the Q3 export.".chars().count());
+    assert!(noted.get("notes_md").is_none());
     store
         .add_note("alice", "owl", "Vendor column is stale.", |_, _| Ok(()))
         .unwrap();
@@ -571,7 +574,7 @@ fn notes_append_to_today_cap_the_day_and_read_by_date() {
         .unwrap_err();
     assert_eq!(stale.code, 4209);
     assert!(
-        stale.message.contains("since you opened it"),
+        stale.message.contains("since you opened them"),
         "{}",
         stale.message
     );
@@ -593,11 +596,11 @@ fn notes_append_to_today_cap_the_day_and_read_by_date() {
         1
     );
     assert_eq!(
-        store.delete_notes("alice", "owl", today).unwrap(),
+        store.delete_notes("alice", "owl", today, None).unwrap(),
         json!({"date": today.to_string(), "deleted": true})
     );
     assert!(!file.exists());
-    store.delete_notes("alice", "owl", today).unwrap();
+    store.delete_notes("alice", "owl", today, None).unwrap();
     // Notes are the owner's, like memory.
     for caller in ["bob", "missing"] {
         assert_eq!(
@@ -616,7 +619,10 @@ fn notes_append_to_today_cap_the_day_and_read_by_date() {
             4302
         );
         assert_eq!(
-            store.delete_notes(caller, "owl", today).unwrap_err().code,
+            store
+                .delete_notes(caller, "owl", today, None)
+                .unwrap_err()
+                .code,
             4302
         );
     }
@@ -717,4 +723,156 @@ fn pruning_removes_only_old_note_files() {
         prune_notes(home.path(), "../owl", today).unwrap_err().code,
         4202
     );
+}
+
+#[test]
+fn notes_delete_checks_expected_and_set_refuses_future_days() {
+    let (_home, store) = setup();
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
+    crate::memory::fix_today(today);
+    store
+        .add_note("alice", "owl", "Plan", |_, _| Ok(()))
+        .unwrap();
+    store
+        .add_note("alice", "owl", "New note", |_, _| Ok(()))
+        .unwrap();
+    assert_eq!(
+        store
+            .delete_notes("alice", "owl", today, Some("Plan"))
+            .unwrap_err()
+            .code,
+        4209
+    );
+    assert_eq!(
+        store.get_notes("alice", "owl", today, today).unwrap()["notes"][0]["text"],
+        "Plan\nNew note"
+    );
+    store
+        .delete_notes("alice", "owl", today, Some("Plan\nNew note"))
+        .unwrap();
+    assert!(
+        store.list_notes("alice", "owl").unwrap()["days"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .set_notes("alice", "owl", today.succ_opt().unwrap(), "Future", None)
+            .unwrap_err()
+            .code,
+        4202
+    );
+}
+
+#[test]
+fn reading_or_listing_notes_prunes_days_without_dreaming_or_appending() {
+    let (home, store) = setup();
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
+    crate::memory::fix_today(today);
+    let dir = home.path().join("profiles/owl/memories/notes");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("2026-09-07.md"), "Keep").unwrap();
+    for list in [true, false] {
+        fs::write(dir.join("2026-09-06.md"), "Old").unwrap();
+        if list {
+            store.list_notes("alice", "owl").unwrap();
+        } else {
+            store.get_notes("alice", "owl", today, today).unwrap();
+        }
+        assert!(!dir.join("2026-09-06.md").exists());
+        assert!(dir.join("2026-09-07.md").exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn notes_reject_symlinked_directories_before_reading_or_pruning() {
+    use crate::memory::{notes_from, prune_notes};
+    use std::os::unix::fs::symlink;
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
+    crate::memory::fix_today(today);
+    for component in [
+        "profiles/owl",
+        "profiles/owl/memories",
+        "profiles/owl/memories/notes",
+    ] {
+        let (home, store) = setup();
+        let dir = home.path().join("profiles/owl/memories/notes");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("2026-09-01.md"), "Private").unwrap();
+        let original = home.path().join(component);
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("moved");
+        fs::rename(&original, &target).unwrap();
+        symlink(&target, &original).unwrap();
+        assert_eq!(
+            notes_from(home.path(), "owl", today).unwrap_err().code,
+            4202
+        );
+        assert_eq!(
+            prune_notes(home.path(), "owl", today).unwrap_err().code,
+            4202
+        );
+        assert_eq!(store.list_notes("alice", "owl").unwrap_err().code, 4202);
+        assert_eq!(
+            fs::read_to_string(dir.join("2026-09-01.md")).unwrap(),
+            "Private"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_prune_failure_does_not_fail_an_append_that_was_saved() {
+    let (home, store) = setup();
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
+    crate::memory::fix_today(today);
+    let dir = home.path().join("profiles/owl/memories/notes");
+    fs::create_dir_all(&dir).unwrap();
+    let old = dir.join("2026-09-01.md");
+    fs::write(&old, "Old note").unwrap();
+    // An immutable old file blocks pruning without blocking today's write.
+    let flag = |value| {
+        std::process::Command::new("chflags")
+            .arg(value)
+            .arg(&old)
+            .status()
+            .unwrap()
+    };
+    assert!(flag("uchg").success());
+    let prune = crate::memory::prune_notes(home.path(), "owl", today);
+    let saved = store.add_note("alice", "owl", "Saved once", |_, _| Ok(()));
+    assert!(flag("nouchg").success());
+    assert!(prune.is_err());
+    assert_eq!(saved.unwrap()["noted"], true);
+    assert_eq!(
+        fs::read_to_string(dir.join(format!("{today}.md"))).unwrap(),
+        "Saved once"
+    );
+}
+
+#[test]
+fn concurrent_pruning_tolerates_already_removed_files() {
+    let (home, _store) = setup();
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
+    let dir = home.path().join("profiles/owl/memories/notes");
+    fs::create_dir_all(&dir).unwrap();
+    for back in 31..131 {
+        fs::write(
+            dir.join(format!("{}.md", today - chrono::Days::new(back))),
+            "Old",
+        )
+        .unwrap();
+    }
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        let prune = || {
+            barrier.wait();
+            crate::memory::prune_notes(home.path(), "owl", today).unwrap();
+        };
+        scope.spawn(prune);
+        scope.spawn(prune);
+    });
+    assert_eq!(fs::read_dir(dir).unwrap().count(), 0);
 }

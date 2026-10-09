@@ -116,7 +116,25 @@ fn notes_methods_list_set_and_delete_a_day() {
     assert_eq!(
         call(
             "hexbot.memory.notes.delete",
-            json!({"bot":"owl","date":"2026-10-06"})
+            json!({"bot":"owl","date":"2026-10-06","expected":"Set up the export."})
+        )
+        .unwrap_err()
+        .code,
+        4209
+    );
+    assert_eq!(
+        call(
+            "hexbot.memory.notes.set",
+            json!({"bot":"owl","date":"2026-10-08","text":"Future"})
+        )
+        .unwrap_err()
+        .code,
+        4202
+    );
+    assert_eq!(
+        call(
+            "hexbot.memory.notes.delete",
+            json!({"bot":"owl","date":"2026-10-06","expected":"Set up the export, twice."})
         )
         .unwrap(),
         json!({"date":"2026-10-06", "deleted":true})
