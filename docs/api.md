@@ -492,6 +492,18 @@ arguments and status, not full nested result bodies; its record is bounded.
 
 ### Providers and models
 
+Provider configuration lives on the daemon in `config.yaml`. Set
+`model_overrides.<provider>.<model>.context_window` to supply a missing context
+window. When no window is known, Hexbot assumes 32,768 tokens. For the
+custom/Ollama endpoint, `model.context_length` takes precedence for every model, including fallbacks,
+and is also sent as `num_ctx`. Bot configuration overrides deployment values.
+Before Pi starts, Hexbot writes compaction settings to the bot's Pi directory
+using the final model registry. The 16,384-token reserve and 20,000-token recent
+context budgets are each capped at a quarter of the model's window. Running
+sections keep the settings loaded at start; workspace `.pi/settings.json`
+cannot override them. See the [daemon reference](../backend/hexbot-core/README.md#storage-and-compatibility)
+and [provider setup guide](https://hexbot.app/docs/providers/).
+
 - `hexbot.providers.list {}` → `{providers: [{id, label, configured,
   auth_type, models_source}]}` (all core providers). `configured` is
   always a boolean: key providers are checked against the deployment

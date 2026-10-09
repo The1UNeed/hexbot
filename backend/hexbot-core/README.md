@@ -100,20 +100,23 @@ it also installs over SSH when nobody is signed in at the screen.
   `settings.json` keys are kept. Compaction uses Pi 1.0.1's defaults, written
   out so a Pi upgrade cannot move them: reserve 16,384 tokens, keep the most
   recent 20,000. Each model Hexbot lists in `models.json` gets a
-  `modelOverrides` entry capping both at a quarter of its context window, so
-  compaction fires at 75% of the window or later for every model instead of
+  `modelOverrides` entry capping the reserve and recent context kept at a
+  quarter of its context window, so compaction fires at 75% of the window or
+  later for every model instead of
   at half of a 32k window. A model with no known window (an empty models.dev
   cache, a custom or local server, an OpenRouter model missing from the
   catalog) is assumed to have 32,768 tokens and compacts near 24,500; set
   `model_overrides.<provider>.<model>.context_window` (or
-  `model_overrides._default.context_window`) in `config.yaml` to tell the
-  daemon the real window, and for Ollama `model.context_length`, which is also
-  sent as `num_ctx`. Models Pi ships natively keep Pi's own metadata; their
-  `modelOverrides` entries scale by the windows in the pinned catalog
+  `model_overrides.<provider>._default.context_window`) in `config.yaml` to
+  tell the daemon the real window. For Ollama, `model.context_length` is also
+  sent as `num_ctx`; it takes precedence over window overrides for every model
+  on the custom endpoint, including fallbacks. Models Pi ships natively keep
+  Pi's own metadata; their `modelOverrides` entries scale by the windows in
+  the pinned catalog
   (`src/pi_catalog.json`, regenerated with `generate-pi-catalog.mjs`), so a
   small built-in model such as `openai/gpt-4` compacts at 6,144 tokens rather
-  than never. A running Pi keeps the settings it loaded at start, so the
-  daemon leaves an unchanged file alone.
+  than on every turn. A running Pi keeps the settings it loaded at start, so
+  the daemon leaves an unchanged file alone.
 - A conversation keeps its system prompt, skill catalog and tool definitions
   across turns and daemon restarts. Skill bodies and grants resolve live. Runtime settings outside the prompt may
   resolve live.

@@ -101,6 +101,16 @@ const DEFAULT_CONTEXT_WINDOW: u64 = 32768;
 /// move them. Compaction fires when the context exceeds `window - reserve`.
 const COMPACTION_RESERVE_TOKENS: u64 = 16384;
 const COMPACTION_KEEP_RECENT_TOKENS: u64 = 20000;
+/// The custom endpoint uses the same window for every model request, including
+/// fallbacks, regardless of the bot's selected provider.
+fn custom_context_window(provider: &str, root: &Value, profile: &Value) -> Option<u64> {
+    if provider != "custom" {
+        return None;
+    }
+    profile["model"]["context_length"]
+        .as_u64()
+        .or_else(|| root["model"]["context_length"].as_u64())
+}
 /// Reserve and keep-recent budgets for one model. Both are capped at a quarter of
 /// the window, so compaction never fires below 75% of it and never halves a
 /// small window the way the global values would.
@@ -934,9 +944,13 @@ fn prepare_pi_config_locked(
     profile_home: Option<&Path>,
     agent_dir: &Path,
 ) -> Result<()> {
-    let mut cfg = common::read_config(home)?;
-    if let Some(profile_home) = profile_home {
-        let profile_cfg = common::read_config(profile_home)?;
+    let root = common::read_config(home)?;
+    let profile_cfg = profile_home
+        .map(common::read_config)
+        .transpose()?
+        .unwrap_or_else(|| json!({}));
+    let mut cfg = root.clone();
+    if profile_home.is_some() {
         for key in [
             "model_overrides",
             "providers",
@@ -1132,11 +1146,8 @@ fn prepare_pi_config_locked(
                 ids.push(model.to_owned())
             }
         }
-        // `context_length` is the `num_ctx` the daemon sends a local server, so
-        // it is the window that server actually uses for the selected model.
-        let configured_window = (selected && slug == "custom")
-            .then(|| cfg["model"]["context_length"].as_u64())
-            .flatten();
+        // Match the `num_ctx` sent for every model on this endpoint.
+        let configured_window = custom_context_window(slug, &root, &profile_cfg);
         if native {
             let known = pi_catalog["providers"][&pi]["models"].as_array();
             ids.retain(|id| !known.is_some_and(|known| known.iter().any(|v| v == id)));
@@ -1152,7 +1163,6 @@ fn prepare_pi_config_locked(
             .map(|id| {
                 let meta = metadata(&cache, &cfg, slug, &id);
                 let window = configured_window
-                    .filter(|_| id == string(&cfg["model"], "default"))
                     .or_else(|| meta["limit"]["context"].as_u64())
                     .unwrap_or(DEFAULT_CONTEXT_WINDOW);
                 json!({
@@ -1260,7 +1270,7 @@ fn prepare_pi_config_locked(
         models["providers"][k] = v.clone()
     }
     write_json(&agent_dir.join("models.json"), &models)?;
-    write_pi_settings(agent_dir, &providers)
+    write_pi_settings(agent_dir, &models["providers"])
 }
 fn jwt_claims(token: &str) -> Option<Value> {
     let payload = token.split('.').nth(1)?;
@@ -2239,10 +2249,7 @@ pub fn adapt_request(home: &Path, bot: &str, session: &str, p: &Value) -> Result
             }
         }
         "custom" => {
-            if let Some(context) = profile_cfg["model"]["context_length"]
-                .as_u64()
-                .or_else(|| root["model"]["context_length"].as_u64())
-            {
+            if let Some(context) = custom_context_window(&provider, &root, &profile_cfg) {
                 object.entry("options").or_insert_with(|| json!({}))["num_ctx"] = json!(context);
             }
             if off {
@@ -2472,6 +2479,88 @@ mod migration_tests {
         server.abort();
     }
     #[test]
+    fn custom_fallback_windows_and_compaction_match_request_num_ctx() {
+        let root = json!({"model":{"provider":"openai","context_length":8192}});
+        assert_eq!(
+            custom_context_window("custom", &root, &json!({})),
+            Some(8192)
+        );
+        assert_eq!(custom_context_window("openai-api", &root, &json!({})), None);
+        let home = tempfile::tempdir().unwrap();
+        crate::db::migrate(home.path()).unwrap();
+        common::write_config(
+            home.path(),
+            &json!({"model":{"provider":"ollama","default":"local","base_url":"http://127.0.0.1:11434/v1","context_length":8192},
+                "fallback_providers":[{"provider":"custom","model":"fallback"}],
+                "model_overrides":{"custom":{"fallback":{"context_window":131072}}}}),
+        )
+        .unwrap();
+        let profile = home.path().join("profiles/owl");
+        let dir = profile.join("pi");
+        // Root inheritance, a profile override, and a non-numeric profile value
+        // all follow the outgoing request rules.
+        for (model, expected) in [
+            (json!({}), 8192),
+            (json!({"context_length":16384}), 16384),
+            (json!({"context_length":null}), 8192),
+        ] {
+            common::write_config(&profile, &json!({"model":model})).unwrap();
+            prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
+            let models = read_json(&dir.join("models.json")).unwrap();
+            let fallback = models["providers"]["custom"]["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["id"] == "fallback")
+                .unwrap();
+            let request = adapt_request(
+                home.path(),
+                "owl",
+                "section",
+                &json!({"provider":"ollama","model":"fallback","payload":{}}),
+            )
+            .unwrap();
+            assert_eq!(request["options"]["num_ctx"], expected);
+            assert_eq!(fallback["contextWindow"], request["options"]["num_ctx"]);
+            let settings = read_json(&dir.join("settings.json")).unwrap();
+            assert_eq!(
+                settings["compaction"]["modelOverrides"]["custom/fallback"],
+                json!({"reserveTokens":expected / 4,"keepRecentTokens":expected / 4})
+            );
+        }
+    }
+
+    #[test]
+    fn retained_provider_models_keep_their_compaction_overrides() {
+        let home = tempfile::tempdir().unwrap();
+        crate::db::migrate(home.path()).unwrap();
+        common::write_config(
+            home.path(),
+            &json!({"providers":{"removed":{"base_url":"http://example.test/v1","models":["small"]}},
+                "model_overrides":{"removed":{"small":{"context_window":8192}}}}),
+        )
+        .unwrap();
+        let dir = home.path().join("profiles/owl/pi");
+        prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
+        let before = read_json(&dir.join("models.json")).unwrap();
+        common::write_config(home.path(), &json!({})).unwrap();
+        prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
+        let models = read_json(&dir.join("models.json")).unwrap();
+        let settings = read_json(&dir.join("settings.json")).unwrap();
+        for provider in ["removed", "custom:removed"] {
+            assert_eq!(models["providers"][provider], before["providers"][provider]);
+            assert_eq!(
+                models["providers"][provider]["models"][0]["contextWindow"],
+                8192
+            );
+            assert_eq!(
+                settings["compaction"]["modelOverrides"][format!("{provider}/small")],
+                json!({"reserveTokens":2048,"keepRecentTokens":2048})
+            );
+        }
+    }
+
+    #[test]
     fn pi_settings_scale_compaction_to_each_window_and_keep_foreign_keys() {
         assert_eq!(compaction_budget(1_000_000), (16384, 20000));
         assert_eq!(compaction_budget(65536), (16384, 16384));
@@ -2483,7 +2572,8 @@ mod migration_tests {
         fs::create_dir_all(&profile).unwrap();
         common::write_config(
             &profile,
-            &json!({"model":{"provider":"ollama","default":"small","base_url":"http://127.0.0.1:11434/v1","context_length":8192},
+            &json!({"model":{"provider":"ollama","default":"small","base_url":"http://127.0.0.1:11434/v1"},
+                "model_overrides":{"custom":{"small":{"context_window":8192}}},
                 "fallback_providers":[{"provider":"custom","model":"unknown"},{"provider":"custom","model":"wide"}]}),
         )
         .unwrap();

@@ -149,7 +149,9 @@ async fn idle_restart_preserves_live_id_prompt_tools_and_client_watermarks() {
     assert_exited(&after[1]);
 }
 #[tokio::test]
-async fn sessions_ignore_project_pi_settings_and_run_on_hexbots_compaction_budget() {
+async fn sessions_pass_no_approve_and_write_hexbots_compaction_budget() {
+    // Fake Pi records arguments only; this checks daemon launch configuration,
+    // not Pi's handling of project settings.
     let (home, runtime, _hub) = setup();
     fs::create_dir_all(home.workspace().join(".pi")).unwrap();
     fs::write(
