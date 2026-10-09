@@ -1017,18 +1017,19 @@ impl Runtime {
     /// The section's prompt as the open path would build it now. The extension
     /// asks at compaction, the one moment the history cache is already lost, so
     /// a long section picks up its bot's current soul, memory and About you.
-    /// Returns `{text}` when the prompt changed and null when it is
+    /// Returns `{text}` when the live prompt differs and null when it is
     /// byte-identical or the row was frozen under another layout (its fixed
     /// lines, guidance or tool names). Tools never change, so only the bot's
     /// name, soul, memory, About you, teammates and skill catalog can.
-    fn refresh_prompt(&self, s: &Live) -> Result<Value> {
+    fn refresh_prompt(&self, s: &Live, current: &str) -> Result<Value> {
+        use sha2::{Digest, Sha256};
         let conn = store::open(&self.home)?;
         let (stored, raw): (String, String) = conn.query_row(
             "SELECT prompt,options FROM native_sessions WHERE stored_id=? AND owner=?",
             params![s.stored, s.owner],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        let mut options: Value =
+        let options: Value =
             serde_json::from_str(&raw).map_err(|e| Error::new(5200, e.to_string()))?;
         // An untagged row was frozen by an older layout, with inline skills and
         // its own tools; a rebuilt prompt would not match them. Nor is a row
@@ -1063,16 +1064,22 @@ impl Runtime {
         prompt.push_str(&connected_tools_block(
             options["mcpServers"].as_array().map_or(&[], Vec::as_slice),
         ));
-        if prompt == stored {
-            return Ok(Value::Null);
+        if prompt != stored {
+            // Update only our keys: a concurrent model switch owns its keys.
+            conn.execute(
+                "UPDATE native_sessions SET prompt=?,options=json_set(options,'$.prompt',?,'$.skills',json(?)) WHERE stored_id=?",
+                params![prompt, prompt, json!(skills).to_string(), s.stored],
+            )?;
         }
-        options["prompt"] = json!(prompt);
-        options["skills"] = json!(skills);
-        conn.execute(
-            "UPDATE native_sessions SET prompt=?,options=? WHERE stored_id=?",
-            params![prompt, options.to_string(), s.stored],
-        )?;
-        Ok(json!({"text":prompt}))
+        // The row may already contain a proposal the extension never received
+        // or could not apply. Keep returning it until the live hash matches.
+        Ok(
+            if format!("{:x}", Sha256::digest(prompt.as_bytes())) == current {
+                Value::Null
+            } else {
+                json!({"text":prompt})
+            },
+        )
     }
     async fn submit(
         &self,
@@ -1819,20 +1826,15 @@ impl Runtime {
                 }
                 Self::command(&s, json!({"type":"set_model","provider":target["provider"],"modelId":target["id"]})).await?;
                 let conn = store::open(&self.home)?;
-                let data: String = conn.query_row(
-                    "SELECT options FROM native_sessions WHERE stored_id=?",
-                    [&s.stored],
-                    |r| r.get(0),
-                )?;
-                let mut options: Value =
-                    serde_json::from_str(&data).map_err(|e| Error::new(5200, e.to_string()))?;
-                options["model"] = target["id"].clone();
-                options["provider"] = target["provider"].clone();
                 conn.execute(
-                    "UPDATE native_sessions SET options=? WHERE stored_id=?",
-                    params![options.to_string(), s.stored],
+                    "UPDATE native_sessions SET options=json_set(options,'$.model',json(?),'$.provider',json(?)) WHERE stored_id=?",
+                    params![target["id"].to_string(), target["provider"].to_string(), s.stored],
                 )?;
-                *s.model.lock().unwrap() = model_choice(&options);
+                {
+                    let mut model = s.model.lock().unwrap();
+                    model[0] = target["provider"].clone();
+                    model[1] = target["id"].clone();
+                }
                 self.emit(
                     &s,
                     "session.info",
@@ -2672,7 +2674,7 @@ impl Runtime {
             "hexbot_todo_context" => {
                 Ok(json!({"text":crate::native_product_tools::todo_context(&self.home,&s.stored)?}))
             }
-            "hexbot_session_prompt" => self.refresh_prompt(s),
+            "hexbot_session_prompt" => self.refresh_prompt(s, common::required(args, "current")?),
             "delegate_task" => self.delegate(s, args).await,
             "message_bot" => {
                 self.require_toolset(s, "hexbot", name)?;
@@ -2967,7 +2969,7 @@ impl Runtime {
                     );
                 }
                 Ok(
-                    json!({"soul":fs::read_to_string(path).unwrap_or_default(),"cap":4000,"saved":args["text"].is_string(),"note":"Changes apply to new sections, and to a long section when it next compacts. Tell the user what changed."}),
+                    json!({"soul":fs::read_to_string(path).unwrap_or_default(),"cap":4000,"saved":args["text"].is_string(),"note":"Changes apply to new sections. Compatible existing sections refresh after compaction when the next request starts a new run. Tell the user what changed."}),
                 )
             }
             _ => {

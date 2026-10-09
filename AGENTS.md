@@ -22,8 +22,10 @@ Three facts shape most decisions:
 - **Prompt caching is sacred.** A section is one persistent Pi session
   that reuses a cached prefix every turn. Do not mutate past context, swap
   toolsets, or rebuild the system prompt mid-conversation. The one exception:
-  when a section compacts, its history cache is already gone, so the daemon
-  rebuilds the prompt once with the bot's current soul, memory, and About you.
+  after a compatible section compacts, refresh its prompt only if the next
+  provider request starts a new run. This picks up the bot's current name,
+  soul, memory, About you, teammates, and skill catalog. If the active run
+  resumes first, keep its prompt until another compaction.
 - **One product, two packages, three channels.** Full package (app plus
   daemon) and client-only package (app alone) are build-time editions
   (`HEXBOT_EDITION`). The installer offers them as Full and Client, plus
