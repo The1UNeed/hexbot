@@ -6,7 +6,7 @@ use std::{
     io::Write,
     ops::Range,
     path::{Component, Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::Mutex,
     time::UNIX_EPOCH,
 };
 
@@ -241,22 +241,24 @@ impl MemoryStore {
 }
 
 /// The day a test pinned with `fix_today`, if any.
-static TODAY: OnceLock<NaiveDate> = OnceLock::new();
+#[cfg(test)]
+static TODAY: std::sync::OnceLock<NaiveDate> = std::sync::OnceLock::new();
 
 /// The daemon's local day, which every stamp and date here is taken from.
 /// A test pins it with `fix_today`, so writing a stamp and reading it back
 /// cannot straddle midnight.
 fn local_today() -> NaiveDate {
-    TODAY
-        .get()
-        .copied()
-        .unwrap_or_else(|| chrono::Local::now().date_naive())
+    #[cfg(test)]
+    if let Some(pinned) = TODAY.get() {
+        return *pinned;
+    }
+    chrono::Local::now().date_naive()
 }
 
-/// Pin the daemon's day for the rest of the process. For tests only: the day
-/// cannot change once set, so every test in one binary pins the same one.
-#[doc(hidden)]
-pub fn fix_today(date: NaiveDate) {
+/// Pin the daemon's day for the rest of the process. The day cannot change
+/// once set, so every test in one binary pins the same one.
+#[cfg(test)]
+pub(crate) fn fix_today(date: NaiveDate) {
     let pinned = *TODAY.get_or_init(|| date);
     assert_eq!(pinned, date, "tests in one process pin one day");
 }
@@ -268,14 +270,15 @@ pub fn month_stamp() -> String {
 
 /// Entries a bot adds carry the month they were learned, so a dream can tell
 /// a stale fact from a current one. Every non-empty line of `text` is one
-/// entry and gets ` [YYYY-MM]` unless it already ends with a stamp; headings
-/// and blank lines are left alone. Whole-file writes (`set`) are never
-/// stamped, so the dream and the user keep control of the text.
+/// entry and gets ` [YYYY-MM]` unless it already ends with a stamp; blank
+/// lines and markup (headings, code fences, rules) are left alone.
+/// Whole-file writes (`set`) are never stamped, so the dream and the user
+/// keep control of the text.
 pub fn stamp_entries(text: &str, month: &str) -> String {
     text.lines()
         .map(|line| {
             let entry = line.trim_end();
-            if entry.is_empty() || entry.starts_with('#') || is_stamped(entry) {
+            if entry.is_empty() || is_markup(entry) || is_stamped(entry) {
                 line.to_owned()
             } else {
                 format!("{entry} [{month}]")
@@ -288,10 +291,11 @@ pub fn stamp_entries(text: &str, month: &str) -> String {
 /// A replacement confirms the entries it touches: every line that crosses
 /// `span`, the byte range of the new text inside `text`, ends with this
 /// month's stamp in place of any older one, including a stamp the new text
-/// brought along. An empty replacement is a removal and stamps nothing.
+/// brought along. An empty replacement is a removal: it stamps nothing and
+/// drops the line when only a bullet and a stamp remain (`drop_emptied_line`).
 pub fn restamp_span(text: &str, span: Range<usize>, month: &str) -> String {
     if span.is_empty() {
-        return text.to_owned();
+        return drop_emptied_line(text, span.start);
     }
     let start = text[..span.start].rfind('\n').map_or(0, |i| i + 1);
     let last = span.end - usize::from(text[..span.end].ends_with('\n'));
@@ -300,7 +304,7 @@ pub fn restamp_span(text: &str, span: Range<usize>, month: &str) -> String {
         .lines()
         .map(|line| {
             let entry = strip_stamps(line.trim_end());
-            if entry.is_empty() || entry.starts_with('#') {
+            if entry.is_empty() || is_markup(entry) {
                 line.to_owned()
             } else {
                 format!("{entry} [{month}]")
@@ -309,6 +313,38 @@ pub fn restamp_span(text: &str, span: Range<usize>, month: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!("{}{touched}{}", &text[..start], &text[end..])
+}
+
+/// Removing an entry's words leaves its line holding only a bullet and a
+/// stamp (`-  [2026-10]`). After a removal at byte `at` of `text`, the line
+/// there goes too when nothing but whitespace, bullets, and stamps remain.
+pub fn drop_emptied_line(text: &str, at: usize) -> String {
+    let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+    let left = strip_stamps(text[start..end].trim());
+    if !left.trim_matches(['-', '*', '+', ' ', '\t']).is_empty() {
+        return text.to_owned();
+    }
+    // Take one of the newlines around the line with it.
+    let (start, end) = if end < text.len() {
+        (start, end + 1)
+    } else {
+        (start.saturating_sub(1), end)
+    };
+    format!("{}{}", &text[..start], &text[end..])
+}
+
+/// Markdown structure that is not an entry: a heading, a code fence, or a
+/// horizontal rule.
+fn is_markup(entry: &str) -> bool {
+    let entry = entry.trim_start();
+    if entry.starts_with('#') || entry.starts_with("```") || entry.starts_with("~~~") {
+        return true;
+    }
+    let marks: Vec<_> = entry.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    marks.len() >= 3
+        && matches!(marks[0], b'-' | b'*' | b'_')
+        && marks.iter().all(|b| *b == marks[0])
 }
 
 fn is_stamped(entry: &str) -> bool {

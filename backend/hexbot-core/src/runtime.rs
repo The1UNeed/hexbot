@@ -2643,7 +2643,19 @@ impl Runtime {
                         _ => return Err(Error::new(4202, "unknown memory action")),
                     };
                     check_memory_edit("", text)?;
-                    memory.check_bot_fits(&bot_owner, &s.bot, text)?;
+                    // Proposals stay raw. Count the stamps the dream will add;
+                    // a replacement can also restamp the surrounding line, so
+                    // reserve one stamp per new line plus one for that boundary.
+                    let month = crate::memory::month_stamp();
+                    let applied = match action {
+                        "add" | "append" => crate::memory::stamp_entries(text, &month),
+                        "replace" if !text.is_empty() => {
+                            let stamps = format!(" [{month}]").repeat(text.lines().count() + 1);
+                            format!("{text}{stamps}")
+                        }
+                        _ => text.to_owned(),
+                    };
+                    memory.check_bot_fits(&bot_owner, &s.bot, &applied)?;
                     let kept = ["text", "old_text"]
                         .into_iter()
                         .filter_map(|k| args[k].as_str().map(|v| (k.to_owned(), json!(v))))
@@ -2661,16 +2673,18 @@ impl Runtime {
                 // The daemon stamps them here so the month does not depend on
                 // the model following a format; a job's proposal is stored as
                 // written and stamped when the dream applies it through this
-                // same arm. `set` is written as given.
+                // same arm. `set` is written as given. The scan runs on the
+                // result before stamping, so a stamp cannot split a pattern
+                // that runs across lines, and again on what is written.
+                let month = crate::memory::month_stamp();
                 match action {
                     "read" => memory.get_bot(&bot_owner, &s.bot),
                     "add" | "append" => {
-                        let text = crate::memory::stamp_entries(
-                            required(args, "text")?,
-                            &crate::memory::month_stamp(),
-                        );
+                        let text = required(args, "text")?;
                         memory.update_bot(&bot_owner, &s.bot, |old| {
-                            let updated = format!("{old}\n{text}").trim().to_owned();
+                            check_memory_edit(old, format!("{old}\n{text}").trim())?;
+                            let stamped = crate::memory::stamp_entries(text, &month);
+                            let updated = format!("{old}\n{stamped}").trim().to_owned();
                             check_memory_edit(old, &updated)?;
                             Ok(updated)
                         })
@@ -2682,11 +2696,10 @@ impl Runtime {
                             let Some(at) = old.find(previous) else {
                                 return Err(Error::new(4202, "memory text was not found"));
                             };
-                            let updated = crate::memory::restamp_span(
-                                &old.replacen(previous, text, 1),
-                                at..at + text.len(),
-                                &crate::memory::month_stamp(),
-                            );
+                            let replaced = old.replacen(previous, text, 1);
+                            check_memory_edit(old, &replaced)?;
+                            let updated =
+                                crate::memory::restamp_span(&replaced, at..at + text.len(), &month);
                             check_memory_edit(old, &updated)?;
                             Ok(updated)
                         })
@@ -2699,7 +2712,14 @@ impl Runtime {
                     "remove" => {
                         let previous = required(args, "text")?;
                         memory.update_bot(&bot_owner, &s.bot, |old| {
-                            let updated = old.replacen(previous, "", 1);
+                            // A line left holding only a bullet and a stamp goes too.
+                            let updated = match old.find(previous) {
+                                Some(at) => crate::memory::drop_emptied_line(
+                                    &old.replacen(previous, "", 1),
+                                    at,
+                                ),
+                                None => old.to_owned(),
+                            };
                             check_memory_edit(old, &updated)?;
                             Ok(updated)
                         })
