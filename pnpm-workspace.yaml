@@ -26,21 +26,74 @@ overrides:
   yauzl: ^3.3.1
   protobufjs: ^8.7.1
   # Scoped: minimatch 3 and 5 need brace-expansion 1.x and 2.x.
-  brace-expansion@^5: 5.0.9
+  brace-expansion@^5: 5.0.12
   mermaid: 11.16.1
-  dompurify: 3.4.13
+  dompurify: 3.4.16
   ip-address: 10.3.1
   nanoid@^3: 3.3.18
   nanoid@^6: 6.0.0
   js-yaml@^4: 4.3.2
-  undici@^6: 6.28.0
-  undici@^7: 7.29.0
+  undici@^6: 6.28.1
+  undici@^7: 7.29.1
+  undici@^8: 8.10.2
+  devalue@^5: 5.9.3
+  seroval@^1: 1.6.3
+  sharp@^0.35: 0.35.5
+  smol-toml@^1: 1.9.0
+  source-map-js@^1: 1.2.2
   postcss: 8.5.23
   tar: 7.5.22
 
 # Refuse releases younger than 14 days (the value is in minutes).
 minimumReleaseAge: 20160
 minimumReleaseAgeExclude:
+  # Security fixes. Keep exceptions tied to the reviewed versions.
+  - brace-expansion@5.0.12
+  - dompurify@3.4.16
+  - undici@6.28.1
+  - undici@7.29.1
+  - undici@8.10.2
+  - devalue@5.9.3
+  - seroval@1.6.3
+  - sharp@0.35.5
+  - '@img/sharp-linux-arm@0.35.5'
+  - '@img/sharp-linux-x64@0.35.5'
+  - '@img/sharp-win32-x64@0.35.5'
+  - '@img/sharp-darwin-x64@0.35.5'
+  - '@img/sharp-win32-ia32@0.35.5'
+  - '@img/sharp-linux-arm64@0.35.5'
+  - '@img/sharp-linux-ppc64@0.35.5'
+  - '@img/sharp-linux-s390x@0.35.5'
+  - '@img/sharp-win32-arm64@0.35.5'
+  - '@img/sharp-darwin-arm64@0.35.5'
+  - '@img/sharp-linux-riscv64@0.35.5'
+  - '@img/sharp-linuxmusl-x64@0.35.5'
+  - '@img/sharp-freebsd-wasm32@0.35.5'
+  - '@img/sharp-linuxmusl-arm64@0.35.5'
+  - '@img/sharp-libvips-linux-arm@1.3.4'
+  - '@img/sharp-libvips-linux-x64@1.3.4'
+  - '@img/sharp-libvips-darwin-x64@1.3.4'
+  - '@img/sharp-libvips-linux-arm64@1.3.4'
+  - '@img/sharp-libvips-linux-ppc64@1.3.4'
+  - '@img/sharp-libvips-linux-s390x@1.3.4'
+  - '@img/sharp-libvips-darwin-arm64@1.3.4'
+  - '@img/sharp-webcontainers-wasm32@0.35.5'
+  - '@img/sharp-wasm32@0.35.5'
+  - '@img/sharp-libvips-linux-riscv64@1.3.4'
+  - '@img/sharp-libvips-linuxmusl-x64@1.3.4'
+  - '@img/sharp-libvips-linuxmusl-arm64@1.3.4'
+  - smol-toml@1.9.0
+  - source-map-js@1.2.2
+  - next@16.3.8
+  - '@next/env@16.3.8'
+  - '@next/swc-darwin-arm64@16.3.8'
+  - '@next/swc-darwin-x64@16.3.8'
+  - '@next/swc-linux-arm64-gnu@16.3.8'
+  - '@next/swc-linux-arm64-musl@16.3.8'
+  - '@next/swc-linux-x64-gnu@16.3.8'
+  - '@next/swc-linux-x64-musl@16.3.8'
+  - '@next/swc-win32-arm64-msvc@16.3.8'
+  - '@next/swc-win32-x64-msvc@16.3.8'
   # assistant-ui packages & a couple specific deps since they update a LOT.
   # remove this when we stabilize (or we haven't updated in 2 wks)
   - '@assistant-ui/*'
@@ -62,8 +115,6 @@ minimumReleaseAgeExclude:
   - fast-uri
   # minimatch 10.2.6 includes fixes for vulns. remove this when 10.2.6 is > 2wks old
   - minimatch
-  # brace-expansion 5.0.9 includes fixes for vulns. remove this when 5.0.9 is > 2wks old
-  - brace-expansion
   # vite 8.2.0 is the first release depending on rolldown >= 1.2.1, which fixes
   # a rolldown panic that breaks `pnpm run build` in apps/desktop
   # (rolldown/rolldown#10337 — a regression in 1.1.5, the version vite 8.1.5
