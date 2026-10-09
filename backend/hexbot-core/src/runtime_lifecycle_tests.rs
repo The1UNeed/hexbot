@@ -3135,8 +3135,10 @@ async fn jobs_and_nested_delegates_cap_bypass_and_refuse_bot_relays() {
 }
 
 /// A section's `note` appends to today's notes file, unstamped and scanned
-/// like a memory edit; `read` with `notes` returns days. A scheduled job's
-/// note is a proposal, like its other writes.
+/// like a memory edit, and answers with a confirmation rather than the day's
+/// text; `read` with `notes` returns days. A scheduled job's note is a
+/// proposal, like its other writes, checked against the day cap rather than
+/// the memory cap.
 #[tokio::test]
 async fn notes_are_written_by_sections_and_proposed_by_jobs() {
     let (home, runtime, _) = setup();
@@ -3151,16 +3153,21 @@ async fn notes_are_written_by_sections_and_proposed_by_jobs() {
         )
         .await
         .unwrap();
-    assert_eq!(noted["date"], today.to_string());
-    assert_eq!(noted["cap"], 4000);
-    runtime
-        .tool(
-            &section,
-            "memory",
-            &json!({"action":"note","text":"Alex wants the short opening."}),
-        )
-        .await
-        .unwrap();
+    assert_eq!(
+        noted,
+        json!({"date": today.to_string(), "noted": true, "length": 52, "cap": 4000})
+    );
+    assert_eq!(
+        runtime
+            .tool(
+                &section,
+                "memory",
+                &json!({"action":"note","text":"Alex wants the short opening."}),
+            )
+            .await
+            .unwrap()["length"],
+        82
+    );
     let file = home
         .path()
         .join(format!("profiles/owl/memories/notes/{today}.md"));
@@ -3264,6 +3271,54 @@ async fn notes_are_written_by_sections_and_proposed_by_jobs() {
             .unwrap()
             .len(),
         1
+    );
+    // A proposed note must fit a day, not the memory cap, which is smaller.
+    assert_eq!(
+        runtime
+            .tool(
+                &job,
+                "memory",
+                &json!({"action":"note","text":"n".repeat(3000)})
+            )
+            .await
+            .unwrap()["proposed"],
+        true
+    );
+    let too_long = runtime
+        .tool(
+            &job,
+            "memory",
+            &json!({"action":"note","text":"n".repeat(4001)}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(too_long.code, 4221);
+    assert!(
+        too_long.message.starts_with("proposed notes"),
+        "{}",
+        too_long.message
+    );
+    assert_eq!(
+        runtime
+            .tool(
+                &job,
+                "memory",
+                &json!({"action":"add","text":"n".repeat(3000)})
+            )
+            .await
+            .unwrap_err()
+            .code,
+        4221
+    );
+    assert_eq!(
+        common::rows(
+            &db::open(home.path()).unwrap(),
+            "SELECT action FROM memory_proposals",
+            &[],
+        )
+        .unwrap()
+        .len(),
+        2
     );
     runtime.shutdown().await;
 }

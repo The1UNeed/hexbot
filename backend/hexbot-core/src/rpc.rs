@@ -51,6 +51,7 @@ pub fn call(store: &MemoryStore, caller: &str, method: &str, params: &Value) -> 
             caller,
             text(params, "bot", true)?,
             parse_note_date(text(params, "date", true)?)?,
+            params["expected"].as_str(),
         ),
         _ => Err(Error::new(-32601, format!("unknown method: {method}"))),
     }

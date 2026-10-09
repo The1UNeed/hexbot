@@ -2704,7 +2704,11 @@ impl Runtime {
                                 }
                                 _ => text.to_owned(),
                             };
-                            memory.check_bot_fits(&bot_owner, &s.bot, &applied)?;
+                            if action == "note" {
+                                crate::memory::check_note_fits(&applied)?;
+                            } else {
+                                memory.check_bot_fits(&bot_owner, &s.bot, &applied)?;
+                            }
                             kept.insert(key.to_owned(), json!(text));
                         }
                     }
