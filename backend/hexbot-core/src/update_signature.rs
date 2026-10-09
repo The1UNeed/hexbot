@@ -12,34 +12,45 @@ const RELEASE_KEYS: &str = include_str!("../../../packaging/update-signing-key.p
 /// their own manifests. Its seed is public (SHA-256 of "hexbot update signing
 /// test key"); release builds never trust it.
 pub const TEST_KEY: &str = "yWrCR+4HB5t9ZHKtbMZ4CTVA5JT9/lBdRcXV2/p79Fg=";
-pub const INVALID: &str = "The update is not signed by the Hexbot release key. Nothing was installed.";
-/// Signatures are tiny; anything bigger is not one.
+pub const INVALID: &str =
+    "The update is not signed by the Hexbot release key. Nothing was installed.";
+/// A `.sig` file holds one signature per line, one per key the release was
+/// signed with; a few lines at most, so anything bigger is not one.
 pub const SIGNATURE_LIMIT: usize = 1024;
 
-/// True when `signature` (base64 of a 64-byte Ed25519 signature, as published in
-/// a `.sig` file) signs exactly `manifest` with a trusted key.
+/// True when a line of `signature` (a `.sig` file: one base64 64-byte Ed25519
+/// signature per line, one per signing key) signs exactly `manifest` with a
+/// trusted key. Extra lines from keys this build does not know are ignored, so
+/// a release signed with the old and the new key verifies on both sides of a
+/// key change.
 pub fn verify(manifest: &[u8], signature: &[u8]) -> bool {
-    let Some(signature) = std::str::from_utf8(signature)
-        .ok()
-        .and_then(|text| STANDARD.decode(text.trim()).ok())
-    else {
+    let Ok(text) = std::str::from_utf8(signature) else {
         return false;
     };
-    let mut keys: Vec<&str> = RELEASE_KEYS.lines().map(str::trim).collect();
+    let mut keys: Vec<Vec<u8>> = RELEASE_KEYS
+        .lines()
+        .filter_map(|key| STANDARD.decode(key.trim()).ok())
+        .collect();
     if cfg!(debug_assertions) {
-        keys.push(TEST_KEY);
+        keys.extend(STANDARD.decode(TEST_KEY).ok());
     }
-    keys.into_iter()
-        .filter_map(|key| STANDARD.decode(key).ok())
-        .any(|key| {
-            ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
-                .verify(manifest, &signature)
-                .is_ok()
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| STANDARD.decode(line).ok())
+        .any(|signature| {
+            keys.iter().any(|key| {
+                ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
+                    .verify(manifest, &signature)
+                    .is_ok()
+            })
         })
 }
 
 /// Signs `manifest` with the public test key, as the release workflow signs with
-/// the real one. For tests and the fake update server only.
+/// the real one. For tests and the fake update server only; release builds do
+/// not carry it.
+#[cfg(any(test, debug_assertions))]
 #[doc(hidden)]
 pub fn test_signature(manifest: &[u8]) -> String {
     use sha2::{Digest, Sha256};
@@ -60,11 +71,45 @@ mod tests {
         assert!(verify(manifest, format!("{signature}\n").as_bytes()));
         assert!(!verify(br#"{"version":"1.2.4"}"#, signature.as_bytes()));
         assert!(!verify(manifest, b""));
+        assert!(!verify(manifest, b"\n\n"));
         assert!(!verify(manifest, b"not base64"));
         let other = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[7; 32]).unwrap();
-        assert!(!verify(manifest, STANDARD.encode(other.sign(manifest)).as_bytes()));
+        assert!(!verify(
+            manifest,
+            STANDARD.encode(other.sign(manifest)).as_bytes()
+        ));
         for key in RELEASE_KEYS.lines() {
             assert_eq!(STANDARD.decode(key.trim()).unwrap().len(), 32);
         }
+    }
+
+    /// While a key is replaced, releases carry one signature per key; a build
+    /// that knows either key accepts the file, and one that knows neither does not.
+    #[test]
+    fn any_line_from_a_trusted_key_verifies() {
+        let manifest = br#"{"version":"1.2.3"}"#;
+        let trusted = test_signature(manifest);
+        let other = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[7; 32]).unwrap();
+        let foreign = STANDARD.encode(other.sign(manifest));
+        assert!(verify(
+            manifest,
+            format!("{foreign}\n{trusted}\n").as_bytes()
+        ));
+        assert!(verify(
+            manifest,
+            format!("{trusted}\r\n{foreign}\r\n").as_bytes()
+        ));
+        assert!(verify(manifest, format!("\n  {trusted}  \n\n").as_bytes()));
+        assert!(!verify(
+            manifest,
+            format!("{foreign}\n{foreign}\n").as_bytes()
+        ));
+        // A trusted signature of other bytes does not vouch for this manifest.
+        let stale = test_signature(br#"{"version":"1.2.2"}"#);
+        assert!(!verify(
+            manifest,
+            format!("{stale}\n{foreign}\n").as_bytes()
+        ));
+        assert!(!verify(manifest, format!("{trusted}{foreign}").as_bytes()));
     }
 }

@@ -570,6 +570,18 @@ fn same_origin(base: &str, target: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Resolve signed artifact paths against this daemon's update server.
+fn artifact_url(base: &str, location: &str) -> Result<Url> {
+    let root = service_url(&format!("{}/", base.trim_end_matches('/')))?;
+    if location.trim().is_empty() {
+        return Err(Error::new(5243, "invalid native update URL"));
+    }
+    let url = root
+        .join(location.trim())
+        .map_err(|_| Error::new(5243, "invalid native update URL"))?;
+    same_origin(base, url.as_str())?;
+    Ok(url)
+}
 async fn object(
     method: Method,
     url: &str,
@@ -1953,8 +1965,7 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
         .map(|executable| native_manifest(&executable, &crate::version()))
         .unwrap_or_else(|_| json!({}));
     require_newer_native_build(&manifest, &current)?;
-    let url = common::required(&manifest, "url")?;
-    same_origin(&base, url)?;
+    let url = artifact_url(&base, common::required(&manifest, "url")?)?;
     let digest = common::required(&manifest, "sha256")?;
     if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::new(5243, "invalid native update checksum"));
@@ -1963,7 +1974,7 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
     let staging = tempfile::tempdir_in(&native)?;
     let tmp = tempfile::NamedTempFile::new_in(&native)?;
     update_state(service, "downloading", None, None).await;
-    download(url, tmp.path(), 1024 * 1024 * 1024, false).await?;
+    download(url.as_str(), tmp.path(), 1024 * 1024 * 1024, false).await?;
     if file_sha256(tmp.path())? != digest.to_ascii_lowercase() {
         return Err(Error::new(5243, "native update checksum mismatch"));
     }
@@ -2339,5 +2350,25 @@ mod native_version_tests {
         }
         assert!(require_newer_native_build(&json!({"builtAt": 1}), &json!({})).is_ok());
         assert!(require_newer_native_build(&json!({}), &json!({"builtAt": 1})).is_err());
+    }
+
+    #[test]
+    fn native_archives_are_fetched_from_the_configured_update_server() {
+        let path = "daemon/native/1.2.3/linux-x86_64/bundle.tar.gz";
+        for base in ["https://mirror.example", "https://mirror.example/hexbot/"] {
+            let expected = format!("{}/{path}", base.trim_end_matches('/'));
+            assert_eq!(artifact_url(base, path).unwrap().as_str(), expected);
+            assert_eq!(artifact_url(base, &expected).unwrap().as_str(), expected);
+            for location in [
+                "",
+                "https://attacker.example/binary",
+                "//attacker.example/binary",
+                "http://mirror.example/binary",
+                "https://user@mirror.example/binary",
+            ] {
+                assert!(artifact_url(base, location).is_err());
+            }
+        }
+        assert!(artifact_url("http://mirror.example", "binary").is_err());
     }
 }

@@ -32,7 +32,7 @@ class NativeTransitionTests(unittest.TestCase):
         self.version = "1.2.3"
         self.manifest = {
             "version": self.version, "target": "linux-x86_64", "format": "tar.gz",
-            "entrypoint": "hexbot", "url": "https://updates.example/bundle.tar.gz",
+            "entrypoint": "hexbot", "url": "bundle.tar.gz",
         }
         self.addCleanup(patch.stopall)
         patch.dict(os.environ, {"HEXBOT_HOME": str(self.home), "HEXBOT_UPDATE_URL": "https://updates.example"}).start()
@@ -61,7 +61,7 @@ class NativeTransitionTests(unittest.TestCase):
             self.assertEqual(limit, 1024)
             destination.write_text(update_signature.sign(SEED, json.dumps(self.manifest).encode())[1])
         else:
-            self.assertEqual(url, self.manifest["url"])
+            self.assertEqual(url, "https://updates.example/bundle.tar.gz")
             shutil.copyfile(self.archive, destination)
 
     def install(self):
@@ -172,6 +172,32 @@ class NativeTransitionTests(unittest.TestCase):
                 transition.install(self.home, self.version, download=download, keys=keys)
             self.assertEqual(launcher.read_text(), "#!/bin/sh\necho old\n")
             self.assertFalse((self.home / "runtime/native-current.json").exists())
+
+    def test_two_signature_lines_accept_either_trusted_key(self):
+        manifest = json.dumps(self.manifest).encode()
+        old, old_sig = update_signature.sign(SEED, manifest)
+        new, new_sig = update_signature.sign(b"\x07" * 32, manifest)
+        for text in (f"{old_sig}\n{new_sig}\n", f"\n{new_sig}\r\n{old_sig}\r\n"):
+            for key in (old, new):
+                self.assertTrue(update_signature.verify(manifest, text.encode(), (key,)))
+            self.assertFalse(update_signature.verify(manifest + b" ", text.encode(), (old, new)))
+            self.assertFalse(update_signature.verify(manifest, text.encode()))
+        self.assertFalse(update_signature.verify(manifest, (old_sig + new_sig).encode(), (old, new)))
+
+        def download(url, destination, limit):
+            self.download(url, destination, limit)
+            if url.endswith(".sig"):
+                destination.write_text(f"{new_sig}\n{old_sig}\n")
+        transition.install(self.home, self.version, download=download, keys=(old,))
+
+    def test_relative_archive_paths_work_under_a_mirror_prefix(self):
+        requested = []
+        def download(url, destination, limit):
+            requested.append(url)
+            self.download(url.replace("https://mirror.example/hexbot", "https://updates.example"), destination, limit)
+        with patch.dict(os.environ, {"HEXBOT_UPDATE_URL": "https://mirror.example/hexbot/"}):
+            transition.install(self.home, self.version, download=download, keys=(TEST_KEY,))
+        self.assertEqual(requested[-1], "https://mirror.example/hexbot/bundle.tar.gz")
 
     def test_unsafe_archives_are_rejected_before_activation(self):
         for entry in [

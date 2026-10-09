@@ -95,7 +95,7 @@ export async function makeInstallManifest(root, { channel, version, baseUrl = 'h
       const path = `${directory}/${file.url}`
       const size = Number(file.size)
       await verify(path, file.sha512, 'sha512', 'base64', size)
-      options[edition] = { url: url(path), sha512: file.sha512, size, format,
+      options[edition] = { url: path, sha512: file.sha512, size, format,
         productName: productName(channel, version, edition === 'client'), appId: appId(channel, edition === 'client') }
     }
     const native = `daemon/native/${version}/${target}`
@@ -104,10 +104,10 @@ export async function makeInstallManifest(root, { channel, version, baseUrl = 'h
       const path = `${native}/hexbot-native-${version}-${target}.tar.gz`
       if (metadata.version !== version || metadata.target !== target || metadata.format !== 'tar.gz')
         throw new Error(`Invalid native manifest: ${native}/manifest.json`)
-      if (new URL(metadata.url).pathname !== new URL(path, base).pathname) throw new Error(`Invalid native archive URL: ${metadata.url}`)
+      if (new URL(metadata.url, base).pathname !== new URL(path, base).pathname) throw new Error(`Invalid native archive URL: ${metadata.url}`)
       await verify(path, metadata.sha256, 'sha256', 'hex', metadata.size)
-      options.headless = { url: url(path), sha256: metadata.sha256, size: metadata.size,
-        format: 'tar.gz', manifest: url(`${native}/manifest.json`) }
+      options.headless = { url: path, sha256: metadata.sha256, size: metadata.size,
+        format: 'tar.gz', manifest: `${native}/manifest.json` }
     }
     const appName = os === 'mac' ? `mac-${arch}.dmg` : 'linux-x86_64.AppImage'
     for (const [option, filename] of [
@@ -116,8 +116,8 @@ export async function makeInstallManifest(root, { channel, version, baseUrl = 'h
     ]) {
       const path = `install/${version}/${filename}`
       if (!(await optional(path))) continue
-      options[option] = { url: url(path), sha256: await digest(join(root, path), 'sha256', 'hex'), size: (await stat(join(root, path))).size }
-      if (option === 'installer') lines.push(`${target} ${options[option].sha256} ${options[option].url}`)
+      options[option] = { url: path, sha256: await digest(join(root, path), 'sha256', 'hex'), size: (await stat(join(root, path))).size }
+      if (option === 'installer') lines.push(`${target} ${options[option].sha256} ${url(path)}`)
     }
     if (Object.keys(options).length) manifest.targets[target] = options
   }

@@ -27,9 +27,13 @@ export const testPublicKey = () => createPublicKey(testKey()).export({ type: 'sp
 
 export const signature = (key, bytes) => sign(null, bytes, key).toString('base64')
 export function verifies(keys, bytes, text) {
-  return [keys].flat().some(key => {
-    try { return verify(null, bytes, publicKey(key), Buffer.from(String(text).trim(), 'base64')) }
-    catch { return false }
+  return String(text).split(/\r?\n/).map(line => line.trim()).filter(Boolean).some(line => {
+    // Do not let Node's permissive base64 decoder ignore trailing signatures.
+    if (!/^[A-Za-z0-9+/]{86}==$/.test(line)) return false
+    return [keys].flat().some(key => {
+      try { return verify(null, bytes, publicKey(key), Buffer.from(line, 'base64')) }
+      catch { return false }
+    })
   })
 }
 
@@ -54,9 +58,10 @@ export function signUpdates(root, { channel, version, key, expected = releaseKey
   }
   for (const [manifest, destination] of manifests) {
     const bytes = readFileSync(manifest)
-    const text = signature(key, bytes)
+    const signatures = [key].flat().map(key => signature(key, bytes))
+    const text = signatures.join('\n')
     // A secret that does not match the committed public key fails here, before upload.
-    if (!verifies(expected, bytes, text)) throw new Error('HEXBOT_UPDATE_SIGNING_KEY does not match packaging/update-signing-key.pub')
+    if (!signatures.every(line => verifies(expected, bytes, line))) throw new Error('HEXBOT_UPDATE_SIGNING_KEY does not match packaging/update-signing-key.pub')
     mkdirSync(join(destination, '..'), { recursive: true })
     writeFileSync(destination, `${text}\n`)
   }
@@ -78,7 +83,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   if (command === 'sign' && path && rest.includes('--channel') && rest.includes('--version')) {
     const pem = process.env.HEXBOT_UPDATE_SIGNING_KEY
     if (!pem) throw new Error('HEXBOT_UPDATE_SIGNING_KEY is not set. See docs/release.md, "Update signing".')
-    for (const file of signUpdates(resolve(path), { channel: option('--channel'), version: option('--version'), key: createPrivateKey(pem) })) console.log(`Signed ${file}`)
+    const keys = [pem, process.env.HEXBOT_UPDATE_SIGNING_KEY_NEXT].filter(Boolean).map(pem => createPrivateKey(pem))
+    for (const file of signUpdates(resolve(path), { channel: option('--channel'), version: option('--version'), key: keys })) console.log(`Signed ${file}`)
   } else if (command === 'generate' && path) {
     generate(resolve(path))
     console.log(`Wrote ${resolve(path)} and added its public key to ${PUBLIC_KEY}. See docs/release.md, "Update signing".`)

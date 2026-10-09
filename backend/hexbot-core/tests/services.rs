@@ -454,7 +454,9 @@ async fn native_update_child() {
     assert!(!home.path().join("runtime/native-current.json").exists());
     let binary = b"#!/bin/sh\nprintf '9.8.7\\n'\n";
     *mock.data.binary.lock().await = binary.to_vec();
-    *mock.data.manifest.lock().await = json!({"version":"9.8.7","builtAt":1,"target":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH),"url":format!("{}/binary",mock.base),"sha256":format!("{:x}",Sha256::digest(binary))});
+    // The manifest names the archive as published; the daemon downloads that
+    // path from its own update server (here the mock), so a mirror works.
+    *mock.data.manifest.lock().await = json!({"version":"9.8.7","builtAt":1,"target":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH),"url":"binary","sha256":format!("{:x}",Sha256::digest(binary))});
     // Whoever controls the update origin cannot publish without the release key.
     *mock.data.unsigned.lock().await = true;
     services::call(

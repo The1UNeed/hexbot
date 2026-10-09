@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createNativeArchive, updateTarget } from './native-runtime.mjs'
 
-export async function makeNativeUpdate(bundle, output, baseUrl = 'https://updates.hexbot.app') {
+export async function makeNativeUpdate(bundle, output) {
   const metadata = JSON.parse(await readFile(join(bundle, 'manifest.json'), 'utf8'))
   if (!/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(metadata.version)) throw new Error('Invalid runtime version')
   const target = updateTarget(metadata.target)
@@ -13,7 +13,7 @@ export async function makeNativeUpdate(bundle, output, baseUrl = 'https://update
   await mkdir(directory, { recursive: true })
   const filename = `hexbot-native-${metadata.version}-${target}.tar.gz`
   const manifest = await createNativeArchive(bundle, join(directory, filename))
-  manifest.url = `${baseUrl.replace(/\/$/, '')}/${[...path, filename].join('/')}`
+  manifest.url = [...path, filename].join('/')
   await writeFile(join(directory, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
   return { directory, filename, manifest }
 }

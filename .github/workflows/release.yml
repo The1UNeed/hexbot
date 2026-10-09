@@ -17,7 +17,10 @@
 # with every package. Signing and notarization
 # happen when the Apple secrets are present and are skipped otherwise.
 #
-# Secrets (all optional; docs/release.md, "One-time setup"):
+# Secrets (docs/release.md, "One-time setup"):
+#   HEXBOT_UPDATE_SIGNING_KEY                               required, Ed25519 PEM
+#   HEXBOT_UPDATE_SIGNING_KEY_NEXT                          optional, rotation key
+# Other secrets are optional:
 #   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY   update server
 #   CSC_LINK, CSC_KEY_PASSWORD                              Developer ID signing
 #   APPLE_API_KEY, APPLE_API_KEY_ID, APPLE_API_ISSUER       notarization
@@ -67,6 +70,14 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 26
+      - name: Require the update signing key
+        env:
+          HEXBOT_UPDATE_SIGNING_KEY: ${{ secrets.HEXBOT_UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$HEXBOT_UPDATE_SIGNING_KEY" ]; then
+            echo '::error::HEXBOT_UPDATE_SIGNING_KEY is not set. See docs/release.md, "Update signing".'
+            exit 1
+          fi
       - id: resolve
         name: Resolve the channel and version
         env:
@@ -461,6 +472,7 @@ jobs:
       - name: Sign the update manifests
         env:
           HEXBOT_UPDATE_SIGNING_KEY: ${{ secrets.HEXBOT_UPDATE_SIGNING_KEY }}
+          HEXBOT_UPDATE_SIGNING_KEY_NEXT: ${{ secrets.HEXBOT_UPDATE_SIGNING_KEY_NEXT }}
         run: node scripts/desktop/update-signing.mjs sign dist/updates --channel "$CHANNEL" --version "$VERSION"
       - name: Publish the update feed to updates.hexbot.app
         if: env.HAS_R2 == 'true'
