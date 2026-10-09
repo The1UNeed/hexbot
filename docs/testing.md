@@ -14,7 +14,18 @@
   sandbox; isolation tests use `sandbox-exec` on macOS and working bubblewrap
   on Linux. CI installs bubblewrap with the AppArmor profile from the install docs.
   macOS tests check that Auto and Manual deny IPv4 and IPv6 TCP/UDP listeners,
-  while approved full-access commands can still listen.
+  while approved full-access commands can still listen. Dummy secret/browser
+  fixtures exercise rename, unlink and append denial, ancestor renames, linked
+  `gitdir`/`commondir` targets, bare `*.git` repositories, and ordinary writes.
+  Rust/TypeScript parity checks compare both profiles and Linux argument lists.
+  Linux argument tests run on either platform and cover Manual read-only roots,
+  secret symlinks, breadth-first scan order and budget refusal. Linux execution
+  runs in Ubuntu CI; macOS cannot validate the bubblewrap kernel boundary.
+  Scheduled-script tests verify that Manual cannot write artifacts. Run
+  `cargo fmt --manifest-path backend/hexbot-core/Cargo.toml --check` too.
+  See [sandbox behavior and limits](../SECURITY.md#tool-isolation): Linux protects
+  only existing repositories within the bounded scan; repositories created
+  during a command remain unprotected. macOS filename rules cover new ones.
 - Native browser end to end: `node scripts/dev/native-ui-smoke.mjs` after building
   Rust and the web bundle and installing the locked Pi dependency and Chromium.
   Uses a local streaming model with actual Pi; no provider credentials needed.

@@ -59,7 +59,13 @@ The app follows the track it was installed from; switch in Settings, Updates.
 - **Tools with approvals.** Bots can run commands, browse, and edit files.
   In **Auto mode**, the default, they work freely inside the workspace
   behind an OS sandbox and ask before anything outside it. Manual asks
-  before every change; Bypass asks nothing.
+  before every change; Bypass asks nothing. Git metadata is read-only and
+  project secrets and browser stores are hidden within the platform limits in
+  [SECURITY.md](SECURITY.md#tool-isolation). Linux scans existing repositories
+  through three nested folders, skips dependency/runtime folders, and requires
+  an approved full-access retry if its 1,000-directory budget is exceeded.
+  Repositories created during a command are not protected on Linux. macOS
+  filename rules also cover new repositories.
 - **Your hardware.** The daemon runs where you install it. Pair devices over
   LAN or Tailscale, revoke them from settings, and delete conversations
   together with the memory they produced.

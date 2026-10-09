@@ -3,7 +3,7 @@
 // a parity test there compares the two outputs.
 import {readFileSync, readdirSync, realpathSync, existsSync, statSync} from 'node:fs';
 import {join, relative, resolve, dirname, basename} from 'node:path';
-import {homedir} from 'node:os';
+import {homedir, tmpdir} from 'node:os';
 import {spawnSync} from 'node:child_process';
 export const credentialPolicy = JSON.parse(readFileSync(new URL('./credential-policy.json', import.meta.url), 'utf8'));
 const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
@@ -82,12 +82,16 @@ function deniedWrites(): string[] {
 // Keychains and browser profiles (cookies, saved passwords). Unreadable in
 // Manual and Auto and to the file tools; an approved full_access command may
 // read them.
+const readCache = new Map<string, {at: number, paths: string[]}>();
 export function readDenied(): string[] {
+  const home = homedir(), cached = readCache.get(home);
+  if (cached && Date.now() - cached.at < 5000) return cached.paths;
   const denied: string[] = [];
   for (const entry of credentialPolicy.readDeny as string[]) {
     const root = policyRoot(entry);
     for (const path of [root, realRoot(root)]) if (!denied.includes(path)) denied.push(path);
   }
+  readCache.set(home, {at: Date.now(), paths: denied});
   return denied;
 }
 // Inside the workspace sandbox git's own folders are read-only, as in Codex: a
@@ -96,22 +100,56 @@ export function readDenied(): string[] {
 // these names wherever they appear, including ones created later; bubblewrap
 // cannot match names, so on Linux the workspace is searched when a command
 // starts, a few levels deep.
-const GIT_DIR = '(^|/)' + regexEscape('.git') + '(/|$)';
+const GIT_DIR = regexEscape('.git') + '(/|$)';
 const WORKSPACE_DEPTH = 3, WORKSPACE_DIRS = 1000;
-export function workspaceProtected(roots: string[]): {git: string[], secrets: string[]} {
-  const git: string[] = [], secrets: string[] = [];
-  let budget = WORKSPACE_DIRS;
-  const walk = (dir: string, depth: number) => {
-    if (budget-- <= 0) return;
-    for (const entry of entries(dir).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
-      const path = join(dir, entry.name);
-      if (fold(entry.name) === '.git') git.push(path);
-      else if (entry.isFile() && secretFileName(entry.name)) secrets.push(path);
-      else if (entry.isDirectory() && depth < WORKSPACE_DEPTH && !credentialPolicy.skip.includes(fold(entry.name))) walk(path, depth + 1);
+export const SCAN_REASON = 'The workspace safety scan exceeded its directory budget. This command needs approval: retry with full_access and a reason.';
+export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): {git: string[], secrets: string[]} {
+  const git = new Set<string>(), secrets = new Set<string>();
+  const add = (set: Set<string>, path: string) => { set.add(path); set.add(realRoot(path)); };
+  const pointerTarget = (base: string, value: string) => realRoot(value.startsWith('/') ? value : base + '/' + value);
+  const metadata = (path: string) => {
+    add(git, path);
+    if (statSync(path).isFile()) {
+      const pointer = readFileSync(path, 'utf8').match(/^gitdir:\s*(.+)\s*$/m);
+      if (!pointer) throw new Error('Invalid .git file; use an approved full_access command.');
+      const dir = pointerTarget(dirname(path), pointer[1].trim());
+      add(git, dir);
+      const common = join(dir, 'commondir');
+      if (existsSync(common)) add(git, pointerTarget(dir, readFileSync(common, 'utf8').trim()));
     }
   };
-  for (const root of roots) if (root !== '/tmp') walk(root, 0);
-  return {git, secrets};
+  const queue: {dir: string, depth: number}[] = [];
+  const seen = new Set<string>();
+  for (const root of roots) {
+    if (root === '/tmp' || root === tmpdir()) continue;
+    const dir = realRoot(root);
+    if (fold(basename(dir)).endsWith('.git')) metadata(dir);
+    queue.push({dir, depth: 0});
+    // A section can use a subdirectory of a linked worktree as its cwd.
+    for (let parent = dir; dirname(parent) !== parent; parent = dirname(parent)) {
+      const marker = join(parent, '.git');
+      if (existsSync(marker)) metadata(marker);
+    }
+  }
+  for (let i = 0; i < queue.length; i++) {
+    const {dir, depth} = queue[i];
+    if (seen.has(dir)) continue;
+    if (seen.size >= limit) throw new Error(SCAN_REASON);
+    seen.add(dir);
+    // Record every entry before visiting any child, even at the budget boundary.
+    for (const entry of entries(dir).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+      const path = join(dir, entry.name);
+      if (fold(entry.name) === '.git' || (fold(entry.name).endsWith('.git') && existsSync(path) && statSync(path).isDirectory())) metadata(path);
+      else if (secretFileName(entry.name) && !statSync(path).isDirectory()) add(secrets, path);
+      else if (entry.isDirectory() && depth < WORKSPACE_DEPTH && !credentialPolicy.skip.includes(fold(entry.name))) queue.push({dir: path, depth: depth + 1});
+    }
+  }
+  return {git: [...git], secrets: [...secrets]};
+}
+function pathAncestors(paths: string[]): string[] {
+  const ancestors = new Set<string>();
+  for (const path of paths) for (let dir = dirname(path); dirname(dir) !== dir; dir = dirname(dir)) ancestors.add(dir);
+  return [...ancestors];
 }
 // Renaming an ancestor would carry a nested store (~/.config/gh) out from under
 // its rule, so the directories between the home and a store cannot be renamed
@@ -150,7 +188,7 @@ function confined(workspace: string[]) {
   }
   return {writable, config};
 }
-export function sandboxProfile(home: string, outputs: string[] = [], workspace?: string[]): string {
+export function sandboxProfile(home: string, outputs: string[] = [], workspace?: string[], searchRoots: string[] = workspace ?? []): string {
   const {roots, paths, writable, denied} = layout(home, outputs);
   const patterns = roots.flatMap(root => ['^' + regexEscape(root) + '/(.*/)?' + credentialPolicy.basename.slice(1), '^' + regexEscape(root) + '/' + credentialPolicy.home.slice(1)]);
   const ssh = join(homedir(), '.ssh');
@@ -164,18 +202,26 @@ export function sandboxProfile(home: string, outputs: string[] = [], workspace?:
   if (workspace) {
     const {writable: open, config} = confined(workspace);
     const inside = [...DEVICES.map(p => `(literal ${JSON.stringify(p)})`), ...['/dev/fd', ...open].map(p => `(subpath ${JSON.stringify(p)})`)].join(' ');
-    const browsers = readDenied().map(p => `(literal ${JSON.stringify(p)}) (subpath ${JSON.stringify(p)}) (regex ${JSON.stringify(sandboxRegex("^" + regexEscape(p) + "(/|$)"))})`).join(' ');
+    const protectedPaths = workspaceProtected(searchRoots);
+    const browserRoots = readDenied();
+    const secretPaths = protectedPaths.secrets.map(p => `(subpath ${JSON.stringify(p)})`).join(' ');
+    const locked = protectedPaths.git.map(p => `(subpath ${JSON.stringify(p)})`).join(' ');
+    const parents = pathAncestors([...browserRoots, ...protectedPaths.git, ...protectedPaths.secrets]).map(p => `(literal ${JSON.stringify(p)})`).join(' ');
+    const browsers = browserRoots.map(p => `(literal ${JSON.stringify(p)}) (subpath ${JSON.stringify(p)}) (regex ${JSON.stringify(sandboxRegex("^" + regexEscape(p) + "(/|$)"))})`).join(' ');
     const secret = `(require-all (vnode-type REGULAR-FILE) (regex ${JSON.stringify(sandboxRegex('/' + credentialPolicy.secretFile.slice(1)))}) (require-not (regex ${JSON.stringify(sandboxRegex(credentialPolicy.secretFileExample))})))`;
-    confine = `(deny network-inbound)(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-read* ${stores} ${browsers} ${secret})(deny file-write* (require-not (require-any ${inside})))(deny file-write* ${config.map(p => `(literal ${JSON.stringify(p)}) (subpath ${JSON.stringify(p)})`).join(' ')})(deny file-write* (regex ${JSON.stringify(sandboxRegex(GIT_DIR))}))`;
+    confine = `(deny network-inbound)(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-read* ${stores} ${browsers} ${secret} ${secretPaths})(deny file-write* (require-not (require-any ${inside})))(deny file-write* ${config.map(p => `(literal ${JSON.stringify(p)}) (subpath ${JSON.stringify(p)})`).join(' ')})(deny file-write* ${browsers} ${secret} ${secretPaths} ${locked})(deny file-write-unlink ${parents})(deny file-write* (regex ${JSON.stringify(sandboxRegex(GIT_DIR))}))`;
   }
   // Apple Events would let a command drive Finder or another app outside the sandbox.
   return `(version 1)(allow default)(deny process-exec (literal "/usr/bin/open") (literal "/bin/launchctl") (literal "/usr/bin/osascript"))(deny appleevent-send)(deny file-write* (require-all ${insideHome} ${exceptWritable}))(deny file-write* ${stores})${ancestors ? `(deny file-write-unlink ${ancestors})` : ''}${confine}(deny file-read* file-write* ${filters.join(' ')})`;
 }
-export function bwrapArguments(home: string, outputs: string[] = [], workspace?: string[]): string[] {
+export function bwrapArguments(home: string, outputs: string[] = [], workspace?: string[], searchRoots: string[] = workspace ?? []): string[] {
   const {roots, paths, writable, denied} = layout(home, outputs);
   const confine = workspace && confined(workspace);
   const args = confine ? ['--die-with-parent', '--new-session', '--unshare-pid', '--unshare-net', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/run', '--tmpfs', '/tmp'] : ['--die-with-parent', '--unshare-pid', '--bind', '/', '/', '--proc', '/proc'];
   if (confine) for (const path of confine.writable) if (path !== '/tmp') args.push('--bind', path, path);
+  if (confine) for (const path of [...new Set(searchRoots.filter(existsSync).map(p => realpathSync(p)))]) {
+    if (!confine.writable.some(root => path === root || path.startsWith(root + '/'))) args.push('--ro-bind', path, path);
+  }
   for (const root of roots) args.push('--ro-bind', root, root);
   for (const path of writable) if (!confine || confine.writable.some(root => path === root || path.startsWith(root + '/'))) args.push('--bind', path, path);
   // A store that does not exist yet cannot be bound (bubblewrap would create the
@@ -184,8 +230,8 @@ export function bwrapArguments(home: string, outputs: string[] = [], workspace?:
   for (const path of confine ? confine.config : []) if (existsSync(path)) args.push('--ro-bind', path, path);
   if (confine) {
     for (const path of readDenied()) if (existsSync(path)) args.push(...(statSync(path).isDirectory() ? ['--tmpfs', path, '--remount-ro', path] : ['--ro-bind', '/dev/null', path]));
-    const {git, secrets} = workspaceProtected(confine.writable);
-    for (const path of git) args.push('--ro-bind', path, path);
+    const {git, secrets} = workspaceProtected(searchRoots);
+    for (const path of git.filter(existsSync)) args.push('--ro-bind', path, path);
     for (const path of secrets) args.push('--ro-bind', '/dev/null', path);
   }
   for (const path of paths) if (existsSync(path)) args.push(...(statSync(path).isDirectory() ? ['--tmpfs', path, '--remount-ro', path] : ['--ro-bind', '/dev/null', path]));
@@ -199,14 +245,14 @@ export function processLimit(): number | undefined {
   const listed = spawnSync('ps', [...process.platform === 'linux' ? ['-L'] : [], '-U', String(process.getuid?.() ?? ''), '-o', 'pid='], {encoding: 'utf8', timeout: 5000});
   return listed.status === 0 ? listed.stdout.split('\n').filter(Boolean).length + PROCESS_HEADROOM : undefined;
 }
-export function isolatedCommand(command: string, home: string, outputs: string[] = [], workspace?: string[]): string {
+export function isolatedCommand(command: string, home: string, outputs: string[] = [], workspace?: string[], searchRoots: string[] = workspace ?? []): string {
   // A command that cannot be capped does not run.
   if (workspace) {
     const limit = processLimit();
     command = limit ? `ulimit -u ${limit} || exit 126\n${command}` : "echo 'Hexbot could not cap processes for the sandbox.' >&2; exit 126";
   }
-  if (process.platform === 'darwin') return `/usr/bin/sandbox-exec -p ${quote(sandboxProfile(home, outputs, workspace))} /bin/bash --noprofile --norc -c ${quote(command)}`;
+  if (process.platform === 'darwin') return `/usr/bin/sandbox-exec -p ${quote(sandboxProfile(home, outputs, workspace, searchRoots))} /bin/bash --noprofile --norc -c ${quote(command)}`;
   const executable = probeIsolation();
-  if (executable) return [executable, ...bwrapArguments(home, outputs, workspace), '--', '/bin/bash', '--noprofile', '--norc', '-c', command].map(quote).join(' ');
+  if (executable) return [executable, ...bwrapArguments(home, outputs, workspace, searchRoots), '--', '/bin/bash', '--noprofile', '--norc', '-c', command].map(quote).join(' ');
   return command;
 }
