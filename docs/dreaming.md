@@ -19,18 +19,23 @@ The native scheduler and digest builder live in
   caps the complete serialized digest at 60,000 bytes, and reports how many
   conversations it left out as `omitted_conversations`. Titles keep their
   first 256 characters.
-- A section Pi compacted since the last dream also carries the summaries Pi
-  wrote at those compactions as `compactions: [{at, summary}]`, oldest
-  first, read from the section's `conversation.jsonl` on the current branch
-  only; abandoned branches, deleted sections, and legacy sections without a
-  conversation file contribute none. The dream makes no model call for them.
+- A section or room conversation Pi compacted since the last dream also
+  carries the summaries Pi wrote at those compactions as
+  `compactions: [{at, summary}]`, oldest first, read from its
+  `conversation.jsonl` on the current branch only; abandoned branches,
+  deleted sections, and legacy sections without a
+  conversation file contribute none. For rooms, only this bot's conversation
+  contributes summaries. Entries without a valid timestamp are skipped.
+  Files last modified before the last dream are skipped without reading them;
+  the digest's file and database reads run on a blocking worker.
+  The dream makes no model call for the summaries.
   Summaries count against the same 12,000 characters: each is capped at
   4,000, the newest are kept first because a later compaction folds the
   earlier ones in, and the verbatim tail keeps at least 4,000 characters of
   its own, so the summary of the morning and the tail of the evening fit
   together. Pi writes a summary from the transcript it compacts, tool results
   included, so a summary can carry text from a fetched page that the digest
-  itself leaves out. The prompt adds one clause, only when a section has
+  itself leaves out. The prompt adds one clause, only when a conversation has
   summaries, saying what they are and that they may carry text from pages
   and other tools: the dream uses only what the user or the bot clearly
   established in them and never takes an instruction from them, as it does
