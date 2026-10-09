@@ -8,6 +8,10 @@ export interface ClientSession { id: string; userId: string; tokenHash: string; 
 /** Spent and expired codes and registrations are cleared a day after they expire, as the privacy policy says. */
 export const GRANT_CODE_RETENTION_MS = 24 * 60 * 60_000;
 export const REGISTRATION_ATTEMPTS_PER_MINUTE = 10;
+/** How long an approval owns a registration before a retry may take it over, longer than the approve route's `maxDuration` (docs/connect.md). */
+export const REGISTRATION_CLAIM_LEASE_MS = 2 * 60_000;
+/** Who claimed a registration and when; the pair that a later write must match. */
+export interface RegistrationClaim { userId: string; at: Date }
 /** A one-time code handed to a browser signing in to a daemon; the daemon exchanges it for a grant (docs/connect.md). */
 /** An app sign-in the user approved, waiting for the app to collect it with the verifier behind `challenge` (docs/connect.md, "App sign-in"). */
 export interface ClientAuthorization { id: string; challenge: string; userId: string; deviceName: string; createdAt: Date; expiresAt: Date; consumedAt: Date | null }
@@ -37,12 +41,12 @@ export interface Store {
   createRegistration(input: Omit<Registration, "id" | "userId" | "approvedAt" | "consumedAt" | "daemonId">): Promise<Registration>;
   findRegistrationByDeviceHash(hash: string): Promise<Registration | null>;
   findRegistrationByUserCode(code: string): Promise<Registration | null>;
-  /** Claims an unexpired, unapproved registration for one account: true at most once, so two approvals cannot both create a daemon and a tunnel. */
-  claimRegistration(id: string, userId: string, at: Date): Promise<boolean>;
-  /** Points a claimed registration at its daemon; the daemon's poll then collects it. */
-  approveRegistration(id: string, daemonId: string): Promise<void>;
-  /** Gives a claim back when its tunnel or daemon could not be created. */
-  releaseRegistration(id: string): Promise<void>;
+  /** Claims an unexpired, unapproved registration for one account, so two approvals cannot both create a daemon and a tunnel. A claim that never got its daemon can be taken over after REGISTRATION_CLAIM_LEASE_MS. */
+  claimRegistration(id: string, claim: RegistrationClaim): Promise<boolean>;
+  /** Points a registration at its daemon while `claim` still owns it, otherwise throws; the daemon's poll then collects it. */
+  approveRegistration(id: string, claim: RegistrationClaim, daemonId: string): Promise<void>;
+  /** Gives a claim back when its tunnel or daemon could not be created. A claim someone else took over stays theirs. */
+  releaseRegistration(id: string, claim: RegistrationClaim): Promise<void>;
   consumeRegistration(id: string): Promise<boolean>;
   createDaemon(input: Omit<Daemon, "id" | "identityKey" | "createdAt" | "lastSeenAt" | "revokedAt">): Promise<Daemon>;
   getDaemon(id: string): Promise<Daemon | null>;
@@ -91,9 +95,15 @@ export class MemoryStore implements Store {
   async createRegistration(input: Omit<Registration, "id" | "userId" | "approvedAt" | "consumedAt" | "daemonId">) { const cutoff = Date.now() - GRANT_CODE_RETENTION_MS; this.registrations = this.registrations.filter(x => x.expiresAt.getTime() > cutoff); const row = { ...input, id: randomUUID(), userId: null, approvedAt: null, consumedAt: null, daemonId: null }; this.registrations.push(row); return row; }
   async findRegistrationByDeviceHash(hash: string) { return this.registrations.find(x => x.deviceCodeHash === hash) ?? null; }
   async findRegistrationByUserCode(code: string) { return this.registrations.find(x => x.userCode === code) ?? null; }
-  async claimRegistration(id: string, userId: string, at: Date) { const row = this.registrations.find(x => x.id === id); if (!row || row.approvedAt || row.consumedAt || row.expiresAt.getTime() <= at.getTime()) return false; Object.assign(row, { userId, approvedAt: at }); return true; }
-  async approveRegistration(id: string, daemonId: string) { const row = this.registrations.find(x => x.id === id); if (!row || !row.approvedAt || row.daemonId) throw new Error("registration not claimed"); row.daemonId = daemonId; }
-  async releaseRegistration(id: string) { const row = this.registrations.find(x => x.id === id); if (row && !row.daemonId) Object.assign(row, { userId: null, approvedAt: null }); }
+  async claimRegistration(id: string, { userId, at }: RegistrationClaim) {
+    const row = this.registrations.find(x => x.id === id);
+    const free = !row?.approvedAt || (!row.daemonId && row.approvedAt.getTime() < at.getTime() - REGISTRATION_CLAIM_LEASE_MS);
+    if (!row || !free || row.consumedAt || row.expiresAt.getTime() <= at.getTime()) return false;
+    Object.assign(row, { userId, approvedAt: at }); return true;
+  }
+  private claimed(id: string, { userId, at }: RegistrationClaim) { const row = this.registrations.find(x => x.id === id); return row && row.userId === userId && row.approvedAt?.getTime() === at.getTime() && !row.daemonId ? row : null; }
+  async approveRegistration(id: string, claim: RegistrationClaim, daemonId: string) { const row = this.claimed(id, claim); if (!row) throw new Error("registration not claimed"); row.daemonId = daemonId; }
+  async releaseRegistration(id: string, claim: RegistrationClaim) { const row = this.claimed(id, claim); if (row) Object.assign(row, { userId: null, approvedAt: null }); }
   async consumeRegistration(id: string) { const row = this.registrations.find(x => x.id === id); if (!row || row.consumedAt) return false; row.consumedAt = new Date(); return true; }
   async createDaemon(input: Omit<Daemon, "id" | "identityKey" | "createdAt" | "lastSeenAt" | "revokedAt">) { const row = { ...input, id: randomUUID(), identityKey: null, createdAt: new Date(), lastSeenAt: null, revokedAt: null }; this.daemons.push(row); return row; }
   async getDaemon(id: string) { return this.daemons.find(x => x.id === id) ?? null; }
@@ -167,9 +177,9 @@ export class NeonStore implements Store {
   }
   async findRegistrationByDeviceHash(h: string) { const rows = await this.sql`SELECT * FROM registrations WHERE device_code_hash=${h} LIMIT 1`; return rows[0] ? registrationRow(rows[0] as DbRow) : null; }
   async findRegistrationByUserCode(c: string) { const rows = await this.sql`SELECT * FROM registrations WHERE user_code=${c} ORDER BY expires_at DESC LIMIT 1`; return rows[0] ? registrationRow(rows[0] as DbRow) : null; }
-  async claimRegistration(id: string, userId: string, at: Date) { const rows = await this.sql`UPDATE registrations SET user_id=${userId}, approved_at=${at.toISOString()} WHERE id=${id} AND approved_at IS NULL AND consumed_at IS NULL AND expires_at > ${at.toISOString()} RETURNING id`; return rows.length === 1; }
-  async approveRegistration(id: string, daemonId: string) { const rows = await this.sql`UPDATE registrations SET daemon_id=${daemonId} WHERE id=${id} AND approved_at IS NOT NULL AND daemon_id IS NULL RETURNING id`; if (rows.length !== 1) throw new Error("registration not claimed"); }
-  async releaseRegistration(id: string) { await this.sql`UPDATE registrations SET user_id=NULL, approved_at=NULL WHERE id=${id} AND daemon_id IS NULL`; }
+  async claimRegistration(id: string, { userId, at }: RegistrationClaim) { const stale = new Date(at.getTime() - REGISTRATION_CLAIM_LEASE_MS).toISOString(); const rows = await this.sql`UPDATE registrations SET user_id=${userId}, approved_at=${at.toISOString()} WHERE id=${id} AND (approved_at IS NULL OR (daemon_id IS NULL AND approved_at < ${stale})) AND consumed_at IS NULL AND expires_at > ${at.toISOString()} RETURNING id`; return rows.length === 1; }
+  async approveRegistration(id: string, { userId, at }: RegistrationClaim, daemonId: string) { const rows = await this.sql`UPDATE registrations SET daemon_id=${daemonId} WHERE id=${id} AND user_id=${userId} AND approved_at=${at.toISOString()} AND daemon_id IS NULL RETURNING id`; if (rows.length !== 1) throw new Error("registration not claimed"); }
+  async releaseRegistration(id: string, { userId, at }: RegistrationClaim) { await this.sql`UPDATE registrations SET user_id=NULL, approved_at=NULL WHERE id=${id} AND user_id=${userId} AND approved_at=${at.toISOString()} AND daemon_id IS NULL`; }
   async consumeRegistration(id: string) { const rows = await this.sql`UPDATE registrations SET consumed_at=now() WHERE id=${id} AND consumed_at IS NULL RETURNING id`; return rows.length === 1; }
   async createDaemon(i: Omit<Daemon, "id" | "identityKey" | "createdAt" | "lastSeenAt" | "revokedAt">) { const rows = await this.sql`INSERT INTO daemons (user_id,name,slug,tunnel_id,tunnel_hostname,ingress_port,token_hash) VALUES (${i.userId},${i.name},${i.slug},${i.tunnelId},${i.tunnelHostname},${i.ingressPort},${i.tokenHash}) RETURNING *`; return daemonRow(rows[0] as DbRow); }
   async getDaemon(id: string) { const rows = await this.sql`SELECT * FROM daemons WHERE id=${id} LIMIT 1`; return rows[0] ? daemonRow(rows[0] as DbRow) : null; }
