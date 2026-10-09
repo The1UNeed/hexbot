@@ -189,12 +189,15 @@ full the section's context is: Pi's own estimate of the tokens the next
 request will carry, the model's context window, and the point where Pi
 summarises older messages (the window minus the reserve the daemon wrote for
 that model in the bot's Pi `settings.json`, as that section's Pi process
-loaded it at start, and never below half the window; see
-`backend/hexbot-core/README.md`). `tokens` is null until the first reply and
-right after a compaction, until the next reply measures the compacted
-context; in the second case `recounting` is true, so a client keeps the meter
-in a neutral state instead of hiding it. `window` and `compact_at` are null
-when Pi has no model. `compacting` is true from a compaction's start until Pi
+loaded it at start; see `backend/hexbot-core/README.md`). Pi triggers when
+context tokens exceed `compact_at`. The threshold can be zero or negative if
+that process loaded a reserve at least as large as the model's window.
+`tokens` is null when Pi has no context estimate, or right after a summary
+until the next reply measures the context. An explicit null in Pi's context
+result sets `recounting` to true, so a client keeps the meter in a neutral
+state, including after process retirement or daemon restart. Missing context
+usage leaves `recounting` false. `window` and `compact_at` are null when Pi
+has no model. `compacting` is true from a compaction's start until Pi
 reports it done. `seq` grows with every report of the daemon; the daemon
 measures each report in its own task and drops one a later report has
 overtaken, and a client drops a report whose `seq` is below the one it holds.

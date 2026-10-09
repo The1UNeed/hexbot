@@ -79,9 +79,6 @@ struct Live {
     /// compaction point comes from here, not from a file a later section may
     /// have rewritten.
     compaction: Value,
-    /// Set once Pi has compacted this session, so a null token count afterwards
-    /// is reported as recounting rather than as nothing measured yet.
-    compacted: AtomicBool,
     /// The highest `seq` of a context report sent for this session; a slower
     /// report with a lower number is dropped.
     usage_sent: AtomicU64,
@@ -364,7 +361,10 @@ impl Runtime {
             )
         });
         let tokens = stats["contextUsage"]["tokens"].clone();
-        let recounting = tokens.is_null() && s.compacted.load(Ordering::Relaxed);
+        // Pi returns an explicit null only when a persisted compaction has no
+        // later assistant usage. Missing contextUsage means no measurement.
+        // This survives process retirement and daemon restart without a flag.
+        let recounting = stats["contextUsage"].get("tokens") == Some(&Value::Null);
         json!({
             "tokens": tokens,
             "window": window,
@@ -919,7 +919,6 @@ impl Runtime {
             settled,
             tools: options["tools"].as_array().cloned().unwrap_or_default(),
             compaction,
-            compacted: AtomicBool::new(false),
             usage_sent: AtomicU64::new(0),
         });
         {
@@ -1052,7 +1051,7 @@ impl Runtime {
                 } else {
                     Err(Error::new(
                         5201,
-                        reply.error.unwrap_or_else(|| "Compaction failed".into()),
+                        reply.error.unwrap_or_else(|| "Summarising failed".into()),
                     ))
                 }
             });
@@ -1066,12 +1065,12 @@ impl Runtime {
                     store::append(
                         &self.home,
                         &s.stored,
-                        json!({"role":"assistant","text":"Conversation compacted."}),
+                        json!({"role":"assistant","text":"Older messages summarised."}),
                     )?;
                     self.emit(
                         s,
                         "message.complete",
-                        json!({"text":"Conversation compacted.","status":"complete"}),
+                        json!({"text":"Older messages summarised.","status":"complete"}),
                     );
                 }
                 Err(error) => {
@@ -3211,9 +3210,8 @@ impl Runtime {
                 self.emit(
                     s,
                     "status.update",
-                    json!({"kind":"working","text":"Compacting conversation"}),
+                    json!({"kind":"working","text":"Summarising older messages"}),
                 );
-                s.compacted.store(true, Ordering::Relaxed);
                 self.emit_usage(s, true);
             }
             // The meter recounts until the next reply measures the compacted context.

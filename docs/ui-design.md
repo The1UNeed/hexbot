@@ -119,14 +119,14 @@ the roster slides in as a drawer.
   hairline bar and "Context 62%" in meta type, muted; a tick on the bar marks
   where older messages get summarised. Hover or focus (the pill is in the tab
   order) for the plain numbers ("41k of 200k tokens. Older messages are
-  summarised at 184k.") in a solid tooltip, so the conversation never shows
-  through it. Within 15% of that point the pill turns warning and the tooltip
-  asks for a new section; while Hexbot summarises it reads "Compacting", and
+  summarised above 184k tokens.") in a solid tooltip, so the conversation
+  never shows through it. Within 15% of that point the pill turns warning and the tooltip
+  asks for a new section; while Hexbot summarises it reads "Summarising", and
   right after, until the next reply is measured, a neutral "Context" with
   "Recounting after the summary." Nothing is drawn until the daemon has
   measured the section (`hexbot.sections.open`, `session.usage`), and nothing
   in rooms. The bar never animates; it is redrawn when a turn ends, a
-  compaction starts or ends, or the model changes. The conversation column is
+  summarising starts or ends, or the model changes. The conversation column is
   a container: under 54rem the word "Context" goes, and the centred title
   truncates before it can reach the pill. The context window is never called
   memory.

@@ -19,6 +19,10 @@ describe('formatTokens', () => {
     expect(formatTokens(9_000)).toBe('9k')
     expect(formatTokens(41_000)).toBe('41k')
     expect(formatTokens(183_616)).toBe('184k')
+    expect(formatTokens(999_499)).toBe('999k')
+    expect(formatTokens(999_500)).toBe('1M')
+    expect(formatTokens(999_999)).toBe('1M')
+    expect(formatTokens(1_000_000)).toBe('1M')
     expect(formatTokens(1_048_576)).toBe('1M')
     expect(formatTokens(1_250_000)).toBe('1.3M')
   })
@@ -44,13 +48,13 @@ describe('readContext', () => {
     expect(reading.detail).toBe('Recounting after the summary.')
     expect(reading.description).toBe('Context. Recounting after the summary.')
 
-    // Compacting wins while it runs, even without a count.
+    // Summarising wins while it runs, even without a count.
     const compacting = readContext(context({ compacting: true, recounting: true, tokens: null }))!
-    expect(compacting.label).toBe('Compacting')
+    expect(compacting.label).toBe('Summarising')
     expect(compacting.percent).toBeNull()
     expect(compacting.recounting).toBe(false)
     expect(compacting.description).toBe(
-      'Context, compacting. Older messages are being summarised now.'
+      'Context, summarising. Older messages are being summarised now.'
     )
   })
 
@@ -61,9 +65,9 @@ describe('readContext', () => {
     expect(reading.label).toBe('21%')
     expect(reading.high).toBe(false)
     expect(reading.compactPercent).toBe(92)
-    expect(reading.detail).toBe('41k of 200k tokens. Older messages are summarised at 184k.')
+    expect(reading.detail).toBe('41k of 200k tokens. Older messages are summarised above 184k tokens.')
     expect(reading.description).toBe(
-      'Context 21%. 41k of 200k tokens. Older messages are summarised at 184k.'
+      'Context 21%. 41k of 200k tokens. Older messages are summarised above 184k tokens.'
     )
   })
 
@@ -75,18 +79,18 @@ describe('readContext', () => {
     expect(reading.high).toBe(true)
     expect(reading.label).toBe('80%')
     expect(reading.detail).toBe(
-      '160k of 200k tokens. Older messages are summarised at 184k. Start a new section soon. Long sections make the bot slower and less accurate.'
+      '160k of 200k tokens. Older messages are summarised above 184k tokens. Start a new section soon. Long sections make the bot slower and less accurate.'
     )
   })
 
   it('names the compaction while it runs instead of a percentage', () => {
     const reading = readContext(context({ compacting: true, tokens: 185_000 }))!
 
-    expect(reading.label).toBe('Compacting')
+    expect(reading.label).toBe('Summarising')
     expect(reading.high).toBe(false)
     expect(reading.detail).toBe('185k of 200k tokens. Older messages are being summarised now.')
     expect(reading.description).toBe(
-      'Context 93%, compacting. 185k of 200k tokens. Older messages are being summarised now.'
+      'Context 93%, summarising. 185k of 200k tokens. Older messages are being summarised now.'
     )
   })
 
@@ -96,6 +100,19 @@ describe('readContext', () => {
     expect(reading.compactPercent).toBeNull()
     expect(reading.detail).toBe('41k of 200k tokens.')
     expect(reading.high).toBe(false)
+  })
+
+  it('reports Pi thresholds when the reserve meets or exceeds the window', () => {
+    const negative = readContext(context({ compact_at: -8192, tokens: 1, window: 8192 }))!
+    expect(negative.compactPercent).toBe(0)
+    expect(negative.high).toBe(true)
+    expect(negative.detail).toContain(
+      'Older messages are summarised at any context size because the reserve exceeds the window.'
+    )
+    const zero = readContext(context({ compact_at: 0, tokens: 1, window: 16384 }))!
+    expect(zero.compactPercent).toBe(0)
+    expect(zero.high).toBe(true)
+    expect(zero.detail).toContain('Older messages are summarised above 0 tokens.')
   })
 
   it('never reads past the window', () => {
@@ -120,7 +137,7 @@ describe('ContextMeter', () => {
 
     expect(meter).toHaveAttribute('aria-valuenow', '21')
     expect(meter).toHaveAccessibleName(
-      'Context 21%. 41k of 200k tokens. Older messages are summarised at 184k.'
+      'Context 21%. 41k of 200k tokens. Older messages are summarised above 184k tokens.'
     )
     expect(meter).toHaveAttribute('data-tone', 'low')
     expect(meter).toHaveTextContent('Context 21%')
@@ -138,13 +155,13 @@ describe('ContextMeter', () => {
     expect(meter).toHaveAccessibleName(/Start a new section soon/)
   })
 
-  it('says Compacting while older messages are summarised', () => {
+  it('says Summarising while older messages are summarised', () => {
     render(<ContextMeter context={context({ compacting: true, tokens: 185_000 })} />)
 
     const meter = screen.getByRole('meter')
 
     expect(meter).toHaveAttribute('data-tone', 'compacting')
-    expect(meter).toHaveTextContent(/^Compacting$/)
+    expect(meter).toHaveTextContent(/^Summarising$/)
     expect(meter).toHaveAccessibleName(/being summarised now/)
   })
 
@@ -168,7 +185,7 @@ describe('ContextMeter', () => {
     expect(meter).toHaveAttribute('tabindex', '0')
     fireEvent.focus(meter)
     expect(
-      await screen.findByText('41k of 200k tokens. Older messages are summarised at 184k.')
+      await screen.findByText('41k of 200k tokens. Older messages are summarised above 184k tokens.')
     ).toBeVisible()
   })
 })

@@ -255,7 +255,7 @@ async fn sections_report_context_usage_and_compaction_point() {
     assert_eq!(usage["usage"]["total_tokens"], 0);
     // Reports take their order from the events, not from which RPC answers
     // first: a start report overtaken by the end report is dropped, so a fast
-    // compaction cannot leave the meter stuck on "Compacting".
+    // compaction cannot leave the meter stuck on "Summarising".
     let overtaken = runtime.usage_seq.load(Ordering::Relaxed) + 2;
     s.usage_sent.store(overtaken, Ordering::Relaxed);
     runtime.emit_usage(&s, true);
@@ -275,7 +275,7 @@ async fn sections_report_context_usage_and_compaction_point() {
     let source = fs::read_to_string(&script)
         .unwrap()
         .replace("tokens:20000,", "tokens:null,");
-    fs::write(script, source).unwrap();
+    fs::write(&script, source).unwrap();
     runtime.close_stored("alice", "first").await.unwrap();
     let opened = runtime
         .call("alice", "hexbot.sections.open", &json!({"id":"first"}))
@@ -283,7 +283,23 @@ async fn sections_report_context_usage_and_compaction_point() {
         .unwrap()
         .unwrap();
     assert_eq!(opened["context"]["tokens"], Value::Null);
-    assert_eq!(opened["context"]["recounting"], false);
+    assert_eq!(opened["context"]["recounting"], true);
+    age(&runtime);
+    assert_eq!(runtime.retire_idle(common::now() - 900.).await.unwrap(), 1);
+    let reopened = runtime
+        .call("alice", "hexbot.sections.open", &json!({"id":"first"}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reopened["context"]["recounting"], true);
+    runtime.shutdown().await;
+    let runtime = Runtime::new(home.path().into(), hub.clone(), script.clone()).unwrap();
+    let reopened = runtime
+        .call("alice", "hexbot.sections.open", &json!({"id":"first"}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reopened["context"]["recounting"], true);
     let s = runtime.sessions.lock().unwrap()["first"].clone();
     let mut events = hub.subscribe();
     runtime
@@ -298,6 +314,19 @@ async fn sections_report_context_usage_and_compaction_point() {
     let usage = next_usage(&mut events).await;
     assert_eq!(usage["context"]["compacting"], false);
     assert_eq!(usage["context"]["recounting"], true);
+    // A measured reply clears recounting even after reopening the process.
+    let source = fs::read_to_string(&script)
+        .unwrap()
+        .replace("tokens:null,", "tokens:12000,");
+    fs::write(&script, source).unwrap();
+    runtime.close_stored("alice", "first").await.unwrap();
+    let measured = runtime
+        .call("alice", "hexbot.sections.open", &json!({"id":"first"}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(measured["context"]["tokens"], 12000);
+    assert_eq!(measured["context"]["recounting"], false);
     runtime.shutdown().await;
 }
 
