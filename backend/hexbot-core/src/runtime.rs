@@ -660,6 +660,11 @@ impl Runtime {
                 .and_then(|p| p.get("parent_session"))
                 .cloned()
                 .unwrap_or(Value::Null);
+            // A scheduled job's session, and any delegate under it, proposes memory.
+            opts["job"] = overrides
+                .and_then(|p| p.get("job"))
+                .cloned()
+                .unwrap_or(Value::Null);
             store::open(&self.home)?.execute(
                 "INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES(?,?,?,?,?)",
                 params![stored, owner, bot, prompt, opts.to_string()],
@@ -2073,6 +2078,13 @@ impl Runtime {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
         let mode = session_approval(&db, &settings, &stored, mode.as_deref(), &owner, &s.owner)?;
+        // Unattended jobs and their delegates keep the workspace sandbox even
+        // when the bot uses Bypass. Read the root's marker, not the child's.
+        let mode = if mode == "off" && saved["job"].is_string() {
+            "smart"
+        } else {
+            mode
+        };
         let own = own_options.expect("section configuration");
         saved["model"] = own["model"].clone();
         saved["provider"] = own["provider"].clone();
@@ -2120,8 +2132,15 @@ impl Runtime {
 
     /// Ask the section owner about a daemon tool action, unless the mode is Bypass.
     async fn native_approval(&self, s: &Live, params: Value) -> Result<bool> {
-        if self.session_settings(s)?["approvalMode"] == "off" {
+        let settings = self.session_settings(s)?;
+        if settings["approvalMode"] == "off" {
             return Ok(true);
+        }
+        if settings["canAsk"] == false {
+            return Err(Error::new(
+                4302,
+                "This action needs approval. Run it in a visible section.",
+            ));
         }
         let id = common::id();
         let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -2544,6 +2563,14 @@ impl Runtime {
             "delegate_task" => self.delegate(s, args).await,
             "message_bot" => {
                 self.require_toolset(s, "hexbot", name)?;
+                // Delivery reuses the recipient's ordinary section. Do not let
+                // a job relay writes through a section without its restrictions.
+                if self.session_settings(s)?["job"].is_string() {
+                    return Err(Error::new(
+                        4302,
+                        "Scheduled jobs and their delegates cannot message other bots. Save the result locally and propose memory through the memory tool.",
+                    ));
+                }
                 let to = required(args, "to")?.to_owned();
                 let text = required(args, "text")?.to_owned();
                 let (stored, message_id, hops) = self.prepare_delivery(s, &to, &text)?;
@@ -2595,7 +2622,41 @@ impl Runtime {
             }
             "memory" => {
                 let memory = MemoryStore::new(self.home.clone());
-                match args["action"].as_str().unwrap_or("read") {
+                let action = args["action"].as_str().unwrap_or("read");
+                // A scheduled job runs unattended, often straight after reading the
+                // web, so its writes wait for the bot's next dream. The proposal
+                // takes the same scan and cap as an edit, and the dream scans
+                // again when it applies one.
+                if action != "read"
+                    && let Some(job) = self.session_settings(s)?["job"].as_str()
+                {
+                    match action {
+                        "add" | "append" | "set" | "remove" => {
+                            required(args, "text")?;
+                        }
+                        "replace" => {
+                            required(args, "old_text")?;
+                        }
+                        _ => return Err(Error::new(4202, "unknown memory action")),
+                    }
+                    let mut kept = serde_json::Map::new();
+                    for key in ["text", "old_text"] {
+                        if let Some(text) = args[key].as_str() {
+                            check_memory_edit("", text)?;
+                            memory.check_bot_fits(&bot_owner, &s.bot, text)?;
+                            kept.insert(key.to_owned(), json!(text));
+                        }
+                    }
+                    return crate::dreaming::propose_memory(
+                        &self.home,
+                        &bot_owner,
+                        &s.bot,
+                        job,
+                        action,
+                        &Value::Object(kept),
+                    );
+                }
+                match action {
                     "read" => memory.get_bot(&bot_owner, &s.bot),
                     "add" | "append" => {
                         let text = required(args, "text")?;
@@ -2693,6 +2754,14 @@ impl Runtime {
             "self_soul" | "hexbot_soul" => {
                 let path = self.home.join("profiles").join(&s.bot).join("SOUL.md");
                 if let Some(text) = args["text"].as_str() {
+                    // A scheduled job runs unattended, often straight after reading
+                    // the web; it reads the soul but the user changes it, in a section.
+                    if self.session_settings(s)?["job"].is_string() {
+                        return Err(Error::new(
+                            4302,
+                            "Soul changes need the user. A scheduled job can read the soul but not change it; ask the user in a section.",
+                        ));
+                    }
                     if text.trim().is_empty() || text.chars().count() > 4000 {
                         return Err(Error::new(
                             4202,

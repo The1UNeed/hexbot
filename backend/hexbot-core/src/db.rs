@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
 use crate::{Error, Result};
 
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// Native scheduler tables live in hexbot-runtime.db, separate from the legacy schema.
 pub(crate) fn migrate_runtime(conn: &Connection) -> Result<()> {
@@ -71,7 +71,12 @@ CREATE TABLE IF NOT EXISTS bot_incidents(
  id TEXT PRIMARY KEY, bot TEXT NOT NULL, section_id TEXT, room_id TEXT, session_id TEXT,
  kind TEXT NOT NULL CHECK(kind IN ('connector_error','turn_failed')), connector TEXT,
  text TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL, resolved_at REAL);
+CREATE TABLE IF NOT EXISTS memory_proposals(
+ id TEXT PRIMARY KEY, bot TEXT NOT NULL, owner_id TEXT NOT NULL, job_id TEXT NOT NULL,
+ action TEXT NOT NULL, args_json TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL,
+ consumed_at REAL, consumed_by TEXT);
 CREATE INDEX IF NOT EXISTS idx_sections_bot ON sections(bot);
+CREATE INDEX IF NOT EXISTS idx_memory_proposals_bot_pending ON memory_proposals(bot,consumed_at,created_at);
 CREATE INDEX IF NOT EXISTS idx_room_events_room_seq ON room_events(room_id,seq);
 CREATE INDEX IF NOT EXISTS idx_room_turns_room_trigger ON room_turns(room_id,trigger_seq);
 CREATE INDEX IF NOT EXISTS idx_bot_messages_pair ON bot_messages(from_bot,to_bot,created_at);

@@ -211,8 +211,9 @@ export default function hexbot(pi: any) {
         }
       }
       if (browser) ask = {key: 'browser_console', command: event.input.expression, reason: 'This runs code in a web page.'};
-      if (!ask || sessionAllowed.has(ask.key)) return;
-      if (mcp && live.canAsk === false) return {block: true, reason: 'This connected tool needs approval. Run it in a visible section.'};
+      if (!ask) return;
+      if (live.canAsk === false) return {block: true, reason: 'This action needs approval. Run it in a visible section.'};
+      if (sessionAllowed.has(ask.key)) return;
       const mode = live.approvalMode;
       const choice = await ctx.ui.select('__HEXBOT_APPROVAL__' + JSON.stringify({tool: event.toolName, command: ask.command, reason: ask.reason}), ['once', 'session', 'deny']);
       if (mcp) {

@@ -103,6 +103,29 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
             columns.push(((*name).into(), "TEXT".into(), false, None, 0));
         }
     }
+    // Native-only tables, in sqlite_master name order with the rest.
+    let text = |name: &str, required: bool| (name.into(), "TEXT".into(), required, None, 0);
+    expected.push((
+        "memory_proposals".into(),
+        vec![
+            ("id".into(), "TEXT".into(), false, None, 1),
+            text("bot", true),
+            text("owner_id", true),
+            text("job_id", true),
+            text("action", true),
+            (
+                "args_json".into(),
+                "TEXT".into(),
+                true,
+                Some("'{}'".into()),
+                0,
+            ),
+            ("created_at".into(), "REAL".into(), true, None, 0),
+            ("consumed_at".into(), "REAL".into(), false, None, 0),
+            text("consumed_by", false),
+        ],
+    ));
+    expected.sort_by(|a, b| a.0.cmp(&b.0));
     expected
 }
 
@@ -417,4 +440,33 @@ fn bot_thread_backfill_uses_first_sender_keeps_renamed_sections_and_is_idempoten
             .unwrap(),
         db::SCHEMA_VERSION
     );
+}
+
+#[test]
+fn version_13_upgrades_to_14_and_preserves_proposals_on_repeat() {
+    let home = legacy_home(11);
+    let conn = db::open(home.path()).unwrap();
+    // Version 13 belongs to the preceding one-person migration. Its gate is
+    // independent; this migration must accept 13 and advance to 14.
+    conn.execute("UPDATE schema_version SET version=13", [])
+        .unwrap();
+    db::migrate(home.path()).unwrap();
+    assert_eq!(db::SCHEMA_VERSION, 14);
+    conn.execute("INSERT INTO memory_proposals(id,bot,owner_id,job_id,action,created_at) VALUES ('p','scout','local','job','add',1)", []).unwrap();
+    db::migrate(home.path()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT version FROM schema_version", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        14
+    );
+    assert_eq!(
+        conn.query_row("SELECT id FROM memory_proposals", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "p"
+    );
+    conn.execute("UPDATE schema_version SET version=15", [])
+        .unwrap();
+    assert!(db::migrate(home.path()).is_err());
 }

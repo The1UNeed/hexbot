@@ -74,12 +74,18 @@ it also installs over SSH when nobody is signed in at the screen.
 
 ## Storage and compatibility
 
-- `hexbot.db` keeps schema v12, IDs, ownership, rooms, sections, and settings.
+- `hexbot.db` keeps schema v14, IDs, ownership, rooms, sections, and settings.
   Migrations use captured legacy schema fixtures for starting versions 1–11
   and check that rows survive upgrades and repeated runs. Version 12 adds
-  `devices.jkt` for optional device proof-key binding.
+  `devices.jkt` for optional device proof-key binding. Version 14 adds
+  `memory_proposals`, the memory changes scheduled jobs ask for until the
+  bot's next dream reviews them (`docs/dreaming.md`).
 - Memory stays in `profiles/<bot>/memories/MEMORY.md`, soul in `SOUL.md`, and
   About you in `users/<id>/user.md`. Deleting a section leaves bot memory alone.
+  Only sections, rooms, and dreams write it; a scheduled job's memory tool
+  records proposals instead, and its soul tool only reads. Jobs and their
+  delegates cannot use `message_bot`. Bypass jobs, including scripts, run in
+  Auto; Manual stays Manual.
 - `hexbot-runtime.db` stores native transcript projections, usage, and frozen
   session options. Pi keeps its conversation JSONL under the native session
   directory. Existing Python `state.db` history is imported once, including
@@ -269,7 +275,7 @@ config, known hosts, public keys, and the SSH agent remain available. If bubblew
 is missing or cannot start, a startup warning records the lack of OS isolation,
 `hexbot.info` reports `sandbox: null` so Settings can show a notice,
 Manual and Auto ask before every shell command and code run, and scheduled
-scripts refuse to run unless approval mode is Bypass.
+scripts refuse to run.
 Provider keys reach the agent through its auth file. The selected Bedrock or Vertex provider also receives its cloud environment settings; shell and scheduled script children do not.
 The Python environment does not include `HEXBOT_HOME`.
 

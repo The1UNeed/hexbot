@@ -36,8 +36,14 @@ Use the job ID when two jobs have similar names. Deleting a bot also removes its
 
 ## Scripts and unattended access
 
-A job can run a script in the bot's scripts folder or workspace. Scheduling an absolute script path asks for approval. Scripts run inside the workspace sandbox in Manual and Auto, without model provider credentials. On Linux, scheduled scripts need working bubblewrap unless an admin chooses Bypass.
+A job can run a script in the bot's scripts folder or workspace. Scheduling an absolute script path asks for approval. Scripts run read-only in Manual and inside the workspace sandbox in Auto or Bypass, without model provider credentials. On Linux, scheduled scripts need working bubblewrap.
 
-An autonomous agent job cannot wait for you to answer a question or approve a tool. Give it enough detail and access to finish on its own. If a required approval has no person to answer it, the job reports an error; inspect that error before broadening access.
+An autonomous agent job and its delegates cannot wait for you to answer a question or approve a tool. Give the job enough detail and access to finish on its own. Actions that need approval are refused immediately; inspect the error before broadening access.
+
+## Jobs and memory
+
+A job can read the bot's memory but not write it. When a job asks to add, replace, or remove a memory entry, Hexbot saves the request as a proposal, and the bot's next dream decides whether to keep it. This keeps text a job fetched from the web out of memory until the bot has looked at it with the rest of the day. See [Dreaming](/docs/dreaming/#proposals-from-scheduled-jobs). A job cannot change the bot's soul either; the bot tells you when it wants a soul change, and you make it in a section.
 
 For memory reviews, use [Dreaming](/docs/dreaming/). Dreaming has its own controls and saves summaries in the bot's dream log.
+
+Jobs and their delegates run in Auto when the bot uses Bypass; Manual stays Manual. They cannot message other bots, because a recipient's ordinary section could change memory without a dream reviewing it. Job results stay local.

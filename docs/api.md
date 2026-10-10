@@ -150,7 +150,7 @@ inside the Hexbot home, symlinks included.
 - `hexbot.bots.clear_status {name}` → `{bot: Bot}`. Closes every open incident
   for the bot.
 - `hexbot.bots.delete {name}` → `{deleted: true}` (deletes the profile
-  directory, all rows, and the bot's scheduled jobs; refuses with 4211 if any of its sections is live
+  directory, all rows, the bot's scheduled jobs, and the memory proposals those jobs left; refuses with 4211 if any of its sections is live
   and mid-turn — `session.active_list` status `working` or `waiting` —
   with `data.sections: [{id, status}]`).
 
@@ -227,6 +227,12 @@ roster shows only the title.
   bot exists. The restore is logged as a dream of its own (`dream_id`) whose
   `memory_before` is the memory it replaced, so it can be undone in turn.
   Broadcasts `hexbot.dreaming.changed`.
+
+Scheduled jobs and their delegates cannot call `message_bot`. Jobs use Auto
+when the bot's approval mode is Bypass; Manual remains Manual. Scheduled
+scripts require OS isolation in every mode. Actions that need approval are
+refused immediately in jobs and their delegates. Memory writes become proposals
+for the next dream, and soul writes are refused. See [Dreaming](dreaming.md).
 
 ### Rooms
 

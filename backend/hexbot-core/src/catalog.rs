@@ -1040,6 +1040,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             let mut conn = db::open(home)?;
             let tx = conn.transaction()?;
             tx.execute("DELETE FROM dreams WHERE bot=?", [name])?;
+            tx.execute("DELETE FROM memory_proposals WHERE bot=?", [name])?;
             tx.execute("UPDATE room_members SET left_at=? WHERE member_kind='bot' AND member_id=? AND left_at IS NULL",params![now(),name])?;
             tx.execute("UPDATE rooms SET main_bot=NULL WHERE main_bot=?", [name])?;
             tx.execute("DELETE FROM room_sessions WHERE bot=?", [name])?;
