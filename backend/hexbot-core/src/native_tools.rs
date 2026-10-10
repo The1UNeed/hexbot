@@ -74,11 +74,11 @@ async fn request(request: reqwest::RequestBuilder) -> Result<Value> {
     serde_json::from_slice(&body).map_err(|_| failure("tool service returned invalid JSON"))
 }
 tokio::task_local! { static SECTION_CWD: PathBuf; }
-// How the section's code runs: in the workspace sandbox (Manual and Auto,
-// `Some(true)`), with no sandbox (Bypass, `Some(false)`), or with the base
-// layer when the caller does not say; and the live working directory, which
-// a bot or section can change.
-tokio::task_local! { pub(crate) static CODE_SANDBOX: (Option<bool>, PathBuf); }
+// How the section's code runs: in the sandbox its commands get (read-only in
+// Manual, the workspace in Auto), with no sandbox (Bypass, `None`), or with the
+// base layer when the caller does not say; and the live working directory,
+// which a bot or section can change.
+tokio::task_local! { pub(crate) static CODE_SANDBOX: (Option<crate::credentials::Confine>, PathBuf); }
 pub(crate) fn workdir(home: &Path, bot: &str) -> Result<PathBuf> {
     if let Ok(cwd) = SECTION_CWD.try_with(Clone::clone) {
         return Ok(cwd);
@@ -1105,7 +1105,7 @@ for line in sys.stdin:
  except Exception as error: print(json.dumps({'success':False,'error':str(error)}),flush=True)
 "#;
 struct Kernel {
-    sandbox: (Option<bool>, PathBuf),
+    sandbox: (Option<crate::credentials::Confine>, PathBuf),
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
@@ -1205,7 +1205,7 @@ async fn execute_code(
     let mut kernel = kernel.lock().await;
     let sandbox = match CODE_SANDBOX.try_with(Clone::clone) {
         Ok(sandbox) => sandbox,
-        Err(_) => (None, workdir(home, bot)?),
+        Err(_) => (Some(crate::credentials::Confine::No), workdir(home, bot)?),
     };
     // A mode or workspace change takes effect on the next run: the worker
     // restarts in the new sandbox.
@@ -1222,19 +1222,20 @@ async fn execute_code(
     if kernel.is_none() {
         let python = python_command(home, cfg, env);
         let python = python.as_str();
-        let mut command = if sandbox.0 == Some(false) {
-            Command::new(python)
-        } else {
-            crate::credentials::isolated_command(
+        let mut command = match sandbox.0 {
+            None => Command::new(python),
+            Some(confine) => crate::credentials::isolated_command_with_outputs(
                 home,
                 python,
                 &[sandbox.1.clone(), artifacts_dir(home, bot)?],
-                if sandbox.0 == Some(true) {
-                    crate::credentials::Confine::Workspace
-                } else {
-                    crate::credentials::Confine::No
-                },
-            )?
+                confine,
+                &[artifacts_dir(home, bot)?],
+            ).map_err(|mut error| {
+                if cfg!(target_os = "linux") && error.code == 5240 {
+                    error.message.push_str(" If the workspace scan cannot finish, run this Python code with the terminal tool using full_access and a reason, or choose a smaller workspace.");
+                }
+                error
+            })?,
         };
         desktop_environment(&mut command);
         let mut child = command
@@ -3248,6 +3249,46 @@ mod safety_tests {
             .unwrap();
         common::write_config(home.path(), &json!({"tools":{"enabled_toolsets":["code_execution","image_gen","tts","browser","web"]}})).unwrap();
         home
+    }
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn code_scan_budget_explains_recovery_and_a_smaller_workspace_runs() {
+        if !crate::credentials::isolation_available() {
+            return;
+        }
+        let home = fixture();
+        let work = home.workspace();
+        for i in 0..1001 {
+            fs::create_dir(work.join(i.to_string())).unwrap();
+        }
+        let cfg = json!({});
+        let env = Default::default();
+        let args = json!({"code": "print('ok')"});
+        let error = CODE_SANDBOX
+            .scope(
+                (Some(crate::credentials::Confine::Workspace), work.clone()),
+                execute_code(home.path(), "owl", "section", &cfg, &env, &args),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("directory budget"));
+        assert!(
+            error
+                .message
+                .contains("terminal tool using full_access and a reason")
+        );
+        assert!(error.message.contains("smaller workspace"));
+        let small = work.join("0");
+        let result = CODE_SANDBOX
+            .scope(
+                (Some(crate::credentials::Confine::Workspace), small),
+                execute_code(home.path(), "owl", "section", &cfg, &env, &args),
+            )
+            .await
+            .unwrap();
+        close_session(home.path(), "section").await;
+        assert_eq!(result["success"], true, "{result}");
+        assert_eq!(result["output"], "ok\n");
     }
     #[tokio::test]
     async fn kernel_uses_frozen_cwd_without_connector_secrets() {

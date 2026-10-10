@@ -1117,7 +1117,7 @@ async fn notes_scan_the_complete_edit_and_soul() {
 }
 
 /// Code runs in the workspace sandbox without asking in Auto, asks first in
-/// Manual, and leaves the sandbox in Bypass. The code floor holds in every mode.
+/// Manual and runs read-only there, and leaves the sandbox in Bypass. The code floor holds in every mode.
 #[tokio::test]
 async fn code_runs_sandboxed_in_auto_asks_in_manual_and_keeps_its_floor() {
     let (home, runtime, hub) = setup();
@@ -1190,6 +1190,45 @@ async fn code_runs_sandboxed_in_auto_asks_in_manual_and_keeps_its_floor() {
         while let Ok(event) = events.try_recv() {
             assert_ne!(event.frame["params"]["type"], "approval.request");
         }
+        // Approved Manual code gets the Manual shell's read-only sandbox, not Auto's.
+        let write = "try:\n    open('hexbot-probe.txt', 'w').write('x')\n    print('wrote')\nexcept OSError:\n    print('read-only')";
+        let result = runtime
+            .tool(&s, "execute_code", &json!({"code":write}))
+            .await
+            .unwrap();
+        assert!(result.to_string().contains("wrote"), "{result}");
+        set_mode("manual");
+        let mut events = hub.subscribe();
+        let task = {
+            let runtime = runtime.clone();
+            let s = s.clone();
+            tokio::spawn(async move {
+                runtime
+                    .tool(&s, "execute_code", &json!({"code":write}))
+                    .await
+            })
+        };
+        let payload = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.frame["params"]["type"] == "approval.request" {
+                    break event.frame["params"]["payload"].clone();
+                }
+            }
+        })
+        .await
+        .unwrap();
+        runtime
+            .call(
+                "alice",
+                "approval.respond",
+                &json!({"session_id":s.id,"request_id":payload["request_id"],"choice":"once"}),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let result = task.await.unwrap().unwrap();
+        assert!(result.to_string().contains("read-only"), "{result}");
         // The worker restarts outside the workspace sandbox once the mode allows it.
         set_mode("off");
         let result = runtime

@@ -238,15 +238,32 @@ checks. In Auto (`smart`, the default) the
 private extension runs each shell command in a sandbox with no network that
 writes only inside the workspace: the bot's working directory, its artifact
 and attachment folders, and temp folders, with shell profiles and login items
-read-only even there. A command that needs more sets `full_access` with a
+read-only even there. Existing Git metadata, including linked `gitdir` and
+`commondir` targets and bare `*.git` folders, is read-only within the scan
+limits below. `.env` and `.envrc` files, keychains, and browser profiles
+(`readDeny` in the policy) are unreadable and unwritable. No
+level sends Apple Events. A command that needs more sets `full_access` with a
 `reason` on the bash tool; the user sees both and, if approved, the command
 runs with the sandbox's base layer only (credential paths still masked). In
-Manual the shell sandbox is read-only and every file change asks. Both modes
+Manual the shell sandbox is read-only and every file change asks. Manual scheduled scripts cannot write artifacts. Both modes
 ask before browser page scripts and before scheduling an absolute script path.
 
-Python code execution runs in the same workspace sandbox outside Bypass.
-Auto runs it without asking; Manual asks first (`runtime.rs`, `native_approval`);
-Bypass runs it unsandboxed. A small literal guard (`check_code`) refuses a
+The workspace scan is breadth-first, through three nested folders, skipping
+policy dependency/runtime folders and shared temporary roots. Manual searches
+read-only workspaces too. Secret symlinks and Git pointers resolve to their real
+targets. Exceeding 1,000 directories refuses the command with an approval reason;
+the bot must request an approved full-access retry. Linux protects repositories
+that exist when the command starts. Repositories created during a command are
+not protected on Linux, nor are paths outside the scan limits. macOS filename
+rules cover new repositories and secrets too, and deny secret/browser writes
+and renames. Scanned Git targets and secret ancestors, and browser-store
+ancestors, cannot be renamed on macOS. Tracked hooks such as `.husky` remain
+writable and visible in `git status`. See [SECURITY.md](../../SECURITY.md#tool-isolation).
+
+Python code execution runs in the sandbox the section's commands get: the
+workspace sandbox in Auto, without asking; in Manual, after asking
+(`runtime.rs`, `native_approval`), read-only except its own artifact folder;
+unsandboxed in Bypass. A small literal guard (`check_code`) refuses a
 handful of catastrophic one-liners in every mode. The extension offers
 `once`, `session`, and `deny` on its cards, and a `session` choice quiets that
 kind of request for the rest of the section; daemon-raised requests offer

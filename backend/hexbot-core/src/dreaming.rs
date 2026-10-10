@@ -1779,9 +1779,15 @@ mod interpreter_tests {
         let workspace = home.workspace();
         fs::create_dir_all(&workspace).unwrap();
         let target = workspace.join("written.txt");
+        let artifact = home.path().join("profiles/owl/artifacts/written.txt");
+        fs::create_dir_all(artifact.parent().unwrap()).unwrap();
         fs::write(
             home.path().join("profiles/owl/scripts/write.sh"),
-            format!("echo x > '{}'\n", target.display()),
+            format!(
+                "echo x > '{}'\necho x > '{}'\n",
+                target.display(),
+                artifact.display()
+            ),
         )
         .unwrap();
         let events = EventHub::new();
@@ -1794,6 +1800,7 @@ mod interpreter_tests {
                 .is_err()
         );
         assert!(!target.exists());
+        assert!(!artifact.exists());
     }
     #[tokio::test]
     async fn scheduled_scripts_do_not_receive_provider_credentials() {

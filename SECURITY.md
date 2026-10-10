@@ -40,12 +40,56 @@ redaction, and pattern checks do not provide equivalent containment.
   with private network and process namespaces and masked credential paths.
   Writable roots include the working directory, daemon-selected artifact and
   attachment folders, and temporary folders. On macOS these include shared `/tmp`.
-  Ordinary files outside the workspace can still be read.
+  Existing Git metadata (`.git`, linked `gitdir`/`commondir` targets and bare
+  `*.git` repositories with `HEAD` and `objects`, plus configured `core.hooksPath`
+  directories) stays read-only within the scan limits below. A bot
+  changes protected metadata with an approved `full_access` command. Project
+  secrets such as `.env` and `.envrc`, keychains, and browser profiles with
+  cookies and saved passwords are unreadable and unwritable. Apple Events are refused, so a command cannot
+  drive Finder or another app. Other files outside the workspace can still be
+  read.
 - Manual uses a read-only shell/code sandbox and asks before file changes.
+  Approved `execute_code` runs can write their own output folder in the Hexbot
+  home. Manual scheduled scripts cannot write artifacts or workspace files.
 - An approved `full_access` shell command leaves the workspace restrictions.
   The base credential-path and Hexbot-home protections still apply. Review both
   the command and its reason before granting more access.
 - Bypass removes prompts and sandboxing and is available only to the admin.
+
+macOS also matches `.git` paths and secret filenames created during a command. It
+blocks renaming protected files and browser stores, and pins the scanned
+ancestors of secrets and Git metadata and the ancestors of browser stores so
+renaming a folder cannot expose their contents. Browser rules include the
+Google parent folder, Chrome Beta/unstable, and Snap and Flatpak profiles.
+Denying `~/Library/Application Support/Google` also hides other Google data
+stored there, including Android Studio and Drive data.
+Tracked hook scripts remain writable unless selected by repository
+`core.hooksPath`; their edits appear in `git status`. Review those changes
+before running them.
+
+Linux protects repositories and secret files that exist when a command starts.
+Repositories created during a command are **not protected** on Linux. The scan
+visits workspace and output roots breadth-first, including read-only workspaces
+in Manual, through three nested folders. It resolves `.env` symlinks and Git
+pointers, and skips dependency/runtime folders listed in `credential-policy.json`
+plus shared temporary roots. Repositories and secrets beyond these limits are
+not covered by the Linux scan. If more than 1,000 directories need scanning,
+only Linux bubblewrap commands refuse to run and require an approved
+`full_access` retry. For `execute_code`, use a smaller workspace or run the
+Python code through the terminal tool with `full_access` and a reason. macOS
+and file tools use partial results when the budget is reached. File changes ask for approval
+in Auto mode when the scan is incomplete. The cwd-ancestor Git pointer
+walk is unbudgeted, and macOS `.git` and secret filename rules still apply.
+Bare `*.git` repositories must exist when the scan starts on either platform.
+File tools refuse protected Git writes; an unreadable Git configuration or
+scan failure asks for approval instead of blocking ordinary writes. Repository
+configs and their includes are parsed with the system Git at `/usr/bin/git`;
+without it, a repository with a config counts as unreadable. Included files and
+configured hook paths inside the workspace or an output folder are protected,
+with their ancestors up to that folder. Ones outside are already read-only to
+sandboxed commands; a hook path that contains the workspace, such as `/` or the
+home folder, is ignored. FIFOs and other special files in Git metadata stay
+locked and are never read.
 
 macOS fails closed when its sandbox cannot start. On Linux, if bubblewrap is
 missing or unusable, Hexbot reports the missing isolation and Auto and Manual
