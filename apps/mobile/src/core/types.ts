@@ -1,5 +1,6 @@
 // Reuse the daemon's wire contract without bundling the web app.
 export type {
+  Bot,
   Section,
   Room,
   RoomEvent,
@@ -13,8 +14,7 @@ export type {
   NetworkInfo,
   UsageSummary
 } from '../../../web/src/lib/types'
-import type { Bot as WireBot, CurrentUser as WireUser } from '../../../web/src/lib/types'
-export type Bot = Omit<WireBot, 'shareable'>
+import type { CurrentUser as WireUser } from '../../../web/src/lib/types'
 export type CurrentUser = Omit<WireUser, 'role'>
 export interface SavedDaemon {
   id: string
