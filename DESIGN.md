@@ -45,9 +45,12 @@ more freedom and more capability than a hosted product can offer.
 - Archive keeps a section. Delete removes the section and its history; what
   the bot wrote to its memory stays until the user or dreaming edits it.
 - Dreaming: every bot, daily at a configurable time (default 03:00), reads
-  conversations since the start of its last successful dream and folds what
-  matters into its memory using its own model. It reads what people and bots
-  said, not tool output or its own earlier reports, plus the summaries
+  conversations from the start of its last successful dream up to, but
+  excluding, its own start and folds what matters into its memory using its
+  own model. Messages and compaction summaries at or after that start wait
+  for the next dream. Failed or interrupted dreams leave the lower cutoff
+  unchanged; the first dream reviews earlier history. It reads what people
+  and bots said, not tool output or its own earlier reports, plus the summaries
   written when a long section or that bot's room conversation was compacted,
   which it treats as untrusted since they were written with tool output in
   view. It never touches the soul or About you. It posts a report in its
