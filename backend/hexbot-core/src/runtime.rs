@@ -2692,6 +2692,13 @@ impl Runtime {
                     let mut kept = serde_json::Map::new();
                     for key in ["text", "old_text"] {
                         if let Some(text) = args[key].as_str() {
+                            // A note is saved trimmed, as it will be written.
+                            let note = key == "text" && action == "note";
+                            let text = if note {
+                                crate::memory::validated_note(text)?
+                            } else {
+                                text
+                            };
                             check_memory_edit("", text)?;
                             let applied = match (key, action) {
                                 ("text", "add" | "append") => {
@@ -2704,9 +2711,7 @@ impl Runtime {
                                 }
                                 _ => text.to_owned(),
                             };
-                            if action == "note" {
-                                crate::memory::check_note_fits(&applied)?;
-                            } else {
+                            if !note {
                                 memory.check_bot_fits(&bot_owner, &s.bot, &applied)?;
                             }
                             kept.insert(key.to_owned(), json!(text));

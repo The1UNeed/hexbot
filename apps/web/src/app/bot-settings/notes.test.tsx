@@ -128,6 +128,64 @@ describe('notes conflicts', () => {
     expect(screen.getByRole('textbox')).toHaveValue('My draft')
   })
 
+  it('reloads a stale delete, keeps the selected day and draft, then deletes fresh text', async () => {
+    let reads = 0
+    let deletes = 0
+    const yesterday = '2026-10-06'
+
+    const call = rpc(method => {
+      if (method.endsWith('.list')) {
+        return {
+          ...listed('Today'),
+          days: [
+            { date: today, text: 'Today' },
+            { date: yesterday, text: reads++ ? 'Plan\nBot note' : 'Plan' }
+          ]
+        }
+      }
+
+      if (deletes++ === 0) {
+        throw conflict()
+      }
+
+      return { deleted: true }
+    })
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<NotesBlock bot="scout" />)
+    await screen.findByRole('textbox')
+    fireEvent.click(screen.getByRole('button', { name: /Yesterday/ }))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'My draft' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(reads).toBe(2))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled())
+    expect(screen.getByRole('button', { name: /Yesterday/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('textbox')).toHaveValue('My draft')
+    expect(screen.getByRole('button', { name: /Yesterday/ })).toHaveTextContent('2 notes')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(call).toHaveBeenLastCalledWith('hexbot.memory.notes.delete', {
+      bot: 'scout', date: yesterday, expected: 'Plan\nBot note'
+    }))
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('Today'))
+  })
+
+  it('shows retention errors and keeps an expired day draft', async () => {
+    const message = 'Notes older than 30 days cannot be saved. Copy your draft to a more recent day.'
+    rpc(method => {
+      if (method.endsWith('.list')) {
+        return listed('Plan')
+      }
+
+      throw Object.assign(new Error(message), { code: 4202 })
+    })
+    render(<NotesBlock bot="scout" />)
+    await screen.findByRole('textbox')
+    edit('My draft')
+    expect(await screen.findByRole('alert')).toHaveTextContent(message)
+    expect(screen.getByRole('textbox')).toHaveValue('My draft')
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+  })
+
   it.each(['save', 'delete'])('prevents overlapping mutations during %s', async action => {
     const pending = deferred<unknown>()
     const call = rpc(method => (method.endsWith('.list') ? listed('Plan') : pending.promise))
@@ -145,6 +203,14 @@ describe('notes conflicts', () => {
 })
 
 describe('notes bot switches', () => {
+  it('replaces the loading skeleton with a list error', async () => {
+    rpc(() => { throw new Error('Unavailable') })
+    render(<NotesBlock bot="scout" />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Unavailable')
+    expect(screen.queryByRole('status', { name: 'Loading notes' })).toBeNull()
+    expect(screen.queryByText('No notes yet')).toBeNull()
+  })
+
   it.each(['resolve', 'reject'] as const)('ignores a superseded list %s', async outcome => {
     const pending = deferred<ReturnType<typeof listed>>()
     rpc((_, params) => (params.bot === 'scout' ? pending.promise : listed('Other bot')))
@@ -162,7 +228,7 @@ describe('notes bot switches', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
-  it.each(['save', 'delete', 'conflict', 'reload'])(
+  it.each(['save', 'delete', 'conflict', 'reload', 'delete reload'])(
     'ignores superseded %s completions',
     async action => {
       const pending = deferred<unknown>()
@@ -174,10 +240,10 @@ describe('notes bot switches', () => {
         }
 
         if (method.endsWith('.list')) {
-          return reads++ && action === 'reload' ? pending.promise : listed('Plan')
+          return reads++ && action.endsWith('reload') ? pending.promise : listed('Plan')
         }
 
-        if (action === 'reload') {
+        if (action.endsWith('reload')) {
           throw conflict()
         }
 
@@ -188,13 +254,13 @@ describe('notes bot switches', () => {
       const view = render(<NotesBlock bot="scout" />)
       await screen.findByRole('textbox')
 
-      if (action === 'delete') {
+      if (action.startsWith('delete')) {
         fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
       } else {
         edit('My plan')
       }
 
-      if (action === 'reload') {
+      if (action.endsWith('reload')) {
         await waitFor(() => expect(reads).toBe(2))
       }
 
@@ -205,7 +271,7 @@ describe('notes bot switches', () => {
           pending.reject(conflict())
         } else {
           pending.resolve(
-            action === 'reload' ? listed('Plan\nBot note') : { deleted: true, text: 'My plan' }
+            action.endsWith('reload') ? listed('Plan\nBot note') : { deleted: true, text: 'My plan' }
           )
         }
       })
