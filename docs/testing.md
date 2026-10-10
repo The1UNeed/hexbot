@@ -19,7 +19,11 @@
   `gitdir`/`commondir` targets from both Git directory and file markers,
   configured hooks in ignored directories and config includes, bare `*.git`
   repositories, dangling `.env` links, and ordinary writes in `project.git`
-  workspaces. Large-workspace tests cover file-tool writes/edits and macOS
+  workspaces. Hook-path tests set `core.hooksPath` to `/`, a browser store, the
+  home folder and a link to `/`, and check that nothing outside the workspace is
+  bound or locked, that no bind follows a mask, and that file tools still
+  write. FIFO tests put FIFOs at `.git`, `commondir`, a config and an include
+  and check that the scan finishes. Large-workspace tests cover file-tool writes/edits and macOS
   commands after the scan budget is reached. Incomplete scans ask before file
   changes; cache-marker `.git` files stay locked without failing the scan.
   Rust/TypeScript parity checks compare both profiles and Linux argument lists.

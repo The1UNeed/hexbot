@@ -399,7 +399,8 @@ test('secret and Git scans include read-only roots, symlink targets, linked work
   assert.ok(!scan.secrets.includes(join(work, '.env.example')));
   const args = bwrapArguments(home, [], [], [work]);
   const triples = args.map((_, i) => args.slice(i, i + 3).join('|'));
-  for (const path of scan.git) assert.ok(triples.includes(`--ro-bind|${path}|${path}`), path);
+  // Manual has no writable root, so Git targets are read-only without a bind.
+  for (const path of scan.git) assert.ok(!triples.includes(`--ro-bind|${path}|${path}`), path);
   for (const path of scan.secrets) assert.ok(triples.includes(`--ro-bind|/dev/null|${path}`), path);
   assert.ok(!args.includes('--bind'), 'Manual must never open writable roots');
   // An exact budget processes the last folder completely. One more folder fails closed.
@@ -498,5 +499,66 @@ test('macOS uses a partial scan in large workspaces and still checks cwd ancesto
   const run = command => spawnSync('/usr/bin/sandbox-exec', ['-p', profile, '/bin/bash', '-c', command], {cwd, encoding:'utf8'});
   assert.equal(run('echo ok > notes.git; cat notes.git').stdout, 'ok\n');
   assert.notEqual(run('mkdir .git').status, 0);
-  assert.ok(profile.includes(join(work, 'metadata')));
+  assert.notEqual(run('echo x > ../metadata/hooks/pre-commit').status, 0);
+});
+
+// Arguments after the confined base: no host bind may follow the first mask.
+const masksLast = args => {
+  const rest = args.slice(15), first = rest.findIndex((arg, i) => arg === '--tmpfs' || (arg === '--ro-bind' && rest[i + 1] === '/dev/null'));
+  return first < 0 || !rest.slice(first).some((arg, i, tail) => (arg === '--bind' || arg === '--ro-bind') && tail[i + 1] !== '/dev/null');
+};
+
+test('repository hook paths outside the workspace never bind, lock or refuse host folders', async t => {
+  const {spawnSync} = await import('node:child_process');
+  const {realpathSync, symlinkSync} = await import('node:fs');
+  const {homedir} = await import('node:os');
+  const {bwrapArguments, readDenied, sandboxProfile, workspaceProtected} = await import('./isolation.ts');
+  const {writeDenial} = await import('./extension.ts');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-hostile-hooks-')));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const home = join(base, 'home'), work = join(base, 'work');
+  for (const path of [home, join(work, '.git'), join(work, 'inside-hooks')]) mkdirSync(path, {recursive:true});
+  symlinkSync('/', join(work, 'linked-root'));
+  const ancestors = path => { const list = []; for (let dir = path; ; dir = join(dir, '..')) { list.push(dir); if (dir === '/') return list; } };
+  for (const target of ['/', readDenied()[0], homedir(), join(work, 'linked-root')]) {
+    writeFileSync(join(work, '.git/config'), `[core]\n\thooksPath = ${target}\n`);
+    const scan = workspaceProtected([work]);
+    assert.equal(scan.failure, undefined, target);
+    const args = bwrapArguments(home, [], [work]);
+    const binds = args.slice(15).flatMap((arg, i, rest) => arg === '--ro-bind' && rest[i + 1] !== '/dev/null' ? [rest[i + 1]] : []);
+    let real = target; try { real = realpathSync.native(target); } catch { /* A store this host does not have. */ }
+    for (const path of ancestors(real)) assert.ok(!binds.includes(path), `${target}: ${path}`);
+    assert.ok(masksLast(args), target);
+    assert.equal(writeDenial(join(work, 'notes'), work, home), undefined, target);
+    assert.match(writeDenial(join(work, '.git/hooks/pre-commit'), work, home), /read-only/);
+    const profile = sandboxProfile(home, [], [work]);
+    assert.ok(!profile.includes('(subpath "/")') && !profile.includes(`(subpath ${JSON.stringify(homedir())})`), target);
+    if (process.platform === 'darwin') {
+      const result = spawnSync('/usr/bin/sandbox-exec', ['-p', profile, '/bin/bash', '-c', 'echo ok > notes; cat notes'], {cwd:work, encoding:'utf8'});
+      assert.equal(result.stdout, 'ok\n', result.stderr);
+    }
+  }
+  // Inside the workspace the configured folder is still locked, before any mask.
+  writeFileSync(join(work, '.git/config'), '[core]\n\thooksPath = inside-hooks\n');
+  const args = bwrapArguments(home, [], [work]);
+  assert.ok(args.some((arg, i) => arg === '--ro-bind' && args[i + 1] === join(work, 'inside-hooks') && args[i + 2] === join(work, 'inside-hooks')));
+  assert.ok(masksLast(args));
+  assert.match(writeDenial(join(work, 'inside-hooks/pre-commit'), work, home), /read-only/);
+});
+
+test('FIFOs in Git metadata and config includes do not stall the scan', {skip:process.platform === 'win32'}, async t => {
+  const {spawnSync} = await import('node:child_process');
+  const {realpathSync} = await import('node:fs');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-fifo-')));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const work = join(base, 'work');
+  for (const path of [join(work, 'a/.git'), join(work, 'b/.git'), join(work, 'c'), join(work, 'd/.git')]) mkdirSync(path, {recursive:true});
+  writeFileSync(join(work, 'b/.git/config'), '[include]\n\tpath = ../include-fifo\n');
+  for (const fifo of ['a/.git/commondir', 'b/include-fifo', 'c/.git', 'd/.git/config']) assert.equal(spawnSync('mkfifo', [join(work, fifo)]).status, 0);
+  const script = `const {workspaceProtected}=await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); console.log(JSON.stringify(workspaceProtected([${JSON.stringify(work)}])));`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {encoding:'utf8', timeout:20000});
+  assert.equal(result.status, 0, result.stderr || String(result.signal));
+  const scan = JSON.parse(result.stdout);
+  assert.equal(scan.failure, undefined);
+  for (const path of ['a/.git', 'b/.git', 'b/include-fifo', 'c/.git', 'd/.git']) assert.ok(scan.git.includes(join(work, path)), path);
 });
