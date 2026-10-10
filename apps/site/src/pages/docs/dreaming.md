@@ -12,7 +12,7 @@ The dream uses the bot's configured model, soul, memory, and skills. Model provi
 
 Hexbot creates a daily dream schedule for each bot. The default time is 3:00 AM in the daemon's local time. The daemon must be running, but a missed dream catches up after it starts again.
 
-Each dream reviews activity since the start of the last successful dream. Conversations and compaction summaries arriving while a dream runs stay eligible for the next one. A failed dream leaves that cutoff unchanged.
+Each dream reviews activity from the start of the last successful dream up to, but excluding, its own start. Messages and compaction summaries at or after that start wait for the next dream, so the time windows neither overlap nor leave gaps. The first dream reviews earlier history. Failed or interrupted dreams leave the lower cutoff unchanged.
 
 Dreaming must be enabled for the daemon and for the individual bot. You can also run a bot's dream now from its Dreaming controls. The status shows the last run, next run, and any error.
 
@@ -28,7 +28,7 @@ A dream writes only to the bot's own memory. It never edits the bot's soul or yo
 
 ## Proposals from scheduled jobs
 
-A scheduled job cannot change memory while it runs unattended. When a job asks to add, replace, or remove something, Hexbot saves the request as a proposal instead. The bot's next dream reads its pending proposals, newest first, treats them as suggestions that may contain text from the web, keeps the ones it agrees with, and says in its summary which it applied or ignored. A proposal stays pending until a dream completes; a failed dream leaves it for the next one. Deleting the bot deletes its proposals.
+A scheduled job cannot change memory while it runs unattended. When a job asks to add, replace, or remove something, Hexbot saves the request as a proposal instead. The bot's next dream reads pending proposals created before it started, newest first, treats them as suggestions that may contain text from the web, keeps the ones it agrees with, and says in its summary which it applied or ignored. A proposal stays pending until a dream completes; a failed dream leaves it for the next one. Deleting the bot deletes its proposals.
 
 ## Room memory
 

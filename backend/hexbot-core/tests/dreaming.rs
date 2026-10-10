@@ -118,12 +118,12 @@ fn digest_preserves_archived_sources_filters_time_and_caps_unicode() {
         json!({"role":"user","text":"界".repeat(13000),"timestamp":100}),
     )
     .unwrap();
-    let digest = dreaming::build_digest(home.path(), "owl", 100.0, None).unwrap();
+    let digest = dreaming::build_digest(home.path(), "owl", 100.0, f64::MAX, None).unwrap();
     let text = digest["sections"][0]["transcript"].as_str().unwrap();
     assert_eq!(text.chars().count(), 12000);
     assert!(text.starts_with("[earlier messages omitted]"));
     assert!(
-        dreaming::build_digest(home.path(), "owl", 101.0, None).unwrap()["sections"]
+        dreaming::build_digest(home.path(), "owl", 101.0, f64::MAX, None).unwrap()["sections"]
             .as_array()
             .unwrap()
             .is_empty()
@@ -497,7 +497,7 @@ fn digest_prefers_native_branch_and_legacy_fallback_resolves_session_keys_and_ac
     let home = setup();
     let legacy = rusqlite::Connection::open(home.path().join("profiles/owl/state.db")).unwrap();
     legacy.execute_batch("CREATE TABLE sessions(id TEXT,session_key TEXT); CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,timestamp REAL,active INTEGER); INSERT INTO sessions VALUES ('physical-session','chat'); INSERT INTO messages VALUES (1,'physical-session','user','inactive legacy',100,0),(2,'physical-session','user','active legacy',101,1);").unwrap();
-    let before = dreaming::build_digest(home.path(), "owl", 0.0, None).unwrap();
+    let before = dreaming::build_digest(home.path(), "owl", 0.0, f64::MAX, None).unwrap();
     assert_eq!(before["sections"][0]["transcript"], "user: active legacy");
     runtime_store::append(
         home.path(),
@@ -512,7 +512,7 @@ fn digest_prefers_native_branch_and_legacy_fallback_resolves_session_keys_and_ac
     )
     .unwrap();
     runtime_store::open(home.path()).unwrap().execute("INSERT INTO native_pi_journal(journal_id,session_id,raw_json,entry_id,projection_seq,active) VALUES ('j','chat','{}','old-entry',2,0)",[]).unwrap();
-    let native = dreaming::build_digest(home.path(), "owl", 0.0, None).unwrap();
+    let native = dreaming::build_digest(home.path(), "owl", 0.0, f64::MAX, None).unwrap();
     assert_eq!(
         native["sections"][0]["transcript"],
         "user: imported native legacy"
@@ -529,7 +529,7 @@ fn digest_prefers_native_branch_and_legacy_fallback_resolves_session_keys_and_ac
         .execute("DELETE FROM native_messages WHERE seq=2", [])
         .unwrap();
     assert!(
-        dreaming::build_digest(home.path(), "owl", 0.0, None).unwrap()["sections"]
+        dreaming::build_digest(home.path(), "owl", 0.0, f64::MAX, None).unwrap()["sections"]
             .as_array()
             .unwrap()
             .is_empty()
@@ -554,7 +554,7 @@ fn digest_keeps_the_newest_conversations_within_one_prompt_budget() {
         )
         .unwrap();
     }
-    let digest = dreaming::build_digest(home.path(), "owl", 0.0, None).unwrap();
+    let digest = dreaming::build_digest(home.path(), "owl", 0.0, f64::MAX, None).unwrap();
     let ids: Vec<_> = digest["sections"]
         .as_array()
         .unwrap()
@@ -664,10 +664,11 @@ fn digest_bounds_metadata_and_counts_json_escaping_and_unicode() {
         .unwrap();
         conn.execute("INSERT INTO room_events(room_id,seq,kind,actor_id,payload_json,created_at) VALUES(?,1,'message','alice',?,?)", rusqlite::params![id, json!({"text":"界\"\n".repeat(5000)}).to_string(), n + 1]).unwrap();
     }
-    let digest = dreaming::build_digest(home.path(), "owl", 0.0, None).unwrap();
+    let digest = dreaming::build_digest(home.path(), "owl", 0.0, f64::MAX, None).unwrap();
     assert!(digest.to_string().len() <= 60_000);
     assert!(digest["omitted_conversations"].as_u64().unwrap() > 0);
-    let empty = dreaming::build_digest(home.path(), &"b".repeat(1024 * 1024), 0.0, None).unwrap();
+    let empty =
+        dreaming::build_digest(home.path(), &"b".repeat(1024 * 1024), 0.0, f64::MAX, None).unwrap();
     assert_eq!(empty["bot"].as_str().unwrap().len(), 256);
     assert!(empty.to_string().len() <= 60_000);
     // Small older conversations still fit after an oversized recent entry is skipped.
@@ -701,12 +702,12 @@ fn digest_keeps_private_thread_questions_and_sender_tool_replies() {
     )
     .unwrap();
     runtime_store::append(h, "chat", json!({"role":"tool","name":"message_bot","text":"{\"reply\":\"The plan needs a rollback\",\"section_id\":\"private\"}"})).unwrap();
-    let receiver = dreaming::build_digest(h, "cat", 0., None)
+    let receiver = dreaming::build_digest(h, "cat", 0., f64::MAX, None)
         .unwrap()
         .to_string();
     assert!(receiver.contains("user: @owl: Review the plan"));
     assert!(receiver.contains("assistant: The plan needs a rollback"));
-    let sender = dreaming::build_digest(h, "owl", 0., None)
+    let sender = dreaming::build_digest(h, "owl", 0., f64::MAX, None)
         .unwrap()
         .to_string();
     assert!(sender.contains("tool: "));
@@ -740,7 +741,7 @@ fn digest_skips_the_dreams_section_and_tool_results() {
         json!({"role":"assistant","text":"The page says the meeting moved","timestamp":202}),
     )
     .unwrap();
-    let digest = dreaming::build_digest(h, "owl", 100.0, None).unwrap();
+    let digest = dreaming::build_digest(h, "owl", 100.0, f64::MAX, None).unwrap();
     let text = digest.to_string();
     assert!(text.contains("user: Read this page for me"));
     assert!(text.contains("assistant: The page says the meeting moved"));
@@ -765,7 +766,7 @@ fn digest_skips_a_proposal_that_does_not_fit_instead_of_stopping() {
     for n in 0..5 {
         propose(format!("{n}{}", "x".repeat(2150)));
     }
-    let digest = dreaming::build_digest(h, "owl", 0.0, None).unwrap();
+    let digest = dreaming::build_digest(h, "owl", 0.0, f64::MAX, None).unwrap();
     let texts: Vec<&str> = digest["proposals"]
         .as_array()
         .unwrap()
@@ -797,7 +798,7 @@ async fn proposals_wait_for_a_complete_dream_and_enter_its_digest_newest_first()
         )
         .unwrap();
     }
-    let digest = dreaming::build_digest(h, "owl", 0.0, None).unwrap();
+    let digest = dreaming::build_digest(h, "owl", 0.0, f64::MAX, None).unwrap();
     let proposals = digest["proposals"].as_array().unwrap();
     assert_eq!(proposals.len(), 20);
     assert_eq!(proposals[0]["text"], "Proposal 24");
@@ -806,7 +807,7 @@ async fn proposals_wait_for_a_complete_dream_and_enter_its_digest_newest_first()
     assert_eq!(proposals[0]["action"], "add");
     // A room dream reads the room, not the bot's proposals.
     assert!(
-        dreaming::build_digest(h, "owl", 0.0, Some("room")).unwrap()["proposals"]
+        dreaming::build_digest(h, "owl", 0.0, f64::MAX, Some("room")).unwrap()["proposals"]
             .as_array()
             .unwrap()
             .is_empty()
@@ -941,7 +942,7 @@ fn digest_carries_compaction_summaries_of_the_current_branch_since_the_last_drea
         ],
     );
     runtime_store::reconcile(h, "owl", "chat", "alice").unwrap();
-    let digest = dreaming::build_digest(h, "owl", epoch(12), None).unwrap();
+    let digest = dreaming::build_digest(h, "owl", epoch(12), f64::MAX, None).unwrap();
     let section = &digest["sections"][0];
     assert_eq!(
         section["compactions"],
@@ -962,7 +963,7 @@ fn digest_carries_compaction_summaries_of_the_current_branch_since_the_last_drea
     assert!(!text.contains("before the last dream"));
     assert!(!text.contains("abandoned"));
     // Nothing compacted since the last dream: the section looks as it always did.
-    let later = dreaming::build_digest(h, "owl", epoch(18) + 1.0, None).unwrap();
+    let later = dreaming::build_digest(h, "owl", epoch(18) + 1.0, f64::MAX, None).unwrap();
     assert!(later["sections"][0].get("compactions").is_none());
     assert_eq!(
         later["sections"][0]["transcript"],
@@ -989,7 +990,7 @@ fn digest_keeps_the_newest_summaries_and_the_verbatim_tail_within_one_section_bu
         ],
     );
     runtime_store::reconcile(h, "owl", "chat", "alice").unwrap();
-    let digest = dreaming::build_digest(h, "owl", 0.0, None).unwrap();
+    let digest = dreaming::build_digest(h, "owl", 0.0, f64::MAX, None).unwrap();
     let section = &digest["sections"][0];
     let compactions = section["compactions"].as_array().unwrap();
     assert_eq!(compactions.len(), 2);
@@ -1012,7 +1013,7 @@ fn compaction_summaries_leave_the_conversation_file_alone_and_vanish_with_the_se
     let home = setup();
     let h = home.path();
     assert!(
-        runtime_store::compaction_summaries(h, "chat", 0.0)
+        runtime_store::compaction_summaries(h, "chat", 0.0, f64::MAX)
             .unwrap()
             .is_empty()
     );
@@ -1027,11 +1028,11 @@ fn compaction_summaries_leave_the_conversation_file_alone_and_vanish_with_the_se
     bytes.extend_from_slice(br#"{"type":"message","id":"torn","parentId":"c1","#);
     fs::write(&path, &bytes).unwrap();
     assert_eq!(
-        runtime_store::compaction_summaries(h, "chat", 0.0).unwrap(),
+        runtime_store::compaction_summaries(h, "chat", 0.0, f64::MAX).unwrap(),
         vec![(epoch(9), "summary".to_owned())]
     );
     assert!(
-        runtime_store::compaction_summaries(h, "chat", epoch(9) + 1.0)
+        runtime_store::compaction_summaries(h, "chat", epoch(9) + 1.0, f64::MAX)
             .unwrap()
             .is_empty()
     );
@@ -1039,7 +1040,7 @@ fn compaction_summaries_leave_the_conversation_file_alone_and_vanish_with_the_se
     assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
     runtime_store::delete(h, "chat").unwrap();
     assert!(
-        runtime_store::compaction_summaries(h, "chat", 0.0)
+        runtime_store::compaction_summaries(h, "chat", 0.0, f64::MAX)
             .unwrap()
             .is_empty()
     );
@@ -1067,21 +1068,21 @@ fn compaction_summaries_skip_idle_files_before_reading_them() {
     set_mtime();
     for since in [epoch(8), epoch(9)] {
         assert_eq!(
-            runtime_store::compaction_summaries(h, "chat", since).unwrap(),
+            runtime_store::compaction_summaries(h, "chat", since, f64::MAX).unwrap(),
             vec![(epoch(9), "summary".to_owned())]
         );
     }
     assert!(
-        runtime_store::compaction_summaries(h, "chat", epoch(10))
+        runtime_store::compaction_summaries(h, "chat", epoch(10), f64::MAX)
             .unwrap()
             .is_empty()
     );
     // An old malformed file would fail parsing if the reader opened it.
     fs::write(&path, "not JSON\n").unwrap();
     set_mtime();
-    assert!(runtime_store::compaction_summaries(h, "chat", epoch(8)).is_err());
+    assert!(runtime_store::compaction_summaries(h, "chat", epoch(8), f64::MAX).is_err());
     assert!(
-        runtime_store::compaction_summaries(h, "chat", epoch(10))
+        runtime_store::compaction_summaries(h, "chat", epoch(10), f64::MAX)
             .unwrap()
             .is_empty()
     );
@@ -1090,7 +1091,7 @@ fn compaction_summaries_skip_idle_files_before_reading_them() {
         .execute("UPDATE sections SET archived_at=1 WHERE id='chat'", [])
         .unwrap();
     assert!(
-        dreaming::build_digest(h, "owl", epoch(10), None).unwrap()["sections"]
+        dreaming::build_digest(h, "owl", epoch(10), f64::MAX, None).unwrap()["sections"]
             .as_array()
             .unwrap()
             .is_empty()
@@ -1112,13 +1113,13 @@ fn compaction_summaries_read_whole_second_mtimes_near_the_cutoff() {
         .unwrap();
     for since in [epoch(9) + 0.5, epoch(9) + 0.75] {
         assert_eq!(
-            runtime_store::compaction_summaries(h, "chat", since).unwrap(),
+            runtime_store::compaction_summaries(h, "chat", since, f64::MAX).unwrap(),
             vec![(epoch(9) + 0.75, "summary".to_owned())]
         );
     }
     // The mtime tolerance must not weaken the entry timestamp filter.
     assert!(
-        runtime_store::compaction_summaries(h, "chat", epoch(9) + 0.8)
+        runtime_store::compaction_summaries(h, "chat", epoch(9) + 0.8, f64::MAX)
             .unwrap()
             .is_empty()
     );
@@ -1146,12 +1147,12 @@ fn compaction_summaries_skip_missing_and_invalid_timestamps() {
     );
     for since in [0.0, epoch(12)] {
         assert_eq!(
-            runtime_store::compaction_summaries(h, "chat", since).unwrap(),
+            runtime_store::compaction_summaries(h, "chat", since, f64::MAX).unwrap(),
             vec![(epoch(12), "valid summary".to_owned())]
         );
     }
     assert!(
-        runtime_store::compaction_summaries(h, "chat", epoch(13))
+        runtime_store::compaction_summaries(h, "chat", epoch(13), f64::MAX)
             .unwrap()
             .is_empty()
     );
@@ -1185,7 +1186,7 @@ fn digest_carries_only_this_bots_room_summaries_within_the_same_budget() {
         ],
     );
     for room in [None, Some("room")] {
-        let digest = dreaming::build_digest(h, "owl", epoch(10), room).unwrap();
+        let digest = dreaming::build_digest(h, "owl", epoch(10), f64::MAX, room).unwrap();
         let entry = &digest["rooms"][0];
         assert_eq!(entry["compactions"].as_array().unwrap().len(), 2);
         assert_eq!(section_chars(entry), 12_000);
@@ -1195,7 +1196,7 @@ fn digest_carries_only_this_bots_room_summaries_within_the_same_budget() {
         assert!(!digest.to_string().contains("other bot's private summary"));
     }
     // A compaction alone is recent activity, even without a new room event.
-    let only_summary = dreaming::build_digest(h, "owl", epoch(12), Some("room")).unwrap();
+    let only_summary = dreaming::build_digest(h, "owl", epoch(12), f64::MAX, Some("room")).unwrap();
     assert_eq!(only_summary["rooms"][0]["transcript"], "");
     assert_eq!(
         only_summary["rooms"][0]["compactions"]
@@ -1205,13 +1206,13 @@ fn digest_carries_only_this_bots_room_summaries_within_the_same_budget() {
         1
     );
     assert!(
-        dreaming::build_digest(h, "owl", epoch(13), Some("room")).unwrap()["rooms"]
+        dreaming::build_digest(h, "owl", epoch(13), f64::MAX, Some("room")).unwrap()["rooms"]
             .as_array()
             .unwrap()
             .is_empty()
     );
     assert!(
-        dreaming::build_digest(h, "owl", 0.0, Some("another-room")).unwrap()["rooms"]
+        dreaming::build_digest(h, "owl", 0.0, f64::MAX, Some("another-room")).unwrap()["rooms"]
             .as_array()
             .unwrap()
             .is_empty()
@@ -1222,11 +1223,132 @@ fn digest_carries_only_this_bots_room_summaries_within_the_same_budget() {
     )
     .unwrap();
     assert!(
-        dreaming::build_digest(h, "owl", 0.0, None).unwrap()["rooms"]
+        dreaming::build_digest(h, "owl", 0.0, f64::MAX, None).unwrap()["rooms"]
             .as_array()
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn summaries_written_after_dream_start_before_scan_are_read_by_exactly_one_dream() {
+    use std::io::Write;
+
+    for in_room in [false, true] {
+        let home = setup();
+        let h = home.path();
+        let stored = if in_room { "room-owl" } else { "chat" };
+        let room = in_room.then_some("room");
+        if in_room {
+            db::open(h).unwrap().execute_batch("INSERT INTO rooms(id,name,owner_id) VALUES ('room','Room','alice'); INSERT INTO room_members(room_id,member_kind,member_id) VALUES ('room','bot','owl'); INSERT INTO room_sessions VALUES ('room','owl','room-owl',NULL);").unwrap();
+        }
+        let path = conversation_for(h, stored, "owl", &[said("u0", None, "user", "old", 7)]);
+        let first_start = epoch(10);
+        // These entries arrive after the first dream starts, before its scan.
+        // Include the exact start boundaries to check both halves of the interval.
+        let entries = [
+            compacted("c0", "u0", "summary at first start", 10),
+            said("u1", Some("c0"), "user", "message at first start", 10),
+            compacted("c1", "u1", "summary before scan", 11),
+            said("u2", Some("c1"), "user", "message before scan", 11),
+            compacted("c2", "u2", "summary at second start", 12),
+            said("u3", Some("c2"), "user", "message at second start", 12),
+        ];
+        let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
+        for entry in entries {
+            writeln!(file, "{entry}").unwrap();
+        }
+        runtime_store::reconcile(h, "owl", stored, "alice").unwrap();
+        if in_room {
+            for (seq, hour, text) in [
+                (1, 7, "old"),
+                (2, 10, "message at first start"),
+                (3, 11, "message before scan"),
+                (4, 12, "message at second start"),
+            ] {
+                db::open(h).unwrap().execute(
+                    "INSERT INTO room_events(room_id,seq,kind,actor_id,payload_json,created_at) VALUES ('room',?,'message','alice',?,?)",
+                    rusqlite::params![seq, json!({"text":text}).to_string(), epoch(hour)],
+                ).unwrap();
+            }
+        }
+        let digests = [
+            dreaming::build_digest(h, "owl", epoch(8), first_start, room).unwrap(),
+            dreaming::build_digest(h, "owl", first_start, epoch(12), room).unwrap(),
+            dreaming::build_digest(h, "owl", epoch(12), epoch(14), room).unwrap(),
+        ];
+        let key = if in_room { "rooms" } else { "sections" };
+        assert!(digests[0][key].as_array().unwrap().is_empty());
+        let middle = &digests[1][key][0];
+        assert_eq!(middle["compactions"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            middle["compactions"][0]["summary"],
+            "summary at first start"
+        );
+        assert_eq!(middle["compactions"][1]["summary"], "summary before scan");
+        assert_eq!(
+            digests[2][key][0]["compactions"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(
+            digests[2][key][0]["compactions"][0]["summary"],
+            "summary at second start"
+        );
+        for text in [
+            "message at first start",
+            "message before scan",
+            "message at second start",
+        ] {
+            assert_eq!(
+                digests
+                    .iter()
+                    .filter(|d| d.to_string().contains(text))
+                    .count(),
+                1,
+                "{text}"
+            );
+        }
+        assert_eq!(
+            digests
+                .iter()
+                .filter(|d| d.to_string().contains("summary before scan"))
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn legacy_messages_and_pending_proposals_wait_until_the_next_dream_at_the_start_boundary() {
+    let home = setup();
+    let h = home.path();
+    let legacy = rusqlite::Connection::open(h.join("profiles/owl/state.db")).unwrap();
+    legacy.execute_batch("CREATE TABLE sessions(id TEXT,session_key TEXT); CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,timestamp REAL,active INTEGER); INSERT INTO sessions VALUES ('physical-session','chat'); INSERT INTO messages VALUES (1,'physical-session','user','before',9,1),(2,'physical-session','user','at start',10,1),(3,'physical-session','user','after start',11,1);").unwrap();
+    for (id, at) in [("before", 9), ("at-start", 10), ("after-start", 11)] {
+        db::open(h).unwrap().execute(
+            "INSERT INTO memory_proposals(id,bot,owner_id,job_id,action,args_json,created_at) VALUES (?,'owl','alice','job','add','{}',?)",
+            rusqlite::params![id, at],
+        ).unwrap();
+    }
+    let first = dreaming::build_digest(h, "owl", 0.0, 10.0, None).unwrap();
+    assert_eq!(first["sections"][0]["transcript"], "user: before");
+    assert_eq!(first["proposals"].as_array().unwrap().len(), 1);
+    assert_eq!(first["proposals"][0]["id"], "before");
+    db::open(h)
+        .unwrap()
+        .execute(
+            "UPDATE memory_proposals SET consumed_at=12 WHERE id='before'",
+            [],
+        )
+        .unwrap();
+    let second = dreaming::build_digest(h, "owl", 10.0, 12.0, None).unwrap();
+    assert_eq!(
+        second["sections"][0]["transcript"],
+        "user: at start\nuser: after start"
+    );
+    assert_eq!(second["proposals"].as_array().unwrap().len(), 2);
+    assert_eq!(second["proposals"][0]["id"], "after-start");
+    assert_eq!(second["proposals"][1]["id"], "at-start");
 }
 
 #[tokio::test]
@@ -1265,7 +1387,7 @@ async fn next_dream_reads_compaction_written_between_digest_and_completion() {
             .unwrap()
             .contains("summary written during the dream")
     );
-    let at = runtime_store::compaction_summaries(h, "chat", 0.0).unwrap()[0].0;
+    let at = runtime_store::compaction_summaries(h, "chat", 0.0, f64::MAX).unwrap()[0].0;
     let started = first["dream"]["started_at"].as_f64().unwrap();
     assert!(at >= started);
     assert!(at < first["dream"]["finished_at"].as_f64().unwrap());
@@ -1294,6 +1416,7 @@ async fn next_dream_reads_compaction_written_between_digest_and_completion() {
     let prompts = fs::read_to_string(h.join("prompts.log")).unwrap();
     let digest: Value = serde_json::from_str(prompts.lines().last().unwrap()).unwrap();
     assert_eq!(digest["since"], started);
+    assert_eq!(digest["until"], second["dream"]["started_at"]);
     assert_eq!(
         digest["sections"][0]["compactions"][0]["summary"],
         "summary written during the dream"

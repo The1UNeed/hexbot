@@ -15,13 +15,16 @@ The native scheduler and digest builder live in
   and records durable preferences and lessons. Unfinished work and daily
   events stay in conversation history. It never writes soul or About you.
 - The digest includes sections and rooms with activity since the start of the
-  last successful dream, recorded before its digest is built. Activity arriving
-  while a dream runs remains eligible for the next dream; failed dreams do not
-  advance this cutoff. It retains the newest 12,000 characters per conversation,
+  last successful dream up to, but excluding, the current dream's start.
+  Both starts are recorded before building their digests. Messages and compaction
+  summaries at or after the current start wait for the next dream, so the time
+  windows neither overlap nor leave gaps. A first dream starts at the beginning
+  of history; failed or interrupted dreams do not advance the lower cutoff.
+  It retains the newest 12,000 characters per conversation,
   caps the complete serialized digest at 60,000 bytes, and reports how many
   conversations it left out as `omitted_conversations`. Titles keep their
   first 256 characters.
-- A section or room conversation Pi compacted since the last dream also
+- A section or room conversation Pi compacted within that time window also
   carries the summaries Pi wrote at those compactions as
   `compactions: [{at, summary}]`, oldest first, read from its
   `conversation.jsonl` on the current branch only; abandoned branches,
@@ -62,9 +65,9 @@ The native scheduler and digest builder live in
   in a job's session but refuses to write: soul changes need the user, in a
   section, and the dream never writes the soul either.
 - The next bot dream (not a room dream) puts pending proposals in the digest
-  as `proposals`, newest first, at most 20 and at most 10,000 bytes, counted
-  against the 60,000-byte budget; a proposal that does not fit is skipped
-  and the smaller ones after it still go in. The prompt labels them as suggestions from
+  as `proposals`, created before the current dream's start, newest first,
+  at most 20 and at most 10,000 bytes, counted against the 60,000-byte budget;
+  a proposal that does not fit is skipped and the smaller ones after it still go in. The prompt labels them as suggestions from
   unattended jobs that may carry text from the web. The dream applies the
   ones it agrees with through its own memory tool, which scans them again,
   and says in its summary which it applied or ignored. When the dream

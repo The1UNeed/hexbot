@@ -168,13 +168,13 @@ pub fn propose_memory(
 }
 
 /// Pending proposals, newest first, bounded for one digest.
-fn pending_proposals(conn: &rusqlite::Connection, bot: &str) -> Result<Vec<Value>> {
+fn pending_proposals(conn: &rusqlite::Connection, bot: &str, until: f64) -> Result<Vec<Value>> {
     let mut proposals = vec![];
     let mut used = 0;
     for row in common::rows(
         conn,
-        "SELECT id,job_id,action,args_json,created_at FROM memory_proposals WHERE bot=? AND consumed_at IS NULL ORDER BY created_at DESC,rowid DESC LIMIT ?",
-        &[&bot, &(PROPOSAL_COUNT_CAP as i64)],
+        "SELECT id,job_id,action,args_json,created_at FROM memory_proposals WHERE bot=? AND consumed_at IS NULL AND created_at<? ORDER BY created_at DESC,rowid DESC LIMIT ?",
+        &[&bot, &until, &(PROPOSAL_COUNT_CAP as i64)],
     )? {
         let args = common::json_field(&row["args_json"]);
         let mut proposal = json!({
@@ -220,15 +220,22 @@ fn consume_proposals(home: &Path, bot: &str, dream: &str, ids: &[&str]) -> Resul
 /// section is the dream's output, not its input, and tool results are left out:
 /// the dream learns from what the user and the bot said, not from fetched pages.
 /// Another bot's reply through message_bot is speech, so it stays.
-/// A section Pi compacted since the last dream also carries those summaries
+/// Activity is restricted to [since, until), where until is this dream's start.
+/// A section Pi compacted in that interval also carries those summaries
 /// as `compactions`, so a long day is not judged by its last messages alone.
-pub fn build_digest(home: &Path, bot: &str, since: f64, room: Option<&str>) -> Result<Value> {
+pub fn build_digest(
+    home: &Path,
+    bot: &str,
+    since: f64,
+    until: f64,
+    room: Option<&str>,
+) -> Result<Value> {
     common::identifier(bot)?;
     let conn = db::open(home)?;
     let mut sections = vec![];
     let mut proposals = vec![];
     if room.is_none() {
-        proposals = pending_proposals(&conn, bot)?;
+        proposals = pending_proposals(&conn, bot, until)?;
         let legacy_path = home.join("profiles").join(bot).join("state.db");
         let legacy = if legacy_path.exists() {
             Some(rusqlite::Connection::open_with_flags(
@@ -261,13 +268,16 @@ pub fn build_digest(home: &Path, bot: &str, since: f64, room: Option<&str>) -> R
             if native_exists {
                 // Summaries are a bonus; one unreadable file must not stop the dream.
                 compactions =
-                    runtime_store::compaction_summaries(home, id, since).unwrap_or_default();
+                    runtime_store::compaction_summaries(home, id, since, until).unwrap_or_default();
                 for (at, _) in &compactions {
                     latest = latest.max(*at);
                 }
                 for message in runtime_store::history(home, id)? {
                     let at = message["timestamp"].as_f64().unwrap_or(0.0);
-                    if at < since || message["role"] == "tool" && message["name"] != "message_bot" {
+                    if at < since
+                        || at >= until
+                        || message["role"] == "tool" && message["name"] != "message_bot"
+                    {
                         continue;
                     }
                     latest = latest.max(at);
@@ -288,8 +298,8 @@ pub fn build_digest(home: &Path, bot: &str, since: f64, room: Option<&str>) -> R
                 if let Some(session) = session {
                     for message in common::rows(
                         store,
-                        "SELECT role,content,timestamp FROM messages WHERE session_id=? AND active=1 AND COALESCE(timestamp,0)>=? AND role<>'tool' ORDER BY id",
-                        &[&session, &since],
+                        "SELECT role,content,timestamp FROM messages WHERE session_id=? AND active=1 AND COALESCE(timestamp,0)>=? AND COALESCE(timestamp,0)<? AND role<>'tool' ORDER BY id",
+                        &[&session, &since, &until],
                     )? {
                         let content = message["content"]
                             .as_str()
@@ -327,13 +337,13 @@ pub fn build_digest(home: &Path, bot: &str, since: f64, room: Option<&str>) -> R
         }
         let rows = common::rows(
             &conn,
-            "SELECT kind,actor_id,payload_json,created_at FROM room_events WHERE room_id=? AND created_at>=? ORDER BY seq",
-            &[&id, &since],
+            "SELECT kind,actor_id,payload_json,created_at FROM room_events WHERE room_id=? AND created_at>=? AND created_at<? ORDER BY seq",
+            &[&id, &since, &until],
         )?;
         let compactions = r["stored_session_id"]
             .as_str()
             .map(|stored| {
-                runtime_store::compaction_summaries(home, stored, since).unwrap_or_default()
+                runtime_store::compaction_summaries(home, stored, since, until).unwrap_or_default()
             })
             .unwrap_or_default();
         if !rows.is_empty() || !compactions.is_empty() {
@@ -375,7 +385,7 @@ pub fn build_digest(home: &Path, bot: &str, since: f64, room: Option<&str>) -> R
     entries.sort_by(|a, b| b.0.total_cmp(&a.0));
     // Proposals are bounded by PROPOSAL_CAP and take their room from the same budget.
     let mut used =
-        json!({"bot":digest_bot,"since":since,"sections":[],"rooms":[],"proposals":proposals,"omitted_conversations":total})
+        json!({"bot":digest_bot,"since":since,"until":until,"sections":[],"rooms":[],"proposals":proposals,"omitted_conversations":total})
             .to_string()
             .len();
     entries.retain(|(_, _, v)| {
@@ -392,7 +402,7 @@ pub fn build_digest(home: &Path, bot: &str, since: f64, room: Option<&str>) -> R
     let values =
         |entries: Vec<(f64, bool, Value)>| entries.into_iter().map(|e| e.2).collect::<Vec<_>>();
     Ok(
-        json!({"bot":digest_bot,"since":since,"sections":values(sections),"rooms":values(rooms),"proposals":proposals,"omitted_conversations":omitted}),
+        json!({"bot":digest_bot,"since":since,"until":until,"sections":values(sections),"rooms":values(rooms),"proposals":proposals,"omitted_conversations":omitted}),
     )
 }
 
@@ -847,12 +857,14 @@ impl Dreaming {
             let home = self.home.clone();
             let digest_bot = bot.to_owned();
             let digest_room = room.map(str::to_owned);
+            let until = context["started_at"].as_f64().unwrap();
             let digest = tokio::task::spawn_blocking(move || {
                 let room = digest_room.as_deref();
                 build_digest(
                     &home,
                     &digest_bot,
                     last_successful_start(&home, &digest_bot, room)?,
+                    until,
                     room,
                 )
             })

@@ -1085,11 +1085,16 @@ fn active_ids(entries: &[Value]) -> Result<HashSet<&str>> {
     }
     Ok(active)
 }
-/// Summaries Pi wrote when it compacted this section's current branch at or
-/// after `since`, oldest first, as `(timestamp, summary)`. Reads the
+/// Summaries Pi wrote when it compacted this section's current branch in
+/// `[since, until)`, oldest first, as `(timestamp, summary)`. Reads the
 /// conversation file without changing it, so it is safe while Pi runs; a
 /// section without one (legacy or deleted) has none.
-pub fn compaction_summaries(home: &Path, stored: &str, since: f64) -> Result<Vec<(f64, String)>> {
+pub fn compaction_summaries(
+    home: &Path,
+    stored: &str,
+    since: f64,
+    until: f64,
+) -> Result<Vec<(f64, String)>> {
     common::identifier(stored)?;
     let path = home
         .join("runtime/sessions")
@@ -1124,7 +1129,7 @@ pub fn compaction_summaries(home: &Path, stored: &str, since: f64) -> Result<Vec
         .filter_map(|entry| {
             let at = parsed_entry_timestamp(entry)?;
             let summary = entry["summary"].as_str()?;
-            (at >= since).then(|| (at, summary.to_owned()))
+            (at >= since && at < until).then(|| (at, summary.to_owned()))
         })
         .collect())
 }

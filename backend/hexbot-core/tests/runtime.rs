@@ -1200,13 +1200,13 @@ async fn actual_pi_generates_descriptions_and_messages_a_private_teammate() {
     assert_eq!(opened["messages"][0]["text"], "@owl: Review the plan");
     assert_eq!(opened["messages"][0]["display_kind"], "hidden");
     assert!(
-        hexbot_core::dreaming::build_digest(h, "owl", 0., None)
+        hexbot_core::dreaming::build_digest(h, "owl", 0., f64::MAX, None)
             .unwrap()
             .to_string()
             .contains("tool: ")
     );
     assert!(
-        hexbot_core::dreaming::build_digest(h, "cat", 0., None)
+        hexbot_core::dreaming::build_digest(h, "cat", 0., f64::MAX, None)
             .unwrap()
             .to_string()
             .contains("@owl: Review the plan")
