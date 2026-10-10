@@ -126,8 +126,10 @@ fn read_memory(home: &Path, bot: &str) -> Result<String> {
         Err(e) => Err(e.into()),
     }
 }
-fn last_finished(home: &Path, bot: &str, room: Option<&str>) -> Result<f64> {
-    Ok(db::open(home)?.query_row("SELECT COALESCE(MAX(finished_at),0) FROM dreams WHERE bot=? AND room_id IS ? AND status='complete'",params![bot,room],|r|r.get(0))?)
+fn last_successful_start(home: &Path, bot: &str, room: Option<&str>) -> Result<f64> {
+    // started_at is recorded before building the digest. Activity arriving
+    // while the dream runs must remain eligible for the next dream.
+    Ok(db::open(home)?.query_row("SELECT COALESCE(MAX(started_at),0) FROM dreams WHERE bot=? AND room_id IS ? AND status='complete'",params![bot,room],|r|r.get(0))?)
 }
 
 /// Save a memory change a scheduled job asked for. Jobs run unattended, often
@@ -850,7 +852,7 @@ impl Dreaming {
                 build_digest(
                     &home,
                     &digest_bot,
-                    last_finished(&home, &digest_bot, room)?,
+                    last_successful_start(&home, &digest_bot, room)?,
                     room,
                 )
             })

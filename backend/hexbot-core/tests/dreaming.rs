@@ -1098,6 +1098,33 @@ fn compaction_summaries_skip_idle_files_before_reading_them() {
 }
 
 #[test]
+fn compaction_summaries_read_whole_second_mtimes_near_the_cutoff() {
+    let home = setup();
+    let h = home.path();
+    let mut summary = compacted("c1", "u0", "summary", 9);
+    summary["timestamp"] = json!("2026-09-24T09:00:00.750Z");
+    let path = conversation(h, &[said("u0", None, "user", "start", 8), summary]);
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(epoch(9) as u64))
+        .unwrap();
+    for since in [epoch(9) + 0.5, epoch(9) + 0.75] {
+        assert_eq!(
+            runtime_store::compaction_summaries(h, "chat", since).unwrap(),
+            vec![(epoch(9) + 0.75, "summary".to_owned())]
+        );
+    }
+    // The mtime tolerance must not weaken the entry timestamp filter.
+    assert!(
+        runtime_store::compaction_summaries(h, "chat", epoch(9) + 0.8)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn compaction_summaries_skip_missing_and_invalid_timestamps() {
     let home = setup();
     let h = home.path();
@@ -1200,6 +1227,79 @@ fn digest_carries_only_this_bots_room_summaries_within_the_same_budget() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn next_dream_reads_compaction_written_between_digest_and_completion() {
+    let home = setup();
+    let h = home.path();
+    let path = conversation(h, &[said("u0", None, "user", "start", 8)]);
+    runtime_store::reconcile(h, "owl", "chat", "alice").unwrap();
+    let pi = fake_pi(h, false);
+    let mut summary = compacted("c1", "u0", "summary written during the dream", 9);
+    summary.as_object_mut().unwrap().remove("timestamp");
+    // Pi receives the prompt only after the digest is built. Append once before
+    // replying, so the summary exists before finished_at but missed that digest.
+    let append = format!(
+        "if(c.message.includes('daily Hexbot dream') && !fs.existsSync({marker})){{const entry={summary};entry.timestamp=new Date().toISOString();fs.appendFileSync({path},JSON.stringify(entry)+'\\n');fs.writeFileSync({marker},'done');}}",
+        marker = json!(h.join("compacted")),
+        path = json!(path),
+    );
+    let script = fs::read_to_string(&pi)
+        .unwrap()
+        .replace("if(false)return;", &format!("{append}if(false)return;"));
+    fs::write(&pi, script).unwrap();
+    let hub = EventHub::new();
+    let mut receiver = hub.subscribe();
+    let runtime = Runtime::new(h.into(), hub.clone(), pi).unwrap();
+    let dreams = Dreaming::new(h.into(), runtime.clone(), hub);
+    dreams
+        .call("alice", "hexbot.dreaming.run_now", &json!({"bot":"owl"}))
+        .await
+        .unwrap()
+        .unwrap();
+    let first = event(&mut receiver, "hexbot.dreaming.changed").await;
+    assert_eq!(first["dream"]["status"], "complete");
+    assert!(
+        !fs::read_to_string(h.join("prompts.log"))
+            .unwrap()
+            .contains("summary written during the dream")
+    );
+    let at = runtime_store::compaction_summaries(h, "chat", 0.0).unwrap()[0].0;
+    let started = first["dream"]["started_at"].as_f64().unwrap();
+    assert!(at >= started);
+    assert!(at < first["dream"]["finished_at"].as_f64().unwrap());
+    // Later failed dreams and successful dreams for another room must not
+    // advance this bot dream's cutoff.
+    db::open(h)
+        .unwrap()
+        .execute_batch("INSERT INTO rooms(id,name,owner_id) VALUES ('other','Other','alice');")
+        .unwrap();
+    for (id, room, status) in [
+        ("failed", None, "failed"),
+        ("room", Some("other"), "complete"),
+    ] {
+        db::open(h).unwrap().execute(
+            "INSERT INTO dreams(id,bot,room_id,started_at,finished_at,status,owner_id) VALUES (?,'owl',?,?,?,?, 'alice')",
+            rusqlite::params![id, room, common::now(), common::now(), status],
+        ).unwrap();
+    }
+    dreams
+        .call("alice", "hexbot.dreaming.run_now", &json!({"bot":"owl"}))
+        .await
+        .unwrap()
+        .unwrap();
+    let second = event(&mut receiver, "hexbot.dreaming.changed").await;
+    assert_eq!(second["dream"]["status"], "complete");
+    let prompts = fs::read_to_string(h.join("prompts.log")).unwrap();
+    let digest: Value = serde_json::from_str(prompts.lines().last().unwrap()).unwrap();
+    assert_eq!(digest["since"], started);
+    assert_eq!(
+        digest["sections"][0]["compactions"][0]["summary"],
+        "summary written during the dream"
+    );
+    dreams.shutdown().await;
+    runtime.shutdown().await;
 }
 
 #[tokio::test]

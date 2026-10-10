@@ -1101,11 +1101,12 @@ pub fn compaction_summaries(home: &Path, stored: &str, since: f64) -> Result<Vec
         Err(error) => return Err(error.into()),
     };
     // A recent compaction requires a recent append. Leave idle files unread.
+    // Allow for filesystems such as HFS+ that round mtimes to whole seconds.
     if metadata
         .modified()
         .ok()
         .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-        .is_some_and(|at| at.as_secs_f64() < since)
+        .is_some_and(|at| at.as_secs_f64() < since - 1.0)
     {
         return Ok(vec![]);
     }
