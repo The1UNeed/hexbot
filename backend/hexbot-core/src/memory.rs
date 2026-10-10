@@ -271,14 +271,23 @@ pub fn month_stamp() -> String {
 /// Entries a bot adds carry the month they were learned, so a dream can tell
 /// a stale fact from a current one. Every non-empty line of `text` is one
 /// entry and gets ` [YYYY-MM]` unless it already ends with a stamp; blank
-/// lines and markup (headings, code fences, rules) are left alone.
+/// lines, markup (headings and rules), and fenced code blocks are left alone.
 /// Whole-file writes (`set`) are never stamped, so the dream and the user
 /// keep control of the text.
 pub fn stamp_entries(text: &str, month: &str) -> String {
+    stamp_entries_after("", text, month)
+}
+
+/// An addition can continue a code fence opened in the existing memory.
+pub(crate) fn stamp_entries_after(old: &str, text: &str, month: &str) -> String {
+    let mut fence = CodeFence::default();
+    for line in old.lines() {
+        fence.contains(line);
+    }
     text.lines()
         .map(|line| {
             let entry = line.trim_end();
-            if entry.is_empty() || is_markup(entry) || is_stamped(entry) {
+            if fence.contains(line) || entry.is_empty() || is_markup(entry) || is_stamped(entry) {
                 line.to_owned()
             } else {
                 format!("{entry} [{month}]")
@@ -300,11 +309,15 @@ pub fn restamp_span(text: &str, span: Range<usize>, month: &str) -> String {
     let start = text[..span.start].rfind('\n').map_or(0, |i| i + 1);
     let last = span.end - usize::from(text[..span.end].ends_with('\n'));
     let end = text[last..].find('\n').map_or(text.len(), |i| last + i);
+    let mut fence = CodeFence::default();
+    for line in text[..start].lines() {
+        fence.contains(line);
+    }
     let touched = text[start..end]
         .lines()
         .map(|line| {
             let entry = strip_stamps(line.trim_end());
-            if entry.is_empty() || is_markup(entry) {
+            if fence.contains(line) || entry.is_empty() || is_markup(entry) {
                 line.to_owned()
             } else {
                 format!("{entry} [{month}]")
@@ -322,7 +335,7 @@ pub fn drop_emptied_line(text: &str, at: usize) -> String {
     let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
     let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
     let left = strip_stamps(text[start..end].trim());
-    if !left.trim_matches(['-', '*', '+', ' ', '\t']).is_empty() {
+    if is_markup(left) || !left.trim_matches(['-', '*', '+', ' ', '\t']).is_empty() {
         return text.to_owned();
     }
     // Take one of the newlines around the line with it.
@@ -332,6 +345,30 @@ pub fn drop_emptied_line(text: &str, at: usize) -> String {
         (start.saturating_sub(1), end)
     };
     format!("{}{}", &text[..start], &text[end..])
+}
+
+/// Track both fence characters and opening length, so shorter or mismatched
+/// fences inside code do not close the block. Delimiter lines are code too.
+#[derive(Default)]
+struct CodeFence(Option<(u8, usize)>);
+
+impl CodeFence {
+    fn contains(&mut self, line: &str) -> bool {
+        let line = line.trim_start();
+        let marker = line.as_bytes().first().copied().unwrap_or_default();
+        let count = line.bytes().take_while(|b| *b == marker).count();
+        if let Some((opening, length)) = self.0 {
+            if marker == opening && count >= length && line[count..].trim().is_empty() {
+                self.0 = None;
+            }
+            return true;
+        }
+        if matches!(marker, b'`' | b'~') && count >= 3 {
+            self.0 = Some((marker, count));
+            return true;
+        }
+        false
+    }
 }
 
 /// Markdown structure that is not an entry: a heading, a code fence, or a
@@ -358,7 +395,8 @@ fn is_stamped(entry: &str) -> bool {
         && b[n - 1] == b']'
 }
 
-fn strip_stamps(mut entry: &str) -> &str {
+pub(crate) fn strip_stamps(entry: &str) -> &str {
+    let mut entry = entry.trim_end();
     while is_stamped(entry) {
         entry = entry[..entry.len() - 9].trim_end();
     }
