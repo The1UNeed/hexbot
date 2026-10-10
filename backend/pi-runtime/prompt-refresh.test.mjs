@@ -10,6 +10,19 @@ import hexbot from './extension.ts';
 
 const hash = text => createHash('sha256').update(text).digest('hex');
 
+// Prompt caching: the provider prompt may change only on the first request
+// after a compaction, never between two requests with no compaction between.
+function assertChangesOnlyAtCompaction(state) {
+  let last;
+  let compacted = false;
+  for (const entry of state.timeline) {
+    if (entry.compact) { compacted = true; continue; }
+    if (last !== undefined && entry.prompt !== last) assert.ok(compacted, `prompt changed outside a compaction: ${last} -> ${entry.prompt}`);
+    last = entry.prompt;
+    compacted = false;
+  }
+}
+
 // Exercise the installed Pi's actual compaction, run and provider boundaries.
 // Only the provider and daemon bridge are fixtures; no provider credits/network.
 async function fixture(t, {midRun = false, prePrompt = false} = {}) {
@@ -25,7 +38,7 @@ async function fixture(t, {midRun = false, prePrompt = false} = {}) {
   });
   // A fake daemon: `prompt` is what it would build now, `offered` its last
   // offer, and `persisted` the saved prompt a reopened section starts on.
-  const state = {prompt:'Changed prompt', persisted:'Original prompt', offered:undefined, drop:false, dropAdopt:false, requests:[], hashes:[], adopts:[], events:[], replies:0};
+  const state = {prompt:'Changed prompt', persisted:'Original prompt', offered:undefined, drop:false, adoptReply:'answer', requests:[], hashes:[], adopts:[], events:[], timeline:[], replies:0};
   const settingsManager = SettingsManager.inMemory({compaction:{enabled:!prePrompt, reserveTokens:8192, keepRecentTokens:1}, retry:{enabled:false}});
   let session;
   let sessionFile;
@@ -44,6 +57,7 @@ async function fixture(t, {midRun = false, prePrompt = false} = {}) {
               try {
                 await options.onPayload?.({}, model);
                 state.requests.push(getCurrentSystemPrompt(context.messages));
+                state.timeline.push({prompt:state.requests.at(-1)});
                 state.events.push('request');
                 const first = state.replies++ === 0;
                 const tool = first && midRun;
@@ -63,7 +77,7 @@ async function fixture(t, {midRun = false, prePrompt = false} = {}) {
           async execute() { return {content:[{type:'text', text:'probed'}]}; }});
         pi.on('before_agent_start', () => { state.events.push('start'); });
         pi.on('session_before_compact', event => ({compaction:{summary:'Fixture summary', firstKeptEntryId:event.preparation.firstKeptEntryId, tokensBefore:event.preparation.tokensBefore}}));
-        pi.on('session_compact', event => { state.events.push(`compact:${event.reason}`); });
+        pi.on('session_compact', event => { state.events.push(`compact:${event.reason}`); state.timeline.push({compact:true}); });
       }],
     });
     await resourceLoader.reload();
@@ -78,7 +92,9 @@ async function fixture(t, {midRun = false, prePrompt = false} = {}) {
         state.adopts.push(args.adopt);
         if (args.adopt !== hash(state.offered ?? '')) return JSON.stringify({error:'prompt was not offered'});
         state.persisted = state.offered;
-        if (state.dropAdopt) return undefined;
+        // Saved before the reply: an interrupt cancels it, or it is lost.
+        if (state.adoptReply === 'cancelled') return undefined;
+        if (state.adoptReply === 'lost') throw new Error('Daemon request interrupted');
         return JSON.stringify({result:{adopted:true}});
       }
       if (name === 'hexbot_session_prompt') {
@@ -168,35 +184,58 @@ for (const boundary of ['mid-run', 'manual', 'pre-prompt']) {
       assert.equal(f.state.requests.at(-1), expected);
       assert.equal(f.state.persisted, expected);
     }
+    assertChangesOnlyAtCompaction(f.state);
   });
 }
 
-test('Pi keeps its old prompt when adoption is refused or its reply is lost', {timeout:30000}, async t => {
+test('Pi keeps its old prompt when the daemon refuses adoption', {timeout:30000}, async t => {
   const f = await fixture(t);
   await f.session.prompt('First run');
   await f.session.compact();
-  // The daemon offered something else in the meantime: refused, nothing saved.
+  // The daemon's latest offer is another prompt: refused, nothing saved.
   f.state.offered = 'Another prompt';
   await f.session.prompt('Adoption refused');
   assert.equal(f.state.requests.at(-1), 'Original prompt');
   assert.equal(f.state.persisted, 'Original prompt');
-  // The daemon saves the prompt, but its reply is lost, so Pi keeps the old one.
-  await f.session.compact();
-  f.state.dropAdopt = true;
-  await f.session.prompt('Adoption reply lost');
-  assert.equal(f.state.requests.at(-1), 'Original prompt');
-  assert.equal(f.state.persisted, 'Changed prompt');
-  f.state.dropAdopt = false;
-  // The next compaction offers it again and adopting it is idempotent.
+  for (const reason of ['idle retirement', 'daemon restart']) {
+    await f.restart();
+    await f.session.prompt(`Ordinary turn after ${reason}`);
+    assert.equal(f.state.requests.at(-1), 'Original prompt');
+    assert.equal(f.state.persisted, 'Original prompt');
+  }
+  // The next compaction offers the change again.
   await f.session.compact();
   await f.session.prompt('Adopted');
   assert.equal(f.state.requests.at(-1), 'Changed prompt');
-  assert.deepEqual(f.state.adopts, [hash('Changed prompt'), hash('Changed prompt'), hash('Changed prompt')]);
-  // With the row and the live prompt in step, nothing more is offered.
-  await f.session.compact();
-  await f.session.prompt('Unchanged');
-  assert.deepEqual(f.state.adopts.length, 3);
+  assert.equal(f.state.persisted, 'Changed prompt');
+  assert.deepEqual(f.state.adopts, [hash('Changed prompt'), hash('Changed prompt')]);
+  assertChangesOnlyAtCompaction(f.state);
 });
+
+for (const adoptReply of ['cancelled', 'lost']) {
+  test(`Pi switches with the saved prompt when the adoption reply is ${adoptReply}`, {timeout:30000}, async t => {
+    const f = await fixture(t);
+    await f.session.prompt('First run');
+    await f.session.compact();
+    f.state.adoptReply = adoptReply;
+    await f.session.prompt('Adoption reply not delivered');
+    assert.equal(f.state.requests.at(-1), 'Changed prompt');
+    assert.equal(f.state.persisted, 'Changed prompt');
+    f.state.adoptReply = 'answer';
+    await f.session.prompt('Ordinary turn');
+    for (const reason of ['idle retirement', 'daemon restart']) {
+      await f.restart();
+      await f.session.prompt(`Ordinary turn after ${reason}`);
+      assert.equal(f.state.requests.at(-1), 'Changed prompt');
+    }
+    assert.deepEqual(f.state.requests, ['Original prompt', 'Changed prompt', 'Changed prompt', 'Changed prompt', 'Changed prompt']);
+    assertChangesOnlyAtCompaction(f.state);
+    // With the row and the live prompt in step, nothing more is offered.
+    await f.session.compact();
+    await f.session.prompt('Unchanged');
+    assert.deepEqual(f.state.adopts, [hash('Changed prompt')]);
+  });
+}
 
 test('Pi restart before adoption ignores an undelivered or unused offer', {timeout:30000}, async t => {
   for (const drop of [false, true]) {

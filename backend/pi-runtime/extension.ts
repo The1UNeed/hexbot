@@ -376,15 +376,18 @@ export default function hexbot(pi: any) {
     fallbackUsed = false; iterations = 0; limitReached = false;
 
     if (pendingPrompt !== undefined) {
-      // The daemon saves the prompt only once we adopt it, so a reopened
-      // section starts on the prompt Pi used. If it refuses or the reply is
-      // lost, keep the old prompt until the next compaction offers it again.
+      // The daemon saves the prompt as our adoption arrives, before an
+      // interrupt can cancel it, so a reopened section starts on the prompt
+      // Pi used. Switch unless it refuses: an interrupted or lost reply means
+      // it was saved. A refused offer waits for the next compaction.
+      const adopt = createHash('sha256').update(pendingPrompt).digest('hex');
+      let reply: any;
       try {
-        const adopt = createHash('sha256').update(pendingPrompt).digest('hex');
-        await bridge(ctx, 'hexbot_session_prompt', {adopt});
-        prompt = pendingPrompt;
-        pendingPrompt = undefined;
+        const raw = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({name: 'hexbot_session_prompt', args: {adopt}}));
+        if (raw) reply = JSON.parse(raw);
       } catch {}
+      if (!reply?.error) prompt = pendingPrompt;
+      pendingPrompt = undefined;
     }
 
     return {systemPrompt: prompt};

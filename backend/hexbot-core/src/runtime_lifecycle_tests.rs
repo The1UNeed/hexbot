@@ -33,7 +33,7 @@ fn setup() -> (common::TestHome, Arc<Runtime>, EventHub) {
 const fs=require('node:fs'),rl=require('node:readline').createInterface({{input:process.stdin}});
 const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
 fs.appendFileSync({logfile},JSON.stringify({{pid:process.pid,args:process.argv.slice(2),environment:process.env,config:JSON.parse(fs.readFileSync(process.env.HEXBOT_SESSION_CONFIG))}})+'\n');
-rl.on('line',line=>{{const c=JSON.parse(line);if(c.type==='extension_ui_response'){{fs.appendFileSync({dialogs},JSON.stringify(c)+'\n');return;}}emit({{type:'response',id:c.id,command:c.type,success:true,data:{{}}}});if(c.type==='prompt'){{emit({{type:'agent_start'}});emit({{type:'message_end',message:{{role:'user',content:c.message}}}});if(c.message!=='wait')emit({{type:'agent_settled'}});}}if(c.type==='abort')emit({{type:'agent_settled'}});}});
+rl.on('line',line=>{{const c=JSON.parse(line);if(c.type==='extension_ui_response'){{fs.appendFileSync({dialogs},JSON.stringify(c)+'\n');if(c.id.startsWith('probe:'))emit({{type:'extension_ui_request',method:'setStatus',statusText:JSON.stringify(c)}});return;}}emit({{type:'response',id:c.id,command:c.type,success:true,data:{{}}}});if(c.type==='prompt'){{emit({{type:'agent_start'}});emit({{type:'message_end',message:{{role:'user',content:c.message}}}});if(c.message!=='wait')emit({{type:'agent_settled'}});}}if(c.type==='abort')emit({{type:'agent_settled'}});}});
 "#
         ),
     )
@@ -74,9 +74,9 @@ fn prompt_hash(prompt: &str) -> Value {
     json!({"current":format!("{:x}", Sha256::digest(prompt.as_bytes()))})
 }
 
-fn adopt(prompt: &str) -> Value {
+fn adopt(prompt: &str) -> String {
     use sha2::{Digest, Sha256};
-    json!({"adopt":format!("{:x}", Sha256::digest(prompt.as_bytes()))})
+    format!("{:x}", Sha256::digest(prompt.as_bytes()))
 }
 
 #[tokio::test]
@@ -154,12 +154,7 @@ async fn compaction_prompt_is_saved_only_when_adopted_and_preserves_other_option
         original
     );
     assert_eq!(saved(), (original.clone(), switched.clone()));
-    assert!(
-        runtime
-            .tool(&s, "hexbot_session_prompt", &adopt(&rebuilt))
-            .await
-            .is_err()
-    );
+    assert!(runtime.adopt_prompt(&s, &adopt(&rebuilt)).is_err());
     // Only the hash of the latest offer is adopted.
     assert_eq!(
         runtime
@@ -168,20 +163,12 @@ async fn compaction_prompt_is_saved_only_when_adopted_and_preserves_other_option
             .unwrap(),
         offer
     );
-    assert!(
-        runtime
-            .tool(&s, "hexbot_session_prompt", &adopt("another prompt"))
-            .await
-            .is_err()
-    );
+    assert!(runtime.adopt_prompt(&s, &adopt("another prompt")).is_err());
     assert_eq!(saved(), (original.clone(), switched.clone()));
     // Model edits between offer and adoption survive it.
     conn.execute("UPDATE native_sessions SET options=json_set(options,'$.model','switched-again') WHERE stored_id='first'", []).unwrap();
     assert_eq!(
-        runtime
-            .tool(&s, "hexbot_session_prompt", &adopt(&rebuilt))
-            .await
-            .unwrap(),
+        runtime.adopt_prompt(&s, &adopt(&rebuilt)).unwrap(),
         json!({"adopted":true})
     );
     let (active, adopted) = saved();
@@ -192,14 +179,11 @@ async fn compaction_prompt_is_saved_only_when_adopted_and_preserves_other_option
     assert_eq!(adopted["model"], "switched-again");
     assert_eq!(adopted["provider"], "custom");
     assert_eq!(adopted["unrelated"], 42);
-    // Retrying an adoption whose reply was lost rewrites nothing, and a live
+    // Adopting the same offer again rewrites nothing, and a live
     // prompt in step with the row is not offered again.
     reject_writes();
     assert_eq!(
-        runtime
-            .tool(&s, "hexbot_session_prompt", &adopt(&rebuilt))
-            .await
-            .unwrap(),
+        runtime.adopt_prompt(&s, &adopt(&rebuilt)).unwrap(),
         json!({"adopted":true})
     );
     let applied = prompt_hash(&rebuilt);
@@ -212,7 +196,7 @@ async fn compaction_prompt_is_saved_only_when_adopted_and_preserves_other_option
     );
     assert_eq!(saved(), (rebuilt.clone(), adopted.clone()));
     allow_writes();
-    // If that reply was lost and Pi kept the old prompt, a later compaction
+    // If the row and Pi's live prompt ever disagree, a later compaction
     // offers the live prompt back even when nothing else changed, so adopting
     // it brings the row back in step with what Pi uses.
     fs::remove_file(home.path().join("profiles/owl/SOUL.md")).unwrap();
@@ -224,10 +208,7 @@ async fn compaction_prompt_is_saved_only_when_adopted_and_preserves_other_option
             .unwrap(),
         json!({"text":original})
     );
-    runtime
-        .tool(&s, "hexbot_session_prompt", &adopt(&original))
-        .await
-        .unwrap();
+    runtime.adopt_prompt(&s, &adopt(&original)).unwrap();
     assert_eq!(saved().0, original);
     // Old sections without either compatibility tag never refresh.
     fs::write(home.path().join("profiles/owl/SOUL.md"), "Changed again").unwrap();
@@ -251,6 +232,84 @@ async fn compaction_prompt_is_saved_only_when_adopted_and_preserves_other_option
     runtime.shutdown().await;
 }
 #[tokio::test]
+async fn interrupts_never_leave_a_prompt_adoption_unsaved_or_unanswered() {
+    let (home, runtime, hub) = setup();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let original = processes(home.path())[0]["config"]["prompt"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fs::write(home.path().join("profiles/owl/SOUL.md"), "Changed soul").unwrap();
+    let offer = runtime
+        .tool(&s, "hexbot_session_prompt", &prompt_hash(&original))
+        .await
+        .unwrap();
+    let next = offer["text"].as_str().unwrap().to_owned();
+    let saved = || -> String {
+        store::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT prompt FROM native_sessions WHERE stored_id='first'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let request = |id: &str, name: &str, args: Value| json!({"type":"extension_ui_request","id":id,"method":"input","title":format!("__HEXBOT_TOOL__{}",json!({"name":name,"args":args}))});
+    let mut events = hub.subscribe();
+    // The turn was interrupted before the adoptions arrive, and is again
+    // while their replies are on their way.
+    runtime.interrupt_stored("alice", "first").await.unwrap();
+    runtime
+        .event(&s, request("probe:late", "hexbot_todo_context", json!({})))
+        .unwrap();
+    let refused = json!({"adopt":adopt("another prompt")});
+    runtime
+        .event(
+            &s,
+            request("probe:refused", "hexbot_session_prompt", refused),
+        )
+        .unwrap();
+    assert_eq!(saved(), original);
+    runtime
+        .event(
+            &s,
+            request(
+                "probe:saved",
+                "hexbot_session_prompt",
+                json!({"adopt":adopt(&next)}),
+            ),
+        )
+        .unwrap();
+    // Saved as the request arrives, before anything can be aborted.
+    assert_eq!(saved(), next);
+    runtime.interrupt_stored("alice", "first").await.unwrap();
+    let mut replies = HashMap::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while replies.len() < 3 {
+            let event = events.recv().await.unwrap();
+            let text = event.frame["params"]["payload"]["text"]
+                .as_str()
+                .unwrap_or("");
+            if let Ok(reply) = serde_json::from_str::<Value>(text) {
+                replies.insert(reply["id"].as_str().unwrap().to_owned(), reply);
+            }
+        }
+    })
+    .await
+    .unwrap();
+    // Other bridge requests are still cancelled; adoptions get a real answer.
+    assert_eq!(replies["probe:late"]["cancelled"], true);
+    let answer = |id: &str| -> Value {
+        serde_json::from_str(replies[id]["value"].as_str().unwrap()).unwrap()
+    };
+    assert_eq!(answer("probe:refused")["error"], "prompt was not offered");
+    assert_eq!(answer("probe:saved"), json!({"result":{"adopted":true}}));
+    assert_eq!(saved(), next);
+    runtime.shutdown().await;
+}
+#[tokio::test]
 async fn only_adopted_prompts_survive_idle_retirement_and_daemon_restart() {
     for adopted in [false, true] {
         let (home, runtime, _) = setup();
@@ -267,10 +326,7 @@ async fn only_adopted_prompts_survive_idle_retirement_and_daemon_restart() {
         let next = offer["text"].as_str().unwrap();
         assert_ne!(next, original);
         if adopted {
-            runtime
-                .tool(&s, "hexbot_session_prompt", &adopt(next))
-                .await
-                .unwrap();
+            runtime.adopt_prompt(&s, &adopt(next)).unwrap();
         }
         let expected = if adopted { next } else { &original };
         age(&runtime);
@@ -2411,10 +2467,7 @@ async fn team_prompt_stays_frozen_across_profile_changes_and_restart() {
     assert!(text.contains("- cat (cat): Edits prose"));
     assert!(text.contains(crate::team::REQUEST_GUIDANCE));
     assert_eq!(saved(), before);
-    restarted
-        .tool(&first, "hexbot_session_prompt", &adopt(text))
-        .await
-        .unwrap();
+    restarted.adopt_prompt(&first, &adopt(text)).unwrap();
     assert_eq!(saved(), text);
     // A section frozen without message_bot gains no teammates when the
     // toolset is turned on later.

@@ -164,13 +164,16 @@ it also installs over SSH when nobody is signed in at the screen.
   The next ordinary turn must not rewrite a prefix that continuation cached.
   Manual compaction and compaction before a new prompt can refresh before the
   new run's first request. There the extension first adopts the offer
-  (`hexbot_session_prompt` with `adopt`, the offer's hash), and the daemon
-  saves the prompt and skill catalog only if that hash matches its latest
-  offer, touching no other options. The extension switches only after that
-  reply; on a refusal or a lost reply it keeps the old prompt, and the next
-  compaction offers again. Otherwise refresh waits for another compaction.
-  Idle retirement and daemon restart therefore reopen a section on the prompt
-  Pi last used, never on a discarded offer.
+  (`hexbot_session_prompt` with `adopt`, the offer's hash). The daemon
+  answers it as the request arrives, before an interrupt can cancel it: it
+  saves the prompt and skill catalog if that hash matches its latest offer,
+  touching no other options, and refuses otherwise. Its reply is never
+  cancelled. The extension switches unless the reply is a refusal, so an
+  interrupted or lost reply counts as adopted, matching the saved row. After
+  a refusal it keeps the old prompt and the next compaction offers again.
+  Otherwise refresh waits for another compaction. Idle retirement and daemon
+  restart therefore reopen a section on the prompt Pi last used, never on a
+  discarded offer.
   Tool declarations never change. A prompt refresh therefore rewrites the
   system prefix only alongside the compacted history, preserving the tools
   prefix where the provider caches it separately.

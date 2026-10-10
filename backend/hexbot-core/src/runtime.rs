@@ -1076,7 +1076,7 @@ impl Runtime {
         ));
         let revision = format!("{:x}", Sha256::digest(prompt.as_bytes()));
         // Also offer the live prompt itself when a reopen would load another,
-        // as after an adoption whose reply was lost: adopting it repairs that.
+        // as if a refusal never reached Pi: adopting it repairs that.
         let offer = revision != current || options["prompt"] != prompt;
         if !offer {
             return Ok(Value::Null);
@@ -1087,7 +1087,7 @@ impl Runtime {
     /// Pi is about to start a run on the prompt with this hash, the one
     /// offered at its last compaction. Save it so idle retirement and daemon
     /// restart reopen the section on that prompt; anything else is refused and
-    /// the extension keeps its old prompt.
+    /// the extension keeps its old prompt. `answer_adoption` calls this.
     fn adopt_prompt(&self, s: &Live, adopt: &str) -> Result<Value> {
         let proposal = s.proposal.lock().unwrap().clone();
         let Some((_, prompt, skills)) = proposal.filter(|(revision, ..)| revision == adopt) else {
@@ -1099,6 +1099,31 @@ impl Runtime {
             params![prompt, prompt, json!(skills).to_string(), s.stored, s.owner, prompt],
         )?;
         Ok(json!({"adopted":true}))
+    }
+    /// Pi switches to an offered prompt unless the daemon refuses it, so the
+    /// adoption is saved or refused here, as the request arrives: before the
+    /// interrupted check and outside the dialog tasks an interrupt aborts and
+    /// answers with a cancellation. Its reply is never cancelled either.
+    fn answer_adoption(&self, s: &Arc<Live>, id: &str, adopt: &str) {
+        let response = match common::bot_session_access(&self.home, &s.owner, &s.bot, &s.stored)
+            .and_then(|_| self.adopt_prompt(s, adopt))
+        {
+            Ok(result) => json!({"result":result}),
+            Err(error) => json!({"error":error.message}),
+        };
+        let (source, id) = (s.clone(), id.to_owned());
+        tokio::spawn(async move {
+            if let Err(error) = source
+                .process
+                .respond_extension(&id, json!({"value":response.to_string()}), DEADLINE)
+                .await
+            {
+                eprintln!(
+                    "Prompt adoption reply failed for {}: {error}",
+                    source.stored
+                );
+            }
+        });
     }
     async fn submit(
         &self,
@@ -2656,10 +2681,8 @@ impl Runtime {
             "hexbot_todo_context" => {
                 Ok(json!({"text":crate::native_product_tools::todo_context(&self.home,&s.stored)?}))
             }
-            "hexbot_session_prompt" => match args["adopt"].as_str() {
-                Some(adopt) => self.adopt_prompt(s, adopt),
-                None => self.refresh_prompt(s, common::required(args, "current")?),
-            },
+            // Adoptions never get here: `answer_adoption` handles them.
+            "hexbot_session_prompt" => self.refresh_prompt(s, common::required(args, "current")?),
             "delegate_task" => self.delegate(s, args).await,
             "message_bot" => {
                 self.require_toolset(s, "hexbot", name)?;
@@ -3210,6 +3233,13 @@ impl Runtime {
                 if let Some(request) = title.strip_prefix("__HEXBOT_TOOL__") {
                     let request: Value = serde_json::from_str(request)
                         .map_err(|e| Error::new(5201, e.to_string()))?;
+                    if let ("hexbot_session_prompt", Some(adopt)) = (
+                        request["name"].as_str().unwrap_or(""),
+                        request["args"]["adopt"].as_str(),
+                    ) {
+                        self.answer_adoption(s, id, adopt);
+                        return Ok(());
+                    }
                     let runtime = self
                         .weak
                         .upgrade()
