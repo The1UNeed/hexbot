@@ -80,7 +80,9 @@ ready for the next message. Failed uploads can be retried without
 resending attachments that already reached the daemon. Removing an uploaded,
 unsubmitted attachment clears the staged batch before re-uploading those kept.
 Leaving the thread, switching daemons or disconnecting clears a staged batch,
-so it never rides along with a later message.
+so it never rides along with a later message. When the daemon cannot be
+reached, the app remembers the batch, clears it on reconnect, and clears it
+before that thread takes another file or message; Send waits until it is gone.
 This uses the new `attachments.clear` RPC. Scheduled job controls use the new
 owner-scoped `hexbot.jobs.*` RPCs; use a daemon built from this checkout for both. The app shows an update notice
 for older daemons and explains when either RPC is unavailable.

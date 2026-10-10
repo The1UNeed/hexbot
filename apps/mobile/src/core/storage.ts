@@ -63,3 +63,14 @@ export const selectDaemon = (id: string) => AsyncStorage.setItem('hexbot.active'
 export const loadConnectSession = () => secret.get('hexbot.connect-session')
 export const saveConnectSession = (token: string) => secret.set('hexbot.connect-session', token)
 export const clearConnectSession = () => secret.delete('hexbot.connect-session')
+/** Sessions that still hold files of a message that was never sent (see StagedFiles). */
+export async function loadStaged(): Promise<string[]> {
+  try {
+    const parsed: unknown = JSON.parse((await AsyncStorage.getItem('hexbot.staged')) ?? '[]')
+    return Array.isArray(parsed) ? parsed.filter(v => typeof v === 'string') : []
+  } catch {
+    return []
+  }
+}
+export const saveStaged = (held: string[]) =>
+  void AsyncStorage.setItem('hexbot.staged', JSON.stringify(held)).catch(() => {})

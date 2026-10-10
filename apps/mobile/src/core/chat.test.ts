@@ -89,21 +89,69 @@ describe('restored tools and questions', () => {
       { id: 'second', text: 'Which?', choices: ['One', 'Two'], multiSelect: true }
     ])
   })
-  it('does not repeat a reply that finished while history loaded', () => {
+  it('reads the history again when a turn finished while it loaded', () => {
+    // The history already has the interim reply and its tool; the buffer holds the same turn.
     const restored = {
       ...emptyChat(),
       messages: historyMessages([
-        { id: 'u', role: 'user', content: 'Hi' },
-        { id: 'a', role: 'assistant', content: 'Hello.' }
+        { id: 'u', role: 'user', content: 'Look' },
+        { id: 'a1', role: 'assistant', content: 'Checking.', tool_calls: [{ id: 't1' }] },
+        { role: 'tool', name: 'read_file', tool_call_id: 't1', text: 'ok' }
       ])
     }
     const loaded = replayChat(restored, [
-      event('message.delta', { text: 'Hello.' }),
-      event('message.complete', { text: 'Hello.' })
+      event('message.delta', { text: 'Checking.' }),
+      event('message.interim', { text: 'Checking.', already_streamed: true }),
+      event('tool.start', { tool_id: 't1', name: 'read_file' }),
+      event('tool.complete', { tool_id: 't1', result: 'ok' }),
+      event('message.complete', { text: 'Done.' })
     ])
-    expect(loaded.messages.map(m => m.text)).toEqual(['Hi', 'Hello.'])
-    expect(loaded.busy).toBe(false)
-    const later = replayChat(restored, [event('message.complete', { text: 'And more.' })])
-    expect(later.messages.map(m => m.text)).toEqual(['Hi', 'Hello.', 'And more.'])
+    expect(loaded.reread).toBe(true)
+    expect(loaded.state.messages.map(m => m.text)).toEqual(['Look', 'Checking.'])
+    expect(loaded.state.busy).toBe(false)
+  })
+  it('never drops a new reply that repeats the last one', () => {
+    const restored = {
+      ...emptyChat(),
+      messages: historyMessages([
+        { id: 'u', role: 'user', content: 'Again?' },
+        { id: 'a', role: 'assistant', content: 'Yes.' }
+      ])
+    }
+    // Finished during loading: the history is read again rather than guessing from text.
+    expect(replayChat(restored, [event('message.complete', { text: 'Yes.' })]).reread).toBe(true)
+    // Finished after loading: the same words are a new reply.
+    const loaded = replayChat(restored, [])
+    expect(loaded.reread).toBe(false)
+    const next = reduceChat(
+      reduceChat(loaded.state, event('message.start')),
+      event('message.complete', { text: 'Yes.' })
+    )
+    expect(next.messages.map(m => m.text)).toEqual(['Again?', 'Yes.', 'Yes.'])
+  })
+  it('keeps a running turn live without repeating what the history shows', () => {
+    const restored = {
+      ...emptyChat(),
+      busy: true,
+      messages: historyMessages([
+        { id: 'u', role: 'user', content: 'Look' },
+        { id: 'a1', role: 'assistant', content: 'Checking.', tool_calls: [{ id: 't1' }] },
+        { role: 'tool', name: 'read_file', tool_call_id: 't1', text: 'ok' }
+      ])
+    }
+    const loaded = replayChat(restored, [
+      event('message.delta', { text: 'Checking.' }),
+      event('message.interim', { text: 'Checking.', already_streamed: true }),
+      event('tool.start', { tool_id: 't1', name: 'read_file' }),
+      event('tool.complete', { tool_id: 't1', result: 'ok' }),
+      event('tool.start', { tool_id: 't2', name: 'terminal' }),
+      event('message.delta', { text: 'Nearly' })
+    ])
+    expect(loaded.reread).toBe(false)
+    expect(loaded.state.messages.map(m => m.text)).toEqual(['Look', 'Checking.'])
+    expect(loaded.state.interim).toEqual([])
+    expect(loaded.state.streaming).toBe('Nearly')
+    expect(loaded.state.tools.map(t => t.id)).toEqual(['t2'])
+    expect(loaded.state.busy).toBe(true)
   })
 })

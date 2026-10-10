@@ -375,7 +375,7 @@ function BotPost({
           </Text>
         ) : null}
         <Text numberOfLines={3} style={styles.postText} variant="callout">
-          {bot.description || 'No description yet. Add one in its profile.'}
+          {bot.description || 'No description yet. Add one in its settings.'}
         </Text>
         {bot.preview ? (
           <View

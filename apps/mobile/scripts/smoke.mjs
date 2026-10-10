@@ -249,7 +249,7 @@ try {
       socket.send(JSON.stringify({ jsonrpc: '2.0', id: key, method, params }) + '\n')
     })
   // Screens show the signed-in name; use a person's name, not the default account.
-  await rpc('hexbot.users.update', { id: 'local', display_name: 'Sam' })
+  await rpc('hexbot.users.me.set', { display_name: 'Sam' })
   await rpc('hexbot.settings.set', {
     patch: {
       workspace_dir: workspace,

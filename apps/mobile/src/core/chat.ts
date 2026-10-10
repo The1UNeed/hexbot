@@ -199,20 +199,31 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
   }
 }
 /**
- * Replays events that arrived while history loaded. A turn that finished in
- * that window may already be in the history; its reply is not added twice.
+ * Replays events that arrived while history loaded onto that history. They
+ * may come from before the snapshot or after it, so none of them adds to the
+ * transcript. `reread` is true when a turn finished in that window: the
+ * history is read again and shows its replies once. A turn still running
+ * keeps its live state, without the interim replies and tools the history
+ * already has; its replies come from the history once it finishes.
  */
-export function replayChat(state: ChatState, events: GatewayEvent[]): ChatState {
-  const last = state.messages.at(-1)
+export function replayChat(
+  state: ChatState,
+  events: GatewayEvent[]
+): { state: ChatState; reread: boolean } {
+  const shown = new Set(state.messages.flatMap(m => m.tools?.map(t => t.id) ?? []))
   for (const event of events) {
-    const next = reduceChat(state, event)
-    const added = next.messages.slice(state.messages.length)
-    state =
-      event.type === 'message.complete' &&
-      last?.role === 'assistant' &&
-      added.at(-1)?.text === last.text
-        ? { ...next, messages: state.messages }
-        : next
+    if (event.type === 'message.complete')
+      return { state: { ...reduceChat(state, event), messages: state.messages }, reread: true }
+    const next =
+      event.type === 'message.interim'
+        ? {
+            ...state,
+            streaming: (event.payload as { already_streamed?: unknown })?.already_streamed
+              ? ''
+              : state.streaming
+          }
+        : reduceChat(state, event)
+    state = { ...next, tools: next.tools.filter(t => !shown.has(t.id)) }
   }
-  return state
+  return { state, reread: false }
 }

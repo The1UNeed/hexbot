@@ -437,8 +437,9 @@ function MobileApp() {
   const removeAttachment = async (id: string) => {
     if (uploading) return
     if (attachmentData.current.get(id)?.uploaded) {
-      await mobile.rpc('attachments.clear', { session_id: mobile.liveSessionId() })
-      mobile.stage(null)
+      const sessionId = mobile.liveSessionId()
+      await mobile.rpc('attachments.clear', { session_id: sessionId })
+      if (sessionId) mobile.unstage(sessionId)
       for (const asset of attachmentData.current.values()) asset.uploaded = false
     }
     attachmentData.current.delete(id)
@@ -724,7 +725,7 @@ function MobileApp() {
           if (!asset.uploaded) {
             await mobile.rpc(asset.method, { ...asset.params, session_id: sessionId })
             asset.uploaded = true
-            mobile.stage(sessionId)
+            if (sessionId) mobile.stage(sessionId)
           }
         }
         if (
