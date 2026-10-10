@@ -1232,6 +1232,15 @@ fn digest_carries_only_this_bots_room_summaries_within_the_same_budget() {
 
 #[test]
 fn summaries_written_after_dream_start_before_scan_are_read_by_exactly_one_dream() {
+    assert_dream_windows(0.0);
+}
+
+#[test]
+fn submillisecond_dream_starts_read_section_and_room_summaries_by_exactly_one_dream() {
+    assert_dream_windows(0.0005);
+}
+
+fn assert_dream_windows(start_fraction: f64) {
     use std::io::Write;
 
     for in_room in [false, true] {
@@ -1243,9 +1252,9 @@ fn summaries_written_after_dream_start_before_scan_are_read_by_exactly_one_dream
             db::open(h).unwrap().execute_batch("INSERT INTO rooms(id,name,owner_id) VALUES ('room','Room','alice'); INSERT INTO room_members(room_id,member_kind,member_id) VALUES ('room','bot','owl'); INSERT INTO room_sessions VALUES ('room','owl','room-owl',NULL);").unwrap();
         }
         let path = conversation_for(h, stored, "owl", &[said("u0", None, "user", "old", 7)]);
-        let first_start = epoch(10);
-        // These entries arrive after the first dream starts, before its scan.
-        // Include the exact start boundaries to check both halves of the interval.
+        let first_start = epoch(10) + start_fraction;
+        // These entries are written before the scan, at or after the rounded start.
+        // Include both rounded start boundaries to check each half of the interval.
         let entries = [
             compacted("c0", "u0", "summary at first start", 10),
             said("u1", Some("c0"), "user", "message at first start", 10),
@@ -1273,10 +1282,22 @@ fn summaries_written_after_dream_start_before_scan_are_read_by_exactly_one_dream
             }
         }
         let digests = [
-            dreaming::build_digest(h, "owl", epoch(8), first_start, room).unwrap(),
-            dreaming::build_digest(h, "owl", first_start, epoch(12), room).unwrap(),
-            dreaming::build_digest(h, "owl", epoch(12), epoch(14), room).unwrap(),
+            dreaming::build_digest(h, "owl", epoch(8) + start_fraction, first_start, room).unwrap(),
+            dreaming::build_digest(h, "owl", first_start, epoch(12) + start_fraction, room)
+                .unwrap(),
+            dreaming::build_digest(
+                h,
+                "owl",
+                epoch(12) + start_fraction,
+                epoch(14) + start_fraction,
+                room,
+            )
+            .unwrap(),
         ];
+        for (digest, (since, until)) in digests.iter().zip([(8, 10), (10, 12), (12, 14)]) {
+            assert_eq!(digest["since"], epoch(since));
+            assert_eq!(digest["until"], epoch(until));
+        }
         let key = if in_room { "rooms" } else { "sections" };
         assert!(digests[0][key].as_array().unwrap().is_empty());
         let middle = &digests[1][key][0];
@@ -1330,7 +1351,9 @@ fn legacy_messages_and_pending_proposals_wait_until_the_next_dream_at_the_start_
             rusqlite::params![id, at],
         ).unwrap();
     }
-    let first = dreaming::build_digest(h, "owl", 0.0, 10.0, None).unwrap();
+    let first = dreaming::build_digest(h, "owl", 0.0005, 10.0005, None).unwrap();
+    assert_eq!(first["since"], 0.0);
+    assert_eq!(first["until"], 10.0);
     assert_eq!(first["sections"][0]["transcript"], "user: before");
     assert_eq!(first["proposals"].as_array().unwrap().len(), 1);
     assert_eq!(first["proposals"][0]["id"], "before");
@@ -1341,7 +1364,9 @@ fn legacy_messages_and_pending_proposals_wait_until_the_next_dream_at_the_start_
             [],
         )
         .unwrap();
-    let second = dreaming::build_digest(h, "owl", 10.0, 12.0, None).unwrap();
+    let second = dreaming::build_digest(h, "owl", 10.0005, 12.0005, None).unwrap();
+    assert_eq!(second["since"], 10.0);
+    assert_eq!(second["until"], 12.0);
     assert_eq!(
         second["sections"][0]["transcript"],
         "user: at start\nuser: after start"
@@ -1391,6 +1416,16 @@ async fn next_dream_reads_compaction_written_between_digest_and_completion() {
     let started = first["dream"]["started_at"].as_f64().unwrap();
     assert!(at >= started);
     assert!(at < first["dream"]["finished_at"].as_f64().unwrap());
+    // A start persisted before millisecond normalization still uses the same
+    // rounded boundary after a restart.
+    let persisted_start = (started * 1000.0).floor() / 1000.0 + 0.0005;
+    db::open(h)
+        .unwrap()
+        .execute(
+            "UPDATE dreams SET started_at=? WHERE id=?",
+            rusqlite::params![persisted_start, first["dream"]["id"].as_str().unwrap()],
+        )
+        .unwrap();
     // Later failed dreams and successful dreams for another room must not
     // advance this bot dream's cutoff.
     db::open(h)
@@ -1415,8 +1450,11 @@ async fn next_dream_reads_compaction_written_between_digest_and_completion() {
     assert_eq!(second["dream"]["status"], "complete");
     let prompts = fs::read_to_string(h.join("prompts.log")).unwrap();
     let digest: Value = serde_json::from_str(prompts.lines().last().unwrap()).unwrap();
-    assert_eq!(digest["since"], started);
-    assert_eq!(digest["until"], second["dream"]["started_at"]);
+    assert_eq!(digest["since"], (persisted_start * 1000.0).floor() / 1000.0);
+    assert_eq!(
+        digest["until"],
+        (second["dream"]["started_at"].as_f64().unwrap() * 1000.0).floor() / 1000.0
+    );
     assert_eq!(
         digest["sections"][0]["compactions"][0]["summary"],
         "summary written during the dream"

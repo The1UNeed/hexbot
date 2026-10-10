@@ -231,6 +231,16 @@ pub fn build_digest(
     room: Option<&str>,
 ) -> Result<Value> {
     common::identifier(bot)?;
+    // Pi stamps entries in whole milliseconds. Round both starts here, including
+    // starts persisted by older versions, so every input uses the same window.
+    let [since, until] = [since, until].map(|at| {
+        let millis = (at * 1000.0).floor();
+        if millis.is_finite() {
+            millis / 1000.0
+        } else {
+            at // Preserve unbounded cutoffs such as f64::MAX.
+        }
+    });
     let conn = db::open(home)?;
     let mut sections = vec![];
     let mut proposals = vec![];
