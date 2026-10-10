@@ -52,13 +52,15 @@ export function MemoryEditor({
   cap: number
   disabled?: boolean
   label: string
-  onSave: (value: string) => Promise<void>
+  /** `base` is the text the draft was loaded from, older than `value` while a kept draft waits. */
+  onSave: (value: string, base: string) => Promise<void>
   placeholder?: string
   preserveDraftOnChange?: boolean
   rows?: number
   value: string
 }) {
   const [draft, setDraft] = useState(value)
+  const [base, setBase] = useState(value)
   const [error, setError] = useState<string | null>(null)
   const previousValue = useRef(value)
   useEffect(() => {
@@ -69,8 +71,14 @@ export function MemoryEditor({
     }
 
     previousValue.current = value
-    setDraft(current => preserveDraftOnChange && current !== previous ? current : value)
-  }, [value, preserveDraftOnChange])
+
+    if (preserveDraftOnChange && draft !== previous) {
+      return
+    }
+
+    setDraft(value)
+    setBase(value)
+  }, [value, preserveDraftOnChange, draft])
   const [saving, setSaving] = useState(false)
   const pending = useRef(false)
   const length = [...draft].length
@@ -89,7 +97,7 @@ export function MemoryEditor({
     pending.current = true
     setSaving(true)
     setError(null)
-    void onSave(draft)
+    void onSave(draft, base)
       .catch(cause => setError(errorText(cause)))
       .finally(() => {
         pending.current = false
@@ -133,6 +141,24 @@ export function MemoryEditor({
           {error}
         </span>
       ) : null}
+      {base !== value ? <ChangedSince base={base} value={value} /> : null}
+    </div>
+  )
+}
+
+/** What was saved elsewhere while a draft was kept: the new lines, or the whole text if it was rewritten. */
+function ChangedSince({ base, value }: { base: string; value: string }) {
+  const boundary = `${base.trimEnd()}\n`
+  const appended = value.startsWith(boundary)
+
+  return (
+    <div className="mt-3 px-1">
+      <p className="text-[length:var(--text-meta)] font-medium text-muted">
+        {appended ? 'Added since you started editing' : 'Saved since you started editing'}
+      </p>
+      <p className="mt-1 whitespace-pre-wrap text-[length:var(--text-secondary)]">
+        {appended ? value.slice(boundary.length) : value || 'Nothing'}
+      </p>
     </div>
   )
 }
@@ -493,7 +519,7 @@ function BotNotesBlock({ bot }: { bot: string }) {
           disabled={busy}
           key={day.date}
           label={`Notes for ${noteDayLabel(day.date, today)}`}
-          onSave={value => save(day.date, day.text, value)}
+          onSave={(value, base) => save(day.date, base, value)}
           preserveDraftOnChange={preserveDraft}
           rows={5}
           value={day.text}
