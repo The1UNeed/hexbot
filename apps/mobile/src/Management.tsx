@@ -469,13 +469,19 @@ export function Management({
       disabled={busy || mobile.connection !== 'connected'}
     />
   )
-  const action = (label: string, fn: () => Promise<unknown>, destructive = false, detail = '') => (
+  const action = (
+    label: string,
+    fn: () => Promise<unknown>,
+    destructive = false,
+    detail = '',
+    unavailable = false
+  ) => (
     <Row
       key={label}
       title={label}
       testID={`action-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
       destructive={destructive}
-      disabled={busy || mobile.connection !== 'connected'}
+      disabled={unavailable || busy || mobile.connection !== 'connected'}
       onPress={() =>
         destructive
           ? confirm(label, detail || 'This change applies to the selected daemon.', () => {
@@ -838,10 +844,12 @@ export function Management({
       break
     case 'room-create':
     case 'room': {
+      const joined = (name: string) =>
+        room
+          ? room.members.some(m => m.member_kind === 'bot' && m.member_id === name && !m.left_at)
+          : values[`member-${name}`] === true
       save = async () => {
-        const members = mobile.bots
-          .filter(b => values[`member-${b.name}`] === true)
-          .map(b => b.name)
+        const members = mobile.bots.filter(b => joined(b.name)).map(b => b.name)
         const result = await rpc<{ room: Room }>(
           room ? 'hexbot.rooms.update' : 'hexbot.rooms.create',
           {
@@ -856,7 +864,8 @@ export function Management({
                 }
               : { members }),
             name: values.name,
-            main_bot: values.main_bot || null
+            // A main bot that has left the room since is cleared by the daemon.
+            main_bot: joined(str(values.main_bot)) ? str(values.main_bot) : null
           }
         )
         if (!room) await mobile.openRoom(result.room)
@@ -867,9 +876,12 @@ export function Management({
           {field('name', 'Room name')}
           <Group
             title="Main bot"
-            footer="Answers when nobody is mentioned. Mention a bot with @ to ask it directly."
+            footer="Answers when nobody is mentioned. Mention a bot with @ to ask it directly. Only bots in the room can be its main bot."
           >
-            {[{ name: '', display_name: 'No main bot' }, ...mobile.bots].map(b => (
+            {[
+              { name: '', display_name: 'No main bot' },
+              ...mobile.bots.filter(b => joined(b.name))
+            ].map(b => (
               <ChoiceRow
                 key={b.name || 'none'}
                 title={b.display_name}
@@ -881,20 +893,20 @@ export function Management({
           </Group>
           <Group title="Bots">
             {mobile.bots.map(b => {
-              const joined =
-                room?.members.some(
-                  m => m.member_kind === 'bot' && m.member_id === b.name && !m.left_at
-                ) ?? values[`member-${b.name}`] === true
               return (
                 <SwitchRow
                   key={b.name}
                   title={b.display_name}
                   testID={`member-${b.name}`}
-                  value={joined}
+                  value={joined(b.name)}
                   disabled={busy || mobile.connection !== 'connected'}
                   leading={<BotFace name={b.display_name} size={28} />}
                   onValueChange={enabled => {
-                    if (!room) return set(`member-${b.name}`, enabled)
+                    if (!room) {
+                      // A bot that leaves the new room cannot stay its main bot.
+                      if (!enabled && str(values.main_bot) === b.name) set('main_bot', '')
+                      return set(`member-${b.name}`, enabled)
+                    }
                     const change = () =>
                       void run(async () => {
                         const updated = await rpc<{ room: Room & { deleted?: boolean } }>(
@@ -1032,14 +1044,26 @@ export function Management({
               }
             />
           </Group>
-          <Group>
+          <Group
+            footer={
+              values.lan_enabled === true
+                ? undefined
+                : 'Turn on local connections to pair another device.'
+            }
+          >
             {((extra.addresses as string[]) ?? []).map((a, i) => (
               <Row key={a} title={a} testID={`address-${i}`} />
             ))}
-            {action('Create pairing code', async () => {
-              const code = await rpc('hexbot.pairing.code')
-              setNotice(`${code.code}\n${code.link}`)
-            })}
+            {action(
+              'Create pairing code',
+              async () => {
+                const code = await rpc('hexbot.pairing.code')
+                setNotice(`${code.code}\n${code.link}`)
+              },
+              false,
+              '',
+              values.lan_enabled !== true
+            )}
           </Group>
         </>
       )

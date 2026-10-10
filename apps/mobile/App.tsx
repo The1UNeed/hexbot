@@ -167,7 +167,15 @@ function MobileApp() {
     multiSelect: boolean
   } | null>(null)
   const attachmentData = useRef(
-    new Map<string, { method: string; params: Record<string, unknown>; uploaded: boolean }>()
+    new Map<
+      string,
+      {
+        method: string
+        params: Record<string, unknown>
+        /** Where the file was uploaded, and the id the daemon gave it. */
+        upload?: { session: string | null; id?: string }
+      }
+    >()
   )
   const [uploading, setUploading] = useState(false)
   const [questionAnswer, setQuestionAnswer] = useState('')
@@ -420,7 +428,6 @@ function MobileApp() {
     const id = Crypto.randomUUID()
     attachmentData.current.set(id, {
       method: image ? 'image.attach_bytes' : pdf ? 'pdf.attach' : 'file.attach',
-      uploaded: false,
       params:
         image || pdf
           ? { content_base64: asset.base64, filename: asset.name }
@@ -434,14 +441,9 @@ function MobileApp() {
       { id, name: asset.name, kind: image ? 'image' : 'file', uri: image ? asset.uri : null }
     ])
   }
-  const removeAttachment = async (id: string) => {
+  // An uploaded file left out of the message is dropped by the daemon when it is sent.
+  const removeAttachment = (id: string) => {
     if (uploading) return
-    if (attachmentData.current.get(id)?.uploaded) {
-      const sessionId = mobile.liveSessionId()
-      await mobile.rpc('attachments.clear', { session_id: sessionId })
-      if (sessionId) mobile.unstage(sessionId)
-      for (const asset of attachmentData.current.values()) asset.uploaded = false
-    }
     attachmentData.current.delete(id)
     setAttachments(a => a.filter(item => item.id !== id))
   }
@@ -721,19 +723,31 @@ function MobileApp() {
       const sessionId = mobile.liveSessionId()
       setUploading(true)
       try {
+        const ids: string[] = []
         for (const asset of attachmentData.current.values()) {
-          if (!asset.uploaded) {
-            await mobile.rpc(asset.method, { ...asset.params, session_id: sessionId })
-            asset.uploaded = true
+          if (!asset.upload || asset.upload.session !== sessionId) {
+            const reply = await mobile.rpc<{ id?: string }>(asset.method, {
+              ...asset.params,
+              session_id: sessionId
+            })
+            asset.upload = { session: sessionId, id: reply.id }
             if (sessionId) mobile.stage(sessionId)
           }
+          if (asset.upload.id) ids.push(asset.upload.id)
         }
         if (
           daemonId !== mobileRef.current.active?.id ||
           sessionId !== mobileRef.current.liveSessionId()
         )
           throw new Error('The conversation changed. Open it again before sending.')
-        await mobile.send(text, attachmentData.current.size > 0)
+        const files = attachmentData.current.size
+        // Daemons older than upload ids send every staged file.
+        const named = ids.length === files
+        await mobile.send(text, files > 0, named ? ids : undefined).catch((e: unknown) => {
+          // The next Send uploads the files again; the daemon drops the copies it holds.
+          if (named) for (const asset of attachmentData.current.values()) asset.upload = undefined
+          throw e
+        })
         setAttachments([])
         attachmentData.current.clear()
       } catch (e) {
@@ -761,7 +775,7 @@ function MobileApp() {
     onDraftChange: setDraft,
     onStop: () => act(mobile.stop),
     attachments,
-    onRemoveAttachment: (id: string) => act(() => removeAttachment(id)),
+    onRemoveAttachment: removeAttachment,
     onApprove: (id: string, choice: ApprovalChoice) => act(() => mobile.approval(id, choice)),
     onOpenTool: setTool,
     onOpenVisual: (id: string) => setVisual(visuals.get(id) ?? null),

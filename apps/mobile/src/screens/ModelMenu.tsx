@@ -11,19 +11,13 @@ import {
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
+import { levelLabel, reasoningOptions, runningLevel } from '../core/reasoning'
 import type { ModelOption, Rpc } from '../core/types'
+
+type Group = { id: string; label: string; configured: boolean; models: ModelOption[] }
 import { HIT, SearchField, Text, useTheme } from '../ui'
 
-/** Labels for Pi's levels. The daemon supplies each model's available choices. */
-export const REASONING_LEVELS = [
-  { label: 'Off', value: 'off' },
-  { label: 'Minimal', value: 'minimal' },
-  { label: 'Low', value: 'low' },
-  { label: 'Medium', value: 'medium' },
-  { label: 'High', value: 'high' },
-  { label: 'Extra high', value: 'xhigh' },
-  { label: 'Max', value: 'max' }
-] as const
+export { REASONING_LEVELS } from '../core/reasoning'
 
 export interface ModelValue {
   provider: string
@@ -32,9 +26,41 @@ export interface ModelValue {
   reasoning: string
 }
 
-type Row = ModelOption & { reasoning_levels?: string[] }
+/** Every model a provider lists right now, recommended ones first, as in the web app. */
+async function providerModels(rpc: Rpc, provider: string) {
+  const { all, curated, error } = await rpc<{
+    curated: ModelOption[]
+    all: ModelOption[]
+    error?: string
+  }>('hexbot.models.list', { provider })
+  const listed = new Map(all.map(m => [m.id, m]))
+  const recommended = new Set(curated.map(m => m.id))
+  return {
+    error,
+    models: [
+      ...curated.map(m => ({ ...listed.get(m.id), ...m })),
+      ...all.filter(m => !recommended.has(m.id))
+    ]
+  }
+}
 
-const levelLabel = (value: string) => REASONING_LEVELS.find(l => l.value === value)?.label
+/** The bot's own model, from its provider's list. */
+function useCurrentModel(rpc: Rpc, value: ModelValue) {
+  const [loaded, setLoaded] = useState<{ provider: string; models: ModelOption[] } | null>(null)
+  useEffect(() => {
+    if (!value.provider) return
+    let live = true
+    providerModels(rpc, value.provider)
+      .then(({ models }) => live && setLoaded({ provider: value.provider, models }))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [rpc, value.provider])
+  return loaded?.provider === value.provider
+    ? loaded.models.find(m => m.id === value.model)
+    : undefined
+}
 
 /**
  * The bot's model as a small pill. Tapping it opens a compact menu with the
@@ -56,7 +82,10 @@ export function ModelPill({
   const theme = useTheme()
   const anchor = useRef<View>(null)
   const [frame, setFrame] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
-  const level = value.reasoning ? levelLabel(value.reasoning) : null
+  const current = useCurrentModel(rpc, value)
+  // The level the model runs at, which may differ from the one saved.
+  const running = runningLevel(value.reasoning || 'medium', current)
+  const level = (current || value.reasoning) && running !== 'off' ? levelLabel(running) : null
 
   const open = () => anchor.current?.measureInWindow((x, y, w, h) => setFrame({ h, w, x, y }))
 
@@ -115,70 +144,76 @@ function ModelMenu({
   const theme = useTheme()
   const insets = useSafeAreaInsets()
   const window = useWindowDimensions()
-  const [rows, setRows] = useState<Row[] | null>(null)
-  const [providers, setProviders] = useState<
-    Record<string, { label: string; configured: boolean }>
-  >({})
+  const [groups, setGroups] = useState<Group[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const visible = !!anchor
 
+  // Only providers with a key or sign-in, plus the bot's own so it reads correctly.
   useEffect(() => {
     if (!visible) return
     let live = true
     setError(null)
     setQuery('')
-    rpc<{ providers: { id: string; label: string; configured: boolean }[] }>(
-      'hexbot.providers.list'
-    )
-      .then(result => {
-        if (live)
-          setProviders(
-            Object.fromEntries(
-              result.providers.map(p => [p.id, { label: p.label, configured: p.configured }])
-            )
+    setGroups(null)
+    void (async () => {
+      const { providers } = await rpc<{
+        providers: { id: string; label: string; configured: boolean }[]
+      }>('hexbot.providers.list')
+      const shown = providers
+        .filter(p => p.configured || p.id === value.provider)
+        .sort(
+          (a, b) =>
+            Number(b.id === value.provider) - Number(a.id === value.provider) ||
+            a.label.localeCompare(b.label)
+        )
+      const errors: string[] = []
+      const loaded = await Promise.all(
+        shown.map(async provider => {
+          let models: ModelOption[] = []
+          try {
+            const result = await providerModels(rpc, provider.id)
+            models = result.models
+            if (result.error) errors.push(`${provider.label}: ${result.error}`)
+          } catch (e) {
+            errors.push(`${provider.label}: ${e instanceof Error ? e.message : String(e)}`)
+          }
+          // The bot's own model stays visible even when the provider's list leaves it out.
+          if (
+            provider.id === value.provider &&
+            value.model &&
+            !models.some(m => m.id === value.model)
           )
-      })
-      .catch(() => {})
-    rpc<{ curated: Row[]; all: Row[]; error?: string }>('hexbot.models.list')
-      .then(result => {
-        if (!live) return
-        const merged = new Map<string, Row>()
-        for (const row of [...result.curated, ...result.all]) {
-          const key = `${row.provider}/${row.id}`
-          merged.set(key, { ...merged.get(key), ...row })
-        }
-        setRows([...merged.values()])
-        if (result.error) setError(result.error)
-      })
-      .catch(e => live && setError(e instanceof Error ? e.message : String(e)))
+            models = [...models, { id: value.model, label: value.model, provider: provider.id }]
+          return { ...provider, models }
+        })
+      )
+      if (!live) return
+      setGroups(loaded)
+      if (errors.length) setError(errors.join('\n'))
+    })().catch(e => live && setError(e instanceof Error ? e.message : String(e)))
     return () => {
       live = false
     }
+    // Load once per opening; picking a model while open keeps the list.
   }, [rpc, visible])
 
-  const current =
-    rows?.find(r => r.id === value.model && r.provider === value.provider) ??
-    rows?.find(r => r.id === value.model)
-  const withoutThinking =
-    current?.reasoning_levels?.length === 1 && current.reasoning_levels[0] === 'off'
-  const levels = REASONING_LEVELS.filter(level => current?.reasoning_levels?.includes(level.value))
-  const groups = useMemo(() => {
+  const current = groups?.find(g => g.id === value.provider)?.models.find(m => m.id === value.model)
+  const options = reasoningOptions(current)
+  const withoutThinking = options.length === 1 && options[0].value === 'off'
+  const running = runningLevel(value.reasoning || 'medium', current)
+  const total = groups?.reduce((n, g) => n + g.models.length, 0) ?? 0
+  const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
-    const map = new Map<string, Row[]>()
-    for (const row of rows ?? []) {
-      if (needle && !`${row.label} ${row.id} ${row.provider}`.toLowerCase().includes(needle))
-        continue
-      const key = row.provider ?? ''
-      map.set(key, [...(map.get(key) ?? []), row])
-    }
-    // The bot's own provider first, then the ones with credentials.
-    const rank = (id: string) => (id === value.provider ? 0 : providers[id]?.configured ? 1 : 2)
-    return [...map.entries()].sort(
-      ([a], [b]) =>
-        rank(a) - rank(b) || (providers[a]?.label ?? a).localeCompare(providers[b]?.label ?? b)
-    )
-  }, [providers, query, rows, value.provider])
+    return (groups ?? [])
+      .map(group => ({
+        ...group,
+        models: group.models.filter(
+          row => !needle || `${row.label} ${row.id} ${group.label}`.toLowerCase().includes(needle)
+        )
+      }))
+      .filter(group => group.models.length)
+  }, [groups, query])
 
   if (!anchor) return null
 
@@ -208,21 +243,17 @@ function ModelMenu({
             <Text tone="muted" variant="footnote">
               Thinking
             </Text>
-            {rows === null && !error ? (
+            {groups === null && !error ? (
               <ActivityIndicator />
             ) : withoutThinking ? (
               <Text tone="muted" variant="footnote" testID={`${testID}-no-thinking`}>
                 {value.model} answers without a thinking step.
               </Text>
-            ) : levels.length === 0 ? (
-              <Text tone="muted" variant="footnote" testID={`${testID}-unknown-thinking`}>
-                Thinking options aren't available for this model.
-              </Text>
             ) : (
               <>
                 <View style={styles.levels}>
-                  {levels.map(level => {
-                    const selected = (value.reasoning || 'medium') === level.value
+                  {options.map(level => {
+                    const selected = running === level.value
                     return (
                       <Pressable
                         accessibilityRole="radio"
@@ -253,7 +284,7 @@ function ModelMenu({
             )}
           </View>
           <View style={[styles.rule, { backgroundColor: theme.hairline }]} />
-          {(rows?.length ?? 0) > 8 ? (
+          {total > 8 ? (
             <View style={styles.search}>
               <SearchField
                 onChangeText={setQuery}
@@ -269,25 +300,25 @@ function ModelMenu({
             </Text>
           ) : null}
           <ScrollView keyboardShouldPersistTaps="handled" style={styles.list}>
-            {groups.map(([provider, models]) => (
-              <View key={provider}>
+            {filtered.map(group => (
+              <View key={group.id}>
                 <Text style={styles.provider} tone="muted" variant="caption">
-                  {providers[provider]?.label ?? (provider || 'Other')}
-                  {providers[provider] && !providers[provider].configured ? ', not connected' : ''}
+                  {group.label}
+                  {group.configured ? '' : ', not connected'}
                 </Text>
-                {models.map(row => {
-                  const selected = row.id === value.model && row.provider === value.provider
+                {group.models.map(row => {
+                  const selected = row.id === value.model && group.id === value.provider
                   return (
                     <Pressable
                       accessibilityRole="radio"
                       accessibilityState={{ checked: selected }}
-                      key={`${row.provider}/${row.id}`}
-                      onPress={() => onChange({ model: row.id, provider: row.provider ?? '' })}
+                      key={row.id}
+                      onPress={() => onChange({ model: row.id, provider: group.id })}
                       style={({ pressed }) => [
                         styles.model,
                         { backgroundColor: pressed ? theme.pressed : 'transparent' }
                       ]}
-                      testID={`${testID}-model-${row.provider}-${row.id}`}
+                      testID={`${testID}-model-${group.id}-${row.id}`}
                     >
                       <View style={styles.modelText}>
                         <Text numberOfLines={1} variant="callout">

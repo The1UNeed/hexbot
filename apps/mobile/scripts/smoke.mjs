@@ -37,7 +37,11 @@ const textOf = value =>
 const model = createServer(async (req, res) => {
   if (req.method === 'GET' && req.url.endsWith('/models')) {
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ data: [{ id: 'mobile-test', object: 'model', owned_by: 'local' }] }))
+    res.end(
+      JSON.stringify({
+        data: ['mobile-test', 'mobile-live'].map(id => ({ id, object: 'model', owned_by: 'local' }))
+      })
+    )
     return
   }
   if (req.method !== 'POST' || !req.url.endsWith('/chat/completions')) {
@@ -159,11 +163,7 @@ try {
   const modelBase = `http://127.0.0.1:${model.address().port}/v1`
   await writeFile(
     path.join(home, 'config.yaml'),
-    `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\nmodel_overrides:\n  lmstudio:\n    mobile-test:\n      supports_reasoning: true\n`
-  )
-  await writeFile(
-    path.join(home, 'live_model_levels.json'),
-    JSON.stringify({ lmstudio: { 'mobile-test': ['off', 'minimal', 'low', 'medium', 'high'] } })
+    `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\nmodel_overrides:\n  lmstudio:\n    mobile-test:\n      supports_reasoning: true\n    mobile-live:\n      supports_reasoning: false\n`
   )
   await mkdir(path.join(home, 'users/local'), { recursive: true })
   await writeFile(path.join(home, 'users/local/user.md'), '')
@@ -332,14 +332,28 @@ try {
   await expect(page.getByTestId(`thread-row-${trip}`)).toBeVisible()
   await expect(page.getByTestId(`thread-row-${old}`)).not.toBeVisible()
   await page.getByTestId('threads-model').click()
-  await expect(page.getByTestId('threads-model-menu-level-xhigh')).toHaveCount(0)
-  await expect(page.getByTestId('threads-model-menu-level-max')).toHaveCount(0)
+  // The menu asks each connected provider for its current list: mobile-live
+  // exists only in LM Studio's live /models reply. Providers without a key or
+  // sign-in are left out.
+  await expect(page.getByTestId('threads-model-menu-model-lmstudio-mobile-live')).toBeVisible({
+    timeout: 30000
+  })
+  await expect(page.locator('[data-testid^="threads-model-menu-model-nous-"]')).toHaveCount(0)
+  // The daemon knows no levels for mobile-test, so every level is offered, as on the web.
+  await expect(page.getByTestId('threads-model-menu-level-max')).toBeVisible()
   await page.getByTestId('threads-model-menu-level-high').click()
-  await expect
-    .poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.reasoning_effort)
-    .toBe('high')
+  const owl = async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot
+  await expect.poll(async () => (await owl()).reasoning_effort).toBe('high')
   await expect(page.getByTestId('threads-model')).toContainText('High')
   await shot('model-menu')
+  // A model without thinking runs with it off, whatever level is saved.
+  await page.getByTestId('threads-model-menu-model-lmstudio-mobile-live').click()
+  await expect.poll(async () => (await owl()).model).toBe('mobile-live')
+  await expect(page.getByTestId('threads-model-menu-no-thinking')).toBeVisible()
+  await expect(page.getByTestId('threads-model')).not.toContainText('High')
+  await page.getByTestId('threads-model-menu-model-lmstudio-mobile-test').click()
+  await expect.poll(async () => (await owl()).model).toBe('mobile-test')
+  await expect(page.getByTestId('threads-model')).toContainText('High')
   await page.getByTestId('threads-model-menu-backdrop').click({ position: { x: 12, y: 12 } })
   await page.getByTestId(`thread-row-${section}`).click()
   await expect(page.getByTestId('chat-empty')).toBeVisible()
@@ -413,12 +427,26 @@ try {
     buffer: Buffer.from('A brief from the phone.')
   })
   await expect(page.getByText('brief.txt', { exact: true })).toBeVisible()
+  // A file another app staged on this thread and never sent stays out of this message.
+  const live = (await rpc('hexbot.sections.list', { include_archived: true })).sections.find(
+    s => s.id === section
+  ).live_session_id
+  const left = await rpc('file.attach', {
+    session_id: live,
+    name: 'left-behind.txt',
+    data_url: 'data:text/plain;base64,' + Buffer.from('Not for this message.').toString('base64')
+  })
   await page.getByTestId('chat-send').click()
   await expect(page.getByText('The mobile attachment reached Pi.', { exact: true })).toBeVisible({
     timeout: 30000
   })
   assert.match(JSON.stringify(modelRequests.at(-1).messages), /brief\.txt/)
   assert.match(JSON.stringify(modelRequests.at(-1).messages), /Please review the attached files\./)
+  assert.doesNotMatch(JSON.stringify(modelRequests.at(-1).messages), /left-behind\.txt/)
+  await access(left.path).then(
+    () => assert.fail('The daemon must drop a staged file the message did not name'),
+    () => {}
+  )
   await expect(page.getByText('brief.txt', { exact: true })).not.toBeVisible()
   await page.getByTestId('chat-input').fill('Ask for approval')
   await page.getByTestId('chat-send').click()
@@ -493,7 +521,7 @@ try {
   await expect
     .poll(
       async () =>
-        (await rpc('hexbot.sections.list', { bot: 'owl', include_archived: true })).sections.find(
+        (await rpc('hexbot.sections.list', { include_archived: true })).sections.find(
           s => s.id === trip
         ).title
     )
@@ -505,7 +533,7 @@ try {
   await expect
     .poll(
       async () =>
-        (await rpc('hexbot.sections.list', { bot: 'owl', include_archived: true })).sections.find(
+        (await rpc('hexbot.sections.list', { include_archived: true })).sections.find(
           s => s.id === old
         ).archived_at
     )
@@ -667,10 +695,10 @@ try {
       'bot chat and streaming',
       'batched questions, multiple choices and explicit retention of attached files',
       'sandboxed bot visual',
-      'attachment-only send delivered to Pi and clears chips after acceptance',
+      'attachment-only send delivered to Pi, clears chips after acceptance, and leaves out a file staged by another app',
       'approval gates a real file write',
       'bot feed, thread list, rename, archive shelf and restore',
-      'model menu sets a supported thinking level',
+      'model menu lists connected providers from their live lists and shows the level the model runs at',
       'thread switcher, tool card and new thread',
       'soul editing',
       'isolated bot memory',

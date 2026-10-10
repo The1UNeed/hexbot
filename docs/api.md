@@ -23,12 +23,18 @@ data model. The native transport and event projection live in
 
 ## Core methods the client calls directly
 
-- Chat: `prompt.submit {session_id, text}`, `session.interrupt`, `session.steer`.
+- Chat: `prompt.submit {session_id, text, attachments?}`, `session.interrupt`, `session.steer`.
 - History: `session.history {session_id}`, `session.events.since` on reconnect.
 - Attachments: `image.attach_bytes {session_id, content_base64, filename}`,
   `file.attach {session_id, data_url, name}`, `pdf.attach {session_id, content_base64}`.
   `attachments.clear {session_id}` clears all unsubmitted attachments and removes
   their staged files. It refuses while the bot is working and keeps the session.
+  Each attach call answers with an `id`. `prompt.submit` with
+  `attachments: [id, ...]` sends only those uploads and removes every other
+  staged file in the section first, so a file left by an upload that never
+  made it into a message (another client, a lost reply, a closed screen) never
+  rides a later one. An id that is no longer staged answers 4204 and changes
+  nothing. Without `attachments`, every staged upload goes with the prompt.
   Images allow 25 MiB decoded; PDFs and generic files allow 45 MiB.
   Larger attachments return 4202 with the size limit. Browser clients check
   before reading or uploading. WebSocket frames and in-flight request bytes

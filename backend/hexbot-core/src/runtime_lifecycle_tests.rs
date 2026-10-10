@@ -84,7 +84,7 @@ async fn clearing_unsubmitted_attachments_preserves_the_session_and_checks_owner
     assert_eq!(open(&runtime).await, id);
     assert_eq!(processes(home.path()).len(), 1);
     let live = runtime.sessions.lock().unwrap()["first"].clone();
-    assert!(live.state.lock().unwrap().refs.is_empty());
+    assert!(live.state.lock().unwrap().staged.is_empty());
     live.state.lock().unwrap().busy = true;
     assert_eq!(
         runtime
@@ -181,7 +181,7 @@ async fn idle_restart_preserves_live_id_prompt_tools_and_client_watermarks() {
             .state
             .lock()
             .unwrap()
-            .refs
+            .staged
             .len(),
         1
     );
@@ -202,11 +202,21 @@ async fn retire_skips_staged_attachments_busy_turns_and_pending_dialogs() {
             if kind == "pending" {
                 state.pending.insert("question".into(), json!({}));
             }
-            if kind == "image" {
-                state.attachments.push(json!({"type":"image"}));
-            }
-            if kind == "file" {
-                state.refs.push("note.txt".into());
+            if kind == "image" || kind == "file" {
+                state.staged.push(Staged {
+                    id: kind.into(),
+                    images: if kind == "image" {
+                        vec![json!({"type":"image"})]
+                    } else {
+                        vec![]
+                    },
+                    refs: if kind == "file" {
+                        vec!["note.txt".into()]
+                    } else {
+                        vec![]
+                    },
+                    files: vec![],
+                });
             }
         }
         assert_eq!(
@@ -217,8 +227,7 @@ async fn retire_skips_staged_attachments_busy_turns_and_pending_dialogs() {
         let mut state = s.state.lock().unwrap();
         state.busy = false;
         state.pending.clear();
-        state.attachments.clear();
-        state.refs.clear();
+        state.staged.clear();
     }
     age(&runtime);
     runtime
@@ -1457,7 +1466,7 @@ async fn delivered_turn_keeps_its_hops_when_a_user_turn_submits_first() {
     let mut settled = s.settled.subscribe();
     let before = *settled.borrow();
     runtime
-        .submit(&s, "user first", false, false, None)
+        .submit(&s, "user first", false, false, None, None)
         .await
         .unwrap();
     while *settled.borrow() == before {
@@ -1489,7 +1498,7 @@ async fn attachment_staging_releases_state_and_registration_rechecks_closed() {
         state.closed = true;
     }
     assert_eq!(attaching.await.unwrap_err().code, 4001);
-    assert!(s.state.lock().unwrap().staged_files.is_empty());
+    assert!(s.state.lock().unwrap().staged.is_empty());
     assert_eq!(
         fs::read_dir(home.path().join("runtime/sessions/first/attachments"))
             .unwrap()

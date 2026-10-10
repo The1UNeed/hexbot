@@ -8,12 +8,14 @@ Transparency use solid controls. Lists and messages use solid backgrounds.
 ## Layout
 
 Three tabs: Bots, Rooms and Daemon. Bots is a feed of bot posts. A bot opens
-its thread page, and a thread opens the chat. Settings, bot profiles, tool
+its thread page, and a thread opens the chat. Settings, bot settings, tool
 steps and visuals open as front cards (`src/ui/Layer.tsx`) that leave the
 screen below in view. The daemon name above Bots switches daemons. The model
-pill lists the model's supported thinking levels (`reasoning_levels` on
-`hexbot.models.list`), from the pinned Pi runtime and provider metadata. Unknown models have
-no thinking choices until their capabilities are available.
+pill lists the providers with a key or sign-in, plus the bot's own, each from
+`hexbot.models.list {provider}` so the provider's current list is used, as in
+the web app. Thinking levels come from `reasoning_levels`; a model the daemon
+knows nothing about offers every level. The pill and the selected level show
+the level the model runs at, which Pi rounds to one it supports.
 
 ## Run
 
@@ -77,13 +79,14 @@ Attachments stay on the phone until Send. Sending files without text uses
 "Please review the attached files." Chips clear only after the daemon accepts
 the message. Answer bot questions before sending attached files; the files stay
 ready for the next message. Failed uploads can be retried without
-resending attachments that already reached the daemon. Removing an uploaded,
-unsubmitted attachment clears the staged batch before re-uploading those kept.
-Leaving the thread, switching daemons or disconnecting clears a staged batch,
-so it never rides along with a later message. When the daemon cannot be
-reached, the app remembers the batch, clears it on reconnect, and clears it
-before that thread takes another file or message; Send waits until it is gone.
-This uses the new `attachments.clear` RPC. Scheduled job controls use the new
+resending attachments that already reached the daemon. Each upload returns an
+id, and `prompt.submit` names the ids for that message: the daemon sends only
+those and drops any other file staged on the thread, such as one whose upload
+reply was lost or one removed from the draft. Leaving the thread, switching
+daemons or disconnecting also clears unsent uploads, so a message sent from
+another app does not carry them; that clear is best effort.
+This uses the new `attachments.clear` RPC and the `attachments` list on
+`prompt.submit`; daemons without upload ids send every staged file. Scheduled job controls use the new
 owner-scoped `hexbot.jobs.*` RPCs; use a daemon built from this checkout for both. The app shows an update notice
 for older daemons and explains when either RPC is unavailable.
 

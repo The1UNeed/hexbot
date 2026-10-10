@@ -7,10 +7,8 @@ import {
   activeDaemonId,
   forgetDaemon,
   loadDaemons,
-  loadStaged,
   loadToken,
   saveDaemon,
-  saveStaged,
   selectDaemon
 } from './storage'
 import { pair } from './transport'
@@ -18,7 +16,6 @@ import { parsePairing, normalizeOrigin } from './links'
 import { emptyChat, historyMessages, reduceChat, replayChat } from './chat'
 import { reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
 import { attachmentPrompt } from './chat-send'
-import { StagedFiles } from './staged'
 import { SECTIONS_QUERY, defaultSection, rebind, type ChatRoute } from './routes'
 import type {
   Bot,
@@ -61,15 +58,14 @@ export function useMobile() {
   const openSequence = useRef(0)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const mounted = useRef(true)
-  const staged = useRef(new StagedFiles())
+  /** Sessions holding files uploaded here for a message that was not sent. */
+  const unsent = useRef(new Set<string>())
   /** The live session whose running turn was half in the history when it loaded. */
   const straddling = useRef<string | null>(null)
   const rpc: Rpc = useCallback(async (method, params = {}) => {
     const current = session.current
     if (!current || current.client.connectionState !== 'open')
       throw new Error('Connect to a daemon first.')
-    const clear = (id: string) => current.client.request('attachments.clear', { session_id: id })
-    await staged.current.before(current.daemon.id, method, params, clear)
     let value: unknown
     try {
       value = await current.client.request(method, params)
@@ -85,25 +81,20 @@ export function useMobile() {
       throw new Error('The selected daemon changed. Retry on this daemon.')
     return value as never
   }, [])
-  // Staged files ride along with the next message on that session, so they
-  // go when the conversation they were picked for is left. Files that cannot
-  // go now are cleared on reconnect, or before that session takes input.
-  const flushStaged = useCallback(async () => {
+  // Messages sent from here name their files, and the daemon drops the rest.
+  // Clearing on leave keeps an abandoned upload off a message sent from
+  // another app; it is best effort.
+  const releaseStaged = useCallback((except?: string) => {
     const current = session.current
-    if (!current || current.client.connectionState !== 'open') return
-    await Promise.race([
-      staged.current.flush(current.daemon.id, id =>
-        current.client.request('attachments.clear', { session_id: id })
-      ),
-      new Promise(resolve => setTimeout(resolve, 3000))
-    ])
+    for (const id of unsent.current) {
+      if (id === except) continue
+      unsent.current.delete(id)
+      if (current?.client.connectionState === 'open')
+        void current.client.request('attachments.clear', { session_id: id }).catch(() => {})
+    }
   }, [])
-  const releaseStaged = useCallback(async () => {
-    staged.current.abandon()
-    await flushStaged()
-  }, [flushStaged])
   const leave = useCallback(() => {
-    void releaseStaged()
+    releaseStaged()
     openSequence.current++
     loadingEvents.current = null
     routeRef.current = null
@@ -321,7 +312,7 @@ export function useMobile() {
     async (daemon: SavedDaemon, suppliedToken?: string) => {
       const token = suppliedToken ?? (await loadToken(daemon.id))
       if (!token) throw new Error('This saved connection has no credential. Pair it again.')
-      await releaseStaged()
+      releaseStaged()
       session.current?.stop()
       setError(null)
       setActive(daemon)
@@ -353,7 +344,6 @@ export function useMobile() {
           }
         },
         async () => {
-          void flushStaged()
           await refreshRef.current()
           await syncChatRef.current()
         },
@@ -363,12 +353,11 @@ export function useMobile() {
       await selectDaemon(daemon.id)
       await next.connect()
     },
-    [onEvent, releaseStaged, flushStaged]
+    [onEvent, releaseStaged]
   )
   useEffect(() => {
     mounted.current = true
     void (async () => {
-      staged.current = new StagedFiles(await loadStaged(), saveStaged)
       const list = await loadDaemons()
       setSaved(list)
       const last = await activeDaemonId()
@@ -416,7 +405,7 @@ export function useMobile() {
         defaultSection(sections, bot.name) ??
         (await rpc<{ section: Section }>('hexbot.sections.create', { bot: bot.name })).section
       const here = routeRef.current
-      if (here?.kind !== 'section' || here.section.id !== selected.id) void releaseStaged()
+      if (here?.kind !== 'section' || here.section.id !== selected.id) releaseStaged()
       const target: ChatRoute = { kind: 'section', section: selected, bot }
       routeRef.current = target
       setRoute(target)
@@ -432,7 +421,7 @@ export function useMobile() {
   const openRoom = async (room: Room) => {
     setLoading(true)
     setError(null)
-    void releaseStaged()
+    releaseStaged()
     roomEvents.current = []
     setHasEarlier(false)
     routeRef.current = { kind: 'room', room }
@@ -446,7 +435,12 @@ export function useMobile() {
       setLoading(false)
     }
   }
-  const send = async (input: string, hasAttachments = false) => {
+  /**
+   * `attachments` are the ids of the files uploaded for this message; the
+   * daemon sends only those. Undefined leaves every staged file attached, for
+   * daemons that do not give uploads an id.
+   */
+  const send = async (input: string, hasAttachments = false, attachments?: string[]) => {
     const text = attachmentPrompt(input, hasAttachments)
     const target = routeRef.current
     if (!target || !text) throw new Error('Enter a message or attach a file.')
@@ -465,18 +459,21 @@ export function useMobile() {
       else {
         if (!liveId.current) throw new Error('Open this thread again before sending.')
         const sessionId = liveId.current
-        await rpc('prompt.submit', { session_id: sessionId, text })
-        // The daemon attached the staged files to this message.
-        if (session.current) staged.current.cleared(session.current.daemon.id, sessionId)
+        await rpc('prompt.submit', { session_id: sessionId, text, attachments })
+        unsent.current.delete(sessionId)
       }
     } catch (e) {
+      // Another app cleared this thread's files after they were uploaded.
+      const error = /attachment not found/i.test(errorText(e))
+        ? new Error('A file was removed from the daemon before sending. Send again.')
+        : e
       setChat(c => ({
         ...c,
         messages: c.messages.filter(m => m.id !== messageId),
         busy: target.kind === 'room' && Object.keys(c.turns).length > 0,
-        error: errorText(e)
+        error: errorText(error)
       }))
-      throw e
+      throw error
     }
   }
   const loadEarlier = async () => {
@@ -595,17 +592,15 @@ export function useMobile() {
     approval,
     answer,
     liveSessionId: () => liveId.current,
-    /** A file for the draft reached the daemon and waits for this session's next message. */
+    /** A file reached the daemon and waits for that session's next message. */
     stage: (sessionId: string) => {
-      if (session.current) staged.current.uploaded(session.current.daemon.id, sessionId)
-    },
-    /** The draft's files were cleared from this session. */
-    unstage: (sessionId: string) => {
-      if (session.current) staged.current.cleared(session.current.daemon.id, sessionId)
+      unsent.current.add(sessionId)
+      // The upload finished after its conversation was left.
+      releaseStaged(liveId.current ?? undefined)
     },
     back: leave,
     disconnect: async () => {
-      await releaseStaged()
+      releaseStaged()
       session.current?.stop()
       session.current = null
       setActive(null)
@@ -615,7 +610,7 @@ export function useMobile() {
     },
     remove: async (id: string) => {
       if (active?.id === id) {
-        await releaseStaged()
+        releaseStaged()
         session.current?.stop()
         session.current = null
         setActive(null)

@@ -52,9 +52,10 @@ the phone from Devices returns it to pairing.
 ## Control a daemon
 
 Bots lists each bot with its role and description. Open a bot to see its
-threads, start a new conversation, or edit its profile. Each thread is a
+threads, start a new conversation, or change its bot settings. Each thread is a
 separate conversation with its own context. Tap the model under New
-conversation to pick the bot's model and thinking level. Existing threads
+conversation to pick the bot's model and thinking level from the providers you
+have connected; it shows the level the model actually runs at. Existing threads
 following its defaults also change when idle; threads with overrides keep them.
 
 Rooms shows one room at a time, with a switcher when you have several. Daemon shows what your bots are doing now and
@@ -69,8 +70,9 @@ room, and the app asks first.
 
 Job details show the last status, error and up to 12,000 characters of output
 saved on the daemon. Attachments can be sent without text. The app asks the bot
-to review the files and keeps attachment chips until the send succeeds. Files
-picked for a thread you leave without sending are removed from the daemon. Older
+to review the files and keeps attachment chips until the send succeeds. A
+message carries only the files picked for it, and files picked for a thread you
+leave without sending are removed from the daemon. Older
 daemons show an update notice for unavailable attachment or job controls. The app does not provide push notifications
 or computer power controls. For development checks and native simulator flows,
 see `apps/mobile/README.md` and `docs/testing.md` in the repository.

@@ -25,11 +25,9 @@ impl Runtime {
                     "wait for the bot before clearing attachments",
                 ));
             }
-            state.attachments.clear();
-            state.refs.clear();
-            std::mem::take(&mut state.staged_files)
+            std::mem::take(&mut state.staged)
         };
-        for path in paths {
+        for path in paths.into_iter().flat_map(|u| u.files) {
             match fs::remove_file(path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -106,26 +104,31 @@ impl Runtime {
         };
         let _attachment = s.attachment_gate.lock().await;
         ensure_open(s)?;
+        let id = common::id();
         let path = store::session_dir(&self.home, &s.stored)?
             .join("attachments")
-            .join(format!("{}-{name}", common::id()));
+            .join(format!("{id}-{name}"));
         let mut staged = stage_files(vec![(path.clone(), bytes)]).await?;
         let mut state = s.state.lock().unwrap();
         if state.closed {
             return Err(Error::new(4001, "session not found"));
         }
         if let Some(image) = &image {
-            ensure_envelope(&state.attachments, std::slice::from_ref(image))?;
+            ensure_envelope(&state.staged, std::slice::from_ref(image))?;
         }
-        state.staged_files.append(&mut staged.0);
-        if let Some(image) = image {
-            state.attachments.push(image);
-        } else {
-            state.refs.push(path.to_string_lossy().into_owned());
-        }
+        let (images, refs) = match image {
+            Some(image) => (vec![image], vec![]),
+            None => (vec![], vec![path.to_string_lossy().into_owned()]),
+        };
+        state.staged.push(Staged {
+            id: id.clone(),
+            images,
+            refs,
+            files: std::mem::take(&mut staged.0),
+        });
         state.last_activity = common::now();
         Ok(
-            json!({"attached":true,"name":name,"path":path,"ref_text":format!("Attached file: {}",path.display()),"count":state.attachments.len()+state.refs.len()}),
+            json!({"attached":true,"id":id,"name":name,"path":path,"ref_text":format!("Attached file: {}",path.display()),"count":count(&state.staged)}),
         )
     }
     async fn attach_pdf(&self, s: &Live, p: &Value, name: &str, bytes: &[u8]) -> Result<Value> {
@@ -222,7 +225,9 @@ impl Runtime {
         }
         let _attachment = s.attachment_gate.lock().await;
         ensure_open(s)?;
+        let id = common::id();
         let dir = store::session_dir(&self.home, &s.stored)?.join("attachments");
+        let prefix = id.clone();
         let (images, pages, mut staged) = tokio::task::spawn_blocking(move || {
             let mut images = vec![];
             let mut pages = vec![];
@@ -230,7 +235,7 @@ impl Runtime {
             for (page, path) in rendered {
                 let data = fs::read(path)?;
                 images.push(json!({"type":"image","data":base64::engine::general_purpose::STANDARD.encode(&data),"mimeType":"image/png"}));
-                let destination = dir.join(format!("{}-pdf_p{page}.png", common::id()));
+                let destination = dir.join(format!("{prefix}-pdf_p{page}.png"));
                 pages.push(json!({"path":destination,"page":page}));
                 files.push((destination, data));
             }
@@ -240,16 +245,21 @@ impl Runtime {
         if state.closed {
             return Err(Error::new(4001, "session not found"));
         }
-        ensure_envelope(&state.attachments, &images)?;
-        state.staged_files.append(&mut staged.0);
-        state.attachments.extend(images);
+        ensure_envelope(&state.staged, &images)?;
+        state.staged.push(Staged {
+            id: id.clone(),
+            images,
+            refs: vec![],
+            files: std::mem::take(&mut staged.0),
+        });
         state.last_activity = common::now();
         Ok(json!({
             "attached": true,
+            "id": id,
             "filename": name,
             "pages_attached": pages.len(),
             "pages": pages,
-            "count": state.attachments.len(),
+            "count": count(&state.staged),
             "text": format!("[User attached PDF: {name} ({} page(s))]", pages.len())
         }))
     }
@@ -285,10 +295,15 @@ fn write_files(files: Vec<(PathBuf, Vec<u8>)>) -> Result<StagedFiles> {
     }
     Ok(staged)
 }
-fn ensure_envelope(existing: &[Value], additional: &[Value]) -> Result<()> {
+/// Images and file references waiting for the next prompt.
+fn count(staged: &[Staged]) -> usize {
+    staged.iter().map(|u| u.images.len() + u.refs.len()).sum()
+}
+fn ensure_envelope(existing: &[Staged], additional: &[Value]) -> Result<()> {
     // Leave space for the prompt, metadata, JSON escaping, and a bounded file list.
     let bytes = existing
         .iter()
+        .flat_map(|u| &u.images)
         .chain(additional)
         .map(|v| v["data"].as_str().map_or(0, str::len) + 256)
         .sum::<usize>();
