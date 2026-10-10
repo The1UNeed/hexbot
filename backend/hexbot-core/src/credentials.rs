@@ -508,51 +508,142 @@ fn add_path(paths: &mut Vec<PathBuf>, path: &Path) -> Result<()> {
     }
     Ok(())
 }
+/// Inside a writable root, as the sandboxes and file tools compare paths.
+fn within(path: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| under(path, root))
+}
+/// A command can create the files the scan reads (.git pointers, commondir,
+/// configs and their includes), so they are opened without blocking and read
+/// only when they are small regular files: a FIFO or device would stall the
+/// daemon. Anything else stays locked but unread, which Git cannot load hooks
+/// from either. Matches isolation.ts.
+const GIT_FILE_BYTES: u64 = 1 << 20;
+const GIT_TIMEOUT: Duration = Duration::from_secs(5);
+const GIT_INCLUDE_DEPTH: usize = 10;
+fn regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                || [Some(libc::ENOTDIR), Some(libc::ENXIO)].contains(&error.raw_os_error()) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+    if metadata.len() > GIT_FILE_BYTES {
+        return Err(Error::new(5240, "Git metadata is too large to scan."));
+    }
+    let mut bytes = vec![];
+    file.take(metadata.len() + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > metadata.len() {
+        return Err(Error::new(
+            5240,
+            "Git metadata changed while it was scanned.",
+        ));
+    }
+    Ok(Some(bytes))
+}
+/// Hook settings by config contents, so unchanged repositories cost no Git process.
+fn config_entries(text: &[u8]) -> Result<Vec<(String, String)>> {
+    type ConfigCache = HashMap<Vec<u8>, Vec<(String, String)>>;
+    static CACHE: OnceLock<Mutex<ConfigCache>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(entries) = cache.lock().unwrap().get(text) {
+        return Ok(entries.clone());
+    }
+    let unreadable = || Error::new(5240, "Git hook configuration could not be read.");
+    // git config only parses; it does not run hooks, aliases or commands. Use
+    // system Git, never a workspace executable from PATH, and give it the bytes
+    // already read: with --no-includes it opens no file, so includes are
+    // followed here. It is killed at the deadline.
+    let mut child = std::process::Command::new("/usr/bin/git")
+        .args([
+            "config",
+            "--no-includes",
+            "--null",
+            "--file",
+            "-",
+            "--path",
+            "--get-regexp",
+            r"^(core.hookspath|include.path|includeif\..*\.path)$",
+        ])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", std::env::var_os("HOME").unwrap_or_default())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|_| unreadable())?;
+    let pid = child.id() as libc::pid_t;
+    let mut stdin = child.stdin.take().ok_or_else(unreadable)?;
+    let input = text.to_vec();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Write;
+        let _ = stdin.write_all(&input);
+        drop(stdin);
+        let _ = sender.send(child.wait_with_output());
+    });
+    let output = match receiver.recv_timeout(GIT_TIMEOUT) {
+        Ok(output) => output.map_err(|_| unreadable())?,
+        Err(_) => {
+            // SAFETY: the waiting thread has not reaped the child, so the pid is still ours.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+            let _ = receiver.recv();
+            return Err(unreadable());
+        }
+    };
+    // Exit 1 without a message is "no matching settings"; a missing Git (the
+    // macOS shim without developer tools) also exits 1, but says so.
+    if !output.status.success() && !(output.status.code() == Some(1) && output.stderr.is_empty()) {
+        return Err(unreadable());
+    }
+    let entries: Vec<_> = String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter_map(|field| field.split_once('\n'))
+        .filter(|(key, _)| !key.is_empty())
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect();
+    let mut cache = cache.lock().unwrap();
+    if cache.len() >= 256 {
+        cache.clear();
+    }
+    cache.insert(text.to_vec(), entries.clone());
+    Ok(entries)
+}
 fn git_hooks(git: &mut Vec<PathBuf>, dir: &Path, worktree: &Path) -> Result<()> {
-    for config in [dir.join("config"), dir.join("config.worktree")] {
-        if !config.exists() {
+    let mut configs = vec![(dir.join("config"), 0), (dir.join("config.worktree"), 0)];
+    let mut i = 0;
+    while let Some((file, depth)) = configs.get(i).cloned() {
+        i += 1;
+        let Some(text) = regular_file(&file)? else {
             continue;
-        }
-        // Use system Git, never a workspace executable from PATH. Parse only
-        // repository config; ignore ambient Git overrides.
-        let output = std::process::Command::new("/usr/bin/git")
-            .args(["config", "--null", "--includes", "--file"])
-            .arg(&config)
-            .args([
-                "--show-origin",
-                "--path",
-                "--get-regexp",
-                r"^(core.hookspath|include.path|includeif\..*\.path)$",
-            ])
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", std::env::var_os("HOME").unwrap_or_default())
-            .env("GIT_DIR", dir)
-            .env("GIT_WORK_TREE", worktree)
-            .output()?;
-        if output.status.code() == Some(1) {
-            continue;
-        }
-        if !output.status.success() {
-            return Err(Error::new(
-                5240,
-                "Git hook configuration could not be read.",
-            ));
-        }
-        let text = String::from_utf8_lossy(&output.stdout);
-        let fields: Vec<_> = text.split('\0').collect();
-        for pair in fields.chunks_exact(2) {
-            let origin = Path::new(pair[0].strip_prefix("file:").unwrap_or(pair[0]));
-            add_path(git, origin)?;
-            if let Some((key, value)) = pair[1].split_once('\n')
-                && !value.is_empty()
-            {
-                let base = if key == "core.hookspath" {
-                    worktree
-                } else {
-                    origin.parent().unwrap()
-                };
-                add_path(git, &real_root(&base.join(value))?)?;
+        };
+        for (key, value) in config_entries(&text)? {
+            if value.is_empty() {
+                continue;
+            }
+            let base = if key == "core.hookspath" {
+                worktree
+            } else {
+                file.parent().unwrap()
+            };
+            let target = real_root(&base.join(value))?;
+            add_path(git, &target)?;
+            if key != "core.hookspath" && depth < GIT_INCLUDE_DEPTH {
+                configs.push((target, depth + 1));
             }
         }
     }
@@ -561,20 +652,23 @@ fn git_hooks(git: &mut Vec<PathBuf>, dir: &Path, worktree: &Path) -> Result<()> 
 fn git_metadata(git: &mut Vec<PathBuf>, path: &Path, worktree: &Path) -> Result<()> {
     add_path(git, path)?;
     let mut dir = path.to_owned();
-    if path.is_file() {
-        let bytes = std::fs::read(path)?;
-        let text = String::from_utf8_lossy(&bytes);
+    if !path.is_dir() {
+        let text = regular_file(path)?.unwrap_or_default();
+        let text = String::from_utf8_lossy(&text);
         let Some(pointer) = text.lines().find_map(|line| line.strip_prefix("gitdir:")) else {
-            return Ok(()); // Cache markers remain locked, but are not pointers.
+            return Ok(()); // Cache markers and other files stay locked.
         };
         dir = real_root(&path.parent().unwrap().join(pointer.trim()))?;
         add_path(git, &dir)?;
     }
-    let common = dir.join("commondir");
-    if common.exists() {
-        let target = real_root(&dir.join(std::fs::read_to_string(common)?.trim()))?;
-        add_path(git, &target)?;
-        git_hooks(git, &target, worktree)?;
+    if let Some(common) = regular_file(&dir.join("commondir"))? {
+        let common = String::from_utf8_lossy(&common);
+        let common = common.trim();
+        if !common.is_empty() {
+            let target = real_root(&dir.join(common))?;
+            add_path(git, &target)?;
+            git_hooks(git, &target, worktree)?;
+        }
     }
     git_hooks(git, &dir, worktree)
 }
@@ -649,8 +743,14 @@ fn workspace_protected(roots: &[PathBuf], limit: usize) -> Result<WorkspaceProte
                 let worktree = if bare_repository(&path) { &path } else { &dir };
                 record_metadata(&mut protected, &path, worktree);
             } else if secret_file_name(&name) && !path.is_dir() {
-                if add_path(&mut protected.secrets, &path).is_err() {
-                    protected.failure = true;
+                // A link that cannot be resolved (a loop) is masked by name alone.
+                if !protected.secrets.contains(&path) {
+                    protected.secrets.push(path.clone());
+                }
+                if let Ok(real) = real_root(&path)
+                    && !protected.secrets.contains(&real)
+                {
+                    protected.secrets.push(real);
                 }
             } else if entry.file_type().is_ok_and(|kind| kind.is_dir())
                 && depth < WORKSPACE_DEPTH
@@ -670,9 +770,24 @@ pub(crate) fn git_write_protected(path: &Path, roots: &[PathBuf]) -> Result<bool
         return Ok(true);
     }
     let scan = workspace_protected(roots, WORKSPACE_DIRS)?;
+    // A repository config can name any folder as its hooks path. One that holds
+    // a writable root (hooksPath = / or the home) would refuse every write, so it
+    // is ignored here as it is in the sandboxes; the folders it can name outside
+    // the workspace stay refused.
+    let writable: Vec<PathBuf> = roots
+        .iter()
+        .cloned()
+        .chain([std::env::temp_dir(), PathBuf::from("/tmp")])
+        .map(|root| real_root(&root).unwrap_or(root))
+        .collect();
     if scan
         .git
         .iter()
+        .filter(|target| {
+            !writable
+                .iter()
+                .any(|root| under(root, target) && folded(root) != folded(target))
+        })
         .any(|root| under(path, root) || under(root, path))
     {
         return Ok(true);
@@ -687,6 +802,30 @@ pub(crate) fn git_write_protected(path: &Path, roots: &[PathBuf]) -> Result<bool
         return Err(Error::new(5240, SCAN_FILE_REASON));
     }
     Ok(false)
+}
+/// Repository files a command can write choose some Git targets (gitdir:,
+/// commondir, core.hooksPath, include.path), so only real paths inside a
+/// writable root are locked: anything else is read-only already, and binding or
+/// locking it could cover a mask (hooksPath = ~/.config/google-chrome) or the
+/// whole file system (hooksPath = /). On Linux a missing target is pinned at its
+/// nearest existing parent, never above the writable root.
+fn locked_git(git: &[PathBuf], roots: &[PathBuf], pin: bool) -> Vec<PathBuf> {
+    let mut locked: Vec<PathBuf> = vec![];
+    for path in git {
+        let Ok(mut real) = real_root(path) else {
+            continue;
+        };
+        while pin && !real.exists() {
+            match real.parent() {
+                Some(parent) if within(parent, roots) => real = parent.to_owned(),
+                _ => break,
+            }
+        }
+        if within(&real, roots) && (!pin || real.exists()) && !locked.contains(&real) {
+            locked.push(real);
+        }
+    }
+    locked
 }
 fn path_ancestors(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut ancestors = vec![];
@@ -845,9 +984,10 @@ fn sandbox_profile(layout: &Layout) -> String {
             .join(" ");
         let secret_paths = confine.protected.secrets.iter().map(|p| format!("(subpath {})", quoted(p.to_string_lossy()))).collect::<Vec<_>>().join(" ");
         let browser_roots = read_denied();
-        let locked = confine.protected.git.iter().map(|p| format!("(subpath {})", quoted(p.to_string_lossy()))).collect::<Vec<_>>().join(" ");
+        let git = locked_git(&confine.protected.git, &confine.writable, false);
+        let locked = git.iter().map(|p| format!("(subpath {})", quoted(p.to_string_lossy()))).collect::<Vec<_>>().join(" ");
         let mut protected = browser_roots.clone();
-        protected.extend(confine.protected.git.clone());
+        protected.extend(git.clone());
         protected.extend(confine.protected.secrets.clone());
         let parents = path_ancestors(&protected).iter().map(|p| format!("(literal {})", quoted(p.to_string_lossy()))).collect::<Vec<_>>().join(" ");
         let browsers = browser_roots
@@ -948,6 +1088,21 @@ fn bwrap_arguments(layout: &Layout) -> Result<Vec<OsString>> {
     }) {
         args.extend(["--bind".into(), path.into(), path.into()]);
     }
+    // Host binds come before every mask, so a later bind can never uncover one.
+    if let Some(confine) = &layout.confine {
+        let open: Vec<PathBuf> = confine
+            .writable
+            .iter()
+            .filter(|p| *p != Path::new("/tmp"))
+            .cloned()
+            .collect();
+        for path in locked_git(&confine.protected.git, &open, true) {
+            args.extend(["--ro-bind".into(), path.clone().into(), path.into()]);
+        }
+        for path in confine.config.iter().filter(|p| p.exists()) {
+            args.extend(["--ro-bind".into(), path.into(), path.into()]);
+        }
+    }
     // A store that does not exist yet cannot be bound (bubblewrap would create the
     // mount point on the host).
     for path in layout.denied.iter().filter(|p| p.exists()) {
@@ -964,14 +1119,6 @@ fn bwrap_arguments(layout: &Layout) -> Result<Vec<OsString>> {
             args.extend(["--ro-bind".into(), "/dev/null".into(), path.into()]);
         }
     }
-    for path in layout
-        .confine
-        .iter()
-        .flat_map(|c| &c.config)
-        .filter(|p| p.exists())
-    {
-        args.extend(["--ro-bind".into(), path.into(), path.into()]);
-    }
     if let Some(confine) = &layout.confine {
         for path in read_denied().iter().filter(|p| p.exists()) {
             if path.is_dir() {
@@ -985,15 +1132,8 @@ fn bwrap_arguments(layout: &Layout) -> Result<Vec<OsString>> {
                 args.extend(["--ro-bind".into(), "/dev/null".into(), path.into()]);
             }
         }
-        for target in &confine.protected.git {
-            let mut path = target.as_path();
-            while !path.exists() {
-                let Some(parent) = path.parent() else { break };
-                path = parent;
-            }
-            args.extend(["--ro-bind".into(), path.into(), path.into()]);
-        }
-        for path in &confine.protected.secrets {
+        // A dangling link has nothing to read yet, and bubblewrap would create its target.
+        for path in confine.protected.secrets.iter().filter(|p| p.exists()) {
             args.extend(["--ro-bind".into(), "/dev/null".into(), path.into()]);
         }
     }
@@ -1642,6 +1782,149 @@ mod tests {
                 .await
                 .unwrap();
             assert!(!String::from_utf8_lossy(&output.stdout).contains("dummy"));
+        }
+    }
+
+    /// Arguments after the confined base: no host bind may follow the first mask.
+    fn masks_last(args: &[OsString]) -> bool {
+        let rest = &args[15..];
+        let host_bind = |i: usize| {
+            (rest[i] == "--bind" || rest[i] == "--ro-bind")
+                && rest.get(i + 1).is_some_and(|arg| arg != "/dev/null")
+        };
+        let mask = |i: usize| rest[i] == "--tmpfs" || (rest[i] == "--ro-bind" && !host_bind(i));
+        (0..rest.len())
+            .find(|&i| mask(i))
+            .is_none_or(|first| !(first..rest.len()).any(host_bind))
+    }
+
+    #[tokio::test]
+    async fn repository_hook_paths_outside_the_workspace_never_bind_or_lock_host_folders() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().canonicalize().unwrap();
+        let home = root.join("home");
+        let work = root.join("work");
+        for path in [&home, &work.join(".git"), &work.join("inside-hooks")] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::os::unix::fs::symlink("/", work.join("linked-root")).unwrap();
+        let user = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        for target in [
+            PathBuf::from("/"),
+            read_denied()[0].clone(),
+            user.clone(),
+            work.join("linked-root"),
+        ] {
+            std::fs::write(
+                work.join(".git/config"),
+                format!("[core]\n\thooksPath = {}\n", target.display()),
+            )
+            .unwrap();
+            let layout = layout(&home, &[], Some(std::slice::from_ref(&work))).unwrap();
+            assert!(!layout.confine.as_ref().unwrap().protected.failure);
+            let args = bwrap_arguments(&layout).unwrap();
+            let real = std::fs::canonicalize(&target).unwrap_or(target.clone());
+            for path in real.ancestors() {
+                assert!(
+                    !args[15..]
+                        .windows(3)
+                        .any(|w| w[0] == "--ro-bind" && w[1] == path && w[2] == path),
+                    "{}: {}",
+                    target.display(),
+                    path.display()
+                );
+            }
+            assert!(masks_last(&args), "{}", target.display());
+            assert!(
+                !git_write_protected(&work.join("notes"), std::slice::from_ref(&work)).unwrap()
+            );
+            assert!(
+                git_write_protected(
+                    &work.join(".git/hooks/pre-commit"),
+                    std::slice::from_ref(&work)
+                )
+                .unwrap()
+            );
+            let profile = sandbox_profile(&layout);
+            assert!(!profile.contains("(subpath \"/\")"));
+            assert!(!profile.contains(&format!("(subpath {})", quoted(user.to_string_lossy()))));
+            if cfg!(target_os = "macos") {
+                let result = tokio::process::Command::new("/usr/bin/sandbox-exec")
+                    .args([
+                        "-p",
+                        &profile,
+                        "/bin/bash",
+                        "-c",
+                        "echo ok > notes; cat notes",
+                    ])
+                    .current_dir(&work)
+                    .output()
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    result.stdout,
+                    b"ok\n",
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+            }
+        }
+        // Inside the workspace the configured folder is still locked, before any mask.
+        std::fs::write(
+            work.join(".git/config"),
+            "[core]\n\thooksPath = inside-hooks\n",
+        )
+        .unwrap();
+        let layout = layout(&home, &[], Some(std::slice::from_ref(&work))).unwrap();
+        let args = bwrap_arguments(&layout).unwrap();
+        let hooks = work.join("inside-hooks");
+        assert!(
+            args.windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1] == hooks && w[2] == hooks)
+        );
+        assert!(masks_last(&args));
+        assert!(
+            git_write_protected(&hooks.join("pre-commit"), std::slice::from_ref(&work)).unwrap()
+        );
+    }
+
+    #[test]
+    fn fifos_in_git_metadata_and_includes_do_not_stall_the_scan() {
+        use std::os::unix::ffi::OsStrExt;
+        let base = tempfile::tempdir().unwrap();
+        let work = base.path().canonicalize().unwrap().join("work");
+        for path in ["a/.git", "b/.git", "c", "d/.git"] {
+            std::fs::create_dir_all(work.join(path)).unwrap();
+        }
+        std::fs::write(
+            work.join("b/.git/config"),
+            "[include]\n\tpath = ../include-fifo\n",
+        )
+        .unwrap();
+        for fifo in [
+            "a/.git/commondir",
+            "b/include-fifo",
+            "c/.git",
+            "d/.git/config",
+        ] {
+            let path = std::ffi::CString::new(work.join(fifo).as_os_str().as_bytes()).unwrap();
+            // SAFETY: path is a valid NUL-terminated string.
+            assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let roots = vec![work.clone()];
+        std::thread::spawn(move || {
+            let _ = sender.send(
+                workspace_protected(&roots, WORKSPACE_DIRS).map(|scan| (scan.git, scan.failure)),
+            );
+        });
+        let (git, failure) = receiver
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the scan finishes")
+            .unwrap();
+        assert!(!failure);
+        for path in ["a/.git", "b/.git", "b/include-fifo", "c/.git", "d/.git"] {
+            assert!(git.contains(&work.join(path)), "{path}");
         }
     }
 

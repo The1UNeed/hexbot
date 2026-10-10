@@ -83,8 +83,13 @@ walk is unbudgeted, and macOS `.git` and secret filename rules still apply.
 Bare `*.git` repositories must exist when the scan starts on either platform.
 File tools refuse protected Git writes; an unreadable Git configuration or
 scan failure asks for approval instead of blocking ordinary writes. Repository
-config includes are parsed with `git config`; included files and configured
-hook paths are protected along with their ancestors.
+configs and their includes are parsed with the system Git at `/usr/bin/git`;
+without it, a repository with a config counts as unreadable. Included files and
+configured hook paths inside the workspace or an output folder are protected,
+with their ancestors up to that folder. Ones outside are already read-only to
+sandboxed commands; a hook path that contains the workspace, such as `/` or the
+home folder, is ignored. FIFOs and other special files in Git metadata stay
+locked and are never read.
 
 macOS fails closed when its sandbox cannot start. On Linux, if bubblewrap is
 missing or unusable, Hexbot reports the missing isolation and Auto and Manual

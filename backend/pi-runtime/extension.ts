@@ -3,7 +3,7 @@ import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync } from 'n
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
-import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, bareRepository, SCAN_REASON, SCAN_FILE_REASON, workspaceProtected} from './isolation.ts';
+import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, bareRepository, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -477,7 +477,13 @@ export function writeDenial(input: string, cwd: string, home: string, outputs: s
   for (let parent = path; dirname(parent) !== parent; parent = dirname(parent)) {
     if (bareRepository(parent)) return 'Git metadata is read-only. Use an approved full_access command.';
   }
-  if (scan.git.some(root => under(path, root) || under(root, path))) return 'Git metadata is read-only. Use an approved full_access command.';
+  // A repository config can name any folder as its hooks path. One that holds a
+  // writable root (hooksPath = / or the home) would refuse every write, so it is
+  // ignored here as it is in the sandboxes; the folders it can name outside the
+  // workspace stay refused.
+  const roots = [cwd, ...outputs, tmpdir(), '/tmp'].map(root => canonicalPath(root, cwd));
+  const git = scan.git.filter(target => !roots.some(root => within(root, [target]) && fold(root) !== fold(target)));
+  if (git.some(root => under(path, root) || under(root, path))) return 'Git metadata is read-only. Use an approved full_access command.';
   if (protectedPath(path, home, outputs)) return 'This path is protected. Use the soul or memory tool for bot notes.';
   if (hostWriteTier(input, cwd, true) === 'deny') return NEVER_WRITTEN;
 }
