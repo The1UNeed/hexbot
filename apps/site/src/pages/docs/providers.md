@@ -45,6 +45,34 @@ model:
 
 Replace `your-loaded-model` with an actual model name on that server. Refresh provider settings and start a new section after configuration changes. For an authenticated endpoint, configure its credentials on the daemon too. Local models need the capabilities your task uses, such as tool calling or image input.
 
+Tell the daemon the model's context window when it cannot find out itself. When a section's context fills, the daemon summarises its oldest part, starting at 75% of the window or later. The reserve defaults to 16,384 tokens and the recent context kept defaults to 20,000 tokens; both are capped at a quarter of the model's window. A model the daemon does not know is assumed to have 32,768 tokens, so a larger model would be summarised far earlier than it needs to be.
+
+For Ollama, set `context_length` under `model`. The daemon sends it to the custom endpoint as `num_ctx` and uses that window for every model there, including fallback models:
+
+```yaml
+model:
+  provider: custom
+  base_url: http://127.0.0.1:11434/v1
+  default: your-loaded-model
+  context_length: 32768
+```
+
+For another server that manages its own window, use `model_overrides` instead of `context_length`:
+
+```yaml
+model:
+  provider: custom
+  base_url: https://your-server.example/v1
+  default: your-loaded-model
+model_overrides:
+  custom:
+    your-loaded-model:
+      context_window: 131072
+      max_output_tokens: 8192
+```
+
+`model_overrides.<provider>.<model>` also accepts `supports_reasoning` and `supports_vision`. A `_default` entry under a provider applies to every model of that provider the daemon has no metadata for. On the custom endpoint, `model.context_length` takes precedence over these window overrides. Project files are never read for this: a `.pi` directory in the workspace does not change how a section is summarised.
+
 LM Studio's default endpoint is `http://127.0.0.1:1234/v1`. Start its server and load a model before selecting it in Hexbot. Use the LM Studio provider for its model discovery.
 
 Model names, prices, context limits, and availability can change. Check the provider's own pricing page before using an unfamiliar model or enabling long unattended tasks.
