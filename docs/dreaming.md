@@ -71,7 +71,9 @@ The native scheduler and digest builder live in
   editor merges only new lines after the exact append boundary and keeps
   the user's draft on other conflicts. Future dates and days older than 30
   days are refused before saving. A stale deletion refreshes the list and
-  keeps the selected day and any draft.
+  keeps the selected day and any draft, shows what changed below the
+  editor, and keeps the text the draft was loaded from as the save's
+  `expected`, so the next save still merges or refuses.
   Deleting a section leaves notes alone, like memory; deleting the
   bot deletes them with the profile.
 - Scheduled jobs do not write memory or notes. In a job's session, and in

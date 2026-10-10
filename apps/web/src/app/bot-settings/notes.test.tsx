@@ -169,6 +169,60 @@ describe('notes conflicts', () => {
     await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('Today'))
   })
 
+  it.each([
+    ['My draft', 'My draft\nBot note'],
+    ['Plan', null]
+  ])('saves draft %j after a stale delete without losing the new note', async (draft, merged) => {
+    let reads = 0
+    let text = 'Plan'
+
+    const call = rpc((method, params) => {
+      if (method.endsWith('.list')) {
+        const shown = listed(text)
+
+        if (reads++ === 0) {
+          text = 'Plan\nBot note'
+        }
+
+        return shown
+      }
+
+      if (params.expected !== text) {
+        throw conflict()
+      }
+
+      text = String(params.text)
+
+      return { date: today, text }
+    })
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<NotesBlock bot="scout" />)
+    fireEvent.change(await screen.findByRole('textbox'), { target: { value: draft } })
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(reads).toBe(2))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled())
+
+    if (merged === null) {
+      expect(screen.getByRole('textbox')).toHaveValue('Plan\nBot note')
+      expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+      expect(screen.queryByText(/since you started editing/)).toBeNull()
+
+      return
+    }
+
+    expect(screen.getByRole('textbox')).toHaveValue(draft)
+    expect(screen.getByText('Added since you started editing')).toBeInTheDocument()
+    expect(screen.getByText('Bot note')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(merged))
+    expect(text).toBe(merged)
+    expect(screen.queryByText(/since you started editing/)).toBeNull()
+    expect(call).toHaveBeenCalledWith('hexbot.memory.notes.set', {
+      bot: 'scout', date: today, expected: 'Plan', text: draft
+    })
+  })
+
   it('shows retention errors and keeps an expired day draft', async () => {
     const message = 'Notes older than 30 days cannot be saved. Copy your draft to a more recent day.'
     rpc(method => {
@@ -302,6 +356,6 @@ it('counts code points and saves a full day of emoji', async () => {
   render(<MemoryEditor cap={4000} label="Notes" onSave={save} value="" />)
   edit('😀'.repeat(4000))
   expect(screen.getByText('4000 / 4000')).toBeVisible()
-  await waitFor(() => expect(save).toHaveBeenCalledWith('😀'.repeat(4000)))
+  await waitFor(() => expect(save).toHaveBeenCalledWith('😀'.repeat(4000), ''))
   expect(screen.queryByRole('alert')).toBeNull()
 })

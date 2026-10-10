@@ -102,7 +102,7 @@ describe('memory editor', () => {
     render(<MemoryEditor cap={2_000} label="About you" onSave={save} value="hello" />)
     fireEvent.change(screen.getByLabelText('About you'), { target: { value: 'Name: Alex' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    expect(save).toHaveBeenCalledWith('Name: Alex')
+    expect(save).toHaveBeenCalledWith('Name: Alex', 'hello')
   })
 })
 
