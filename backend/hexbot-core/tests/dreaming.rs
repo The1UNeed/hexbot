@@ -279,6 +279,7 @@ async fn cron_crud_run_now_and_owner_isolation() {
     assert!(prompt.contains("If the memory tool is available"));
     assert!(prompt.contains("If the soul tool is available"));
     assert!(prompt.contains("cannot message other bots"));
+    assert!(!prompt.contains("Bypass runs as Auto here"));
     assert_eq!(complete["job"]["enabled"], false);
     dreams
         .tool_call("alice", "owl", &json!({"action":"resume","job_id":id}))

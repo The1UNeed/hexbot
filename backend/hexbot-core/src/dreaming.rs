@@ -1387,7 +1387,7 @@ impl Dreaming {
             prompt.push_str(&format!("\n\nFor this run only:\n{extra}"));
         }
         prompt.push_str(
-            "\n\nThis is an autonomous scheduled job. Finish with the result; do not ask the user questions. Output is saved locally. You and your delegates cannot message other bots. Bypass runs as Auto here; Manual stays Manual.",
+            "\n\nThis is an autonomous scheduled job. Finish with the result; do not ask the user questions. Output is saved locally. You and your delegates cannot message other bots.",
         );
         // The memory tool reads here, every write becomes a proposal, and the
         // soul tool refuses writes (runtime.rs).

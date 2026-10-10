@@ -225,7 +225,8 @@ roster shows only the title.
 
 Scheduled jobs and their delegates cannot call `message_bot`. Jobs use Auto
 when the bot's approval mode is Bypass; Manual remains Manual. Scheduled
-scripts require OS isolation in every mode. Memory writes become proposals
+scripts require OS isolation in every mode. Actions that need approval are
+refused immediately in jobs and their delegates. Memory writes become proposals
 for the next dream, and soul writes are refused. See [Dreaming](dreaming.md).
 
 ### Rooms

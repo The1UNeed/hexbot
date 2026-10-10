@@ -2054,8 +2054,15 @@ impl Runtime {
 
     /// Ask the section owner about a daemon tool action, unless the mode is Bypass.
     async fn native_approval(&self, s: &Live, params: Value) -> Result<bool> {
-        if self.session_settings(s)?["approvalMode"] == "off" {
+        let settings = self.session_settings(s)?;
+        if settings["approvalMode"] == "off" {
             return Ok(true);
+        }
+        if settings["canAsk"] == false {
+            return Err(Error::new(
+                4302,
+                "This action needs approval. Run it in a visible section.",
+            ));
         }
         let id = common::id();
         let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -2545,24 +2552,23 @@ impl Runtime {
                 if action != "read"
                     && let Some(job) = self.session_settings(s)?["job"].as_str()
                 {
-                    let text = match action {
-                        "add" | "append" | "set" => required(args, "text")?,
+                    match action {
+                        "add" | "append" | "set" | "remove" => {
+                            required(args, "text")?;
+                        }
                         "replace" => {
                             required(args, "old_text")?;
-                            args["text"].as_str().unwrap_or("")
-                        }
-                        "remove" => {
-                            required(args, "text")?;
-                            ""
                         }
                         _ => return Err(Error::new(4202, "unknown memory action")),
-                    };
-                    check_memory_edit("", text)?;
-                    memory.check_bot_fits(&bot_owner, &s.bot, text)?;
-                    let kept = ["text", "old_text"]
-                        .into_iter()
-                        .filter_map(|k| args[k].as_str().map(|v| (k.to_owned(), json!(v))))
-                        .collect::<serde_json::Map<_, _>>();
+                    }
+                    let mut kept = serde_json::Map::new();
+                    for key in ["text", "old_text"] {
+                        if let Some(text) = args[key].as_str() {
+                            check_memory_edit("", text)?;
+                            memory.check_bot_fits(&bot_owner, &s.bot, text)?;
+                            kept.insert(key.to_owned(), json!(text));
+                        }
+                    }
                     return crate::dreaming::propose_memory(
                         &self.home,
                         &bot_owner,
