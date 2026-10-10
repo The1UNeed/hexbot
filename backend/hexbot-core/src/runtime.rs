@@ -86,6 +86,10 @@ struct Live {
     /// The highest `seq` of a context report sent for this session; a slower
     /// report with a lower number is dropped.
     usage_sent: AtomicU64,
+    /// The prompt last offered at compaction, with its hash and skill catalog.
+    /// It is saved only when the extension adopts it, never on offer: Pi may
+    /// discard it, and a reopened section must keep the prompt Pi used.
+    proposal: Mutex<Option<(String, String, Vec<Value>)>>,
 }
 pub struct Runtime {
     home: PathBuf,
@@ -918,6 +922,7 @@ impl Runtime {
             compaction,
             compacted: AtomicBool::new(false),
             usage_sent: AtomicU64::new(0),
+            proposal: Mutex::new(None),
         });
         {
             let mut sessions = self.sessions.lock().unwrap();
@@ -1021,13 +1026,16 @@ impl Runtime {
     /// byte-identical or the row was frozen under another layout (its fixed
     /// lines, guidance or tool names). Tools never change, so only the bot's
     /// name, soul, memory, About you, teammates and skill catalog can.
+    /// Offering writes nothing; `adopt_prompt` saves the offer once Pi uses it.
     fn refresh_prompt(&self, s: &Live, current: &str) -> Result<Value> {
         use sha2::{Digest, Sha256};
+        // A new compaction replaces the last offer, adopted or not.
+        s.proposal.lock().unwrap().take();
         let conn = store::open(&self.home)?;
-        let (stored, raw): (String, String) = conn.query_row(
-            "SELECT prompt,options FROM native_sessions WHERE stored_id=? AND owner=?",
+        let raw: String = conn.query_row(
+            "SELECT options FROM native_sessions WHERE stored_id=? AND owner=?",
             params![s.stored, s.owner],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| r.get(0),
         )?;
         let options: Value =
             serde_json::from_str(&raw).map_err(|e| Error::new(5200, e.to_string()))?;
@@ -1066,22 +1074,31 @@ impl Runtime {
         prompt.push_str(&connected_tools_block(
             options["mcpServers"].as_array().map_or(&[], Vec::as_slice),
         ));
-        if prompt != stored {
-            // Update only our keys: a concurrent model switch owns its keys.
-            conn.execute(
-                "UPDATE native_sessions SET prompt=?,options=json_set(options,'$.prompt',?,'$.skills',json(?)) WHERE stored_id=?",
-                params![prompt, prompt, json!(skills).to_string(), s.stored],
-            )?;
+        let revision = format!("{:x}", Sha256::digest(prompt.as_bytes()));
+        // Also offer the live prompt itself when a reopen would load another,
+        // as after an adoption whose reply was lost: adopting it repairs that.
+        let offer = revision != current || options["prompt"] != prompt;
+        if !offer {
+            return Ok(Value::Null);
         }
-        // The row may already contain a proposal the extension never received
-        // or could not apply. Keep returning it until the live hash matches.
-        Ok(
-            if format!("{:x}", Sha256::digest(prompt.as_bytes())) == current {
-                Value::Null
-            } else {
-                json!({"text":prompt})
-            },
-        )
+        *s.proposal.lock().unwrap() = Some((revision, prompt.clone(), skills));
+        Ok(json!({"text":prompt}))
+    }
+    /// Pi is about to start a run on the prompt with this hash, the one
+    /// offered at its last compaction. Save it so idle retirement and daemon
+    /// restart reopen the section on that prompt; anything else is refused and
+    /// the extension keeps its old prompt.
+    fn adopt_prompt(&self, s: &Live, adopt: &str) -> Result<Value> {
+        let proposal = s.proposal.lock().unwrap().clone();
+        let Some((_, prompt, skills)) = proposal.filter(|(revision, ..)| revision == adopt) else {
+            return Err(Error::new(4202, "prompt was not offered"));
+        };
+        // Update only our keys: a concurrent model switch owns its keys.
+        store::open(&self.home)?.execute(
+            "UPDATE native_sessions SET prompt=?,options=json_set(options,'$.prompt',?,'$.skills',json(?)) WHERE stored_id=? AND owner=? AND prompt IS NOT ?",
+            params![prompt, prompt, json!(skills).to_string(), s.stored, s.owner, prompt],
+        )?;
+        Ok(json!({"adopted":true}))
     }
     async fn submit(
         &self,
@@ -2639,7 +2656,10 @@ impl Runtime {
             "hexbot_todo_context" => {
                 Ok(json!({"text":crate::native_product_tools::todo_context(&self.home,&s.stored)?}))
             }
-            "hexbot_session_prompt" => self.refresh_prompt(s, common::required(args, "current")?),
+            "hexbot_session_prompt" => match args["adopt"].as_str() {
+                Some(adopt) => self.adopt_prompt(s, adopt),
+                None => self.refresh_prompt(s, common::required(args, "current")?),
+            },
             "delegate_task" => self.delegate(s, args).await,
             "message_bot" => {
                 self.require_toolset(s, "hexbot", name)?;

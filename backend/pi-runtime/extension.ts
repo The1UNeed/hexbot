@@ -376,8 +376,15 @@ export default function hexbot(pi: any) {
     fallbackUsed = false; iterations = 0; limitReached = false;
 
     if (pendingPrompt !== undefined) {
-      prompt = pendingPrompt;
-      pendingPrompt = undefined;
+      // The daemon saves the prompt only once we adopt it, so a reopened
+      // section starts on the prompt Pi used. If it refuses or the reply is
+      // lost, keep the old prompt until the next compaction offers it again.
+      try {
+        const adopt = createHash('sha256').update(pendingPrompt).digest('hex');
+        await bridge(ctx, 'hexbot_session_prompt', {adopt});
+        prompt = pendingPrompt;
+        pendingPrompt = undefined;
+      } catch {}
     }
 
     return {systemPrompt: prompt};
@@ -390,8 +397,8 @@ export default function hexbot(pi: any) {
       const todo = await bridge(ctx, 'hexbot_todo_context');
       if (todo?.text) pi.sendMessage({customType: 'hexbot_todo', content: todo.text, display: false});
     } catch {}
-    // Compare with the live prompt, not the persisted proposal: delivery may
-    // have failed last time, or a mid-run request discarded the replacement.
+    // Compare with the live prompt: an earlier offer may have been lost, or a
+    // mid-run request discarded it.
     try {
       const current = createHash('sha256').update(prompt).digest('hex');
       const fresh = await bridge(ctx, 'hexbot_session_prompt', {current});

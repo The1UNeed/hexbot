@@ -155,15 +155,22 @@ it also installs over SSH when nobody is signed in at the screen.
   the extension asks the daemon for a rebuilt prompt over the bridge
   (`hexbot_session_prompt`), sending the SHA-256 hash of its live prompt.
   The daemon uses the section-open rules, skills by name and frozen connected
-  server namespaces. It stores a changed proposal and returns it whenever
-  the live hash differs, even if an earlier response was interrupted.
-  Updates touch only the prompt and skill catalog, preserving model settings.
-  The extension stages the proposal until `before_agent_start`. If a provider
-  request comes first, it discards the proposal: Pi 1.0.1 keeps its forced
+  server namespaces. It offers the rebuilt prompt whenever the live hash
+  differs, even if an earlier reply was interrupted, and also when the saved
+  prompt differs from the live one. Offering writes nothing.
+  The extension stages the offer until `before_agent_start`. If a provider
+  request comes first, it discards the offer: Pi 1.0.1 keeps its forced
   prompt through a run, including automatic compaction and continuation.
   The next ordinary turn must not rewrite a prefix that continuation cached.
   Manual compaction and compaction before a new prompt can refresh before the
-  new run's first request. Otherwise refresh waits for another compaction.
+  new run's first request. There the extension first adopts the offer
+  (`hexbot_session_prompt` with `adopt`, the offer's hash), and the daemon
+  saves the prompt and skill catalog only if that hash matches its latest
+  offer, touching no other options. The extension switches only after that
+  reply; on a refusal or a lost reply it keeps the old prompt, and the next
+  compaction offers again. Otherwise refresh waits for another compaction.
+  Idle retirement and daemon restart therefore reopen a section on the prompt
+  Pi last used, never on a discarded offer.
   Tool declarations never change. A prompt refresh therefore rewrites the
   system prefix only alongside the compacted history, preserving the tools
   prefix where the provider caches it separately.

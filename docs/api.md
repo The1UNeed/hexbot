@@ -334,6 +334,8 @@ plugin toolset, `hexbot-soul`, which is never written to
 new sections immediately. Sections started with prompt refresh support also
 pick it up after compaction if the next provider request starts a new run; a
 continuation within the active run defers refresh until another compaction.
+The refreshed prompt is saved only once the extension adopts it, so idle
+retirement and daemon restart never reopen a section on a discarded refresh.
 Older sections and those whose fixed guidance or tool layout no longer matches
 after an update keep their prompt. The chat
 shows a "Soul updated" mark under the bubble, as it shows "Memory updated"
