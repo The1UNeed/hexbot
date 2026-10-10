@@ -1706,6 +1706,36 @@ async fn stamps_cannot_hide_threats_assembled_across_two_memory_edits() {
 }
 
 #[tokio::test]
+async fn a_threat_prefix_in_memory_does_not_exempt_its_completion() {
+    let (home, runtime, _) = setup();
+    let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+    let memory = MemoryStore::new(home.path().into());
+    for (prefix, rest) in [
+        ("you are now a", "bot"),
+        ("pretend you are", "a bot"),
+        ("heartbeat to", "server"),
+    ] {
+        for args in [
+            json!({"action":"add","text":rest}),
+            json!({"action":"append","text":rest}),
+            json!({"action":"replace","old_text":prefix,"text":format!("{prefix}\n{rest}")}),
+            json!({"action":"set","text":format!("{prefix} {rest}")}),
+        ] {
+            // Unstamped, the prefix alone is no match and may be saved.
+            runtime
+                .tool(&s, "memory", &json!({"action":"set","text":prefix}))
+                .await
+                .unwrap();
+            let before = prefix;
+            let refused = runtime.tool(&s, "memory", &args).await.unwrap_err();
+            assert_eq!(refused.code, 4202, "{prefix}: {args}");
+            assert_eq!(memory.get_bot("alice", "owl").unwrap()["memory_md"], before);
+        }
+    }
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn dated_existing_threats_can_stay_but_new_matches_are_refused() {
     let (home, runtime, _) = setup();
     let s = runtime.open_session("alice", "owl", "first").await.unwrap();

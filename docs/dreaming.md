@@ -72,10 +72,12 @@ The native scheduler and digest builder live in
   nothing, and drop a line left holding only a bullet and a stamp. Rules
   and adjacent blank separators remain. `set`, the Memory tab, and
   `hexbot.memory.bot.set` write text as given, so the dream and the user
-  keep control. The threat scan checks both the literal
-  text and copies with all trailing stamps stripped from the old and new
-  memory, before stamping and again on the final text. Existing unchanged
-  threats may remain, but dates cannot hide a new match across lines. A
+  keep control. The threat scan reads the old and new
+  memory with each line's trailing stamps turned into one space (a bare
+  carriage return also ends a line), before stamping and again on the final
+  text. A match may remain only when the same exact text matched as often in
+  the old memory, so existing unchanged threats stay, but dates cannot hide
+  a new match and an old prefix cannot exempt its completion. A
   proposal is stored as the job wrote it and stamped when the dream applies
   it through its own memory tool, so the cap check on an addition counts its
   stamps. For a replacement it reserves one stamp per new line plus one for

@@ -354,28 +354,38 @@ struct CodeFence(Option<(u8, usize)>);
 
 impl CodeFence {
     fn contains(&mut self, line: &str) -> bool {
-        let line = line.trim_start();
-        let marker = line.as_bytes().first().copied().unwrap_or_default();
-        let count = line.bytes().take_while(|b| *b == marker).count();
         if let Some((opening, length)) = self.0 {
-            if marker == opening && count >= length && line[count..].trim().is_empty() {
+            let line = line.trim_start();
+            let count = line.bytes().take_while(|b| *b == opening).count();
+            if count >= length && line[count..].trim().is_empty() {
                 self.0 = None;
             }
             return true;
         }
-        if matches!(marker, b'`' | b'~') && count >= 3 {
-            self.0 = Some((marker, count));
-            return true;
-        }
-        false
+        self.0 = fence_opening(line);
+        self.0.is_some()
     }
+}
+
+/// Three or more backticks or tildes open a fence. As in CommonMark, a
+/// backtick fence's info string has no backticks: "```ls``` is" is inline code.
+fn fence_opening(line: &str) -> Option<(u8, usize)> {
+    let line = line.trim_start();
+    let marker = *line.as_bytes().first()?;
+    let count = line.bytes().take_while(|b| *b == marker).count();
+    let opens = match marker {
+        b'`' => !line[count..].contains('`'),
+        b'~' => true,
+        _ => false,
+    };
+    (opens && count >= 3).then_some((marker, count))
 }
 
 /// Markdown structure that is not an entry: a heading, a code fence, or a
 /// horizontal rule.
 fn is_markup(entry: &str) -> bool {
     let entry = entry.trim_start();
-    if entry.starts_with('#') || entry.starts_with("```") || entry.starts_with("~~~") {
+    if entry.starts_with('#') || fence_opening(entry).is_some() {
         return true;
     }
     let marks: Vec<_> = entry.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
@@ -494,7 +504,21 @@ fn read_optional(path: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::expand_env;
+    use super::{expand_env, stamp_entries, stamp_entries_after};
+
+    #[test]
+    fn inline_code_with_backticks_does_not_open_a_fence() {
+        let old = "```git push -f``` is banned";
+        assert_eq!(
+            stamp_entries(old, "2026-10"),
+            "```git push -f``` is banned [2026-10]"
+        );
+        assert_eq!(
+            stamp_entries_after(old, "Likes tea.", "2026-10"),
+            "Likes tea. [2026-10]"
+        );
+        assert_eq!(stamp_entries_after("~~~ `sh`", "ls", "2026-10"), "ls");
+    }
 
     #[test]
     fn expands_only_supported_environment_references_without_recursive_expansion() {
