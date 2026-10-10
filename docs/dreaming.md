@@ -14,8 +14,10 @@ The native scheduler and digest builder live in
   tool. It merges duplicates, replaces vague entries, removes stale facts,
   and records durable preferences and lessons. Unfinished work and daily
   events stay in conversation history. It never writes soul or About you.
-- The digest includes sections and rooms with activity since the last
-  successful dream. It retains the newest 12,000 characters per conversation,
+- The digest includes sections and rooms with activity since the start of the
+  last successful dream, recorded before its digest is built. Activity arriving
+  while a dream runs remains eligible for the next dream; failed dreams do not
+  advance this cutoff. It retains the newest 12,000 characters per conversation,
   caps the complete serialized digest at 60,000 bytes, and reports how many
   conversations it left out as `omitted_conversations`. Titles keep their
   first 256 characters.
@@ -26,7 +28,8 @@ The native scheduler and digest builder live in
   deleted sections, and legacy sections without a
   conversation file contribute none. For rooms, only this bot's conversation
   contributes summaries. Entries without a valid timestamp are skipped.
-  Files last modified before the last dream are skipped without reading them;
+  Files last modified more than one second before the cutoff are skipped
+  without reading them, allowing for whole-second filesystem timestamps;
   the digest's file and database reads run on a blocking worker.
   The dream makes no model call for the summaries.
   Summaries count against the same 12,000 characters: each is capped at
