@@ -401,3 +401,135 @@ fn atomic_memory_edits_keep_unicode_caps_and_leave_failed_edits_unwritten() {
     );
     assert_eq!(store.get_bot("alice", "owl").unwrap()["memory_md"], "界🦉é");
 }
+
+#[test]
+fn added_entries_are_stamped_per_line_and_kept_when_already_stamped() {
+    use crate::memory::stamp_entries;
+    assert_eq!(
+        stamp_entries("Likes tea.", "2026-10"),
+        "Likes tea. [2026-10]"
+    );
+    assert_eq!(
+        stamp_entries(
+            "Met in 2024. [2024-05]\n## Work\n\n  Ships on Fridays.  \n界🦉é\n",
+            "2026-10"
+        ),
+        "Met in 2024. [2024-05]\n## Work\n\n  Ships on Fridays. [2026-10]\n界🦉é [2026-10]"
+    );
+    // Only a trailing [YYYY-MM] counts as a stamp.
+    assert_eq!(
+        stamp_entries("[2024-05] early\nv[2024-5]\n[2024-05].", "2026-10"),
+        "[2024-05] early [2026-10]\nv[2024-5] [2026-10]\n[2024-05]. [2026-10]"
+    );
+    assert_eq!(stamp_entries("", "2026-10"), "");
+    // Code fences and rules are markup, not entries.
+    assert_eq!(
+        stamp_entries("```sh\nls\n```\n---\n--\n- - -", "2026-10"),
+        "```sh\nls\n```\n---\n-- [2026-10]\n- - -"
+    );
+    let markup = "  ## Work\n  ```rust\n  ```\n~~~sh\n~~~\n***\n_ _ _\n  - - -  ";
+    assert_eq!(stamp_entries(markup, "2026-10"), markup);
+    assert_eq!(
+        crate::memory::restamp_span(markup, 0..markup.len(), "2026-10"),
+        markup
+    );
+}
+
+#[test]
+fn removals_drop_a_line_left_with_only_a_bullet_and_a_stamp() {
+    use crate::memory::{drop_emptied_line, restamp_span};
+    let text = "- Likes tea. [2024-05]\n-  [2026-10]\n* [2024-05] [2026-10]\n\nLast";
+    // "-  [2026-10]" is what removing "Prefers tabs" leaves; the line goes.
+    assert_eq!(
+        drop_emptied_line(text, 25),
+        "- Likes tea. [2024-05]\n* [2024-05] [2026-10]\n\nLast"
+    );
+    // Doubled stamps count as a stamp; a blank line counts as empty.
+    assert_eq!(
+        drop_emptied_line(text, 38),
+        "- Likes tea. [2024-05]\n-  [2026-10]\n\nLast"
+    );
+    assert_eq!(
+        drop_emptied_line(text, 58),
+        "- Likes tea. [2024-05]\n-  [2026-10]\n* [2024-05] [2026-10]\nLast"
+    );
+    // A line with words left keeps its stamp; the last line takes the
+    // newline before it; a lone line leaves nothing.
+    assert_eq!(drop_emptied_line(text, 2), text);
+    assert_eq!(
+        drop_emptied_line("Likes tea.\n [2026-10]", 11),
+        "Likes tea."
+    );
+    assert_eq!(drop_emptied_line("- [2026-10]", 0), "");
+    // An empty replacement is a removal and does the same.
+    assert_eq!(
+        restamp_span("Keep\n-  [2026-10]\nKeep", 7..7, "2026-10"),
+        "Keep\nKeep"
+    );
+}
+
+#[test]
+fn replacements_restamp_only_the_lines_they_touch() {
+    use crate::memory::restamp_span;
+    let text = "Likes tea. [2024-05]\n## Work\nShips on Fridays. [2024-05] [2025-01]\nUndated";
+    // "tea" -> "coffee" touches the first line, whose old stamp is refreshed.
+    assert_eq!(
+        restamp_span(&text.replacen("tea", "coffee", 1), 6..12, "2026-10"),
+        "Likes coffee. [2026-10]\n## Work\nShips on Fridays. [2024-05] [2025-01]\nUndated"
+    );
+    // Doubled stamps collapse into one, and a heading in the span stays bare.
+    let at = text.find("## Work").unwrap();
+    let new = "## Work\nShips on Mondays. [2020-01]";
+    assert_eq!(
+        restamp_span(
+            &text.replacen("## Work\nShips on Fridays. [2024-05] [2025-01]", new, 1),
+            at..at + new.len(),
+            "2026-10"
+        ),
+        "Likes tea. [2024-05]\n## Work\nShips on Mondays. [2026-10]\nUndated"
+    );
+    // New text that ends with a newline does not reach into the next line.
+    let at = text.find("Undated").unwrap();
+    let replaced = text.replacen("Undated", "Dated\n", 1) + "Next";
+    assert_eq!(
+        restamp_span(&replaced, at..at + 6, "2026-10"),
+        "Likes tea. [2024-05]\n## Work\nShips on Fridays. [2024-05] [2025-01]\nDated [2026-10]\nNext"
+    );
+    // An empty replacement is a removal.
+    assert_eq!(restamp_span(text, 6..6, "2026-10"), text);
+}
+
+#[test]
+fn fenced_code_stays_unchanged_in_additions_and_replacements() {
+    use crate::memory::{restamp_span, stamp_entries, stamp_entries_after};
+    // Mismatched and shorter fences inside code do not end the block.
+    for (opening, inner, closing) in [
+        ("```sh", "~~~", "```"),
+        ("  ~~~~sh", "~~~\n```", "  ~~~~~  "),
+    ] {
+        let code = format!("{opening}\nls  \n{inner}\nvalue [2020-01]\n{closing}");
+        let text = format!("Before\n{code}\nAfter");
+        let expected = format!("Before [2026-10]\n{code}\nAfter [2026-10]");
+        assert_eq!(stamp_entries(&text, "2026-10"), expected);
+        assert_eq!(restamp_span(&text, 0..text.len(), "2026-10"), expected);
+        let at = text.find("ls").unwrap();
+        assert_eq!(restamp_span(&text, at..at + 2, "2026-10"), text);
+        let tail = format!("ls  \n{closing}\nAfter");
+        assert_eq!(
+            stamp_entries_after(opening, &tail, "2026-10"),
+            format!("ls  \n{closing}\nAfter [2026-10]")
+        );
+    }
+    assert_eq!(
+        stamp_entries("```\nunfinished", "2026-10"),
+        "```\nunfinished"
+    );
+}
+
+#[test]
+fn removal_cleanup_keeps_horizontal_rules() {
+    for rule in ["---", "***", "_ _ _", "  - - -  "] {
+        let text = format!("Keep\n{rule}\nLast");
+        assert_eq!(crate::memory::drop_emptied_line(&text, 5), text);
+    }
+}

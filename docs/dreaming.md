@@ -74,6 +74,31 @@ The native scheduler and digest builder live in
   completes, the proposals it read are marked consumed with that dream's id;
   a failed dream leaves them pending, as it leaves `since` where it was.
   Deleting the bot deletes its proposals.
+- Memory entries end with the month they were learned, `[YYYY-MM]` in the
+  daemon's local time. The daemon adds it when the memory tool's `add` or
+  `append` runs, to every non-empty line outside fenced code blocks, except
+  headings and rules; a line that already ends with a stamp keeps it.
+  `replace` restamps the lines it touches with the current month, since a
+  replacement confirms the entry. An empty replacement and `remove` stamp
+  nothing, and drop a line left holding only a bullet and a stamp. Rules
+  and adjacent blank separators remain. `set`, the Memory tab, and
+  `hexbot.memory.bot.set` write text as given, so the dream and the user
+  keep control. The threat scan reads the old and new
+  memory with each line's trailing stamps turned into one space (a bare
+  carriage return also ends a line), before stamping and again on the final
+  text. A match may remain only when the same exact text matched as often in
+  the old memory, so existing unchanged threats stay, but dates cannot hide
+  a new match and an old prefix cannot exempt its completion. A
+  proposal is stored as the job wrote it and stamped when the dream applies
+  it through its own memory tool, so the cap check on an addition counts its
+  stamps. For a replacement it reserves one stamp per new line plus one for
+  the surrounding line; the dream checks
+  the final memory again when applying it. The dream prompt names the
+  current month and asks the dream to keep stamps, refresh one when a fact
+  is confirmed again, and stamp new or merged entries when rewriting with
+  `set`. It judges every entry on its content: an entry without a stamp
+  predates stamps or was written by the user, and a missing date is
+  no reason to remove it. Stamps count against the memory cap.
 - Dream rows in `hexbot.db` record `memory_before`, `memory_after`, status,
   and summary. The Memory tab shows the two versions side by side.
   `hexbot.dreaming.restore {id}` restores `memory_before`.
