@@ -666,6 +666,8 @@ test('file writes protect gitdir and commondir targets outside the worktree and 
   t.after(() => rmSync(root, {recursive:true, force:true}));
   const work = join(root, 'work'), home = join(root, 'home');
   for (const path of [work, home, join(root, 'metadata'), join(root, 'common'), join(work, 'bare.git'), join(work, 'subdir')]) mkdirSync(path, {recursive:true});
+  mkdirSync(join(work, 'bare.git/objects'), {recursive:true});
+  writeFileSync(join(work, 'bare.git/HEAD'), 'ref: refs/heads/main\n');
   writeFileSync(join(work, '.git'), 'gitdir: ../metadata\n');
   writeFileSync(join(root, 'metadata/commondir'), '../common\n');
   for (const path of ['metadata/hooks/pre-commit', 'common/config', 'work/bare.git/config']) assert.match(writeDenial(join(root, path), join(work, 'subdir'), home), /protected|read-only/);
@@ -678,9 +680,32 @@ test('an exhausted safety scan blocks the command and requires an approved full-
   t.after(() => rmSync(work, {recursive:true, force:true}));
   f.settings.cwd = work;
   for (let i = 0; i < 1001; i++) mkdirSync(join(work, String(i)));
-  assert.match((await f.gate('bash', {command:'echo harmless'})).reason, /budget.*approval/);
+  const command = await f.gate('bash', {command:'echo harmless'});
+  if (process.platform === 'linux') assert.match(command.reason, /budget.*approval/);
+  else assert.equal(command, undefined);
   assert.equal(f.choices.length, 0);
   f.ctx.choice = 'once';
   assert.equal(await f.gate('bash', {command:'echo harmless', full_access:true, reason:'The safety scan exceeded its budget.'}), undefined);
   assert.match(f.choices[0].reason, /outside the sandbox/);
+});
+
+test('file tools ask and can write and edit when a workspace scan is incomplete', async t => {
+  const work = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-file-scan-')));
+  t.after(() => rmSync(work, {recursive:true, force:true}));
+  const f = fixture(t, 'smart', ['file'], {cwd:work});
+  for (let i = 0; i < 1001; i++) mkdirSync(join(work, String(i)));
+  assert.match((await f.gate('write', {path:'notes.git', content:'before'})).reason, /denied/);
+  assert.match(f.choices.at(-1).reason, /directory budget/);
+  f.ctx.choice = 'once';
+  await f.run('write', {path:'notes.git', content:'before'});
+  await f.run('edit', {path:'notes.git', edits:[{oldText:'before', newText:'after'}]});
+  const {readFileSync} = await import('node:fs');
+  assert.equal(readFileSync(join(work, 'notes.git'), 'utf8'), 'after');
+  assert.equal(f.choices.length, 3);
+  mkdirSync(join(work, '.git'));
+  writeFileSync(join(work, '.git/config'), '[broken config');
+  f.ctx.choice = 'once';
+  await f.run('write', {path:'approved', content:'ok'});
+  assert.match(f.choices.at(-1).reason, /could not be scanned/);
+  assert.equal(readFileSync(join(work, 'approved'), 'utf8'), 'ok');
 });

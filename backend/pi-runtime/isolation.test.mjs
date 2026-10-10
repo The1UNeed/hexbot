@@ -384,6 +384,8 @@ test('secret and Git scans include read-only roots, symlink targets, linked work
   t.after(() => rmSync(base, {recursive:true, force:true}));
   const home = join(base, 'home'), work = join(base, 'work'), metadata = join(base, 'metadata'), common = join(base, 'common');
   for (const path of [home, work, metadata, common, join(work, 'bare.git/hooks')]) mkdirSync(path, {recursive:true});
+  mkdirSync(join(work, 'bare.git/objects'), {recursive:true});
+  writeFileSync(join(work, 'bare.git/HEAD'), 'ref: refs/heads/main\n');
   writeFileSync(join(work, '.git'), 'gitdir: ../metadata\n');
   writeFileSync(join(metadata, 'commondir'), '../common\n');
   writeFileSync(join(base, 'secret'), 'dummy'); symlinkSync('../secret', join(work, '.env'));
@@ -405,7 +407,7 @@ test('secret and Git scans include read-only roots, symlink targets, linked work
   writeFileSync(join(work, 'z/.env'), 'dummy'); mkdirSync(join(work, 'z/.git'));
   assert.ok(workspaceProtected([work], 3).secrets.includes(join(work, 'z/.env')));
   mkdirSync(join(work, 'a/deep'));
-  assert.throws(() => workspaceProtected([work], 3), /budget.*approval/);
+  assert.equal(workspaceProtected([work], 3).exhausted, true);
   for (let i = 0; i < 1001; i++) mkdirSync(join(work, 'a', String(i)));
   assert.throws(() => bwrapArguments(home, [], [work]), /budget.*approval/);
 });
@@ -417,6 +419,8 @@ test('macOS refuses secret renames, browser ancestor renames and linked Git writ
   t.after(() => rmSync(base, {recursive:true, force:true}));
   const home = join(base, 'hexbot'), user = join(base, 'user'), work = join(base, 'work');
   for (const path of [home, user, work, join(base, 'metadata/hooks'), join(base, 'common/hooks'), join(work, 'bare.git/hooks'), join(work, 'nested')]) mkdirSync(path, {recursive:true});
+  mkdirSync(join(work, 'bare.git/objects'), {recursive:true});
+  writeFileSync(join(work, 'bare.git/HEAD'), 'ref: refs/heads/main\n');
   writeFileSync(join(work, '.git'), 'gitdir: ../metadata\n');
   writeFileSync(join(base, 'metadata/commondir'), '../common\n');
   for (const name of ['.env', '.envrc', 'nested/.env']) writeFileSync(join(work, name), 'dummy');
@@ -431,4 +435,68 @@ test('macOS refuses secret renames, browser ancestor renames and linked Git writ
   ];
   const script = `const {sandboxProfile}=await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); const {spawnSync}=await import('node:child_process'); const profile=sandboxProfile(${JSON.stringify(home)},[],${JSON.stringify([base])}); for(const command of ${JSON.stringify(denied)}) { const r=spawnSync('/usr/bin/sandbox-exec',['-p',profile,'/bin/bash','-c',command],{cwd:${JSON.stringify(work)},encoding:'utf8'}); if(r.status===0 || /sandbox_(init|apply)/.test(r.stderr)) throw Error(command+' '+r.stderr); } const r=spawnSync('/usr/bin/sandbox-exec',['-p',profile,'/bin/bash','-c','echo ok > notes; cat notes'],{cwd:${JSON.stringify(work)},encoding:'utf8'}); if(r.stdout!=='ok\\n') throw Error(r.stderr);`;
   execFileSync(process.execPath, ['--input-type=module', '-e', script], {env:{...process.env,HOME:user}});
+});
+
+test('directory commondir and configured hooks, including ignored paths and includes, are protected', async t => {
+  const {spawnSync} = await import('node:child_process');
+  const {realpathSync, symlinkSync, existsSync} = await import('node:fs');
+  const {workspaceProtected, bwrapArguments, sandboxProfile} = await import('./isolation.ts');
+  const {writeDenial} = await import('./extension.ts');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-config-hooks-')));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const home = join(base, 'home'), work = join(base, 'project.git');
+  for (const path of [home, join(work, '.git'), join(work, 'shared/hooks'), join(work, '.local-hooks'), join(work, 'markers'), join(work, 'ordinary.git')]) mkdirSync(path, {recursive:true});
+  writeFileSync(join(work, '.git/commondir'), '../shared\n');
+  writeFileSync(join(work, 'shared/config'), '[include]\n path = ../hooks-config\n');
+  writeFileSync(join(work, 'hooks-config'), '[core]\n hooksPath = ".local-hooks"\n');
+  writeFileSync(join(work, '.gitignore'), '.local-hooks/\n');
+  writeFileSync(join(work, 'markers/.git'), Buffer.from([0xff]));
+  symlinkSync('missing-secret', join(work, '.env'));
+  symlinkSync('ordinary.git', join(work, '.env.venv'));
+  const savedPath = process.env.PATH, bin = join(work, 'bin');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'git'), `#!/bin/sh\necho ran > '${join(work, 'untrusted-git-ran')}'\nexit 1\n`, {mode:0o755});
+  process.env.PATH = `${bin}:${savedPath}`;
+  t.after(() => { process.env.PATH = savedPath; });
+  const scan = workspaceProtected([work]);
+  assert.equal(scan.failure, undefined);
+  assert.equal(existsSync(join(work, 'untrusted-git-ran')), false);
+  assert.ok(scan.secrets.includes(join(work, '.env')));
+  assert.ok(!scan.secrets.includes(join(work, '.env.venv')));
+  for (const path of ['.git', 'shared', '.local-hooks', 'hooks-config', 'markers/.git']) {
+    const target = join(work, path);
+    assert.ok(scan.git.includes(target), target);
+    assert.match(writeDenial(target, work, home), /read-only/);
+    assert.ok(bwrapArguments(home, [], [work]).some((arg, i, args) => arg === '--ro-bind' && args[i + 1] === target && args[i + 2] === target));
+  }
+  assert.match(writeDenial(work, work, home), /read-only/, 'ancestors cannot be replaced');
+  for (const path of ['notes.git', 'ordinary.git/notes', 'notes']) assert.equal(writeDenial(join(work, path), work, home), undefined);
+  if (process.platform === 'darwin') {
+    const profile = sandboxProfile(home, [], [work]);
+    const run = command => spawnSync('/usr/bin/sandbox-exec', ['-p', profile, '/bin/bash', '-c', command], {cwd:work, encoding:'utf8'});
+    for (const command of ['echo x > shared/hooks/pre-commit', 'echo x > .local-hooks/pre-commit', 'mv shared moved', 'mv .local-hooks moved', 'echo x > hooks-config', 'echo x > markers/.git']) {
+      const result = run(command);
+      assert.notEqual(result.status, 0, command);
+      assert.doesNotMatch(result.stderr, /sandbox_(init|apply)/);
+    }
+    assert.equal(run('echo ok > notes.git; echo ok > ordinary.git/notes; cat notes.git').stdout, 'ok\n');
+  }
+});
+
+test('macOS uses a partial scan in large workspaces and still checks cwd ancestors', {skip:process.platform !== 'darwin'}, async t => {
+  const {spawnSync} = await import('node:child_process');
+  const {realpathSync} = await import('node:fs');
+  const {sandboxProfile, workspaceProtected} = await import('./isolation.ts');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-large-')));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const home = join(base, 'home'), work = join(base, 'project.git'), cwd = join(work, 'subdir');
+  for (const dir of [home, cwd, join(work, 'metadata/hooks')]) mkdirSync(dir, {recursive:true});
+  writeFileSync(join(work, '.git'), 'gitdir: metadata\n');
+  for (let i = 0; i < 1001; i++) mkdirSync(join(cwd, String(i)));
+  assert.equal(workspaceProtected([cwd]).exhausted, true);
+  const profile = sandboxProfile(home, [], [cwd]);
+  const run = command => spawnSync('/usr/bin/sandbox-exec', ['-p', profile, '/bin/bash', '-c', command], {cwd, encoding:'utf8'});
+  assert.equal(run('echo ok > notes.git; cat notes.git').stdout, 'ok\n');
+  assert.notEqual(run('mkdir .git').status, 0);
+  assert.ok(profile.includes(join(work, 'metadata')));
 });

@@ -1230,7 +1230,12 @@ async fn execute_code(
                 &[sandbox.1.clone(), artifacts_dir(home, bot)?],
                 confine,
                 &[artifacts_dir(home, bot)?],
-            )?,
+            ).map_err(|mut error| {
+                if cfg!(target_os = "linux") && error.code == 5240 {
+                    error.message.push_str(" If the workspace scan cannot finish, run this Python code with the terminal tool using full_access and a reason, or choose a smaller workspace.");
+                }
+                error
+            })?,
         };
         desktop_environment(&mut command);
         let mut child = command
@@ -3244,6 +3249,46 @@ mod safety_tests {
             .unwrap();
         common::write_config(home.path(), &json!({"tools":{"enabled_toolsets":["code_execution","image_gen","tts","browser","web"]}})).unwrap();
         home
+    }
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn code_scan_budget_explains_recovery_and_a_smaller_workspace_runs() {
+        if !crate::credentials::isolation_available() {
+            return;
+        }
+        let home = fixture();
+        let work = home.workspace();
+        for i in 0..1001 {
+            fs::create_dir(work.join(i.to_string())).unwrap();
+        }
+        let cfg = json!({});
+        let env = Default::default();
+        let args = json!({"code": "print('ok')"});
+        let error = CODE_SANDBOX
+            .scope(
+                (Some(crate::credentials::Confine::Workspace), work.clone()),
+                execute_code(home.path(), "owl", "section", &cfg, &env, &args),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("directory budget"));
+        assert!(
+            error
+                .message
+                .contains("terminal tool using full_access and a reason")
+        );
+        assert!(error.message.contains("smaller workspace"));
+        let small = work.join("0");
+        let result = CODE_SANDBOX
+            .scope(
+                (Some(crate::credentials::Confine::Workspace), small),
+                execute_code(home.path(), "owl", "section", &cfg, &env, &args),
+            )
+            .await
+            .unwrap();
+        close_session(home.path(), "section").await;
+        assert_eq!(result["success"], true, "{result}");
+        assert_eq!(result["output"], "ok\n");
     }
     #[tokio::test]
     async fn kernel_uses_frozen_cwd_without_connector_secrets() {

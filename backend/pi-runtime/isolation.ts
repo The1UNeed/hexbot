@@ -100,51 +100,94 @@ export function readDenied(): string[] {
 // these names wherever they appear, including ones created later; bubblewrap
 // cannot match names, so on Linux the workspace is searched when a command
 // starts, a few levels deep.
-const GIT_DIR = regexEscape('.git') + '(/|$)';
+const GIT_DIR = '/' + regexEscape('.git') + '(/|$)';
+export const bareRepository = (path: string) => fold(basename(path)).endsWith('.git') && existsSync(join(path, 'HEAD')) && existsSync(join(path, 'objects'));
 const WORKSPACE_DEPTH = 3, WORKSPACE_DIRS = 1000;
 export const SCAN_REASON = 'The workspace safety scan exceeded its directory budget. This command needs approval: retry with full_access and a reason.';
-export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): {git: string[], secrets: string[]} {
+export const SCAN_FILE_REASON = 'The workspace safety scan reached its directory budget, so Git protection is partial. Approve this file change only if you trust its destination.';
+export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): {git: string[], secrets: string[], exhausted: boolean, failure?: string} {
+  let exhausted = false, failure: string | undefined;
   const git = new Set<string>(), secrets = new Set<string>();
   const add = (set: Set<string>, path: string) => { set.add(path); set.add(realRoot(path)); };
   const pointerTarget = (base: string, value: string) => realRoot(value.startsWith('/') ? value : base + '/' + value);
-  const metadata = (path: string) => {
+  const hooks = (dir: string, worktree: string) => {
+    for (const config of [join(dir, 'config'), join(dir, 'config.worktree')]) {
+      if (!existsSync(config)) continue;
+      // git config only parses files; it does not run hooks, aliases or commands.
+      // Use system Git, never a workspace executable from PATH. Explicit --file
+      // avoids user/system config. Git handles quoting and includes.
+      const parsed = spawnSync('/usr/bin/git', ['config', '--null', '--includes', '--file', config, '--show-origin', '--path', '--get-regexp', '^(core.hookspath|include.path|includeif\\..*\\.path)$'], {
+        encoding: 'utf8', timeout: 5000,
+        env: {PATH: process.env.PATH, HOME: homedir(), GIT_DIR: dir, GIT_WORK_TREE: worktree},
+      });
+      if (parsed.status === 1) continue; // No matching settings.
+      if (parsed.status !== 0) throw new Error('Git hook configuration could not be read.');
+      const fields = parsed.stdout.split('\0');
+      for (let i = 0; i + 1 < fields.length; i += 2) {
+        const origin = fields[i].replace(/^file:/, '');
+        add(git, origin);
+        const split = fields[i + 1].indexOf('\n');
+        const key = fields[i + 1].slice(0, split), value = fields[i + 1].slice(split + 1);
+        if (value) add(git, pointerTarget(key === 'core.hookspath' ? worktree : dirname(origin), value));
+      }
+    }
+  };
+  const metadata = (path: string, worktree = dirname(path)) => {
     add(git, path);
+    let dir = path;
     if (statSync(path).isFile()) {
       const pointer = readFileSync(path, 'utf8').match(/^gitdir:\s*(.+)\s*$/m);
-      if (!pointer) throw new Error('Invalid .git file; use an approved full_access command.');
-      const dir = pointerTarget(dirname(path), pointer[1].trim());
+      if (!pointer) return; // Cache markers are ordinary files, but remain locked.
+      dir = pointerTarget(dirname(path), pointer[1].trim());
       add(git, dir);
-      const common = join(dir, 'commondir');
-      if (existsSync(common)) add(git, pointerTarget(dir, readFileSync(common, 'utf8').trim()));
     }
+    const common = join(dir, 'commondir');
+    if (existsSync(common)) {
+      const target = pointerTarget(dir, readFileSync(common, 'utf8').trim());
+      add(git, target);
+      hooks(target, worktree);
+    }
+    hooks(dir, worktree);
+  };
+  const recordMetadata = (path: string, worktree?: string) => {
+    try { metadata(path, worktree); } catch { failure = 'Git metadata or hook configuration could not be scanned. Approve this file change only if you trust its destination.'; }
   };
   const queue: {dir: string, depth: number}[] = [];
   const seen = new Set<string>();
   for (const root of roots) {
     if (root === '/tmp' || root === tmpdir()) continue;
-    const dir = realRoot(root);
-    if (fold(basename(dir)).endsWith('.git')) metadata(dir);
+    let dir: string;
+    try { dir = realRoot(root); } catch { failure = 'The workspace safety scan could not read a directory. Approve this file change only if you trust its destination.'; continue; }
+    if (bareRepository(dir)) recordMetadata(dir, dir);
     queue.push({dir, depth: 0});
     // A section can use a subdirectory of a linked worktree as its cwd.
     for (let parent = dir; dirname(parent) !== parent; parent = dirname(parent)) {
       const marker = join(parent, '.git');
-      if (existsSync(marker)) metadata(marker);
+      if (existsSync(marker)) recordMetadata(marker);
     }
   }
   for (let i = 0; i < queue.length; i++) {
     const {dir, depth} = queue[i];
     if (seen.has(dir)) continue;
-    if (seen.size >= limit) throw new Error(SCAN_REASON);
+    if (seen.size >= limit) { exhausted = true; break; }
     seen.add(dir);
     // Record every entry before visiting any child, even at the budget boundary.
-    for (const entry of entries(dir).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+    let list: ReturnType<typeof entries>;
+    try { list = readdirSync(dir, {withFileTypes:true}); } catch { failure = 'The workspace safety scan could not read a directory. Approve this file change only if you trust its destination.'; continue; }
+    for (const entry of list.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
       const path = join(dir, entry.name);
-      if (fold(entry.name) === '.git' || (fold(entry.name).endsWith('.git') && existsSync(path) && statSync(path).isDirectory())) metadata(path);
-      else if (secretFileName(entry.name) && !statSync(path).isDirectory()) add(secrets, path);
+      if (fold(entry.name) === '.git' || bareRepository(path)) recordMetadata(path, bareRepository(path) ? path : dirname(path));
+      else if (secretFileName(entry.name) && !entry.isDirectory()) {
+        // Follow valid directory links, but keep unresolved secret names masked.
+        let directory = false;
+        try { directory = statSync(path).isDirectory(); } catch { /* Mask unresolved secret names. */ }
+        if (directory) continue;
+        try { add(secrets, path); } catch { failure = 'The workspace safety scan could not resolve a secret path. Approve this file change only if you trust its destination.'; }
+      }
       else if (entry.isDirectory() && depth < WORKSPACE_DEPTH && !credentialPolicy.skip.includes(fold(entry.name))) queue.push({dir: path, depth: depth + 1});
     }
   }
-  return {git: [...git], secrets: [...secrets]};
+  return {git: [...git], secrets: [...secrets], exhausted, failure};
 }
 function pathAncestors(paths: string[]): string[] {
   const ancestors = new Set<string>();
@@ -230,8 +273,14 @@ export function bwrapArguments(home: string, outputs: string[] = [], workspace?:
   for (const path of confine ? confine.config : []) if (existsSync(path)) args.push('--ro-bind', path, path);
   if (confine) {
     for (const path of readDenied()) if (existsSync(path)) args.push(...(statSync(path).isDirectory() ? ['--tmpfs', path, '--remount-ro', path] : ['--ro-bind', '/dev/null', path]));
-    const {git, secrets} = workspaceProtected(searchRoots);
-    for (const path of git.filter(existsSync)) args.push('--ro-bind', path, path);
+    const {git, secrets, exhausted, failure} = workspaceProtected(searchRoots);
+    if (exhausted) throw new Error(SCAN_REASON);
+    if (failure) throw new Error('The workspace safety scan could not finish. Retry with full_access and a reason.');
+    for (let path of git) {
+      // Pin the nearest existing parent when the configured hooks dir is absent.
+      while (!existsSync(path) && dirname(path) !== path) path = dirname(path);
+      args.push('--ro-bind', path, path);
+    }
     for (const path of secrets) args.push('--ro-bind', '/dev/null', path);
   }
   for (const path of paths) if (existsSync(path)) args.push(...(statSync(path).isDirectory() ? ['--tmpfs', path, '--remount-ro', path] : ['--ro-bind', '/dev/null', path]));

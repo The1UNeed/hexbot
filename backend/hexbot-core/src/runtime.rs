@@ -2451,7 +2451,7 @@ impl Runtime {
                         } else {
                             PathBuf::from(live["cwd"].as_str().unwrap_or(".")).join(raw)
                         };
-                        let (path, ask) = guarded_file_path(
+                        let (path, ask, reason) = guarded_file_path(
                             &runtime.home,
                             &path,
                             name != "read_file",
@@ -2461,7 +2461,7 @@ impl Runtime {
                                 .filter_map(|v| v.as_str().map(PathBuf::from))
                                 .collect::<Vec<_>>(),
                         )?;
-                        if ask && !runtime.native_approval(&session, json!({"tool":name,"toolCall":{"title":path.to_string_lossy()},"input":args})).await? {
+                        if ask && !runtime.native_approval(&session, json!({"tool":name,"toolCall":{"title":path.to_string_lossy()},"input":args,"reason":reason})).await? {
                             return Err(Error::new(4302, "The user denied this action."));
                         }
                         return match name.as_str() {
@@ -4491,7 +4491,7 @@ fn guarded_file_path(
     write: bool,
     mode: &str,
     writable: &[PathBuf],
-) -> Result<(PathBuf, bool)> {
+) -> Result<(PathBuf, bool, Option<String>)> {
     fn resolve(path: &Path) -> Result<PathBuf> {
         let mut resolved = PathBuf::new();
         for component in path.components() {
@@ -4519,9 +4519,15 @@ fn guarded_file_path(
     let target = resolve(path)?;
     // Bypass is Pi's own behaviour: no checks.
     if mode == "off" {
-        return Ok((target, false));
+        return Ok((target, false, None));
     }
-    if write && crate::credentials::git_write_protected(&target, writable)? {
+    let git_check = if write {
+        crate::credentials::git_write_protected(&target, writable)
+    } else {
+        Ok(false)
+    };
+    let reason = git_check.as_ref().err().map(ToString::to_string);
+    if matches!(git_check, Ok(true)) {
         return Err(Error::new(
             4302,
             "Git metadata is read-only. Use an approved full_access command.",
@@ -4530,7 +4536,8 @@ fn guarded_file_path(
     let root = resolve(home)?;
     // Manual asks before every change, Auto before one outside the workspace.
     let mut ask = write
-        && (mode == "manual"
+        && (reason.is_some()
+            || mode == "manual"
             || !writable
                 .iter()
                 .any(|p| resolve(p).is_ok_and(|p| crate::credentials::under(&target, &p))));
@@ -4567,7 +4574,6 @@ fn guarded_file_path(
                             v.to_owned()
                         };
                         v.starts_with(".env")
-                            || v.ends_with(".git")
                             || [".git", "node_modules", ".ssh"].contains(&v.as_str())
                     })
                 }))
@@ -4578,7 +4584,7 @@ fn guarded_file_path(
             ));
         }
     }
-    Ok((target, ask))
+    Ok((target, ask, reason))
 }
 
 #[cfg(test)]
@@ -4599,6 +4605,8 @@ mod file_bridge_tests {
         ] {
             fs::create_dir_all(path).unwrap();
         }
+        fs::create_dir_all(work.join("bare.git/objects")).unwrap();
+        fs::write(work.join("bare.git/HEAD"), "ref: refs/heads/main\n").unwrap();
         fs::write(work.join(".git"), "gitdir: ../metadata\n").unwrap();
         fs::write(root.join("metadata/commondir"), "../common\n").unwrap();
         for mode in ["manual", "smart"] {
@@ -4624,6 +4632,70 @@ mod file_bridge_tests {
             );
         }
     }
+    #[test]
+    fn bridge_handles_large_workspaces_and_directory_common_hooks() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let home = root.join("home");
+        let work = root.join("project.git");
+        for path in [
+            &home,
+            &work.join(".git"),
+            &work.join("shared/hooks"),
+            &work.join(".local-hooks"),
+        ] {
+            fs::create_dir_all(path).unwrap();
+        }
+        fs::write(work.join(".git/commondir"), "../shared\n").unwrap();
+        fs::write(
+            work.join("shared/config"),
+            "[core]\n hooksPath = .local-hooks\n",
+        )
+        .unwrap();
+        for i in 0..1001 {
+            fs::create_dir(work.join(i.to_string())).unwrap();
+        }
+        for local in [
+            "shared/hooks/pre-commit",
+            ".local-hooks/pre-commit",
+            "shared",
+            ".local-hooks",
+        ] {
+            assert!(
+                guarded_file_path(
+                    &home,
+                    &work.join(local),
+                    true,
+                    "smart",
+                    std::slice::from_ref(&work)
+                )
+                .is_err()
+            );
+        }
+        let (path, ask, reason) = guarded_file_path(
+            &home,
+            &work.join("notes.git"),
+            true,
+            "smart",
+            std::slice::from_ref(&work),
+        )
+        .unwrap();
+        assert!(ask);
+        assert!(reason.unwrap().contains("directory budget"));
+        fs::write(path, "ok").unwrap();
+        fs::write(work.join("shared/config"), "[broken config").unwrap();
+        let (_, ask, reason) = guarded_file_path(
+            &home,
+            &work.join("notes.git"),
+            true,
+            "smart",
+            std::slice::from_ref(&work),
+        )
+        .unwrap();
+        assert!(ask);
+        assert!(reason.unwrap().contains("could not be scanned"));
+    }
+
     #[test]
     fn bridge_file_checks_follow_the_mode_and_resolve_links() {
         let temp = tempfile::tempdir().unwrap();
@@ -4653,7 +4725,7 @@ mod file_bridge_tests {
             assert!(guarded_file_path(&home, &home.join("notes.txt"), true, mode, &[]).is_err());
         }
         // Bypass is plain Pi: nothing is checked.
-        let (target, ask) = guarded_file_path(
+        let (target, ask, _) = guarded_file_path(
             &home,
             &home.join("profiles/owl/pi/auth.json"),
             true,
@@ -4734,7 +4806,7 @@ mod file_bridge_tests {
                 // Credential stores are private to reads too.
                 assert!(guarded_file_path(&home, &user.join(".netrc"), false, mode, &[]).is_err());
                 // A shell profile asks even when explicitly writable.
-                let (_, ask) = guarded_file_path(
+                let (_, ask, _) = guarded_file_path(
                     &home,
                     &user.join(".zshrc"),
                     true,

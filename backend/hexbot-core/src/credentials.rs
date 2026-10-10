@@ -487,46 +487,107 @@ fn read_denied() -> Vec<PathBuf> {
 const WORKSPACE_DEPTH: usize = 3;
 const WORKSPACE_DIRS: usize = 1000;
 fn git_dir_regex() -> String {
-    format!("{}(/|$)", regex_escape(".git"))
+    format!("/{}(/|$)", regex_escape(".git"))
 }
 const SCAN_REASON: &str = "The workspace safety scan exceeded its directory budget. This command needs approval: retry with full_access and a reason.";
+const SCAN_FILE_REASON: &str = "The workspace safety scan reached its directory budget, so Git protection is partial. Approve this file change only if you trust its destination.";
 #[derive(Default)]
 struct WorkspaceProtected {
     git: Vec<PathBuf>,
     secrets: Vec<PathBuf>,
+    exhausted: bool,
+    failure: bool,
 }
 fn add_path(paths: &mut Vec<PathBuf>, path: &Path) -> Result<()> {
-    for path in [path.to_owned(), real_root(path)?] {
-        if !paths.contains(&path) {
-            paths.push(path);
+    if !paths.contains(&path.to_owned()) {
+        paths.push(path.to_owned());
+    }
+    let real = real_root(path)?;
+    if !paths.contains(&real) {
+        paths.push(real);
+    }
+    Ok(())
+}
+fn git_hooks(git: &mut Vec<PathBuf>, dir: &Path, worktree: &Path) -> Result<()> {
+    for config in [dir.join("config"), dir.join("config.worktree")] {
+        if !config.exists() {
+            continue;
+        }
+        // Use system Git, never a workspace executable from PATH. Parse only
+        // repository config; ignore ambient Git overrides.
+        let output = std::process::Command::new("/usr/bin/git")
+            .args(["config", "--null", "--includes", "--file"])
+            .arg(&config)
+            .args([
+                "--show-origin",
+                "--path",
+                "--get-regexp",
+                r"^(core.hookspath|include.path|includeif\..*\.path)$",
+            ])
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", std::env::var_os("HOME").unwrap_or_default())
+            .env("GIT_DIR", dir)
+            .env("GIT_WORK_TREE", worktree)
+            .output()?;
+        if output.status.code() == Some(1) {
+            continue;
+        }
+        if !output.status.success() {
+            return Err(Error::new(
+                5240,
+                "Git hook configuration could not be read.",
+            ));
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        let fields: Vec<_> = text.split('\0').collect();
+        for pair in fields.chunks_exact(2) {
+            let origin = Path::new(pair[0].strip_prefix("file:").unwrap_or(pair[0]));
+            add_path(git, origin)?;
+            if let Some((key, value)) = pair[1].split_once('\n')
+                && !value.is_empty()
+            {
+                let base = if key == "core.hookspath" {
+                    worktree
+                } else {
+                    origin.parent().unwrap()
+                };
+                add_path(git, &real_root(&base.join(value))?)?;
+            }
         }
     }
     Ok(())
 }
-fn git_metadata(git: &mut Vec<PathBuf>, path: &Path) -> Result<()> {
+fn git_metadata(git: &mut Vec<PathBuf>, path: &Path, worktree: &Path) -> Result<()> {
     add_path(git, path)?;
+    let mut dir = path.to_owned();
     if path.is_file() {
-        let text = std::fs::read_to_string(path)?;
-        let pointer = text
-            .lines()
-            .find_map(|line| line.strip_prefix("gitdir:"))
-            .ok_or_else(|| {
-                Error::new(
-                    5240,
-                    "Invalid .git file; use an approved full_access command.",
-                )
-            })?;
-        let dir = real_root(&path.parent().unwrap().join(pointer.trim()))?;
+        let bytes = std::fs::read(path)?;
+        let text = String::from_utf8_lossy(&bytes);
+        let Some(pointer) = text.lines().find_map(|line| line.strip_prefix("gitdir:")) else {
+            return Ok(()); // Cache markers remain locked, but are not pointers.
+        };
+        dir = real_root(&path.parent().unwrap().join(pointer.trim()))?;
         add_path(git, &dir)?;
-        let common = dir.join("commondir");
-        if common.exists() {
-            add_path(
-                git,
-                &real_root(&dir.join(std::fs::read_to_string(common)?.trim()))?,
-            )?;
-        }
     }
-    Ok(())
+    let common = dir.join("commondir");
+    if common.exists() {
+        let target = real_root(&dir.join(std::fs::read_to_string(common)?.trim()))?;
+        add_path(git, &target)?;
+        git_hooks(git, &target, worktree)?;
+    }
+    git_hooks(git, &dir, worktree)
+}
+fn bare_repository(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| folded(Path::new(name)).to_string_lossy().ends_with(".git"))
+        && path.join("HEAD").exists()
+        && path.join("objects").exists()
+}
+fn record_metadata(protected: &mut WorkspaceProtected, path: &Path, worktree: &Path) {
+    if git_metadata(&mut protected.git, path, worktree).is_err() {
+        protected.failure = true;
+    }
 }
 fn workspace_protected(roots: &[PathBuf], limit: usize) -> Result<WorkspaceProtected> {
     let mut protected = WorkspaceProtected::default();
@@ -536,17 +597,20 @@ fn workspace_protected(roots: &[PathBuf], limit: usize) -> Result<WorkspaceProte
         .iter()
         .filter(|root| *root != Path::new("/tmp") && **root != std::env::temp_dir())
     {
-        let dir = real_root(root)?;
-        if dir
-            .file_name()
-            .is_some_and(|name| folded(Path::new(name)).to_string_lossy().ends_with(".git"))
-        {
-            git_metadata(&mut protected.git, &dir)?;
+        let dir = match real_root(root) {
+            Ok(dir) => dir,
+            Err(_) => {
+                protected.failure = true;
+                continue;
+            }
+        };
+        if bare_repository(&dir) {
+            record_metadata(&mut protected, &dir, &dir);
         }
         for parent in dir.ancestors().filter(|p| p.parent().is_some()) {
             let marker = parent.join(".git");
             if marker.exists() {
-                git_metadata(&mut protected.git, &marker)?;
+                record_metadata(&mut protected, &marker, parent);
             }
         }
         queue.push_back((dir, 0));
@@ -556,22 +620,38 @@ fn workspace_protected(roots: &[PathBuf], limit: usize) -> Result<WorkspaceProte
             continue;
         }
         if seen.len() >= limit {
-            return Err(Error::new(5240, SCAN_REASON));
+            protected.exhausted = true;
+            break;
         }
         seen.insert(dir.clone());
-        let mut list: Vec<_> = entries(&dir).collect();
+        let mut list: Vec<_> = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries
+                .filter_map(|entry| match entry {
+                    Ok(entry) => Some(entry),
+                    Err(_) => {
+                        protected.failure = true;
+                        None
+                    }
+                })
+                .collect(),
+            Err(_) => {
+                protected.failure = true;
+                continue;
+            }
+        };
         list.sort_by_key(|entry| entry.file_name());
         for entry in list {
             let path = entry.path();
             let name = entry.file_name();
             let name = name.to_string_lossy();
             let git_name = folded(Path::new(name.as_ref()));
-            if git_name == Path::new(".git")
-                || (git_name.to_string_lossy().ends_with(".git") && path.is_dir())
-            {
-                git_metadata(&mut protected.git, &path)?;
+            if git_name == Path::new(".git") || bare_repository(&path) {
+                let worktree = if bare_repository(&path) { &path } else { &dir };
+                record_metadata(&mut protected, &path, worktree);
             } else if secret_file_name(&name) && !path.is_dir() {
-                add_path(&mut protected.secrets, &path)?;
+                if add_path(&mut protected.secrets, &path).is_err() {
+                    protected.failure = true;
+                }
             } else if entry.file_type().is_ok_and(|kind| kind.is_dir())
                 && depth < WORKSPACE_DEPTH
                 && !policy()
@@ -586,10 +666,27 @@ fn workspace_protected(roots: &[PathBuf], limit: usize) -> Result<WorkspaceProte
     Ok(protected)
 }
 pub(crate) fn git_write_protected(path: &Path, roots: &[PathBuf]) -> Result<bool> {
-    Ok(workspace_protected(roots, WORKSPACE_DIRS)?
+    if path.ancestors().any(bare_repository) {
+        return Ok(true);
+    }
+    let scan = workspace_protected(roots, WORKSPACE_DIRS)?;
+    if scan
         .git
         .iter()
-        .any(|root| under(path, root)))
+        .any(|root| under(path, root) || under(root, path))
+    {
+        return Ok(true);
+    }
+    if scan.failure {
+        return Err(Error::new(
+            5240,
+            "Git metadata or hook configuration could not be scanned. Approve this file change only if you trust its destination.",
+        ));
+    }
+    if scan.exhausted {
+        return Err(Error::new(5240, SCAN_FILE_REASON));
+    }
+    Ok(false)
 }
 fn path_ancestors(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut ancestors = vec![];
@@ -783,7 +880,18 @@ fn sandbox_profile(layout: &Layout) -> String {
         filters.join(" ")
     )
 }
-fn bwrap_arguments(layout: &Layout) -> Vec<OsString> {
+fn bwrap_arguments(layout: &Layout) -> Result<Vec<OsString>> {
+    if let Some(confine) = &layout.confine {
+        if confine.protected.exhausted {
+            return Err(Error::new(5240, SCAN_REASON));
+        }
+        if confine.protected.failure {
+            return Err(Error::new(
+                5240,
+                "Git metadata or hook configuration could not be scanned. Use an approved full_access command.",
+            ));
+        }
+    }
     let base: &[&str] = if layout.confine.is_some() {
         &[
             "--die-with-parent",
@@ -877,7 +985,12 @@ fn bwrap_arguments(layout: &Layout) -> Vec<OsString> {
                 args.extend(["--ro-bind".into(), "/dev/null".into(), path.into()]);
             }
         }
-        for path in confine.protected.git.iter().filter(|p| p.exists()) {
+        for target in &confine.protected.git {
+            let mut path = target.as_path();
+            while !path.exists() {
+                let Some(parent) = path.parent() else { break };
+                path = parent;
+            }
             args.extend(["--ro-bind".into(), path.into(), path.into()]);
         }
         for path in &confine.protected.secrets {
@@ -896,7 +1009,7 @@ fn bwrap_arguments(layout: &Layout) -> Vec<OsString> {
             args.extend(["--ro-bind".into(), "/dev/null".into(), path.into()]);
         }
     }
-    args
+    Ok(args)
 }
 /// Neither sandbox caps process creation, so a workspace program may start at
 /// most this many more processes than the user already runs.
@@ -978,7 +1091,7 @@ pub(crate) fn isolated_command_with_outputs(
     } else if let Some(bwrap) = bwrap() {
         let mut command = tokio::process::Command::new(bwrap);
         command
-            .args(bwrap_arguments(&layout))
+            .args(bwrap_arguments(&layout)?)
             .arg("--")
             .arg(program);
         command
@@ -1250,6 +1363,8 @@ mod tests {
         ] {
             std::fs::create_dir_all(path).unwrap();
         }
+        std::fs::create_dir_all(work.join("bare.git/objects")).unwrap();
+        std::fs::write(work.join("bare.git/HEAD"), "ref: refs/heads/main\n").unwrap();
         std::fs::write(work.join(".git"), "gitdir: ../metadata\n").unwrap();
         std::fs::write(root.join("metadata/commondir"), "../common\n").unwrap();
         std::fs::write(work.join("z/.env"), "dummy").unwrap();
@@ -1282,7 +1397,7 @@ mod tests {
             assert!(scan.git.contains(&path));
         }
         let layout = layout_scanned(&home, &[], Some(&[]), std::slice::from_ref(&work)).unwrap();
-        let args = bwrap_arguments(&layout);
+        let args = bwrap_arguments(&layout).unwrap();
         assert!(!args.iter().any(|arg| arg == "--bind"));
         for path in scan.secrets {
             assert!(
@@ -1296,11 +1411,134 @@ mod tests {
                 .any(|w| w[0] == "--ro-bind" && w[1] == "/dev/null" && w[2] == root.join("secret"))
         );
         std::fs::create_dir(work.join("a/deep")).unwrap();
-        assert!(workspace_protected(std::slice::from_ref(&work), 3).is_err());
+        assert!(
+            workspace_protected(std::slice::from_ref(&work), 3)
+                .unwrap()
+                .exhausted
+        );
         for i in 0..1001 {
             std::fs::create_dir(work.join("a").join(i.to_string())).unwrap();
         }
-        assert!(layout_scanned(&home, &[], Some(&[]), &[work]).is_err());
+        let partial = layout_scanned(&home, &[], Some(&[]), &[work]).unwrap();
+        assert!(bwrap_arguments(&partial).is_err());
+        assert!(!sandbox_profile(&partial).is_empty());
+    }
+
+    #[tokio::test]
+    async fn directory_common_hooks_and_partial_scans_preserve_protection() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().canonicalize().unwrap();
+        let home = root.join("home");
+        let work = root.join("project.git");
+        for path in [
+            &home,
+            &work.join(".git"),
+            &work.join("shared/hooks"),
+            &work.join(".local-hooks"),
+            &work.join("markers"),
+            &work.join("ordinary.git"),
+        ] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::write(work.join(".git/commondir"), "../shared\n").unwrap();
+        std::fs::write(
+            work.join("shared/config"),
+            "[include]\n path = ../hooks-config\n",
+        )
+        .unwrap();
+        std::fs::write(
+            work.join("hooks-config"),
+            "[core]\n hooksPath = \".local-hooks\"\n",
+        )
+        .unwrap();
+        std::fs::write(work.join(".gitignore"), ".local-hooks/\n").unwrap();
+        std::fs::write(work.join("markers/.git"), [0xff]).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("missing-secret", work.join(".env")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("ordinary.git", work.join(".env.venv")).unwrap();
+        let scan = workspace_protected(std::slice::from_ref(&work), WORKSPACE_DIRS).unwrap();
+        assert!(!scan.failure);
+        #[cfg(unix)]
+        assert!(scan.secrets.contains(&work.join(".env")));
+        assert!(!scan.secrets.contains(&work.join(".env.venv")));
+        let layout = layout(&home, &[], Some(std::slice::from_ref(&work))).unwrap();
+        let args = bwrap_arguments(&layout).unwrap();
+        for local in [
+            ".git",
+            "shared",
+            ".local-hooks",
+            "hooks-config",
+            "markers/.git",
+        ] {
+            let path = work.join(local);
+            assert!(scan.git.contains(&path), "{}", path.display());
+            assert!(git_write_protected(&path, std::slice::from_ref(&work)).unwrap());
+            assert!(
+                args.windows(3)
+                    .any(|w| w[0] == "--ro-bind" && w[1] == path && w[2] == path)
+            );
+        }
+        assert!(git_write_protected(&work, std::slice::from_ref(&work)).unwrap());
+        for local in ["notes.git", "ordinary.git/notes", "notes"] {
+            assert!(!git_write_protected(&work.join(local), std::slice::from_ref(&work)).unwrap());
+        }
+        // Real macOS reproduction, using only dummy files.
+        if cfg!(target_os = "macos") {
+            let profile = sandbox_profile(&layout);
+            for script in [
+                "echo x > shared/hooks/pre-commit",
+                "echo x > .local-hooks/pre-commit",
+                "mv shared moved",
+                "mv .local-hooks moved",
+                "echo x > hooks-config",
+                "echo x > markers/.git",
+            ] {
+                let result = tokio::process::Command::new("/usr/bin/sandbox-exec")
+                    .args(["-p", &profile, "/bin/bash", "-c", script])
+                    .current_dir(&work)
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(!result.status.success(), "{script}");
+                assert!(!String::from_utf8_lossy(&result.stderr).contains("sandbox_init"));
+            }
+        }
+        for i in 0..1001 {
+            std::fs::create_dir(work.join(i.to_string())).unwrap();
+        }
+        let partial = super::layout(&home, &[], Some(std::slice::from_ref(&work))).unwrap();
+        assert!(partial.confine.as_ref().unwrap().protected.exhausted);
+        assert!(bwrap_arguments(&partial).is_err());
+        assert!(
+            git_write_protected(&work.join("notes.git"), std::slice::from_ref(&work))
+                .unwrap_err()
+                .message
+                .contains("directory budget")
+        );
+        if cfg!(target_os = "macos") {
+            let result = isolated_command(
+                &home,
+                "/bin/bash",
+                std::slice::from_ref(&work),
+                Confine::Workspace,
+            )
+            .unwrap()
+            .args([
+                "-c",
+                "echo ok > notes.git; echo ok > ordinary.git/notes; cat notes.git",
+            ])
+            .current_dir(&work)
+            .output()
+            .await
+            .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert_eq!(result.stdout, b"ok\n");
+        }
     }
 
     #[tokio::test]
@@ -1322,6 +1560,8 @@ mod tests {
         ] {
             std::fs::create_dir_all(path).unwrap();
         }
+        std::fs::create_dir_all(work.join("bare.git/objects")).unwrap();
+        std::fs::write(work.join("bare.git/HEAD"), "ref: refs/heads/main\n").unwrap();
         std::fs::write(work.join(".git"), "gitdir: ../metadata\n").unwrap();
         std::fs::write(root.join("metadata/commondir"), "../common\n").unwrap();
         std::fs::write(work.join(".env"), "dummy").unwrap();
@@ -1430,10 +1670,24 @@ mod tests {
         std::fs::create_dir_all(workspace[0].join("app")).unwrap();
         std::fs::create_dir_all(workspace[0].join("linked")).unwrap();
         std::fs::create_dir_all(workspace[0].join("bare.git/hooks")).unwrap();
+        std::fs::create_dir_all(workspace[0].join("bare.git/objects")).unwrap();
+        std::fs::write(workspace[0].join("bare.git/HEAD"), "ref: refs/heads/main\n").unwrap();
         std::fs::create_dir_all(base.path().join("metadata")).unwrap();
         std::fs::create_dir_all(base.path().join("common")).unwrap();
         std::fs::write(workspace[0].join("linked/.git"), "gitdir: ../../metadata\n").unwrap();
         std::fs::write(base.path().join("metadata/commondir"), "../common\n").unwrap();
+        std::fs::write(workspace[0].join(".git/commondir"), "../../common\n").unwrap();
+        std::fs::write(
+            base.path().join("common/config"),
+            "[include]\n path = ../hooks-config\n",
+        )
+        .unwrap();
+        std::fs::write(
+            base.path().join("hooks-config"),
+            "[core]\n hooksPath = .local-hooks\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(workspace[0].join(".local-hooks")).unwrap();
         std::fs::write(workspace[0].join("app/.env"), "secret").unwrap();
         std::fs::write(workspace[0].join(".env.example"), "example").unwrap();
         let confined = super::layout(
@@ -1468,7 +1722,7 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap().into())
             .collect();
-        assert_eq!(bwrap, bwrap_arguments(&layout));
+        assert_eq!(bwrap, bwrap_arguments(&layout).unwrap());
         assert_eq!(
             extension["confined"].as_str().unwrap(),
             sandbox_profile(&confined)
@@ -1481,7 +1735,7 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap().into())
             .collect();
-        assert_eq!(confined_bwrap, bwrap_arguments(&confined));
+        assert_eq!(confined_bwrap, bwrap_arguments(&confined).unwrap());
         let manual = layout_scanned(
             &home,
             &[attachments.clone(), outputs],
@@ -1499,7 +1753,7 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap().into())
             .collect();
-        assert_eq!(manual_bwrap, bwrap_arguments(&manual));
+        assert_eq!(manual_bwrap, bwrap_arguments(&manual).unwrap());
         let work = workspace[0].canonicalize().unwrap();
         assert!(confined_bwrap.windows(3).any(|w| w[0] == "--ro-bind"
             && w[1] == work.join(".git").as_os_str()
@@ -1732,7 +1986,7 @@ mod tests {
         let user = PathBuf::from(std::env::var_os("HOME").unwrap());
         if !isolation_available() {
             let home = tempfile::tempdir().unwrap();
-            let args = bwrap_arguments(&layout(home.path(), &[], None).unwrap());
+            let args = bwrap_arguments(&layout(home.path(), &[], None).unwrap()).unwrap();
             for local in &policy().write.deny {
                 let path = user.join(local);
                 assert!(

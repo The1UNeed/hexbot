@@ -3,7 +3,7 @@ import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync } from 'n
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
-import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, workspaceProtected} from './isolation.ts';
+import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, bareRepository, SCAN_REASON, SCAN_FILE_REASON, workspaceProtected} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -194,9 +194,11 @@ export default function hexbot(pi: any) {
         checked(path);
         if (credentialPath(resolve(cwd, input), live.home) || credentialPath(path, live.home)) return {block: true, reason: 'Credential files are private.'};
         if (['write', 'edit'].includes(event.toolName)) {
-          const denial = writeDenial(input, cwd, live.home, live.outputDirs);
+          const scan = workspaceProtected([cwd, ...live.outputDirs ?? []]);
+          const denial = writeDenial(input, cwd, live.home, live.outputDirs, scan);
           if (denial) return {block: true, reason: denial};
-          if (live.approvalMode === 'manual') ask = {key: 'file', command: path, reason: 'Manual mode asks before every file change.'};
+          if (scan.failure || scan.exhausted) ask = {key: 'file:scan', command: path, reason: scan.failure ?? SCAN_FILE_REASON};
+          else if (live.approvalMode === 'manual') ask = {key: 'file', command: path, reason: 'Manual mode asks before every file change.'};
           else if (hostWriteTier(input, cwd) === 'ask') ask = {key: 'file:host-config', command: path, reason: 'This changes a shell profile, login item or other host configuration file.'};
           else if (!inWorkspace(path)) ask = {key: 'file:outside', command: path, reason: 'This changes a file outside the workspace.'};
         }
@@ -210,8 +212,11 @@ export default function hexbot(pi: any) {
           ask = {key: 'shell:unsandboxed', command: event.input.command, reason: 'Hexbot has no OS sandbox on this system, so this command can read and change any file you can. Install bubblewrap and restart the daemon to restore isolation.'};
         }
       }
-      if (event.toolName === 'bash' && levelFor(event.input) === 'confined' && isolationAvailable()) {
-        try { workspaceProtected([cwd, ...live.outputDirs ?? []]); }
+      if (process.platform === 'linux' && event.toolName === 'bash' && levelFor(event.input) === 'confined' && isolationAvailable()) {
+        try {
+          const scan = workspaceProtected([cwd, ...live.outputDirs ?? []]);
+          if (scan.exhausted || scan.failure) return {block: true, reason: scan.exhausted ? SCAN_REASON : 'The workspace safety scan could not finish. Retry with full_access and a reason.'};
+        }
         catch (error: any) { return {block: true, reason: error.message}; }
       }
       if (browser) ask = {key: 'browser_console', command: event.input.expression, reason: 'This runs code in a web page.'};
@@ -467,9 +472,12 @@ export function hostWriteTier(input: string, cwd: string, fileTool = false): 'de
   }
 }
 // Inside the home only the daemon-chosen output folders are writable, never the cwd.
-export function writeDenial(input: string, cwd: string, home: string, outputs: string[] = []): string | undefined {
+export function writeDenial(input: string, cwd: string, home: string, outputs: string[] = [], scan = workspaceProtected([cwd, ...outputs])): string | undefined {
   const path = canonicalPath(input, cwd);
-  if (workspaceProtected([cwd, ...outputs]).git.some(root => under(path, root))) return 'Git metadata is read-only. Use an approved full_access command.';
+  for (let parent = path; dirname(parent) !== parent; parent = dirname(parent)) {
+    if (bareRepository(parent)) return 'Git metadata is read-only. Use an approved full_access command.';
+  }
+  if (scan.git.some(root => under(path, root) || under(root, path))) return 'Git metadata is read-only. Use an approved full_access command.';
   if (protectedPath(path, home, outputs)) return 'This path is protected. Use the soul or memory tool for bot notes.';
   if (hostWriteTier(input, cwd, true) === 'deny') return NEVER_WRITTEN;
 }
@@ -483,7 +491,7 @@ function protectedHomePath(path: string, home: string, writable: string[]): bool
 }
 export function protectedPath(path: string, home: string, writable: string[] = []): boolean {
   path = canonicalPath(path, process.cwd());
-  return protectedHomePath(path, home, writable) || path.split(sep).some(part => fold(part).startsWith('.env') || fold(part).endsWith('.git') || ['.git', 'node_modules', '.ssh'].includes(fold(part)));
+  return protectedHomePath(path, home, writable) || path.split(sep).some(part => fold(part).startsWith('.env') || ['.git', 'node_modules', '.ssh'].includes(fold(part)));
 }
 export function shellEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   // Explicit inheritance prevents unfamiliar connector keys and runtime injection
