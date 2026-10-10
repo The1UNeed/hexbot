@@ -23,7 +23,7 @@ import {
   userMemoryGet,
   userMemorySet
 } from '../../lib/api'
-import { APPROVAL_MODES } from '../../lib/approval-modes'
+import { approvalModes } from '../../lib/approval-modes'
 import {
   defaultDeviceName,
   getBridge,
@@ -1160,6 +1160,7 @@ function formatDate(value: null | number): string {
 }
 
 export function ApprovalsSettings(): React.JSX.Element {
+  const role = useMe(state => state.me?.role)
   const settings = useSettings(state => state.settings)
   const refresh = useSettings(state => state.refresh)
   const patch = useSettings(state => state.patch)
@@ -1192,7 +1193,7 @@ export function ApprovalsSettings(): React.JSX.Element {
       ) : null}
       <Group title="Mode">
         <div aria-label="Approval mode" className={dividerClass} role="radiogroup">
-          {APPROVAL_MODES.map(mode => (
+          {approvalModes(role, settings?.approval_mode).map(mode => (
             <ChoiceRow
               checked={settings?.approval_mode === mode.value}
               description={mode.description}

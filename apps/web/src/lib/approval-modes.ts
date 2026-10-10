@@ -21,3 +21,10 @@ export const APPROVAL_MODES: { description: string; label: string; value: Approv
     value: 'off'
   }
 ]
+
+/** Older daemons reject Bypass for members; keep a stored selection visible. */
+export function approvalModes(role: 'admin' | 'member' | undefined, current: string | undefined) {
+  return APPROVAL_MODES.filter(
+    mode => role !== 'member' || mode.value !== 'off' || current === 'off'
+  )
+}

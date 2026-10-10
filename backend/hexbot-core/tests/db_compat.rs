@@ -699,6 +699,60 @@ fn pinning_inherited_room_does_not_relax_its_other_manual_bots() {
 }
 
 #[test]
+fn fold_only_preserves_current_room_bot_restrictions() {
+    for saved_session in [false, true] {
+        for current in [false, true] {
+            for (owner, mode, bot_owner, bot_mode, expected_current) in [
+                ("local", Some("off"), "bob", "manual", Some("manual")),
+                ("bob", None, "local", "off", Some("smart")),
+            ] {
+                let home = legacy_home(12);
+                let conn = db::open(home.path()).unwrap();
+                conn.execute_batch(
+                    "INSERT INTO users(id,display_name,role,created_at) VALUES
+                    ('local','Owner','admin',0),('bob','Bob','member',0);",
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO bots(name,owner_id,approval_mode) VALUES ('bot',?,?)",
+                    [bot_owner, bot_mode],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO rooms(id,name,owner_id,approval_mode) VALUES ('room','Room',?,?)",
+                    rusqlite::params![owner, mode],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO room_members(room_id,member_kind,member_id,added_by,left_at)
+                    VALUES ('room','bot','bot','local',?)",
+                    [if current { None } else { Some(1.0) }],
+                )
+                .unwrap();
+                if saved_session {
+                    conn.execute_batch(
+                        "INSERT INTO room_sessions(room_id,bot,stored_session_id)
+                        VALUES ('room','bot','saved');",
+                    )
+                    .unwrap();
+                }
+                db::migrate(home.path()).unwrap();
+                let after: Option<String> = conn
+                    .query_row("SELECT approval_mode FROM rooms WHERE id='room'", [], |r| {
+                        r.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(
+                    after.as_deref(),
+                    if current { expected_current } else { mode },
+                    "owner {owner}, mode {mode:?}, current {current}, saved session {saved_session}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn empty_schema_version_still_folds_legacy_accounts() {
     let home = legacy_home(12);
     let conn = db::open(home.path()).unwrap();

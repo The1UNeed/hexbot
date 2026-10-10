@@ -83,6 +83,7 @@ describe('settings', () => {
       settings: null
     })
     useConnection.setState({ status: 'connected', target: null })
+    useMe.setState({ me: { display_name: 'Alex', id: 'local' } })
     document.documentElement.removeAttribute('data-theme')
     vi.clearAllMocks()
   })
@@ -252,6 +253,33 @@ describe('settings', () => {
     fireEvent.click(screen.getByRole('radio', { name: /^Bypass/ }))
     expect(patch).toHaveBeenCalledWith({ approval_mode: 'off' })
     expect(screen.queryByText(/approver model/i)).toBeNull()
+  })
+
+  it.each([
+    ['member', 'smart', false],
+    ['member', 'off', true],
+    ['admin', 'smart', true],
+    [undefined, 'smart', true]
+  ] as const)('global approvals for role %s, mode %s offer Bypass: %s', (role, approval_mode, bypass) => {
+    useMe.setState({ me: { display_name: 'Alex', id: 'local', role } })
+    useSettings.setState({
+      refresh: vi.fn().mockResolvedValue(undefined),
+      settings: {
+        approval_mode,
+        billing_notice_ack: false,
+        dream_enabled: true,
+        dream_time: '03:00',
+        lan_enabled: false,
+        service_installed: false,
+        workspace_dir: ''
+      }
+    })
+    render(<ApprovalsSettings />)
+    expect(screen.queryByRole('radio', { name: /^Bypass/ }) !== null).toBe(bypass)
+
+    if (approval_mode === 'off') {
+      expect(screen.getByRole('radio', { name: /^Bypass/ })).toBeChecked()
+    }
   })
 
   it('warns when the daemon has no OS sandbox, and only then', async () => {

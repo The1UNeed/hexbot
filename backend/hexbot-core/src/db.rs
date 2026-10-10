@@ -312,10 +312,9 @@ fn preserve_approval_modes(connection: &Connection) -> Result<()> {
                     COALESCE(u.role='admin' AND u.disabled_at IS NULL,0)
              FROM bots b LEFT JOIN users u ON u.id=b.owner_id
              WHERE b.name IN (SELECT member_id FROM room_members
-                              WHERE room_id=? AND member_kind='bot'
-                              UNION SELECT bot FROM room_sessions WHERE room_id=?)",
+                              WHERE room_id=? AND member_kind='bot' AND left_at IS NULL)",
         )?;
-        let bots = bots.query_map([&id, &id], |r| {
+        let bots = bots.query_map([&id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,

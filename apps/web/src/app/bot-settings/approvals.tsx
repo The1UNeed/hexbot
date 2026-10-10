@@ -1,9 +1,11 @@
-import { APPROVAL_MODES } from '../../lib/approval-modes'
+import { approvalModes } from '../../lib/approval-modes'
 import type { Bot } from '../../lib/types'
+import { useMe } from '../../stores/me'
 
 import { ChoiceRow, dividerClass, Group, Heading, type SaveBot } from './shared'
 
 export function ApprovalsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
+  const role = useMe(state => state.me?.role)
   const current = bot.approval_mode ?? 'inherit'
 
   const modes = [
@@ -12,7 +14,7 @@ export function ApprovalsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
       label: 'Inherit',
       value: 'inherit' as const
     },
-    ...APPROVAL_MODES
+    ...approvalModes(role, current)
   ]
 
   return (

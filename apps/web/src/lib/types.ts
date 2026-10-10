@@ -412,6 +412,8 @@ export interface Settings {
 export interface CurrentUser {
   /** Absent on daemons without display-name editing. */
   can_rename?: boolean
+  /** Older daemons may say member; they reject Bypass from members. */
+  role?: 'admin' | 'member'
   id: string
   display_name: string
 }

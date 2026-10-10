@@ -7,8 +7,8 @@ Mockups: https://claude.ai/code/artifact/6430c704-4d70-4363-adf8-affcef0ccfb8
 ## The problem
 
 The right panel is the only place to change a bot. It holds identity
-fields, a Shareable switch, seven sub-pages behind chevrons, and Delete,
-all in a 300 px column. Three things go wrong:
+fields, seven sub-pages behind chevrons, and Delete, all in a 300 px
+column. Three things go wrong:
 
 1. Everything is one level deep, so nothing is more important than
    anything else. The persona editor and the delete action sit in the
@@ -56,10 +56,9 @@ Width unchanged. Contents, top to bottom:
   silence a chatty bot without silencing all of them.
 - **Bot settings** button, with a muted line naming what is inside.
 
-Gone from the panel: Shareable (moves to Profile in the window), the
-seven sub-pages, Delete bot (moves to Advanced). Status is not in the
-panel either; it lives in the chat (below). The panel header shows the
-bot's name instead of "Settings".
+Gone from the panel: the seven sub-pages, Delete bot (moves to Advanced).
+Status is not in the panel either; it lives in the chat (below). The panel
+header shows the bot's name instead of "Settings".
 
 ## Status in the chat
 
@@ -93,7 +92,7 @@ rows can all deep-link. Closing returns to the section that was open.
 
 Tabs, in order:
 
-1. **Profile.** Face, name, label, description, Shareable.
+1. **Profile.** Face, name, label, description.
 2. **Persona.** Full-height editor. Role templates as a menu that
    replaces the text after confirming. Word count.
 3. **Model.** Provider and model, curated list pinned on top as today,
@@ -207,7 +206,7 @@ message under the field.
 Daemon-scoped values go in the daemon's `.env`.
 Bot-scoped values go in the bot's profile `.env`. Global Settings gets
 a Connectors tab that is the same catalog without the per-bot switch,
-for administrators who want to set everything up before making bots.
+for setting everything up before making bots.
 
 ## Status and notifications
 

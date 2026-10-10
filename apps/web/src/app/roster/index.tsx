@@ -21,7 +21,7 @@ import { Select } from '../../components/ui/select'
 import { StatusDot, StatusTag } from '../../components/ui/status-dot'
 import { Title } from '../../components/ui/title'
 import { providerModels, sectionsMarkRead } from '../../lib/api'
-import { APPROVAL_MODES } from '../../lib/approval-modes'
+import { approvalModes } from '../../lib/approval-modes'
 import {
   avatarPng,
   avatarSrc,
@@ -963,6 +963,7 @@ function NewRoomDialog({
   open: boolean
 }) {
   const bots = useBotList()
+  const role = useMe(state => state.me?.role)
   const settings = useSettings(state => state.settings)
   const [name, setName] = useState('')
   const [query, setQuery] = useState('')
@@ -1066,7 +1067,7 @@ function NewRoomDialog({
           <Select
             label="Room approval mode"
             onValueChange={value => setApprovalMode(value as typeof approvalMode)}
-            options={APPROVAL_MODES.map(({ label, value }) => ({ label, value }))}
+            options={approvalModes(role, approvalMode).map(({ label, value }) => ({ label, value }))}
             value={approvalMode}
           />
         </label>

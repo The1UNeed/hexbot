@@ -10,7 +10,7 @@ import { activeBots, RoomCluster } from '../../components/ui/room-cluster'
 import { Select } from '../../components/ui/select'
 import { settingsPageClass } from '../../components/ui/settings-shell'
 import { roomsLeave } from '../../lib/api'
-import { APPROVAL_MODES } from '../../lib/approval-modes'
+import { approvalModes } from '../../lib/approval-modes'
 import { avatarSrc } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import type { Bot, BotApprovalMode, Room } from '../../lib/types'
@@ -186,6 +186,7 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
   const navigate = useNavigate()
   const me = useMe(state => state.me)
   const owned = room.owner_id === me?.id
+  const [leaving, setLeaving] = useState(false)
   const [name, setName] = useState(room.name)
   const [turns, setTurns] = useState(String(room.limits.bot_turns_per_human_turn ?? ''))
   const [budget, setBudget] = useState(String(room.limits.budget_tokens_per_human_turn ?? ''))
@@ -304,7 +305,12 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
                     onValueChange={value => void save({ approval_mode: value as BotApprovalMode })}
                     options={[
                       { label: 'Inherit', value: 'inherit' },
-                      ...APPROVAL_MODES.map(({ label, value }) => ({ label, value }))
+                      ...approvalModes(me?.role, room.approval_mode ?? undefined).map(
+                        ({ label, value }) => ({
+                          label,
+                          value
+                        })
+                      )
                     ]}
                     value={room.approval_mode ?? 'inherit'}
                   />
@@ -357,23 +363,41 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
         <Group title="Membership">
           <Row
             control={
-              <Button
-                onClick={() =>
-                  void roomsLeave(room.id, me.id)
-                    .then(async () => {
-                      rooms().drop(room.id)
-                      await navigate({ to: '/' })
-                    })
-                    .catch(cause => setError(errorOf(cause)))
-                }
-                size="sm"
-              >
-                Leave
-              </Button>
+              leaving ? undefined : (
+                <Button onClick={() => setLeaving(true)} size="sm" variant="danger">
+                  Leave
+                </Button>
+              )
             }
             description="The room and its transcript stay with its owner."
             title="Leave room"
           />
+          {leaving ? (
+            <div className="hex-fade space-y-3 px-4 py-4" role="alertdialog">
+              <p className="text-[length:var(--text-secondary)]">
+                Leave this room? You can no longer read or post in it.
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  onClick={() =>
+                    void roomsLeave(room.id, me.id)
+                      .then(async () => {
+                        rooms().drop(room.id)
+                        await navigate({ to: '/' })
+                      })
+                      .catch(cause => setError(errorOf(cause)))
+                  }
+                  size="sm"
+                  variant="danger"
+                >
+                  Leave
+                </Button>
+                <Button onClick={() => setLeaving(false)} size="sm" variant="ghost">
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : null}
         </Group>
       ) : null}
       {error ? (
