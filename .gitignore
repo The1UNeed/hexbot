@@ -179,3 +179,8 @@ dist/
 
 # Native desktop runtime staging and daemon update bundles.
 apps/desktop/resources/hexbot-native*
+
+# Expo native projects are generated from apps/mobile/app.config.ts.
+apps/mobile/.expo/
+apps/mobile/ios/
+apps/mobile/android/

@@ -20,7 +20,11 @@
     "check": "pnpm -r run check",
     "fix": "pnpm -r run fix",
     "format": "prettier --write \"apps/web/src/**/*.{ts,tsx,css}\" \"apps/desktop/src/**/*.ts\" \"scripts/desktop/*.{mjs,cjs}\"",
-    "format:check": "prettier --check \"apps/web/src/**/*.{ts,tsx,css}\" \"apps/desktop/src/**/*.ts\""
+    "format:check": "prettier --check \"apps/web/src/**/*.{ts,tsx,css}\" \"apps/desktop/src/**/*.ts\"",
+    "mobile:dev": "pnpm --filter @hexbot/mobile run dev",
+    "mobile:ios": "pnpm --filter @hexbot/mobile run ios",
+    "mobile:android": "pnpm --filter @hexbot/mobile run android",
+    "mobile:check": "pnpm --filter @hexbot/mobile run check"
   },
   "repository": {
     "type": "git",

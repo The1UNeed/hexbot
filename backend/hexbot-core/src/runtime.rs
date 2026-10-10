@@ -48,9 +48,8 @@ struct State {
     tool_dialogs: std::collections::HashSet<String>,
     native_approvals: HashMap<String, tokio::sync::oneshot::Sender<String>>,
     display: VecDeque<String>,
-    attachments: Vec<Value>,
-    refs: Vec<String>,
-    staged_files: Vec<PathBuf>,
+    /// Uploads waiting for the next prompt, in the order they arrived.
+    staged: Vec<Staged>,
     /// Bot-to-bot messages sent during the turn that started this one. Every
     /// section in a chain shares the counter; a fresh turn starts a fresh one.
     hops: Arc<AtomicUsize>,
@@ -58,6 +57,13 @@ struct State {
     /// Argument previews by tool call id, kept until the tool result row is written.
     tool_context: HashMap<String, String>,
     unsaved: VecDeque<(Value, Option<String>, Option<Value>)>,
+}
+/// One upload: an image, a file reference, or the rendered pages of a PDF.
+struct Staged {
+    id: String,
+    images: Vec<Value>,
+    refs: Vec<String>,
+    files: Vec<PathBuf>,
 }
 const MAX_HOPS: usize = 8;
 struct Live {
@@ -213,8 +219,7 @@ impl Runtime {
             || state.busy
             || state.closed
             || !state.pending.is_empty()
-            || !state.attachments.is_empty()
-            || !state.refs.is_empty()
+            || !state.staged.is_empty()
             || !state.unsaved.is_empty()
             || state.last_activity >= before
             || !s.requests.lock().unwrap().is_empty()
@@ -813,9 +818,7 @@ impl Runtime {
                 tool_dialogs: std::collections::HashSet::new(),
                 native_approvals: HashMap::new(),
                 display: VecDeque::new(),
-                attachments: vec![],
-                refs: vec![],
-                staged_files: vec![],
+                staged: vec![],
                 hops: Arc::default(),
                 tool_started: HashMap::new(),
                 tool_context: HashMap::new(),
@@ -914,6 +917,7 @@ impl Runtime {
         hidden: bool,
         queued: bool,
         hops: Option<Arc<AtomicUsize>>,
+        uploads: Option<&[String]>,
     ) -> Result<Value> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(Error::new(5201, "daemon is shutting down"));
@@ -984,8 +988,8 @@ impl Runtime {
             return Err(Error::new(4202, "prompt exceeds 1 MiB"));
         }
         let mut command = json!({"type":"prompt","message":text});
-        let refs;
-        let staged_files;
+        let sent;
+        let dropped;
         {
             let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
@@ -994,6 +998,16 @@ impl Runtime {
             }
             if state.busy && !queued {
                 return Err(Error::new(4002, "session is already working"));
+            }
+            if let Some(ids) = uploads
+                && let Some(missing) = ids
+                    .iter()
+                    .find(|id| !state.staged.iter().any(|u| &u.id == *id))
+            {
+                return Err(Error::new(
+                    4204,
+                    format!("attachment not found: {missing}; attach it again"),
+                ));
             }
             if !state.busy {
                 state.output.clear();
@@ -1006,9 +1020,17 @@ impl Runtime {
             state
                 .display
                 .push_back(if hidden { "hidden" } else { "normal" }.into());
-            command["images"] = json!(std::mem::take(&mut state.attachments));
-            refs = std::mem::take(&mut state.refs);
-            staged_files = std::mem::take(&mut state.staged_files);
+            // A client that names its uploads sends only those; anything else
+            // staged here was abandoned, by this client or another one.
+            (sent, dropped) = std::mem::take(&mut state.staged)
+                .into_iter()
+                .partition::<Vec<_>, _>(|u| uploads.is_none_or(|ids| ids.contains(&u.id)));
+            command["images"] = json!(
+                sent.iter()
+                    .flat_map(|u| u.images.clone())
+                    .collect::<Vec<_>>()
+            );
+            let refs = sent.iter().flat_map(|u| u.refs.clone()).collect::<Vec<_>>();
             if !refs.is_empty() {
                 command["message"] =
                     json!(format!("{}\n\nAttached files:\n{}", text, refs.join("\n")));
@@ -1017,6 +1039,7 @@ impl Runtime {
                 command["streamingBehavior"] = json!("followUp");
             }
         }
+        remove_staged(dropped);
         let intent = store::stage_prompt(
             &self.home,
             &s.stored,
@@ -1048,23 +1071,11 @@ impl Runtime {
                     let _ = store::reject_prompt(&self.home, &s.stored, &id);
                 }
                 let mut state = s.state.lock().unwrap();
-                let mut images = command["images"]
-                    .as_array_mut()
-                    .map(std::mem::take)
-                    .unwrap_or_default();
-                images.append(&mut state.attachments);
-                state.attachments = images;
-                let mut restored_refs = refs;
-                restored_refs.append(&mut state.refs);
-                state.refs = restored_refs;
                 if state.closed {
-                    for path in staged_files {
-                        if let Err(error) = fs::remove_file(&path) {
-                            eprintln!("Could not remove staged attachment: {error}");
-                        }
-                    }
+                    remove_staged(sent);
                 } else {
-                    state.staged_files.extend(staged_files);
+                    let later = std::mem::replace(&mut state.staged, sent);
+                    state.staged.extend(later);
                 }
                 state.busy = false;
                 state.error = Some(error.message.clone());
@@ -1160,7 +1171,7 @@ impl Runtime {
         let mut settled = s.settled.subscribe();
         let before = *settled.borrow();
         let finished = tokio::time::timeout(deadline, async {
-            self.submit(&s, text, true, false, hops).await?;
+            self.submit(&s, text, true, false, hops, None).await?;
             loop {
                 if *settled.borrow() != before {
                     break;
@@ -1319,13 +1330,7 @@ impl Runtime {
             Self::cancel_dialogs(&s).await;
             {
                 let mut state = s.state.lock().unwrap();
-                state.attachments.clear();
-                state.refs.clear();
-                for path in state.staged_files.drain(..) {
-                    if let Err(error) = fs::remove_file(path) {
-                        eprintln!("Could not remove staged attachment: {error}");
-                    }
-                }
+                remove_staged(std::mem::take(&mut state.staged));
             }
             crate::native_tools::close_session(&self.home, &s.stored).await;
             // The section is already closed and out of the map; an unreaped
@@ -1406,6 +1411,7 @@ impl Runtime {
                 | "image.attach_bytes"
                 | "pdf.attach"
                 | "file.attach"
+                | "attachments.clear"
         );
         if !matched {
             return None;
@@ -1472,8 +1478,15 @@ impl Runtime {
                     ));
                 }
                 let bot = crate::catalog::bot(&self.home, caller, &bot)?;
-                self.submit(&s, &crate::catalog::kickoff_prompt(&bot), true, false, None)
-                    .await?;
+                self.submit(
+                    &s,
+                    &crate::catalog::kickoff_prompt(&bot),
+                    true,
+                    false,
+                    None,
+                    None,
+                )
+                .await?;
                 return Ok(json!({"section":section,"submitted":true}));
             }
             let mut result = json!({"section":section,"messages":messages});
@@ -1523,6 +1536,23 @@ impl Runtime {
         }
         match method {
             "prompt.submit" => {
+                let uploads = match &p["attachments"] {
+                    Value::Null => None,
+                    Value::Array(ids) => Some(
+                        ids.iter()
+                            .map(|id| id.as_str().map(str::to_owned))
+                            .collect::<Option<Vec<_>>>()
+                            .ok_or_else(|| {
+                                Error::new(4202, "attachments must be a list of attachment ids")
+                            })?,
+                    ),
+                    _ => {
+                        return Err(Error::new(
+                            4202,
+                            "attachments must be a list of attachment ids",
+                        ));
+                    }
+                };
                 let result = self
                     .submit(
                         &s,
@@ -1530,6 +1560,7 @@ impl Runtime {
                         p["display_kind"] == "hidden",
                         p["queued"] == true,
                         None,
+                        uploads.as_deref(),
                     )
                     .await?;
                 if p["display_kind"] != "hidden"
@@ -1739,6 +1770,7 @@ impl Runtime {
                 })
             }
             "image.attach_bytes" | "pdf.attach" | "file.attach" => self.attach(&s, method, p).await,
+            "attachments.clear" => self.clear_attachments(&s).await,
             _ => Err(Error::new(-32601, "unknown runtime method")),
         }
     }
@@ -1847,7 +1879,7 @@ impl Runtime {
                 .open_session_locked(owner, bot, stored, None, None, true)
                 .await?;
             drop(guard);
-            self.submit(&parent, text, true, true, None).await
+            self.submit(&parent, text, true, true, None, None).await
         }
         .await;
         if let Err(error) = result {
@@ -3135,6 +3167,15 @@ fn pump(
             }
         }
     })
+}
+fn remove_staged(uploads: Vec<Staged>) {
+    for path in uploads.into_iter().flat_map(|u| u.files) {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => eprintln!("Could not remove staged attachment: {error}"),
+        }
+    }
 }
 fn pi_error(error: crate::pi::PiError) -> Error {
     Error::new(5201, error.to_string())
