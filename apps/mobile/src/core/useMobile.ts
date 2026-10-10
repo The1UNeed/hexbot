@@ -13,8 +13,8 @@ import {
 } from './storage'
 import { pair } from './transport'
 import { parsePairing, normalizeOrigin } from './links'
-import { emptyChat, historyMessages, reduceChat } from './chat'
-import { reduceRoom, restoreRoom, roomChat } from './room-chat'
+import { emptyChat, historyMessages, reduceChat, replayChat } from './chat'
+import { reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
 import { attachmentPrompt } from './chat-send'
 import type {
   Bot,
@@ -30,6 +30,8 @@ import type {
 export type ChatRoute =
   { kind: 'section'; section: Section; bot: Bot } | { kind: 'room'; room: Room }
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
+/** A room opens at its latest events and pages back this many at a time. */
+const ROOM_PAGE = 200
 export function useMobile() {
   const [saved, setSaved] = useState<SavedDaemon[]>([])
   const [active, setActive] = useState<SavedDaemon | null>(null)
@@ -46,6 +48,8 @@ export function useMobile() {
   const [route, setRoute] = useState<ChatRoute | null>(null)
   const [chat, setChat] = useState(emptyChat)
   const [loading, setLoading] = useState(false)
+  const [hasEarlier, setHasEarlier] = useState(false)
+  const [loadingEarlier, setLoadingEarlier] = useState(false)
   const session = useRef<MobileSession | null>(null)
   const routeRef = useRef<ChatRoute | null>(null)
   const liveId = useRef<string | null>(null)
@@ -54,6 +58,8 @@ export function useMobile() {
   const openSequence = useRef(0)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const mounted = useRef(true)
+  /** The live session holding files uploaded for a message that was not sent yet. */
+  const staged = useRef<string | null>(null)
   const rpc: Rpc = useCallback(async (method, params = {}) => {
     const current = session.current
     if (!current || current.client.connectionState !== 'open')
@@ -66,17 +72,37 @@ export function useMobile() {
         (method === 'attachments.clear' || method.startsWith('hexbot.jobs.')) &&
         /unknown method|method not found|unsupported method|not implemented/i.test(errorText(error))
       )
-        throw new Error(
-          'This daemon is older than this app. Update the daemon to use attachment and job controls.'
-        )
+        throw new Error('This daemon is older than this app. Update it on that computer.')
       throw error
     }
     if (session.current !== current)
       throw new Error('The selected daemon changed. Retry on this daemon.')
     return value as never
   }, [])
+  // Staged files ride along with the next message on that session, so they
+  // go when the conversation they were picked for is left.
+  const releaseStaged = useCallback(async () => {
+    const sessionId = staged.current
+    const current = session.current
+    staged.current = null
+    if (!sessionId || !current || current.client.connectionState !== 'open') return
+    await Promise.race([
+      current.client.request('attachments.clear', { session_id: sessionId }).catch(() => {}),
+      new Promise(resolve => setTimeout(resolve, 3000))
+    ])
+  }, [])
+  const leave = useCallback(() => {
+    void releaseStaged()
+    openSequence.current++
+    loadingEvents.current = null
+    routeRef.current = null
+    liveId.current = null
+    setRoute(null)
+    setHasEarlier(false)
+  }, [releaseStaged])
   const refresh = useCallback(async () => {
     const current = session.current
+    const before = routeRef.current
     const [b, r, s, i, config, me] = await Promise.all([
       rpc<{ bots: Bot[] }>('hexbot.bots.list'),
       rpc<{ rooms: Room[] }>('hexbot.rooms.list'),
@@ -92,38 +118,54 @@ export function useMobile() {
     setInfo(i)
     setSettings(config)
     setUser(me)
-  }, [rpc])
+    // The open conversation follows renames and edits, and closes once it is gone.
+    // A route that changed while the lists loaded may be newer than them.
+    if (!before || routeRef.current !== before) return
+    let next: ChatRoute | null = null
+    if (before.kind === 'section') {
+      const section = s.sections.find(x => x.id === before.section.id)
+      const bot = b.bots.find(x => x.name === before.bot.name)
+      if (section && bot) next = { kind: 'section', section, bot }
+    } else {
+      const room = r.rooms.find(x => x.id === before.room.id)
+      if (room) next = { kind: 'room', room: { ...room, turns: room.turns ?? before.room.turns } }
+    }
+    if (!next) return leave()
+    routeRef.current = next
+    setRoute(next)
+  }, [rpc, leave])
   const syncRoom = useCallback(
     async (id: string) => {
       const sequence = ++openSequence.current
       loadingEvents.current = []
+      const stale = () =>
+        sequence !== openSequence.current ||
+        routeRef.current?.kind !== 'room' ||
+        routeRef.current.room.id !== id
       try {
-        const events: RoomEvent[] = []
-        let after = 0
-        for (;;) {
-          const page = await rpc<{ events: RoomEvent[] }>('hexbot.rooms.log', {
-            id,
-            after_seq: after,
-            limit: 1000
-          })
-          if (
-            sequence !== openSequence.current ||
-            routeRef.current?.kind !== 'room' ||
-            routeRef.current.room.id !== id
-          )
-            return
-          events.push(...page.events)
-          if (page.events.length < 1000) break
-          after = page.events.at(-1)!.seq
-        }
+        const latest = await rpc<{ events: RoomEvent[] }>('hexbot.rooms.log', {
+          id,
+          before_seq: Number.MAX_SAFE_INTEGER,
+          limit: ROOM_PAGE
+        })
+        if (stale()) return
+        const events = latest.events
+        // Older daemons ignore before_seq and answer from the start; read the rest.
+        if (events.length === ROOM_PAGE && events[0]?.seq === 1)
+          for (;;) {
+            const page = await rpc<{ events: RoomEvent[] }>('hexbot.rooms.log', {
+              id,
+              after_seq: events.at(-1)!.seq,
+              limit: 1000
+            })
+            if (stale()) return
+            events.push(...page.events)
+            if (page.events.length < 1000) break
+          }
         const { room } = await rpc<{ room: Room }>('hexbot.rooms.get', { id })
-        if (
-          sequence !== openSequence.current ||
-          routeRef.current?.kind !== 'room' ||
-          routeRef.current.room.id !== id
-        )
-          return
+        if (stale()) return
         roomEvents.current = events
+        setHasEarlier((events[0]?.seq ?? 1) > 1)
         const buffered = loadingEvents.current ?? []
         loadingEvents.current = null
         setChat(restoreRoom(room, events))
@@ -159,15 +201,17 @@ export function useMobile() {
       )
         return
       liveId.current = result.section.live_session_id
+      setHasEarlier(false)
       const status = await rpc<{ status: string }>('session.status', { session_id: liveId.current })
       if (sequence !== openSequence.current) return
-      let restored = {
-        ...emptyChat(),
-        busy: status.status === 'working',
-        messages: historyMessages(result.messages)
-      }
-      for (const event of loadingEvents.current ?? [])
-        if (event.session_id === liveId.current) restored = reduceChat(restored, event)
+      let restored = replayChat(
+        {
+          ...emptyChat(),
+          busy: status.status === 'working',
+          messages: historyMessages(result.messages)
+        },
+        (loadingEvents.current ?? []).filter(event => event.session_id === liveId.current)
+      )
       if (result.pending_clarify)
         restored = reduceChat(restored, {
           type: 'clarify.request',
@@ -249,6 +293,7 @@ export function useMobile() {
     async (daemon: SavedDaemon, suppliedToken?: string) => {
       const token = suppliedToken ?? (await loadToken(daemon.id))
       if (!token) throw new Error('This saved connection has no credential. Pair it again.')
+      await releaseStaged()
       session.current?.stop()
       setError(null)
       setActive(daemon)
@@ -289,7 +334,7 @@ export function useMobile() {
       await selectDaemon(daemon.id)
       await next.connect()
     },
-    [onEvent]
+    [onEvent, releaseStaged]
   )
   useEffect(() => {
     mounted.current = true
@@ -340,6 +385,8 @@ export function useMobile() {
         section ??
         sections.find(s => s.bot === bot.name && !s.archived_at) ??
         (await rpc<{ section: Section }>('hexbot.sections.create', { bot: bot.name })).section
+      const here = routeRef.current
+      if (here?.kind !== 'section' || here.section.id !== selected.id) void releaseStaged()
       const target: ChatRoute = { kind: 'section', section: selected, bot }
       routeRef.current = target
       setRoute(target)
@@ -355,7 +402,9 @@ export function useMobile() {
   const openRoom = async (room: Room) => {
     setLoading(true)
     setError(null)
+    void releaseStaged()
     roomEvents.current = []
+    setHasEarlier(false)
     routeRef.current = { kind: 'room', room }
     setRoute(routeRef.current)
     setChat(emptyChat())
@@ -384,8 +433,10 @@ export function useMobile() {
     try {
       if (target.kind === 'room') await rpc('hexbot.rooms.send', { id: target.room.id, text })
       else {
-        if (!liveId.current) throw new Error('Open this section again before sending.')
+        if (!liveId.current) throw new Error('Open this thread again before sending.')
         await rpc('prompt.submit', { session_id: liveId.current, text })
+        // The daemon attached the staged files to this message.
+        if (staged.current === liveId.current) staged.current = null
       }
     } catch (e) {
       setChat(c => ({
@@ -395,6 +446,34 @@ export function useMobile() {
         error: errorText(e)
       }))
       throw e
+    }
+  }
+  const loadEarlier = async () => {
+    const target = routeRef.current
+    const first = roomEvents.current[0]
+    if (target?.kind !== 'room' || !first || loadingEarlier) return
+    setLoadingEarlier(true)
+    try {
+      const { events } = await rpc<{ events: RoomEvent[] }>('hexbot.rooms.log', {
+        id: target.room.id,
+        before_seq: first.seq,
+        limit: ROOM_PAGE
+      })
+      const here = routeRef.current
+      if (here?.kind !== 'room' || here.room.id !== target.room.id) return
+      if (roomEvents.current[0] !== first) return
+      roomEvents.current = [...events, ...roomEvents.current]
+      const older = events.flatMap(e => {
+        const m = roomMessage(e, here.room)
+        return m ? [m] : []
+      })
+      setChat(c => ({
+        ...c,
+        messages: [...older.filter(m => !c.messages.some(x => x.id === m.id)), ...c.messages]
+      }))
+      setHasEarlier((events[0]?.seq ?? 1) > 1)
+    } finally {
+      setLoadingEarlier(false)
     }
   }
   const stop = async () => {
@@ -461,6 +540,9 @@ export function useMobile() {
     route,
     chat,
     loading,
+    hasEarlier,
+    loadingEarlier,
+    loadEarlier,
     rpc,
     refresh,
     syncChat,
@@ -474,14 +556,13 @@ export function useMobile() {
     approval,
     answer,
     liveSessionId: () => liveId.current,
-    back: () => {
-      openSequence.current++
-      loadingEvents.current = null
-      routeRef.current = null
-      setRoute(null)
-      liveId.current = null
+    /** Files are on the daemon for this session's next message; null once they are not. */
+    stage: (sessionId: string | null) => {
+      staged.current = sessionId
     },
-    disconnect: () => {
+    back: leave,
+    disconnect: async () => {
+      await releaseStaged()
       session.current?.stop()
       session.current = null
       setActive(null)
@@ -491,6 +572,7 @@ export function useMobile() {
     },
     remove: async (id: string) => {
       if (active?.id === id) {
+        await releaseStaged()
         session.current?.stop()
         session.current = null
         setActive(null)

@@ -270,8 +270,10 @@ and its bots run as the owner.
   → `{room}`
 - `hexbot.rooms.send {id, text, attachments?}` → `{event}`. This queues the
   room engine after writing the user event.
-- `hexbot.rooms.log {id, after_seq?, limit?}` → `{events}` in ascending room
-  sequence order. `limit` is capped at 1000.
+- `hexbot.rooms.log {id, after_seq?, before_seq?, limit?}` → `{events}` in
+  ascending room sequence order. `limit` is capped at 1000. With `before_seq`,
+  the events are the newest `limit` before that sequence, so a client can open
+  a long room at its latest messages and page back.
 - `hexbot.rooms.stop {id}` → `{stopped: true}`
 - `hexbot.rooms.archive {id}` → `{room}`
 - `hexbot.rooms.unarchive {id}` → `{room}`

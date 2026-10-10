@@ -62,9 +62,15 @@ opens settings, models, connectors, skills, jobs, About you, usage, bot
 activity, devices, network, Hex Connect and updates. Settings and
 editors open as cards over the screen you came from. One person owns the daemon; paired devices access that person’s bots and rooms.
 
+A room opens at its latest messages; Show earlier messages loads older ones.
+Rooms take messages while bots work. A thread takes one at a time, so Stop
+replaces Send until its bot finishes. Removing a room's last bot deletes the
+room, and the app asks first.
+
 Job details show the last status, error and up to 12,000 characters of output
 saved on the daemon. Attachments can be sent without text. The app asks the bot
-to review the files and keeps attachment chips until the send succeeds. Older
+to review the files and keeps attachment chips until the send succeeds. Files
+picked for a thread you leave without sending are removed from the daemon. Older
 daemons show an update notice for unavailable attachment or job controls. The app does not provide push notifications
 or computer power controls. For development checks and native simulator flows,
 see `apps/mobile/README.md` and `docs/testing.md` in the repository.

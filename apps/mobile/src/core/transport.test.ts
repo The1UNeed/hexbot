@@ -3,7 +3,7 @@ import { ed25519 } from '@noble/curves/ed25519'
 import { utf8ToBytes } from '@noble/hashes/utils'
 import { DeviceProofError, type JsonRpcGatewayClient } from '@hermes/shared'
 import { base64url, decodeBase64url, thumbprint } from './proof'
-import { connectGrant, openGateway, request, RevokedError } from './transport'
+import { connectGrant, openGateway, pair, request, RevokedError } from './transport'
 vi.mock('react-native', () => ({ Platform: { OS: 'ios' } }))
 vi.mock('expo-crypto', () => ({
   randomUUID: () => 'fresh-request',
@@ -24,11 +24,18 @@ describe('mobile authentication boundary', () => {
         .mockResolvedValueOnce(json({ code: 'invalid_dpop_proof' }, 401))
         .mockResolvedValueOnce(json({ error: 'revoked' }, 401))
     )
-    await expect(request('https://daemon.example/api/auth/ws-ticket')).rejects.toBeInstanceOf(
-      DeviceProofError
-    )
-    await expect(request('https://daemon.example/api/auth/ws-ticket')).rejects.toBeInstanceOf(
-      RevokedError
+    const signedIn = { headers: { Authorization: 'Bearer hxb_device' } }
+    await expect(
+      request('https://daemon.example/api/auth/ws-ticket', signedIn)
+    ).rejects.toBeInstanceOf(DeviceProofError)
+    await expect(
+      request('https://daemon.example/api/auth/ws-ticket', signedIn)
+    ).rejects.toBeInstanceOf(RevokedError)
+  })
+  it('reports a refused pairing code as a wrong code, not a revoked device', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ error: 'invalid code' }, 401)))
+    await expect(pair('http://owl.local:9119', '123456')).rejects.toThrow(
+      'That pairing code is wrong or expired.'
     )
   })
   it('binds a Connect grant to the app key and verifies the daemon before presenting it', async () => {

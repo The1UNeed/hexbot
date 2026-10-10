@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { emptyChat, reduceChat, historyMessages } from './chat'
+import { emptyChat, reduceChat, historyMessages, replayChat } from './chat'
 import type { GatewayEvent } from '@hermes/shared'
 const event = (type: string, payload: Record<string, unknown> = {}): GatewayEvent => ({
   type,
@@ -88,5 +88,22 @@ describe('restored tools and questions', () => {
     expect(state.questions[0].questions).toEqual([
       { id: 'second', text: 'Which?', choices: ['One', 'Two'], multiSelect: true }
     ])
+  })
+  it('does not repeat a reply that finished while history loaded', () => {
+    const restored = {
+      ...emptyChat(),
+      messages: historyMessages([
+        { id: 'u', role: 'user', content: 'Hi' },
+        { id: 'a', role: 'assistant', content: 'Hello.' }
+      ])
+    }
+    const loaded = replayChat(restored, [
+      event('message.delta', { text: 'Hello.' }),
+      event('message.complete', { text: 'Hello.' })
+    ])
+    expect(loaded.messages.map(m => m.text)).toEqual(['Hi', 'Hello.'])
+    expect(loaded.busy).toBe(false)
+    const later = replayChat(restored, [event('message.complete', { text: 'And more.' })])
+    expect(later.messages.map(m => m.text)).toEqual(['Hi', 'Hello.', 'And more.'])
   })
 })

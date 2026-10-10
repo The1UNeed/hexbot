@@ -198,3 +198,21 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
       return state
   }
 }
+/**
+ * Replays events that arrived while history loaded. A turn that finished in
+ * that window may already be in the history; its reply is not added twice.
+ */
+export function replayChat(state: ChatState, events: GatewayEvent[]): ChatState {
+  const last = state.messages.at(-1)
+  for (const event of events) {
+    const next = reduceChat(state, event)
+    const added = next.messages.slice(state.messages.length)
+    state =
+      event.type === 'message.complete' &&
+      last?.role === 'assistant' &&
+      added.at(-1)?.text === last.text
+        ? { ...next, messages: state.messages }
+        : next
+  }
+  return state
+}

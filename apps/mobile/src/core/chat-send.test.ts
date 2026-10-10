@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { attachmentPrompt, imageMime } from './chat-send'
+import { attachmentPrompt, encodeAnswer, imageMime } from './chat-send'
 import { avatarSrc } from './avatar'
 
 describe('attachments and avatars', () => {
@@ -20,5 +20,14 @@ describe('attachments and avatars', () => {
     )
     expect(avatarSrc({ data: 'abc', mime: 'image/png' })).toBe('data:image/png;base64,abc')
     expect(avatarSrc(null)).toBeNull()
+  })
+})
+
+describe('question answers', () => {
+  it('sends multiple choices as a JSON array, so a choice with a comma stays whole', () => {
+    expect(encodeAnswer(true, ['Paris, France', 'Rome'], '')).toBe('["Paris, France","Rome"]')
+    expect(encodeAnswer(true, ['Rome'], ' Oslo ')).toBe('["Rome","Oslo"]')
+    expect(encodeAnswer(false, ['Rome'], '')).toBe('Rome')
+    expect(encodeAnswer(false, ['Rome'], 'Oslo')).toBe('Oslo')
   })
 })

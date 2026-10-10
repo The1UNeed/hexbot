@@ -24,26 +24,36 @@ export function roomChat(state: ChatState): ChatState {
   }
 }
 
+const LIMITS: Record<string, string> = {
+  daily_tokens: 'Daily token limit reached.',
+  room_bot_turns_per_human_turn: 'Bot reply limit reached.',
+  room_budget_tokens_per_human_turn: 'Room token budget reached.',
+  bot_daily_token_budget: 'Bot daily token budget reached.'
+}
+
+const memberName = (room: Room, kind: 'bot' | 'human', id: string | null) =>
+  room.members.find(m => m.member_kind === kind && m.member_id === id)?.display_name
+
 export function roomMessage(event: RoomEvent, room: Room): ChatMessage | null {
   const base = { id: `room-${event.seq}`, createdAt: event.created_at * 1000 }
-  if (event.kind === 'turn.failed' || event.kind === 'limit.tripped') {
-    const limits: Record<string, string> = {
-      bot_turns_per_human_turn: 'Bot reply limit reached.',
-      budget_tokens_per_human_turn: 'Room token budget reached.',
-      bot_daily_token_budget: 'Bot daily token budget reached.'
-    }
+  const error = typeof event.payload.error === 'string' ? event.payload.error : ''
+  if (event.kind === 'turn.failed') {
+    const who =
+      event.actor_kind === 'bot' ? memberName(room, 'bot', event.actor_id) || event.actor_id : null
     return {
       ...base,
       role: 'system',
       tone: 'danger',
-      text:
-        typeof event.payload.error === 'string' && event.payload.error
-          ? event.payload.error
-          : event.kind === 'turn.failed'
-            ? 'The turn did not finish.'
-            : (limits[String(event.payload.limit)] ?? 'Room limit reached.')
+      text: [`${who || 'The room'} stopped`, error].filter(Boolean).join(' · ')
     }
   }
+  if (event.kind === 'limit.tripped')
+    return {
+      ...base,
+      role: 'system',
+      tone: 'danger',
+      text: LIMITS[String(event.payload.limit)] ?? 'A room limit was reached.'
+    }
   if (event.kind !== 'message.user' && event.kind !== 'message.bot') return null
   return {
     ...base,
@@ -52,8 +62,7 @@ export function roomMessage(event: RoomEvent, room: Room): ChatMessage | null {
     sender: event.actor_id ?? undefined,
     senderName:
       event.kind === 'message.user'
-        ? room.members.find(m => m.member_kind === 'human' && m.member_id === event.actor_id)
-            ?.display_name || 'Former member'
+        ? memberName(room, 'human', event.actor_id) || 'Former member'
         : undefined
   }
 }

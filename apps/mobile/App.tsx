@@ -7,7 +7,7 @@ import * as ExpoLinking from 'expo-linking'
 import * as WebBrowser from 'expo-web-browser'
 import * as Crypto from 'expo-crypto'
 import { avatarSrc } from './src/core/avatar'
-import { imageMime } from './src/core/chat-send'
+import { encodeAnswer, imageMime } from './src/core/chat-send'
 import { daemonBehind } from './src/core/version-skew'
 import { version as appVersion } from '../desktop/package.json'
 import { pickFile } from './src/core/pickFile'
@@ -171,6 +171,7 @@ function MobileApp() {
   )
   const [uploading, setUploading] = useState(false)
   const [questionAnswer, setQuestionAnswer] = useState('')
+  const [questionChoices, setQuestionChoices] = useState<string[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const pendingState = useRef<string | null>(null)
   const processedLink = useRef<string | null>(null)
@@ -202,7 +203,12 @@ function MobileApp() {
     setConnectSession(token)
     setConnectDaemons(result.daemons)
   }
+  // The sign-in sheet and the app link can both deliver the same callback.
+  const handledCallback = useRef<string | null>(null)
   const callback = useCallback(async (url: string) => {
+    const state = new URL(url).searchParams.get('state')
+    if (state && handledCallback.current === state) return
+    handledCallback.current = state
     const stored = await AsyncStorage.getItem('hexbot.connect-pending')
     const pending = stored ? (JSON.parse(stored) as { state: string; at: number }) : null
     const expected = pendingState.current ?? pending?.state
@@ -279,6 +285,7 @@ function MobileApp() {
         multiSelect: q.multiSelect
       })
       setQuestionAnswer('')
+      setQuestionChoices([])
     } else setQuestion(null)
   }, [firstQuestionId, firstQuestion?.requestId])
   const route = mobile.route
@@ -431,6 +438,7 @@ function MobileApp() {
     if (uploading) return
     if (attachmentData.current.get(id)?.uploaded) {
       await mobile.rpc('attachments.clear', { session_id: mobile.liveSessionId() })
+      mobile.stage(null)
       for (const asset of attachmentData.current.values()) asset.uploaded = false
     }
     attachmentData.current.delete(id)
@@ -696,12 +704,15 @@ function MobileApp() {
         setQuestionAnswer(text)
         return
       }
+      const q = pending.questions[0]
       act(async () => {
-        await mobile.answer(pending.requestId, pending.questions[0].id, text)
+        await mobile.answer(pending.requestId, q.id, encodeAnswer(q.multiSelect, [], text))
         setDraft('')
       })
       return
     }
+    // A thread takes one message at a time; rooms queue messages themselves.
+    if (mobile.route?.kind === 'section' && mobile.chat.busy) return
     const previous = draft
     setDraft('')
     act(async () => {
@@ -713,6 +724,7 @@ function MobileApp() {
           if (!asset.uploaded) {
             await mobile.rpc(asset.method, { ...asset.params, session_id: sessionId })
             asset.uploaded = true
+            mobile.stage(sessionId)
           }
         }
         if (
@@ -743,6 +755,7 @@ function MobileApp() {
         ? { label: activityLabel(mobile.chat.activity) || 'Working' }
         : undefined,
     onSend: send,
+    sendWhileBusy: route?.kind === 'room' || mobile.chat.questions.length > 0,
     draft,
     onDraftChange: setDraft,
     onStop: () => act(mobile.stop),
@@ -975,6 +988,9 @@ function MobileApp() {
               members={rooms.find(r => r.id === route.room.id)?.members ?? []}
               archived={!!route.room.archived_at}
               bottomInset={tabInset - 12}
+              hasEarlier={mobile.hasEarlier}
+              loadingEarlier={mobile.loadingEarlier}
+              onLoadEarlier={() => act(mobile.loadEarlier)}
             />
           ) : (
             <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
@@ -996,7 +1012,7 @@ function MobileApp() {
         onDisconnect={() => {
           setDemo(false)
           setBotPage(null)
-          mobile.disconnect()
+          void mobile.disconnect()
         }}
         refreshing={refreshing}
         onRefresh={() => {
@@ -1030,17 +1046,19 @@ function MobileApp() {
                 multiSelect: q.multiSelect
               })
               setQuestionAnswer('')
+              setQuestionChoices([])
             }}
+          />
+        ) : null}
+        {mobile.active && daemonBehind(appVersion, mobile.info?.version ?? null) ? (
+          <Banner
+            message="This daemon is older than this app. Update it on that computer."
+            testID="version-skew"
+            tone="warning"
           />
         ) : null}
         <StatusBar style={theme.scheme === 'dark' ? 'light' : 'dark'} />
         {screen}
-        {mobile.active && daemonBehind(appVersion, mobile.info?.version ?? null) ? (
-          <Banner
-            message="This daemon is older than this app. Update it for attachment and job controls."
-            testID="version-skew"
-          />
-        ) : null}
         {mobile.loading && mobile.active ? (
           <View pointerEvents="none" style={{ position: 'absolute', top: 70, alignSelf: 'center' }}>
             <ActivityIndicator />
@@ -1246,14 +1264,19 @@ function MobileApp() {
         testID="question-sheet"
         action={{
           label: 'Send',
-          disabled: !questionAnswer.trim(),
+          disabled: !questionAnswer.trim() && !questionChoices.length,
           onPress: () => {
             if (question)
               act(async () => {
-                await mobile.answer(question.requestId, question.questionId, questionAnswer)
+                await mobile.answer(
+                  question.requestId,
+                  question.questionId,
+                  encodeAnswer(question.multiSelect, questionChoices, questionAnswer)
+                )
                 if (draft.trim() === questionAnswer.trim()) setDraft('')
                 setQuestion(null)
                 setQuestionAnswer('')
+                setQuestionChoices([])
               })
           }
         }}
@@ -1266,40 +1289,38 @@ function MobileApp() {
                 <Text tone="muted">Your attached files will stay here for the next message.</Text>
               ) : null}
               <Group>
-                {question.choices.map(choice => (
-                  <Row
-                    key={choice}
-                    title={choice}
-                    testID={`question-choice-${choice}`}
-                    selected={
-                      question.multiSelect
-                        ? questionAnswer.split(', ').includes(choice)
-                        : questionAnswer === choice
-                    }
-                    trailing={
-                      (
+                {question.choices.map(choice => {
+                  const selected = question.multiSelect
+                    ? questionChoices.includes(choice)
+                    : questionAnswer === choice
+                  return (
+                    <Row
+                      key={choice}
+                      title={choice}
+                      testID={`question-choice-${choice}`}
+                      selected={selected}
+                      trailing={
+                        selected ? (
+                          <Ionicons color={theme.accent} name="checkmark" size={22} />
+                        ) : null
+                      }
+                      onPress={() =>
                         question.multiSelect
-                          ? questionAnswer.split(', ').includes(choice)
-                          : questionAnswer === choice
-                      ) ? (
-                        <Ionicons color={theme.accent} name="checkmark" size={22} />
-                      ) : null
-                    }
-                    onPress={() =>
-                      setQuestionAnswer(previous =>
-                        question.multiSelect
-                          ? (previous.split(', ').filter(Boolean).includes(choice)
-                              ? previous.split(', ').filter(c => c !== choice)
-                              : [...previous.split(', ').filter(Boolean), choice]
-                            ).join(', ')
-                          : choice
-                      )
-                    }
-                  />
-                ))}
+                          ? setQuestionChoices(list =>
+                              list.includes(choice)
+                                ? list.filter(c => c !== choice)
+                                : [...list, choice]
+                            )
+                          : setQuestionAnswer(choice)
+                      }
+                    />
+                  )
+                })}
               </Group>
               <Field
-                label="Answer"
+                label={
+                  question.multiSelect && question.choices.length ? 'Another answer' : 'Answer'
+                }
                 testID="question-answer"
                 value={questionAnswer}
                 onChangeText={setQuestionAnswer}

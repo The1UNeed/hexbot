@@ -562,8 +562,10 @@ export function Management({
           title: values.title,
           description: values.description,
           persona: values.persona,
-          provider: values.provider,
-          model: values.model,
+          // Without a model the daemon uses its default.
+          ...(values.provider && values.model
+            ? { provider: values.provider, model: values.model }
+            : {}),
           reasoning_effort: values.reasoning_effort || null,
           ...(bot
             ? {
@@ -891,17 +893,28 @@ export function Management({
                   value={joined}
                   disabled={busy || mobile.connection !== 'connected'}
                   leading={<BotFace name={b.display_name} size={28} />}
-                  onValueChange={enabled =>
-                    room
-                      ? void run(async () => {
-                          const updated = await rpc<{ room: Room }>(
-                            enabled ? 'hexbot.rooms.add_member' : 'hexbot.rooms.remove_member',
-                            { id: room.id, bot: b.name }
-                          )
-                          onNavigate({ kind: 'room', room: updated.room })
-                        })
-                      : set(`member-${b.name}`, enabled)
-                  }
+                  onValueChange={enabled => {
+                    if (!room) return set(`member-${b.name}`, enabled)
+                    const change = () =>
+                      void run(async () => {
+                        const updated = await rpc<{ room: Room & { deleted?: boolean } }>(
+                          enabled ? 'hexbot.rooms.add_member' : 'hexbot.rooms.remove_member',
+                          { id: room.id, bot: b.name }
+                        )
+                        // Removing the last bot deleted the room; the refresh leaves it.
+                        if (updated.room.deleted) return onClose()
+                        onNavigate({ kind: 'room', room: updated.room })
+                      })
+                    const last = !room.members.some(
+                      m => m.member_kind === 'bot' && m.member_id !== b.name && !m.left_at
+                    )
+                    if (enabled || !last) return change()
+                    confirm(
+                      'Remove and delete room',
+                      `${b.display_name} is the last bot here. Removing it deletes this room, its transcript and the memory made from it. The bot itself stays.`,
+                      change
+                    )
+                  }}
                 />
               )
             })}
@@ -1371,9 +1384,11 @@ export function Management({
       break
     case 'job':
     case 'job-create': {
+      // A job belongs to its bot; a different bot means a new job.
+      const jobBot = kind === 'job' ? str(panel?.data?.bot) : str(values.bot)
       save = () =>
         rpc(kind === 'job' ? 'hexbot.jobs.update' : 'hexbot.jobs.create', {
-          bot: values.bot,
+          bot: jobBot,
           ...(kind === 'job' ? { job_id: panel?.data?.id } : {}),
           name: values.name,
           prompt: values.prompt,
@@ -1392,7 +1407,17 @@ export function Management({
       content = (
         <>
           {field('name', 'Job name')}
-          {field('bot', 'Bot name')}
+          {kind === 'job' ? (
+            <Group>
+              <Row
+                testID="job-bot"
+                title="Bot"
+                meta={mobile.bots.find(b => b.name === jobBot)?.display_name || jobBot}
+              />
+            </Group>
+          ) : (
+            field('bot', 'Bot name')
+          )}
           {field('prompt', 'Instructions', true)}
           {field(
             'schedule',
@@ -1434,17 +1459,17 @@ export function Management({
               {action(panel?.data?.enabled ? 'Pause job' : 'Resume job', async () => {
                 const result = await rpc(
                   'hexbot.jobs.' + (panel?.data?.enabled ? 'pause' : 'resume'),
-                  { bot: values.bot, job_id: panel?.data?.id }
+                  { bot: jobBot, job_id: panel?.data?.id }
                 )
-                onNavigate({ ...panel!, data: { ...(result.job as RowData), bot: values.bot } })
+                onNavigate({ ...panel!, data: { ...(result.job as RowData), bot: jobBot } })
               })}
               {action('Run job now', () =>
-                rpc('hexbot.jobs.run', { bot: values.bot, job_id: panel?.data?.id })
+                rpc('hexbot.jobs.run', { bot: jobBot, job_id: panel?.data?.id })
               )}
               {action(
                 'Delete job',
                 async () => {
-                  await rpc('hexbot.jobs.remove', { bot: values.bot, job_id: panel?.data?.id })
+                  await rpc('hexbot.jobs.remove', { bot: jobBot, job_id: panel?.data?.id })
                   navigate('jobs')
                 },
                 true

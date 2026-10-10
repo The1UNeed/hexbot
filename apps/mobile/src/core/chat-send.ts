@@ -15,3 +15,9 @@ export function imageMime(name: string, mime?: string): string | undefined {
     } as Record<string, string>
   )[extension]
 }
+/** What the question tool receives: one answer, or every chosen answer as a JSON array, as on the web. */
+export function encodeAnswer(multiSelect: boolean, chosen: string[], typed: string): string {
+  const own = typed.trim()
+  if (multiSelect) return JSON.stringify(own ? [...chosen, own] : chosen)
+  return own || chosen[0] || ''
+}

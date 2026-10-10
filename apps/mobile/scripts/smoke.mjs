@@ -248,6 +248,8 @@ try {
       })
       socket.send(JSON.stringify({ jsonrpc: '2.0', id: key, method, params }) + '\n')
     })
+  // Screens show the signed-in name; use a person's name, not the default account.
+  await rpc('hexbot.users.update', { id: 'local', display_name: 'Sam' })
   await rpc('hexbot.settings.set', {
     patch: {
       workspace_dir: workspace,
@@ -382,7 +384,9 @@ try {
   })
   const answerRequest = modelRequests.at(-1)
   assert.match(JSON.stringify(answerRequest.messages), /Morning/)
-  assert.match(JSON.stringify(answerRequest.messages), /One, Two/)
+  // Multiple choices reach the bot as a JSON array, as from the web.
+  const answers = JSON.parse(answerRequest.messages.findLast(m => m.role === 'tool').content)
+  assert.deepEqual(JSON.parse(answers.topics), ['One', 'Two'])
   assert.doesNotMatch(JSON.stringify(answerRequest.messages), /answer-notes\.txt/)
   await expect(page.getByText('answer-notes.txt', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Remove answer-notes.txt', exact: true }).click()

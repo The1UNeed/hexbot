@@ -58,6 +58,8 @@ export interface ChatScreenProps {
   waiting?: { label?: string | null; who?: FaceSource | null } | null
   /** A turn is running; the composer offers Stop. */
   busy?: boolean
+  /** Keep Send next to Stop while busy, for rooms and for answering a question. */
+  sendWhileBusy?: boolean
 
   onSend: (text: string) => void
   onStop?: () => void
@@ -173,7 +175,7 @@ export function ChatScreen(props: ChatScreenProps) {
             ) : null}
             {onOpenSettings ? (
               <IconButton
-                accessibilityLabel={room ? 'Group settings' : `Edit ${title}`}
+                accessibilityLabel={room ? 'Room settings' : `Edit ${title}`}
                 icon="ellipsis-horizontal"
                 iconSize={21}
                 onPress={onOpenSettings}
@@ -713,6 +715,7 @@ function Composer({
   onSend,
   onStop,
   sendDisabledReason,
+  sendWhileBusy,
   title
 }: Omit<ChatScreenProps, 'onBack'> & { bottom: number }) {
   const theme = useTheme()
@@ -808,7 +811,7 @@ function Composer({
               variant="filled"
             />
           ) : null}
-          {!busy || text.trim() ? (
+          {!busy || (sendWhileBusy && text.trim()) ? (
             <IconButton
               accessibilityLabel="Send"
               disabled={!canSend}

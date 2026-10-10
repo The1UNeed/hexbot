@@ -11,6 +11,14 @@ export class RevokedError extends Error {
     this.name = 'RevokedError'
   }
 }
+export class HttpError extends Error {
+  readonly status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'HttpError'
+    this.status = status
+  }
+}
 export async function request<T>(
   url: string,
   init: RequestInit = {},
@@ -24,8 +32,13 @@ export async function request<T>(
     if (proofError) throw proofError
     const body = await response.json().catch(() => ({}))
     if (!response.ok) {
-      if (response.status === 401) throw new RevokedError()
-      throw new Error(body.message || body.error || `The request failed, HTTP ${response.status}.`)
+      // Only a request made with a credential can find that credential revoked.
+      if (response.status === 401 && new Headers(init.headers).has('Authorization'))
+        throw new RevokedError()
+      throw new HttpError(
+        response.status,
+        body.message || body.error || `The request failed, HTTP ${response.status}.`
+      )
     }
     return body as T
   } catch (error) {
@@ -62,7 +75,11 @@ export async function pair(
         platform: Platform.OS
       })
     }
-  )
+  ).catch(error => {
+    if (error instanceof HttpError && error.status === 401)
+      throw new Error('That pairing code is wrong or expired.')
+    throw error
+  })
   if (!result.device_token || !result.device_id)
     throw new Error('The daemon did not return a device credential.')
   return {
@@ -120,7 +137,12 @@ export async function connectGrant(
         password
       })
     }
-  )
+  ).catch(error => {
+    // The grant is a one-time sign-in, not a device credential that can be revoked.
+    if (error instanceof RevokedError)
+      throw new Error('The daemon refused the Hex Connect sign-in. Choose it again.')
+    throw error
+  })
   if (!login.device_token || !login.device_id)
     throw new Error('The daemon did not return a device credential.')
   return {

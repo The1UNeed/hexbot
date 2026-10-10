@@ -16,6 +16,16 @@ const room: Room = {
   last_activity_at: 0,
   members: [
     {
+      member_id: 'alpha',
+      member_kind: 'bot',
+      display_name: 'Alpha',
+      left_at: null,
+      room_id: 'room',
+      added_at: 0,
+      added_by: 'owner',
+      last_read_seq: 0
+    },
+    {
       member_id: 'former',
       member_kind: 'human',
       display_name: 'Ada',
@@ -152,16 +162,22 @@ describe('room sessions', () => {
 describe('room history', () => {
   it('shows failures and budget limits identically live and after reconnect, without duplicates', () => {
     const events = [
-      log(1, 'turn.failed', { error: 'Provider unavailable' }),
-      log(2, 'limit.tripped', { limit: 'bot_turns_per_human_turn', used: 8, cap: 8 })
-    ]
+      { ...log(1, 'turn.failed', { error: 'Provider unavailable' }, 'alpha'), actor_kind: 'bot' },
+      log(2, 'limit.tripped', { limit: 'room_bot_turns_per_human_turn', used: 8, cap: 8 }),
+      log(3, 'limit.tripped', { limit: 'room_budget_tokens_per_human_turn', used: 9, cap: 9 }),
+      log(4, 'limit.tripped', { limit: 'daily_tokens', used: 9, cap: 9 }),
+      log(5, 'turn.failed', { error: 'database is locked' })
+    ] as RoomEvent[]
     let state = restoreRoom(room, [])
     for (const event of [...events, events[1]])
       state = reduce(state, wire('hexbot.rooms.event', '', { room_id: room.id, event }))
     expect(state.messages).toEqual(restoreRoom(room, events).messages)
     expect(state.messages.map(m => [m.role, m.text])).toEqual([
-      ['system', 'Provider unavailable'],
-      ['system', 'Bot reply limit reached.']
+      ['system', 'Alpha stopped · Provider unavailable'],
+      ['system', 'Bot reply limit reached.'],
+      ['system', 'Room token budget reached.'],
+      ['system', 'Daily token limit reached.'],
+      ['system', 'The room stopped · database is locked']
     ])
     expect(state.busy).toBe(true)
   })

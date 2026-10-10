@@ -68,7 +68,10 @@ addresses use AsyncStorage. The browser preview holds credentials only in memory
 A revoked phone returns to pairing. Backgrounding closes the socket while the
 daemon continues working; foregrounding restores history and pending dialogs
 for active turns. Rooms keep each bot’s streaming text, tools and pending cards
-separate. Failed turns and budget limits appear in the room history.
+separate. Failed turns and budget limits appear in the room history. A room
+opens at its latest 200 events and pages back with `before_seq` on
+`hexbot.rooms.log`; older daemons ignore it and the app reads the whole log.
+Threads take one message at a time, so Stop replaces Send while a bot works.
 
 Attachments stay on the phone until Send. Sending files without text uses
 "Please review the attached files." Chips clear only after the daemon accepts
@@ -76,6 +79,8 @@ the message. Answer bot questions before sending attached files; the files stay
 ready for the next message. Failed uploads can be retried without
 resending attachments that already reached the daemon. Removing an uploaded,
 unsubmitted attachment clears the staged batch before re-uploading those kept.
+Leaving the thread, switching daemons or disconnecting clears a staged batch,
+so it never rides along with a later message.
 This uses the new `attachments.clear` RPC. Scheduled job controls use the new
 owner-scoped `hexbot.jobs.*` RPCs; use a daemon built from this checkout for both. The app shows an update notice
 for older daemons and explains when either RPC is unavailable.

@@ -31,13 +31,30 @@ pub fn get(home: &Path, caller: &str, room: &str) -> Result<Value> {
     Ok(row)
 }
 
-pub fn log(home: &Path, caller: &str, room: &str, after: i64, limit: i64) -> Result<Vec<Value>> {
+/// Events after `after` in order; with `before`, the newest events before it, still in order.
+pub fn log(
+    home: &Path,
+    caller: &str,
+    room: &str,
+    after: i64,
+    before: Option<i64>,
+    limit: i64,
+) -> Result<Vec<Value>> {
     get(home, caller, room)?;
-    let mut events = rows(
-        &db::open(home)?,
-        "SELECT * FROM room_events WHERE room_id=? AND seq>? ORDER BY seq LIMIT ?",
-        &[&room, &after, &limit.clamp(1, 1000)],
-    )?;
+    let limit = limit.clamp(1, 1000);
+    let conn = db::open(home)?;
+    let mut events = match before {
+        Some(before) => rows(
+            &conn,
+            "SELECT * FROM (SELECT * FROM room_events WHERE room_id=? AND seq>? AND seq<? ORDER BY seq DESC LIMIT ?) ORDER BY seq",
+            &[&room, &after, &before, &limit],
+        )?,
+        None => rows(
+            &conn,
+            "SELECT * FROM room_events WHERE room_id=? AND seq>? ORDER BY seq LIMIT ?",
+            &[&room, &after, &limit],
+        )?,
+    };
     for e in &mut events {
         e["payload"] = json_field(&e["payload_json"]);
         e.as_object_mut().unwrap().remove("payload_json");
@@ -286,9 +303,14 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                     }),
                 )?
             })),
-            "hexbot.rooms.log" => Ok(
-                json!({"events":log(home,caller,required(p,"id")?,p["after_seq"].as_i64().unwrap_or(0),p["limit"].as_i64().filter(|n|*n!=0).unwrap_or(200))?}),
-            ),
+            "hexbot.rooms.log" => Ok(json!({"events":log(
+                home,
+                caller,
+                required(p, "id")?,
+                p["after_seq"].as_i64().unwrap_or(0),
+                p["before_seq"].as_i64(),
+                p["limit"].as_i64().filter(|n| *n != 0).unwrap_or(200),
+            )?})),
             "hexbot.rooms.mark_read" => {
                 let room = required(p, "id")?;
                 get(home, caller, room)?;
