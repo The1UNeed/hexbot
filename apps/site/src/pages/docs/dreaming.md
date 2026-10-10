@@ -10,7 +10,9 @@ The dream uses the bot's configured model, soul, memory, and skills. Model provi
 
 ## When dreams run
 
-Hexbot creates a daily dream schedule for each bot. The default time is 3:00 AM in the daemon's local time. The daemon must be running, but a missed dream catches up after it starts again and covers activity since the previous run.
+Hexbot creates a daily dream schedule for each bot. The default time is 3:00 AM in the daemon's local time. The daemon must be running, but a missed dream catches up after it starts again.
+
+Each dream reviews activity from the start of the last successful dream up to, but excluding, its own start. Both starts are rounded down to whole milliseconds. Messages and compaction summaries at or after that start wait for the next dream, so the time windows do not overlap. The first dream reviews earlier history. Failed or interrupted dreams leave the lower cutoff unchanged.
 
 Dreaming must be enabled for the daemon and for the individual bot. You can also run a bot's dream now from its Dreaming controls. The status shows the last run, next run, and any error.
 
@@ -18,7 +20,7 @@ Dreaming must be enabled for the daemon and for the individual bot. You can also
 
 Hexbot posts each summary in that bot's `Dreams` section. The section stays out of the sidebar. Open the bot's settings, Memory, and find the dream log at the bottom. Each dream that changed memory shows what it looked like before and after, with a button to restore the memory from before that dream.
 
-A dream reads only that bot's sections and the rooms it belongs to, and only what you and the bot said there: pages the bot fetched and other tool output stay out, and so do the bot's own earlier dream summaries. Long transcripts are capped, with the newest part kept for review. Titles and room names are shortened too. On a busy day the dream keeps the most recent conversations that fit in one prompt.
+A dream reads only that bot's sections and the rooms it belongs to, and only what you and the bot said there: pages the bot fetched and other tool output stay out of the transcripts it reads, and so do the bot's own earlier dream summaries. Long transcripts are capped, with the newest part kept for review; when a long section or that bot's room conversation was compacted during the day, the dream also reads the summaries written at those points, so the morning of a busy conversation still counts. Those summaries were written with tool output still in view, so they can mention what a page said; the dream is told to treat them as it treats a job's proposals and to keep only what you or the bot clearly established. Summaries without a valid timestamp are skipped. Titles and room names are shortened too. On a busy day the dream keeps the most recent conversations that fit in one prompt.
 
 ## What a dream may change
 
@@ -26,7 +28,7 @@ A dream writes only to the bot's own memory. It never edits the bot's soul or yo
 
 ## Proposals from scheduled jobs
 
-A scheduled job cannot change memory while it runs unattended. When a job asks to add, replace, or remove something, Hexbot saves the request as a proposal instead. The bot's next dream reads its pending proposals, newest first, treats them as suggestions that may contain text from the web, keeps the ones it agrees with, and says in its summary which it applied or ignored. A proposal stays pending until a dream completes; a failed dream leaves it for the next one. Deleting the bot deletes its proposals.
+A scheduled job cannot change memory while it runs unattended. When a job asks to add, replace, or remove something, Hexbot saves the request as a proposal instead. The bot's next dream reads pending proposals created before it started, newest first, treats them as suggestions that may contain text from the web, keeps the ones it agrees with, and says in its summary which it applied or ignored. A proposal stays pending until a dream completes; a failed dream leaves it for the next one. Deleting the bot deletes its proposals.
 
 ## Room memory
 

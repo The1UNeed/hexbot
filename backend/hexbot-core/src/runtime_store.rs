@@ -835,20 +835,7 @@ pub fn reconcile(home: &Path, bot: &str, stored: &str, owner: &str) -> Result<()
         .iter()
         .filter_map(|entry| entry["id"].as_str().map(|id| (id, entry)))
         .collect::<HashMap<_, _>>();
-    let mut active = HashSet::new();
-    let mut current = entries.last();
-    while let Some(entry) = current {
-        let id = common::required(entry, "id")?;
-        if !active.insert(id) {
-            return Err(crate::Error::new(
-                5200,
-                "conversation contains a parent cycle",
-            ));
-        }
-        current = entry["parentId"]
-            .as_str()
-            .and_then(|parent| by_id.get(parent).copied());
-    }
+    let active = active_ids(&entries)?;
     let mut conn = open(home)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let known: Option<(String, String)> = tx
@@ -978,14 +965,36 @@ pub fn reconcile(home: &Path, bot: &str, stored: &str, owner: &str) -> Result<()
     Ok(())
 }
 fn entry_timestamp(entry: &Value) -> f64 {
+    parsed_entry_timestamp(entry).unwrap_or_else(common::now)
+}
+fn parsed_entry_timestamp(entry: &Value) -> Option<f64> {
     entry["timestamp"]
         .as_str()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .map(|d| d.timestamp_millis() as f64 / 1000.0)
-        .unwrap_or_else(common::now)
 }
+/// Read a conversation for recovery: a torn final record is backed up and cut
+/// so the next Pi append starts on a clean line. Only call this before the
+/// section's process starts; a live file is read with `parse_pi_entries`.
 fn read_pi_entries(path: &Path) -> Result<Vec<Value>> {
     let bytes = fs::read(path)?;
+    let (entries, valid_end, torn) = parse_pi_entries(&bytes)?;
+    if torn {
+        // Preserve the complete damaged file, then remove only its incomplete
+        // final record so the next Pi append starts on a clean line.
+        let backup = path.with_file_name(format!("conversation.recovery-{}.jsonl", id()));
+        common::atomic_write(&backup, &bytes)?;
+        common::atomic_write(path, &bytes[..valid_end])?;
+    } else if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+        let mut normalized = bytes;
+        normalized.push(b'\n');
+        common::atomic_write(path, &normalized)?;
+    }
+    Ok(entries)
+}
+/// Parse a conversation without touching it: the entries after the header,
+/// the end of the last complete record, and whether the final record is torn.
+fn parse_pi_entries(bytes: &[u8]) -> Result<(Vec<Value>, usize, bool)> {
     let mut entries = Vec::new();
     let mut offset = 0;
     let mut valid_end = 0;
@@ -1052,18 +1061,77 @@ fn read_pi_entries(path: &Path) -> Result<Vec<Value>> {
     if !header {
         return Err(crate::Error::new(5200, "missing conversation header"));
     }
-    if torn {
-        // Preserve the complete damaged file, then remove only its incomplete
-        // final record so the next Pi append starts on a clean line.
-        let backup = path.with_file_name(format!("conversation.recovery-{}.jsonl", id()));
-        common::atomic_write(&backup, &bytes)?;
-        common::atomic_write(path, &bytes[..valid_end])?;
-    } else if !bytes.is_empty() && !bytes.ends_with(b"\n") {
-        let mut normalized = bytes;
-        normalized.push(b'\n');
-        common::atomic_write(path, &normalized)?;
+    Ok((entries, valid_end, torn))
+}
+/// The ids on the current branch: the last entry and its parents.
+fn active_ids(entries: &[Value]) -> Result<HashSet<&str>> {
+    let by_id = entries
+        .iter()
+        .filter_map(|entry| entry["id"].as_str().map(|id| (id, entry)))
+        .collect::<HashMap<_, _>>();
+    let mut active = HashSet::new();
+    let mut current = entries.last();
+    while let Some(entry) = current {
+        let id = common::required(entry, "id")?;
+        if !active.insert(id) {
+            return Err(crate::Error::new(
+                5200,
+                "conversation contains a parent cycle",
+            ));
+        }
+        current = entry["parentId"]
+            .as_str()
+            .and_then(|parent| by_id.get(parent).copied());
     }
-    Ok(entries)
+    Ok(active)
+}
+/// Summaries Pi wrote when it compacted this section's current branch in
+/// `[since, until)`, oldest first, as `(timestamp, summary)`. Reads the
+/// conversation file without changing it, so it is safe while Pi runs; a
+/// section without one (legacy or deleted) has none.
+pub fn compaction_summaries(
+    home: &Path,
+    stored: &str,
+    since: f64,
+    until: f64,
+) -> Result<Vec<(f64, String)>> {
+    common::identifier(stored)?;
+    let path = home
+        .join("runtime/sessions")
+        .join(stored)
+        .join("conversation.jsonl");
+    let metadata = match fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => return Err(error.into()),
+    };
+    // A recent compaction requires a recent append. Leave idle files unread.
+    // Allow for filesystems such as HFS+ that round mtimes to whole seconds.
+    if metadata
+        .modified()
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .is_some_and(|at| at.as_secs_f64() < since - 1.0)
+    {
+        return Ok(vec![]);
+    }
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => return Err(error.into()),
+    };
+    let (entries, _, _) = parse_pi_entries(&bytes)?;
+    let active = active_ids(&entries)?;
+    Ok(entries
+        .iter()
+        .filter(|entry| entry["type"] == "compaction")
+        .filter(|entry| entry["id"].as_str().is_some_and(|id| active.contains(id)))
+        .filter_map(|entry| {
+            let at = parsed_entry_timestamp(entry)?;
+            let summary = entry["summary"].as_str()?;
+            (at >= since && at < until).then(|| (at, summary.to_owned()))
+        })
+        .collect())
 }
 fn reorder_projection(conn: &Connection, stored: &str, source_order: &[i64]) -> Result<()> {
     let rows = common::rows(
