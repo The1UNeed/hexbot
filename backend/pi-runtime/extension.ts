@@ -1,4 +1,5 @@
 /** Hexbot's frozen session tools and approval bridge. Pi owns the agent loop. */
+import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync } from 'node:fs';
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
@@ -104,6 +105,11 @@ export default function hexbot(pi: any) {
   };
   let live = config;
   let primary: any;
+  // Pi 1.0.1 holds its forced prompt for the whole run. Only adopt a rebuilt
+  // prompt if the first request after compaction starts a new run. A resumed
+  // request caches the old prompt again, so discard the replacement then.
+  let prompt = config.prompt;
+  let pendingPrompt: string | undefined;
   const refresh = async (ctx: any) => { live = {...config, ...await bridge(ctx, 'hexbot_session_settings')}; };
   // Resolve credentials in memory on the first prompt. RPC cannot answer a
   // bridge request during session_start, before its stdin reader is attached.
@@ -337,6 +343,7 @@ export default function hexbot(pi: any) {
   });
 
   pi.on('before_provider_request', async (event: any, ctx: any) => {
+    pendingPrompt = undefined;
     const provider = ctx.model?.provider ?? config.provider;
     if (!['qwen-oauth', 'nous', 'openrouter', 'kimi-coding', 'kimi-coding-cn', 'moonshotai', 'moonshotai-cn', 'deepseek', 'zai', 'minimax', 'minimax-cn', 'minimax-oauth', 'custom', 'ollama'].includes(provider)) return;
     const raw = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({name: 'hexbot_provider_request', args: {provider, model: ctx.model?.id, thinking: pi.getThinkingLevel(), payload: event.payload}}));
@@ -355,19 +362,52 @@ export default function hexbot(pi: any) {
     Object.assign(event.headers, reply.result?.headers ?? {});
   });
   pi.on('before_agent_start', async (_event: any, ctx: any) => {
-    await refresh(ctx);
-    await registerMcp(ctx);
-    primary ??= ctx.model;
-    const model = ctx.modelRegistry.find(live.provider, live.model) ?? primary;
-    if (model && (ctx.model?.provider !== model.provider || ctx.model?.id !== model.id)) await pi.setModel(model);
+    // Pi 1.0.1 drops the result of a handler that throws and runs on its
+    // launch prompt, which is stale once a section adopts a refreshed one.
+    // Whatever fails here, still return the prompt Pi is running.
+    try {
+      await refresh(ctx);
+      await registerMcp(ctx);
+      primary ??= ctx.model;
+      const model = ctx.modelRegistry.find(live.provider, live.model) ?? primary;
+      if (model && (ctx.model?.provider !== model.provider || ctx.model?.id !== model.id)) await pi.setModel(model);
+    } catch (error: any) {
+      ctx.ui.notify(`Could not load the latest settings, so this turn uses the previous ones: ${error?.message ?? error}`, 'warning');
+    }
     fallbackUsed = false; iterations = 0; limitReached = false;
-    return {systemPrompt: config.prompt};
+
+    if (pendingPrompt !== undefined) {
+      // The daemon saves the prompt as our adoption arrives, before an
+      // interrupt can cancel it, so a reopened section starts on the prompt
+      // Pi used. Switch unless it refuses: an interrupted or lost reply means
+      // it was saved. A refused offer waits for the next compaction.
+      const adopt = createHash('sha256').update(pendingPrompt).digest('hex');
+      let reply: any;
+      try {
+        const raw = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({name: 'hexbot_session_prompt', args: {adopt}}));
+        if (raw) reply = JSON.parse(raw);
+      } catch {}
+      if (!reply?.error) prompt = pendingPrompt;
+      pendingPrompt = undefined;
+    }
+
+    return {systemPrompt: prompt};
   });
   pi.on('session_compact', async (_event: any, ctx: any) => {
-    const raw = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({name: 'hexbot_todo_context', args: {}}));
-    if (!raw) return;
-    const reply = JSON.parse(raw);
-    if (reply.result?.text) pi.sendMessage({customType: 'hexbot_todo', content: reply.result.text, display: false});
+    pendingPrompt = undefined;
+    // The todo list and the prompt are two requests; one failing or empty
+    // never stops the other.
+    try {
+      const todo = await bridge(ctx, 'hexbot_todo_context');
+      if (todo?.text) pi.sendMessage({customType: 'hexbot_todo', content: todo.text, display: false});
+    } catch {}
+    // Compare with the live prompt: an earlier offer may have been lost, or a
+    // mid-run request discarded it.
+    try {
+      const current = createHash('sha256').update(prompt).digest('hex');
+      const fresh = await bridge(ctx, 'hexbot_session_prompt', {current});
+      if (typeof fresh?.text === 'string' && fresh.text) pendingPrompt = fresh.text;
+    } catch {}
   });
   pi.on('agent_before_settle', async (event: any, ctx: any) => {
     if (limitReached || event.outcome !== 'error' || fallbackUsed) return;

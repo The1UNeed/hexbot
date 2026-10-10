@@ -23,7 +23,8 @@ more freedom and more capability than a hosted product can offer.
 ## 2. Daemon
 
 - Rust owns storage, rooms, tools, approvals, networking and scheduling.
-  Each section has one persistent Pi conversation and cached prompt prefix.
+  Each section has one persistent Pi conversation and cached prompt prefix,
+  refreshed only at a compatible compaction boundary, as described below.
 - No cap on bots per user or bots per room.
 - All core providers are supported. Credentials are configured once at the
   deployment level. Each bot picks any model from any configured provider.
@@ -150,8 +151,13 @@ more freedom and more capability than a hosted product can offer.
 - Persistent, Discord-thread-like conversations per bot and per room. Each is
   its own persistent conversation with its own context window.
 - A new section starts with the bot's memory and a catalog of skill descriptions.
-  It loads skill bodies when needed. Existing prompts stay fixed; skill reads
-  use current bodies and grants.
+  It loads skill bodies when needed. Sections started with prompt refresh
+  support can pick up the current name, soul, memory, About you, teammates
+  and skill catalog after compaction if the next request starts a new run.
+  A continuation within the active run discards that refresh until another
+  compaction. Older sections and sections whose fixed guidance or tool layout
+  no longer matches after an update retain their prompt. Skill reads use
+  current bodies and grants.
 - Sidebar: one list of bots and rooms ordered by recent activity. Each entry
   shows one or two recent sections and expands to show the rest. Archived
   sections sit collapsed at the bottom.
