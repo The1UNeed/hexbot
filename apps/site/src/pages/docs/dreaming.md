@@ -12,7 +12,7 @@ The dream uses the bot's configured model, soul, memory, and skills. Model provi
 
 Hexbot creates a daily dream schedule for each bot. The default time is 3:00 AM in the daemon's local time. The daemon must be running, but a missed dream catches up after it starts again.
 
-Each dream reviews activity from the start of the last successful dream up to, but excluding, its own start. Messages and compaction summaries at or after that start wait for the next dream, so the time windows neither overlap nor leave gaps. The first dream reviews earlier history. Failed or interrupted dreams leave the lower cutoff unchanged.
+Each dream reviews activity from the start of the last successful dream up to, but excluding, its own start. Both starts are rounded down to whole milliseconds. Messages and compaction summaries at or after that start wait for the next dream, so the time windows do not overlap. The first dream reviews earlier history. Failed or interrupted dreams leave the lower cutoff unchanged.
 
 Dreaming must be enabled for the daemon and for the individual bot. You can also run a bot's dream now from its Dreaming controls. The status shows the last run, next run, and any error.
 

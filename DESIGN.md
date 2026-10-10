@@ -47,9 +47,10 @@ more freedom and more capability than a hosted product can offer.
 - Dreaming: every bot, daily at a configurable time (default 03:00), reads
   conversations from the start of its last successful dream up to, but
   excluding, its own start and folds what matters into its memory using its
-  own model. Messages and compaction summaries at or after that start wait
-  for the next dream. Failed or interrupted dreams leave the lower cutoff
-  unchanged; the first dream reviews earlier history. It reads what people
+  own model. Both starts are rounded down to whole milliseconds. Messages
+  and compaction summaries at or after that start wait for the next dream.
+  Failed or interrupted dreams leave the lower cutoff unchanged; the first
+  dream reviews earlier history. It reads what people
   and bots said, not tool output or its own earlier reports, plus the summaries
   written when a long section or that bot's room conversation was compacted,
   which it treats as untrusted since they were written with tool output in

@@ -16,10 +16,11 @@ The native scheduler and digest builder live in
   events stay in conversation history. It never writes soul or About you.
 - The digest includes sections and rooms with activity since the start of the
   last successful dream up to, but excluding, the current dream's start.
-  Both starts are recorded before building their digests. Messages and compaction
-  summaries at or after the current start wait for the next dream, so the time
-  windows neither overlap nor leave gaps. A first dream starts at the beginning
-  of history; failed or interrupted dreams do not advance the lower cutoff.
+  Both starts are recorded before building their digests and rounded down to
+  whole milliseconds. Messages and compaction summaries at or after the current
+  start wait for the next dream, so the time windows do not overlap. A first
+  dream starts at the beginning of history; failed or interrupted dreams do not
+  advance the lower cutoff.
   It retains the newest 12,000 characters per conversation,
   caps the complete serialized digest at 60,000 bytes, and reports how many
   conversations it left out as `omitted_conversations`. Titles keep their
