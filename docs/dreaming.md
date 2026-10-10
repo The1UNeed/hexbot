@@ -30,7 +30,8 @@ The native scheduler and digest builder live in
   under it, the memory tool reads as usual, but `add`, `append`, `replace`,
   `set`, and `remove` are saved as rows in `memory_proposals` (bot, owner,
   job id, action, arguments, created_at) after the same injection scan and
-  memory cap as an edit, so a proposal the dream could never apply is
+  memory cap as an edit on every retained text field, including removal
+  targets and replacement `old_text`, so a proposal the dream could never apply is
   refused at once. The tool result tells the bot the change waits for its
   next dream. A bot keeps at most 100 pending proposals; older ones are
   dropped unread. Reviewed proposals expire after 30 days; inserting a proposal
@@ -41,6 +42,8 @@ The native scheduler and digest builder live in
   stays Manual. File tools and the shell/code sandbox protect memory and soul
   from direct writes. Scheduled scripts, including monitor scripts and jobs
   without an agent, require OS isolation even in Bypass.
+  Actions that need approval are refused immediately because jobs and their
+  delegates have no visible section where the user can answer.
 - Jobs and their delegates cannot use `message_bot`. Delivery reuses the
   recipient's ordinary section, whose writes would bypass the job's proposal
   rule. Results stay local; use the memory tool for proposals when available.
