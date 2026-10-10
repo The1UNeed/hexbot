@@ -62,10 +62,12 @@ The app follows the track it was installed from; switch in Settings, Updates.
   before every change; Bypass asks nothing. Git metadata is read-only and
   project secrets and browser stores are hidden within the platform limits in
   [SECURITY.md](SECURITY.md#tool-isolation). Linux scans existing repositories
-  through three nested folders, skips dependency/runtime folders, and requires
-  an approved full-access retry if its 1,000-directory budget is exceeded.
+  through three nested folders and skips dependency/runtime folders. Only Linux
+  bubblewrap commands require an approved full-access retry when the scan
+  exceeds 1,000 directories. macOS uses partial scan results; file changes
+  ask for approval in Auto mode when the scan is incomplete.
   Repositories created during a command are not protected on Linux. macOS
-  filename rules also cover new repositories.
+  filename rules also cover new `.git` metadata directories.
 - **Your hardware.** The daemon runs where you install it. Pair devices over
   LAN or Tailscale, revoke them from settings, and delete conversations
   together with the memory they produced.
