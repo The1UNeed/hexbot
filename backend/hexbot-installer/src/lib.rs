@@ -4,6 +4,10 @@ mod detect;
 mod install_ownership;
 mod safety;
 mod types;
+#[path = "../../hexbot-core/src/update_path.rs"]
+mod update_path;
+#[path = "../../hexbot-core/src/update_signature.rs"]
+pub mod update_signature;
 
 pub use archive::{extract_native, verify_file};
 pub use detect::{Paths, app_option, detect, detect_at, read_receipt, sanitize_appimage_env};
@@ -61,6 +65,7 @@ fn client(base: &str) -> Result<Client> {
 
 pub fn default_track(base: &str) -> Result<Track> {
     const ERROR: &str = "Could not reach the update server. Check your connection and try again.";
+    https_origin(base)?;
     let response = client(base)?
         .get(format!(
             "{}/install/stable.json",
@@ -75,28 +80,80 @@ pub fn default_track(base: &str) -> Result<Track> {
     }
 }
 
+/// The track's install manifest, after its release signature is checked. The
+/// signature lives at the immutable `install/<version>/<track>.json.sig`, so
+/// replacing `install/<track>.json` never races its signature.
 pub fn fetch_manifest(base: &str, track: Track) -> Result<Manifest> {
-    let manifest: Manifest = client(base)?
-        .get(format!(
-            "{}/install/{track}.json",
-            base.trim_end_matches('/')
-        ))
-        .send()?
-        .error_for_status()?
-        .json()?;
+    https_origin(base)?;
+    let base = base.trim_end_matches('/');
+    let client = client(base)?;
+    let fetch = |url: String, limit: u64| -> Result<Vec<u8>> {
+        let mut body = Vec::new();
+        client
+            .get(url)
+            .send()?
+            .error_for_status()?
+            .take(limit + 1)
+            .read_to_end(&mut body)?;
+        if body.len() as u64 > limit {
+            return fail("The install manifest is too large.");
+        }
+        Ok(body)
+    };
+    let bytes = fetch(format!("{base}/install/{track}.json"), 1024 * 1024)?;
+    // Only the version is read before verification, to find the signature.
+    let unverified: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let release = semver::Version::parse(unverified["version"].as_str().unwrap_or_default())?;
+    let signature = fetch(
+        format!("{base}/install/{release}/{track}.json.sig"),
+        update_signature::SIGNATURE_LIMIT as u64,
+    )?;
+    if !update_signature::verify(&bytes, &signature) {
+        return fail(update_signature::INVALID);
+    }
+    let manifest: Manifest = serde_json::from_slice(&bytes)?;
     manifest.validate(&version())?;
-    validate_origins(base, &manifest)?;
+    validate_artifacts(base, &manifest)?;
     if manifest.channel != track {
         return fail("The install manifest has the wrong track.");
     }
     Ok(manifest)
 }
 
-fn validate_origins(base: &str, manifest: &Manifest) -> Result<()> {
-    let base = reqwest::Url::parse(base)?;
-    if !matches!(base.scheme(), "https" | "http") {
-        return fail("Invalid update URL.");
+/// HTTPS only; plain HTTP just for a loopback test server.
+fn https_origin(base: &str) -> Result<reqwest::Url> {
+    let url = reqwest::Url::parse(base)?;
+    let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    if !(url.scheme() == "https" || url.scheme() == "http" && loopback)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return fail("The update URL must use HTTPS.");
     }
+    Ok(url)
+}
+
+/// Resolve signed artifact paths against the selected update server.
+fn artifact_url(base: &str, artifact: &Artifact) -> Result<reqwest::Url> {
+    let root = https_origin(&format!("{}/", base.trim_end_matches('/')))?;
+    let url = if let Some(path) = &artifact.path {
+        if !update_path::valid(path) {
+            return fail("The install manifest names an invalid artifact path.");
+        }
+        root.join(path)?
+    } else {
+        reqwest::Url::parse(&artifact.url)?
+    };
+    https_origin(url.as_str())?;
+    if url.origin() != root.origin() {
+        return fail("Every artifact URL must have the same origin as the update URL.");
+    }
+    Ok(url)
+}
+
+fn validate_artifacts(base: &str, manifest: &Manifest) -> Result<()> {
     for artifacts in manifest.targets.values() {
         for artifact in [
             &artifacts.headless,
@@ -108,9 +165,7 @@ fn validate_origins(base: &str, manifest: &Manifest) -> Result<()> {
         .into_iter()
         .flatten()
         {
-            if reqwest::Url::parse(&artifact.url)?.origin() != base.origin() {
-                return fail("Every artifact URL must have the same origin as the update URL.");
-            }
+            artifact_url(base, artifact)?;
         }
     }
     Ok(())
@@ -271,6 +326,26 @@ impl Installer {
         Ok(())
     }
 
+    /// A signed manifest stays valid after the next release replaces it, so a
+    /// replayed old one must not move an install back on its own track. A fresh
+    /// install and a track change may install an older version.
+    fn refuse_downgrade(&self, manifest: &Manifest) -> Result<()> {
+        let Some(receipt) = read_receipt(&self.paths.receipt())? else {
+            return Ok(());
+        };
+        if receipt.channel != manifest.channel {
+            return Ok(());
+        }
+        let installed = semver::Version::parse(&receipt.version)?;
+        let offered = semver::Version::parse(&manifest.version)?;
+        if offered.cmp_precedence(&installed).is_lt() {
+            return fail(format!(
+                "The update server offers Hexbot {offered}, older than the installed {installed}. Nothing was installed."
+            ));
+        }
+        Ok(())
+    }
+
     fn write_receipt(&self, receipt: &Receipt) -> Result<()> {
         archive::write_atomic(&self.paths.receipt(), &serde_json::to_vec_pretty(receipt)?)
     }
@@ -283,7 +358,8 @@ impl Installer {
     ) -> Result<InstallResult> {
         self.paths.validate()?;
         manifest.validate(&version())?;
-        validate_origins(&self.base_url, manifest)?;
+        validate_artifacts(&self.base_url, manifest)?;
+        self.refuse_downgrade(manifest)?;
         if option == InstallOption::Headless {
             self.preflight_ownership()?;
         }
@@ -697,7 +773,7 @@ fn download_file(
     progress: &mut ProgressCallback<'_>,
 ) -> Result<()> {
     let mut response = client(base)?
-        .get(&artifact.url)
+        .get(artifact_url(base, artifact)?)
         .send()?
         .error_for_status()?;
     let mut file = fs::File::create(path)?;

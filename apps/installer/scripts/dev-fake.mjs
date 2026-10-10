@@ -23,6 +23,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { prepareRoot } from './dev-fake-root.mjs'
+import { signUpdates, testKey, testPublicKey } from '../../../scripts/desktop/update-signing.mjs'
 
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repo = path.resolve(appDir, '../..')
@@ -308,6 +309,8 @@ fs.writeFileSync(
     2
   )
 )
+// Debug builds of the installer trust the public test key, as release builds trust the release key.
+signUpdates(dirs.server, { channel: 'nightly', version, key: testKey(), expected: testPublicKey() })
 
 const environment = {
   HEXBOT_HOME: dirs.hexbotHome,

@@ -570,6 +570,23 @@ fn same_origin(base: &str, target: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Resolve signed artifact paths against this daemon's update server.
+fn artifact_url(base: &str, manifest: &Value) -> Result<Url> {
+    let root = service_url(&format!("{}/", base.trim_end_matches('/')))?;
+    let url = if manifest.get("path").is_some() {
+        let path = common::required(manifest, "path")?;
+        if !crate::update_path::valid(path) {
+            return Err(Error::new(5243, "invalid native update path"));
+        }
+        root.join(path)
+            .map_err(|_| Error::new(5243, "invalid native update path"))?
+    } else {
+        service_url(common::required(manifest, "url")?)?
+    };
+    same_origin(base, url.as_str())?;
+    Ok(url)
+}
+
 async fn object(
     method: Method,
     url: &str,
@@ -1887,6 +1904,46 @@ pub(crate) fn extract_archive(source: &Path, destination: &Path, limit: u64) -> 
     Ok(())
 }
 
+/// A native update manifest with its release signature (`<url>.sig`) checked
+/// before anything in it is trusted.
+async fn signed_manifest(url: &str) -> Result<Value> {
+    service_url(url)?;
+    let fetch = |url: String, limit: usize| async move {
+        let response = client()?
+            .get(&url)
+            .send()
+            .await
+            .map_err(|_| Error::new(5243, "native update manifest unavailable"))?;
+        if !response.status().is_success() {
+            return Err(Error::new(
+                5243,
+                format!(
+                    "native update manifest returned HTTP {}",
+                    response.status().as_u16()
+                ),
+            ));
+        }
+        crate::http::bytes(
+            response,
+            limit,
+            |_| Error::new(5243, "native update manifest interrupted"),
+            Error::new(5243, "native update manifest exceeds byte limit"),
+        )
+        .await
+    };
+    let manifest = fetch(url.to_owned(), 1024 * 1024).await?;
+    let signature = fetch(
+        format!("{url}.sig"),
+        crate::update_signature::SIGNATURE_LIMIT,
+    )
+    .await?;
+    if !crate::update_signature::verify(&manifest, &signature) {
+        return Err(Error::new(5243, crate::update_signature::INVALID));
+    }
+    serde_json::from_slice(&manifest)
+        .map_err(|_| Error::new(5243, "native update manifest is invalid JSON"))
+}
+
 async fn native_update(home: &Path, version: &str, service: &Service) -> Result<PathBuf> {
     let config = common::read_config(home)?;
     let base = config
@@ -1898,15 +1955,10 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
     service_url(&base)?;
     let target = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     update_state(service, "checking", None, None).await;
-    let manifest = object(
-        Method::GET,
-        &format!(
-            "{}/daemon/native/{version}/{target}/manifest.json",
-            base.trim_end_matches('/')
-        ),
-        None,
-        None,
-    )
+    let manifest = signed_manifest(&format!(
+        "{}/daemon/native/{version}/{target}/manifest.json",
+        base.trim_end_matches('/')
+    ))
     .await?;
     if manifest["version"] != version || manifest["target"] != target {
         return Err(Error::new(
@@ -1918,8 +1970,7 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
         .map(|executable| native_manifest(&executable, &crate::version()))
         .unwrap_or_else(|_| json!({}));
     require_newer_native_build(&manifest, &current)?;
-    let url = common::required(&manifest, "url")?;
-    same_origin(&base, url)?;
+    let url = artifact_url(&base, &manifest)?;
     let digest = common::required(&manifest, "sha256")?;
     if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::new(5243, "invalid native update checksum"));
@@ -1928,7 +1979,7 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
     let staging = tempfile::tempdir_in(&native)?;
     let tmp = tempfile::NamedTempFile::new_in(&native)?;
     update_state(service, "downloading", None, None).await;
-    download(url, tmp.path(), 1024 * 1024 * 1024, false).await?;
+    download(url.as_str(), tmp.path(), 1024 * 1024 * 1024, false).await?;
     if file_sha256(tmp.path())? != digest.to_ascii_lowercase() {
         return Err(Error::new(5243, "native update checksum mismatch"));
     }
@@ -2300,5 +2351,57 @@ mod native_version_tests {
         }
         assert!(require_newer_native_build(&json!({"builtAt": 1}), &json!({})).is_ok());
         assert!(require_newer_native_build(&json!({}), &json!({"builtAt": 1})).is_err());
+    }
+
+    #[test]
+    fn native_archives_are_fetched_from_the_configured_update_server() {
+        let path = "daemon/native/1.2.3/linux-x86_64/bundle.tar.gz";
+        let canonical = format!("https://updates.hexbot.app/{path}");
+        for base in ["https://mirror.example", "https://mirror.example/hexbot/"] {
+            let expected = format!("{}/{path}", base.trim_end_matches('/'));
+            let manifest = json!({"url": canonical, "path": path});
+            assert_eq!(artifact_url(base, &manifest).unwrap().as_str(), expected);
+            // No path: preserve the old absolute URL and same-origin rules.
+            assert_eq!(
+                artifact_url(base, &json!({"url": expected}))
+                    .unwrap()
+                    .as_str(),
+                expected
+            );
+            assert!(artifact_url(base, &json!({"url": canonical})).is_err());
+            for location in [
+                "",
+                "../binary",
+                "a/../binary",
+                "./binary",
+                "/binary",
+                "%2e%2e/binary",
+                "a/%2Fbinary",
+                "a\\..\\binary",
+                "https://mirror.example/binary",
+                "//mirror.example/binary",
+                "https://attacker.example/binary",
+                "//attacker.example/binary",
+                "http://mirror.example/binary",
+                "https://user@mirror.example/binary",
+                "binary?query",
+                "binary#fragment",
+                " binary",
+                "a//binary",
+            ] {
+                assert!(
+                    artifact_url(base, &json!({"url": expected, "path": location})).is_err(),
+                    "{location}"
+                );
+            }
+            for location in [
+                "binary",
+                "//mirror.example/binary",
+                "https://attacker.example/binary",
+            ] {
+                assert!(artifact_url(base, &json!({"url": location})).is_err());
+            }
+        }
+        assert!(artifact_url("http://mirror.example", &json!({"path": path})).is_err());
     }
 }

@@ -14,6 +14,12 @@ main() {
 
     base=${HEXBOT_UPDATE_URL:-https://updates.hexbot.app}
     base=${base%/}
+    # HTTPS only (plain HTTP just for a loopback test server), with no user info.
+    case "$base" in
+        *@*) fail 'HEXBOT_UPDATE_URL must be an HTTPS address.' ;;
+        https://?*|http://127.0.0.1:*|http://localhost:*|http://\[::1\]:*) ;;
+        *) fail 'HEXBOT_UPDATE_URL must be an HTTPS address.' ;;
+    esac
     track=${HEXBOT_TRACK:-}
     for arg in "$@"; do
         case "$arg" in
@@ -25,10 +31,11 @@ main() {
 
     if command -v curl >/dev/null 2>&1; then
         downloader=curl
-        fetch() { curl --fail --silent --show-error --location --connect-timeout 30 --output "$2" "$1"; }
+        # No redirects: every file is on the update server, so nothing can move a download elsewhere.
+        fetch() { [ "$(curl --silent --show-error --max-redirs 0 --connect-timeout 30 --output "$2" --write-out '%{http_code}' "$1")" = 200 ]; }
     elif command -v wget >/dev/null 2>&1; then
         downloader=wget
-        fetch() { wget -q -O "$2" "$1"; }
+        fetch() { wget -q --max-redirect=0 -O "$2" "$1"; }
     else
         fail 'Install curl or wget, then run this command again.'
     fi
@@ -50,14 +57,14 @@ main() {
     if [ -z "$track" ]; then
         network_error='Could not reach the update server. Check your connection and try again.'
         if [ "$downloader" = curl ]; then
-            code=$(curl --silent --show-error --location --connect-timeout 30 --output "$tmp/manifest.json" --write-out '%{http_code}' "$base/install/stable.json") || fail "$network_error"
+            code=$(curl --silent --show-error --max-redirs 0 --connect-timeout 30 --output "$tmp/manifest.json" --write-out '%{http_code}' "$base/install/stable.json") || fail "$network_error"
             case "$code" in
                 200) track=stable ;;
                 404) track=nightly ;;
                 *) fail "$network_error" ;;
             esac
         else
-            if wget -O "$tmp/manifest.json" "$base/install/stable.json" 2>"$tmp/wget-error"; then
+            if wget --max-redirect=0 -O "$tmp/manifest.json" "$base/install/stable.json" 2>"$tmp/wget-error"; then
                 track=stable
             elif grep -q 'ERROR 404' "$tmp/wget-error"; then
                 track=nightly

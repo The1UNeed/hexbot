@@ -80,9 +80,27 @@ not encrypted by an OS keychain. Same-user malware and unprotected backups can
 read them. The daemon and its configured providers must be trusted with these keys.
 
 Installers validate archive paths, reject links, enforce size limits, and verify
-download checksums. Checksums detect corruption; unsigned native manifests
-still trust HTTPS and write access to the update origin. Manifest signing needs
-independent release-key provisioning. See [the update API](docs/api.md).
+download checksums. Install and native daemon manifests carry Ed25519 release
+signatures. The installer and native updater refuse an untrusted manifest;
+its signed checksums then pin the packages. Controlling the update origin,
+its TLS, or `HEXBOT_UPDATE_URL` cannot replace packages accepted by an
+already-trusted installer or native updater. Update URLs require HTTPS.
+The Python handoff verifies native manifests only after the legacy updater
+has downloaded and run the handoff package.
+
+Not covered by those signatures:
+
+- The legacy `daemon/hexbot-src-<version>.tar.gz` handoff source package.
+  It trusts HTTPS and executes before the native signature check, so that
+  check does not authenticate the handoff package itself.
+- The terminal installer script, its `.txt` index, and initial installer
+  download. The script follows no redirects but still trusts HTTPS to
+  `hexbot.app` and the update server.
+- Electron app update feeds. macOS updates rely on code signing;
+  Linux AppImage updates use checksums only.
+
+See [release signing](docs/release.md#update-signing) for key rotation and
+mirror support.
 
 ## Report scope
 

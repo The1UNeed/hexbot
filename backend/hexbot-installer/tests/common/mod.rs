@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use base64::{Engine, engine::general_purpose::STANDARD};
-use hexbot_installer::{Artifact, InstallOption, Paths, Target};
+use hexbot_installer::{Artifact, InstallOption, Manifest, Paths, Target};
 use sha2::{Digest, Sha256, Sha512};
 use std::{
     fs,
@@ -11,6 +11,21 @@ use std::{
     sync::{Arc, Mutex},
     thread,
 };
+
+/// Writes `install/<track>.json` and its release signature at
+/// `install/<version>/<track>.json.sig`, as release.yml publishes them, signed
+/// with the test key that debug builds trust.
+pub fn publish(root: &Path, track: impl std::fmt::Display, manifest: &Manifest) {
+    let bytes = serde_json::to_vec(manifest).unwrap();
+    fs::write(root.join(format!("install/{track}.json")), &bytes).unwrap();
+    let signatures = root.join(format!("install/{}", manifest.version));
+    fs::create_dir_all(&signatures).unwrap();
+    fs::write(
+        signatures.join(format!("{track}.json.sig")),
+        hexbot_installer::update_signature::test_signature(&bytes),
+    )
+    .unwrap();
+}
 
 pub fn paths(root: &Path) -> Paths {
     let home = root.join("home");
@@ -78,6 +93,7 @@ pub fn app_artifact_for_track(
     }
     let bytes = fs::read(&path).unwrap();
     Artifact {
+        path: None,
         url: format!("{base}/{file}.{extension}"),
         sha256: None,
         sha512: Some(STANDARD.encode(Sha512::digest(&bytes))),
@@ -146,6 +162,7 @@ esac
     tar.into_inner().unwrap().finish().unwrap();
     let bytes = fs::read(&archive).unwrap();
     Artifact {
+        path: None,
         url: format!("{base}/native.tar.gz"),
         sha256: Some(format!("{:x}", Sha256::digest(&bytes))),
         sha512: None,

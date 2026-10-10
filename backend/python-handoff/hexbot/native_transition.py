@@ -18,6 +18,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
 
+from . import update_signature
+
 MARKER = "HEXBOT_NATIVE_TRANSITION.json"
 MAX_ARCHIVE = 1024 * 1024 * 1024
 MAX_UNPACKED = 4 * 1024 * 1024 * 1024
@@ -87,7 +89,7 @@ def _sync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def install(home: Path, version: str, *, download=_download) -> Path:
+def install(home: Path, version: str, *, download=_download, keys=update_signature.RELEASE_KEYS) -> Path:
     """Validate a complete bundle before changing the service's selected executable."""
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", version):
         raise ValueError("Invalid native version")
@@ -111,15 +113,32 @@ def install(home: Path, version: str, *, download=_download) -> Path:
     with tempfile.TemporaryDirectory(prefix=".transition-", dir=native) as temporary:
         staging = Path(temporary)
         manifest_path = staging / "manifest.json"
-        download(f"{base}/daemon/native/{version}/{target}/manifest.json", manifest_path, 1024 * 1024)
+        manifest_url = f"{base}/daemon/native/{version}/{target}/manifest.json"
+        download(manifest_url, manifest_path, 1024 * 1024)
+        signature_path = staging / "manifest.json.sig"
+        download(f"{manifest_url}.sig", signature_path, 1024)
+        # The release signature, not the update origin, vouches for the checksum below.
+        if not update_signature.verify(manifest_path.read_bytes(), signature_path.read_bytes(), keys):
+            raise ValueError("Native manifest is not signed by the Hexbot release key")
         manifest = json.loads(manifest_path.read_text())
         if not isinstance(manifest, dict) or any(manifest.get(key) != value for key, value in {
             "version": version, "target": target, "format": "tar.gz", "entrypoint": "hexbot"
         }.items()):
             raise ValueError("Native manifest does not match requested runtime")
-        url = manifest.get("url", "")
+        if "path" in manifest:
+            path = manifest["path"]
+            if (not isinstance(path, str)
+                    or any(not (c.isascii() and (c.isalnum() or c in "-._/")) for c in path)
+                    or any(part in ("", ".", "..") for part in path.split("/"))):
+                raise ValueError("Invalid native archive path")
+            url = urllib.parse.urljoin(f"{base}/", path)
+        else:
+            url = manifest.get("url", "")
+            if not isinstance(url, str) or not url.strip():
+                raise ValueError("Invalid native archive URL")
         parsed = urllib.parse.urlparse(url)
-        if parsed.scheme != "https" or parsed.netloc != origin.netloc:
+        if (parsed.scheme != "https" or parsed.netloc != origin.netloc
+                or parsed.username or parsed.password or parsed.query or parsed.fragment):
             raise ValueError("Native archive must use the update server origin")
         archive = staging / "bundle.tar.gz"
         download(url, archive, MAX_ARCHIVE)

@@ -2,6 +2,7 @@ mod common;
 use common::*;
 use hexbot_installer::{
     Artifacts, InstallOption, Installer, Manifest, Receipt, Target, Track, fetch_manifest,
+    read_receipt,
 };
 use std::{
     fs,
@@ -185,8 +186,12 @@ fn linux_detection_does_not_authorize_deleting_prefix_matches_or_directories() {
     assert!(apps.join("app.hexbot.desktop.AppImage").is_dir());
 }
 
+/// A signed manifest names each artifact's path; the installer downloads that
+/// path from its own update server, so a mirror (`HEXBOT_UPDATE_URL`) serves
+/// the same release and a manifest cannot send a download to another origin.
+/// Redirects must stay on that origin too.
 #[test]
-fn manifests_and_redirects_cannot_leave_the_configured_origin() {
+fn artifacts_come_from_the_configured_server_and_redirects_cannot_leave_it() {
     let temp = tempfile::tempdir().unwrap();
     fs::create_dir(temp.path().join("install")).unwrap();
     let server = Server::new(temp.path());
@@ -211,21 +216,109 @@ fn manifests_and_redirects_cannot_leave_the_configured_origin() {
             },
         )]),
     };
-    let publish = |m: &Manifest| {
-        fs::write(
-            temp.path().join("install/stable.json"),
-            serde_json::to_vec(m).unwrap(),
-        )
-        .unwrap()
-    };
-    publish(&manifest);
-    assert!(
-        fetch_manifest(&server.base, Track::Stable)
-            .unwrap_err()
-            .to_string()
-            .contains("same origin")
-    );
+    let publish = |m: &Manifest| publish(temp.path(), "stable", m);
     let mut engine = engine(temp.path());
+    engine.base_url = server.base.clone();
+    // Old manifests omit path; new manifests retain a canonical URL for old clients.
+    for path in [None, Some("client.AppImage".to_string())] {
+        let artifact = manifest
+            .targets
+            .get_mut("linux-x86_64")
+            .unwrap()
+            .client
+            .as_mut()
+            .unwrap();
+        artifact.url = if path.is_some() {
+            "https://updates.hexbot.app/client.AppImage".into()
+        } else {
+            format!("{}/client.AppImage", server.base)
+        };
+        artifact.path = path;
+        publish(&manifest);
+        engine
+            .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+            .unwrap();
+        assert!(foreign.requests.lock().unwrap().is_empty());
+        assert!(
+            server
+                .requests
+                .lock()
+                .unwrap()
+                .contains(&"/client.AppImage".to_string())
+        );
+        fs::remove_file(engine.paths.receipt()).unwrap();
+    }
+    for location in [
+        "",
+        "../client.AppImage",
+        "a/../client.AppImage",
+        "./client.AppImage",
+        "/client.AppImage",
+        "%2e%2e/client.AppImage",
+        "a/%2Fclient.AppImage",
+        "a\\..\\client.AppImage",
+        "//attacker.example/client.AppImage",
+        "https://updates.hexbot.app/client.AppImage",
+        "ftp://updates.hexbot.app/client.AppImage",
+        "client.AppImage?query",
+        "client.AppImage#fragment",
+        " client.AppImage",
+        "a//client.AppImage",
+    ] {
+        let artifact = manifest
+            .targets
+            .get_mut("linux-x86_64")
+            .unwrap()
+            .client
+            .as_mut()
+            .unwrap();
+        // A valid legacy URL must not rescue an invalid signed path.
+        artifact.url = format!("{}/client.AppImage", server.base);
+        artifact.path = Some(location.into());
+        publish(&manifest);
+        assert!(
+            fetch_manifest(&server.base, Track::Stable).is_err(),
+            "{location}"
+        );
+    }
+    for location in [
+        "client.AppImage",
+        "//attacker.example/client.AppImage",
+        "https://attacker.example/client.AppImage",
+    ] {
+        let artifact = manifest
+            .targets
+            .get_mut("linux-x86_64")
+            .unwrap()
+            .client
+            .as_mut()
+            .unwrap();
+        artifact.url = location.into();
+        artifact.path = None;
+        publish(&manifest);
+        assert!(fetch_manifest(&server.base, Track::Stable).is_err());
+    }
+    let mirror = temp.path().join("mirror");
+    fs::create_dir_all(mirror.join("install")).unwrap();
+    fs::copy(
+        temp.path().join("client.AppImage"),
+        mirror.join("client.AppImage"),
+    )
+    .unwrap();
+    let artifact = manifest
+        .targets
+        .get_mut("linux-x86_64")
+        .unwrap()
+        .client
+        .as_mut()
+        .unwrap();
+    artifact.url = "https://updates.hexbot.app/client.AppImage".into();
+    artifact.path = Some("client.AppImage".into());
+    common::publish(&mirror, "stable", &manifest);
+    engine.base_url = format!("{}/mirror/", server.base);
+    engine
+        .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+        .unwrap();
     engine.base_url = server.base.clone();
     manifest
         .targets
@@ -302,11 +395,7 @@ fn running_legacy_appimage_blocks_replace_change_and_uninstall() {
             },
         )]),
     };
-    fs::write(
-        temp.path().join("install/stable.json"),
-        serde_json::to_vec(&manifest).unwrap(),
-    )
-    .unwrap();
+    publish(temp.path(), "stable", &manifest);
     let mut child = Command::new("sh")
         .args(["-c", "printf 'ready\\n'; read line"])
         .env("APPIMAGE", &legacy)
@@ -367,11 +456,7 @@ fn publish_options(root: &Path, engine: &Installer) {
             },
         )]),
     };
-    fs::write(
-        root.join("install/stable.json"),
-        serde_json::to_vec(&manifest).unwrap(),
-    )
-    .unwrap();
+    publish(root, "stable", &manifest);
 }
 
 #[test]
@@ -611,11 +696,7 @@ fn app_ids_must_match_the_manifest_track_before_installing() {
                     },
                     suffix
                 ));
-                fs::write(
-                    root.path().join(format!("install/{track}.json")),
-                    serde_json::to_vec(&manifest).unwrap(),
-                )
-                .unwrap();
+                publish(root.path(), track, &manifest);
                 let error = engine.apply(option, track, &mut |_| {}).unwrap_err();
                 assert!(error.to_string().contains("selected track"), "{error}");
                 assert!(!engine.paths.receipt().exists());
@@ -758,5 +839,186 @@ exit 1
     assert_eq!(
         fs::read_to_string(root.path().join("home/systemctl-calls")).unwrap(),
         "--user disable --now hexbot\n--user daemon-reload\n--user disable --now hexbot\n--user daemon-reload\n"
+    );
+}
+
+/// Whoever controls the update origin, its TLS, or HEXBOT_UPDATE_URL cannot
+/// ship a build: the manifest needs the release key's signature, and its
+/// checksums then pin every package.
+#[test]
+fn unsigned_or_altered_manifests_and_plain_http_are_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("install")).unwrap();
+    let server = Server::new(temp.path());
+    let artifact = app_artifact(
+        temp.path(),
+        &server.base,
+        InstallOption::Client,
+        Target::LinuxX86_64,
+    );
+    let manifest = Manifest {
+        schema: 1,
+        channel: Track::Stable,
+        version: "0.0.1".into(),
+        min_installer: "0.0.1".into(),
+        targets: std::collections::BTreeMap::from([(
+            "linux-x86_64".into(),
+            Artifacts {
+                client: Some(artifact),
+                ..Default::default()
+            },
+        )]),
+    };
+    let signature = temp.path().join("install/0.0.1/stable.json.sig");
+    fs::write(
+        temp.path().join("install/stable.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    assert!(fetch_manifest(&server.base, Track::Stable).is_err());
+    publish(temp.path(), "stable", &manifest);
+    let trusted = fs::read_to_string(&signature).unwrap();
+    let foreign = hexbot_installer::update_signature::test_signature(b"other manifest");
+    fs::write(&signature, format!("{foreign}\n{trusted}\n")).unwrap();
+    fetch_manifest(&server.base, Track::Stable).unwrap();
+    let mut altered = manifest.clone();
+    altered.min_installer = "0.0.0".into();
+    let signed = fs::read(&signature).unwrap();
+    fs::write(
+        temp.path().join("install/stable.json"),
+        serde_json::to_vec(&altered).unwrap(),
+    )
+    .unwrap();
+    fs::write(&signature, &signed).unwrap();
+    let error = fetch_manifest(&server.base, Track::Stable).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        hexbot_installer::update_signature::INVALID
+    );
+    let mut engine = engine(temp.path());
+    engine.base_url = server.base.clone();
+    assert!(
+        engine
+            .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+            .is_err()
+    );
+    assert!(!engine.paths.receipt().exists());
+    for base in ["http://updates.example", "https://user@updates.example"] {
+        assert_eq!(
+            fetch_manifest(base, Track::Stable).unwrap_err().to_string(),
+            "The update URL must use HTTPS."
+        );
+        assert_eq!(
+            hexbot_installer::default_track(base)
+                .unwrap_err()
+                .to_string(),
+            "The update URL must use HTTPS."
+        );
+    }
+}
+
+/// A signed manifest stays valid after the next release replaces it, so a
+/// replayed older one must not move an install back on its own track. Apply
+/// and repair refuse it; a fresh install or a track change may install it.
+#[test]
+fn a_replayed_older_signed_manifest_cannot_move_an_install_back() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("install")).unwrap();
+    let server = Server::new(temp.path());
+    let mut engine = engine(temp.path());
+    engine.base_url = server.base.clone();
+    let manifest = |version: &str, track: Track| Manifest {
+        schema: 1,
+        channel: track,
+        version: version.into(),
+        min_installer: "0.0.1".into(),
+        targets: std::collections::BTreeMap::from([(
+            "linux-x86_64".into(),
+            Artifacts {
+                client: Some(app_artifact_for_track(
+                    temp.path(),
+                    &server.base,
+                    InstallOption::Client,
+                    Target::LinuxX86_64,
+                    track == Track::Nightly,
+                )),
+                ..Default::default()
+            },
+        )]),
+    };
+    let older = manifest("0.0.1", Track::Stable);
+    publish(temp.path(), "stable", &older);
+    let signed_older = fs::read(temp.path().join("install/0.0.1/stable.json.sig")).unwrap();
+    let older_bytes = fs::read(temp.path().join("install/stable.json")).unwrap();
+    publish(temp.path(), "stable", &manifest("0.0.2", Track::Stable));
+    engine
+        .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+        .unwrap();
+    assert_eq!(
+        read_receipt(&engine.paths.receipt())
+            .unwrap()
+            .unwrap()
+            .version,
+        "0.0.2"
+    );
+    // Replay the older manifest with its still-valid immutable signature.
+    fs::write(temp.path().join("install/stable.json"), &older_bytes).unwrap();
+    fs::write(
+        temp.path().join("install/0.0.1/stable.json.sig"),
+        &signed_older,
+    )
+    .unwrap();
+    fetch_manifest(&server.base, Track::Stable).unwrap();
+    let requests = server.requests.lock().unwrap().len();
+    for attempt in [
+        engine.apply(InstallOption::Client, Track::Stable, &mut |_| {}),
+        engine.repair(&mut |_| {}),
+        engine.change(
+            InstallOption::Client,
+            InstallOption::Full,
+            Track::Stable,
+            &mut |_| true,
+            &mut |_| {},
+        ),
+    ] {
+        assert_eq!(
+            attempt.unwrap_err().to_string(),
+            "The update server offers Hexbot 0.0.1, older than the installed 0.0.2. Nothing was installed."
+        );
+    }
+    let receipt = read_receipt(&engine.paths.receipt()).unwrap().unwrap();
+    assert_eq!(receipt.version, "0.0.2");
+    assert_eq!(receipt.channel, Track::Stable);
+    // Nothing was downloaded: only the manifest and its signature were read.
+    assert!(
+        server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .skip(requests)
+            .all(|path| path.starts_with("/install/"))
+    );
+    // An explicit track change may install an older version.
+    publish(temp.path(), "nightly", &manifest("0.0.1", Track::Nightly));
+    engine
+        .apply(InstallOption::Client, Track::Nightly, &mut |_| {})
+        .unwrap();
+    let receipt = read_receipt(&engine.paths.receipt()).unwrap().unwrap();
+    assert_eq!(
+        (receipt.version.as_str(), receipt.channel),
+        ("0.0.1", Track::Nightly)
+    );
+    // And so may a fresh install.
+    fs::remove_file(engine.paths.receipt()).unwrap();
+    engine
+        .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+        .unwrap();
+    assert_eq!(
+        read_receipt(&engine.paths.receipt())
+            .unwrap()
+            .unwrap()
+            .version,
+        "0.0.1"
     );
 }

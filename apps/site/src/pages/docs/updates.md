@@ -18,10 +18,23 @@ The app and the daemon it talks to can be on different computers. When the daemo
 
 Bots stop while the daemon restarts; sections and memory stay. The client waits for the daemon to come back and reports a failure if it does not. A daemon only moves to a build made from newer source, on either track, so switching between Stable and Nightly never takes it back to an older daemon. An older or equally old build is refused.
 
-Native daemon manifests are not signed yet. The daemon checks the archive's
-SHA-256, but authenticity depends on HTTPS and control of the update origin.
-Provisioning a release signing key and verifying signed manifests remain a
-known gap.
+Native daemon and installer manifests require a signature from a trusted Hexbot
+release key. Their signed checksums pin the downloaded packages. If verification
+fails, the installer or Settings, Updates reports: "The update is not signed by
+the Hexbot release key. Nothing was installed." The existing installation stays
+in place. A missing signature file can instead appear as a download error.
+Retry later; if it persists, report the error and version to the maintainer.
+
+For HTTPS mirrors, `HEXBOT_UPDATE_URL` selects the base URL. Signed manifests
+keep an absolute `url` for older clients and add a relative `path` that new
+clients prefer. Copy manifests, signatures, and packages without changing the
+signed files. New clients resolve `path` under the mirror's base path; manifests
+without it still use `url`. Downloads must stay on the configured origin.
+
+These signatures do not cover Electron's app update feeds, the initial installer
+download, or the legacy Python handoff source package. macOS app updates rely on
+code signing; Linux AppImage updates use checksums only. The legacy source
+package trusts HTTPS before its native signature check can run.
 
 Existing Python background services try to install the native daemon during their
 next update. If the download or runtime validation fails, the update reports failure
@@ -40,7 +53,7 @@ A stable install follows the stable track and a nightly install follows the nigh
 
 Dev builds run from a source checkout and do not check for updates.
 
-The [installer](/docs/install/#run-it-again) installs from a track too. A new install uses Stable once it is published and Nightly until then; `--stable` or `--nightly` chooses. Update or repair keeps the installed track.
+The [installer](/docs/install/#run-it-again) installs from a track too. A new install uses Stable once it is published and Nightly until then; `--stable` or `--nightly` chooses. Update or repair keeps the installed track and refuses a version older than the install receipt. A fresh install or an explicit track change may install an older version.
 
 ## What an update check sends
 

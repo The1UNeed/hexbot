@@ -103,6 +103,7 @@ fn verifies_both_hash_algorithms_and_rejects_missing_or_bad_checksums() {
     let file = root.path().join("download");
     fs::write(&file, b"hello").unwrap();
     let mut artifact = Artifact {
+        path: None,
         url: "https://example.test".into(),
         sha256: Some(format!("{:x}", Sha256::digest(b"hello"))),
         sha512: Some(STANDARD.encode(Sha512::digest(b"hello"))),

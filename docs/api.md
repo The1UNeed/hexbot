@@ -572,9 +572,10 @@ A client newer than the daemon asks the daemon to update itself
   version. Service updates require a newer source build, using manifest
   `builtAt` across Stable and Nightly. An older or equally old build reports
   failure before downloading its archive.
-  Native manifests are not signed yet. SHA-256 checks detect corruption;
-  authenticity depends on HTTPS and update-origin write access. Release-key
-  provisioning and manifest signing remain a known gap.
+  The manifest must carry a release signature at `manifest.json.sig`
+  (docs/release.md, "Update signing"); without a valid one the update fails
+  before anything downloads, and the SHA-256 in the signed manifest then pins
+  the archive.
 - `hexbot.update.status {}` → `{capability, status, requested, version,
   percent, message, at}`. `status` is `idle`, `requested`, `checking`,
   `downloading`, `installing`, `restarting`, `up-to-date`, or `failed`.
