@@ -2674,8 +2674,8 @@ impl Runtime {
                 // the model following a format; a job's proposal is stored as
                 // written and stamped when the dream applies it through this
                 // same arm. `set` is written as given. The scan runs on the
-                // result before stamping, so a stamp cannot split a pattern
-                // that runs across lines, and again on what is written.
+                // result before stamping and again on what is written. Each
+                // scan also strips existing stamps from both versions.
                 let month = crate::memory::month_stamp();
                 match action {
                     "read" => memory.get_bot(&bot_owner, &s.bot),
@@ -2683,7 +2683,7 @@ impl Runtime {
                         let text = required(args, "text")?;
                         memory.update_bot(&bot_owner, &s.bot, |old| {
                             check_memory_edit(old, format!("{old}\n{text}").trim())?;
-                            let stamped = crate::memory::stamp_entries(text, &month);
+                            let stamped = crate::memory::stamp_entries_after(old, text, &month);
                             let updated = format!("{old}\n{stamped}").trim().to_owned();
                             check_memory_edit(old, &updated)?;
                             Ok(updated)
@@ -2698,8 +2698,14 @@ impl Runtime {
                             };
                             let replaced = old.replacen(previous, text, 1);
                             check_memory_edit(old, &replaced)?;
-                            let updated =
-                                crate::memory::restamp_span(&replaced, at..at + text.len(), &month);
+                            // Removing a newline can land on an untouched separator.
+                            let updated = if text.is_empty()
+                                && (previous.starts_with('\n') || previous.ends_with('\n'))
+                            {
+                                replaced
+                            } else {
+                                crate::memory::restamp_span(&replaced, at..at + text.len(), &month)
+                            };
                             check_memory_edit(old, &updated)?;
                             Ok(updated)
                         })
@@ -2712,8 +2718,14 @@ impl Runtime {
                     "remove" => {
                         let previous = required(args, "text")?;
                         memory.update_bot(&bot_owner, &s.bot, |old| {
-                            // A line left holding only a bullet and a stamp goes too.
+                            // Clean up leftover bullets/stamps, unless the removal
+                            // includes a boundary newline beside an untouched line.
                             let updated = match old.find(previous) {
+                                Some(_)
+                                    if previous.starts_with('\n') || previous.ends_with('\n') =>
+                                {
+                                    old.replacen(previous, "", 1)
+                                }
                                 Some(at) => crate::memory::drop_emptied_line(
                                     &old.replacen(previous, "", 1),
                                     at,
@@ -3630,14 +3642,34 @@ fn check_memory_edit(old: &str, text: &str) -> Result<()> {
     ]).case_insensitive(true).size_limit(64 * 1024 * 1024).build().expect("memory threat patterns"));
     let normalized = text.nfkc().collect::<String>();
     let before = old.nfkc().collect::<String>();
-    let flagged = patterns.matches(&normalized).into_iter().any(|index| {
-        regex::RegexBuilder::new(&patterns.patterns()[index])
-            .case_insensitive(true)
-            .build()
-            .unwrap()
-            .find_iter(&normalized)
-            .any(|m| !before.contains(m.as_str()))
-    });
+    // Dates from earlier edits or supplied by the model must not split a
+    // threat across lines. Strip every trailing stamp, after normalization,
+    // from both versions so unchanged threats retain the same exemption.
+    let without_stamps = |text: &str| {
+        text.lines()
+            .map(crate::memory::strip_stamps)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let stripped = without_stamps(&normalized);
+    let stripped_before = without_stamps(&before);
+    let flagged = [(&before, &normalized), (&stripped_before, &stripped)]
+        .into_iter()
+        .any(|(before, candidate)| {
+            patterns.matches(candidate).into_iter().any(|index| {
+                regex::RegexBuilder::new(&patterns.patterns()[index])
+                    .case_insensitive(true)
+                    .build()
+                    .unwrap()
+                    .find_iter(candidate)
+                    .any(|m| {
+                        // A refresh may change dates inside a literal match.
+                        // Compare its words too, preserving unchanged threats.
+                        !before.contains(m.as_str())
+                            && !stripped_before.contains(&without_stamps(m.as_str()))
+                    })
+            })
+        });
     if flagged {
         return Err(Error::new(
             4202,

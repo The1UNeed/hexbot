@@ -425,7 +425,7 @@ fn added_entries_are_stamped_per_line_and_kept_when_already_stamped() {
     // Code fences and rules are markup, not entries.
     assert_eq!(
         stamp_entries("```sh\nls\n```\n---\n--\n- - -", "2026-10"),
-        "```sh\nls [2026-10]\n```\n---\n-- [2026-10]\n- - -"
+        "```sh\nls\n```\n---\n-- [2026-10]\n- - -"
     );
     let markup = "  ## Work\n  ```rust\n  ```\n~~~sh\n~~~\n***\n_ _ _\n  - - -  ";
     assert_eq!(stamp_entries(markup, "2026-10"), markup);
@@ -497,4 +497,39 @@ fn replacements_restamp_only_the_lines_they_touch() {
     );
     // An empty replacement is a removal.
     assert_eq!(restamp_span(text, 6..6, "2026-10"), text);
+}
+
+#[test]
+fn fenced_code_stays_unchanged_in_additions_and_replacements() {
+    use crate::memory::{restamp_span, stamp_entries, stamp_entries_after};
+    // Mismatched and shorter fences inside code do not end the block.
+    for (opening, inner, closing) in [
+        ("```sh", "~~~", "```"),
+        ("  ~~~~sh", "~~~\n```", "  ~~~~~  "),
+    ] {
+        let code = format!("{opening}\nls  \n{inner}\nvalue [2020-01]\n{closing}");
+        let text = format!("Before\n{code}\nAfter");
+        let expected = format!("Before [2026-10]\n{code}\nAfter [2026-10]");
+        assert_eq!(stamp_entries(&text, "2026-10"), expected);
+        assert_eq!(restamp_span(&text, 0..text.len(), "2026-10"), expected);
+        let at = text.find("ls").unwrap();
+        assert_eq!(restamp_span(&text, at..at + 2, "2026-10"), text);
+        let tail = format!("ls  \n{closing}\nAfter");
+        assert_eq!(
+            stamp_entries_after(opening, &tail, "2026-10"),
+            format!("ls  \n{closing}\nAfter [2026-10]")
+        );
+    }
+    assert_eq!(
+        stamp_entries("```\nunfinished", "2026-10"),
+        "```\nunfinished"
+    );
+}
+
+#[test]
+fn removal_cleanup_keeps_horizontal_rules() {
+    for rule in ["---", "***", "_ _ _", "  - - -  "] {
+        let text = format!("Keep\n{rule}\nLast");
+        assert_eq!(crate::memory::drop_emptied_line(&text, 5), text);
+    }
 }

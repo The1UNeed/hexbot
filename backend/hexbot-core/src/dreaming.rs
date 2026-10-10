@@ -847,8 +847,8 @@ impl Dreaming {
                 "Curate memory with the memory tool: merge duplicates, replace vague entries, remove stale facts, and add durable preferences and lessons. Do not record unfinished work or daily events. Never write the soul. Finish with a short markdown summary of changes, or [SILENT] if nothing changed."
             };
             let stamps = format!(
-                " Entries end with the month they were learned; it is now [{}]. Keep each stamp and refresh it when a fact is confirmed again. An entry without a stamp predates stamps or was written by the user; missing a date is no reason to remove it. Judge every entry on its content, and check or drop old ones that may no longer hold.",
-                crate::memory::month_stamp()
+                " Entries the bot adds end with the month they were learned; it is now [{month}]. Keep each stamp and refresh it when a fact is confirmed again. When rewriting memory with `set`, end new or merged entries with [{month}]. An entry without a stamp predates stamps or was written by the user; missing a date is no reason to remove it. Judge every entry on its content, and check or drop old ones that may no longer hold.",
+                month = crate::memory::month_stamp()
             );
             let proposals = if reviewed.is_empty() {
                 ""
