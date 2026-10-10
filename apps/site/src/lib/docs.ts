@@ -25,7 +25,6 @@ export const docGroups = [
       { title: 'Pairing and LAN', summary: 'Pair an app or browser and revoke a device later.', href: '/docs/pairing-and-lan/' },
       { title: 'Tailscale', summary: 'Reach a daemon over your private network while away.', href: '/docs/tailscale/' },
       { title: 'Hex Connect', summary: 'Sign in from an app or browser without opening a router port.', href: '/docs/connect/' },
-      { title: 'Multi-user', summary: 'Invite people, share bots, and set usage budgets.', href: '/docs/multi-user/' },
     ],
   },
   {

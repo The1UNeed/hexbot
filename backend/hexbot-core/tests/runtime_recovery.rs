@@ -399,11 +399,11 @@ fn startup_recovery_counts_unread_history_and_usage_before_any_session_open() {
         ],
     );
     assert_eq!(
-        hexbot_core::settings::summary(home.path(), "alice", None, 0.0).unwrap()["input_tokens"],
+        hexbot_core::settings::summary(home.path(), "alice", 0.0).unwrap()["input_tokens"],
         0
     );
     store::reconcile_all(home.path()).unwrap();
-    let usage = hexbot_core::settings::summary(home.path(), "alice", None, 0.0).unwrap();
+    let usage = hexbot_core::settings::summary(home.path(), "alice", 0.0).unwrap();
     assert_eq!(usage["input_tokens"], 17);
     assert_eq!(usage["output_tokens"], 2);
     assert_eq!(

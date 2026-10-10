@@ -3,7 +3,6 @@ import { useShallow } from 'zustand/react/shallow'
 
 import {
   roomsAddMember,
-  roomsAddPerson,
   roomsCreate,
   roomsDelete,
   roomsGet,
@@ -11,7 +10,6 @@ import {
   roomsLog,
   roomsMarkRead,
   roomsRemoveMember,
-  roomsRemovePerson,
   roomsUpdate
 } from '../lib/api'
 import type { RoomCreateInput } from '../lib/api'
@@ -21,7 +19,6 @@ import { useTranscripts } from './transcripts'
 
 export interface RoomsState {
   addMember: (id: string, bot: string) => Promise<void>
-  addPerson: (id: string, user: string) => Promise<void>
   byId: Record<string, Room>
   create: (input: RoomCreateInput) => Promise<Room>
   /** Forget a room the daemon deleted. */
@@ -32,7 +29,7 @@ export interface RoomsState {
   handleTurn: (turn: RoomTurn) => void
   liveTurnsByRoom: Record<string, Record<string, RoomTurn>>
   loading: boolean
-  /** Best effort: failures are swallowed, and a room you left is dropped. */
+  /** Best effort: failures are swallowed, and a room that is gone is dropped. */
   markRead: (id: string, seq: number) => Promise<void>
   /** Resolves once loaded, or once the room turned out to be gone and was dropped. */
   open: (id: string) => Promise<void>
@@ -43,12 +40,10 @@ export interface RoomsState {
   remove: (id: string) => Promise<void>
   /** Resolves true when the room was deleted because its last bot left. */
   removeMember: (id: string, bot: string) => Promise<boolean>
-  /** Remove a person; removing yourself leaves the room and forgets it. */
-  removePerson: (id: string, user: string, self: boolean) => Promise<void>
   update: (id: string, patch: Parameters<typeof roomsUpdate>[1]) => Promise<void>
 }
 
-/** The daemon no longer shows this room to you: deleted, or you were removed. */
+/** The daemon no longer shows this room to you. */
 function roomGone(error: unknown): boolean {
   const code = (error as { code?: number } | null)?.code
 
@@ -242,11 +237,6 @@ export const useRooms = create<RoomsState>((set, get) => ({
     set(state => mergeRoom(state, room))
   },
 
-  async addPerson(id, user) {
-    const { room } = await roomsAddPerson(id, user)
-    set(state => mergeRoom(state, room))
-  },
-
   async removeMember(id, bot) {
     const { room } = await roomsRemoveMember(id, bot)
 
@@ -259,11 +249,6 @@ export const useRooms = create<RoomsState>((set, get) => ({
     set(state => mergeRoom(state, room))
 
     return false
-  },
-
-  async removePerson(id, user, self) {
-    const { room } = await roomsRemovePerson(id, user)
-    set(state => (self ? dropRoom(state, id) : mergeRoom(state, room)))
   },
 
   drop(id) {

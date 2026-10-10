@@ -4,7 +4,9 @@ import { vi } from 'vitest'
 import { setActiveRpc } from '../../lib/rpc'
 import type { Bot, Connector } from '../../lib/types'
 import { useConnectors } from '../../stores/connectors'
+import { useMe } from '../../stores/me'
 
+import { ApprovalsTab } from './approvals'
 import { ConnectorsTab } from './connectors'
 import { DreamingBlock, MemoryEditor } from './memory'
 import { ModelTab } from './model'
@@ -29,7 +31,6 @@ const bot = {
   provider: null,
   sections_recent: [],
   sections_total: 0,
-  shareable: false,
   skills: [],
   title: '',
   tools: [],
@@ -381,5 +382,24 @@ describe('tools tab', () => {
   it('shows every tool when the daemon does not say what is set up', () => {
     render(<ToolsTab bot={bot} onSave={vi.fn()} />)
     expect(screen.getByRole('switch', { name: 'Browser' })).toBeInTheDocument()
+  })
+})
+
+describe('bot approvals on older daemons', () => {
+  it.each([
+    ['member', 'smart', false],
+    ['member', 'off', true],
+    ['admin', 'smart', true],
+    [undefined, 'smart', true]
+  ] as const)('role %s, mode %s offers Bypass: %s', (role, approval_mode, bypass) => {
+    useMe.setState({ me: { display_name: 'Alex', id: 'local', role } })
+    render(<ApprovalsTab bot={{ ...bot, approval_mode }} onSave={vi.fn()} />)
+    expect(screen.queryByRole('radio', { name: /^Bypass/ }) !== null).toBe(bypass)
+    expect(screen.getByRole('radio', { name: /^Auto/ })).toBeVisible()
+    expect(screen.getByRole('radio', { name: /^Manual/ })).toBeVisible()
+
+    if (approval_mode === 'off') {
+      expect(screen.getByRole('radio', { name: /^Bypass/ })).toBeChecked()
+    }
   })
 })

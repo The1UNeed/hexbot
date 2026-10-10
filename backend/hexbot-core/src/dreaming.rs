@@ -879,11 +879,7 @@ impl Dreaming {
             return self.restore(owner, common::required(p, "id")?);
         }
         let bot = common::required(p, "bot")?;
-        if method == "hexbot.dreaming.list" && p["all"] == true {
-            common::admin(&self.home, owner)?;
-        } else {
-            self.bot(owner, bot)?;
-        }
+        self.bot(owner, bot)?;
         match method {
             "hexbot.dreaming.list" => {
                 let limit = p["limit"]
@@ -1077,14 +1073,12 @@ impl Dreaming {
         let artifacts = self.home.join("profiles").join(bot).join("artifacts");
         fs::create_dir_all(&artifacts)?;
         let conn = db::open(&self.home)?;
-        let (mode, owner): (Option<String>, String) = conn
-            .query_row(
-                "SELECT approval_mode,owner_id FROM bots WHERE name=?",
-                [bot],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
+        let mode: Option<String> = conn
+            .query_row("SELECT approval_mode FROM bots WHERE name=?", [bot], |r| {
+                r.get(0)
+            })
             .optional()?
-            .unwrap_or_default();
+            .flatten();
         let mode = mode
             .filter(|m| matches!(m.as_str(), "manual" | "smart" | "off"))
             .unwrap_or_else(|| {
@@ -1093,8 +1087,7 @@ impl Dreaming {
                     .and_then(|s| s["approval_mode"].as_str().map(str::to_owned))
                     .unwrap_or_else(|| "manual".to_owned())
             });
-        // Only the admin's bots run in Bypass, as in their sections.
-        let bypass = mode == "off" && crate::runtime::owner_is_admin(&conn, &owner)?;
+        let bypass = mode == "off";
         crate::credentials::require_isolation(if bypass { "off" } else { "smart" })?;
         // A script runs in the sandbox the bot's commands get: read-only in
         // Manual, the workspace in Auto, none in Bypass.

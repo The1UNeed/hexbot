@@ -149,27 +149,8 @@ async fn credentials_are_private_inherited_and_quoted() {
 }
 
 #[tokio::test]
-async fn authorization_and_unknown_values_do_not_mutate_files() {
+async fn unknown_values_do_not_mutate_files() {
     let home = setup();
-    for method in [
-        "hexbot.connectors.setup",
-        "hexbot.connectors.clear",
-        "hexbot.connectors.add_mcp",
-        "hexbot.connectors.remove_mcp",
-    ] {
-        assert_eq!(
-            call(
-                home.path(),
-                "bob",
-                method,
-                json!({"id":"web_search","name":"demo"})
-            )
-            .await
-            .unwrap_err()
-            .code,
-            4301
-        );
-    }
     assert_eq!(
         call(
             home.path(),

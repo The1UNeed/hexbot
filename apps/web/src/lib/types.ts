@@ -100,7 +100,6 @@ export interface Bot {
   dream_enabled: boolean
   /** Native notifications when the bot stops or needs the user. */
   notify?: boolean
-  shareable: boolean
   name: string
   owner_id: string
   persona: string
@@ -156,7 +155,6 @@ export type BotUpdatePatch = Partial<Omit<BotCreateInput, 'avatar' | 'name'>> & 
   avatar?: null | string
   dream_enabled?: boolean
   notify?: boolean
-  shareable?: boolean
   workdir?: null | string
 }
 
@@ -410,16 +408,14 @@ export interface Settings {
   dream_time: string
 }
 
+/** The one person a daemon belongs to. */
 export interface CurrentUser {
+  /** Absent on daemons without display-name editing. */
+  can_rename?: boolean
+  /** Older daemons may say member; they reject Bypass from members. */
+  role?: 'admin' | 'member'
   id: string
   display_name: string
-  role: 'admin' | 'member'
-}
-export interface User extends CurrentUser {
-  created_at?: number
-  disabled_at?: null | number
-  disabled?: boolean
-  limits?: { daily_tokens: null | number }
 }
 export interface UsageSummary {
   input_tokens: number

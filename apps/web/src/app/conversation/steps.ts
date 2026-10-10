@@ -49,8 +49,8 @@ const PREVIEW: Record<string, string> = {
 }
 
 /**
- * Phrasing for those tools when no preview came with the call, as room members
- * see another person's bot: "Ran a command", never a bare "Ran".
+ * Phrasing for those tools when no preview came with the call: "Ran a
+ * command", never a bare "Ran".
  */
 const NO_PREVIEW: Record<string, [live: string, done: string]> = {
   patch: ['Editing a file', 'Edited a file'],
@@ -166,7 +166,7 @@ export interface Ask {
   /** The message was sent without waiting for a reply (`wait: false`); nothing came back. */
   sent: boolean
   status: ToolCallStatus
-  /** The target bot's name; null when a room member got the call stripped of its arguments. */
+  /** The target bot's name; null when the call came without its arguments. */
   target: null | string
 }
 
@@ -226,7 +226,7 @@ export function asks(message: Message): Ask[] {
 /**
  * The ask row's line: "Research is asking Writer" while it runs, "Writer
  * helped" once the reply is in, "Sent to Writer" when no reply was waited
- * for. "A teammate" stands in when a room member is not told the name.
+ * for. "A teammate" stands in when the call did not name the target.
  */
 export function askLabel(
   ask: Pick<Ask, 'sent' | 'status'>,

@@ -133,7 +133,7 @@ pub fn mirror(home: &Path, profile: &Path) -> Result<()> {
 }
 
 pub fn update(home: &Path, caller: &str, patch: &Value) -> Result<Value> {
-    common::admin(home, caller)?;
+    common::user(home, caller)?;
     validate(patch)?;
     if let Some(dir) = patch["workspace_dir"].as_str() {
         common::check_workdir(home, dir)?;
@@ -221,12 +221,9 @@ fn profile_usage(path: &Path, sessions: &BTreeSet<String>, since: f64) -> Result
     Ok(totals)
 }
 
-pub fn summary(home: &Path, caller: &str, user: Option<&str>, since: f64) -> Result<Value> {
+pub fn summary(home: &Path, caller: &str, since: f64) -> Result<Value> {
     common::user(home, caller)?;
-    let user = user.filter(|s| !s.is_empty()).unwrap_or(caller);
-    if user != caller {
-        common::admin(home, caller)?;
-    }
+    let user = caller;
     if !since.is_finite() {
         return Err(Error::new(4202, "since must be a finite timestamp"));
     }
@@ -266,23 +263,6 @@ pub fn summary(home: &Path, caller: &str, user: Option<&str>, since: f64) -> Res
     Ok(
         json!({"input_tokens":totals.0,"output_tokens":totals.1,"estimated_cost_usd":totals.2,"by_bot":by_bot}),
     )
-}
-
-pub fn check_budget(home: &Path, caller: &str) -> Result<()> {
-    let user = common::user(home, caller)?;
-    let limits = common::json_field(&user["limits_json"]);
-    let limit = limits["daily_tokens"].as_i64();
-    if let Some(limit) = limit {
-        let now = common::now();
-        let usage = summary(home, caller, None, now - now % 86400.0)?;
-        let used = usage["input_tokens"].as_i64().unwrap_or(0)
-            + usage["output_tokens"].as_i64().unwrap_or(0);
-        if used >= limit {
-            return Err(Error::new(4303, "daily token budget reached")
-                .with_data(json!({"user":caller,"used":used,"limit":limit})));
-        }
-    }
-    Ok(())
 }
 
 fn ipv4_interfaces(interfaces: Vec<if_addrs::Interface>) -> BTreeSet<String> {
@@ -425,7 +405,7 @@ pub fn resolve_incidents(home: &Path, filters: &Value) -> Result<Vec<Value>> {
 
 pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result<Value>> {
     Some(match method {
-        "hexbot.settings.get" => common::admin(home, caller).and_then(|()| get(home)),
+        "hexbot.settings.get" => common::user(home, caller).and_then(|_| get(home)),
         "hexbot.settings.set" => update(home, caller, &p["patch"]),
         "hexbot.usage.summary" => {
             let since = p
@@ -436,9 +416,9 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                         .ok_or_else(|| Error::new(4202, "since must be a number"))
                 })
                 .transpose();
-            since.and_then(|s| summary(home, caller, p["user"].as_str(), s.unwrap_or(0.0)))
+            since.and_then(|s| summary(home, caller, s.unwrap_or(0.0)))
         }
-        "hexbot.network.get" => common::admin(home, caller).and_then(|()| network(home)),
+        "hexbot.network.get" => common::user(home, caller).and_then(|_| network(home)),
         "hexbot.network.set" => update(home, caller, &json!({"lan_enabled":p["lan_enabled"]}))
             .and_then(|_| network(home)),
         _ => return None,

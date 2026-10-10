@@ -35,7 +35,7 @@ Three facts shape most decisions:
 Use these words consistently in code, UI copy, docs, and commit messages.
 
 - **Hexbot**: the product. Not "Hexybot". Package and CLI name `hexbot`, home directory `~/.hexbot`.
-- **Daemon**: the Hexbot server process (`hexbot serve`) that runs bots, rooms, memory, tools, and serves the WebSocket API and the web UI.
+- **Daemon**: the Hexbot server process (`hexbot serve`) that runs bots, rooms, memory, tools, and serves the WebSocket API and the web UI. A daemon belongs to one person: no invites, roles, or other accounts. One person may run several daemons and switch between them; rooms with other people go through Hex Connect.
 - **App**: the Electron desktop shell in `apps/desktop/` hosting the React bundle from `apps/web/`. The same bundle is served by the daemon to LAN browsers.
 - **Full package**: the app with a local daemon. **Client-only**: the same app connected to a daemon elsewhere. Together, the two **editions**. The installer and its UI call them **Full** and **Client**.
 - **Headless**: the install option for the daemon alone, without the app: the native runtime in `~/.hexbot/runtime`, a launchd or systemd user service (`hexbot service`), and the `hexbot` CLI in `~/.local/bin`. Used from another computer with Client or Full. Not an edition. Internal id `headless`.
@@ -52,7 +52,7 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Memory**: a bot's own notes, the `MEMORY.md` in its profile. The bot writes it during chat, dreaming curates it, the user can edit it. Deleting a section removes its history and leaves memory alone.
 - **About you**: one text per user, written only by the user and read by every bot they own (`users/<id>/user.md`).
 - **Dreaming**: a bot's daily pass over that day's conversations that folds what matters into its memory.
-- **Auto mode**: the default approval mode. Bots work freely inside the workspace; shell commands run in an OS sandbox with no network, and anything outside the workspace asks first. The daemon calls it `smart`. The other modes are Manual (read-only sandbox, every file change asks) and Bypass (no prompts and no sandbox, admin only; the daemon calls it `off`).
+- **Auto mode**: the default approval mode. Bots work freely inside the workspace; shell commands run in an OS sandbox with no network, and anything outside the workspace asks first. The daemon calls it `smart`. The other modes are Manual (read-only sandbox, every file change asks) and Bypass (no prompts and no sandbox; the daemon calls it `off`).
 - **Pairing**: connecting an app to a daemon with a one-time code or link over LAN. Never depends on Connect.
 - **Hex Connect**: the optional cloud service at connect.hexbot.app (Clerk auth, Cloudflare tunnels) for reaching a daemon from outside the LAN. Brokers identity and a hostname; chat traffic never passes through it.
 - **`hermes` identifiers**: some code names keep a `hermes` prefix for compatibility with existing installs: `HERMES_HOME` and other `HERMES_*` variables, `@hermes/shared`, the `hermes_session_at` cookie. Do not rename them. Never write "Hermes" in UI copy, docs, or prompts; the only exceptions are the credits to Hermes Agent in `README.md`, `NOTICE`, the site, and Settings, About.

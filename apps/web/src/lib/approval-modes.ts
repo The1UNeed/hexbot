@@ -1,5 +1,3 @@
-import { useUsers } from '../stores/users'
-
 import type { ApprovalMode } from './types'
 
 /** The approval modes, strictest first. The daemon calls Auto `smart` and Bypass `off`. */
@@ -24,12 +22,9 @@ export const APPROVAL_MODES: { description: string; label: string; value: Approv
   }
 ]
 
-/**
- * Bypass can read the admin's provider keys, so the daemon offers it to the
- * admin only. A mode already in use stays listed so the control shows it.
- */
-export function useApprovalModes(current?: null | string) {
-  const admin = useUsers(state => state.supported === false || state.current?.role === 'admin')
-
-  return APPROVAL_MODES.filter(mode => mode.value !== 'off' || admin || current === 'off')
+/** Older daemons reject Bypass for members; keep a stored selection visible. */
+export function approvalModes(role: 'admin' | 'member' | undefined, current: string | undefined) {
+  return APPROVAL_MODES.filter(
+    mode => role !== 'member' || mode.value !== 'off' || current === 'off'
+  )
 }

@@ -107,7 +107,7 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
     Ok(tools)
 }
 fn ensure_session(home: &Path, owner: &str, bot: &str, session: &str) -> Result<()> {
-    common::bot_session_access(home, owner, bot, session)?;
+    common::bot_owner(home, owner, bot)?;
     common::identifier(session)?;
     let actual: Option<(String, String)> = runtime_store::open(home)?
         .query_row(

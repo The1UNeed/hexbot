@@ -16,7 +16,7 @@ A bot's memory is what it has learned: facts, preferences, and lessons about wor
 
 Whenever a bot writes to its memory or its soul during a conversation, a small "Memory updated" or "Soul updated" mark appears under its reply. Open it to see what changed.
 
-Hexbot includes a bot's own memory in its starting prompt, rather than another bot's notes. Each bot also has searchable history over its own sections and the rooms it belongs to. Starting a new section gives the conversation a new context window without erasing that history. These ownership rules do not isolate local files from enabled file and terminal tools; see [Multi-user](/docs/multi-user/) before sharing a daemon.
+Hexbot includes a bot's own memory in its starting prompt, rather than another bot's notes. Each bot also has searchable history over its own sections and the rooms it belongs to. Starting a new section gives the conversation a new context window without erasing that history.
 
 A new section reads the current soul, memory, and About you text into its starting context. Existing sections keep their cached starting context. After editing these settings, start a new section when you need the bot to begin with the updated text. In-conversation memory edits remain part of the conversation that made them.
 

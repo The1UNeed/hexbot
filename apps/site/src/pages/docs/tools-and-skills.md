@@ -31,7 +31,7 @@ The **Working directory** is the bot's workspace. Choose a project folder outsid
 
 Open Bot settings, Connectors to configure web search, cloud browser, image and video generation, premium voice, Notion, Home Assistant, and other available services. The [tool catalog](/tools/) lists the capabilities.
 
-An admin sets up a connector by choosing its provider and entering the requested credentials. Each bot has its own on/off switch. A connector must be ready and enabled for that bot before its tools appear in a new section.
+You set up a connector by choosing its provider and entering the requested credentials. Each bot has its own on/off switch. A connector must be ready and enabled for that bot before its tools appear in a new section.
 
 **Connected** means an authenticated probe answered. **Key saved** means Hexbot stored the key but has not verified it with a live probe. Use the connector's test action if a service stops working, and check its reported error before replacing credentials.
 
@@ -39,7 +39,7 @@ Your model provider and your connectors may bill separately. A model subscriptio
 
 ## Add an MCP server
 
-An admin can add a server in Bot settings, Connectors. Enter a name and a **Command or URL**. A command launches a local server on the daemon computer; an HTTP URL connects to a remote server. Make sure the local command and its dependencies exist on that computer.
+Add a server in Bot settings, Connectors. Enter a name and a **Command or URL**. A command launches a local server on the daemon computer; an HTTP URL connects to a remote server. Make sure the local command and its dependencies exist on that computer.
 
 Hexbot registers the server for the daemon and gives each bot an enable switch. Start a new section after adding or enabling it. Removing a server removes it for the deployment, so check whether another bot uses it first.
 
@@ -47,8 +47,8 @@ Use the server's own instructions for credentials and permissions. Its tools can
 
 ## Choose skills
 
-Every bot draws on one shared skill library: the skills bundled with Hexbot plus any an admin adds. A skill in the library is on for every bot until it is turned off for everyone or for one bot. Open Bot settings, Skills to see a bot's skills grouped by category and turn them on or off.
+Every bot draws on one shared skill library: the skills bundled with Hexbot plus any you add. A skill in the library is on for every bot until it is turned off for everyone or for one bot. Open Bot settings, Skills to see a bot's skills grouped by category and turn them on or off.
 
-A skill a bot writes for itself stays private to that bot. An admin can share a private skill from a bot they own into the library. A skill can guide a workflow, but it does not supply credentials or make a disabled tool available.
+A skill a bot writes for itself stays private to that bot. You can share a private skill from a bot into the library. A skill can guide a workflow, but it does not supply credentials or make a disabled tool available.
 
-A new section lists each skill's name and description, and the bot reads the full instructions only when it needs them. Turning a skill off or editing it takes effect the next time a bot reads it, even in open sections; a skill added later appears in new sections. Read a skill's instructions before relying on it for unattended work. [Multi-user](/docs/multi-user/#skills) explains who can change what.
+A new section lists each skill's name and description, and the bot reads the full instructions only when it needs them. Turning a skill off or editing it takes effect the next time a bot reads it, even in open sections; a skill added later appears in new sections. Read a skill's instructions before relying on it for unattended work.

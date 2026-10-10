@@ -1583,7 +1583,7 @@ async fn login_start(home: &Path, caller: &str, provider: &str) -> Result<Value>
     Ok(public)
 }
 async fn login_poll(home: &Path, caller: &str, id: &str, cancel: bool) -> Result<Value> {
-    common::admin(home, caller)?;
+    common::user(home, caller)?;
     let mut entries = logins().lock().await;
     let entry = entries
         .get_mut(id)
@@ -1768,9 +1768,6 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
     Some(
         async {
             common::user(home, caller)?;
-            if !matches!(method,"hexbot.providers.list"|"hexbot.models.list"|"model.options") {
-                common::admin(home, caller)?;
-            }
             match method {
                 "hexbot.providers.list" => list_providers(home),
                 "hexbot.providers.set_key" => set_key(

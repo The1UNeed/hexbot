@@ -31,7 +31,10 @@ async fn rpc_permissions_and_private_visibility() {
         if method == "share" {
             args["bot"] = json!("owl");
         }
-        assert_eq!(rpc(h, "member", method, args).await.unwrap_err().code, 4301);
+        assert_eq!(
+            rpc(h, "missing", method, args).await.unwrap_err().code,
+            4302
+        );
     }
     for category in [".hidden", "../escape"] {
         assert!(
@@ -438,7 +441,7 @@ fn new_bots_use_library_without_copies_or_frozen_global_disables() {
 }
 
 #[tokio::test]
-async fn changes_reach_library_readers_and_only_private_skill_owners() {
+async fn skill_changes_reach_the_caller() {
     let home = setup();
     let h = home.path();
     let app = hexbot_core::server::App::new(
@@ -462,8 +465,7 @@ async fn changes_reach_library_readers_and_only_private_skill_owners() {
             owners.push(event.owner);
         }
     }
-    owners.sort();
-    assert_eq!(owners, ["local", "member"]);
+    assert_eq!(owners, ["local"]);
     app.call(
         "member",
         "hexbot.skills.save",
@@ -483,7 +485,7 @@ async fn changes_reach_library_readers_and_only_private_skill_owners() {
 }
 
 #[test]
-fn admin_library_writes_still_require_ownership_of_every_affected_bot() {
+fn library_writes_still_require_ownership_of_every_affected_bot() {
     let home = setup();
     let h = home.path();
     skills::call(

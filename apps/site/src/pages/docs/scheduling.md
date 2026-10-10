@@ -36,7 +36,7 @@ Use the job ID when two jobs have similar names. Deleting a bot also removes its
 
 ## Scripts and unattended access
 
-A job can run a script in the bot's scripts folder or workspace. Scheduling an absolute script path asks for approval. Scripts run inside the workspace sandbox in Manual and Auto, without model provider credentials. On Linux, scheduled scripts need working bubblewrap unless an admin chooses Bypass.
+A job can run a script in the bot's scripts folder or workspace. Scheduling an absolute script path asks for approval. Scripts run inside the workspace sandbox in Manual and Auto, without model provider credentials. On Linux, scheduled scripts need working bubblewrap unless you choose Bypass.
 
 An autonomous agent job cannot wait for you to answer a question or approve a tool. Give it enough detail and access to finish on its own. If a required approval has no person to answer it, the job reports an error; inspect that error before broadening access.
 

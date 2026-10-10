@@ -6,7 +6,9 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
 use crate::{Error, Result};
 
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
+/// Version 13 made a daemon one person's: earlier accounts fold into the owner.
+const ONE_PERSON_VERSION: i64 = 13;
 
 /// Native scheduler tables live in hexbot-runtime.db, separate from the legacy schema.
 pub(crate) fn migrate_runtime(conn: &Connection) -> Result<()> {
@@ -63,6 +65,7 @@ CREATE TABLE IF NOT EXISTS dreams(
 CREATE TABLE IF NOT EXISTS room_memory(
  room_id TEXT PRIMARY KEY, text TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL,
  FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);
+-- One row: the owner, id 'local'. role and limits_json are left from multi-user builds.
 CREATE TABLE IF NOT EXISTS users(
  id TEXT PRIMARY KEY, display_name TEXT NOT NULL, role TEXT NOT NULL
  CHECK(role IN ('admin','member')), limits_json TEXT NOT NULL DEFAULT '{}',
@@ -139,12 +142,12 @@ pub fn migrate(home: &Path) -> Result<()> {
     lock.lock()?;
     let mut connection = open(home)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut previous: Option<i64> = None;
     if table_exists(&transaction, "schema_version")? {
-        let version: Option<i64> =
-            transaction.query_row("SELECT MAX(version) FROM schema_version", [], |row| {
-                row.get(0)
-            })?;
-        if version.is_some_and(|version| version > SCHEMA_VERSION) {
+        previous = transaction.query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+            row.get(0)
+        })?;
+        if previous.is_some_and(|version| version > SCHEMA_VERSION) {
             return Err(Error::new(
                 5200,
                 "database was created by a newer Hexbot version",
@@ -175,6 +178,11 @@ pub fn migrate(home: &Path) -> Result<()> {
         "INSERT OR IGNORE INTO users(id,display_name,role,limits_json,created_at) VALUES ('local','Admin','admin','{}',?)",
         [now],
     )?;
+    #[allow(clippy::unnecessary_map_or)]
+    if previous.map_or(true, |version| version < ONE_PERSON_VERSION) {
+        name_from_about_you(&transaction, home)?;
+        fold_people(&transaction, home, now)?;
+    }
     transaction.execute("DELETE FROM schema_version", [])?;
     transaction.execute(
         "INSERT INTO schema_version(version) VALUES (?)",
@@ -182,6 +190,180 @@ pub fn migrate(home: &Path) -> Result<()> {
     )?;
     transaction.commit()?;
     crate::skills::migrate(home)?;
+    Ok(())
+}
+
+/// Earlier builds kept the name from Get Started only in About you and called the
+/// owner Admin everywhere else.
+fn name_from_about_you(connection: &Connection, home: &Path) -> Result<()> {
+    let about = fs::read_to_string(home.join("users/local/user.md")).unwrap_or_default();
+    let Some(name) = about
+        .lines()
+        .find_map(|line| line.strip_prefix("Name:"))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    else {
+        return Ok(());
+    };
+    let name: String = name.chars().take(64).collect();
+    connection.execute(
+        "UPDATE users SET display_name=? WHERE id='local' AND display_name='Admin'",
+        [name],
+    )?;
+    Ok(())
+}
+
+/// Earlier builds let an admin invite other people. A daemon is now one person's:
+/// what other accounts made becomes the owner's, and their devices stop working.
+fn fold_people(connection: &Connection, home: &Path, now: f64) -> Result<()> {
+    let others: i64 =
+        connection.query_row("SELECT COUNT(*) FROM users WHERE id<>'local'", [], |row| {
+            row.get(0)
+        })?;
+    if others == 0 {
+        return Ok(());
+    }
+    preserve_approval_modes(connection)?;
+    // The runtime database commits first; rerunning this fold is harmless.
+    let mut runtime = crate::runtime_store::open(home)?;
+    let tx = runtime.transaction()?;
+    tx.execute_batch(
+        "UPDATE native_sessions SET owner='local' WHERE owner<>'local';
+         UPDATE native_jobs SET owner='local' WHERE owner<>'local';
+         UPDATE native_usage SET owner_id='local' WHERE owner_id<>'local';",
+    )?;
+    tx.commit()?;
+    connection.execute_batch(
+        "UPDATE bots SET owner_id='local' WHERE owner_id<>'local';
+         UPDATE sections SET owner_id='local' WHERE owner_id<>'local';
+         UPDATE rooms SET owner_id='local' WHERE owner_id<>'local';
+         UPDATE dreams SET owner_id='local' WHERE owner_id<>'local';
+         UPDATE room_members SET added_by='local' WHERE added_by<>'local';",
+    )?;
+    connection.execute(
+        "UPDATE room_members SET left_at=? WHERE member_kind='human' AND member_id<>'local' AND left_at IS NULL",
+        [now],
+    )?;
+    connection.execute(
+        "INSERT OR IGNORE INTO room_members(room_id,member_kind,member_id,added_by,added_at,left_at,last_read_seq) SELECT id,'human','local','local',?,NULL,0 FROM rooms",
+        [now],
+    )?;
+    connection.execute(
+        "UPDATE room_members SET left_at=NULL WHERE member_kind='human' AND member_id='local'",
+        [],
+    )?;
+    connection.execute(
+        "UPDATE devices SET revoked_at=? WHERE owner_id<>'local' AND revoked_at IS NULL",
+        [now],
+    )?;
+    connection.execute(
+        "UPDATE pairing_codes SET used_at=? WHERE user_id<>'local' AND used_at IS NULL",
+        [now],
+    )?;
+    connection.execute(
+        "UPDATE users SET disabled_at=? WHERE id<>'local' AND disabled_at IS NULL",
+        [now],
+    )?;
+    connection.execute(
+        "UPDATE users SET role='admin',disabled_at=NULL,limits_json='{}' WHERE id='local'",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Preserve the old owner caps before folding ownership. Room overrides used to
+/// be bounded by a shared bot's own mode; pin the room to its strictest old mode
+/// if folding would relax any bot. This can tighten its other bots too.
+fn preserve_approval_modes(connection: &Connection) -> Result<()> {
+    let global: Option<String> = connection
+        .query_row(
+            "SELECT value FROM settings WHERE key='approval_mode'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let global = global
+        .and_then(|value| serde_json::from_str::<String>(&value).ok())
+        .unwrap_or_else(|| "smart".into());
+    let rank = |mode: &str| match mode {
+        "off" => 0,
+        "smart" => 1,
+        _ => 2,
+    };
+    let resolve = |mode: &str| rank(if mode == "inherit" { &global } else { mode });
+    let mut rooms = connection.prepare(
+        "SELECT r.id,r.owner_id,r.approval_mode,
+                COALESCE(u.role='admin' AND u.disabled_at IS NULL,0)
+         FROM rooms r LEFT JOIN users u ON u.id=r.owner_id",
+    )?;
+    let rooms = rooms.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Option<String>>(2)?,
+            r.get::<_, bool>(3)?,
+        ))
+    })?;
+    for room in rooms {
+        let (id, owner, mode, admin) = room?;
+        let override_mode = mode.as_deref().filter(|mode| *mode != "inherit").map(rank);
+        let mut bots = connection.prepare(
+            "SELECT b.owner_id,b.approval_mode,
+                    COALESCE(u.role='admin' AND u.disabled_at IS NULL,0)
+             FROM bots b LEFT JOIN users u ON u.id=b.owner_id
+             WHERE b.name IN (SELECT member_id FROM room_members
+                              WHERE room_id=? AND member_kind='bot' AND left_at IS NULL)",
+        )?;
+        let bots = bots.query_map([&id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, bool>(2)?,
+            ))
+        })?;
+        let mut strictest = override_mode.unwrap_or(0);
+        let mut relaxes = false;
+        for bot in bots {
+            let (bot_owner, bot_mode, bot_admin) = bot?;
+            let before_bot = resolve(&bot_mode);
+            let before = match override_mode {
+                Some(mode) if owner == bot_owner => mode,
+                Some(mode) => mode.max(before_bot),
+                None => before_bot,
+            };
+            let before = if before == 0 && (!admin || !bot_admin) {
+                1
+            } else {
+                before
+            };
+            let after_bot = if before_bot == 0 && !bot_admin {
+                1
+            } else {
+                before_bot
+            };
+            let after = override_mode.unwrap_or(after_bot);
+            strictest = strictest.max(before);
+            relaxes |= after < before;
+        }
+        // Preserve an explicit member Bypass cap even in an empty room.
+        if override_mode == Some(0) && !admin {
+            strictest = strictest.max(1);
+            relaxes = true;
+        }
+        if relaxes {
+            connection.execute(
+                "UPDATE rooms SET approval_mode=? WHERE id=?",
+                [["off", "smart", "manual"][strictest], &id],
+            )?;
+        }
+    }
+    connection.execute(
+        "UPDATE bots SET approval_mode='smart'
+         WHERE (approval_mode='off' OR (approval_mode='inherit' AND ?='off'))
+         AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id=bots.owner_id
+                         AND u.role='admin' AND u.disabled_at IS NULL)",
+        [&global],
+    )?;
     Ok(())
 }
 

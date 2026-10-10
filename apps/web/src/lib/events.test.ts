@@ -1,6 +1,7 @@
 import type { GatewayEvent } from '@hermes/shared'
 
 import { useBots } from '../stores/bots'
+import { useMe } from '../stores/me'
 import { useSections } from '../stores/sections'
 import {
   emptyTranscript,
@@ -165,4 +166,11 @@ it('keeps warnings before a section opens and clears them when dismissed or disc
   expect(Object.keys(useTranscripts.getState().warnings)).toHaveLength(2)
   useTranscripts.getState().dropAll()
   expect(useTranscripts.getState().warnings).toEqual({})
+})
+
+it('refreshes your identity when another client renames you', () => {
+  const refresh = vi.spyOn(useMe.getState(), 'refresh').mockResolvedValue(undefined)
+  routeEvent({ type: 'hexbot.users.changed', payload: {} } as never)
+  expect(refresh).toHaveBeenCalledOnce()
+  refresh.mockRestore()
 })

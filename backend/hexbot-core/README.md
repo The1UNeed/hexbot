@@ -74,10 +74,11 @@ it also installs over SSH when nobody is signed in at the screen.
 
 ## Storage and compatibility
 
-- `hexbot.db` keeps schema v12, IDs, ownership, rooms, sections, and settings.
-  Migrations use captured legacy schema fixtures for starting versions 1–11
+- `hexbot.db` keeps schema v13, IDs, ownership, rooms, sections, and settings.
+  Migrations use captured legacy schema fixtures for starting versions 1–12
   and check that rows survive upgrades and repeated runs. Version 12 adds
-  `devices.jkt` for optional device proof-key binding.
+  `devices.jkt` for optional device proof-key binding. Version 13 folds former
+  accounts into the owner while preserving bot and room approval restrictions.
 - Memory stays in `profiles/<bot>/memories/MEMORY.md`, soul in `SOUL.md`, and
   About you in `users/<id>/user.md`. Deleting a section leaves bot memory alone.
 - `hexbot-runtime.db` stores native transcript projections, usage, and frozen
@@ -127,8 +128,8 @@ New library skills are on for every bot. The bot's `config.yaml` `skills.disable
 is the per-bot deny-list, and the root config's `skills.disabled` disables a
 library name globally, including private overrides. `bots.skills_json` remains
 for storage compatibility but is not read for grants or the bot's skills list.
-Library writes and global disables pass one admin-only helper. Owners can edit
-private skills and grants for their bots. Admins must own the source bot to
+Library writes and global disables pass one library-write helper. Owners can
+edit private skills and grants for their bots, and must own the source bot to
 share a skill and every bot listed in a library save's `bots_disabled`. All
 ownership checks finish before that save writes anything. RPC contracts are
 in `docs/api.md`.
@@ -171,7 +172,8 @@ load bodies through `skill_view`. Read-only `skill_view` and `skills_list` are
 available without the authoring toolset and enforce current grants on every
 call. `skill_manage` still requires the skills toolset. Skill body edits are
 live. Existing sections retain their exact prompt and options, including old
-inline skill bodies. The existing About you privacy repair is unchanged.
+inline skill bodies. The former shared-session About you repair is no longer
+needed after ownership is folded. Saved prompts remain unchanged.
 
 Pi starts with `--no-skills` and receives no `--skill` paths. Pi 1.0.1 accepts
 explicit skill paths even with `--no-skills`; its `/skill:name` commands load
@@ -232,8 +234,7 @@ by running the tests. App install count is not a daemon capacity measurement.
 Approval modes follow Codex: the OS sandbox is the boundary, not a judging
 model and not a list of command patterns. Pi has no approval modes of its own;
 Bypass (`off`) is plain Pi with no prompts, no sandbox, and no credential
-checks, and only the admin may choose it (`common::bypass_allowed` rejects it
-for a member's bot or room, error 4301, and such a bot runs in Auto). In Auto (`smart`, the default) the
+checks. In Auto (`smart`, the default) the
 private extension runs each shell command in a sandbox with no network that
 writes only inside the workspace: the bot's working directory, its artifact
 and attachment folders, and temp folders, with shell profiles and login items
@@ -301,7 +302,7 @@ itself needs no approval, but every nested tool call passes the same gates.
 Its QuickJS worker has no Node, filesystem, or network globals. Its `models`
 helpers can call provider APIs using session credentials and incur costs.
 
-Stdio servers are trusted admin-configured code, outside the shell sandbox.
+Stdio servers are trusted owner-configured code, outside the shell sandbox.
 Pi starts one process per section per server in `<home>/runtime/mcp/<bot>`, a
 daemon-owned directory with mode 0700, with its allowlisted environment and only
 the server's explicit `env`, rather than all connector credentials. Reference

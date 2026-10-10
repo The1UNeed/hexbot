@@ -154,25 +154,6 @@ impl App {
         }
         common::user(&self.home, owner)?;
         let mut affected_rooms = Vec::new();
-        // Everyone in a room hears about its changes, including whoever a
-        // delete or removal takes out of it.
-        let room_wide = matches!(
-            method,
-            "hexbot.rooms.create"
-                | "hexbot.rooms.update"
-                | "hexbot.rooms.add_member"
-                | "hexbot.rooms.remove_member"
-                | "hexbot.rooms.send"
-                | "hexbot.rooms.archive"
-                | "hexbot.rooms.unarchive"
-                | "hexbot.rooms.delete"
-        );
-        let mut audience = if matches!(method, "hexbot.rooms.delete" | "hexbot.rooms.remove_member")
-        {
-            self.audience(p["id"].as_str())
-        } else {
-            Vec::new()
-        };
         // Deletes are orchestrated here alone: one busy check, one close pass.
         if method == "hexbot.sections.delete" {
             let stored = common::required(p, "id")?;
@@ -238,12 +219,9 @@ impl App {
         let mut removed_sessions = Vec::new();
         // Removing a bot or the room closes sessions first, so ownership is
         // checked once here and the rooms helpers below do not repeat it.
-        // Removing a person closes nothing and stays in the rooms module.
-        let closes = method == "hexbot.rooms.delete"
-            || (method == "hexbot.rooms.remove_member" && p.get("user").is_none());
-        if closes {
+        if matches!(method, "hexbot.rooms.delete" | "hexbot.rooms.remove_member") {
             let room = common::required(p, "id")?;
-            let row = rooms::owned(&self.home, owner, room)?;
+            let row = rooms::get(&self.home, owner, room)?;
             let bot = p["bot"].as_str();
             let active = row["members"]
                 .as_array()
@@ -331,17 +309,13 @@ impl App {
                 "sandbox": crate::credentials::sandbox(),
                 // Clients describe Manual, Auto and Bypass only to a daemon that has them.
                 "approvals": "sandbox",
-                "home": if common::admin(&self.home, owner).is_ok() {
-                    json!(self.home)
-                } else {
-                    json!("")
-                }
+                "home": self.home
             })),
             "hexbot.rooms.stop" => {
                 Ok(json!({"stopped":self.rooms.stop(owner,common::required(p,"id")?).await?}))
             }
             "hexbot.rooms.delete" => rooms::delete(&self.home, common::required(p, "id")?),
-            "hexbot.rooms.remove_member" if closes => rooms::remove_bot(
+            "hexbot.rooms.remove_member" => rooms::remove_bot(
                 &self.home,
                 owner,
                 common::required(p, "id")?,
@@ -383,24 +357,16 @@ impl App {
             }
         }?;
         let mut result = result;
-        // Opening a room restores the owner's cards or a member's status.
+        // Opening a room restores its open approval and question cards.
         if method == "hexbot.rooms.get" {
-            let room_owner = common::required(&result["room"], "owner_id")?;
             for turn in result["room"]["turns"].as_array().into_iter().flatten() {
                 if let Some(live) = turn["live_session_id"].as_str() {
-                    self.runtime.replay_pending(room_owner, live, owner);
+                    self.runtime.replay_pending(owner, live);
                 }
             }
         }
         if method == "hexbot.rooms.archive" && result["room"]["archived_at"].is_number() {
             self.rooms.stop(owner, common::required(p, "id")?).await?;
-        }
-        if matches!(
-            method,
-            "hexbot.rooms.add_member" | "hexbot.rooms.remove_member"
-        ) && !closes
-        {
-            self.rooms.share(common::required(p, "id")?)?;
         }
         if !removed_sessions.is_empty() {
             // Only the removed bot stops; the rest of the room keeps going.
@@ -416,45 +382,6 @@ impl App {
         }
         if method == "hexbot.bots.delete" {
             crate::connectors::close_bot(&self.home, common::required(p, "name")?).await;
-        }
-        let after = if room_wide {
-            self.audience(result["room"]["id"].as_str().or(p["id"].as_str()))
-        } else {
-            Vec::new()
-        };
-        for user in std::iter::once(owner.to_owned()).chain(after) {
-            if !audience.contains(&user) {
-                audience.push(user);
-            }
-        }
-        if method == "hexbot.bots.update" && p["shareable"] == false {
-            let bot = common::required(p, "name")?;
-            // Unsharing preserves membership and history, but revokes active execution.
-            let rooms = common::rows(
-                &db::open(&self.home)?,
-                "SELECT r.id,r.owner_id FROM rooms r JOIN room_members m ON m.room_id=r.id WHERE m.member_kind='bot' AND m.member_id=? AND m.left_at IS NULL AND r.owner_id<>?",
-                &[&bot, &owner],
-            )?;
-            for room in rooms {
-                let id = room["id"].as_str().unwrap_or("");
-                let owner = room["owner_id"].as_str().unwrap_or("");
-                self.rooms.stop_internal(id).await?;
-                let sessions = common::rows(
-                    &db::open(&self.home)?,
-                    "SELECT stored_session_id FROM room_sessions WHERE room_id=? AND bot=?",
-                    &[&id, &bot],
-                )?;
-                for session in sessions {
-                    self.runtime
-                        .close_stored(owner, session["stored_session_id"].as_str().unwrap_or(""))
-                        .await?;
-                }
-                db::open(&self.home)?.execute(
-                    "UPDATE room_sessions SET live_session_id=NULL WHERE room_id=? AND bot=?",
-                    rusqlite::params![id, bot],
-                )?;
-                affected_rooms.push(room);
-            }
         }
         if method == "hexbot.pairing.code" {
             let code = result["code"].as_str().unwrap_or("");
@@ -480,14 +407,12 @@ impl App {
         }
         if method == "hexbot.rooms.send" {
             let id = common::required(p, "id")?;
-            for user in &audience {
-                self.events.emit(
-                    user,
-                    None,
-                    "hexbot.rooms.event",
-                    json!({"room_id":id,"event":result["event"]}),
-                );
-            }
+            self.events.emit(
+                owner,
+                None,
+                "hexbot.rooms.event",
+                json!({"room_id":id,"event":result["event"]}),
+            );
             self.rooms.notify(owner, id).await?;
         }
         if matches!(
@@ -496,14 +421,12 @@ impl App {
         ) && result["event"].is_object()
         {
             let event = result.as_object_mut().unwrap().remove("event").unwrap();
-            for user in &audience {
-                self.events.emit(
-                    user,
-                    None,
-                    "hexbot.rooms.event",
-                    json!({"room_id":p["id"],"event":event}),
-                );
-            }
+            self.events.emit(
+                owner,
+                None,
+                "hexbot.rooms.event",
+                json!({"room_id":p["id"],"event":event}),
+            );
         }
         if method == "hexbot.bots.list" {
             if let Some(bots) = result["bots"].as_array_mut() {
@@ -514,7 +437,7 @@ impl App {
         } else if method == "hexbot.bots.get" {
             self.bot_status(owner, &mut result["bot"]);
         }
-        self.changed(&audience, method, p, &result);
+        self.changed(owner, method, p, &result);
         for room in affected_rooms {
             self.events.emit(
                 room["owner_id"].as_str().unwrap_or(""),
@@ -580,11 +503,7 @@ impl App {
         common::atomic_write(&path, id.as_bytes())?;
         Ok(id)
     }
-    fn audience(&self, room: Option<&str>) -> Vec<String> {
-        room.and_then(|room| rooms::audience(&self.home, room).ok())
-            .unwrap_or_default()
-    }
-    fn changed(&self, audience: &[String], method: &str, p: &Value, result: &Value) {
+    fn changed(&self, owner: &str, method: &str, p: &Value, result: &Value) {
         if matches!(
             method,
             "hexbot.providers.set_key"
@@ -592,51 +511,23 @@ impl App {
                 | "model.save_key"
                 | "model.disconnect"
         ) {
-            if let Ok(owners) = db::open(&self.home)
-                .and_then(|conn| common::rows(&conn, "SELECT id FROM users", &[]))
-            {
-                for owner in owners {
-                    if let Some(owner) = owner["id"].as_str() {
-                        self.events
-                            .emit(owner, None, "hexbot.bots.changed", json!({}));
-                    }
-                }
-            }
+            self.events
+                .emit(owner, None, "hexbot.bots.changed", json!({}));
             return;
         }
         if method.starts_with("hexbot.skills.")
             && !matches!(method, "hexbot.skills.list" | "hexbot.skills.get")
         {
             let global = p["bot"].is_null() || method == "hexbot.skills.share";
-            let mut owners = audience.to_vec();
-            let query = if global {
-                "SELECT id FROM users"
-            } else {
-                "SELECT owner_id AS id FROM bots WHERE name=?"
-            };
-            let bot = p["bot"].as_str().unwrap_or("");
-            let params: Vec<&dyn rusqlite::ToSql> = if global { vec![] } else { vec![&bot] };
-            if let Ok(rows) =
-                db::open(&self.home).and_then(|conn| common::rows(&conn, query, &params))
-            {
-                owners.extend(
-                    rows.into_iter()
-                        .filter_map(|r| r["id"].as_str().map(str::to_owned)),
-                );
-            }
-            owners.sort();
-            owners.dedup();
             let payload = if global {
                 json!({"name":p["name"]})
             } else {
                 json!({"name":p["name"],"bot":p["bot"]})
             };
-            for owner in owners {
-                self.events
-                    .emit(&owner, None, "hexbot.skills.changed", payload.clone());
-                self.events
-                    .emit(&owner, None, "hexbot.bots.changed", json!({}));
-            }
+            self.events
+                .emit(owner, None, "hexbot.skills.changed", payload);
+            self.events
+                .emit(owner, None, "hexbot.bots.changed", json!({}));
             return;
         }
         if (method == "hexbot.bots.update" && p.get("skills").is_some())
@@ -645,7 +536,7 @@ impl App {
                 && matches!(p["id"].as_str(), Some("notion" | "airtable")))
         {
             self.changed(
-                audience,
+                owner,
                 "hexbot.skills.set_for_bot",
                 &json!({
                     "bot":p["bot"].as_str().or(p["name"].as_str()),
@@ -707,26 +598,23 @@ impl App {
             "hexbot.memory.user.changed".to_string()
         } else if matches!(
             group,
-            "bots" | "sections" | "rooms" | "connectors" | "network" | "connect" | "dreaming"
+            "bots"
+                | "sections"
+                | "rooms"
+                | "connectors"
+                | "network"
+                | "connect"
+                | "dreaming"
+                | "users"
         ) {
             format!("hexbot.{group}.changed")
         } else {
             return;
         };
-        // Whoever a removal takes out of the room drops it from their list.
-        let removed = (method == "hexbot.rooms.remove_member")
-            .then(|| p["user"].as_str())
-            .flatten();
-        for owner in audience {
-            let mut payload = payload.clone();
-            if removed == Some(owner.as_str()) {
-                payload["removed"] = json!(true);
-            }
-            self.events.emit(owner, None, &event, payload.clone());
-            if group == "connectors" {
-                self.events
-                    .emit(owner, None, "hexbot.bots.changed", payload.clone());
-            }
+        self.events.emit(owner, None, &event, payload.clone());
+        if group == "connectors" {
+            self.events
+                .emit(owner, None, "hexbot.bots.changed", payload);
         }
     }
 }

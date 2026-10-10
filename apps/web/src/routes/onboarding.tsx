@@ -49,6 +49,7 @@ import type {
 } from '../lib/types'
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
+import { unknownMethod, useMe } from '../stores/me'
 import { introduceBot } from '../stores/sections'
 import { type LastSection, uiActions } from '../stores/ui'
 
@@ -590,6 +591,8 @@ async function loadModelChoices(providers: Provider[]): Promise<ModelChoice[]> {
 
 /** The daemon's cap on About you (`hexbot.memory.USER_CAP`). */
 const ABOUT_CAP = 2000
+/** The daemon's cap on your display name (`hexbot.users.me.set`). */
+const NAME_CAP = 64
 
 export interface AboutYou {
   name: string
@@ -631,10 +634,22 @@ export function AboutStep({
   const patch = (field: keyof AboutYou) => (event: { target: { value: string } }) =>
     setAbout(current => ({ ...current, [field]: event.target.value }))
 
-  const save = async (value: string) => {
+  const save = async (value: string, name = '') => {
     setBusy(true)
 
     try {
+      // The name you give here is the one rooms show. It goes first: once
+      // About you is saved, Get Started counts as done and is not shown again.
+      if (name) {
+        try {
+          await useMe.getState().rename(name)
+        } catch (error) {
+          if (!unknownMethod(error)) {
+            throw error
+          }
+        }
+      }
+
       await userMemorySet(value)
       onContinue()
     } catch (reason) {
@@ -651,6 +666,7 @@ export function AboutStep({
         <Input
           autoFocus
           data-testid="onboarding-about-name"
+          maxLength={NAME_CAP}
           onChange={patch('name')}
           placeholder="Alex"
           value={about.name}
@@ -693,7 +709,7 @@ export function AboutStep({
           className={PILL}
           data-testid="onboarding-about-continue"
           disabled={!about.name.trim() || text.length > ABOUT_CAP}
-          onClick={() => void save(text)}
+          onClick={() => void save(text, about.name.trim())}
           variant="primary"
         >
           Continue

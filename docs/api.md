@@ -47,12 +47,11 @@ Events the client renders: `message.start`, `message.delta`, `message.interim`,
 ## `hexbot.*` methods
 
 All results are objects. Errors use JSON-RPC error objects with core-style
-codes. Code `4301` means `admin only`, `4302` means `not the owner`, and `4303`
-means the user's daily token budget is exhausted.
+codes. Code `4302` means `not the owner`.
 
-List methods accept `all: true` only for admins. Without it, bots, sections,
-rooms, devices, dreams, activity, and memory are scoped to the authenticated
-user. Get and mutation methods always check ownership.
+A daemon belongs to one person. Bots, sections, rooms, devices, dreams,
+activity, and memory are scoped to the authenticated user, and get and
+mutation methods check ownership.
 
 ### Daemon
 
@@ -64,8 +63,8 @@ user. Get and mutation methods always check ownership.
   sandbox shell and code tools run in: `sandbox-exec` on macOS, `bubblewrap`
   on Linux after a successful probe, and `null` when there is none; Settings,
   Approvals shows a notice then. The compatibility field
-  `hermes_version` carries the pinned agent core version. `home` is an empty
-  string for members and contains the daemon state path only for admins. `auth_required`
+  `hermes_version` carries the pinned agent core version. `home` is the daemon
+  state path. `auth_required`
   is always true and kept for older clients: every client presents a device
   credential, whatever the bind address. `install_id` preserves the existing
   `<HEXBOT_HOME>/install_id` file and migrates an early native `install-id` file
@@ -80,7 +79,7 @@ user. Get and mutation methods always check ownership.
 
 ### Bots
 
-Bot shape: `{name, display_name, title, description, persona, tools: [string], available_tools: [string], skills: [string], shareable,
+Bot shape: `{name, display_name, title, description, persona, tools: [string], available_tools: [string], skills: [string],
 provider, model, reasoning_effort | null, avatar: {mime, data} | null, created_at, updated_at, last_activity_at,
 owner_id, dream_enabled, notify, approval_mode, workdir | null,
 status, status_detail | null, sections_total, sections_recent: [Section]}`
@@ -103,9 +102,7 @@ room `waiting.human` events, and open incidents. `status_detail` is
 null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
 `approval_mode` is `inherit` (the deployment setting), `manual`, `smart`
 (Auto), or `off` (Bypass); `workdir` overrides the deployment workspace for
-that bot's terminal. Only the admin may set `off`: the daemon refuses it for
-a member's bot or room with "Only the admin can choose Bypass." and runs a
-member's bot in Auto if `off` was stored earlier.
+that bot's terminal.
 `reasoning_effort` is the bot's Pi thinking level: `off`, `minimal`, `low`,
 `medium`, `high`, `xhigh`, or `max`, stored as `model.reasoning_effort` in
 the profile's `config.yaml`. Null means Pi's default, `medium`; Pi rounds a
@@ -139,7 +136,7 @@ inside the Hexbot home, symlinks included.
   once they have navigated to the section. Refused (4243) once the section
   has messages.
 - `hexbot.bots.update {name, display_name?, title?, description?, persona?,
-  provider?, model?, reasoning_effort?, avatar?, dream_enabled?, shareable?,
+  provider?, model?, reasoning_effort?, avatar?, dream_enabled?,
   tools?, skills?, notify?, approval_mode?, workdir?}` →
   `{bot: Bot}`. `tools` accepts `terminal`, `files`, `code_execution`, `browser`,
   `computer_use`, `vision`, `voice`, `message_bots`, `delegate`, and
@@ -203,9 +200,8 @@ roster shows only the title.
 
 - `hexbot.memory.user.get {}` → `{text, cap: 2000, updated_at}`. The caller's
   About you text, injected as the plugin prompt section
-  `hexbot.about-you` into every session of a bot they own. Shared bot sessions
-  saved with the room owner's About you before this restriction rebuild their
-  prompt once on reopen, preserving their saved tools and options.
+  `hexbot.about-you` into new sessions. Existing sections retain their saved
+  prompt, including About you, after ownership is folded.
 - `hexbot.memory.user.set {text}` → same as get. Broadcasts
   `hexbot.memory.user.changed`.
 - `hexbot.memory.bot.get {bot}` → `{memory_md, cap: 2200}`
@@ -232,17 +228,15 @@ roster shows only the title.
 
 Room shape: `{id, name, owner_id, main_bot, approval_mode, limits,
 created_at, updated_at, last_activity_at, archived_at, members}`. Member rows
-include `display_name` for both bots and people, and keep `left_at` after
+include `display_name` for bots and for the owner, and keep `left_at` after
 departure so old transcripts retain their identities.
 `limits` is `{bot_turns_per_human_turn?, budget_tokens_per_human_turn?}`,
 each a whole number or null (use the system setting); other keys are
 rejected with 4202. Rooms saved by earlier builds may still hold
 `room_bot_turns_per_human_turn` or `room_budget_tokens_per_human_turn` in
 `limits`; those keys are ignored, so such a room uses the system settings
-until its limits are saved again. The owner and the room's human members can
-list, get, read, send, mark read and stop; only the owner can update, change
-members, archive or delete (4302 otherwise). A member may remove only
-themselves. Bots always run as the owner.
+until its limits are saved again. Only the owner uses a room (4302 otherwise),
+and its bots run as the owner.
 
 - `hexbot.rooms.list {include_archived?}` → `{rooms: [Room]}`
 - `hexbot.rooms.get {id}` → `{room: Room}`
@@ -251,16 +245,6 @@ themselves. Bots always run as the owner.
 - `hexbot.rooms.update {id, name?, main_bot?, limits?, approval_mode?}` → `{room}`
 - `hexbot.rooms.add_member {id, bot}` / `hexbot.rooms.remove_member {id, bot}`
   → `{room}`
-- `hexbot.rooms.people {id}` → `{users: [{id, display_name}]}`. Owner only;
-  lists active daemon users for Add person without exposing account settings.
-- `hexbot.rooms.add_member {id, user}` → `{room}`. Owner only; adding a
-  person back clears `left_at`, resets their read position, and restores room
-  and live session events.
-- `hexbot.rooms.remove_member {id, user}` → `{room}`. The owner removes a
-  person; any other member passes their own id to leave. The owner cannot
-  remove themselves (4202); they delete the room instead. The person gets the
-  `member.left` event and `hexbot.rooms.changed`, then 4302 from every room
-  call and no further room or live session events.
 - `hexbot.rooms.send {id, text, attachments?}` → `{event}`. This queues the
   room engine after writing the user event.
 - `hexbot.rooms.log {id, after_seq?, limit?}` → `{events}` in ascending room
@@ -273,14 +257,10 @@ themselves. Bots always run as the owner.
 Room turns use hidden sessions on each bot profile. The daemon waits
 for the corresponding assistant row through `session.history` after
 `prompt.submit`; it does not depend on the WebSocket that initiated the room.
-The live session's events (`message.delta`, `tool.*` and the rest) reach the
-owner and every human member, so everyone watches the bot work. Approval and
-question events (`approval.*`, `clarify.*`) go to the owner alone, who
-answers them; `session.events.since` replays a room session to the owner
-only. Opening a room with `hexbot.rooms.get` re-sends pending cards to the
-owner and the current waiting or working `status.update` to other members
-for each running turn. Members receive "Waiting for <owner name>" while
-an approval or question is open, including after a reload. Tool labels in
+The live session's events (`message.delta`, `tool.*`, `approval.*`,
+`clarify.*` and the rest) reach the owner, who answers approvals and
+questions; `session.events.since` replays a room session. Opening a room with
+`hexbot.rooms.get` re-sends pending cards for each running turn. Tool labels in
 rooms and sections stay in the present tense until the tool completes.
 
 ### Bot activity
@@ -372,8 +352,8 @@ or a clear.
 
 - `hexbot.connectors.list {bot?}` → `{connectors: [Connector]}`.
 - `hexbot.connectors.setup {id, values: {ENV_KEY: value}, provider?, bot?,
-  enable_for_bot?, bot_only?}` → `{connector, test: {ok, message}}`. Admin
-  only. Writes the values into the root `.env`, every profile `.env` and the
+  enable_for_bot?, bot_only?}` → `{connector, test: {ok, message}}`.
+  Writes the values into the root `.env`, every profile `.env` and the
   process environment (`bot_only` writes only that bot's profile), records the
   backend choice where the core reads it, runs the check or probe, and, when
   it passes, turns the connector on for `bot` unless `enable_for_bot` is
@@ -381,11 +361,11 @@ or a clear.
 - `hexbot.connectors.test {id, bot?}` → `{ok, message, tool_count?}`. A successful
   connected-server probe counts all tool pages and saves `tool_count`. The connector
   list reports the last probe count, or null when untested.
-- `hexbot.connectors.clear {id, bot?, bot_only?}` → `{connector}`. Admin only.
+- `hexbot.connectors.clear {id, bot?, bot_only?}` → `{connector}`.
 - `hexbot.connectors.set_for_bot {id, bot, enabled}` → `{connector}`.
 - `hexbot.connectors.add_mcp {name, command?, args?, env?, url?, transport?}` →
   `{connector}`; `hexbot.connectors.remove_mcp {name}` → `{removed: true}`.
-  Admin only. MCP servers live in the root `config.yaml` and appear as
+  MCP servers live in the root `config.yaml` and appear as
   `mcp:<name>` connectors. New entries accept stdio or streamable HTTP. SSE
   returns 4202, "SSE is not supported. Use the server's streamable HTTP URL."
   Environment values starting with `!` are rejected.
@@ -430,11 +410,10 @@ inside another skill. A skill cannot contain another skill, including in a
 `skill_manage` batch. Skill reads hold a shared lock through discovery and body
 reads; saves and tool commits hold the exclusive side through replacement.
 
-Library reads require a signed-in user. All library writes, sharing and global
-changes require an admin, checked through one library-write permission helper.
-Private reads, writes and per-bot grants require the bot's owner, including
-when the caller is an admin. Sharing requires both library-write permission
-and ownership of the source bot. `bots_disabled` requires ownership of every
+Library reads and writes, sharing and global changes require a signed-in
+user, checked through one library-write permission helper. Private reads,
+writes and per-bot grants require the bot's owner. Sharing also requires
+ownership of the source bot. `bots_disabled` requires ownership of every
 listed bot.
 New library skills are enabled for all bots unless denied. Resolution is by
 name: private skill, then user library, then bundled skill. `hexbot.bots.update
@@ -454,8 +433,8 @@ New sections list skill descriptions and load bodies through `skill_view`.
 `skill_view` and `skills_list` check live grants without requiring the authoring
 toolset. `skill_manage` still requires that toolset and writes only private
 skills; deleting an inherited skill disables it for that bot. Existing sections
-keep their stored prompts and tool definitions. The existing repair of leaked
-About you text in unversioned shared sections remains in place.
+keep their stored prompts and tool definitions. The former shared-session
+About you repair is removed because every section now belongs to the owner.
 
 New sections freeze connected server names and reach tools through Pi's codemode.
 Saved sections keep their frozen Rust bridge tools, including SSE. New sections
@@ -539,7 +518,7 @@ arguments and status, not full nested result bodies; its record is bounded.
   The daemon does not restart and running bot turns continue. The reply's
   `restarting: true` is kept for older apps.
 - `hexbot.pairing.code {}` → `{code, expires_at, link}` (loopback or paired
-  admin only). `link` is `hexbot://pair?host=...&port=...#code=...`.
+  device). `link` is `hexbot://pair?host=...&port=...#code=...`.
 - `hexbot.devices.list {}` → `{devices: [{id, name, platform, created_at,
   last_seen_at, current: bool}]}`
 - `hexbot.devices.revoke {id}` → `{revoked: true}`
@@ -583,7 +562,7 @@ See [Connect trust](connect.md#trust) for the TLS and compatibility limits.
 A client newer than the daemon asks the daemon to update itself
 (`docs/channels.md`, "Updating a daemon from a client").
 
-- `hexbot.update.request {version}` (admin) → `{accepted: true, method,
+- `hexbot.update.request {version}` → `{accepted: true, method,
   version}`. `method` is the daemon's `update_capability`. With `desktop` the
   app running the daemon downloads and installs its own update and relaunches;
   with `service` the daemon fetches
@@ -604,21 +583,23 @@ A client newer than the daemon asks the daemon to update itself
 
 ### Users and usage
 
-- `hexbot.users.me {}` → `{id, display_name, role}`.
-- `hexbot.users.list {}` → `{users}`. Admin only.
-- `hexbot.users.invite {display_name, role?}` → `{user, code, expires_at}`.
-  Admin only. The code is bound to the new user, and its redeemed device keeps
-  that ownership.
-- `hexbot.users.update {id, display_name?, role?, disabled?, limits?}` →
-  `{user}`. Admin only. `limits.daily_tokens` is a non-negative integer or null.
-  Updates that remove the last enabled admin return 4202.
-- `hexbot.usage.summary {user?, since?}` → `{input_tokens, output_tokens,
-  estimated_cost_usd, by_bot}`. Members may request only their own usage.
+A daemon belongs to one person. Earlier builds let an admin invite others;
+upgrading folds their bots, sections and rooms into the owner, revokes their
+devices, and removes the invite and update methods.
 
-The room engine and `hexbot.sections.open` refuse a new turn after the owning
-user reaches `daily_tokens`, and emit `hexbot.usage.limit {user}`. The core's
-`pre_llm_call` plugin hook cannot refuse a request, so it is not used as a
-budget gate.
+- `hexbot.users.me {}` → `{id, display_name, role, can_rename: true}`.
+  The name Get Started asks for; rooms show it on your messages. `role` is
+  always `admin`.
+- `hexbot.users.list {}` → `{users: [{id, display_name, role}]}`, only you.
+  Kept with `role` so apps older than 0.1.6 still offer Bypass and the other
+  owner controls.
+- Renaming broadcasts owner-scoped `hexbot.users.changed`; clients refresh
+  `hexbot.users.me`. Older daemons omit `can_rename`, so clients hide the editor
+  and Get Started falls back to saving About you on an unknown-method error.
+- `hexbot.users.me.set {display_name}` → `{id, display_name, can_rename: true}`.
+  The name is trimmed, nonempty (4200) and at most 64 characters (4202).
+- `hexbot.usage.summary {since?}` → `{input_tokens, output_tokens,
+  estimated_cost_usd, by_bot}`.
 
 ### Hex Connect
 
@@ -643,7 +624,7 @@ Connect registration and disconnection emit `hexbot.connect.changed {}`.
 Room mutations emit `hexbot.rooms.changed {id}`. Every persisted room event
 emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit
 `hexbot.rooms.turn {room_id, bot, live_session_id, status}`. Room events go
-to the owner and every human member.
+to the owner.
 Dream triggers emit `hexbot.dreaming.changed {bot}`.
 Connector mutations emit `hexbot.connectors.changed {connector, bot?}` and
 `hexbot.bots.changed`. Opening or resolving an incident emits

@@ -60,8 +60,6 @@ struct State {
     unsaved: VecDeque<(Value, Option<String>, Option<Value>)>,
 }
 const MAX_HOPS: usize = 8;
-/// Frozen prompts built without anyone else's About you carry this tag.
-const PROMPT_VERSION: u64 = 2;
 struct Live {
     owner: String,
     bot: String,
@@ -145,7 +143,7 @@ impl Runtime {
             .find(|s| s.id == id && s.owner == caller)
             .cloned();
         if let Some(s) = existing {
-            common::bot_session_access(&self.home, caller, &s.bot, &s.stored)?;
+            common::bot_owner(&self.home, caller, &s.bot)?;
             s.state.lock().unwrap().last_activity = common::now();
             return Ok(s);
         }
@@ -157,7 +155,7 @@ impl Runtime {
             )
             .optional()?;
         let (stored, bot) = target.ok_or_else(|| Error::new(4001, "session not found"))?;
-        common::bot_session_access(&self.home, caller, &bot, &stored)?;
+        common::bot_owner(&self.home, caller, &bot)?;
         self.open_session(caller, &bot, &stored).await
     }
     // Retire only settled sessions. Their frozen prompt, tools, JSONL and live ID
@@ -323,8 +321,8 @@ impl Runtime {
             .map(|v| v["approval_payload"].clone());
         (approval, clarify)
     }
-    /// Replay open cards to the owner, or the current status to a room member.
-    pub fn replay_pending(&self, owner: &str, live: &str, caller: &str) {
+    /// Replay open approval and question cards to the owner.
+    pub fn replay_pending(&self, owner: &str, live: &str) {
         let s = self
             .sessions
             .lock()
@@ -334,17 +332,7 @@ impl Runtime {
             .cloned();
         let Some(s) = s else { return };
         let (approval, clarify) = Self::pending_cards(&s);
-        let emit = |kind, payload| {
-            if caller == owner {
-                self.emit(&s, kind, payload);
-            } else {
-                self.events
-                    .emit_to_viewer(owner, live, caller, kind, payload);
-            }
-        };
-        if caller != owner && approval.is_none() && clarify.is_none() {
-            emit("status.update", json!({"kind":"working","text":"Working"}));
-        }
+        let emit = |kind, payload| self.emit(&s, kind, payload);
         if let Some(payload) = approval {
             emit("approval.request", payload);
         }
@@ -396,14 +384,7 @@ impl Runtime {
         }
         common::identifier(bot)?;
         common::identifier(stored)?;
-        common::bot_session_access(
-            &self.home,
-            owner,
-            bot,
-            overrides
-                .and_then(|p| p["parent_session"].as_str())
-                .unwrap_or(stored),
-        )?;
+        common::bot_owner(&self.home, owner, bot)?;
         let _parent_guard =
             if let Some(parent) = overrides.and_then(|p| p["parent_session"].as_str()) {
                 let guard = self.open_lock(parent).lock_owned().await;
@@ -437,11 +418,7 @@ impl Runtime {
         if self.stopping.load(Ordering::Acquire) {
             return Err(Error::new(5201, "daemon is shutting down"));
         }
-        if let Some(parent) = overrides.and_then(|p| p["parent_session"].as_str()) {
-            common::bot_session_access(&self.home, owner, bot, parent)?;
-        } else {
-            common::bot_session_access(&self.home, owner, bot, stored)?;
-        }
+        common::bot_owner(&self.home, owner, bot)?;
         store::session_dir(&self.home, stored)?;
         let running = self.sessions.lock().unwrap().get(stored).cloned();
         if let Some(s) = running {
@@ -489,32 +466,15 @@ impl Runtime {
         );
         let cwd = common::resolve_workdir(&self.home, configured)?;
         let dir = store::session_dir(&self.home, stored)?;
-        let existing: Option<(String, String)> = store::open(&self.home)?
+        let existing: Option<String> = store::open(&self.home)?
             .query_row(
-                "SELECT prompt,options FROM native_sessions WHERE stored_id=?",
+                "SELECT options FROM native_sessions WHERE stored_id=?",
                 [stored],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| r.get(0),
             )
             .optional()?;
-        let options = if let Some((prompt, options)) = existing {
-            let mut options = serde_json::from_str::<Value>(&options)
-                .map_err(|e| Error::new(5200, e.to_string()))?;
-            // Rows frozen before About you stayed private may carry another
-            // user's text; repair those once. Tagged rows are never rebuilt, so
-            // a soul or memory quoting the heading keeps its cached prefix.
-            if botrow["owner_id"] != owner
-                && options["prompt_version"].is_null()
-                && prompt.contains("\n\n# About the user\n")
-            {
-                let prompt = self.session_prompt(&botrow, owner, bot, &cwd)?.0;
-                options["prompt"] = json!(prompt);
-                options["prompt_version"] = json!(PROMPT_VERSION);
-                store::open(&self.home)?.execute(
-                    "UPDATE native_sessions SET prompt=?,options=? WHERE stored_id=?",
-                    params![prompt, options.to_string(), stored],
-                )?;
-            }
-            options
+        let options = if let Some(options) = existing {
+            serde_json::from_str::<Value>(&options).map_err(|e| Error::new(5200, e.to_string()))?
         } else {
             let (mut prompt, skills) = self.session_prompt(&botrow, owner, bot, &cwd)?;
             let enabled = crate::connectors::toolsets(&self.home, bot)?;
@@ -548,12 +508,7 @@ impl Runtime {
                         .insert(format!("{owner}:{bot}:{name}"))
                     {
                         let label = self.bot_label(bot);
-                        let fix = if common::admin(&self.home, owner).is_ok() {
-                            "switch it to the server's HTTP address in bot settings"
-                        } else {
-                            "an admin can switch it to the server's HTTP address"
-                        };
-                        self.warning(owner, stored, &label, &format!("{label} can't use {name}. Its server uses an old connection type; {fix}."));
+                        self.warning(owner, stored, &label, &format!("{label} can't use {name}. Its server uses an old connection type; switch it to the server's HTTP address in bot settings."));
                     }
                 } else {
                     mcp_names.push(json!(name));
@@ -600,8 +555,6 @@ impl Runtime {
                 &settings,
                 stored,
                 botrow["approval_mode"].as_str(),
-                botrow["owner_id"].as_str().unwrap_or(""),
-                owner,
             )?;
             // A delegate keeps its parent section's level, even the default;
             // a scheduled job's own level wins over the bot's.
@@ -615,7 +568,6 @@ impl Runtime {
             };
             let mut opts = json!({
                 "prompt": prompt,
-                "prompt_version": PROMPT_VERSION,
                 "mcpServers": mcp_names,
                 "tools": tools,
                 "approvalMode": mode,
@@ -919,17 +871,11 @@ impl Runtime {
         let profile = self.home.join("profiles").join(bot);
         let soul = fs::read_to_string(profile.join("SOUL.md")).unwrap_or_default();
         let memory = fs::read_to_string(profile.join("memories/MEMORY.md")).unwrap_or_default();
-        // About you is read only by the bots a user owns. A shared bot in someone
-        // else's room gets neither its owner's text nor the room owner's.
-        let about = if botrow["owner_id"] == owner {
-            fs::read_to_string(self.home.join("users").join(owner).join("user.md"))
-                .ok()
-                .filter(|text| !text.trim().is_empty())
-                .map(|text| format!("\n\n# About the user\n{text}"))
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
+        let about = fs::read_to_string(self.home.join("users").join(owner).join("user.md"))
+            .ok()
+            .filter(|text| !text.trim().is_empty())
+            .map(|text| format!("\n\n# About the user\n{text}"))
+            .unwrap_or_default();
         let prompt = format!(
             "You are {}, a Hexbot bot. Use your tools to complete the user's requests. Conversations persist. Keep private information within this user's conversations.\n\n# Soul\n{}\n\n# Memory\n{}{}\n\nUse the memory tool for durable notes. Use hexbot_soul to change your persona and tell the user when you do. Never modify the user's About you text.",
             botrow["display_name"].as_str().unwrap_or(bot),
@@ -972,18 +918,7 @@ impl Runtime {
         if self.stopping.load(Ordering::Acquire) {
             return Err(Error::new(5201, "daemon is shutting down"));
         }
-        common::bot_session_access(&self.home, &s.owner, &s.bot, &s.stored)?;
-        if let Err(error) = crate::settings::check_budget(&self.home, &s.owner) {
-            if error.code == 4303 {
-                self.events.emit(
-                    &s.owner,
-                    None,
-                    "hexbot.usage.limit",
-                    error.data.clone().unwrap_or(Value::Null),
-                );
-            }
-            return Err(error);
-        }
+        common::bot_owner(&self.home, &s.owner, &s.bot)?;
         self.register_worker_bridge(s);
         if text.trim() == "/compact" || text.trim().starts_with("/compact ") {
             {
@@ -1144,7 +1079,7 @@ impl Runtime {
     /// Callers share the live ID with room viewers before running, so a section
     /// moves to its bot's new model here rather than mid-turn.
     pub async fn ensure_hidden(&self, owner: &str, bot: &str, stored: &str) -> Result<String> {
-        common::bot_session_access(&self.home, owner, bot, stored)?;
+        common::bot_owner(&self.home, owner, bot)?;
         Ok(self.open_for_input(owner, bot, stored).await?.id.clone())
     }
     pub async fn run_hidden_job(
@@ -1155,11 +1090,7 @@ impl Runtime {
         text: &str,
         options: &Value,
     ) -> Result<String> {
-        if let Some(parent) = options["parent_session"].as_str() {
-            common::bot_session_access(&self.home, owner, bot, parent)?;
-        } else {
-            common::bot_owner(&self.home, owner, bot)?;
-        }
+        common::bot_owner(&self.home, owner, bot)?;
         let restricted = options["enabled_tools"]
             .as_array()
             .map(|v| v.iter().filter_map(Value::as_str).collect::<Vec<_>>());
@@ -1224,7 +1155,7 @@ impl Runtime {
         deadline: Duration,
         hops: Option<Arc<AtomicUsize>>,
     ) -> Result<String> {
-        common::bot_session_access(&self.home, owner, bot, stored)?;
+        common::bot_owner(&self.home, owner, bot)?;
         let s = self.open_for_input(owner, bot, stored).await?;
         let mut settled = s.settled.subscribe();
         let before = *settled.borrow();
@@ -1781,7 +1712,7 @@ impl Runtime {
                         json!({"value":p["answer"].as_str().unwrap_or("")})
                     }
                 };
-                // Room members saw the bot waiting; it works again.
+                // The bot was waiting on the owner; it works again.
                 let resumed = json!({"kind":"working","text":"Working"});
                 if request["method"] == "native" {
                     {
@@ -1967,19 +1898,6 @@ impl Runtime {
         if to == s.bot {
             return Err(Error::new(4202, "A bot cannot message itself."));
         }
-        // A shared bot running in someone else's room has no team there: their bots, memory, and
-        // names stay private to them.
-        let sender_owner: Option<String> = db::open(&self.home)?
-            .query_row("SELECT owner_id FROM bots WHERE name=?", [&s.bot], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        if sender_owner.as_deref() != Some(s.owner.as_str()) {
-            return Err(Error::new(
-                4302,
-                "Only the user's own bots can ask their other bots for help.",
-            ));
-        }
         let teammates = common::rows(
             &db::open(&self.home)?,
             "SELECT name FROM bots WHERE owner_id=? AND name<>? ORDER BY last_activity_at DESC,name",
@@ -2067,12 +1985,12 @@ impl Runtime {
         };
         let settings = crate::settings::get(&self.home)?;
         let db = db::open(&self.home)?;
-        let (owner, mode, bot_workdir): (String, Option<String>, Option<String>) = db.query_row(
-            "SELECT owner_id,approval_mode,workdir FROM bots WHERE name=?",
+        let (mode, bot_workdir): (Option<String>, Option<String>) = db.query_row(
+            "SELECT approval_mode,workdir FROM bots WHERE name=?",
             [&bot],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        let mode = session_approval(&db, &settings, &stored, mode.as_deref(), &owner, &s.owner)?;
+        let mode = session_approval(&db, &settings, &stored, mode.as_deref())?;
         let own = own_options.expect("section configuration");
         saved["model"] = own["model"].clone();
         saved["provider"] = own["provider"].clone();
@@ -2354,9 +2272,6 @@ impl Runtime {
         Ok(())
     }
     fn team_block(&self, row: &Value, owner: &str, bot: &str) -> Result<String> {
-        if row["owner_id"] != owner {
-            return Ok(String::new());
-        }
         let own = crate::team::description(row);
         let mut block = format!(
             "\n\n{}{}",
@@ -2508,7 +2423,7 @@ impl Runtime {
         );
     }
     async fn tool(&self, s: &Arc<Live>, name: &str, args: &Value) -> Result<Value> {
-        common::bot_session_access(&self.home, &s.owner, &s.bot, &s.stored)?;
+        common::bot_owner(&self.home, &s.owner, &s.bot)?;
         let bot_owner: String = db::open(&self.home)?.query_row(
             "SELECT owner_id FROM bots WHERE name=?",
             [&s.bot],
@@ -3118,8 +3033,7 @@ impl Runtime {
                     {
                         let raw = event["message"].as_str().unwrap_or("");
                         let label = self.bot_label(&s.bot);
-                        let admin = common::admin(&self.home, &s.owner).is_ok();
-                        let message = connected_tools_notice(&label, raw, admin)
+                        let message = connected_tools_notice(&label, raw)
                             .unwrap_or_else(|| raw.trim().to_owned());
                         self.warning(&s.owner, &s.stored, &label, &message);
                     }
@@ -3391,14 +3305,12 @@ When the user needs help with Hexbot itself (settings, pairing, connectors, upda
 
 /// Rewrites Pi's and the extension's connected-tool notices for the UI. The
 /// first line is the notice; later lines are details the UI shows on hover.
-fn connected_tools_notice(bot: &str, raw: &str, admin: bool) -> Option<String> {
+fn connected_tools_notice(bot: &str, raw: &str) -> Option<String> {
     let fix = |many: bool| {
-        let it = if many { "them" } else { "it" };
-        if admin {
-            format!("Check {it} in bot settings.")
-        } else {
-            format!("Ask an admin to check {it}.")
-        }
+        format!(
+            "Check {} in bot settings.",
+            if many { "them" } else { "it" }
+        )
     };
     let with_details = |summary: String, details: &str| {
         let details = details.trim();
@@ -3585,72 +3497,32 @@ fn tool_context(name: &str, args: &Value) -> String {
     }
 }
 /// The approval mode of a stored session: the bot's own mode (or the global
-/// one for `inherit`), combined with its room's mode when it runs in a room.
+/// one for `inherit`), replaced by its room's mode when it runs in a room.
 fn session_approval(
     db: &rusqlite::Connection,
     settings: &Value,
     stored: &str,
     bot_mode: Option<&str>,
-    bot_owner: &str,
-    section_owner: &str,
 ) -> Result<&'static str> {
-    let room: Option<(String, Option<String>)> = db
+    let room: Option<Option<String>> = db
         .query_row(
-            "SELECT r.owner_id,r.approval_mode FROM rooms r JOIN room_sessions s ON r.id=s.room_id WHERE s.stored_session_id=? LIMIT 1",
+            "SELECT r.approval_mode FROM rooms r JOIN room_sessions s ON r.id=s.room_id WHERE s.stored_session_id=? LIMIT 1",
             [stored],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| r.get(0),
         )
         .optional()?;
     let bot_mode = bot_mode
         .filter(|m| *m != "inherit")
         .unwrap_or_else(|| settings["approval_mode"].as_str().unwrap_or("smart"));
-    let mode = effective_approval(
-        bot_mode,
-        room.as_ref().and_then(|(_, m)| m.as_deref()),
-        room.as_ref().is_some_and(|(owner, _)| owner == bot_owner),
-    );
-    // Bypass reads everything the daemon can, the admin's provider keys
-    // included, so it runs only when the admin owns the bot, the section and
-    // the room. A member using the admin's shared bot gets Auto.
-    let owners = [
-        Some(bot_owner),
-        Some(section_owner),
-        room.as_ref().map(|(o, _)| o.as_str()),
-    ];
-    for owner in owners.into_iter().flatten() {
-        if mode == "off" && !owner_is_admin(db, owner)? {
-            return Ok("smart");
-        }
-    }
-    Ok(mode)
+    Ok(effective_approval(bot_mode, room.flatten().as_deref()))
 }
 
-pub(crate) fn owner_is_admin(db: &rusqlite::Connection, owner: &str) -> Result<bool> {
-    Ok(db
-        .query_row(
-            "SELECT role='admin' FROM users WHERE id=? AND disabled_at IS NULL",
-            [owner],
-            |r| r.get(0),
-        )
-        .optional()?
-        .unwrap_or(false))
-}
-
-fn effective_approval(bot: &str, room: Option<&str>, owns_bot: bool) -> &'static str {
-    fn rank(mode: &str) -> usize {
-        match mode {
-            "off" => 0,
-            "smart" => 1,
-            _ => 2,
-        }
+fn effective_approval(bot: &str, room: Option<&str>) -> &'static str {
+    match room.filter(|r| *r != "inherit").unwrap_or(bot) {
+        "off" => "off",
+        "smart" => "smart",
+        _ => "manual",
     }
-    let bot = rank(bot);
-    let level = match room.filter(|r| *r != "inherit") {
-        Some(room) if owns_bot => rank(room),
-        Some(room) => bot.max(rank(room)),
-        None => bot,
-    };
-    ["off", "smart", "manual"][level]
 }
 
 #[cfg(test)]
@@ -3744,16 +3616,12 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         );
         runtime.close_stored("alice", "first").await.unwrap();
         // Simulate a section from the old implementation, including inline
-        // skill bodies and an unversioned options row belonging to its owner.
+        // skill bodies.
         let old_prompt = format!("{prompt}\n## custom-notes\nFULL BODY MARKER");
         let mut old_options = options;
         old_options["prompt"] = json!(old_prompt);
         old_options["skills"] =
             json!([{"name":"custom-notes","path":skill,"content":"FULL BODY MARKER"}]);
-        old_options
-            .as_object_mut()
-            .unwrap()
-            .remove("prompt_version");
         let old_options = old_options.to_string();
         store::open(home.path())
             .unwrap()
@@ -3818,18 +3686,17 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         }
     }
     #[test]
-    fn room_modes_cannot_weaken_a_shared_bot() {
+    fn a_room_mode_replaces_the_bot_mode() {
         for (bot, room, expected) in [
-            ("manual", "off", "manual"),
-            ("smart", "off", "smart"),
-            ("off", "smart", "smart"),
-            ("smart", "manual", "manual"),
-            ("manual", "inherit", "manual"),
+            ("manual", Some("off"), "off"),
+            ("off", Some("smart"), "smart"),
+            ("smart", Some("manual"), "manual"),
+            ("manual", Some("inherit"), "manual"),
+            ("off", None, "off"),
+            ("off", Some("invalid"), "manual"),
         ] {
-            assert_eq!(effective_approval(bot, Some(room), false), expected);
+            assert_eq!(effective_approval(bot, room), expected);
         }
-        assert_eq!(effective_approval("manual", Some("off"), true), "off");
-        assert_eq!(effective_approval("off", Some("invalid"), true), "manual");
     }
     #[test]
     fn memory_scan_rejects_injection_exfiltration_and_unicode_bypasses() {
@@ -3874,33 +3741,17 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         assert_eq!(config["cwd"], workspace);
         assert_eq!(runtime.session_settings(&s).unwrap()["cwd"], workspace);
     }
-    /// Bypass can read the admin's provider keys, so a member's bot runs in Auto.
     #[test]
-    fn only_the_admins_bots_run_in_bypass() {
+    fn sessions_take_the_bot_mode_or_their_rooms() {
         let home = common::TestHome::new();
         db::migrate(home.path()).unwrap();
         let db = db::open(home.path()).unwrap();
-        db.execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0),('bob','Bob','member',0)").unwrap();
         let settings = crate::settings::defaults();
-        let mode =
-            |bot, owner| session_approval(&db, &settings, "none", Some(bot), owner, owner).unwrap();
-        assert_eq!(mode("off", "alice"), "off");
-        assert_eq!(mode("off", "bob"), "smart");
-        // The admin's Bypass bot in a member's section or room runs in Auto.
-        assert_eq!(
-            session_approval(&db, &settings, "none", Some("off"), "alice", "bob").unwrap(),
-            "smart"
-        );
-        db.execute_batch("INSERT INTO rooms(id,name,owner_id) VALUES('r','R','bob');INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('r','owl','in-room')").unwrap();
-        assert_eq!(
-            session_approval(&db, &settings, "in-room", Some("off"), "alice", "alice").unwrap(),
-            "smart"
-        );
-        assert_eq!(mode("manual", "bob"), "manual");
-        assert_eq!(mode("inherit", "bob"), "smart");
-        db.execute_batch("UPDATE users SET disabled_at=1 WHERE id='alice'")
-            .unwrap();
-        assert_eq!(mode("off", "alice"), "smart");
+        let mode = |stored, bot| session_approval(&db, &settings, stored, Some(bot)).unwrap();
+        assert_eq!(mode("none", "off"), "off");
+        assert_eq!(mode("none", "inherit"), "smart");
+        db.execute_batch("INSERT INTO rooms(id,name,owner_id,approval_mode) VALUES('r','R','alice','manual');INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('r','owl','in-room')").unwrap();
+        assert_eq!(mode("in-room", "off"), "manual");
     }
     #[tokio::test]
     async fn sections_follow_a_new_bot_model_from_the_next_message() {
@@ -4014,13 +3865,10 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         db::open(home.path())
             .unwrap()
             .execute_batch(
-                "INSERT INTO rooms(id,name,owner_id,approval_mode) VALUES('room','Shared','bob','off'); INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room','owl','first');",
+                "INSERT INTO rooms(id,name,owner_id,approval_mode) VALUES('room','Room','alice','off'); INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room','owl','first');",
             )
             .unwrap();
-        assert_eq!(
-            runtime.session_settings(&s).unwrap()["approvalMode"],
-            "manual"
-        );
+        assert_eq!(runtime.session_settings(&s).unwrap()["approvalMode"], "off");
         let child = runtime
             .open_session_locked(
                 "alice",
@@ -4031,14 +3879,6 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
                 false,
             )
             .await
-            .unwrap();
-        assert_eq!(
-            runtime.session_settings(&child).unwrap()["approvalMode"],
-            "manual"
-        );
-        db::open(home.path())
-            .unwrap()
-            .execute_batch("UPDATE rooms SET owner_id='alice'")
             .unwrap();
         assert_eq!(
             runtime.session_settings(&child).unwrap()["approvalMode"],
@@ -4096,106 +3936,6 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
                 .code,
             4210
         );
-        runtime.shutdown().await;
-    }
-    /// About you reaches only the bots a user owns: a shared bot in another member's
-    /// room sees neither text, and the room cannot loosen the bot's approval mode.
-    #[tokio::test]
-    async fn shared_bot_prompt_carries_no_about_you_and_keeps_owner_policy() {
-        let (home, runtime, _) = setup();
-        for (id, text) in [("alice", "Private owner facts"), ("bob", "Bob likes tea")] {
-            common::atomic_write(
-                &home.path().join("users").join(id).join("user.md"),
-                text.as_bytes(),
-            )
-            .unwrap();
-        }
-        db::open(home.path())
-            .unwrap()
-            .execute_batch(
-                "UPDATE bots SET shareable=1,approval_mode='manual';INSERT INTO sections(id,bot,owner_id,title) VALUES('shared','owl','bob','Shared')",
-            )
-            .unwrap();
-        db::open(home.path())
-            .unwrap()
-            .execute_batch(
-                "INSERT INTO rooms(id,name,owner_id,approval_mode) VALUES('shared-room','Shared','bob','off');INSERT INTO room_members(room_id,member_kind,member_id) VALUES('shared-room','bot','owl');INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('shared-room','owl','shared');",
-            )
-            .unwrap();
-        runtime.open_session("bob", "owl", "shared").await.unwrap();
-        runtime.open_session("alice", "owl", "first").await.unwrap();
-        let frozen = |stored: &str| -> (String, Value) {
-            store::open(home.path())
-                .unwrap()
-                .query_row(
-                    "SELECT prompt,options FROM native_sessions WHERE stored_id=?",
-                    [stored],
-                    |r| {
-                        Ok((
-                            r.get::<_, String>(0)?,
-                            serde_json::from_str(&r.get::<_, String>(1)?).unwrap(),
-                        ))
-                    },
-                )
-                .unwrap()
-        };
-        let (prompt, options) = frozen("shared");
-        assert!(!prompt.contains("Bob likes tea"));
-        assert!(!prompt.contains("Private owner facts"));
-        assert!(!prompt.contains("# About the user"));
-        assert!(prompt.contains(HEXBOT_GUIDANCE));
-        assert!(!prompt.contains("Active bot profile"));
-        assert_eq!(options["approvalMode"], "manual");
-        let (prompt, _) = frozen("first");
-        assert!(prompt.contains("# About the user\nPrivate owner facts"));
-        assert!(!prompt.contains("Bob likes tea"));
-        runtime.close_stored("bob", "shared").await.unwrap();
-        let (clean, mut options) = frozen("shared");
-        assert_eq!(options["prompt_version"], PROMPT_VERSION);
-        // A row frozen by an older build has no tag and may hold a leak.
-        let leaked = format!("{clean}\n\n# About the user\nBob likes tea");
-        options["prompt"] = json!(leaked);
-        options.as_object_mut().unwrap().remove("prompt_version");
-        store::open(home.path())
-            .unwrap()
-            .execute(
-                "UPDATE native_sessions SET prompt=?,options=? WHERE stored_id='shared'",
-                params![leaked, options.to_string()],
-            )
-            .unwrap();
-        runtime.open_session("bob", "owl", "shared").await.unwrap();
-        let (repaired, repaired_options) = frozen("shared");
-        assert_eq!(repaired, clean);
-        assert_eq!(repaired_options["prompt"], repaired);
-        options["prompt"] = json!(clean);
-        options["prompt_version"] = json!(PROMPT_VERSION);
-        assert_eq!(repaired_options, options);
-        runtime.close_stored("bob", "shared").await.unwrap();
-        // Memory that quotes the heading must not rebuild a tagged prompt.
-        common::atomic_write(
-            &home.path().join("profiles/owl/SOUL.md"),
-            b"Changed after repair",
-        )
-        .unwrap();
-        common::atomic_write(
-            &home.path().join("profiles/owl/memories/MEMORY.md"),
-            b"Notes\n\n# About the user\nquoted heading",
-        )
-        .unwrap();
-        runtime.open_session("bob", "owl", "shared").await.unwrap();
-        assert_eq!(frozen("shared").0, repaired);
-        runtime.close_stored("bob", "shared").await.unwrap();
-        store::open(home.path())
-            .unwrap()
-            .execute("DELETE FROM native_sessions WHERE stored_id='shared'", [])
-            .unwrap();
-        runtime.open_session("bob", "owl", "shared").await.unwrap();
-        let (quoted, _) = frozen("shared");
-        assert!(quoted.contains("quoted heading"));
-        runtime.close_stored("bob", "shared").await.unwrap();
-        common::atomic_write(&home.path().join("profiles/owl/SOUL.md"), b"Changed again").unwrap();
-        runtime.open_session("bob", "owl", "shared").await.unwrap();
-        assert_eq!(frozen("shared").0, quoted);
         runtime.shutdown().await;
     }
     /// Tool rows reach clients under the names and previews they label, live and restored.

@@ -12,7 +12,7 @@ Use Bot settings to configure how it works:
 
 | Setting | What it controls |
 | --- | --- |
-| Profile | Display name, face, teammate description, and sharing with other users. |
+| Profile | Display name, face, and teammate description. |
 | Soul | How the bot behaves and speaks. You and the bot can edit it. |
 | Model | The provider and model this bot uses. |
 | Tools | Local capabilities and the working directory on the daemon computer. |

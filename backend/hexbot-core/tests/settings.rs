@@ -42,10 +42,10 @@ fn defaults_and_settings_are_persisted_and_access_controlled() {
             .is_none()
     );
     assert_eq!(
-        settings::update(home.path(), "bob", &json!({}))
+        settings::update(home.path(), "missing", &json!({}))
             .unwrap_err()
             .code,
-        4301
+        4302
     );
     let result = settings::update(
         home.path(),
@@ -55,11 +55,11 @@ fn defaults_and_settings_are_persisted_and_access_controlled() {
     .unwrap();
     assert_eq!(settings::get(home.path()).unwrap(), result);
     assert_eq!(
-        settings::call(home.path(), "bob", "hexbot.settings.get", &json!({}))
+        settings::call(home.path(), "missing", "hexbot.settings.get", &json!({}))
             .unwrap()
             .unwrap_err()
             .code,
-        4301
+        4302
     );
 }
 
@@ -141,65 +141,18 @@ fn usage(home: &std::path::Path) {
 fn usage_is_owned_inclusive_at_since_and_attributes_room_bots_to_adder() {
     let home = setup();
     usage(home.path());
-    let data = settings::summary(home.path(), "alice", None, 200.0).unwrap();
+    let data = settings::summary(home.path(), "alice", 200.0).unwrap();
     assert_eq!(data["input_tokens"], 230);
     assert_eq!(data["output_tokens"], 23);
     assert!((data["estimated_cost_usd"].as_f64().unwrap() - 0.23).abs() < 0.000001);
     assert_eq!(data["by_bot"].as_array().unwrap().len(), 1);
     assert_eq!(
-        settings::summary(home.path(), "alice", None, 200.1).unwrap()["input_tokens"],
+        settings::summary(home.path(), "alice", 200.1).unwrap()["input_tokens"],
         0
     );
     assert_eq!(
-        settings::summary(home.path(), "bob", None, 0.0).unwrap()["input_tokens"],
+        settings::summary(home.path(), "bob", 0.0).unwrap()["input_tokens"],
         999
-    );
-    assert_eq!(
-        settings::summary(home.path(), "bob", Some("alice"), 0.0)
-            .unwrap_err()
-            .code,
-        4301
-    );
-    assert_eq!(
-        settings::summary(home.path(), "alice", Some("bob"), 0.0).unwrap()["input_tokens"],
-        999
-    );
-}
-
-#[test]
-fn budget_uses_utc_day_and_zero_budget_blocks() {
-    let home = setup();
-    usage(home.path());
-    let conn = db::open(home.path()).unwrap();
-    conn.execute(
-        "UPDATE users SET limits_json=? WHERE id='alice'",
-        [json!({"daily_tokens":0}).to_string()],
-    )
-    .unwrap();
-    assert_eq!(
-        settings::check_budget(home.path(), "alice")
-            .unwrap_err()
-            .code,
-        4303
-    );
-    conn.execute(
-        "UPDATE users SET limits_json=? WHERE id='alice'",
-        [json!({"daily_tokens":1}).to_string()],
-    )
-    .unwrap();
-    settings::check_budget(home.path(), "alice").unwrap();
-    let state = rusqlite::Connection::open(home.path().join("profiles/owl/state.db")).unwrap();
-    state
-        .execute(
-            "INSERT INTO session_model_usage VALUES ('a',1,0,0,?)",
-            [hexbot_core::common::now()],
-        )
-        .unwrap();
-    assert_eq!(
-        settings::check_budget(home.path(), "alice")
-            .unwrap_err()
-            .code,
-        4303
     );
 }
 
@@ -258,7 +211,7 @@ fn native_usage_merges_legacy_and_counts_cached_input_without_cross_user_leaks()
     usage(home.path());
     let conn = hexbot_core::runtime_store::open(home.path()).unwrap();
     conn.execute_batch("INSERT INTO native_usage(session_id,owner_id,bot,model,provider,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost,timestamp) VALUES ('a','alice','owl','m','p',10,2,20,30,0.1,200),('a','alice','owl','m','p',1000,2,0,0,0.1,199),('b','bob','owl','m','p',1000,2,0,0,0.1,200);").unwrap();
-    let data = settings::summary(home.path(), "alice", None, 200.0).unwrap();
+    let data = settings::summary(home.path(), "alice", 200.0).unwrap();
     assert_eq!(data["input_tokens"], 290);
     assert_eq!(data["output_tokens"], 25);
     assert!((data["estimated_cost_usd"].as_f64().unwrap() - 0.33).abs() < 0.000001);

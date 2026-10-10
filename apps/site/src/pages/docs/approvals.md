@@ -29,7 +29,7 @@ Manual is for work you want to watch closely. Reads are free; every change asks.
 
 ## Bypass
 
-Bypass is plain Pi, the agent runtime: no prompts, no sandbox, no credential checks. Bots can read and change anything the daemon's user account can, including Hexbot's own credential files and provider keys. Only the admin can choose it. A member's bots and rooms run in Auto instead, and so does an admin's bot that a member uses in their own section or room. Reserve it for a machine you can rebuild.
+Bypass is plain Pi, the agent runtime: no prompts, no sandbox, no credential checks. Bots can read and change anything the daemon's user account can, including Hexbot's own credential files and provider keys. Reserve it for a machine you can rebuild.
 
 ## Connected tools
 
@@ -40,7 +40,7 @@ Allow in this section covers that server while the section's agent process runs.
 Shell and file calls inside a script still follow their usual approval rules.
 Removing or turning off a server stops its tools at once, even in open sections.
 
-Connected servers are trusted code configured by the admin. They run outside
+Connected servers are trusted code you configure. They run outside
 the shell sandbox, in a daemon-owned directory. Each section starts its own
 process per connected server. A server receives its explicit
 environment settings and the runtime's allowed environment variables, rather

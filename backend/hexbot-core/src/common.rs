@@ -84,22 +84,6 @@ pub fn user(home: &Path, caller: &str) -> Result<Value> {
     .next()
     .ok_or_else(|| Error::new(4302, "not the owner"))
 }
-pub fn admin(home: &Path, caller: &str) -> Result<()> {
-    if user(home, caller)?["role"] != "admin" {
-        return Err(Error::new(4301, "admin only"));
-    }
-    Ok(())
-}
-/// Bypass reads everything the daemon can, the admin's provider keys included,
-/// so only the admin chooses it for a bot or a room.
-pub fn bypass_allowed(home: &Path, caller: &str, patch: &Value) -> Result<()> {
-    if patch.get("approval_mode").and_then(Value::as_str) == Some("off")
-        && user(home, caller)?["role"] != "admin"
-    {
-        return Err(Error::new(4301, "Only the admin can choose Bypass."));
-    }
-    Ok(())
-}
 pub fn owner(home: &Path, caller: &str, owner: &str) -> Result<()> {
     user(home, caller)?;
     if caller != owner {
@@ -119,63 +103,6 @@ pub fn bot_owner(home: &Path, caller: &str, bot: &str) -> Result<()> {
         caller,
         &owner_id.ok_or_else(|| Error::new(4205, format!("bot not found: {bot}")))?,
     )
-}
-/// Authorize a bot's tools without granting room owners access to unrelated profiles.
-/// Delegates retain a parent-session link and lose access when that room loses access.
-pub fn bot_session_access(home: &Path, caller: &str, bot: &str, stored: &str) -> Result<()> {
-    user(home, caller)?;
-    identifier(bot)?;
-    identifier(stored)?;
-    let conn = db::open(home)?;
-    let row: Option<(String, bool)> = conn
-        .query_row(
-            "SELECT owner_id,shareable FROM bots WHERE name=?",
-            [bot],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    let (owner, shared) = row.ok_or_else(|| Error::new(4205, format!("bot not found: {bot}")))?;
-    if owner == caller {
-        return Ok(());
-    }
-    if !shared {
-        return Err(Error::new(4302, "not the owner"));
-    }
-    let mut session = stored.to_owned();
-    let mut seen = std::collections::HashSet::new();
-    for _ in 0..16 {
-        if !seen.insert(session.clone()) {
-            break;
-        }
-        let authorized: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM room_sessions s JOIN rooms r ON r.id=s.room_id JOIN room_members m ON m.room_id=r.id AND m.member_kind='bot' AND m.member_id=s.bot WHERE s.stored_session_id=?1 AND s.bot=?2 AND r.owner_id=?3 AND r.archived_at IS NULL AND m.left_at IS NULL)",
-            rusqlite::params![session, bot, caller],
-            |r| r.get(0),
-        )?;
-        if authorized {
-            return Ok(());
-        }
-        let parent =
-            Connection::open_with_flags(
-                home.join("hexbot-runtime.db"),
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-            .ok()
-            .and_then(|native| {
-                native.query_row(
-                "SELECT options FROM native_sessions WHERE stored_id=? AND owner=? AND bot=?",
-                rusqlite::params![session, caller, bot], |r| r.get::<_, String>(0),
-            ).optional().ok().flatten()
-            })
-            .and_then(|options| serde_json::from_str::<Value>(&options).ok())
-            .and_then(|options| options["parent_session"].as_str().map(str::to_owned));
-        let Some(parent) = parent else {
-            break;
-        };
-        identifier(&parent)?;
-        session = parent;
-    }
-    Err(Error::new(4302, "not the owner"))
 }
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path

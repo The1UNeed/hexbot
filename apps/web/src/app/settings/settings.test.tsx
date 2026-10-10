@@ -14,19 +14,19 @@ import type { UpdateState } from '../../lib/bridge'
 import { pairWithDaemon } from '../../lib/connection'
 import type { DaemonInfo } from '../../lib/types'
 import { useConnection } from '../../stores/connection'
+import { useMe } from '../../stores/me'
 import { useSettings } from '../../stores/settings'
 import { useUpdates } from '../../stores/updates'
-import { useUsers } from '../../stores/users'
 
 import {
   AboutSettings,
   AppearanceSettings,
   ApprovalsSettings,
   ConnectSettings,
+  MemorySettings,
   NetworkSettings,
   ProvidersSettings,
-  UpdatesSettings,
-  UsersSettings
+  UpdatesSettings
 } from './index'
 
 vi.mock('../../lib/api', async importOriginal => ({
@@ -83,6 +83,7 @@ describe('settings', () => {
       settings: null
     })
     useConnection.setState({ status: 'connected', target: null })
+    useMe.setState({ me: { display_name: 'Alex', id: 'local' } })
     document.documentElement.removeAttribute('data-theme')
     vi.clearAllMocks()
   })
@@ -231,7 +232,7 @@ describe('settings', () => {
     await waitFor(() => expect(revokeDevice).toHaveBeenCalledExactlyOnceWith('other'))
   })
 
-  it('maps Auto approvals to smart and offers Bypass to the admin only', () => {
+  it('maps Auto approvals to smart and offers Bypass', () => {
     const patch = vi.fn().mockResolvedValue(undefined)
     useSettings.setState({
       patch,
@@ -246,20 +247,39 @@ describe('settings', () => {
         workspace_dir: ''
       }
     })
-    useUsers.setState({
-      current: { display_name: 'Ana', id: 'ana', role: 'member' } as never,
-      supported: true
-    })
-    const { unmount } = render(<ApprovalsSettings />)
-    expect(screen.queryByRole('radio', { name: /^Bypass/ })).toBeNull()
+    render(<ApprovalsSettings />)
     fireEvent.click(screen.getByRole('radio', { name: /^Auto/ }))
     expect(patch).toHaveBeenCalledWith({ approval_mode: 'smart' })
-    unmount()
-    useUsers.setState({ current: { display_name: 'Ana', id: 'ana', role: 'admin' } as never })
-    render(<ApprovalsSettings />)
     fireEvent.click(screen.getByRole('radio', { name: /^Bypass/ }))
     expect(patch).toHaveBeenCalledWith({ approval_mode: 'off' })
     expect(screen.queryByText(/approver model/i)).toBeNull()
+  })
+
+  it.each([
+    ['member', 'smart', false],
+    ['member', 'off', true],
+    ['admin', 'smart', true],
+    [undefined, 'smart', true]
+  ] as const)('global approvals for role %s, mode %s offer Bypass: %s', (role, approval_mode, bypass) => {
+    useMe.setState({ me: { display_name: 'Alex', id: 'local', role } })
+    useSettings.setState({
+      refresh: vi.fn().mockResolvedValue(undefined),
+      settings: {
+        approval_mode,
+        billing_notice_ack: false,
+        dream_enabled: true,
+        dream_time: '03:00',
+        lan_enabled: false,
+        service_installed: false,
+        workspace_dir: ''
+      }
+    })
+    render(<ApprovalsSettings />)
+    expect(screen.queryByRole('radio', { name: /^Bypass/ }) !== null).toBe(bypass)
+
+    if (approval_mode === 'off') {
+      expect(screen.getByRole('radio', { name: /^Bypass/ })).toBeChecked()
+    }
   })
 
   it('warns when the daemon has no OS sandbox, and only then', async () => {
@@ -542,16 +562,27 @@ describe('settings', () => {
     }
   })
 
-  it('gates user management to administrators', () => {
-    useUsers.setState({
-      current: { display_name: 'Member', id: 'u1', role: 'member' },
-      refresh: vi.fn().mockResolvedValue(undefined),
-      supported: true,
-      users: []
-    })
-    render(<UsersSettings />)
-    expect(screen.getByText('Only administrators can manage users.')).toBeVisible()
-    expect(screen.queryByRole('button', { name: 'Invite' })).not.toBeInTheDocument()
+  it('renames you from the Memory page', () => {
+    const rename = vi.fn().mockResolvedValue(undefined)
+    useSettings.setState({ refresh: vi.fn().mockResolvedValue(undefined) })
+    useMe.setState({ me: { can_rename: true, display_name: 'Admin', id: 'local' }, rename })
+    render(<MemorySettings />)
+    const name = screen.getByLabelText('Your name')
+    fireEvent.blur(name, { target: { value: 'Admin' } })
+    expect(rename).not.toHaveBeenCalled()
+    fireEvent.change(name, { target: { value: '   ' } })
+    fireEvent.blur(name)
+    expect(name).toHaveValue('Admin')
+    expect(rename).not.toHaveBeenCalled()
+    fireEvent.change(name, { target: { value: '  Alex ' } })
+    fireEvent.blur(name)
+    expect(rename).toHaveBeenCalledWith('Alex')
+  })
+
+  it('hides the name editor on older daemons', () => {
+    useMe.setState({ me: { display_name: 'Admin', id: 'local' } })
+    render(<MemorySettings />)
+    expect(screen.queryByLabelText('Your name')).toBeNull()
   })
 
   it('lists open source licenses with GitHub links and returns to About', async () => {

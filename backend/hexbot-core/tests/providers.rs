@@ -12,7 +12,12 @@ use std::{
 fn setup() -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     db::migrate(home.path()).unwrap();
-    db::open(home.path()).unwrap().execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES ('member','Member','member',0),('other','Other','admin',0)").unwrap();
+    db::open(home.path())
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO users(id,display_name,role,created_at) VALUES ('other','Other','admin',0)",
+        )
+        .unwrap();
     home
 }
 async fn call(home: &Path, caller: &str, method: &str, p: Value) -> hexbot_core::Result<Value> {
@@ -46,7 +51,7 @@ async fn credentials_reach_profiles_without_leaking_to_clients() {
             .unwrap()
             .contains("OPENAI_API_KEY=")
     );
-    let rows = call(home.path(), "member", "hexbot.providers.list", json!({}))
+    let rows = call(home.path(), "local", "hexbot.providers.list", json!({}))
         .await
         .unwrap();
     assert!(!rows.to_string().contains("secret"));
@@ -90,26 +95,6 @@ async fn credentials_reach_profiles_without_leaking_to_clients() {
 #[tokio::test]
 async fn guards_provider_mutations_and_rejects_invalid_keys() {
     let home = setup();
-    for method in [
-        "hexbot.providers.set_key",
-        "hexbot.providers.clear_key",
-        "hexbot.providers.login_start",
-        "model.save_key",
-        "model.disconnect",
-    ] {
-        assert_eq!(
-            call(
-                home.path(),
-                "member",
-                method,
-                json!({"provider":"openai","key":"secret","slug":"openai-api","api_key":"secret"})
-            )
-            .await
-            .unwrap_err()
-            .code,
-            4301
-        )
-    }
     assert_eq!(
         call(home.path(), "missing", "hexbot.providers.list", json!({}))
             .await
@@ -160,7 +145,7 @@ async fn model_catalog_preserves_aliases_and_curated_rows() {
     let home = setup();
     let models = call(
         home.path(),
-        "member",
+        "local",
         "hexbot.models.list",
         json!({"provider":"chatgpt"}),
     )
@@ -176,7 +161,7 @@ async fn model_catalog_preserves_aliases_and_curated_rows() {
     );
     let models = call(
         home.path(),
-        "member",
+        "local",
         "hexbot.models.list",
         json!({"provider":"openai"}),
     )

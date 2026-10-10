@@ -47,7 +47,6 @@ const bot = {
   provider: null,
   sections_recent: [],
   sections_total: 0,
-  shareable: false,
   skills: [],
   title: '',
   tools: [],

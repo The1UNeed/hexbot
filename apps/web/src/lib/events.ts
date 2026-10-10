@@ -24,6 +24,7 @@ import type { GatewayEvent } from '@hermes/shared'
 
 import { useBots } from '../stores/bots'
 import { useConnectors } from '../stores/connectors'
+import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
 import { useSections } from '../stores/sections'
 import { useSettings } from '../stores/settings'
@@ -131,6 +132,11 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
       return
 
+    case 'hexbot.users.changed':
+      void useMe.getState().refresh()
+
+      return
+
     case 'hexbot.memory.user.changed':
       return
 
@@ -166,10 +172,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
     }
 
     case 'hexbot.rooms.changed':
-      if (
-        typeof payload.id === 'string' &&
-        (payload.deleted === true || payload.removed === true)
-      ) {
+      if (typeof payload.id === 'string' && payload.deleted === true) {
         rooms.drop(payload.id)
       } else if (typeof payload.id === 'string') {
         void rooms.refreshOne(payload.id)

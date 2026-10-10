@@ -21,7 +21,7 @@ import { Select } from '../../components/ui/select'
 import { StatusDot, StatusTag } from '../../components/ui/status-dot'
 import { Title } from '../../components/ui/title'
 import { providerModels, sectionsMarkRead } from '../../lib/api'
-import { useApprovalModes } from '../../lib/approval-modes'
+import { approvalModes } from '../../lib/approval-modes'
 import {
   avatarPng,
   avatarSrc,
@@ -38,6 +38,7 @@ import type { Bot, ModelOption, ReasoningEffort, Room, RoomEvent, Section } from
 import { useBotList, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useDrafts } from '../../stores/drafts'
+import { useMe } from '../../stores/me'
 import { roomStatus, roomUnread, useRoomList, useRooms } from '../../stores/rooms'
 import {
   botStatusWithLive,
@@ -51,7 +52,6 @@ import {
 } from '../../stores/sections'
 import { useSettings } from '../../stores/settings'
 import { useTranscripts } from '../../stores/transcripts'
-import { useUsers } from '../../stores/users'
 import { rememberedTab } from '../bot-settings'
 import { UpdatePill } from '../update-pill'
 
@@ -138,7 +138,7 @@ function RoomRow({
   const bots = useBots(state => state.byName)
   const events = useRooms(state => state.eventsByRoom[room.id] ?? NO_EVENTS)
   const turns = useRooms(state => state.liveTurnsByRoom[room.id])
-  const currentId = useUsers(state => state.current?.id)
+  const currentId = useMe(state => state.me?.id)
 
   if (query && !room.name.toLowerCase().includes(query)) {
     return null
@@ -413,7 +413,7 @@ export function RosterColumn() {
   const sectionMap = useSections(state => state.byId)
   const drafts = useDrafts(state => state.byId)
   const connection = useConnection()
-  const currentUser = useUsers(state => state.current)
+  const me = useMe(state => state.me)
   const [query, setQuery] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [botDialog, setBotDialog] = useState(false)
@@ -793,7 +793,7 @@ export function RosterColumn() {
         <UpdatePill className="mb-1 w-full" />
         <div className={cn(footerRow, 'hover:bg-transparent')}>
           <span className="relative">
-            <PersonAvatar name={currentUser?.display_name ?? 'You'} />
+            <PersonAvatar name={me?.display_name ?? 'You'} />
             <span
               className={cn(
                 'absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-surface',
@@ -803,7 +803,7 @@ export function RosterColumn() {
             />
           </span>
           <span className="min-w-0 flex-1 truncate font-medium">
-            {currentUser?.display_name ?? 'Local user'}
+            {me?.display_name ?? 'You'}
           </span>
           <button
             aria-label="Settings"
@@ -963,15 +963,13 @@ function NewRoomDialog({
   open: boolean
 }) {
   const bots = useBotList()
-  const users = useUsers(state => state.users)
+  const role = useMe(state => state.me?.role)
   const settings = useSettings(state => state.settings)
   const [name, setName] = useState('')
   const [query, setQuery] = useState('')
   const [members, setMembers] = useState<string[]>([])
-  const [humanMembers, setHumanMembers] = useState<string[]>([])
   const [mainBot, setMainBot] = useState('')
   const [approvalMode, setApprovalMode] = useState(settings?.approval_mode ?? 'smart')
-  const approvalModes = useApprovalModes(approvalMode)
   const [turns, setTurns] = useState(String(settings?.room_bot_turns_per_human_turn ?? 8))
   const [budget, setBudget] = useState(String(settings?.room_budget_tokens_per_human_turn ?? ''))
   const [error, setError] = useState<string | null>(null)
@@ -999,7 +997,7 @@ function NewRoomDialog({
                 budget_tokens_per_human_turn: budget ? Number(budget) : null
               },
               main_bot: mainBot || undefined,
-              members: [...members, ...humanMembers],
+              members,
               name: name.trim()
             })
             .then(room => {
@@ -1046,27 +1044,6 @@ function NewRoomDialog({
               </label>
             ))}
         </fieldset>
-        {users.length > 1 ? (
-          <fieldset className="border-y border-border py-2">
-            <legend className="mb-1 font-medium">People</legend>
-            {users.map(user => (
-              <label className="flex items-center gap-3 py-1" key={user.id}>
-                <input
-                  checked={humanMembers.includes(user.id)}
-                  onChange={event =>
-                    setHumanMembers(items =>
-                      event.target.checked
-                        ? [...items, user.id]
-                        : items.filter(id => id !== user.id)
-                    )
-                  }
-                  type="checkbox"
-                />
-                <span>{user.display_name}</span>
-              </label>
-            ))}
-          </fieldset>
-        ) : null}
         <label className="grid gap-1">
           <span>
             Main bot <span className="text-muted">(optional)</span>
@@ -1090,7 +1067,7 @@ function NewRoomDialog({
           <Select
             label="Room approval mode"
             onValueChange={value => setApprovalMode(value as typeof approvalMode)}
-            options={approvalModes.map(({ label, value }) => ({ label, value }))}
+            options={approvalModes(role, approvalMode).map(({ label, value }) => ({ label, value }))}
             value={approvalMode}
           />
         </label>
@@ -1127,7 +1104,7 @@ function NewRoomDialog({
             Cancel
           </Button>
           <Button
-            disabled={!name.trim() || (!members.length && !humanMembers.length)}
+            disabled={!name.trim() || !members.length}
             type="submit"
             variant="primary"
           >

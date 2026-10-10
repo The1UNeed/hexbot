@@ -14,7 +14,7 @@ On another computer, choose **Connect to a daemon** and use its address and pair
 
 ## 2. Tell bots about yourself
 
-Setup first asks for your name, what you do, and how bots should speak to you. This becomes **About you**, one text that every bot you own reads. Edit it later in Settings, Memory. Only you can write this text.
+Setup first asks for your name, what you do, and how bots should speak to you. Your name is what rooms show on your messages; all three become **About you**, one text that every bot you own reads. Edit it later in Settings, Memory. Only you can write this text.
 
 Keep it practical. Your preferred language, units, and working hours are useful. Passwords and provider keys belong in their credential settings.
 

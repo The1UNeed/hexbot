@@ -583,7 +583,7 @@ pub async fn call(
     name: &str,
     args: &Value,
 ) -> Result<Value> {
-    common::bot_session_access(home, owner, bot, stored)?;
+    common::bot_owner(home, owner, bot)?;
     common::identifier(stored)?;
     let mut stopped = {
         let mut map = cancellations().lock().unwrap_or_else(|e| e.into_inner());
@@ -599,7 +599,7 @@ pub async fn call(
             return result;
         }
         if let Some(result) =
-            crate::native_external_tools::call(home, owner, bot, stored, name, args.clone()).await
+            crate::native_external_tools::call(home, owner, bot, name, args.clone()).await
         {
             return result;
         }

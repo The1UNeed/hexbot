@@ -17,11 +17,11 @@ import { buildHermesWebSocketUrl, DeviceProofError, isDeviceProofCode, type Pair
 
 import { botsActions } from '../stores/bots'
 import { connectionActions } from '../stores/connection'
+import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
 import { sectionsActions } from '../stores/sections'
 import { settingsActions } from '../stores/settings'
 import { uiActions } from '../stores/ui'
-import { useUsers } from '../stores/users'
 
 import { getBridge, type HexbotBridge } from './bridge'
 import { DaemonIdentityError, DaemonUnreachableError } from './daemon-identity'
@@ -537,7 +537,7 @@ export class ConnectionSupervisor {
         settingsActions().refresh(),
         botsActions().refresh(),
         useRooms.getState().refresh(),
-        useUsers.getState().refresh()
+        useMe.getState().refresh()
       ])
 
       store.setDaemon(info)

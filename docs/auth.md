@@ -106,8 +106,8 @@ daemon verifies the grant against Connect's cached JWKS, checks that its
 platform `connect`. The grant never becomes a session token. The returned
 `hxb_` device token follows the same cookie or bearer flow as LAN pairing.
 
-User updates must leave at least one enabled admin. Disable or demote an admin
-only after another enabled admin exists. Pairing limits track up to 4096 client
+A daemon belongs to one person, the user `local`; every device, Connect
+grant and pairing code is theirs. Pairing limits track up to 4096 client
 buckets, each allowing ten attempts per minute. When all buckets are occupied,
 a new client replaces the least recently used bucket.
 

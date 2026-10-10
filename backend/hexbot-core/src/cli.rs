@@ -447,7 +447,6 @@ pub async fn execute(home: &Path, args: &[String]) -> Result<Value> {
     db::migrate(home)?;
     common::user(home, "local")?;
     if method == "register" {
-        common::admin(home, "local")?;
         if services::ConnectConfig::load(home)?.is_some_and(|c| !c.daemon_id.is_empty()) {
             return Err(Error::new(
                 4240,

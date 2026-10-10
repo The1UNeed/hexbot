@@ -2112,11 +2112,7 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
     }
     Some(
         async {
-            if method == "hexbot.update.status" {
-                common::user(home, caller)?;
-            } else {
-                common::admin(home, caller)?;
-            }
+            common::user(home, caller)?;
             match method {
                 "hexbot.connect.status" => connect_status(home).await,
                 "hexbot.connect.register_start" => {

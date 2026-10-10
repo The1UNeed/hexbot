@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import {
   Archive,
   Brain,
@@ -9,20 +9,27 @@ import {
   KeyRound,
   ShieldCheck,
   SunMoon,
-  Users,
   Wifi
 } from 'lucide-react'
 
 import { AppShell } from '../app/app-shell'
-import { SettingsPanel, type SettingsTab } from '../app/settings'
+import { SETTINGS_TABS, SettingsPanel, type SettingsTab } from '../app/settings'
 import {
   SettingsShell,
   type SettingsTabGroup,
   type SettingsTabItem
 } from '../components/ui/settings-shell'
-import { useUsers } from '../stores/users'
+import { useMe } from '../stores/me'
 
-export const Route = createFileRoute('/settings/$tab')({ component: SettingsDialog })
+export const Route = createFileRoute('/settings/$tab')({
+  // Old links, such as the Users tab, land on the first tab.
+  beforeLoad: ({ params }) => {
+    if (!SETTINGS_TABS.includes(params.tab as SettingsTab)) {
+      throw redirect({ params: { tab: 'providers' }, replace: true, to: '/settings/$tab' })
+    }
+  },
+  component: SettingsDialog
+})
 
 const ITEMS: Record<SettingsTab, SettingsTabItem<SettingsTab>> = {
   about: { icon: Info, id: 'about', label: 'About' },
@@ -34,13 +41,12 @@ const ITEMS: Record<SettingsTab, SettingsTabItem<SettingsTab>> = {
   network: { icon: Wifi, id: 'network', label: 'Network' },
   providers: { icon: KeyRound, id: 'providers', label: 'Providers' },
   updates: { icon: Download, id: 'updates', label: 'Updates' },
-  usage: { icon: Gauge, id: 'usage', label: 'Usage' },
-  users: { icon: Users, id: 'users', label: 'Users' }
+  usage: { icon: Gauge, id: 'usage', label: 'Usage' }
 }
 
 const GROUPS: { ids: SettingsTab[]; label: string }[] = [
   { ids: ['providers', 'usage'], label: 'Models' },
-  { ids: ['network', 'connect', 'users'], label: 'Devices' },
+  { ids: ['network', 'connect'], label: 'Devices' },
   { ids: ['memory', 'archive', 'approvals', 'appearance'], label: 'You' },
   { ids: ['updates', 'about'], label: 'App' }
 ]
@@ -48,16 +54,8 @@ const GROUPS: { ids: SettingsTab[]; label: string }[] = [
 function SettingsDialog() {
   const { tab } = Route.useParams()
   const navigate = useNavigate()
-  const supported = useUsers(state => state.supported)
-  const current = useUsers(state => state.current)
-  const usageSupported = useUsers(state => state.usageSupported)
-
-  const visible = (item: SettingsTab) =>
-    item === 'users'
-      ? Boolean(supported && current?.role === 'admin')
-      : item === 'usage'
-        ? Boolean(usageSupported)
-        : true
+  const usageSupported = useMe(state => state.usageSupported)
+  const visible = (item: SettingsTab) => item !== 'usage' || Boolean(usageSupported)
 
   const tabs: SettingsTabGroup<SettingsTab>[] = GROUPS.map(group => ({
     items: group.ids.filter(visible).map(id => ITEMS[id]),
