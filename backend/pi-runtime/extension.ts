@@ -368,11 +368,18 @@ export default function hexbot(pi: any) {
     Object.assign(event.headers, reply.result?.headers ?? {});
   });
   pi.on('before_agent_start', async (_event: any, ctx: any) => {
-    await refresh(ctx);
-    await registerMcp(ctx);
-    primary ??= ctx.model;
-    const model = ctx.modelRegistry.find(live.provider, live.model) ?? primary;
-    if (model && (ctx.model?.provider !== model.provider || ctx.model?.id !== model.id)) await pi.setModel(model);
+    // Pi 1.0.1 drops the result of a handler that throws and runs on its
+    // launch prompt, which is stale once a section adopts a refreshed one.
+    // Whatever fails here, still return the prompt Pi is running.
+    try {
+      await refresh(ctx);
+      await registerMcp(ctx);
+      primary ??= ctx.model;
+      const model = ctx.modelRegistry.find(live.provider, live.model) ?? primary;
+      if (model && (ctx.model?.provider !== model.provider || ctx.model?.id !== model.id)) await pi.setModel(model);
+    } catch (error: any) {
+      ctx.ui.notify(`Could not load the latest settings, so this turn uses the previous ones: ${error?.message ?? error}`, 'warning');
+    }
     fallbackUsed = false; iterations = 0; limitReached = false;
 
     if (pendingPrompt !== undefined) {
