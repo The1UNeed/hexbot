@@ -25,11 +25,11 @@ function assertChangesOnlyAtCompaction(state) {
 
 // Exercise the installed Pi's actual compaction, run and provider boundaries.
 // Only the provider and daemon bridge are fixtures; no provider credits/network.
-async function fixture(t, {midRun = false, prePrompt = false} = {}) {
+async function fixture(t, {midRun = false, prePrompt = false, mcp = false} = {}) {
   const home = mkdtempSync(join(tmpdir(), 'hexbot-prompt-refresh-'));
   const previous = process.env.HEXBOT_SESSION_CONFIG;
   process.env.HEXBOT_SESSION_CONFIG = join(home, 'session.json');
-  const config = {home, cwd:home, prompt:'Original prompt', tools:[], provider:'refresh-fixture', model:'fixture', approvalMode:'off'};
+  const config = {home, cwd:home, prompt:'Original prompt', tools:[], provider:'refresh-fixture', model:'fixture', approvalMode:'off', ...(mcp && {mcpServers:['fixture']})};
   writeFileSync(process.env.HEXBOT_SESSION_CONFIG, JSON.stringify(config));
   t.after(() => {
     if (previous === undefined) delete process.env.HEXBOT_SESSION_CONFIG;
@@ -38,7 +38,7 @@ async function fixture(t, {midRun = false, prePrompt = false} = {}) {
   });
   // A fake daemon: `prompt` is what it would build now, `offered` its last
   // offer, and `persisted` the saved prompt a reopened section starts on.
-  const state = {prompt:'Changed prompt', persisted:'Original prompt', offered:undefined, drop:false, adoptReply:'answer', requests:[], hashes:[], adopts:[], events:[], timeline:[], replies:0};
+  const state = {prompt:'Changed prompt', persisted:'Original prompt', offered:undefined, drop:false, adoptReply:'answer', fail:undefined, warnings:[], requests:[], hashes:[], adopts:[], events:[], timeline:[], replies:0};
   const settingsManager = SettingsManager.inMemory({compaction:{enabled:!prePrompt, reserveTokens:8192, keepRecentTokens:1}, retry:{enabled:false}});
   let session;
   let sessionFile;
@@ -87,7 +87,12 @@ async function fixture(t, {midRun = false, prePrompt = false} = {}) {
     sessionFile = sessionManager.getSessionFile();
     await session.bindExtensions({uiContext:{async input(title) {
       const {name, args} = JSON.parse(title.slice('__HEXBOT_TOOL__'.length));
-      if (name === 'hexbot_session_settings') return JSON.stringify({result:config});
+      if (name === 'hexbot_session_settings') {
+        if (state.fail === 'settings') return JSON.stringify({error:'settings unavailable'});
+        // A changed connected-tools state makes the extension fetch servers again.
+        return JSON.stringify({result:state.fail === 'connected tools' ? {...config, mcpState:state.requests.length} : config});
+      }
+      if (name === 'hexbot_mcp_servers') return JSON.stringify({result:state.fail === 'connected tools' ? null : []});
       if (name === 'hexbot_session_prompt' && args.adopt) {
         state.adopts.push(args.adopt);
         if (args.adopt !== hash(state.offered ?? '')) return JSON.stringify({error:'prompt was not offered'});
@@ -105,7 +110,7 @@ async function fixture(t, {midRun = false, prePrompt = false} = {}) {
         return JSON.stringify({result:offer ? {text:state.prompt} : null});
       }
       return JSON.stringify({result:null});
-    }}, onError:error => assert.fail(error.message)});
+    }, notify(message) { state.warnings.push(message); }}, onError:error => assert.fail(error.message)});
     await session.setModel(modelRuntime.getModel('refresh-fixture', 'fixture'));
   };
   await start();
@@ -250,3 +255,28 @@ test('Pi restart before adoption ignores an undelivered or unused offer', {timeo
     assert.deepEqual(f.state.adopts, []);
   }
 });
+
+for (const fail of ['settings', 'connected tools']) {
+  test(`Pi keeps the adopted prompt when loading ${fail} fails`, {timeout:30000}, async t => {
+    const f = await fixture(t, {mcp:true});
+    await f.session.prompt('First run');
+    await f.session.compact();
+    await f.session.prompt('Adopt');
+    assert.equal(f.state.requests.at(-1), 'Changed prompt');
+    // Pi's launch prompt is now stale; a failure must not fall back to it.
+    f.state.fail = fail;
+    await f.session.prompt('Loading fails');
+    assert.equal(f.state.requests.at(-1), 'Changed prompt');
+    assert.equal(f.state.warnings.length, 1);
+    // Failing on the adoption turn itself still adopts the saved prompt.
+    f.state.fail = undefined;
+    f.state.prompt = 'Third prompt';
+    await f.session.compact();
+    f.state.fail = fail;
+    await f.session.prompt('Adopt while loading fails');
+    assert.equal(f.state.requests.at(-1), 'Third prompt');
+    assert.equal(f.state.persisted, 'Third prompt');
+    assert.deepEqual(f.state.requests, ['Original prompt', 'Changed prompt', 'Changed prompt', 'Third prompt']);
+    assertChangesOnlyAtCompaction(f.state);
+  });
+}
