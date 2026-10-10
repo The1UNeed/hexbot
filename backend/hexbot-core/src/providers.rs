@@ -6,7 +6,7 @@ use crate::{Error, Result, common};
 use base64::Engine;
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
@@ -136,6 +136,8 @@ fn pi_catalog() -> &'static Value {
 /// running Pi keeps the settings it loaded, so an unchanged file is left alone.
 fn write_pi_settings(agent_dir: &Path, providers: &Value) -> Result<()> {
     let mut overrides = json!({});
+    // A registry model can use the global budgets and need no override.
+    let mut registry_keys = HashSet::new();
     let mut scale = |key: String, window: u64| {
         let (reserve, keep) = compaction_budget(window);
         if (reserve, keep) != (COMPACTION_RESERVE_TOKENS, COMPACTION_KEEP_RECENT_TOKENS)
@@ -146,17 +148,22 @@ fn write_pi_settings(agent_dir: &Path, providers: &Value) -> Result<()> {
     };
     for (pi, entry) in providers.as_object().into_iter().flatten() {
         for model in entry["models"].as_array().into_iter().flatten() {
-            if let (Some(id), Some(window)) =
-                (model["id"].as_str(), model["contextWindow"].as_u64())
-            {
-                scale(format!("{pi}/{id}"), window);
+            if let Some(id) = model["id"].as_str() {
+                let key = format!("{pi}/{id}");
+                registry_keys.insert(key.clone());
+                if let Some(window) = model["contextWindow"].as_u64() {
+                    scale(key, window);
+                }
             }
         }
     }
     for (pi, entry) in pi_catalog()["providers"].as_object().into_iter().flatten() {
         for (id, window) in entry["windows"].as_object().into_iter().flatten() {
-            if let Some(window) = window.as_u64() {
-                scale(format!("{pi}/{id}"), window);
+            let key = format!("{pi}/{id}");
+            if !registry_keys.contains(&key)
+                && let Some(window) = window.as_u64()
+            {
+                scale(key, window);
             }
         }
     }
@@ -1268,6 +1275,20 @@ fn prepare_pi_config_locked(
     }
     for (k, v) in providers.as_object().unwrap() {
         models["providers"][k] = v.clone()
+    }
+    // Retained custom models use the same current window as outgoing requests.
+    if let Some(window) = custom_context_window("custom", &root, &profile_cfg) {
+        for provider in ["custom", "custom:custom"] {
+            for model in models["providers"]
+                .get_mut(provider)
+                .and_then(|entry| entry.get_mut("models"))
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                model["contextWindow"] = json!(window);
+            }
+        }
     }
     write_json(&agent_dir.join("models.json"), &models)?;
     write_pi_settings(agent_dir, &models["providers"])
@@ -2558,6 +2579,115 @@ mod migration_tests {
                 json!({"reserveTokens":2048,"keepRecentTokens":2048})
             );
         }
+    }
+
+    #[test]
+    fn registry_windows_take_precedence_over_catalog_compaction_budgets() {
+        let home = tempfile::tempdir().unwrap();
+        crate::db::migrate(home.path()).unwrap();
+        let id = "Qwen/Qwen2.5-7B-Instruct-Turbo";
+        let key = format!("together/{id}");
+        assert_eq!(pi_catalog()["providers"]["together"]["windows"][id], 32768);
+        let dir = home.path().join("profiles/owl/pi");
+        for (window, expected) in [
+            (131072, None),
+            (
+                65536,
+                Some(json!({"reserveTokens":16384,"keepRecentTokens":16384})),
+            ),
+            (
+                8192,
+                Some(json!({"reserveTokens":2048,"keepRecentTokens":2048})),
+            ),
+            (131072, None),
+        ] {
+            common::write_config(
+                home.path(),
+                &json!({"providers":{"together":{"base_url":"http://example.test/v1","models":[id]}},
+                    "model_overrides":{"together":{id:{"context_window":window}}}}),
+            )
+            .unwrap();
+            prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
+            let models = read_json(&dir.join("models.json")).unwrap();
+            let model = models["providers"]["together"]["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|model| model["id"] == id)
+                .unwrap();
+            assert_eq!(model["contextWindow"], window);
+            let settings = read_json(&dir.join("settings.json")).unwrap();
+            assert_eq!(settings["compaction"]["reserveTokens"], 16384);
+            assert_eq!(settings["compaction"]["keepRecentTokens"], 20000);
+            assert_eq!(
+                settings["compaction"]["modelOverrides"].get(&key),
+                expected.as_ref()
+            );
+        }
+        // The catalog still supplies budgets when the registry does not list the model.
+        write_pi_settings(&dir, &json!({})).unwrap();
+        let settings = read_json(&dir.join("settings.json")).unwrap();
+        assert_eq!(
+            settings["compaction"]["modelOverrides"][&key],
+            json!({"reserveTokens":8192,"keepRecentTokens":8192})
+        );
+    }
+
+    #[test]
+    fn retained_custom_models_use_the_current_configured_window() {
+        let home = tempfile::tempdir().unwrap();
+        crate::db::migrate(home.path()).unwrap();
+        common::write_config(
+            home.path(),
+            &json!({"model":{"provider":"openai","context_length":8192},
+                "providers":{"custom":{"base_url":"http://example.test/v1","models":["small","wide"]}},
+                "model_overrides":{"custom":{"wide":{"context_window":200000}}}}),
+        )
+        .unwrap();
+        let profile = home.path().join("profiles/owl");
+        let dir = profile.join("pi");
+        prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
+        // Removing the endpoint retains both registry aliases; another provider is selected.
+        common::write_config(
+            home.path(),
+            &json!({"model":{"provider":"openai","context_length":16384}}),
+        )
+        .unwrap();
+        for (model, expected) in [
+            (json!({}), 16384),
+            (json!({"context_length":4096}), 4096),
+            (json!({"context_length":null}), 16384),
+        ] {
+            common::write_config(&profile, &json!({"model":model})).unwrap();
+            prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
+            let models = read_json(&dir.join("models.json")).unwrap();
+            let settings = read_json(&dir.join("settings.json")).unwrap();
+            let request = adapt_request(
+                home.path(),
+                "owl",
+                "section",
+                &json!({"provider":"custom","model":"small","payload":{}}),
+            )
+            .unwrap();
+            assert_eq!(request["options"]["num_ctx"], expected);
+            for provider in ["custom", "custom:custom"] {
+                let retained = models["providers"][provider]["models"].as_array().unwrap();
+                assert_eq!(retained.len(), 2);
+                for model in retained {
+                    assert_eq!(model["contextWindow"], expected);
+                    let key = format!("{provider}/{}", model["id"].as_str().unwrap());
+                    assert_eq!(
+                        settings["compaction"]["modelOverrides"][key],
+                        json!({"reserveTokens":expected / 4,"keepRecentTokens":expected / 4})
+                    );
+                }
+            }
+        }
+        // Without a configured window, retained model metadata remains unchanged.
+        common::write_config(home.path(), &json!({"model":{"provider":"openai"}})).unwrap();
+        let before = read_json(&dir.join("models.json")).unwrap();
+        prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
+        assert_eq!(read_json(&dir.join("models.json")).unwrap(), before);
     }
 
     #[test]

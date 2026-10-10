@@ -495,8 +495,9 @@ arguments and status, not full nested result bodies; its record is bounded.
 Provider configuration lives on the daemon in `config.yaml`. Set
 `model_overrides.<provider>.<model>.context_window` to supply a missing context
 window. When no window is known, Hexbot assumes 32,768 tokens. For the
-custom/Ollama endpoint, `model.context_length` takes precedence for every model, including fallbacks,
-and is also sent as `num_ctx`. Bot configuration overrides deployment values.
+custom/Ollama endpoint, `model.context_length` takes precedence for every model,
+including fallbacks, and is also sent as `num_ctx`. Bot configuration overrides
+deployment values.
 Before Pi starts, Hexbot writes compaction settings to the bot's Pi directory
 using the final model registry. The 16,384-token reserve and 20,000-token recent
 context budgets are each capped at a quarter of the model's window. Running
