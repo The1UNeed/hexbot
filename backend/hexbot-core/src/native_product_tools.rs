@@ -9,7 +9,10 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 fn text<'a>(p: &'a Value, key: &str) -> &'a str {
@@ -670,105 +673,306 @@ fn manage_skills(home: &Path, bot: &str, p: &Value) -> Result<Value> {
     Ok(json!({"success":true,"operations_applied":results.len(),"results":results}))
 }
 
+/// A section as history search sees it, with the row values and history version
+/// it was read at, so a refresh can tell whether it needs reading again. `bytes`
+/// estimates the retained JSON and object overhead; SQLite pages count separately.
 struct RecallSession {
     id: String,
     title: String,
     started: f64,
     updated: f64,
+    archived: Option<f64>,
+    version: i64,
     messages: Vec<Value>,
+    // Inclusive FTS rowid range: the title followed by eligible messages.
+    rowids: (i64, i64),
+    bytes: usize,
 }
-fn recall_sessions(
+impl RecallSession {
+    fn unchanged(&self, section: &Value, version: i64) -> bool {
+        self.version == version
+            && self.title == text(section, "title")
+            && self.started == section["created_at"].as_f64().unwrap_or(0.0)
+            && self.updated == section["updated_at"].as_f64().unwrap_or(0.0)
+            && self.archived == section["archived_at"].as_f64()
+    }
+}
+/// What a bot's searches share: its sections for one owner, newest first, and an
+/// FTS5 table over their titles and messages for one role filter. The section
+/// asking is left out at answer time, so every section of the bot uses the same
+/// index. Kept in `INDEXES` between searches and refreshed section by section, so
+/// a query after a quiet stretch costs a lookup instead of a rebuild of every message.
+struct RecallIndex {
+    sessions: Vec<RecallSession>,
+    legacy: Option<Vec<(std::time::SystemTime, u64)>>,
+    index: Connection,
+}
+#[derive(PartialEq)]
+struct RecallKey {
+    home: PathBuf,
+    owner: String,
+    bot: String,
+    roles: String,
+}
+/// Least recently used first. An index is taken out while a search refreshes and
+/// uses it, so two searches for the same key at once each build their own; the
+/// last one put back replaces any earlier entry for that key. Each search
+/// checks database versions independently.
+static INDEXES: Mutex<Vec<(RecallKey, RecallIndex)>> = Mutex::new(Vec::new());
+const INDEX_LIMIT: usize = 8;
+/// Budget for retained JSON, object overhead, and allocated SQLite pages.
+/// In-flight searches and transient query allocations are outside this budget.
+const INDEX_BYTES: usize = 256 << 20;
+/// Estimated object and list overhead beyond each message's serialized JSON.
+const MESSAGE_BYTES: usize = 512;
+
+static SECTIONS_READ: AtomicU64 = AtomicU64::new(0);
+/// Sections read into a history index since the daemon started. Tests use it to
+/// check that a refresh reads only what changed.
+pub fn sections_read() -> u64 {
+    SECTIONS_READ.load(Ordering::Relaxed)
+}
+/// Drops every history index, so the next search rebuilds from the database.
+pub fn forget_history_indexes() {
+    INDEXES.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+fn take_index(key: &RecallKey) -> Option<RecallIndex> {
+    let mut cache = INDEXES.lock().unwrap_or_else(|e| e.into_inner());
+    let at = cache.iter().position(|(k, _)| k == key)?;
+    Some(cache.remove(at).1)
+}
+impl RecallIndex {
+    fn estimated_bytes(&self) -> Result<usize> {
+        let pages: usize = self
+            .index
+            .query_row("PRAGMA page_count", [], |r| r.get(0))?;
+        let page_size: usize = self.index.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+        Ok(pages * page_size + self.sessions.iter().map(|s| s.bytes).sum::<usize>())
+    }
+}
+fn store_index(key: RecallKey, index: RecallIndex) -> Result<()> {
+    // A single oversized index must not evict other bots' useful entries.
+    if index.estimated_bytes()? > INDEX_BYTES {
+        return Ok(());
+    }
+    let mut cache = INDEXES.lock().unwrap_or_else(|e| e.into_inner());
+    cache.retain(|(k, _)| k != &key);
+    cache.push((key, index));
+    while cache.len() > INDEX_LIMIT
+        || cache.iter().try_fold(0, |bytes, (_, index)| {
+            index.estimated_bytes().map(|size| bytes + size)
+        })? > INDEX_BYTES
+    {
+        cache.remove(0);
+    }
+    Ok(())
+}
+/// The legacy database and its WAL, which only a purge touches; any change rebuilds.
+fn legacy_stamp(path: &Path) -> Result<Option<Vec<(std::time::SystemTime, u64)>>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let mut stamp = vec![];
+    for path in [path.to_path_buf(), path.with_extension("db-wal")] {
+        if let Ok(meta) = fs::metadata(path) {
+            stamp.push((meta.modified()?, meta.len()));
+        }
+    }
+    Ok(Some(stamp))
+}
+fn read_session(
+    conn: &Connection,
+    legacy: Option<&Connection>,
+    section: &Value,
+    version: i64,
+) -> Result<RecallSession> {
+    let id = text(section, "id");
+    SECTIONS_READ.fetch_add(1, Ordering::Relaxed);
+    let native = common::rows(
+        conn,
+        "SELECT m.seq,m.message_json FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? AND (p.active IS NULL OR p.active=1) ORDER BY m.seq",
+        &[&id],
+    )?;
+    let mut messages = vec![];
+    for row in native {
+        let m: Value = serde_json::from_str(text(&row, "message_json"))
+            .map_err(|_| Error::new(5200, "invalid stored message"))?;
+        let body = m["text"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| runtime_store::text(&m["content"]));
+        messages.push(json!({"id":row["seq"],"role":m["role"],"content":body,"timestamp":m["timestamp"],"tool_name":m["tool_name"],"tool_calls":m["tool_calls"],"tool_call_id":m["tool_call_id"]}));
+    }
+    let has_native: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_messages WHERE session_id=?)",
+        [id],
+        |r| r.get(0),
+    )?;
+    if messages.is_empty()
+        && !has_native
+        && let Some(legacy) = legacy
+    {
+        let legacy_id: Option<String> = legacy
+            .query_row(
+                "SELECT id FROM sessions WHERE session_key=?1 OR id=?1 ORDER BY CASE WHEN session_key=?1 THEN 0 ELSE 1 END LIMIT 1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(legacy_id) = legacy_id {
+            for row in common::rows(
+                legacy,
+                "SELECT * FROM messages WHERE session_id=? ORDER BY id",
+                &[&legacy_id],
+            )? {
+                let content = row["content"].as_str().unwrap_or("");
+                let content = serde_json::from_str::<Value>(content)
+                    .ok()
+                    .filter(Value::is_array)
+                    .map(|v| runtime_store::text(&v))
+                    .unwrap_or_else(|| content.to_owned());
+                messages.push(json!({
+                    "id": row["id"],
+                    "role": row["role"],
+                    "content": content,
+                    "timestamp": row["timestamp"],
+                    "tool_name": row["tool_name"],
+                    "tool_calls": row["tool_calls"],
+                    "tool_call_id": row["tool_call_id"]
+                }));
+            }
+        }
+    }
+    let title = text(section, "title").to_owned();
+    let bytes = id.len()
+        + title.len()
+        + std::mem::size_of::<RecallSession>()
+        + messages
+            .iter()
+            .map(|m| m.to_string().len() + MESSAGE_BYTES)
+            .sum::<usize>();
+    Ok(RecallSession {
+        id: id.to_owned(),
+        title,
+        started: section["created_at"].as_f64().unwrap_or(0.0),
+        updated: section["updated_at"].as_f64().unwrap_or(0.0),
+        archived: section["archived_at"].as_f64(),
+        version,
+        messages,
+        rowids: (0, 0),
+        bytes,
+    })
+}
+fn index_session(
+    index: &Connection,
+    session: &mut RecallSession,
+    roles: &BTreeSet<&str>,
+) -> Result<()> {
+    let mut insert = index.prepare_cached(
+        "INSERT INTO recall(content,session_id,message_index,time) VALUES(?,?,?,?)",
+    )?;
+    insert.execute(params![session.title, session.id, -1i64, session.updated])?;
+    let first = index.last_insert_rowid();
+    for (midx, message) in session.messages.iter().enumerate() {
+        let role = if message["role"] == "toolResult" {
+            "tool"
+        } else {
+            text(message, "role")
+        };
+        if roles.contains(role) {
+            insert.execute(params![
+                text(message, "content"),
+                session.id,
+                midx as i64,
+                session.updated
+            ])?;
+        }
+    }
+    session.rowids = (first, index.last_insert_rowid());
+    Ok(())
+}
+fn delete_session(index: &Connection, session: &RecallSession) -> Result<()> {
+    index.execute(
+        "DELETE FROM recall WHERE rowid BETWEEN ? AND ?",
+        params![session.rowids.0, session.rowids.1],
+    )?;
+    Ok(())
+}
+/// The index for `key`, brought up to date. Every section's row and history
+/// version are compared on each call; only sections that changed, appeared, or
+/// went away touch the FTS5 table. The asking section keeps its old rows and
+/// version until another section searches; answer removes it before ranking.
+/// A deleted section loses its row in `sections` in the same transaction that
+/// removes it, so its messages stop being searchable at the next query.
+fn recall(
     home: &Path,
-    owner: &str,
-    bot: &str,
-    current: &str,
-) -> Result<Vec<RecallSession>> {
+    key: &RecallKey,
+    roles: &BTreeSet<&str>,
+    excluded: &str,
+) -> Result<RecallIndex> {
     let sections = common::rows(
         &db::open(home)?,
-        "SELECT * FROM sections WHERE owner_id=? AND bot=? ORDER BY updated_at DESC",
-        &[&owner, &bot],
+        "SELECT * FROM sections WHERE owner_id=? AND bot=? ORDER BY updated_at DESC,id ASC",
+        &[&key.owner, &key.bot],
     )?;
-    let legacy_path = catalog::profile(home, bot)?.join("state.db");
+    let legacy_path = catalog::profile(home, &key.bot)?.join("state.db");
     safe_path(home, &legacy_path)?;
-    let legacy = if legacy_path.exists() {
+    let legacy = legacy_stamp(&legacy_path)?;
+    let legacy_db = if legacy.is_some() {
         Some(Connection::open_with_flags(
-            legacy_path,
+            &legacy_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?)
     } else {
         None
     };
-    let conn = runtime_store::open(home)?;
-    let mut sessions = vec![];
-    for section in sections {
-        let id = text(&section, "id");
-        if id == current {
-            continue;
-        }
-        let native = common::rows(
-            &conn,
-            "SELECT m.seq,m.message_json FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? AND (p.active IS NULL OR p.active=1) ORDER BY m.seq",
-            &[&id],
-        )?;
-        let mut messages = vec![];
-        for row in native {
-            let m: Value = serde_json::from_str(text(&row, "message_json"))
-                .map_err(|_| Error::new(5200, "invalid stored message"))?;
-            let body = m["text"]
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| runtime_store::text(&m["content"]));
-            messages.push(json!({"id":row["seq"],"role":m["role"],"content":body,"timestamp":m["timestamp"],"tool_name":m["tool_name"],"tool_calls":m["tool_calls"],"tool_call_id":m["tool_call_id"]}));
-        }
-        let has_native: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM native_messages WHERE session_id=?)",
-            [id],
-            |r| r.get(0),
-        )?;
-        if messages.is_empty()
-            && !has_native
-            && let Some(legacy) = &legacy
-        {
-            let legacy_id: Option<String> = legacy
-                .query_row(
-                    "SELECT id FROM sessions WHERE session_key=?1 OR id=?1 ORDER BY CASE WHEN session_key=?1 THEN 0 ELSE 1 END LIMIT 1",
-                    [id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if let Some(legacy_id) = legacy_id {
-                for row in common::rows(
-                    legacy,
-                    "SELECT * FROM messages WHERE session_id=? ORDER BY id",
-                    &[&legacy_id],
-                )? {
-                    let content = row["content"].as_str().unwrap_or("");
-                    let content = serde_json::from_str::<Value>(content)
-                        .ok()
-                        .filter(Value::is_array)
-                        .map(|v| runtime_store::text(&v))
-                        .unwrap_or_else(|| content.to_owned());
-                    messages.push(json!({
-                        "id": row["id"],
-                        "role": row["role"],
-                        "content": content,
-                        "timestamp": row["timestamp"],
-                        "tool_name": row["tool_name"],
-                        "tool_calls": row["tool_calls"],
-                        "tool_call_id": row["tool_call_id"]
-                    }));
-                }
+    let mut index = match take_index(key).filter(|index| index.legacy == legacy) {
+        Some(index) => index,
+        None => {
+            let index = Connection::open_in_memory()?;
+            index.execute_batch(
+                "CREATE VIRTUAL TABLE recall USING fts5(content,session_id UNINDEXED,message_index UNINDEXED,time UNINDEXED)",
+            )?;
+            RecallIndex {
+                sessions: vec![],
+                legacy,
+                index,
             }
         }
-        sessions.push(RecallSession {
-            id: id.to_owned(),
-            title: text(&section, "title").to_owned(),
-            started: section["created_at"].as_f64().unwrap_or(0.0),
-            updated: section["updated_at"].as_f64().unwrap_or(0.0),
-            messages,
-        });
+    };
+    let mut kept = index
+        .sessions
+        .drain(..)
+        .map(|s| (s.id.clone(), s))
+        .collect::<HashMap<_, _>>();
+    let conn = runtime_store::open(home)?;
+    let tx = index.index.transaction()?;
+    for section in &sections {
+        let id = text(section, "id");
+        if id == excluded {
+            if let Some(session) = kept.remove(id) {
+                index.sessions.push(session);
+            }
+            continue;
+        }
+        let version = runtime_store::history_version(&conn, id)?;
+        match kept.remove(id) {
+            Some(session) if session.unchanged(section, version) => {
+                index.sessions.push(session);
+                continue;
+            }
+            Some(session) => delete_session(&tx, &session)?,
+            None => (),
+        };
+        let mut session = read_session(&conn, legacy_db.as_ref(), section, version)?;
+        index_session(&tx, &mut session, roles)?;
+        index.sessions.push(session);
     }
-    Ok(sessions)
+    for session in kept.values() {
+        delete_session(&tx, session)?;
+    }
+    tx.commit()?;
+    Ok(index)
 }
 fn shaped(message: &Value, anchor: Option<&Value>) -> Value {
     let mut message = message.clone();
@@ -796,12 +1000,35 @@ fn search_sessions(home: &Path, owner: &str, bot: &str, current: &str, p: &Value
     if target != bot {
         common::bot_owner(home, owner, target)?;
     }
-    let sessions = recall_sessions(
-        home,
-        owner,
-        target,
-        if target == bot { current } else { "" },
-    )?;
+    let roles = p["role_filter"]
+        .as_str()
+        .unwrap_or("user,assistant")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect::<BTreeSet<_>>();
+    let key = RecallKey {
+        home: home.to_path_buf(),
+        owner: owner.to_owned(),
+        bot: target.to_owned(),
+        roles: roles.iter().copied().collect::<Vec<_>>().join(","),
+    };
+    let excluded = if target == bot { current } else { "" };
+    let mut index = recall(home, &key, &roles, excluded)?;
+    let result = answer(&mut index, target, p, excluded);
+    store_index(key, index)?;
+    result
+}
+/// The answer for one asking section: the index minus `excluded`, the section
+/// whose history is already in the asking bot's context. Read from the same
+/// kept rows every section of the bot shares, it is what a rebuild without
+/// that section would give.
+fn answer(index: &mut RecallIndex, target: &str, p: &Value, excluded: &str) -> Result<Value> {
+    let sessions = index
+        .sessions
+        .iter()
+        .filter(|s| s.id != excluded)
+        .collect::<Vec<_>>();
     let limit = p["limit"].as_u64().unwrap_or(3).clamp(1, 10) as usize;
     let window = p["window"].as_u64().unwrap_or(5).clamp(1, 20) as usize;
     let requested = text(p, "session_id");
@@ -882,65 +1109,56 @@ fn search_sessions(home: &Path, owner: &str, bot: &str, current: &str, p: &Value
             .collect::<Vec<_>>();
         return Ok(json!({"success":true,"mode":"browse","count":results.len(),"results":results}));
     }
-    let mut index = Connection::open_in_memory()?;
-    index.execute_batch(
-        "CREATE VIRTUAL TABLE recall USING fts5(content,session_index UNINDEXED,message_index UNINDEXED,time UNINDEXED)",
-    )?;
-    let roles = p["role_filter"]
-        .as_str()
-        .unwrap_or("user,assistant")
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect::<BTreeSet<_>>();
-    {
-        let tx = index.transaction()?;
-        let mut insert = tx.prepare(
-            "INSERT INTO recall(content,session_index,message_index,time) VALUES(?,?,?,?)",
-        )?;
-        for (sidx, session) in sessions.iter().enumerate() {
-            insert.execute(params![session.title, sidx as i64, -1i64, session.updated])?;
-            for (midx, message) in session.messages.iter().enumerate() {
-                let role = if message["role"] == "toolResult" {
-                    "tool"
-                } else {
-                    text(message, "role")
-                };
-                if roles.contains(role) {
-                    insert.execute(params![
-                        text(message, "content"),
-                        sidx as i64,
-                        midx as i64,
-                        session.updated
-                    ])?;
-                }
-            }
+    // Removing the asking section from FTS also removes its BM25 corpus counts.
+    // finish rolls back and releases the savepoint even when MATCH fails.
+    let savepoint = index.index.savepoint()?;
+    let result = (|| {
+        if let Some(session) = index.sessions.iter().find(|s| s.id == excluded) {
+            delete_session(&savepoint, session)?;
         }
-        drop(insert);
-        tx.commit()?;
-    }
+        answer_matches(&savepoint, &sessions, target, p, query, limit, window)
+    })();
+    savepoint.finish()?;
+    result
+}
+fn answer_matches(
+    connection: &Connection,
+    sessions: &[&RecallSession],
+    target: &str,
+    p: &Value,
+    query: &str,
+    limit: usize,
+    window: usize,
+) -> Result<Value> {
+    // Ties end in the order a rebuild inserts: newest section first, then its
+    // messages, so a refreshed index and a fresh one rank alike.
     let order = match text(p, "sort") {
-        "newest" => "CAST(time AS REAL) DESC,bm25(recall)",
-        "oldest" => "CAST(time AS REAL) ASC,bm25(recall)",
-        _ => "bm25(recall)",
+        "newest" => "CAST(time AS REAL) DESC,bm25(recall),session_id,message_index",
+        "oldest" => "CAST(time AS REAL) ASC,bm25(recall),session_id,message_index",
+        _ => "bm25(recall),CAST(time AS REAL) DESC,session_id,message_index",
     };
-    let mut stmt = index.prepare(&format!(
-        "SELECT session_index,message_index FROM recall WHERE recall MATCH ? ORDER BY {order}"
+    let by_id = sessions
+        .iter()
+        .map(|s| (s.id.as_str(), s))
+        .collect::<HashMap<_, _>>();
+    let mut stmt = connection.prepare(&format!(
+        "SELECT session_id,message_index FROM recall WHERE recall MATCH ? ORDER BY {order}"
     ))?;
     let rows = stmt
         .query_map([query], |r| {
-            Ok((r.get::<_, i64>(0)? as usize, r.get::<_, i64>(1)?))
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
         })
         .map_err(|_| Error::new(4200, "invalid history search expression"))?;
     let mut results = vec![];
     let mut seen = BTreeSet::new();
     for row in rows {
-        let (sidx, midx) =
-            row.map_err(|_| Error::new(4200, "invalid history search expression"))?;
-        if !seen.insert(sidx) {
+        let (sid, midx) = row.map_err(|_| Error::new(4200, "invalid history search expression"))?;
+        let Some(session) = by_id.get(sid.as_str()) else {
+            continue;
+        };
+        if !seen.insert(sid) {
             continue;
         }
-        let session = &sessions[sidx];
         let anchor = midx.max(0) as usize;
         let full = results.is_empty() || p["detail"] == "full";
         let start = if full {
@@ -1068,4 +1286,207 @@ pub async fn call(
             ))
         }),
     )
+}
+
+#[cfg(test)]
+mod history_index_tests {
+    use super::*;
+
+    fn session(id: &str, contents: &[&str]) -> RecallSession {
+        RecallSession {
+            id: id.to_owned(),
+            title: id.to_owned(),
+            started: 1.0,
+            updated: 2.0,
+            archived: None,
+            version: 1,
+            messages: contents
+                .iter()
+                .enumerate()
+                .map(|(i, content)| json!({"id":i,"role":"user","content":content}))
+                .collect(),
+            rowids: (0, 0),
+            bytes: 0,
+        }
+    }
+    fn build(mut sessions: Vec<RecallSession>) -> RecallIndex {
+        let index = Connection::open_in_memory().unwrap();
+        index.execute_batch("CREATE VIRTUAL TABLE recall USING fts5(content,session_id UNINDEXED,message_index UNINDEXED,time UNINDEXED)").unwrap();
+        for session in &mut sessions {
+            index_session(&index, session, &BTreeSet::from(["user"])).unwrap();
+        }
+        RecallIndex {
+            sessions,
+            legacy: None,
+            index,
+        }
+    }
+    fn scores(index: &Connection) -> Vec<(String, f64)> {
+        index.prepare("SELECT session_id,bm25(recall) FROM recall WHERE recall MATCH 'alpha OR beta' ORDER BY bm25(recall),session_id,message_index")
+            .unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap().collect::<rusqlite::Result<_>>().unwrap()
+    }
+
+    #[test]
+    fn excluded_section_has_exact_rebuild_ranking_and_scores() {
+        // One long alpha document and twenty short ones both flip A/B ranking
+        // if the asking section contributes to BM25 corpus statistics.
+        let repeated = "alpha ".repeat(20);
+        for active in [vec![repeated.as_str()], vec!["alpha"; 20]] {
+            let mut cached = build(vec![
+                session("A", &["alpha alpha"]),
+                session("B", &["beta"]),
+                session("current", &active),
+            ]);
+            // This oracle never inserts the asking section, or uses exclusion.
+            let fresh = build(vec![
+                session("A", &["alpha alpha"]),
+                session("B", &["beta"]),
+            ]);
+            let expected = scores(&fresh.index);
+            assert_eq!(
+                expected
+                    .iter()
+                    .map(|(id, _)| id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["A", "B"]
+            );
+            let before = scores(&cached.index);
+            assert_eq!(
+                before
+                    .iter()
+                    .filter(|(id, _)| id != "current")
+                    .map(|(id, _)| id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["B", "A"]
+            );
+            for sort in ["", "newest", "oldest"] {
+                let args = json!({"query":"alpha OR beta","sort":sort,"detail":"full"});
+                let sessions = fresh.sessions.iter().collect::<Vec<_>>();
+                let oracle =
+                    answer_matches(&fresh.index, &sessions, "owl", &args, "alpha OR beta", 3, 5)
+                        .unwrap();
+                assert_eq!(
+                    answer(&mut cached, "owl", &args, "current").unwrap(),
+                    oracle
+                );
+                assert!(cached.index.is_autocommit());
+                assert_eq!(scores(&cached.index), before);
+            }
+            let range = cached.sessions[2].rowids;
+            let savepoint = cached.index.savepoint().unwrap();
+            savepoint
+                .execute(
+                    "DELETE FROM recall WHERE rowid BETWEEN ? AND ?",
+                    params![range.0, range.1],
+                )
+                .unwrap();
+            assert_eq!(scores(&savepoint), expected);
+            savepoint.finish().unwrap();
+            assert_eq!(scores(&cached.index), before);
+            assert_eq!(
+                answer(
+                    &mut cached,
+                    "owl",
+                    &json!({"query":"\"unterminated"}),
+                    "current"
+                )
+                .unwrap_err()
+                .code,
+                4200
+            );
+            assert!(cached.index.is_autocommit());
+            assert_eq!(scores(&cached.index), before);
+        }
+    }
+
+    #[test]
+    fn retained_native_and_legacy_tool_calls_count_toward_budget() {
+        let home = tempfile::tempdir().unwrap();
+        let conn = runtime_store::open(home.path()).unwrap();
+        let calls = json!([{"name":"write","arguments":{"text":"x".repeat(8 << 20)}}]);
+        runtime_store::append(
+            home.path(),
+            "native",
+            json!({"role":"assistant","tool_calls":calls}),
+        )
+        .unwrap();
+        let section = json!({"id":"native","title":"Native"});
+        let native = read_session(&conn, None, &section, 1).unwrap();
+        assert_eq!(shaped(&native.messages[0], None)["tool_calls"], calls);
+        assert!(native.bytes > (8 << 20) + MESSAGE_BYTES);
+        let legacy = Connection::open_in_memory().unwrap();
+        legacy.execute_batch("CREATE TABLE sessions(id TEXT,session_key TEXT); CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,tool_calls TEXT); INSERT INTO sessions VALUES('legacy','legacy');").unwrap();
+        legacy
+            .execute(
+                "INSERT INTO messages VALUES(1,'legacy','assistant','',?)",
+                [calls.to_string()],
+            )
+            .unwrap();
+        let legacy = read_session(&conn, Some(&legacy), &json!({"id":"legacy"}), 0).unwrap();
+        assert!(legacy.bytes > (8 << 20) + MESSAGE_BYTES);
+    }
+
+    #[test]
+    fn allocated_sqlite_pages_count_after_history_is_deleted() {
+        let content = "large searchable history ".repeat(350_000);
+        let mut index = build(vec![
+            session("large", &[&content]),
+            session("small", &["survivor"]),
+        ]);
+        let large = index.sessions.remove(0);
+        assert_eq!(large.rowids, (1, 2));
+        assert_eq!(index.sessions[0].rowids, (3, 4));
+        delete_session(&index.index, &large).unwrap();
+        assert_eq!(
+            index
+                .index
+                .query_row("SELECT count(*) FROM recall", [], |r| r.get::<_, usize>(0))
+                .unwrap(),
+            2
+        );
+        let allocated = index.estimated_bytes().unwrap();
+        let fresh = build(vec![session("small", &["survivor"])]);
+        assert!(allocated > 8 << 20);
+        assert!(allocated > fresh.estimated_bytes().unwrap());
+        let pages: usize = index
+            .index
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .unwrap();
+        let page_size: usize = index
+            .index
+            .query_row("PRAGMA page_size", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(allocated, pages * page_size);
+    }
+
+    #[test]
+    fn cache_replaces_duplicate_keys_and_preserves_other_entries_on_oversize() {
+        fn key(bot: &str) -> RecallKey {
+            RecallKey {
+                home: PathBuf::from("cache-test"),
+                owner: "local".to_owned(),
+                bot: bot.to_owned(),
+                roles: "user".to_owned(),
+            }
+        }
+        forget_history_indexes();
+        store_index(key("owl"), build(vec![session("old", &["alpha"])])).unwrap();
+        store_index(key("fox"), build(vec![session("other", &["beta"])])).unwrap();
+        // Two concurrent misses can return independently; the last replaces old.
+        store_index(key("owl"), build(vec![session("new", &["alpha"])])).unwrap();
+        {
+            let cache = INDEXES.lock().unwrap();
+            assert_eq!(cache.len(), 2);
+            assert_eq!(cache[0].0.bot, "fox");
+            assert_eq!(cache[1].1.sessions[0].id, "new");
+        }
+        let mut oversized = build(vec![session("huge", &["alpha"])]);
+        oversized.sessions[0].bytes = INDEX_BYTES;
+        store_index(key("owl"), oversized).unwrap();
+        let retained = take_index(&key("owl")).unwrap();
+        assert_eq!(retained.sessions[0].id, "new");
+        assert!(take_index(&key("fox")).is_some());
+        assert!(INDEXES.lock().unwrap().is_empty());
+    }
 }

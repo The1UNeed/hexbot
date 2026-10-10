@@ -1,4 +1,4 @@
-use hexbot_core::{common, db, native_product_tools as product, runtime_store};
+use hexbot_core::{catalog, common, db, native_product_tools as product, runtime_store};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 
@@ -124,6 +124,7 @@ async fn todo_bounds_and_access_are_enforced() {
 }
 #[tokio::test]
 async fn session_search_supports_browse_boolean_discovery_read_and_scroll() {
+    let _serial = SEARCH.lock().await;
     let home = setup();
     for (role, text) in [
         ("user", "alpha deployment"),
@@ -223,6 +224,7 @@ async fn session_search_supports_browse_boolean_discovery_read_and_scroll() {
 }
 #[tokio::test]
 async fn old_hermes_history_is_read_without_mutating_its_database() {
+    let _serial = SEARCH.lock().await;
     let home = setup();
     let path = home.path().join("profiles/owl/state.db");
     let conn = rusqlite::Connection::open(&path).unwrap();
@@ -234,6 +236,335 @@ async fn old_hermes_history_is_read_without_mutating_its_database() {
         .unwrap();
     assert_eq!(found["results"][0]["match_message_id"], 7);
     assert_eq!(fs::read(path).unwrap(), before);
+}
+async fn search(home: &Path, owner: &str, bot: &str, session: &str, args: &Value) -> Value {
+    product::call(home, owner, bot, session, "session_search", args)
+        .await
+        .unwrap()
+        .unwrap()
+}
+/// The answer the kept index gives, how many sections it had to read again for
+/// it, and a fresh index that never inserts the asking section.
+async fn cached_then_without_asking(
+    home: &Path,
+    owner: &str,
+    bot: &str,
+    session: &str,
+    args: &Value,
+) -> (Value, u64, Value) {
+    let before = product::sections_read();
+    let cached = search(home, owner, bot, session, args).await;
+    let read = product::sections_read() - before;
+    product::forget_history_indexes();
+    (cached, read, search(home, owner, bot, session, args).await)
+}
+#[tokio::test]
+async fn session_search_reuses_its_index_and_follows_every_history_change() {
+    let _serial = SEARCH.lock().await;
+    let home = setup();
+    let h = home.path();
+    seed_history(h, 500);
+    let section = |method: &str, args: Value| {
+        catalog::call(h, "local", method, &args).unwrap().unwrap();
+    };
+    let query = json!({"query":"harbor OR ledger","limit":10,"detail":"full"});
+    let before = product::sections_read();
+    let first = search(h, "local", "owl", "current", &query).await;
+    assert_eq!(first["count"], 10);
+    // Fifty seeded sections and "past"; the asking section is never read.
+    assert_eq!(product::sections_read() - before, 51);
+    assert!(!first.to_string().contains("\"current\""));
+    assert_eq!(search(h, "local", "owl", "current", &query).await, first);
+    assert_eq!(product::sections_read() - before, 51);
+    for sort in ["newest", "oldest"] {
+        let sorted = json!({"query":"harbor OR ledger","limit":10,"sort":sort});
+        let (cached, read, fresh) =
+            cached_then_without_asking(h, "local", "owl", "current", &sorted).await;
+        assert_eq!(read, 0);
+        assert_eq!(cached, fresh);
+    }
+
+    // A new message: only its section is read again.
+    runtime_store::append(h, "s3", json!({"role":"user","text":"fresh harbor update"})).unwrap();
+    let (cached, read, fresh) =
+        cached_then_without_asking(h, "local", "owl", "current", &query).await;
+    assert_eq!(read, 1);
+    assert_eq!(cached, fresh);
+    let only_new = json!({"query":"fresh"});
+    let (cached, read, fresh) =
+        cached_then_without_asking(h, "local", "owl", "current", &only_new).await;
+    assert_eq!(read, 0);
+    assert_eq!(cached["count"], 1);
+    assert_eq!(cached["results"][0]["session_id"], "s3");
+    assert_eq!(cached, fresh);
+
+    // A deleted section is gone at the next search, without reading anything,
+    // and its version row goes with its history.
+    let only_s7 = json!({"query":"57"});
+    assert_eq!(
+        search(h, "local", "owl", "current", &only_s7).await["count"],
+        1
+    );
+    assert!(runtime_store::history_version(&runtime_store::open(h).unwrap(), "s7").unwrap() > 0);
+    section("hexbot.sections.delete", json!({"id":"s7"}));
+    assert_eq!(
+        runtime_store::history_version(&runtime_store::open(h).unwrap(), "s7").unwrap(),
+        0
+    );
+    let (cached, read, fresh) =
+        cached_then_without_asking(h, "local", "owl", "current", &only_s7).await;
+    assert_eq!(read, 0);
+    assert_eq!(cached["count"], 0);
+    assert_eq!(cached, fresh);
+    let (cached, _, fresh) = cached_then_without_asking(h, "local", "owl", "current", &query).await;
+    assert_eq!(cached, fresh);
+    assert!(!cached.to_string().contains("\"s7\""));
+
+    // Archiving and unarchiving reorder the sections; renaming changes an indexed title.
+    for method in ["hexbot.sections.archive", "hexbot.sections.unarchive"] {
+        section(method, json!({"id":"s5"}));
+        let (cached, read, fresh) =
+            cached_then_without_asking(h, "local", "owl", "current", &query).await;
+        assert_eq!(read, 1);
+        assert_eq!(cached, fresh);
+    }
+    section(
+        "hexbot.sections.rename",
+        json!({"id":"s11","title":"Lighthouse"}),
+    );
+    let title = json!({"query":"lighthouse"});
+    let (cached, read, fresh) =
+        cached_then_without_asking(h, "local", "owl", "current", &title).await;
+    assert_eq!(read, 1);
+    assert_eq!(cached["results"][0]["matched_role"], "session_title");
+    assert_eq!(cached, fresh);
+
+    // A branch change hides a message and can bring it back.
+    let only_s9 = json!({"query":"59"});
+    assert_eq!(
+        search(h, "local", "owl", "current", &only_s9).await["count"],
+        1
+    );
+    let runtime = runtime_store::open(h).unwrap();
+    runtime.execute("INSERT INTO native_pi_journal(journal_id,session_id,raw_json,projection_seq,active) VALUES('branch','s9','{}',2,0)",[]).unwrap();
+    let (cached, read, fresh) =
+        cached_then_without_asking(h, "local", "owl", "current", &only_s9).await;
+    assert_eq!(read, 1);
+    assert_eq!(cached["count"], 0);
+    assert_eq!(cached, fresh);
+    runtime
+        .execute(
+            "UPDATE native_pi_journal SET active=1 WHERE journal_id='branch'",
+            [],
+        )
+        .unwrap();
+    let (cached, read, fresh) =
+        cached_then_without_asking(h, "local", "owl", "current", &only_s9).await;
+    assert_eq!(read, 1);
+    assert_eq!(cached["count"], 1);
+    assert_eq!(cached, fresh);
+
+    // Another section shares the index and loads the former asking section; its
+    // answer leaves itself out and is what a rebuild without it would give.
+    runtime_store::append(
+        h,
+        "current",
+        json!({"role":"user","text":"harbor from the current section"}),
+    )
+    .unwrap();
+    let (cached, read, fresh) = cached_then_without_asking(h, "local", "owl", "s3", &query).await;
+    assert_eq!(read, 1);
+    assert_eq!(cached, fresh);
+    assert!(!cached.to_string().contains("\"session_id\":\"s3\""));
+    assert_eq!(search(h, "local", "owl", "s3", &only_new).await["count"], 0);
+    let only_current = json!({"query":"\"from the current section\""});
+    let (cached, read, fresh) =
+        cached_then_without_asking(h, "local", "owl", "s3", &only_current).await;
+    assert_eq!(read, 0);
+    assert_eq!(cached["count"], 1);
+    assert_eq!(cached["results"][0]["session_id"], "current");
+    assert_eq!(cached, fresh);
+    let (cached, read, fresh) =
+        cached_then_without_asking(h, "local", "owl", "current", &query).await;
+    assert_eq!(read, 1); // The preceding fresh index never inserted s3.
+    assert_eq!(cached, fresh);
+    assert!(!cached.to_string().contains("\"session_id\":\"current\""));
+    let (cached, read, fresh) =
+        cached_then_without_asking(h, "local", "owl", "current", &only_current).await;
+    assert_eq!(read, 0);
+    assert_eq!(cached["count"], 0);
+    assert_eq!(cached, fresh);
+    // Browse and read modes leave the asking section out too.
+    for (asking, other) in [("current", "s3"), ("s3", "current")] {
+        let browse = search(h, "local", "owl", asking, &json!({"limit":10})).await;
+        assert!(
+            !browse
+                .to_string()
+                .contains(&format!("\"session_id\":\"{asking}\""))
+        );
+        assert_eq!(
+            product::call(
+                h,
+                "local",
+                "owl",
+                asking,
+                "session_search",
+                &json!({"session_id":asking})
+            )
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code,
+            4205
+        );
+        assert_eq!(
+            search(h, "local", "owl", asking, &json!({"session_id":other})).await["session_id"],
+            other
+        );
+    }
+    db::open(h).unwrap().execute("INSERT INTO sections(id,bot,owner_id,title,created_at,updated_at) VALUES('den','fox','other','Den',1,2)",[]).unwrap();
+    runtime_store::append(h, "den", json!({"role":"user","text":"harbor of the fox"})).unwrap();
+    let (cached, read, fresh) =
+        cached_then_without_asking(h, "other", "fox", "foreign", &query).await;
+    // The other owner's index reads only the fox's non-asking section.
+    assert_eq!(read, 1);
+    assert_eq!(cached["count"], 1);
+    assert_eq!(cached["results"][0]["session_id"], "den");
+    assert_eq!(cached, fresh);
+    let owl = search(h, "local", "owl", "current", &query).await;
+    assert!(!owl.to_string().contains("harbor of the fox"));
+}
+#[tokio::test]
+async fn session_search_defers_asking_history_and_restores_it_after_invalid_match() {
+    let _serial = SEARCH.lock().await;
+    let home = setup();
+    let h = home.path();
+    runtime_store::append(h, "current", json!({"role":"user","text":"alpha alpha"})).unwrap();
+    runtime_store::append(h, "past", json!({"role":"user","text":"beta"})).unwrap();
+    let query = json!({"query":"alpha OR beta"});
+    // Warm the shared index with current present, then search from current.
+    assert_eq!(search(h, "local", "owl", "past", &query).await["count"], 1);
+    let before = product::sections_read();
+    runtime_store::append(h, "current", json!({"role":"user","text":"gamma"})).unwrap();
+    assert_eq!(
+        search(h, "local", "owl", "current", &query).await["count"],
+        1
+    );
+    assert_eq!(product::sections_read() - before, 1); // Only past was missing.
+    let before = product::sections_read();
+    let error = call(h, "session_search", json!({"query":"\"unterminated"}))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, 4200);
+    assert_eq!(product::sections_read(), before);
+    assert_eq!(
+        search(h, "local", "owl", "past", &json!({"query":"gamma"})).await["count"],
+        1
+    );
+    assert_eq!(product::sections_read() - before, 1); // Current refreshes for another caller.
+    let before = product::sections_read();
+    assert_eq!(
+        call(h, "session_search", json!({"query":"\"unterminated"}))
+            .await
+            .unwrap_err()
+            .code,
+        4200
+    );
+    assert_eq!(
+        search(h, "local", "owl", "past", &json!({"query":"alpha"})).await["count"],
+        1
+    );
+    assert_eq!(product::sections_read(), before); // Rollback restored current's rows.
+}
+/// Search tests share one process-wide index and read counter.
+static SEARCH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Seeds `count` messages over fifty sections of the bot, in one transaction.
+fn seed_history(home: &Path, count: usize) {
+    let words = [
+        "deploy", "budget", "garden", "launch", "invoice", "sprint", "harbor", "recipe", "ledger",
+        "orbit", "quartz", "violin", "meadow", "cipher", "lantern", "summit", "tundra",
+    ];
+    let mut db = db::open(home).unwrap();
+    let tx = db.transaction().unwrap();
+    for s in 0..50 {
+        tx.execute(
+            "INSERT INTO sections(id,bot,owner_id,title,created_at,updated_at) VALUES(?,'owl','local',?,?,?)",
+            rusqlite::params![format!("s{s}"), format!("Section {s}"), 10 + s, 100 + s],
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
+    let mut runtime = runtime_store::open(home).unwrap();
+    let tx = runtime.transaction().unwrap();
+    for i in 0..count {
+        let text = format!(
+            "note {i} about the {} {} and the {} {}",
+            words[i % 17],
+            words[(i * 7) % 17],
+            words[(i * 11) % 17],
+            words[(i * 13) % 17]
+        );
+        tx.execute(
+            "INSERT INTO native_messages(session_id,seq,message_json) VALUES(?,?,?)",
+            rusqlite::params![
+                format!("s{}", i % 50),
+                (i / 50) as i64 + 1,
+                json!({"role": if i % 2 == 0 { "user" } else { "assistant" }, "text": text, "timestamp": i})
+                    .to_string()
+            ],
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
+}
+/// One-off measurement, not a CI check. Run with
+/// `cargo test --release --locked --manifest-path backend/hexbot-core/Cargo.toml --test native_product_tools search_index_timing -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore]
+async fn search_index_timing() {
+    let _serial = SEARCH.lock().await;
+    for count in [5_000usize, 50_000] {
+        let home = setup();
+        seed_history(home.path(), count);
+        let path = home.path();
+        let time = |query: &'static str| async move {
+            let started = std::time::Instant::now();
+            let found = call(path, "session_search", json!({"query":query}))
+                .await
+                .unwrap();
+            assert!(found["count"].as_u64().unwrap() > 0);
+            started.elapsed()
+        };
+        let first = time("harbor OR ledger").await;
+        let second = time("harbor OR ledger").await;
+        let third = time("quartz violin").await;
+        runtime_store::append(
+            home.path(),
+            "s7",
+            json!({"role":"user","text":"one more harbor note"}),
+        )
+        .unwrap();
+        let after_append = time("harbor OR ledger").await;
+        // Populate the asking section and warm it from another caller, so this
+        // also measures temporary deletion of a previously indexed rowid range.
+        runtime_store::open(path).unwrap().execute(
+            "INSERT INTO native_messages(session_id,seq,message_json) SELECT 'current',seq,message_json FROM native_messages WHERE session_id='s0'",
+            [],
+        ).unwrap();
+        search(
+            path,
+            "local",
+            "owl",
+            "past",
+            &json!({"query":"harbor OR ledger"}),
+        )
+        .await;
+        let excluding = time("harbor OR ledger").await;
+        let asking_messages = count / 50;
+        println!(
+            "{count} messages: first query {first:.3?}, repeat {second:.3?}, other query {third:.3?}, after one new message {after_append:.3?}, excluding {asking_messages} indexed asking messages {excluding:.3?}"
+        );
+    }
 }
 #[tokio::test]
 async fn skills_create_view_patch_supporting_files_and_delete() {
