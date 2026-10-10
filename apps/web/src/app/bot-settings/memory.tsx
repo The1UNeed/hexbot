@@ -61,24 +61,23 @@ export function MemoryEditor({
 }) {
   const [draft, setDraft] = useState(value)
   const [base, setBase] = useState(value)
+  const [shown, setShown] = useState(value)
   const [error, setError] = useState<string | null>(null)
-  const previousValue = useRef(value)
-  useEffect(() => {
-    const previous = previousValue.current
 
-    if (previous === value) {
-      return
+  // Synced while rendering, so a save never paints a frame with a stale base.
+  if (shown !== value) {
+    setShown(value)
+
+    if (!preserveDraftOnChange || draft === shown) {
+      setDraft(value)
     }
+  }
 
-    previousValue.current = value
-
-    if (preserveDraftOnChange && draft !== previous) {
-      return
-    }
-
-    setDraft(value)
+  // A draft that matches the text holds nothing of its own, so it starts again from that text.
+  if (draft === value && base !== value) {
     setBase(value)
-  }, [value, preserveDraftOnChange, draft])
+  }
+
   const [saving, setSaving] = useState(false)
   const pending = useRef(false)
   const length = [...draft].length
@@ -154,10 +153,10 @@ function ChangedSince({ base, value }: { base: string; value: string }) {
   return (
     <div className="mt-3 px-1">
       <p className="text-[length:var(--text-meta)] font-medium text-muted">
-        {appended ? 'Added since you started editing' : 'Saved since you started editing'}
+        {appended ? 'Added since you started editing' : 'Changed since you started editing'}
       </p>
       <p className="mt-1 whitespace-pre-wrap text-[length:var(--text-secondary)]">
-        {appended ? value.slice(boundary.length) : value || 'Nothing'}
+        {appended ? value.slice(boundary.length) : value}
       </p>
     </div>
   )

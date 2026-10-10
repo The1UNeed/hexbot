@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { setActiveRpc } from '../../lib/rpc'
@@ -223,6 +224,55 @@ describe('notes conflicts', () => {
     })
   })
 
+  it.each([
+    ['My draft', 'Plan\nBot note', 'My draft\nBot note'],
+    ['Plan\nBot note', null, 'Revised plan\nBot note']
+  ])(
+    'starts again from the new text once draft %j matches it after a stale delete',
+    async (draft, accepted, revised) => {
+      let reads = 0
+      let text = 'Plan'
+
+      rpc((method, params) => {
+        if (method.endsWith('.list')) {
+          const shown = listed(text)
+
+          if (reads++ === 0) {
+            text = 'Plan\nBot note'
+          }
+
+          return shown
+        }
+
+        if (params.expected !== text) {
+          throw conflict()
+        }
+
+        text = String(params.text)
+
+        return { date: today, text }
+      })
+
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      render(<NotesBlock bot="scout" />)
+      fireEvent.change(await screen.findByRole('textbox'), { target: { value: draft } })
+      fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+      await waitFor(() => expect(reads).toBe(2))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled())
+
+      if (accepted !== null) {
+        fireEvent.change(screen.getByRole('textbox'), { target: { value: accepted } })
+      }
+
+      expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+      expect(screen.queryByText(/since you started editing/)).toBeNull()
+      edit(revised)
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull())
+      expect(text).toBe(revised)
+      expect(screen.getByRole('textbox')).toHaveValue(revised)
+    }
+  )
+
   it('shows retention errors and keeps an expired day draft', async () => {
     const message = 'Notes older than 30 days cannot be saved. Copy your draft to a more recent day.'
     rpc(method => {
@@ -358,4 +408,58 @@ it('counts code points and saves a full day of emoji', async () => {
   expect(screen.getByText('4000 / 4000')).toBeVisible()
   await waitFor(() => expect(save).toHaveBeenCalledWith('😀'.repeat(4000), ''))
   expect(screen.queryByRole('alert')).toBeNull()
+})
+
+describe('memory editor base', () => {
+  function Saved({ initial }: { initial: string }) {
+    const [value, setValue] = useState(initial)
+
+    return (
+      <MemoryEditor
+        cap={4000}
+        label="Notes"
+        onSave={async next => setValue(next)}
+        preserveDraftOnChange
+        value={value}
+      />
+    )
+  }
+
+  it('never shows what changed while saving a plain edit', async () => {
+    const shown: string[] = []
+
+    const observer = new MutationObserver(records => {
+      for (const record of records) {
+        record.addedNodes.forEach(node => shown.push(node.textContent ?? ''))
+      }
+    })
+
+    const view = render(<Saved initial="Plan" />)
+    observer.observe(view.container, { childList: true, subtree: true })
+    edit('My plan')
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull())
+    await act(async () => {})
+    observer.disconnect()
+    expect(screen.getByRole('textbox')).toHaveValue('My plan')
+    expect(shown.filter(text => text.includes('since you started editing'))).toEqual([])
+  })
+
+  it('shows a rewrite under a kept draft and starts from it once the draft matches', () => {
+    const save = vi.fn().mockResolvedValue(undefined)
+
+    const editor = (value: string) => (
+      <MemoryEditor cap={4000} label="Notes" onSave={save} preserveDraftOnChange value={value} />
+    )
+
+    const view = render(editor('Plan'))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'My draft' } })
+    view.rerender(editor('Other plan'))
+    expect(screen.getByRole('textbox')).toHaveValue('My draft')
+    expect(screen.getByText('Changed since you started editing')).toBeInTheDocument()
+    expect(screen.getByText('Other plan')).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Other plan' } })
+    expect(screen.queryByText(/since you started editing/)).toBeNull()
+    edit('My other plan')
+    expect(save).toHaveBeenCalledWith('My other plan', 'Other plan')
+  })
 })
