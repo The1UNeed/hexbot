@@ -205,6 +205,18 @@ pub fn propose_memory(
     common::identifier(bot)?;
     let id = common::id();
     let now = common::now();
+    let size = memory_proposal(&id, job, action, args, now)
+        .to_string()
+        .len()
+        + 2; // The surrounding digest array brackets also use the budget.
+    if size > PROPOSAL_CAP {
+        return Err(Error::new(
+            4221,
+            format!(
+                "The proposal is {size} serialized bytes; the dream limit is {PROPOSAL_CAP}. Shorten it before retrying."
+            ),
+        ));
+    }
     let mut conn = db::open(home)?;
     let tx = conn.transaction()?;
     tx.execute(
@@ -226,27 +238,40 @@ pub fn propose_memory(
     )
 }
 
+/// Use the same serialized shape when accepting a proposal and budgeting its digest.
+fn memory_proposal(id: &str, job: &str, action: &str, args: &Value, created_at: f64) -> Value {
+    let mut proposal = json!({
+        "id": id,
+        "job_id": metadata(job),
+        "action": action,
+        "created_at": created_at,
+    });
+    for key in ["text", "old_text"] {
+        if let Some(text) = args[key].as_str() {
+            proposal[key] = json!(text);
+        }
+    }
+    proposal
+}
+
 /// Pending proposals, newest first, bounded for one digest.
 fn pending_proposals(conn: &rusqlite::Connection, bot: &str) -> Result<Vec<Value>> {
     let mut proposals = vec![];
-    let mut used = 0;
+    // One closing bracket, then one separator (or opening bracket) per entry.
+    let mut used = 1;
     for row in common::rows(
         conn,
         "SELECT id,job_id,action,args_json,created_at FROM memory_proposals WHERE bot=? AND consumed_at IS NULL ORDER BY created_at DESC,rowid DESC LIMIT ?",
         &[&bot, &(PROPOSAL_COUNT_CAP as i64)],
     )? {
         let args = common::json_field(&row["args_json"]);
-        let mut proposal = json!({
-            "id": row["id"],
-            "job_id": metadata(row["job_id"].as_str().unwrap_or("")),
-            "action": row["action"],
-            "created_at": row["created_at"],
-        });
-        for key in ["text", "old_text"] {
-            if let Some(text) = args[key].as_str() {
-                proposal[key] = json!(text);
-            }
-        }
+        let proposal = memory_proposal(
+            row["id"].as_str().unwrap_or(""),
+            row["job_id"].as_str().unwrap_or(""),
+            row["action"].as_str().unwrap_or(""),
+            &args,
+            row["created_at"].as_f64().unwrap_or(0.0),
+        );
         // One proposal that does not fit must not hide the smaller ones after it.
         let size = proposal.to_string().len() + 1;
         if used + size > PROPOSAL_CAP {

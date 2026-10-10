@@ -43,6 +43,7 @@ export function MemoryEditor({
   label,
   onSave,
   placeholder,
+  preserveDraftOnChange = false,
   rows = 6,
   value
 }: {
@@ -53,12 +54,23 @@ export function MemoryEditor({
   label: string
   onSave: (value: string) => Promise<void>
   placeholder?: string
+  preserveDraftOnChange?: boolean
   rows?: number
   value: string
 }) {
   const [draft, setDraft] = useState(value)
   const [error, setError] = useState<string | null>(null)
-  useEffect(() => setDraft(value), [value])
+  const previousValue = useRef(value)
+  useEffect(() => {
+    const previous = previousValue.current
+
+    if (previous === value) {
+      return
+    }
+
+    previousValue.current = value
+    setDraft(current => preserveDraftOnChange && current !== previous ? current : value)
+  }, [value, preserveDraftOnChange])
   const [saving, setSaving] = useState(false)
   const pending = useRef(false)
   const length = [...draft].length
@@ -249,6 +261,7 @@ export function NotesBlock({ bot }: { bot: string }) {
 function BotNotesBlock({ bot }: { bot: string }) {
   const [notes, setNotes] = useState<BotNotes | null>(null)
   const [chosen, setChosen] = useState<string | null>(null)
+  const [preserveDraft, setPreserveDraft] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const generation = useRef(0)
@@ -292,6 +305,7 @@ function BotNotesBlock({ bot }: { bot: string }) {
       entry.date !== date ? [entry] : text?.trim() ? [{ ...entry, text }] : []
     )
 
+    setPreserveDraft(false)
     setNotes({ ...notes, days: next })
     setChosen(next.some(entry => entry.date === date) ? date : (next[0]?.date ?? null))
   }
@@ -384,6 +398,24 @@ function BotNotesBlock({ bot }: { bot: string }) {
     } catch (cause) {
       if (request === generation.current) {
         setError(errorText(cause))
+
+        if ((cause as { code?: unknown }).code === NOTES_CHANGED) {
+          try {
+            const fresh = await botNotesList(bot)
+
+            if (request === generation.current) {
+              setPreserveDraft(true)
+              setNotes(fresh)
+              setChosen(
+                fresh.days.some(entry => entry.date === date) ? date : (fresh.days[0]?.date ?? null)
+              )
+            }
+          } catch (reloadCause) {
+            if (request === generation.current) {
+              setError(errorText(reloadCause))
+            }
+          }
+        }
       }
     } finally {
       pending.current = false
@@ -405,11 +437,11 @@ function BotNotesBlock({ bot }: { bot: string }) {
             {error}
           </p>
         ) : null}
-        {!notes ? (
+        {!notes && !error ? (
           <div className="px-4 py-3">
             <SkeletonLines label="Loading notes" lines={2} />
           </div>
-        ) : days.length === 0 ? (
+        ) : !notes ? null : days.length === 0 ? (
           <Row title="No notes yet" />
         ) : (
           <div aria-label="Days with notes" role="group">
@@ -462,6 +494,7 @@ function BotNotesBlock({ bot }: { bot: string }) {
           key={day.date}
           label={`Notes for ${noteDayLabel(day.date, today)}`}
           onSave={value => save(day.date, day.text, value)}
+          preserveDraftOnChange={preserveDraft}
           rows={5}
           value={day.text}
         />

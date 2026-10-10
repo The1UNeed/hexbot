@@ -69,7 +69,9 @@ The native scheduler and digest builder live in
   tab shows notes by day; the user can edit or delete a day there, and
   `hexbot.memory.notes.set` writes text as given. Saves and deletions accept `expected` and refuse stale text. The
   editor merges only new lines after the exact append boundary and keeps
-  the user's draft on other conflicts. Future dates are refused on writes.
+  the user's draft on other conflicts. Future dates and days older than 30
+  days are refused before saving. A stale deletion refreshes the list and
+  keeps the selected day and any draft.
   Deleting a section leaves notes alone, like memory; deleting the
   bot deletes them with the profile.
 - Scheduled jobs do not write memory or notes. In a job's session, and in
@@ -77,7 +79,9 @@ The native scheduler and digest builder live in
   `append`, `replace`, `set`, `remove`, and `note` are saved as rows in
   `memory_proposals` (bot, owner, job id, action, arguments, created_at)
   after the same injection scan as an edit. Notes use the 4,000-character
-  day cap; memory proposals use the bot's memory cap. An oversized proposal
+  day cap after trimming, and blank notes are refused; memory proposals use
+  the bot's memory cap. Each proposal must also fit the digest's 10,000-byte
+  serialized limit, including metadata and JSON escaping. An oversized proposal
   is refused at once. The tool result tells the bot the change waits for
   its next dream. A bot keeps at most 100 pending proposals; older ones are dropped unread. Reviewed proposals are kept 30
   days. The soul tool reads in a job's session but refuses to write: soul

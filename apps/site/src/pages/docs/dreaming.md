@@ -26,7 +26,7 @@ A dream writes only to the bot's own memory. It never edits the bot's soul or yo
 
 ## Proposals from scheduled jobs
 
-A scheduled job cannot change memory or notes while it runs unattended. When a job asks to add, replace, or remove something, or to note it, Hexbot saves the request as a proposal instead. The bot's next dream reads its pending proposals, newest first, treats them as suggestions that may contain text from the web, keeps the ones it agrees with, and says in its summary which it applied or ignored. A proposed note can hold up to 4,000 characters; a proposed memory change uses the bot's memory limit. A proposal stays pending until a dream completes; a failed dream leaves it for the next one. Deleting the bot deletes its proposals.
+A scheduled job cannot change memory or notes while it runs unattended. When a job asks to add, replace, or remove something, or to note it, Hexbot saves the request as a proposal instead. The bot's next dream reads its pending proposals, newest first, treats them as suggestions that may contain text from the web, keeps the ones it agrees with, and says in its summary which it applied or ignored. A proposed note must contain text and can hold up to 4,000 characters after trimming; a proposed memory change uses the bot's memory limit. Every proposal must also fit the dream's 10,000-byte limit after JSON encoding, including its metadata. Hexbot refuses oversized proposals before saving them. A proposal stays pending until a dream completes; a failed dream leaves it for the next one. Deleting the bot deletes its proposals.
 
 ## Room memory
 

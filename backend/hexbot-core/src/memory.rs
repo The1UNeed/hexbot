@@ -129,10 +129,7 @@ impl MemoryStore {
         text: &str,
         check: impl FnOnce(&str, &str) -> Result<()>,
     ) -> Result<Value> {
-        let note = text.trim();
-        if note.is_empty() {
-            return Err(Error::new(4202, "a note needs some text"));
-        }
+        let note = validated_note(text)?;
         let _guard = BOT_WRITES
             .lock()
             .map_err(|_| Error::new(5200, "memory write lock poisoned"))?;
@@ -211,7 +208,7 @@ impl MemoryStore {
     /// the day. With `expected`, the text the editor loaded, the edit is
     /// refused when the day has changed since, so a note the bot added in
     /// the meantime is not written over. Notes can only be filed for days
-    /// up to today.
+    /// up to today and within the retention window.
     pub fn set_notes(
         &self,
         caller: &str,
@@ -225,10 +222,19 @@ impl MemoryStore {
             .map_err(|_| Error::new(5200, "memory write lock poisoned"))?;
         self.require_bot(caller, bot)?;
         check_cap(text, NOTE_DAY_CAP, "notes")?;
-        if date > local_today() {
+        let today = local_today();
+        if date > today {
             return Err(Error::new(
                 4202,
                 "Notes are kept for today and earlier days only.",
+            ));
+        }
+        if (today - date).num_days() > NOTE_RETENTION_DAYS {
+            return Err(Error::new(
+                4202,
+                format!(
+                    "Notes older than {NOTE_RETENTION_DAYS} days cannot be saved. Copy your draft to a more recent day."
+                ),
             ));
         }
         let relative = note_path(bot, date);
@@ -556,11 +562,15 @@ pub fn prune_notes(home: &Path, bot: &str, today: NaiveDate) -> Result<Vec<Naive
     Ok(removed)
 }
 
-/// A note a scheduled job proposes must fit a day on its own, as a memory
-/// proposal must fit the memory cap, so the dream is never handed one it
-/// could not write.
-pub fn check_note_fits(text: &str) -> Result<()> {
-    check_cap(text, NOTE_DAY_CAP, "proposed notes")
+/// Direct writes and scheduled proposals trim notes, reject blank text, and
+/// require the trimmed note to fit a day on its own.
+pub fn validated_note(text: &str) -> Result<&str> {
+    let note = text.trim();
+    if note.is_empty() {
+        return Err(Error::new(4202, "a note needs some text"));
+    }
+    check_cap(note, NOTE_DAY_CAP, "note")?;
+    Ok(note)
 }
 
 /// Entries a bot adds carry the month they were learned, so a dream can tell

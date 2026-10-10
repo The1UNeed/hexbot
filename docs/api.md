@@ -234,11 +234,13 @@ context of its own; the meter belongs to bot sections.
   as the daemon files them. Owner only.
 - `hexbot.memory.notes.set {bot, date, text, expected?}` → `{date, text,
   cap}` writes one day as given; an empty `text` removes the day. Future
-  dates return 4202. With `expected`, the text the editor loaded, a changed
+  dates and days older than 30 days return 4202 before any write. With
+  `expected`, the text the editor loaded, a changed
   day returns 4209. The app merges appended lines or keeps the draft on
   other conflicts.
 - `hexbot.memory.notes.delete {bot, date, expected?}` → `{date, deleted: true}`.
   With `expected`, deletion returns 4209 if the day has changed; the file stays.
+  The app refreshes the list while keeping the selected day and any draft.
   Notes are written by the bot through its `memory` tool (`note`, and `read`
   with `notes`); see `docs/dreaming.md`.
 

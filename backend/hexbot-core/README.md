@@ -93,7 +93,10 @@ it also installs over SSH when nobody is signed in at the screen.
   Appending returns a compact confirmation; only an explicit read returns
   the day's text. The editor checks the text it loaded before saving or
   deleting a day. Scheduled jobs propose notes under the 4,000-character
-  day cap; proposed memory changes use the bot's memory cap.
+  day cap after trimming and cannot be blank; proposed memory changes use
+  the bot's memory cap. Every proposal must fit the dream's 10,000-byte
+  serialized limit before it is saved. Note saves refuse future dates and
+  days older than 30 days.
 - `hexbot-runtime.db` stores native transcript projections, usage, and frozen
   session options. Pi keeps its conversation JSONL under the native session
   directory. Existing Python `state.db` history is imported once, including

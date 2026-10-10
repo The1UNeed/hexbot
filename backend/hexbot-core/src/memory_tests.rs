@@ -876,3 +876,43 @@ fn concurrent_pruning_tolerates_already_removed_files() {
     });
     assert_eq!(fs::read_dir(dir).unwrap().count(), 0);
 }
+
+#[test]
+fn notes_set_rejects_expired_days_before_writing_and_keeps_the_retention_boundary() {
+    let (home, store) = setup();
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
+    crate::memory::fix_today(today);
+    let boundary = today - chrono::Duration::days(crate::memory::NOTE_RETENTION_DAYS);
+    let expired = boundary.pred_opt().unwrap();
+    let file = home
+        .path()
+        .join(format!("profiles/owl/memories/notes/{expired}.md"));
+    let error = store
+        .set_notes("alice", "owl", expired, "Draft", None)
+        .unwrap_err();
+    assert_eq!(error.code, 4202);
+    assert_eq!(
+        error.message,
+        "Notes older than 30 days cannot be saved. Copy your draft to a more recent day."
+    );
+    assert!(!file.exists());
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(&file, "Original").unwrap();
+    for text in ["Draft", ""] {
+        assert_eq!(
+            store
+                .set_notes("alice", "owl", expired, text, Some("Original"))
+                .unwrap_err()
+                .code,
+            4202
+        );
+        assert_eq!(fs::read_to_string(&file).unwrap(), "Original");
+    }
+    store
+        .set_notes("alice", "owl", boundary, "Keep", None)
+        .unwrap();
+    assert_eq!(
+        store.list_notes("alice", "owl").unwrap()["days"][0]["text"],
+        "Keep"
+    );
+}

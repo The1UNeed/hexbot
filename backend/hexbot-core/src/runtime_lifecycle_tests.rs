@@ -2709,6 +2709,31 @@ async fn notes_are_written_by_sections_and_proposed_by_jobs() {
         )
         .await
         .unwrap();
+    // Both writers trim and reject empty notes; a job cannot leave an
+    // oversized serialized proposal pending forever.
+    for session in [&section, &job] {
+        let error = runtime
+            .tool(session, "memory", &json!({"action":"note","text":" \n\t "}))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, 4202);
+        assert_eq!(error.message, "a note needs some text");
+    }
+    for text in ["😀".repeat(4000), "\u{0000}".repeat(4000)] {
+        let error = runtime
+            .tool(&job, "memory", &json!({"action":"note","text":text}))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, 4221);
+        assert!(error.message.contains("serialized bytes"));
+    }
+    let count: i64 = db::open(home.path())
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM memory_proposals", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
     let proposed = runtime
         .tool(
             &job,
@@ -2751,12 +2776,21 @@ async fn notes_are_written_by_sections_and_proposed_by_jobs() {
             .tool(
                 &job,
                 "memory",
-                &json!({"action":"note","text":"n".repeat(3000)})
+                &json!({"action":"note","text":format!("  {}\n", "n".repeat(4000))})
             )
             .await
             .unwrap()["proposed"],
         true
     );
+    let normalized: String = db::open(home.path())
+        .unwrap()
+        .query_row(
+            "SELECT args_json FROM memory_proposals WHERE bot='owl' ORDER BY rowid DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(normalized, json!({"text":"n".repeat(4000)}).to_string());
     let too_long = runtime
         .tool(
             &job,
@@ -2766,11 +2800,7 @@ async fn notes_are_written_by_sections_and_proposed_by_jobs() {
         .await
         .unwrap_err();
     assert_eq!(too_long.code, 4221);
-    assert!(
-        too_long.message.starts_with("proposed notes"),
-        "{}",
-        too_long.message
-    );
+    assert!(too_long.message.starts_with("note"), "{}", too_long.message);
     assert_eq!(
         runtime
             .tool(

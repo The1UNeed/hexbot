@@ -2642,16 +2642,20 @@ impl Runtime {
                         }
                         _ => return Err(Error::new(4202, "unknown memory action")),
                     };
-                    check_memory_edit("", text)?;
-                    if action == "note" {
-                        crate::memory::check_note_fits(text)?;
+                    let text = if action == "note" {
+                        crate::memory::validated_note(text)?
                     } else {
                         memory.check_bot_fits(&bot_owner, &s.bot, text)?;
-                    }
-                    let kept = ["text", "old_text"]
+                        text
+                    };
+                    check_memory_edit("", text)?;
+                    let mut kept = ["text", "old_text"]
                         .into_iter()
                         .filter_map(|k| args[k].as_str().map(|v| (k.to_owned(), json!(v))))
                         .collect::<serde_json::Map<_, _>>();
+                    if action == "note" {
+                        kept.insert("text".into(), json!(text));
+                    }
                     return crate::dreaming::propose_memory(
                         &self.home,
                         &bot_owner,

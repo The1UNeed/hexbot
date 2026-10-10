@@ -780,6 +780,79 @@ fn digest_skips_a_proposal_that_does_not_fit_instead_of_stopping() {
     assert!(digest.to_string().len() < 60_000);
 }
 
+/// Proposal acceptance uses the digest's serialized shape, including escaped
+/// text and metadata, so every accepted proposal can fit a digest on its own.
+#[test]
+fn proposals_reject_oversized_serialization_before_storage() {
+    let home = setup();
+    let h = home.path();
+    for args in [
+        json!({"text":"😀".repeat(4000)}),
+        json!({"text":"\u{0000}".repeat(4000)}),
+        json!({"text":"x".repeat(5000),"old_text":"y".repeat(5000)}),
+    ] {
+        let error =
+            dreaming::propose_memory(h, "alice", "owl", "job-1", "note", &args).unwrap_err();
+        assert_eq!(error.code, 4221);
+        assert!(error.message.contains("serialized bytes"));
+    }
+    let conn = db::open(h).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM memory_proposals", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+    dreaming::propose_memory(
+        h,
+        "alice",
+        "owl",
+        &"😀".repeat(256),
+        "note",
+        &json!({"text":"😀".repeat(2200)}),
+    )
+    .unwrap();
+    let digest = dreaming::build_digest(h, "owl", 0.0, None).unwrap();
+    assert_eq!(digest["proposals"].as_array().unwrap().len(), 1);
+    assert_eq!(digest["proposals"][0]["text"], "😀".repeat(2200));
+    assert!(digest["proposals"].to_string().len() <= 10_000);
+}
+
+#[test]
+fn accepted_proposals_near_the_byte_limit_fit_the_digest_array() {
+    let home = setup();
+    let h = home.path();
+    let conn = db::open(h).unwrap();
+    let mut accepted = 0;
+    let mut rejected = 0;
+    // Vary a byte at a time across the limit, including JSON escaping. Each
+    // accepted proposal must be readable even when it almost fills the budget.
+    for padding in 0..90 {
+        let text = format!("{}{}", "\u{0000}".repeat(1640), "x".repeat(padding));
+        match dreaming::propose_memory(h, "alice", "owl", "job-1", "note", &json!({"text":text})) {
+            Ok(proposal) => {
+                accepted += 1;
+                let digest = dreaming::build_digest(h, "owl", 0.0, None).unwrap();
+                assert_eq!(digest["proposals"].as_array().unwrap().len(), 1);
+                assert_eq!(digest["proposals"][0]["id"], proposal["id"]);
+                assert!(digest["proposals"].to_string().len() <= 10_000);
+            }
+            Err(error) => {
+                rejected += 1;
+                assert_eq!(error.code, 4221);
+                let count: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM memory_proposals", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(count, 0);
+            }
+        }
+        conn.execute("DELETE FROM memory_proposals", []).unwrap();
+    }
+    assert!(accepted > 0 && rejected > 0);
+}
+
 /// Scheduled jobs propose memory; the digest carries the newest proposals,
 /// bounded, and a dream consumes only what it read, only when it completes.
 #[tokio::test]
