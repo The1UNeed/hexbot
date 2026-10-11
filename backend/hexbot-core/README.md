@@ -86,7 +86,9 @@ it also installs over SSH when nobody is signed in at the screen.
   Only sections, rooms, and dreams write it; a scheduled job's memory tool
   records proposals instead, and its soul tool only reads. Jobs and their
   delegates cannot use `message_bot`. Bypass jobs, including scripts, run in
-  Auto; Manual stays Manual.
+  Auto; Manual stays Manual. The memory tool's `add`, `append`, and `replace`
+  end each entry with the month it was learned (`[YYYY-MM]`); `set` and the
+  app write text as given (`docs/dreaming.md`).
 - `hexbot-runtime.db` stores native transcript projections, usage, and frozen
   session options. Pi keeps its conversation JSONL under the native session
   directory. Existing Python `state.db` history is imported once, including

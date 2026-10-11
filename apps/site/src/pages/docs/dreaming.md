@@ -4,7 +4,7 @@ title: Dreaming
 description: Let bots review recent conversations and update their memory.
 ---
 
-A dream is a normal bot turn that reads the conversations since the bot's last dream and tidies its memory: it merges duplicates, sharpens vague entries, drops what is stale, and adds durable facts and lessons about working with you. Memory is short on purpose, so a dream keeps it dense rather than long. Unfinished work and what happened on a given day stay in section history.
+A dream is a normal bot turn that reads the conversations since the bot's last dream and tidies its memory: it merges duplicates, sharpens vague entries, drops what is stale, and adds durable facts and lessons about working with you. Memory is short on purpose, so a dream keeps it dense rather than long. Unfinished work and what happened on a given day stay in section history. Each entry the bot adds ends with the month it was learned; the dream keeps those stamps, refreshes one when a fact is confirmed again, and checks or drops old entries that may no longer hold. An entry without a stamp is one you wrote or one from before stamps; the dream judges it on what it says, not on the missing date.
 
 The dream uses the bot's configured model, soul, memory, and skills. Model provider charges apply as they do for any other turn.
 
