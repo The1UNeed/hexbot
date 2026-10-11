@@ -3384,6 +3384,33 @@ impl Runtime {
             "extension_ui_request" => {
                 let id = event["id"].as_str().unwrap_or("");
                 let title = event["title"].as_str().unwrap_or("");
+                if !title.starts_with("__HEXBOT_TOOL__")
+                    && (title.starts_with("__HEXBOT_CLARIFY__")
+                        || matches!(
+                            event["method"].as_str(),
+                            Some("select" | "confirm" | "input" | "editor")
+                        ))
+                    && s.state.lock().unwrap().interrupted
+                {
+                    // Pi can prepare another dialog while Stop cancels the first.
+                    // Answer it so abort can finish, without publishing another card.
+                    let source = s.clone();
+                    let id = id.to_owned();
+                    let mut tasks = s.requests.lock().unwrap();
+                    while tasks.try_join_next().is_some() {}
+                    s.state.lock().unwrap().tool_dialogs.insert(id.clone());
+                    tasks.spawn(async move {
+                        if let Err(error) = source
+                            .process
+                            .respond_extension(&id, json!({"cancelled":true}), DEADLINE)
+                            .await
+                        {
+                            eprintln!("Could not cancel late bot dialog {id}: {error}");
+                        }
+                        source.state.lock().unwrap().tool_dialogs.remove(&id);
+                    });
+                    return Ok(());
+                }
                 if let Some(request) = title.strip_prefix("__HEXBOT_TOOL__") {
                     let request: Value = serde_json::from_str(request)
                         .map_err(|e| Error::new(5201, e.to_string()))?;

@@ -1,6 +1,101 @@
 use super::*;
 
 #[tokio::test]
+async fn stopping_cancels_late_approvals_and_questions_before_abort_finishes() {
+    let (home, runtime, hub) = setup();
+    db::open(home.path())
+        .unwrap()
+        .execute("UPDATE bots SET approval_mode='manual'", [])
+        .unwrap();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    runtime
+        .call_inner(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"late-dialogs"}),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "approval.request" {
+                assert_eq!(event.frame["params"]["payload"]["request_id"], "first");
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        runtime.status_for_bot("alice", "owl").unwrap()["status"],
+        "needs_you"
+    );
+    let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+    let params = json!({"session_id":id});
+    let stop = runtime.call_inner("alice", "session.interrupt", &params);
+    tokio::pin!(stop);
+    let mut completed = false;
+    let stopped = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            tokio::select! {
+                result = &mut stop => break result,
+                event = events.recv() => {
+                    let frame = event.unwrap().frame;
+                    completed |= frame["params"]["type"] == "message.complete";
+                    if matches!(frame["params"]["type"].as_str(), Some("approval.request" | "clarify.request")) {
+                        let request = frame["params"]["payload"]["request_id"].as_str().unwrap().to_owned();
+                        // Release a broken producer too, so the regression reports
+                        // the unexpected card without leaving its fake Pi blocked.
+                        s.process.respond_extension(&request, json!({"cancelled":true}), DEADLINE).await.unwrap();
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(stopped["status"], "interrupted");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !completed {
+            completed = events.recv().await.unwrap().frame["params"]["type"] == "message.complete";
+        }
+    })
+    .await
+    .unwrap();
+    assert!(s.state.lock().unwrap().pending.is_empty());
+    assert!(!s.state.lock().unwrap().busy);
+    assert!(runtime.status_for_bot("alice", "owl").is_none());
+    let replies = fs::read_to_string(home.path().join("dialogs.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(replies.len(), 4);
+    assert!(replies.iter().all(|reply| reply["cancelled"] == true));
+    let replay = hub.since("alice", &id, before);
+    let published = replay["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| {
+            matches!(
+                event["type"].as_str(),
+                Some("approval.request" | "clarify.request")
+            )
+        })
+        .collect::<Vec<_>>();
+    runtime.shutdown().await;
+    assert!(
+        published.is_empty(),
+        "late cards were published: {published:?}"
+    );
+}
+
+#[tokio::test]
 async fn dialog_delivery_failure_keeps_partial_answers_unsettled() {
     let (_home, runtime, hub) = setup();
     let id = open(&runtime).await;
@@ -171,7 +266,16 @@ fn setup() -> (common::TestHome, Arc<Runtime>, EventHub) {
 const fs=require('node:fs'),rl=require('node:readline').createInterface({{input:process.stdin}});
 const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
 fs.appendFileSync({logfile},JSON.stringify({{pid:process.pid,args:process.argv.slice(2),environment:process.env,config:JSON.parse(fs.readFileSync(process.env.HEXBOT_SESSION_CONFIG))}})+'\n');
-rl.on('line',line=>{{const c=JSON.parse(line);if(c.type==='extension_ui_response'){{fs.appendFileSync({dialogs},JSON.stringify(c)+'\n');if(c.id.startsWith('probe:'))emit({{type:'extension_ui_request',method:'setStatus',statusText:JSON.stringify(c)}});return;}}emit({{type:'response',id:c.id,command:c.type,success:true,data:{{}}}});if(c.type==='prompt'){{emit({{type:'agent_start'}});emit({{type:'message_end',message:{{role:'user',content:c.message}}}});if(c.message!=='wait')emit({{type:'agent_settled'}});}}if(c.type==='abort')emit({{type:'agent_settled'}});}});
+let late=null,abort=null;
+const finishAbort=()=>{{if(abort&&late.size===0){{emit({{type:'response',id:abort.id,command:'abort',success:true,data:{{}}}});abort=null;emit({{type:'message_end',message:{{role:'assistant',content:[],stopReason:'aborted'}}}});emit({{type:'agent_settled'}});}}}};
+rl.on('line',line=>{{const c=JSON.parse(line);if(c.type==='extension_ui_response'){{fs.appendFileSync({dialogs},JSON.stringify(c)+'\n');if(c.id.startsWith('probe:'))emit({{type:'extension_ui_request',method:'setStatus',statusText:JSON.stringify(c)}});
+if(c.id==='first'&&c.cancelled){{late=new Set(['late-approval','late-batch','late-question']);
+emit({{type:'extension_ui_request',id:'late-approval',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({{tool:'bash',command:'pwd'}}),options:['once','deny']}});
+emit({{type:'extension_ui_request',id:'late-batch',method:'input',title:'__HEXBOT_CLARIFY__'+JSON.stringify({{questions:[{{qid:'why',question:'Why?'}}]}})}});
+emit({{type:'extension_ui_request',id:'late-question',method:'input',title:'Another question?'}});
+}}else if(late&&late.delete(c.id))finishAbort();return;}}
+if(c.type==='abort'&&late){{abort=c;finishAbort();return;}}
+emit({{type:'response',id:c.id,command:c.type,success:true,data:{{}}}});if(c.type==='prompt'){{emit({{type:'agent_start'}});emit({{type:'message_end',message:{{role:'user',content:c.message}}}});if(c.message==='late-dialogs'){{emit({{type:'extension_ui_request',id:'first',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({{tool:'bash',command:'pwd'}}),options:['once','deny']}});return;}}if(c.message!=='wait')emit({{type:'agent_settled'}});}}if(c.type==='abort')emit({{type:'agent_settled'}});}});
 "#
         ),
     )

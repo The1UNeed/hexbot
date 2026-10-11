@@ -61,6 +61,9 @@ context}` (the section's totals and its context meter, see Sections), `error`.
 without a question or approval. Mobile keeps that activity text; pending human
 cards use Waiting.
 
+Stop cancels pending dialogs and any approval or question that Pi sends while
+the turn is stopping. Late dialogs are not published as new cards.
+
 Accepted answers publish session-scoped `approval.resolved {request_id,
 choice}` or `clarify.resolved {request_id, answers, status, remaining?}`.
 Approval choices are canonical `once | session | deny`. Clarification answers
