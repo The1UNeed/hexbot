@@ -15,6 +15,7 @@ export function roomChat(state: ChatState): ChatState {
   return {
     ...state,
     busy: turns.length > 0,
+    waiting: turns.some(t => t.waiting),
     activity: turns
       .map(t => t.activity)
       .filter(Boolean)
@@ -95,7 +96,15 @@ export function reduceRoom(
     const id = typeof p.live_session_id === 'string' ? p.live_session_id : undefined
     const bot = String(p.bot ?? '')
     if (id && ['running', 'working', 'waiting'].includes(String(p.status))) {
-      turns[id] = { ...(turns[id] ?? newTurn(bot, id)), activity: `${botName(bot)} is working` }
+      const turn = turns[id] ?? newTurn(bot, id)
+      const waiting =
+        p.status === 'waiting' || turn.approvals.length > 0 || turn.questions.length > 0
+      turns[id] = {
+        ...turn,
+        waiting,
+        resumedWaiting: waiting ? false : turn.resumedWaiting,
+        activity: `${botName(bot)} is ${waiting ? 'waiting' : 'working'}`
+      }
     } else {
       for (const [key, turn] of Object.entries(turns))
         if (key === id || turn.bot === bot) delete turns[key]

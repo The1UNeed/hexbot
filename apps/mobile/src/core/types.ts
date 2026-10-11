@@ -70,15 +70,28 @@ export interface PendingQuestion {
   sessionId: string
   questions: { id: string; text: string; choices: string[]; multiSelect: boolean }[]
 }
+export interface RequestSettlement {
+  choice?: 'once' | 'session' | 'deny'
+  answers?: Record<string, string>
+  answered?: boolean
+  closed?: boolean
+}
 /** What one live session is doing right now; it empties when the turn ends. */
 export interface TurnState {
   streaming: string
   interim: string[]
   busy: boolean
+  waiting: boolean
+  /** An accepted last card ended this session's wait, even if the roster refresh fails. */
+  resumedWaiting: boolean
+  /** Receipt order of the exact answer that resumed this wait. */
+  waitingRevision: number
   activity: string
   tools: ChatTool[]
   approvals: PendingApproval[]
   questions: PendingQuestion[]
+  /** Exact accepted answers also suppress cards replayed after their settlement. */
+  settlements: Record<string, RequestSettlement>
   error: string | null
 }
 /** A bot's turn in a room, kept apart so bots working at once do not mix. */

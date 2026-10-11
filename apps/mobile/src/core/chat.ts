@@ -1,13 +1,25 @@
 import type { GatewayEvent } from '@hermes/shared'
-import type { ChatMessage, ChatState, ChatTool, TurnState } from './types'
+import type {
+  Bot,
+  ChatMessage,
+  ChatState,
+  ChatTool,
+  PendingApproval,
+  PendingQuestion,
+  TurnState
+} from './types'
 export const emptyTurn = (): TurnState => ({
   streaming: '',
   interim: [],
   busy: false,
+  waiting: false,
+  resumedWaiting: false,
+  waitingRevision: 0,
   activity: '',
   tools: [],
   approvals: [],
   questions: [],
+  settlements: {},
   error: null
 })
 export const emptyChat = (): ChatState => ({ ...emptyTurn(), messages: [], turns: {} })
@@ -31,6 +43,94 @@ export const parseArgs = (value: unknown): unknown => {
 }
 const detailOf = (value: unknown) =>
   typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value, null, 2)
+const requestKey = (kind: string, sessionId: string, requestId: string) =>
+  JSON.stringify([kind, sessionId, requestId])
+const answerMap = (value: unknown): Record<string, string> =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.fromEntries(
+        Object.entries(value).filter(
+          (entry): entry is [string, string] => typeof entry[1] === 'string'
+        )
+      )
+    : {}
+const choiceOf = (value: unknown) =>
+  value === 'once' || value === 'session' || value === 'deny' ? value : undefined
+const resumeAnswered = (state: ChatState, accepted: boolean, revision: number): ChatState =>
+  accepted && state.busy && state.waiting && !state.approvals.length && !state.questions.length
+    ? { ...state, waiting: false, resumedWaiting: true, waitingRevision: revision, activity: '' }
+    : state
+
+/** Only a roster wait naming this exact session can be superseded by its accepted answer. */
+export function settledBot(bot: Bot, state: TurnState, sessionId: string | null): Bot {
+  if (
+    bot.status !== 'needs_you' ||
+    !sessionId ||
+    bot.status_detail?.session_id !== sessionId ||
+    !state.resumedWaiting ||
+    state.waiting ||
+    state.approvals.length ||
+    state.questions.length
+  )
+    return bot
+  return {
+    ...bot,
+    status: state.busy ? 'working' : state.error ? 'stopped' : 'idle',
+    status_detail: { ...bot.status_detail, text: state.activity, action: null }
+  }
+}
+
+/** A successful roster read retires older evidence, but cannot undo answers accepted during it. */
+export function rosterChat(state: ChatState, started: number): ChatState {
+  return {
+    ...state,
+    resumedWaiting: state.resumedWaiting && state.waitingRevision > started,
+    turns: Object.fromEntries(
+      Object.entries(state.turns).map(([id, turn]) => [
+        id,
+        turn.waitingRevision > started ? turn : { ...turn, resumedWaiting: false }
+      ])
+    )
+  }
+}
+
+/** Successful local responses use the same canonical projection as remote settlements. */
+export function approvalResponse(
+  pending: PendingApproval,
+  choice: string,
+  result: Record<string, unknown>
+): GatewayEvent | undefined {
+  if (result.resolved !== true) return
+  const canonical = choiceOf(
+    result.choice ??
+      (choice === 'always' ? (pending.choices.includes('session') ? 'session' : 'once') : choice)
+  )
+  if (!canonical) return
+  return {
+    type: 'approval.resolved',
+    session_id: pending.sessionId,
+    payload: { request_id: pending.requestId, choice: canonical }
+  }
+}
+export function clarifyResponse(
+  pending: PendingQuestion,
+  questionId: string,
+  answer: string,
+  result: Record<string, unknown>
+): GatewayEvent {
+  const answers =
+    result.answers === undefined ? { [questionId]: answer } : answerMap(result.answers)
+  const status =
+    result.status === 'waiting' || result.status === 'answered'
+      ? result.status
+      : pending.questions.every(q => Object.hasOwn(answers, q.id))
+        ? 'answered'
+        : 'waiting'
+  return {
+    type: 'clarify.resolved',
+    session_id: pending.sessionId,
+    payload: { request_id: pending.requestId, answers, status }
+  }
+}
 export function historyMessages(raw: unknown[]): ChatMessage[] {
   const messages: ChatMessage[] = []
   const args = new Map<string, unknown>()
@@ -67,9 +167,19 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
   const p = (event.payload ?? {}) as Record<string, unknown>
   const text = typeof p.text === 'string' ? p.text : ''
   const sessionId = event.session_id ?? ''
+  const revision = (event as GatewayEvent & { mobileRevision?: number }).mobileRevision ?? 0
   switch (event.type) {
     case 'message.start':
-      return { ...state, busy: true, streaming: '', interim: [], tools: [], error: null }
+      return {
+        ...state,
+        busy: true,
+        waiting: false,
+        resumedWaiting: false,
+        streaming: '',
+        interim: [],
+        tools: [],
+        error: null
+      }
     case 'message.delta':
       return { ...state, busy: true, streaming: state.streaming + text }
     case 'message.interim':
@@ -81,6 +191,13 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
     case 'message.complete': {
       const parts = [...state.interim, text || state.streaming].filter(Boolean)
       if (!parts.length && state.tools.length) parts.push('')
+      const settlements = { ...state.settlements }
+      for (const card of state.approvals)
+        settlements[requestKey('approval', card.sessionId, card.requestId)] = { closed: true }
+      for (const card of state.questions) {
+        const key = requestKey('clarify', card.sessionId, card.requestId)
+        settlements[key] = { ...settlements[key], closed: true }
+      }
       return {
         ...state,
         messages: [
@@ -93,24 +210,32 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
           }))
         ],
         busy: false,
+        waiting: false,
         streaming: '',
         interim: [],
         activity: '',
         tools: [],
         approvals: [],
         questions: [],
+        settlements,
         error: typeof p.error === 'string' ? p.error : null
       }
     }
-    case 'status.update':
+    case 'status.update': {
+      const waiting =
+        p.kind === 'waiting' ||
+        (p.kind === 'working' && (state.approvals.length > 0 || state.questions.length > 0))
       return {
         ...state,
-        activity: text,
+        activity: p.kind === 'working' && waiting ? state.activity : text,
+        waiting,
+        resumedWaiting: waiting ? false : state.resumedWaiting,
         busy:
           p.kind === 'idle' || p.kind === 'done' || p.kind === 'error' || p.kind === 'interrupted'
             ? false
             : state.busy || p.kind === 'working' || p.kind === 'waiting'
       }
+    }
     case 'thinking.delta':
       return { ...state, activity: text }
     case 'tool.start':
@@ -156,6 +281,8 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
       }
     case 'approval.request': {
       if (typeof p.request_id !== 'string') return state
+      const saved = state.settlements[requestKey('approval', sessionId, p.request_id)]
+      if (saved?.choice || saved?.closed) return state
       const request = {
         requestId: p.request_id,
         sessionId,
@@ -166,12 +293,40 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
       return {
         ...state,
         busy: true,
-        approvals: [...state.approvals.filter(a => a.requestId !== request.requestId), request]
+        waiting: true,
+        resumedWaiting: false,
+        activity: 'Waiting for approval',
+        approvals: [
+          ...state.approvals.filter(
+            a => a.requestId !== request.requestId || a.sessionId !== sessionId
+          ),
+          request
+        ]
       }
+    }
+    case 'approval.resolved': {
+      const choice = choiceOf(p.choice)
+      if (typeof p.request_id !== 'string' || !sessionId || !choice) return state
+      const key = requestKey('approval', sessionId, p.request_id)
+      const approvals = state.approvals.filter(
+        a => a.requestId !== p.request_id || a.sessionId !== sessionId
+      )
+      return resumeAnswered(
+        {
+          ...state,
+          approvals,
+          settlements: { ...state.settlements, [key]: { ...state.settlements[key], choice } }
+        },
+        approvals.length !== state.approvals.length,
+        revision
+      )
     }
     case 'clarify.request': {
       if (typeof p.request_id !== 'string') return state
-      const answers = p.answers as Record<string, string> | undefined
+      const key = requestKey('clarify', sessionId, p.request_id)
+      const saved = state.settlements[key]
+      if (saved?.closed) return state
+      const answers = { ...answerMap(p.answers), ...saved?.answers }
       const questions = (Array.isArray(p.questions) ? p.questions : [p])
         .filter(
           (q: Record<string, unknown>) =>
@@ -183,17 +338,65 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
           choices: Array.isArray(q.choices) ? (q.choices as string[]) : [],
           multiSelect: q.multi_select === true
         }))
+      if (!questions.length && saved?.answered) return state
       return {
         ...state,
         busy: true,
+        waiting: true,
+        resumedWaiting: false,
+        activity: 'Waiting for your answer',
+        settlements: { ...state.settlements, [key]: { ...saved, answers } },
         questions: [
-          ...state.questions.filter(q => q.requestId !== p.request_id),
+          ...state.questions.filter(q => q.requestId !== p.request_id || q.sessionId !== sessionId),
           { requestId: p.request_id, sessionId, questions }
         ]
       }
     }
-    case 'clarify.expire':
-      return { ...state, questions: state.questions.filter(q => q.requestId !== p.request_id) }
+    case 'clarify.resolved': {
+      if (
+        typeof p.request_id !== 'string' ||
+        !sessionId ||
+        (p.status !== 'waiting' && p.status !== 'answered')
+      )
+        return state
+      const key = requestKey('clarify', sessionId, p.request_id)
+      const saved = state.settlements[key]
+      const answers = { ...answerMap(p.answers), ...saved?.answers }
+      const card = state.questions.find(
+        q => q.requestId === p.request_id && q.sessionId === sessionId
+      )
+      const answered =
+        p.status === 'answered' &&
+        (!card || card.questions.every(q => Object.hasOwn(answers, q.id)))
+      const questions = state.questions.flatMap(q => {
+        if (q !== card) return [q]
+        const remaining = q.questions.filter(question => !Object.hasOwn(answers, question.id))
+        return answered ? [] : [{ ...q, questions: remaining }]
+      })
+      return resumeAnswered(
+        {
+          ...state,
+          questions,
+          settlements: {
+            ...state.settlements,
+            [key]: { ...saved, answers, answered: saved?.answered || answered }
+          }
+        },
+        Boolean(card && answered),
+        revision
+      )
+    }
+    case 'clarify.expire': {
+      if (typeof p.request_id !== 'string' || !sessionId) return state
+      const key = requestKey('clarify', sessionId, p.request_id)
+      return {
+        ...state,
+        questions: state.questions.filter(
+          q => q.requestId !== p.request_id || q.sessionId !== sessionId
+        ),
+        settlements: { ...state.settlements, [key]: { ...state.settlements[key], closed: true } }
+      }
+    }
     default:
       return state
   }
@@ -211,9 +414,13 @@ export function replayChat(
   events: GatewayEvent[]
 ): { state: ChatState; reread: boolean } {
   const shown = new Set(state.messages.flatMap(m => m.tools?.map(t => t.id) ?? []))
+  let reread = false
   for (const event of events) {
-    if (event.type === 'message.complete')
-      return { state: { ...reduceChat(state, event), messages: state.messages }, reread: true }
+    if (event.type === 'message.complete') {
+      state = { ...reduceChat(state, event), messages: state.messages }
+      reread = true
+      continue
+    }
     const next =
       event.type === 'message.interim'
         ? {
@@ -225,5 +432,20 @@ export function replayChat(
         : reduceChat(state, event)
     state = { ...next, tools: next.tools.filter(t => !shown.has(t.id)) }
   }
-  return { state, reread: false }
+  return { state, reread }
+}
+
+/** A pending snapshot predates the events received while its RPC was loading. */
+export function restoreChat(
+  state: ChatState,
+  sessionId: string,
+  pending: Record<string, unknown> | undefined,
+  events: GatewayEvent[]
+): { state: ChatState; reread: boolean } {
+  if (pending)
+    state = reduceChat(state, { type: 'clarify.request', session_id: sessionId, payload: pending })
+  return replayChat(
+    state,
+    events.filter(event => event.session_id === sessionId)
+  )
 }

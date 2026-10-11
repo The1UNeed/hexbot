@@ -13,8 +13,17 @@ import {
 } from './storage'
 import { pair } from './transport'
 import { parsePairing, normalizeOrigin } from './links'
-import { emptyChat, historyMessages, reduceChat, replayChat } from './chat'
-import { reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
+import {
+  approvalResponse,
+  clarifyResponse,
+  emptyChat,
+  historyMessages,
+  reduceChat,
+  restoreChat,
+  rosterChat,
+  settledBot
+} from './chat'
+import { reduceRoom, restoreRoom, roomMessage } from './room-chat'
 import { attachmentPrompt } from './chat-send'
 import { modelLists, providerModels } from './models'
 import { ROOMS_QUERY, SECTIONS_QUERY, defaultSection, rebind, type ChatRoute } from './routes'
@@ -63,6 +72,8 @@ export function useMobile() {
   const unsent = useRef(new Set<string>())
   /** The live session whose running turn was half in the history when it loaded. */
   const straddling = useRef<string | null>(null)
+  const eventRevision = useRef(0)
+  const rosterRevision = useRef(-1)
   const rpc: Rpc = useCallback(async (method, params = {}) => {
     const current = session.current
     if (!current || current.client.connectionState !== 'open')
@@ -113,6 +124,7 @@ export function useMobile() {
   }, [releaseStaged])
   const refresh = useCallback(async () => {
     const current = session.current
+    const revision = eventRevision.current
     clearModels()
     const before = routeRef.current
     const [b, r, s, i, config, me] = await Promise.all([
@@ -124,7 +136,9 @@ export function useMobile() {
       rpc<CurrentUser>('hexbot.users.me')
     ])
     if (!mounted.current || session.current !== current) return
+    rosterRevision.current = Math.max(rosterRevision.current, revision)
     setBots(b.bots)
+    setChat(c => rosterChat(c, rosterRevision.current))
     setRooms(r.rooms)
     setSections(s.sections)
     setInfo(i)
@@ -212,27 +226,24 @@ export function useMobile() {
           session_id: liveId.current
         })
         if (sequence !== openSequence.current) return
-        const replay = replayChat(
-          {
-            ...emptyChat(),
-            busy: status.status === 'working',
-            messages: historyMessages(result.messages)
-          },
-          (loadingEvents.current ?? []).filter(event => event.session_id === liveId.current)
+        const snapshot = {
+          ...emptyChat(),
+          busy: status.status === 'working',
+          messages: historyMessages(result.messages)
+        }
+        const replay = restoreChat(
+          snapshot,
+          liveId.current!,
+          result.pending_clarify,
+          loadingEvents.current ?? []
         )
         failure = replay.state.error ?? failure
         // A turn finished while the history loaded; read it again so its replies show once.
         if (replay.reread && attempt < 2) continue
         straddling.current = replay.state.busy ? liveId.current : null
-        let restored = { ...replay.state, error: failure }
-        if (result.pending_clarify)
-          restored = reduceChat(restored, {
-            type: 'clarify.request',
-            session_id: liveId.current!,
-            payload: result.pending_clarify
-          })
+        const restored = { ...replay.state, error: failure }
         loadingEvents.current = null
-        setChat(restored)
+        setChat(rosterChat(restored, rosterRevision.current))
         const newRoute: ChatRoute = { ...target, section: result.section }
         routeRef.current = newRoute
         setRoute(newRoute)
@@ -249,6 +260,9 @@ export function useMobile() {
   refreshRef.current = refresh
   const onEvent = useCallback(
     (event: GatewayEvent) => {
+      // Preserve original receipt order when a loading buffer is replayed.
+      if ((event as GatewayEvent & { mobileRevision?: number }).mobileRevision === undefined)
+        event = { ...event, mobileRevision: ++eventRevision.current } as GatewayEvent
       const target = routeRef.current
       const p = (event.payload ?? {}) as Record<string, unknown>
       if (event.type.endsWith('.changed')) {
@@ -273,11 +287,14 @@ export function useMobile() {
           )
         }
         setChat(c =>
-          reduceRoom(
-            c,
-            event,
-            target.room,
-            id => botsRef.current.find(b => b.name === id)?.display_name || id
+          rosterChat(
+            reduceRoom(
+              c,
+              event,
+              target.room,
+              id => botsRef.current.find(b => b.name === id)?.display_name || id
+            ),
+            rosterRevision.current
           )
         )
       } else {
@@ -286,7 +303,9 @@ export function useMobile() {
           // Part of this turn was already in the history; the history now has all of it.
           straddling.current = null
           const failed = typeof p.error === 'string' ? p.error : null
-          setChat(c => ({ ...reduceChat(c, event), messages: c.messages }))
+          setChat(c =>
+            rosterChat({ ...reduceChat(c, event), messages: c.messages }, rosterRevision.current)
+          )
           void syncChatRef
             .current()
             .then(() => {
@@ -296,7 +315,7 @@ export function useMobile() {
             .catch(e => setError(errorText(e)))
           return
         }
-        setChat(c => reduceChat(c, event))
+        setChat(c => rosterChat(reduceChat(c, event), rosterRevision.current))
       }
     },
     [rpc]
@@ -334,6 +353,8 @@ export function useMobile() {
       setUser(null)
       openSequence.current++
       loadingEvents.current = null
+      eventRevision.current = 0
+      rosterRevision.current = -1
       routeRef.current = null
       liveId.current = null
       setRoute(null)
@@ -528,49 +549,51 @@ export function useMobile() {
     if (target?.kind === 'room') await rpc('hexbot.rooms.stop', { id: target.room.id })
     else if (liveId.current) await rpc('session.interrupt', { session_id: liveId.current })
   }
-  const approval = async (requestId: string, choice: string) => {
-    const pending = chat.approvals.find(a => a.requestId === requestId)
+  const approval = async (requestId: string, choice: string, sessionId?: string) => {
+    const pending = chat.approvals.find(
+      a => a.requestId === requestId && (!sessionId || a.sessionId === sessionId)
+    )
     if (!pending) return
-    await rpc('approval.respond', { session_id: pending.sessionId, request_id: requestId, choice })
-    setChat(c => {
-      if (!c.turns[pending.sessionId])
-        return { ...c, approvals: c.approvals.filter(a => a.requestId !== requestId) }
-      const turn = c.turns[pending.sessionId]
-      return roomChat({
-        ...c,
-        turns: {
-          ...c.turns,
-          [pending.sessionId]: {
-            ...turn,
-            approvals: turn.approvals.filter(a => a.requestId !== requestId)
-          }
-        }
-      })
+    const result = await rpc<Record<string, unknown>>('approval.respond', {
+      session_id: pending.sessionId,
+      request_id: requestId,
+      choice
     })
+    const accepted = approvalResponse(pending, choice, result)
+    if (accepted) eventRef.current(accepted)
   }
-  const answer = async (requestId: string, questionId: string, answer: string) => {
-    const pending = chat.questions.find(q => q.requestId === requestId)
+  const answer = async (
+    requestId: string,
+    questionId: string,
+    answer: string,
+    sessionId?: string
+  ) => {
+    const pending = chat.questions.find(
+      q => q.requestId === requestId && (!sessionId || q.sessionId === sessionId)
+    )
     if (!pending) return
-    await rpc('clarify.respond', {
+    const result = await rpc<Record<string, unknown>>('clarify.respond', {
       session_id: pending.sessionId,
       request_id: requestId,
       question_id: questionId,
       answer
     })
-    setChat(c => {
-      const turn = c.turns[pending.sessionId]
-      const questions = (turn ?? c).questions
-        .map(q =>
-          q.requestId === requestId
-            ? { ...q, questions: q.questions.filter(question => question.id !== questionId) }
-            : q
-        )
-        .filter(q => q.questions.length)
-      return turn
-        ? roomChat({ ...c, turns: { ...c.turns, [pending.sessionId]: { ...turn, questions } } })
-        : { ...c, questions }
-    })
+    eventRef.current(clarifyResponse(pending, questionId, answer, result))
   }
+
+  const visibleBots = bots.map(bot => {
+    if (route?.kind === 'section' && route.bot.name === bot.name)
+      return settledBot(bot, chat, liveId.current)
+    const turn =
+      route?.kind === 'room' &&
+      bot.status_detail?.session_id &&
+      chat.turns[bot.status_detail.session_id]
+    return turn && turn.bot === bot.name ? settledBot(bot, turn, turn.sessionId) : bot
+  })
+  const visibleRoute =
+    route?.kind === 'section'
+      ? { ...route, bot: settledBot(route.bot, chat, liveId.current) }
+      : route
 
   return {
     saved,
@@ -578,13 +601,13 @@ export function useMobile() {
     connection,
     error,
     setError,
-    bots,
+    bots: visibleBots,
     rooms,
     sections,
     info,
     settings,
     user,
-    route,
+    route: visibleRoute,
     chat,
     loading,
     hasEarlier,

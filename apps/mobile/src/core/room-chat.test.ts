@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { GatewayEvent } from '@hermes/shared'
 import type { Room, RoomEvent } from './types'
 import { reduceRoom, restoreRoom } from './room-chat'
+import { approvalResponse, clarifyResponse, rosterChat, settledBot } from './chat'
+import type { Bot } from './types'
 
 const room: Room = {
   id: 'room',
@@ -64,6 +66,91 @@ const reduce = (state: ReturnType<typeof restoreRoom>, event: GatewayEvent) =>
   reduceRoom(state, event, room, id => (id === 'beta' ? 'Beta display' : 'Alpha display'))
 
 describe('room sessions', () => {
+  it('settles exact session cards from local RPC results without removing same-ID siblings', () => {
+    let state = restoreRoom(room, [])
+    for (const id of ['a', 'b']) {
+      state = reduce(state, wire('approval.request', id, { request_id: 'same' }))
+      state = reduce(state, wire('clarify.request', id, { request_id: 'same', question: 'When?' }))
+    }
+    const approval = state.turns.a.approvals[0]
+    const question = state.turns.a.questions[0]
+    state = reduce(state, approvalResponse(approval, 'once', { resolved: true, choice: 'once' })!)
+    state = reduce(
+      state,
+      clarifyResponse(question, 'same', 'Now', {
+        status: 'answered',
+        answers: { same: 'Canonical' }
+      })
+    )
+    expect(state.turns.a).toMatchObject({
+      approvals: [],
+      questions: [],
+      busy: true,
+      waiting: false
+    })
+    expect(state.approvals.map(a => a.sessionId)).toEqual(['b'])
+    expect(state.questions.map(q => q.sessionId)).toEqual(['b'])
+    expect(state.turns.b.waiting).toBe(true)
+    state = reduce(
+      state,
+      wire('hexbot.rooms.turn', '', {
+        room_id: room.id,
+        bot: 'alpha',
+        live_session_id: 'a',
+        status: 'complete'
+      })
+    )
+    const before = state
+    state = reduce(state, approvalResponse(approval, 'once', { resolved: true })!)
+    state = reduce(state, clarifyResponse(question, 'same', 'Now', { status: 'answered' }))
+    expect(state).toBe(before)
+    expect(state.approvals.map(a => a.sessionId)).toEqual(['b'])
+    expect(state.questions.map(q => q.sessionId)).toEqual(['b'])
+  })
+
+  it('remembers answer-before-card per live room session and preserves sibling Waiting on Working', () => {
+    let state = restoreRoom(room, [])
+    state = reduce(
+      state,
+      wire('clarify.resolved', 'a', {
+        request_id: 'same',
+        answers: { same: 'Now' },
+        status: 'answered'
+      })
+    )
+    state = reduce(state, wire('clarify.request', 'a', { request_id: 'same', question: 'When?' }))
+    state = reduce(state, wire('clarify.request', 'b', { request_id: 'same', question: 'When?' }))
+    state = reduce(
+      state,
+      wire('hexbot.rooms.turn', '', {
+        room_id: room.id,
+        bot: 'beta',
+        live_session_id: 'b',
+        status: 'working'
+      })
+    )
+    expect(state.turns.a.questions).toEqual([])
+    expect(state.questions.map(q => q.sessionId)).toEqual(['b'])
+    expect(state.turns.b.waiting).toBe(true)
+    expect(state.activity).toBe('Beta display is waiting')
+  })
+
+  it('retires roster proof per room session while preserving an answer accepted during its read', () => {
+    let state = restoreRoom(room, [])
+    for (const id of ['a', 'b']) {
+      state = reduce(state, wire('approval.request', id, { request_id: 'same' }))
+      state = reduce(state, {
+        ...wire('approval.resolved', id, { request_id: 'same', choice: 'once' }),
+        mobileRevision: id === 'a' ? 1 : 2
+      } as GatewayEvent)
+    }
+    state = rosterChat(state, 1)
+    expect(state.turns.a.resumedWaiting).toBe(false)
+    expect(state.turns.b.resumedWaiting).toBe(true)
+    const bot = { name: 'beta', status: 'needs_you', status_detail: { session_id: 'a' } } as Bot
+    expect(settledBot(bot, state.turns.b, 'b')).toBe(bot)
+  })
+
   it('keeps simultaneous text, interim replies, tools and cards separate until all turns finish', () => {
     let state = restoreRoom(room, [])
     state = reduce(state, wire('message.delta', 'a', { text: 'Alpha ' }))

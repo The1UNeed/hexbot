@@ -162,6 +162,7 @@ function MobileApp() {
   const [attachments, setAttachments] = useState<AttachmentView[]>([])
   const [question, setQuestion] = useState<{
     requestId: string
+    sessionId: string
     questionId: string
     text: string
     choices: string[]
@@ -288,6 +289,7 @@ function MobileApp() {
     if (q) {
       setQuestion({
         requestId: pending.requestId,
+        sessionId: pending.sessionId,
         questionId: q.id,
         text: q.text,
         choices: q.choices,
@@ -296,7 +298,7 @@ function MobileApp() {
       setQuestionAnswer('')
       setQuestionChoices([])
     } else setQuestion(null)
-  }, [firstQuestionId, firstQuestion?.requestId])
+  }, [firstQuestionId, firstQuestion?.requestId, firstQuestion?.sessionId])
   const route = mobile.route
   // A thread belongs to its bot: leaving the chat lands on that bot's page.
   const routeBot = route?.kind === 'section' ? route.bot.name : null
@@ -648,7 +650,7 @@ function MobileApp() {
   mobile.chat.approvals.forEach(a =>
     items.push({
       kind: 'approval',
-      id: `approval-${a.requestId}`,
+      id: `approval-${a.sessionId}-${a.requestId}`,
       request: {
         ...a,
         choices: a.choices.filter(c => ['once', 'session', 'deny'].includes(c)) as ApprovalChoice[]
@@ -659,7 +661,7 @@ function MobileApp() {
     q.questions.forEach(question =>
       items.push({
         kind: 'notice',
-        id: `question-${question.id}`,
+        id: `question-${q.sessionId}-${q.requestId}-${question.id}`,
         text: `Question: ${question.text}`
       })
     )
@@ -698,6 +700,7 @@ function MobileApp() {
         const q = pending.questions[0]
         setQuestion({
           requestId: pending.requestId,
+          sessionId: pending.sessionId,
           questionId: q.id,
           text: q.text,
           choices: q.choices,
@@ -708,7 +711,12 @@ function MobileApp() {
       }
       const q = pending.questions[0]
       act(async () => {
-        await mobile.answer(pending.requestId, q.id, encodeAnswer(q.multiSelect, [], text))
+        await mobile.answer(
+          pending.requestId,
+          q.id,
+          encodeAnswer(q.multiSelect, [], text),
+          pending.sessionId
+        )
         setDraft('')
       })
       return
@@ -766,7 +774,11 @@ function MobileApp() {
     busy: mobile.chat.busy,
     waiting:
       mobile.chat.busy && !mobile.chat.streaming
-        ? { label: activityLabel(mobile.chat.activity) || 'Working' }
+        ? {
+            label: mobile.chat.waiting
+              ? 'Waiting'
+              : activityLabel(mobile.chat.activity) || 'Working'
+          }
         : undefined,
     onSend: send,
     sendWhileBusy: route?.kind === 'room' || mobile.chat.questions.length > 0,
@@ -775,7 +787,8 @@ function MobileApp() {
     onStop: () => act(mobile.stop),
     attachments,
     onRemoveAttachment: removeAttachment,
-    onApprove: (id: string, choice: ApprovalChoice) => act(() => mobile.approval(id, choice)),
+    onApprove: (id: string, choice: ApprovalChoice, sessionId?: string) =>
+      act(() => mobile.approval(id, choice, sessionId)),
     onOpenTool: setTool,
     onOpenVisual: (id: string) => setVisual(visuals.get(id) ?? null),
     sendDisabledReason: uploading
@@ -1061,6 +1074,7 @@ function MobileApp() {
               const q = pending.questions[0]
               setQuestion({
                 requestId: pending.requestId,
+                sessionId: pending.sessionId,
                 questionId: q.id,
                 text: q.text,
                 choices: q.choices,
@@ -1292,7 +1306,8 @@ function MobileApp() {
                 await mobile.answer(
                   question.requestId,
                   question.questionId,
-                  encodeAnswer(question.multiSelect, questionChoices, questionAnswer)
+                  encodeAnswer(question.multiSelect, questionChoices, questionAnswer),
+                  question.sessionId
                 )
                 if (draft.trim() === questionAnswer.trim()) setDraft('')
                 setQuestion(null)
