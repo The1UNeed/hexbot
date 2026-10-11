@@ -15,7 +15,7 @@ import {
 import type { RoomCreateInput } from '../lib/api'
 import type { BotStatus, Room, RoomEvent, RoomTurn } from '../lib/types'
 
-import { useTranscripts } from './transcripts'
+import { transcriptRevision, useTranscripts } from './transcripts'
 
 export interface RoomsState {
   addMember: (id: string, bot: string) => Promise<void>
@@ -112,6 +112,7 @@ export const useRooms = create<RoomsState>((set, get) => ({
   async refresh() {
     set({ error: null, loading: true })
     const changes = new Map(turnChanges)
+    const revision = transcriptRevision()
 
     try {
       const { rooms } = await roomsList(true)
@@ -148,7 +149,9 @@ export const useRooms = create<RoomsState>((set, get) => ({
       for (const turns of Object.values(liveTurnsByRoom)) {
         for (const turn of Object.values(turns)) {
           if (turn.live_session_id) {
-            transcripts.open(turn.live_session_id, `room:${turn.room_id}`, [], undefined, turn.bot)
+            transcripts.open(turn.live_session_id, `room:${turn.room_id}`, [], revision, turn.bot, {
+              preserveWaiting: true
+            })
           }
         }
       }
@@ -313,7 +316,9 @@ export const useRooms = create<RoomsState>((set, get) => ({
         current[turn.bot] = turn
         useTranscripts
           .getState()
-          .open(turn.live_session_id, `room:${turn.room_id}`, [], undefined, turn.bot)
+          .open(turn.live_session_id, `room:${turn.room_id}`, [], undefined, turn.bot, {
+            preserveWaiting: true
+          })
       } else {
         const previous = current[turn.bot]
 

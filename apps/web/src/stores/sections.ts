@@ -909,13 +909,16 @@ export function botStatusWithLive(
       ? rooms.liveTurnsByRoom[roomId]?.[bot.name]?.live_session_id
       : indexed.liveSessionId[id]
 
-    // A thread may ask before any client has opened it; the card confirms its ownership.
-    if (current === sessionId || (!roomId && !current && confirmedWaiting(session))) {
-      const fresh = freshSessionStatus(session)
+    const fresh = freshSessionStatus(session)
 
-      if (fresh) {
-        own.push(fresh)
-      }
+    // An unopened thread's trusted card ownership survives its answer and
+    // fresh progress, until a roster or lifecycle update retires that evidence.
+    if (
+      fresh &&
+      (current === sessionId ||
+        (!roomId && !current && (fresh === 'needs_you' || fresh === 'working')))
+    ) {
+      own.push(fresh)
     }
   }
 

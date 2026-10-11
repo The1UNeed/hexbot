@@ -332,6 +332,234 @@ it('ignores acknowledged deletion even if a queued replay creates a later transc
 })
 
 describe.each(['approval', 'clarify'] as const)('an unopened private sibling %s', kind => {
+  it.each(['RPC first', 'events first'] as const)(
+    'continues Working after its answer with %s while its roster fails',
+    async order => {
+      useBots.setState({ byName: { owl: idleBot }, order: ['owl'] })
+      const reply = deferred()
+      setActiveRpc({
+        call: vi.fn((method: string) =>
+          method === `${kind}.respond` ? reply.promise : Promise.reject(new Error('offline'))
+        )
+      } as never)
+      ask('never-opened', 'pending', kind)
+      await useBots.getState().refresh()
+      expect(dot(useBots.getState().byName.owl!)).toBe('needs_you')
+      const actions = useTranscripts.getState()
+
+      const answering =
+        kind === 'approval'
+          ? actions.respondApproval('never-opened', 'pending', 'once')
+          : actions.respondClarify('never-opened', 'pending', 'Yes')
+
+      const result =
+        kind === 'approval'
+          ? { resolved: true, choice: 'once' }
+          : { status: 'answered', answers: { pending: 'Yes' } }
+
+      const resumed = () => {
+        routeEvent({
+          type: `${kind}.resolved`,
+          session_id: 'never-opened',
+          payload: { ...result, request_id: 'pending' }
+        } as GatewayEvent)
+        routeEvent({
+          type: 'status.update',
+          session_id: 'never-opened',
+          payload: { kind: 'working', text: 'Working' }
+        } as GatewayEvent)
+      }
+
+      if (order === 'events first') {
+        resumed()
+      }
+
+      reply.resolve(result)
+      await answering
+      expect(useSections.getState().liveSessionId.thread).toBeUndefined()
+      expect(useTranscripts.getState().bySession['never-opened']?.waitingRequests).toEqual([])
+      expect(dot(useBots.getState().byName.owl!)).toBe('working')
+
+      if (order === 'RPC first') {
+        resumed()
+      }
+
+      await useBots.getState().refresh()
+      expect(useTranscripts.getState().bySession['never-opened']?.liveStatus).toBe('working')
+      expect(dot(useBots.getState().byName.owl!)).toBe('working')
+      expect(dot({ ...idleBot, name: 'cat' })).toBe('idle')
+    }
+  )
+
+  it.each([
+    'complete',
+    'idle',
+    'error',
+    'reconnect',
+    'new daemon',
+    'aggregate idle roster',
+    'matched Working roster',
+    'replacement session',
+    'archived',
+    'deleted'
+  ] as const)('retires unopened progress on %s', async boundary => {
+    ask('never-opened', 'pending', kind)
+    routeEvent({
+      type: `${kind}.resolved`,
+      session_id: 'never-opened',
+      payload:
+        kind === 'approval'
+          ? { request_id: 'pending', choice: 'once' }
+          : { request_id: 'pending', status: 'answered', answers: { pending: 'Yes' } }
+    } as GatewayEvent)
+    routeEvent({
+      type: 'status.update',
+      session_id: 'never-opened',
+      payload: { kind: 'working', text: 'Working' }
+    } as GatewayEvent)
+    expect(dot(idleBot)).toBe('working')
+    const actions = useTranscripts.getState()
+
+    if (boundary === 'complete') {
+      routeEvent({
+        type: 'message.complete',
+        session_id: 'never-opened',
+        payload: {}
+      } as GatewayEvent)
+    } else if (boundary === 'idle') {
+      routeEvent({
+        type: 'status.update',
+        session_id: 'never-opened',
+        payload: { kind: 'idle', text: '' }
+      } as GatewayEvent)
+    } else if (boundary === 'error') {
+      routeEvent({
+        type: 'error',
+        session_id: 'never-opened',
+        payload: { message: 'Failed' }
+      } as GatewayEvent)
+    } else if (boundary === 'reconnect') {
+      actions.clearAnsweredWaiting(undefined, undefined, undefined, { preserveWaiting: true })
+    } else if (boundary === 'new daemon') {
+      useSections.getState().clearLive()
+    } else if (boundary === 'replacement session') {
+      await openSibling('thread', 'owl', 'current-live')
+    } else if (boundary === 'archived') {
+      setActiveRpc({
+        call: vi.fn().mockResolvedValue({ section: section('thread', { archived_at: 1 }) })
+      } as never)
+      await useSections.getState().archive('thread')
+    } else if (boundary === 'deleted') {
+      setActiveRpc({ call: vi.fn().mockResolvedValue({ deleted: true }) } as never)
+      await useSections.getState().remove('thread')
+    } else {
+      const bot =
+        boundary === 'aggregate idle roster'
+          ? idleBot
+          : {
+              ...idleBot,
+              status: 'working',
+              status_detail: { section_id: 'thread', session_id: 'never-opened' }
+            }
+
+      setActiveRpc({ call: vi.fn().mockResolvedValue({ bots: [bot] }) } as never)
+      await useBots.getState().refresh()
+    }
+
+    // The old cached Idle snapshot is sufficient again once its local evidence retires.
+    expect(dot(idleBot)).toBe('idle')
+  })
+
+  it.each(['older idle', 'other bot'] as const)(
+    'preserves newer owned progress through an accepted %s roster',
+    async scope => {
+      useBots.setState({ byName: { owl: idleBot }, order: ['owl'] })
+      const pending = deferred()
+      setActiveRpc({ call: vi.fn(() => pending.promise) } as never)
+
+      const refreshing =
+        scope === 'older idle' ? useBots.getState().refresh() : useBots.getState().refreshOne('cat')
+
+      ask('never-opened', 'pending', kind)
+      routeEvent({
+        type: `${kind}.resolved`,
+        session_id: 'never-opened',
+        payload:
+          kind === 'approval'
+            ? { request_id: 'pending', choice: 'once' }
+            : { request_id: 'pending', status: 'answered', answers: { pending: 'Yes' } }
+      } as GatewayEvent)
+      routeEvent({
+        type: 'status.update',
+        session_id: 'never-opened',
+        payload: { kind: 'working', text: 'Working' }
+      } as GatewayEvent)
+      pending.resolve(
+        scope === 'older idle' ? { bots: [idleBot] } : { bot: { ...idleBot, name: 'cat' } }
+      )
+      await refreshing
+      expect(dot(idleBot)).toBe('working')
+      expect(dot({ ...idleBot, name: 'cat' })).toBe('idle')
+      setActiveRpc({ call: vi.fn().mockResolvedValue({ bots: [idleBot] }) } as never)
+      await useBots.getState().refresh()
+      expect(dot(idleBot)).toBe('idle')
+    }
+  )
+
+  it('does not trust raw streaming or informational status after request authority retires', () => {
+    ask('never-opened', 'pending', kind)
+    useTranscripts.getState().clearAnsweredWaiting()
+    routeEvent({
+      type: 'message.delta',
+      session_id: 'never-opened',
+      payload: { text: 'Old stream' }
+    } as GatewayEvent)
+    routeEvent({
+      type: 'status.update',
+      session_id: 'never-opened',
+      payload: { kind: 'status', text: 'Working' }
+    } as GatewayEvent)
+    expect(dot(idleBot)).toBe('idle')
+  })
+
+  it('does not transfer private progress into a shared room without its current turn', () => {
+    ask('never-opened', 'pending', kind)
+    const actions = useTranscripts.getState()
+    actions.setSectionId('never-opened', 'room:shared', 'owl')
+    actions.statusUpdate('never-opened', { kind: 'working', text: 'Working' })
+    expect(dot(idleBot)).toBe('idle')
+  })
+
+  it('keeps global, room, connector, and sibling section Stopped precedence', () => {
+    ask('never-opened', 'pending', kind)
+    useTranscripts.getState().statusUpdate('never-opened', { kind: 'working', text: 'Working' })
+
+    const details: Partial<NonNullable<Bot['status_detail']>>[] = [
+      { section_id: null, action: { kind: 'retry' } },
+      { room_id: 'room', session_id: 'room-live', action: { kind: 'retry' } },
+      { section_id: 'thread', action: { kind: 'fix_connector', connector: 'mail' } },
+      { section_id: 'sibling', session_id: 'sibling-live', action: { kind: 'retry' } }
+    ]
+
+    for (const detail of details) {
+      expect(
+        dot({
+          ...idleBot,
+          status: 'stopped',
+          status_detail: {
+            since: 1,
+            text: 'Stopped',
+            action: null,
+            room_id: null,
+            section_id: null,
+            session_id: null,
+            ...detail
+          }
+        })
+      ).toBe('stopped')
+    }
+  })
+
   it('honors trusted ownership and fresh confirmation without confusing retained cards', async () => {
     const bot = {
       ...idleBot,
@@ -373,7 +601,20 @@ describe.each(['approval', 'clarify'] as const)('an unopened private sibling %s'
     expect(useTranscripts.getState().bySession['older-process']?.sectionId).toBe('thread')
     expect(useSections.getState().liveSessionId.thread).toBe('current-live')
     expect(dot(idleBot)).toBe('idle')
+    useTranscripts.getState().statusUpdate('older-process', { kind: 'working', text: 'Working' })
+    expect(dot(idleBot)).toBe('idle')
   })
+})
+
+it('rejects explicit progress without trusted card or open ownership', () => {
+  routeEvent({
+    type: 'status.update',
+    session_id: 'unknown',
+    payload: { bot: 'owl', section_id: 'thread', kind: 'working', text: 'Working' }
+  } as GatewayEvent)
+  expect(dot(idleBot)).toBe('idle')
+  useTranscripts.getState().setSectionId('unknown', 'thread')
+  expect(dot(idleBot)).toBe('idle')
 })
 
 describe.each([undefined, 'owl'])('single-row edits during a %s list', bot => {

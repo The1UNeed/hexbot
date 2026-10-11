@@ -215,7 +215,8 @@ export interface TranscriptsState {
     sectionId: string,
     messages: Message[],
     throughRevision?: number,
-    bot?: string
+    bot?: string,
+    options?: { preserveWaiting?: boolean }
   ) => void
   reasoningDelta: (sessionId: string, text: string) => void
   resolveApproval: (
@@ -492,11 +493,18 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       })
     },
 
-    open(sessionId, sectionId, messages, throughRevision = Infinity, bot) {
+    open(sessionId, sectionId, messages, throughRevision = Infinity, bot, options = {}) {
       droppedSessions.delete(sessionId)
       set(state => {
         const existing = state.bySession[sessionId]
         const newer = existing && existing.authorityRevision > throughRevision
+
+        // A running-room snapshot identifies the session, but says nothing
+        // about which human requests are still pending within that turn.
+        const preserveWaiting =
+          options.preserveWaiting &&
+          existing?.sectionId === sectionId &&
+          (!existing.bot || !bot || existing.bot === bot)
 
         // A live transcript that is ahead of the stored history (a message
         // just sent, a reply streaming) wins over the snapshot.
@@ -508,7 +516,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
             bySession: {
               ...state.bySession,
               [sessionId]: {
-                ...(newer ? existing : retireAuthority(existing)),
+                ...(newer ? existing : retireAuthority(existing, { preserveWaiting })),
                 sectionId,
                 bot: bot ?? existing.bot
               }
@@ -526,6 +534,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
               ...emptyTranscript(sessionId, sectionId),
               ...(existing ? { epoch: existing.epoch } : {}),
               bot: bot ?? existing?.bot,
+              ...(preserveWaiting ? { waitingRequests: existing.waitingRequests } : {}),
               ...(newer
                 ? {
                     authorityRevision: existing.authorityRevision,
