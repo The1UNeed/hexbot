@@ -4,19 +4,21 @@ title: Approvals
 description: Choose when Hexbot asks before a bot acts.
 ---
 
-Bots read files, run commands, use a browser, and change data. The approval mode decides which of those happen on their own and which wait for you. Hexbot follows the model of Codex: an operating-system sandbox is the boundary, not a model judging each command and not a list of risky patterns. Set the mode in Settings, Approvals; a bot or a room can override it.
+Bots read files, run commands, use a browser, and change data. The approval mode decides which of those happen on their own and which wait for you. Hexbot follows Codex and Claude Code: an operating-system sandbox is the boundary, and in Auto a quick check by the bot's model decides which steps outside it need you. Set the mode in Settings, Approvals; a bot or a room can override it.
 
 The **workspace** is the bot's working directory (`~/Hexbot` by default) plus its artifact and attachment folders and the temp folders.
 
 ## Auto
 
-Auto is the default. Bots work freely inside the workspace and ask before anything outside it.
+Auto is the default. Bots work freely inside the workspace, and only risky steps outside it ask.
 
 - Shell commands run in a sandbox with no internet access and no access to local service sockets, and can write only inside the workspace. They cannot signal your other programs, and they can start only a few hundred processes, so a runaway loop stops there. Shell profiles and login items stay read-only even there; on Linux, a profile that does not exist yet is not protected when the workspace holds your home folder, and a service socket inside your home folder stays reachable (the ones in `/run` and `/tmp` are hidden).
-- When a command needs the internet or must write outside the workspace, the bot says so. You see a card with the command and the bot's one-sentence reason. If you approve, the command runs outside the workspace sandbox; credential files stay unreadable.
-- File tools change files inside the workspace without asking, and ask before changing anything outside it or a shell profile.
-- Python code and scheduled scripts run in the same workspace sandbox without asking.
-- Browser page scripts ask. Scheduling a script by an absolute path asks.
+- When a command needs the internet or must write outside the workspace, the bot says so with a one-sentence reason. Before it runs outside the workspace sandbox, the section's model reviews the step against your messages in the section. Routine work toward what you asked runs without a card: reading or downloading public pages, saving into the workspace or a temp folder, installing packages, builds and tests, pushing a feature branch. Risky steps show a card with the command, the bot's reason and why it was stopped: deleting or overwriting data outside the workspace, force pushes or pushes to main, running downloaded code, sending private data or credentials anywhere, changing system settings or credentials, deploying, publishing, sending messages or paying. Credential files stay unreadable either way.
+- The same check covers file changes outside the workspace, connected tools that change something, and browser page scripts. Shell profiles and login items always ask, and so do file and browser steps a code run asks for through Hexbot's tools.
+- A card from the check is approved one step at a time, so approving one risky step does not let the next through, and Allow in this section from Manual does not carry over. If the check fails, takes over a minute, or the step is too long to read whole, the card appears as usual.
+- The check reads only your messages and the whole step, not web pages, files or the bot's replies, so text a bot reads cannot approve its own step. In a room it reads only your own messages there, not other people's. It is a judgment, not a guarantee: choose Manual when you want to see every step.
+- File tools change files inside the workspace without asking.
+- Python code and scheduled scripts run in the same workspace sandbox without asking. Scheduling a script by an absolute path asks.
 - Reads are free everywhere except credential files, which stay private.
 
 ## Manual
@@ -35,7 +37,7 @@ Bypass is plain Pi, the agent runtime: no prompts, no sandbox, no credential che
 
 In new sections, bots call connected tools from short scripts they run. Manual
 asks for every connected-tool call. Auto runs tools marked read-only freely and
-asks for all others. Bypass never asks. Reading a resource needs no approval.
+checks the others first, asking only when a call looks risky. Bypass never asks. Reading a resource needs no approval.
 Allow in this section covers that server while the section's agent process runs.
 Shell and file calls inside a script still follow their usual approval rules.
 Removing or turning off a server stops its tools at once, even in open sections.

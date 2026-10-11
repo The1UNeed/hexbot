@@ -57,7 +57,7 @@ export interface DaemonSheetProps {
 const MODES: { key: ApprovalMode; title: string; detail: string }[] = [
   {
     detail:
-      'Bots work freely in the workspace. Shell commands run sandboxed with no network, and anything outside the workspace asks first.',
+      'Bots work freely in the workspace. Steps outside it get a quick safety check, and only risky ones ask first.',
     key: 'smart',
     title: 'Auto'
   },

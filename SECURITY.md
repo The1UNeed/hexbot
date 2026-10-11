@@ -51,6 +51,13 @@ redaction, and pattern checks do not provide equivalent containment.
 - Manual uses a read-only shell/code sandbox and asks before file changes.
   Approved `execute_code` runs can write their own output folder in the Hexbot
   home. Manual scheduled scripts cannot write artifacts or workspace files.
+- In Auto, a `full_access` command, a file change outside the workspace, a
+  connected tool that changes something, and a browser page script go to a
+  review on the section's model before they run. It reads the section's user
+  messages and the step, not tool output or the bot's replies. A step it rates
+  low or medium risk runs without asking; anything else, and any review that
+  fails or times out, asks the user. The review is a model judgment, not
+  containment: a step it allows has the same access as one the user approves.
 - An approved `full_access` shell command leaves the workspace restrictions.
   The base credential-path and Hexbot-home protections still apply. Review both
   the command and its reason before granting more access.

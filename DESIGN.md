@@ -98,18 +98,30 @@ more freedom and more capability than a hosted product can offer.
 
 - Modes: Auto (default, `smart` in config), Manual, Bypass (`off` in
   config). Overridable per bot and per room. The model follows Codex: the
-  OS sandbox is the boundary, not a judging model and not pattern matching.
-  Pi itself has no approval modes; Bypass is plain Pi.
+  OS sandbox is the boundary, not pattern matching. In Auto, a step that
+  leaves the sandbox goes to a reviewer first, like Codex's auto-review and
+  Claude Code's auto mode. Pi itself has no approval modes; Bypass is plain Pi.
 - Auto: shell commands run in a sandbox with no network that can write only
   inside the workspace (the bot's working directory, its artifact and
   attachment folders, temp folders); shell profiles and login items stay
   read-only even there. A command that needs the internet or a write outside
-  the workspace sets `full_access` with a one-sentence `reason`, and the user
-  sees the command and the reason before it runs with the sandbox's base
-  layer only (credential files still unreadable). File tools change the
-  workspace without asking and ask outside it. Code execution runs in the
-  same workspace sandbox without asking. Browser page scripts and absolute
-  cron script paths ask.
+  the workspace sets `full_access` with a one-sentence `reason`, and runs
+  with the sandbox's base layer only (credential files still unreadable).
+  File tools change the workspace without asking. Code execution runs in the
+  same workspace sandbox without asking. Absolute cron script paths and shell
+  profiles always ask.
+- Auto's reviewer (`runtime_review.rs`): a full-access command, a file change
+  outside the workspace, a connected tool that changes something, and a
+  browser page script go to a tool-free one-shot call on the section's model.
+  It reads the owner's messages (the section's visible user messages, or the
+  owner's room messages for a room section) and the step's whole input, never
+  assistant text, tool output or bot-added messages, where injected
+  instructions arrive. A step over 20,000 characters asks without review. A low or medium risk
+  `allow` runs the step; anything else, including a failure, a timeout (60 s)
+  or unparseable output, shows the card with the reviewer's sentence. Those
+  cards offer Approve and Deny only, and reviewed steps ignore section grants
+  from Manual, so one approval never covers the next step. Leaving Auto
+  while a review runs blocks the step. Only visible sections are reviewed; the rest still refuse.
 - Manual: the shell sandbox is read-only, so a command that writes or
   reaches the network sets `full_access` and asks. Every file change and
   every code run asks. Reads are free in both modes except credential files,

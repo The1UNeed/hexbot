@@ -350,26 +350,53 @@ test('Auto asks before full access, with the bot reason, and before writes outsi
   const f = fixture(t, 'smart', ['terminal', 'file']);
   f.settings.cwd = join(user, 'Hexbot'); mkdirSync(f.settings.cwd);
   assert.equal((await f.gate('bash', {command:'npm install', full_access:true, reason:' Downloads the dependencies. '}))?.block, true);
-  assert.deepEqual(f.choices[0], {tool:'bash', command:'npm install', reason:'Run outside the sandbox, with internet access and writes outside the workspace. Downloads the dependencies.', options:['once', 'session', 'deny']});
+  // The daemon's reviewer reads the bot's own reason and answers routine steps.
+  assert.deepEqual(f.choices[0], {tool:'bash', command:'npm install', reason:'Run outside the sandbox, with internet access and writes outside the workspace. Downloads the dependencies.',
+    review:true, input:{command:'npm install', full_access:true, reason:' Downloads the dependencies. '}, cwd:f.settings.cwd, options:['once', 'session', 'deny']});
   // The temp folders are part of the workspace; /usr/local is not.
   assert.equal(await f.gate('write', {path:join(user, 'scratch.txt')}), undefined);
   assert.equal((await f.gate('write', {path:'/usr/local/hexbot-elsewhere.txt'}))?.block, true);
   assert.match(f.choices[1].reason, /outside the workspace/);
   assert.equal(f.choices[1].command, '/usr/local/hexbot-elsewhere.txt');
+  assert.equal(f.choices[1].review, true);
+  assert.equal(f.choices[1].overwrites, false);
   // A workspace that holds shell profiles still asks before changing them.
   f.settings.cwd = user;
   assert.equal(await f.gate('write', {path:join(user, 'notes.txt')}), undefined);
   assert.equal((await f.gate('write', {path:join(user, '.zshrc')}))?.block, true);
   assert.match(f.choices[2].reason, /shell profile/);
+  // Host configuration always reaches the user.
+  assert.equal(f.choices[2].review, undefined);
   assert.equal(f.choices.length, 3);
-  // Allowing outside files for the section does not cover shell profiles.
+  // A section answer to a reviewed step is not remembered, and never covers shell profiles.
   f.settings.cwd = join(user, 'Hexbot');
   f.ctx.choice = 'session';
   assert.equal(await f.gate('write', {path:'/usr/local/hexbot-elsewhere.txt'}), undefined);
   f.ctx.choice = 'deny';
-  assert.equal(await f.gate('write', {path:'/usr/local/hexbot-other.txt'}), undefined);
+  assert.equal((await f.gate('write', {path:'/usr/local/hexbot-other.txt'}))?.block, true);
   assert.equal((await f.gate('write', {path:join(user, '.zshrc')}))?.block, true);
-  assert.equal(f.choices.length, 5);
+  assert.equal(f.choices.length, 6);
+});
+
+test('Auto reviews every step outside the sandbox, whatever was allowed before', async t => {
+  const f = fixture(t, 'manual', ['terminal']);
+  // A section grant from Manual does not carry into Auto's reviewed steps.
+  f.ctx.choice = 'session';
+  assert.equal(await f.gate('bash', {command:'make', full_access:true}), undefined);
+  assert.equal(await f.gate('bash', {command:'make', full_access:true}), undefined);
+  assert.equal(f.choices.length, 1);
+  f.settings.approvalMode = 'smart';
+  assert.equal(await f.gate('bash', {command:'rm -rf ~', full_access:true}), undefined);
+  assert.equal(f.choices.length, 2);
+  assert.equal(f.choices[1].review, true);
+  // Nor does a session answer to a reviewed step.
+  assert.equal(await f.gate('bash', {command:'rm -rf ~', full_access:true}), undefined);
+  assert.equal(f.choices.length, 3);
+  // Leaving Auto while the reviewer runs stops the step.
+  const select = f.ctx.ui.select;
+  f.ctx.ui.select = async (title, options) => {f.settings.approvalMode = 'manual'; return select(title, options);};
+  f.ctx.choice = 'once';
+  assert.match((await f.gate('bash', {command:'curl -sL https://example.com', full_access:true}))?.reason, /approval mode changed/);
 });
 
 test('Manual asks before every file change and full access, not before reads or sandboxed commands', async t => {
@@ -383,6 +410,8 @@ test('Manual asks before every file change and full access, not before reads or 
   assert.match(f.choices[0].reason, /Manual mode asks/);
   assert.equal((await f.gate('bash', {command:'make', full_access:true}))?.block, true);
   assert.match(f.choices[1].reason, /No reason given/);
+  // Manual never hands a step to Auto's reviewer.
+  assert.equal(f.choices[1].review, undefined);
   assert.equal((await f.gate('browser_console', {expression:'document.title'}))?.block, true);
   assert.equal(await f.gate('browser_console', {}), undefined);
   for (const name of ['memory', 'hexbot_soul', 'message_bot', 'cronjob_manage', 'execute_code']) assert.equal(await f.gate(name, {}), undefined);
@@ -392,7 +421,7 @@ test('Manual asks before every file change and full access, not before reads or 
 });
 
 test('allowing for the section covers later requests of the same kind only', async t => {
-  const f = fixture(t, 'smart', ['terminal']);
+  const f = fixture(t, 'manual', ['terminal']);
   f.ctx.choice = 'session';
   assert.equal(await f.gate('bash', {command:'curl a', full_access:true, reason:'r'}), undefined);
   f.ctx.choice = 'deny';
@@ -644,7 +673,8 @@ test('connected tool approvals follow annotations and allow a whole server only 
     f.ctx.choice = 'session';
     assert.equal(await f.gate(name, {}), undefined);
     f.ctx.choice = 'deny';
-    assert.equal(await f.gate(name, {}), undefined);
+    // Auto reviews each call instead of remembering the server.
+    assert.equal((await f.gate(name, {}))?.block, mode === 'smart' ? true : undefined);
     assert.equal((await f.gate('mcp__b__change', {}))?.block, mode === 'off' ? undefined : true);
     if (mode !== 'off') assert.match(f.choices[0].command, /^a__long-name\/change/);
     assert.equal(await f.gate('read_mcp_resource', {}), undefined);
@@ -856,6 +886,8 @@ test('an incomplete scan asks once per file change and never widens a section ap
     assert.equal(await f.gate('write', {path, content:'x'}), undefined);
     assert.deepEqual(f.choices.at(-1).options, ['once', 'deny']);
     assert.match(f.choices.at(-1).reason, /directory budget/);
+    // An incomplete scan always reaches the user, not the reviewer.
+    assert.equal(f.choices.at(-1).review, undefined);
   }
   assert.equal(f.choices.length, 2);
   // Destinations that always ask keep their own reason as well.
@@ -864,14 +896,15 @@ test('an incomplete scan asks once per file change and never widens a section ap
   assert.match(f.choices.at(-1).reason, /shell profile.*directory budget/);
   assert.equal((await f.gate('write', {path:join(tmpdir(), '..', 'hexbot-outside-' + process.pid), content:'x'})).block, true);
   assert.match(f.choices.at(-1).reason, /outside the workspace.*directory budget/);
-  // With a complete scan the usual section approval applies again.
+  // With a complete scan the change goes to Auto's reviewer again, one at a time.
   for (let i = 0; i < 1001; i++) rmSync(join(work, String(i)), {recursive:true});
   f.ctx.choice = 'session';
   assert.equal(await f.gate('write', {path:join(homedir(), 'hexbot-outside-test-1.txt'), content:'x'}), undefined);
   assert.deepEqual(f.choices.at(-1).options, ['once', 'session', 'deny']);
+  assert.equal(f.choices.at(-1).review, true);
   const asked = f.choices.length;
   assert.equal(await f.gate('write', {path:join(homedir(), 'hexbot-outside-test-2.txt'), content:'x'}), undefined);
-  assert.equal(f.choices.length, asked);
+  assert.equal(f.choices.length, asked + 1);
 });
 
 test('on Linux a command asks when a missing Git target would pin a repository or Git is reached through a link', async t => {

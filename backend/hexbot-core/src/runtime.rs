@@ -27,6 +27,8 @@ use tokio::sync::{Mutex as AsyncMutex, watch};
 mod attachments;
 #[path = "runtime_delegation.rs"]
 mod delegation;
+#[path = "runtime_review.rs"]
+mod review;
 
 #[cfg(test)]
 #[path = "runtime_lifecycle_tests.rs"]
@@ -3456,6 +3458,9 @@ impl Runtime {
                         };
                         // Kept so a client that opens the section later sees the card.
                         request["approval_payload"] = payload;
+                        if request["approval_payload"]["review"] == true {
+                            return self.review_then_ask(s, id, request);
+                        }
                     }
                     s.state
                         .lock()

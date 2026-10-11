@@ -10,7 +10,7 @@ export const APPROVAL_MODES: { description: string; label: string; value: Approv
   },
   {
     description:
-      'Work freely in the workspace. Commands run without internet access, and anything outside the workspace asks first.',
+      'Work freely in the workspace. Steps outside it get a quick safety check, and only risky ones ask first.',
     label: 'Auto',
     value: 'smart'
   },

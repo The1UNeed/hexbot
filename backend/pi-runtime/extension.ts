@@ -236,18 +236,26 @@ export default function hexbot(pi: any) {
       if (browser) ask = {key: 'browser_console', command: event.input.expression, reason: 'This runs code in a web page.'};
       if (!ask) return;
       if (live.canAsk === false) return {block: true, reason: 'This action needs approval. Run it in a visible section.'};
-      if (sessionAllowed.has(ask.key) && !ask.once) return;
       const mode = live.approvalMode;
-      const choice = await ctx.ui.select('__HEXBOT_APPROVAL__' + JSON.stringify({tool: event.toolName, command: ask.command, reason: ask.reason}), ask.once ? ['once', 'deny'] : ['once', 'session', 'deny']);
-      if (mcp) {
+      // In Auto the daemon's reviewer answers routine steps outside the sandbox
+      // one at a time, so a grant remembered in another mode does not cover them.
+      // Host configuration and incomplete scans always reach the user.
+      const review = mode === 'smart' && !ask.once && (REVIEWED.includes(ask.key) || ask.key.startsWith('mcp:'));
+      if (sessionAllowed.has(ask.key) && !ask.once && !review) return;
+      // The reviewer reads the whole input the tool will run with, not the card's preview.
+      const reviewed = review ? {review: true, input: event.input, cwd, ...event.toolName === 'write' ? {overwrites: existsSync(ask.command)} : {}} : {};
+      const choice = await ctx.ui.select('__HEXBOT_APPROVAL__' + JSON.stringify({tool: event.toolName, command: ask.command, reason: ask.reason, ...reviewed}),
+        ask.once ? ['once', 'deny'] : ['once', 'session', 'deny']);
+      if (mcp || review) {
         // Pi emits execution_start before tool_call. Its public API has no MCP
-        // execute wrapper; the last blocking hook is this gate. Recheck after UI.
+        // execute wrapper; the last blocking hook is this gate. Recheck after UI,
+        // and after a review: the user may leave Auto while the reviewer runs.
         await refresh(ctx);
         if (mode !== live.approvalMode) return {block: true, reason: 'The approval mode changed before this ran. Try again.'};
-        const reason = mcpDenial(event.toolName);
+        const reason = mcp && mcpDenial(event.toolName);
         if (reason) return {block: true, reason};
       }
-      if (choice === 'session' && !ask.once) sessionAllowed.add(ask.key);
+      if (choice === 'session' && !ask.once && !review) sessionAllowed.add(ask.key);
       else if (choice !== 'once' && choice !== 'session') return {block: true, reason: 'The user denied this action.'};
     } catch {
       return {block: true, reason: 'The approval settings could not be checked. Try again.'};
@@ -506,6 +514,8 @@ function credentialName(path: string, home: string, denied: string[]): boolean {
   const local = relative(fold(root), fold(path)).split(sep).join('/');
   return !local.startsWith('../') && (policyRegex(credentialPolicy.basename).test(name) || policyRegex(credentialPolicy.home).test(local));
 }
+// Steps outside the sandbox that Auto's reviewer may let through; connected tools too.
+const REVIEWED = ['shell:full-access', 'file:outside', 'browser_console'];
 const NEVER_WRITTEN = 'Credential and system configuration files are never written by tools.';
 // credential-policy.json "write": deny entries are credential stores that tools
 // never write; ask entries (shell profiles, login items) prompt in Manual and

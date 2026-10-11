@@ -58,7 +58,8 @@ The app follows the track it was installed from; switch in Settings, Updates.
   servers, and more. Pick a model per bot.
 - **Tools with approvals.** Bots can run commands, browse, and edit files.
   In **Auto mode**, the default, they work freely inside the workspace
-  behind an OS sandbox and ask before anything outside it. Manual asks
+  behind an OS sandbox; steps outside it get a quick safety check, and only
+  risky ones ask first. Manual asks
   before every change; Bypass asks nothing. Git metadata is read-only and
   project secrets and browser stores are hidden within the platform limits in
   [SECURITY.md](SECURITY.md#tool-isolation). Linux scans existing repositories
