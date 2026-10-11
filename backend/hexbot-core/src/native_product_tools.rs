@@ -1016,7 +1016,9 @@ fn search_sessions(home: &Path, owner: &str, bot: &str, current: &str, p: &Value
     let excluded = if target == bot { current } else { "" };
     let mut index = recall(home, &key, &roles, excluded)?;
     let result = answer(&mut index, target, p, excluded);
-    store_index(key, index)?;
+    // The cache is best effort: a failure to keep the index never replaces
+    // the answer; the next search rebuilds it.
+    let _ = store_index(key, index);
     result
 }
 /// The answer for one asking section: the index minus `excluded`, the section

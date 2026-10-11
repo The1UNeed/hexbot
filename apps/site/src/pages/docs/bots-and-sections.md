@@ -37,7 +37,7 @@ A new section takes a title from your first message. The bot can rename its own 
 
 Use a title that lets you find the task later. The conversation history is also searchable by the bot, so a new section can build on earlier work without carrying the whole transcript in its context.
 
-Searches leave out the section asking, including its effect on relevance ranking. The daemon reuses a history index and reads changed sections when the bot next searches; a deleted section disappears from results at that search.
+When the bot searches, it leaves out the section it is in, which it already has in view. A deleted section stops showing up in the bot's next search.
 
 ## Stop, archive, and delete
 
