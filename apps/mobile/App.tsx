@@ -56,6 +56,7 @@ import { parseArgs } from './src/core/chat'
 import { activityLabel, readableResult, resultLine, toolLabel } from './src/core/tools'
 import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
+import { shownRoom } from './src/core/routes'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
 import { connectGrant, request, RevokedError } from './src/core/transport'
@@ -318,14 +319,12 @@ function MobileApp() {
     setBotPage(null)
     setRoomId(null)
   }, [mobile.active?.id])
-  const liveRooms = mobile.rooms.filter(r => !r.archived_at)
-  const selectedRoom = mobile.rooms.find(r => r.id === roomId)
-  // Rooms shows one room at a time; start with the most recent.
+  // Rooms shows one room at a time; start with the most recent. A room archived
+  // while it is open stays, so it can be restored there.
+  const shown = demo ? roomId : shownRoom(mobile.rooms, roomId, routeRoom)
   useEffect(() => {
-    if (demo || selectedRoom) return
-    const latest = [...liveRooms].sort((a, b) => b.last_activity_at - a.last_activity_at)[0]
-    if (latest) setRoomId(latest.id)
-  }, [demo, selectedRoom, liveRooms.length])
+    if (shown !== roomId) setRoomId(shown)
+  }, [shown, roomId])
   useEffect(() => {
     const m = mobileRef.current
     if (tab !== 'rooms' || demo || botPage || m.connection !== 'connected') return
@@ -871,7 +870,7 @@ function MobileApp() {
               </Text>
             ) : null}
             <ModelSummary
-              rpc={mobile.rpc}
+              models={mobile.models}
               testID="chat-intro-model"
               value={{
                 provider: route.bot.provider ?? '',
@@ -934,6 +933,7 @@ function MobileApp() {
         model={
           <ModelPill
             disabled={mobile.connection !== 'connected'}
+            models={mobile.models}
             onChange={next => updateModel(pageBot, next)}
             rpc={mobile.rpc}
             testID="threads-model"
@@ -970,7 +970,11 @@ function MobileApp() {
         onOpenPulse={id => {
           const b = botByName(id)
           const detail = b?.status_detail
-          if (b && detail?.room_id && mobile.rooms.some(r => r.id === detail.room_id)) {
+          if (
+            b &&
+            detail?.room_id &&
+            mobile.rooms.some(r => r.id === detail.room_id && !r.archived_at)
+          ) {
             setRoomId(detail.room_id)
             changeTab('rooms')
             return

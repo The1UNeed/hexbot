@@ -11,6 +11,7 @@ import {
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
+import { providerModels, type ModelList } from '../core/models'
 import { reasoningOptions, runningLevel, shownLevel } from '../core/reasoning'
 import type { ModelOption, Rpc } from '../core/types'
 import { HIT, SearchField, Text, useTheme } from '../ui'
@@ -24,37 +25,22 @@ export interface ModelValue {
   reasoning: string
 }
 
-/** Every model a provider lists right now, recommended ones first, as in the web app. */
-async function providerModels(rpc: Rpc, provider: string) {
-  const { all, curated, error } = await rpc<{
-    curated: ModelOption[]
-    all: ModelOption[]
-    error?: string
-  }>('hexbot.models.list', { provider })
-  const listed = new Map(all.map(m => [m.id, m]))
-  const recommended = new Set(curated.map(m => m.id))
-  return {
-    error,
-    models: [
-      ...curated.map(m => ({ ...listed.get(m.id), ...m })),
-      ...all.filter(m => !recommended.has(m.id))
-    ]
-  }
-}
+/** Each provider's list, shared by everything on screen. */
+export type Models = (provider: string) => Promise<ModelList>
 
 /** The bot's own model, from its provider's list. */
-function useCurrentModel(rpc: Rpc, value: ModelValue) {
+function useCurrentModel(models: Models, value: ModelValue) {
   const [loaded, setLoaded] = useState<{ provider: string; models: ModelOption[] } | null>(null)
   useEffect(() => {
     if (!value.provider) return
     let live = true
-    providerModels(rpc, value.provider)
-      .then(({ models }) => live && setLoaded({ provider: value.provider, models }))
+    models(value.provider)
+      .then(list => live && setLoaded({ provider: value.provider, models: list.models }))
       .catch(() => {})
     return () => {
       live = false
     }
-  }, [rpc, value.provider])
+  }, [models, value.provider])
   return loaded?.provider === value.provider
     ? loaded.models.find(m => m.id === value.model)
     : undefined
@@ -62,15 +48,15 @@ function useCurrentModel(rpc: Rpc, value: ModelValue) {
 
 /** The bot's model and the level it runs at, as one line under a new conversation. */
 export function ModelSummary({
-  rpc,
+  models,
   testID,
   value
 }: {
-  rpc: Rpc
+  models: Models
   testID: string
   value: ModelValue
 }) {
-  const level = shownLevel(value.reasoning, useCurrentModel(rpc, value))
+  const level = shownLevel(value.reasoning, useCurrentModel(models, value))
   return (
     <Text align="center" tone="faint" variant="footnote" testID={testID}>
       {[value.model, level?.toLowerCase()].filter(Boolean).join(', thinking ')}
@@ -84,6 +70,7 @@ export function ModelSummary({
  */
 export function ModelPill({
   disabled,
+  models,
   onChange,
   rpc,
   testID,
@@ -91,6 +78,7 @@ export function ModelPill({
 }: {
   value: ModelValue
   onChange: (next: Partial<ModelValue>) => void
+  models: Models
   rpc: Rpc
   testID: string
   disabled?: boolean
@@ -99,7 +87,7 @@ export function ModelPill({
   const anchor = useRef<View>(null)
   const [frame, setFrame] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
   // The level the model runs at, which may differ from the one saved.
-  const level = shownLevel(value.reasoning, useCurrentModel(rpc, value))
+  const level = shownLevel(value.reasoning, useCurrentModel(models, value))
 
   const open = () => anchor.current?.measureInWindow((x, y, w, h) => setFrame({ h, w, x, y }))
 

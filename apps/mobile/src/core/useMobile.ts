@@ -16,7 +16,8 @@ import { parsePairing, normalizeOrigin } from './links'
 import { emptyChat, historyMessages, reduceChat, replayChat } from './chat'
 import { reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
 import { attachmentPrompt } from './chat-send'
-import { SECTIONS_QUERY, defaultSection, rebind, type ChatRoute } from './routes'
+import { modelLists, providerModels } from './models'
+import { ROOMS_QUERY, SECTIONS_QUERY, defaultSection, rebind, type ChatRoute } from './routes'
 import type {
   Bot,
   Section,
@@ -81,6 +82,8 @@ export function useMobile() {
       throw new Error('The selected daemon changed. Retry on this daemon.')
     return value as never
   }, [])
+  // Forgotten when the lists reload or the daemon changes, so new keys and models show.
+  const [models] = useState(() => modelLists(provider => providerModels(rpc, provider)))
   // Messages sent from here name their files, and the daemon drops the rest.
   // Clearing on leave keeps an abandoned upload off a message sent from
   // another app; it is best effort.
@@ -104,10 +107,11 @@ export function useMobile() {
   }, [releaseStaged])
   const refresh = useCallback(async () => {
     const current = session.current
+    models.clear()
     const before = routeRef.current
     const [b, r, s, i, config, me] = await Promise.all([
       rpc<{ bots: Bot[] }>('hexbot.bots.list'),
-      rpc<{ rooms: Room[] }>('hexbot.rooms.list'),
+      rpc<{ rooms: Room[] }>('hexbot.rooms.list', ROOMS_QUERY),
       rpc<{ sections: Section[] }>('hexbot.sections.list', SECTIONS_QUERY),
       rpc<DaemonInfo>('hexbot.info'),
       rpc<Settings>('hexbot.settings.get'),
@@ -127,7 +131,7 @@ export function useMobile() {
     if (!next) return leave()
     routeRef.current = next
     setRoute(next)
-  }, [rpc, leave])
+  }, [rpc, models, leave])
   const syncRoom = useCallback(
     async (id: string) => {
       const sequence = ++openSequence.current
@@ -350,10 +354,11 @@ export function useMobile() {
         onEvent
       )
       session.current = next
+      models.clear()
       await selectDaemon(daemon.id)
       await next.connect()
     },
-    [onEvent, releaseStaged]
+    [onEvent, releaseStaged, models]
   )
   useEffect(() => {
     mounted.current = true
@@ -580,6 +585,8 @@ export function useMobile() {
     loadingEarlier,
     loadEarlier,
     rpc,
+    /** A provider's models, fetched once for every screen showing them. */
+    models: models.get,
     refresh,
     syncChat,
     accept,

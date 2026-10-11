@@ -3,9 +3,23 @@ export type ChatRoute =
   { kind: 'section'; section: Section; bot: Bot } | { kind: 'room'; room: Room }
 /** Every section the open conversation can be, teammate threads included. */
 export const SECTIONS_QUERY = { include_archived: true, include_threads: true }
+/** Every room, archived ones included, so Rooms can count them and restore one. */
+export const ROOMS_QUERY = { include_archived: true }
 /** The thread a bot opens on when none is picked: its latest own one, never a teammate thread. */
 export const defaultSection = (sections: Section[], bot: string) =>
   sections.find(s => s.bot === bot && !s.archived_at && !s.peer_bot)
+/**
+ * The room Rooms shows: the picked one while it is open or not archived,
+ * otherwise the most recent room that is not archived.
+ */
+export function shownRoom(rooms: Room[], picked: string | null, open: string | null) {
+  const room = rooms.find(r => r.id === picked)
+  if (room && (!room.archived_at || room.id === open)) return room.id
+  return (
+    rooms.filter(r => !r.archived_at).sort((a, b) => b.last_activity_at - a.last_activity_at)[0]
+      ?.id ?? null
+  )
+}
 /** The open conversation after the lists reload, or null once it is gone. */
 export function rebind(
   route: ChatRoute,

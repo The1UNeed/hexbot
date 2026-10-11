@@ -74,6 +74,7 @@ export interface HomeScreenProps {
   onBotLongPress?: (id: string) => void
   onNewBot?: () => void
 
+  /** Every room, archived ones included; the tab lists the others and counts these. */
   rooms: RoomSummary[]
   /** The room shown in the Rooms tab. */
   roomId?: string | null
@@ -539,7 +540,7 @@ function RoomsTab({
           face={{ face: { color: 'teal', shape: 'cloud' }, name: 'Room' }}
           message="A room is one chat with you and any number of bots."
           testID="rooms-empty"
-          title="No rooms yet"
+          title={archived > 0 ? 'Every room is archived' : 'No rooms yet'}
         />
       )}
     </View>
