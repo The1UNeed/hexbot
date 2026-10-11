@@ -434,7 +434,7 @@ impl App {
                     self.bot_status(owner, bot);
                 }
             }
-        } else if method == "hexbot.bots.get" {
+        } else if matches!(method, "hexbot.bots.get" | "hexbot.bots.update") {
             self.bot_status(owner, &mut result["bot"]);
         }
         self.changed(owner, method, p, &result);

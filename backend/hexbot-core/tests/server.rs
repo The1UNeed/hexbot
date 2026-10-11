@@ -61,6 +61,9 @@ const rl=require('node:readline').createInterface({input:process.stdin});
 process.on('SIGTERM',()=>process.exit(0));
 rl.on('line',line=>{const c=JSON.parse(line);emit({type:'response',id:c.id,command:c.type,success:true,data:c.type==='get_available_models'?{models:[{id:'one',provider:'fixture'}]}:{}});if(c.type==='prompt'){
 emit({type:'agent_start'});emit({type:'message_end',message:{role:'user',content:c.message}});
+if(c.message==='working')return;
+if(c.message==='approval'){emit({type:'extension_ui_request',id:'approval-1',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'bash',command:'pwd'}),options:['once','deny']});return;}
+if(c.message==='clarification'){emit({type:'extension_ui_request',id:'clarify-1',method:'input',title:'__HEXBOT_CLARIFY__'+JSON.stringify({questions:[{qid:'color',question:'Color?',choices:['red','blue']}]})});return;}
 emit({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'Fixture reply'}});
 emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'Fixture reply'}],usage:{input:5,output:2,cost:{total:0}},stopReason:'stop'}});
 emit({type:'agent_end'});emit({type:'agent_settled'});}});
@@ -145,6 +148,112 @@ async fn request(socket: &mut Socket, id: &str, method: &str, params: Value) -> 
         .await
         .unwrap();
     response(socket, id).await
+}
+
+#[tokio::test]
+async fn bot_update_preserves_live_work_and_questions_but_prioritizes_incidents() {
+    let fixture = Fixture::new(false).await;
+    let mut socket = fixture.socket(&fixture.token).await;
+    for (bot, event_type, status, text) in [
+        ("working", "status.update", "working", "Working"),
+        (
+            "approval",
+            "approval.request",
+            "needs_you",
+            "Waiting for you",
+        ),
+        (
+            "clarification",
+            "clarify.request",
+            "needs_you",
+            "Waiting for you",
+        ),
+    ] {
+        let conn = db::open(&fixture.home).unwrap();
+        conn.execute(
+            "INSERT INTO bots(name,owner_id,description) VALUES(?,'local','Fixture bot')",
+            [bot],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sections(id,bot,owner_id,title) VALUES(?,?,'local','Fixture section')",
+            [bot, bot],
+        )
+        .unwrap();
+        let profile = fixture.home.join("profiles").join(bot);
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(
+            profile.join("config.yaml"),
+            "tools:\n  enabled_toolsets: []\n",
+        )
+        .unwrap();
+        let opened = fixture
+            .app
+            .call("local", "hexbot.sections.open", &json!({"id":bot}))
+            .await
+            .unwrap();
+        let session = &opened["section"]["live_session_id"];
+        let mut events = fixture.app.events.subscribe();
+        fixture
+            .app
+            .call(
+                "local",
+                "prompt.submit",
+                &json!({"session_id":session,"text":bot}),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.frame["params"]["session_id"] == *session
+                    && event.frame["params"]["type"] == event_type
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let saved = request(
+            &mut socket,
+            "save",
+            "hexbot.bots.update",
+            json!({"name":bot,"description":"Saved while active"}),
+        )
+        .await;
+        assert!(saved.get("error").is_none(), "{saved}");
+        let saved = &saved["result"]["bot"];
+        assert_eq!(saved["description"], "Saved while active");
+        assert_eq!(saved["status"], status);
+        assert_eq!(saved["status_detail"]["text"], text);
+        assert_eq!(saved["status_detail"]["section_id"], bot);
+        assert_eq!(saved["status_detail"]["session_id"], *session);
+        assert!(saved["status_detail"]["room_id"].is_null());
+        assert!(saved["status_detail"]["action"].is_null());
+        assert!(saved["status_detail"]["since"].as_f64().unwrap() > 0.0);
+        hexbot_core::settings::record_incident(
+            &fixture.home,
+            bot,
+            "connector_error",
+            "Connector login expired",
+            &json!({"connector":"github"}),
+        )
+        .unwrap();
+        let stopped = request(
+            &mut socket,
+            "save-stopped",
+            "hexbot.bots.update",
+            json!({"name":bot,"description":"Saved with an incident"}),
+        )
+        .await;
+        assert!(stopped.get("error").is_none(), "{stopped}");
+        let stopped = &stopped["result"]["bot"];
+        assert_eq!(stopped["status"], "stopped");
+        assert_eq!(stopped["status_detail"]["text"], "Connector login expired");
+        assert_eq!(stopped["status_detail"]["action"]["kind"], "fix_connector");
+    }
+    fixture.shutdown().await;
 }
 
 #[tokio::test]

@@ -362,6 +362,10 @@ export class ConnectionSupervisor {
       return this.starting
     }
 
+    if (this.target && targetOrigin(this.target) !== targetOrigin(target)) {
+      useTranscripts.getState().clearAnsweredWaiting()
+    }
+
     this.teardown()
     this.stopped = false
     this.revoked = false
@@ -411,7 +415,9 @@ export class ConnectionSupervisor {
     this.client?.close()
     this.client = null
     setActiveRpc(null)
-    useTranscripts.getState().clearAnsweredWaiting()
+    useTranscripts.getState().clearAnsweredWaiting(undefined, undefined, undefined, {
+      preserveWaiting: true
+    })
   }
 
   private async attemptConnect(): Promise<void> {
@@ -507,7 +513,9 @@ export class ConnectionSupervisor {
       }
     })
 
-    useTranscripts.getState().clearAnsweredWaiting()
+    useTranscripts.getState().clearAnsweredWaiting(undefined, undefined, undefined, {
+      preserveWaiting: true
+    })
     this.adoptEpoch(payload.replay_epoch ?? null)
 
     this.connectedAt = Date.now()
@@ -564,7 +572,9 @@ export class ConnectionSupervisor {
     }
 
     setActiveRpc(null)
-    useTranscripts.getState().clearAnsweredWaiting()
+    useTranscripts.getState().clearAnsweredWaiting(undefined, undefined, undefined, {
+      preserveWaiting: true
+    })
     this.detach?.()
     this.detach = null
     this.client = null

@@ -270,12 +270,21 @@ describe.each(['full', 'scoped', 'update'])('%s aggregate roster', scope => {
       const idle = { name: 'owl', status: 'idle', status_detail: null } as Bot
       let reply = selected as Bot
       setActiveRpc({
-        call: vi.fn(async () => (scope === 'full' ? { bots: [reply] } : { bot: reply }))
+        call: vi.fn(async (method: string) =>
+          method === 'hexbot.bots.list' ? { bots: [reply] } : { bot: reply }
+        )
       } as never)
       await refresh()
       expect(actions().bySession.live?.liveStatus).toBe('working')
       reply = idle
       await refresh()
+
+      if (scope === 'update') {
+        // Catalog-only mutation replies cannot establish aggregate Idle on older daemons.
+        expect(actions().bySession.live?.liveStatus).toBe('working')
+        await useBots.getState().refresh()
+      }
+
       expect(actions().bySession.live?.liveStatus).toBe('idle')
       expect(actions().bySession.teammate?.liveStatus).toBe('working')
     }

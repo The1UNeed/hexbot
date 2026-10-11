@@ -58,7 +58,7 @@ context}` (the section's totals and its context meter, see Sections), `error`.
 
 When a new agent turn starts, `message.start` includes `retry_resolved: true`
 if resolving that section's `turn_failed` incidents succeeded. Clients can
-retire a cached private-section Retry status for that exact live session.
+retire a cached private-section Stopped status with a Retry action for that exact live session.
 Compaction starts and older daemons omit this field; an unmarked start or a
 Working event alone does not prove that a failure was resolved.
 
@@ -133,6 +133,12 @@ active. A non-idle bot reply must not erase status evidence for a
 sibling session. An accepted Idle reply can retire the bot's older live
 status evidence. Pending questions and approvals remain Waiting through an
 unrelated Working event; answers settle only their matching request IDs.
+Bot list, get and update replies include the daemon's live status. Older
+daemons can return catalog-only Idle from an update, so a settings save alone
+must not retire confirmed pending cards or a live Working status. A later
+roster or live event can settle them. Reconnecting within the same replay
+epoch retains confirmed pending cards while retiring optimistic answer
+evidence; a new epoch drops the previous process's live sessions.
 `approval_mode` is `inherit` (the deployment setting), `manual`, `smart`
 (Auto), or `off` (Bypass); `workdir` overrides the deployment workspace for
 that bot's terminal.
