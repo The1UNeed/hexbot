@@ -69,6 +69,8 @@ export interface Transcript {
   approvals: ApprovalRequest[]
   /** Questions the bot asked through the clarify tool, oldest first. */
   clarifies: ClarifyRequest[]
+  /** Exact settlement survives same-session snapshots, including expiry before card replay. */
+  settledClarifyIds?: string[]
   /** The context meter; null until the daemon has reported it. */
   context: null | ContextUsage
   /** Inline error rows are also pushed as messages; this is the header copy. */
@@ -150,11 +152,15 @@ export interface TranscriptsState {
     payload: ApprovalRequestPayload,
     options?: { notify?: boolean }
   ) => void
-  clarifyExpire: (sessionId: string, requestId: string) => void
+  clarifyExpire: (
+    sessionId: string,
+    requestId: string,
+    options?: { preserveEvidence?: boolean }
+  ) => void
   clarifyRequest: (
     sessionId: string,
     payload: ClarifyRequestPayload & { answers?: Record<string, string> },
-    options?: { notify?: boolean; throughRevision?: number }
+    options?: { notify?: boolean; confirmPending?: boolean }
   ) => void
   appendUserMessage: (sessionId: string, text: string, attachments?: Attachment[]) => Message
   warnings: Record<string, string>
@@ -457,6 +463,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
                   }
                 : {}),
               approvals: existing?.approvals ?? [],
+              settledClarifyIds: existing?.settledClarifyIds,
               clarifies: (existing?.clarifies ?? []).filter(
                 item =>
                   clarifyWaiting(item) ||
@@ -786,15 +793,42 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       let added = false
 
       update(sessionId, transcript => {
-        if (
-          options.throughRevision !== undefined &&
-          transcript.authorityRevision > options.throughRevision
-        ) {
+        if (transcript.settledClarifyIds?.includes(requestId)) {
           return transcript
         }
 
-        if (transcript.clarifies.some(item => item.requestId === requestId)) {
-          return transcript
+        const liveStatus = (card: ClarifyRequest) =>
+          clarifyWaiting(card)
+            ? 'needs_you'
+            : transcript.liveStatus === 'needs_you' &&
+                !(
+                  transcript.approvals.some(item => !item.decision) ||
+                  transcript.clarifies.some(
+                    item => item.requestId !== requestId && clarifyWaiting(item)
+                  )
+                )
+              ? undefined
+              : transcript.liveStatus
+
+        const existing = transcript.clarifies.find(item => item.requestId === requestId)
+
+        if (existing) {
+          if (!options.confirmPending) {
+            return transcript
+          }
+
+          const current = { ...existing, answers: { ...payload.answers, ...existing.answers } }
+          const waiting = clarifyWaiting(current)
+
+          return {
+            ...(waiting ? advanceAuthority(transcript) : transcript),
+            liveStatus: liveStatus(current),
+            answeredWaiting: waiting ? undefined : transcript.answeredWaiting,
+            settledClarifyIds: waiting
+              ? transcript.settledClarifyIds
+              : [...new Set([...(transcript.settledClarifyIds ?? []), requestId])],
+            clarifies: transcript.clarifies.map(item => (item === existing ? current : item))
+          }
         }
 
         added = true
@@ -807,9 +841,15 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           sessionId
         }
 
+        const waiting = clarifyWaiting(clarify)
+
         return {
-          ...advanceAuthority(closeForCard(transcript)),
-          liveStatus: clarifyWaiting(clarify) ? 'needs_you' : undefined,
+          ...(waiting ? advanceAuthority(closeForCard(transcript)) : transcript),
+          liveStatus: liveStatus(clarify),
+          answeredWaiting: waiting ? undefined : transcript.answeredWaiting,
+          settledClarifyIds: waiting
+            ? transcript.settledClarifyIds
+            : [...new Set([...(transcript.settledClarifyIds ?? []), requestId])],
           clarifies: [...transcript.clarifies, clarify]
         }
       })
@@ -868,26 +908,35 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           !attempt ||
           (attempt.revision === transcript.authorityRevision && attempt.answered !== false)
 
-        const answered =
-          current &&
+        const settled =
+          attempt?.answered !== false &&
           wasWaiting &&
           clarifies.some(
             item => item.requestId === requestId && !item.expired && clarifyAnswered(item)
           )
+
+        const answered = current && settled
 
         return {
           ...transcript,
           authorityRevision: answered ? ++authorityRevision : transcript.authorityRevision,
           liveStatus: answered ? undefined : transcript.liveStatus,
           answeredWaiting: answered ? { kind: 'clarify', requestId } : transcript.answeredWaiting,
+          settledClarifyIds: settled
+            ? [...new Set([...(transcript.settledClarifyIds ?? []), requestId])]
+            : transcript.settledClarifyIds,
           clarifies
         }
       })
     },
 
-    clarifyExpire(sessionId, requestId) {
+    clarifyExpire(sessionId, requestId, options = {}) {
       update(sessionId, transcript => ({
         ...advanceAuthority(transcript),
+        ...(options.preserveEvidence
+          ? { liveStatus: transcript.liveStatus, answeredWaiting: transcript.answeredWaiting }
+          : {}),
+        settledClarifyIds: [...new Set([...(transcript.settledClarifyIds ?? []), requestId])],
         clarifies: transcript.clarifies.map(item =>
           item.requestId === requestId ? { ...item, expired: true } : item
         )

@@ -205,7 +205,11 @@ roster shows only the title.
   context: Context, pending_clarify?}` (resumes the stored session on the
   bot's profile; idempotent if live). If the bot is waiting on an approval,
   the daemon sends its `approval.request` event again so a reloaded client
-  gets the card back; clients dedupe on `request_id`.
+  gets the card back; clients dedupe on `request_id`. An approval and a
+  question can be pending together. Answering an approval can emit Working
+  while the separate question still needs an answer. `pending_clarify`
+  names one pending question; a different ID does not prove that an earlier
+  question settled. Match answers and expiry to their own `request_id`.
 
 `Context = {tokens, window, compact_at, compacting, recounting, seq}` is how
 full the section's context is: Pi's own estimate of the tokens the next

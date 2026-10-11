@@ -22,7 +22,7 @@ import { KICKOFF_MARKER } from '../lib/bot-kickoff'
 import type { Bot, BotStatus, Message, Section } from '../lib/types'
 
 import { draftsActions } from './drafts'
-import { transcriptRevision, useTranscripts } from './transcripts'
+import { clarifyWaiting, type Transcript, transcriptRevision, useTranscripts } from './transcripts'
 
 /**
  * A thread: the private conversation in which `peer_bot` asks `bot` for help.
@@ -30,6 +30,70 @@ import { transcriptRevision, useTranscripts } from './transcripts'
  * section can arrive by (a bot's recent sections, a changed event, an open).
  */
 export const isThread = (section: Pick<Section, 'peer_bot'>) => Boolean(section.peer_bot)
+
+function clarifySettled(transcript: Transcript | undefined, requestId: string | undefined) {
+  return Boolean(
+    requestId &&
+    (transcript?.settledClarifyIds?.includes(requestId) ||
+      transcript?.clarifies.some(card => card.requestId === requestId && !clarifyWaiting(card)))
+  )
+}
+
+async function openSnapshot(id: string) {
+  const revision = transcriptRevision()
+  let snapshot = await sectionsOpen(id)
+  let pendingClarifies = snapshot.pending_clarify ? [snapshot.pending_clarify] : []
+  const live = snapshot.section.live_session_id
+  const transcript = live ? useTranscripts.getState().bySession[live] : undefined
+  const requestId = snapshot.pending_clarify?.request_id
+
+  // Working can follow an unrelated approval while this question is still pending.
+  if (
+    snapshot.pending_clarify &&
+    transcript &&
+    transcript.authorityRevision > revision &&
+    (transcript.liveStatus === 'working' || transcript.liveStatus === 'idle') &&
+    !clarifySettled(transcript, requestId)
+  ) {
+    const card = transcript.clarifies.find(item => item.requestId === requestId)
+
+    try {
+      const verified = await sectionsOpen(id)
+      pendingClarifies = verified.pending_clarify
+        ? verified.section.live_session_id === live &&
+          verified.pending_clarify.request_id !== requestId
+          ? [...pendingClarifies, verified.pending_clarify]
+          : [verified.pending_clarify]
+        : []
+      snapshot = verified
+      const current = useTranscripts.getState().bySession[transcript.sessionId]
+
+      if (
+        requestId &&
+        snapshot.section.live_session_id === live &&
+        !snapshot.pending_clarify &&
+        current?.epoch === transcript.epoch &&
+        (card
+          ? current.clarifies.includes(card)
+          : !current.clarifies.some(item => item.requestId === requestId))
+      ) {
+        useTranscripts.getState().clarifyExpire(transcript.sessionId, requestId, {
+          preserveEvidence: true
+        })
+      }
+    } catch {
+      // A failed verification leaves the question visible so it can still be answered.
+    }
+  }
+
+  const currentLive = snapshot.section.live_session_id
+  const current = currentLive ? useTranscripts.getState().bySession[currentLive] : undefined
+  pendingClarifies = pendingClarifies.filter(
+    pending => !clarifySettled(current, pending.request_id)
+  )
+
+  return { pendingClarifies, revision, snapshot }
+}
 
 export interface SectionsState {
   archive: (id: string) => Promise<void>
@@ -242,8 +306,8 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   async open(id) {
-    const revision = transcriptRevision()
-    const { context, messages, pending_clarify, section } = await sectionsOpen(id)
+    const { pendingClarifies, revision, snapshot } = await openSnapshot(id)
+    const { context, messages, section } = snapshot
     const live = section.live_session_id
 
     openedSectionRequests.set(section.id, ++sectionsRequest)
@@ -254,7 +318,6 @@ export const useSections = create<SectionsState>((set, get) => ({
 
     if (live) {
       const transcripts = useTranscripts.getState()
-      const newer = (transcripts.bySession[live]?.authorityRevision ?? 0) > revision
       transcripts.open(
         live,
         id,
@@ -269,10 +332,10 @@ export const useSections = create<SectionsState>((set, get) => ({
         useTranscripts.getState().sessionContext(live, context)
       }
 
-      if (pending_clarify) {
-        useTranscripts.getState().clarifyRequest(live, pending_clarify, {
+      for (const pending of pendingClarifies) {
+        useTranscripts.getState().clarifyRequest(live, pending, {
           notify: false,
-          throughRevision: newer ? revision : undefined
+          confirmPending: true
         })
       }
     }
@@ -281,21 +344,20 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   async openThread(id, peer) {
-    const revision = transcriptRevision()
-    const { messages, pending_clarify, section } = await sectionsOpen(id)
+    const { pendingClarifies, revision, snapshot } = await openSnapshot(id)
+    const { messages, section } = snapshot
     const live = section.live_session_id
 
     if (live) {
-      const newer = (useTranscripts.getState().bySession[live]?.authorityRevision ?? 0) > revision
       set(state => ({ liveSessionId: { ...state.liveSessionId, [id]: live } }))
       useTranscripts.getState().clearAnsweredWaiting([], [live], revision)
       useTranscripts.getState().setSectionId(live, id)
 
       // The owner answers the receiving bot's questions here: threads have no other view.
-      if (pending_clarify) {
-        useTranscripts.getState().clarifyRequest(live, pending_clarify, {
+      for (const pending of pendingClarifies) {
+        useTranscripts.getState().clarifyRequest(live, pending, {
           notify: false,
-          throughRevision: newer ? revision : undefined
+          confirmPending: true
         })
       }
     }
