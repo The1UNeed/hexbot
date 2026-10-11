@@ -354,9 +354,14 @@ Auto's reviewer reads the whole step, including the checked file destination,
 working directory and overwrite status, plus complete visible owner messages
 from the section and complete owner-authored room messages. A step over 20,000
 characters or a complete request over 80,000 characters asks without clipping
-or dropping authorization evidence. Missing or unreadable evidence also asks.
-Before allowing a step, the daemon reads that evidence again. Changed owner
-messages or queued owner prompts and steers invalidate automatic approval.
+or dropping authorization evidence. History reads stop at that cap, and a
+stored row over the allocation limit asks before JSON parsing, including large
+tool or bot metadata. Missing or unreadable evidence also asks.
+Before allowing a step, the daemon reads that evidence again and queues the
+reply while holding the same gate used to stage owner prompts and steers.
+A brief room database write reservation orders owner room messages with that
+check and reply. Changed or pending owner messages invalidate automatic approval.
+Neither lock is held while waiting for the transport write to finish.
 Mode and working-directory changes during review block execution, and file
 execution rechecks the resolved destination and reviewed overwrite status.
 

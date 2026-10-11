@@ -6,6 +6,9 @@ use super::*;
 const TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_CHARS: usize = 80_000;
 const STEP_CHARS: usize = 20_000;
+// Allow JSON's twelve-byte surrogate escapes plus ordinary row metadata.
+// Larger rows ask, even if their text alone would fit; never allocate them.
+const ROW_BYTES: usize = REQUEST_CHARS * 12 + 4096;
 
 pub(super) const PROMPT: &str = r#"You review one step a Hexbot bot wants to take in Auto mode. The bot normally works in a sandbox that has no internet access and can write only inside its workspace. This step leaves the sandbox: a shell command with internet access that can change any file the user can, a file change outside the workspace, a connected tool that can change something, or a script in a web page. Decide whether it runs now or the user is asked first.
 
@@ -28,7 +31,8 @@ Reply with one JSON object and nothing else: {"decision":"allow" or "ask","risk"
 /// The user's own messages in a section. Assistant text, tool output and
 /// messages the bots or Hexbot add are left out, since that is where injected
 /// instructions arrive. Room turns arrive hidden; `room_messages` reads those.
-pub(super) fn section_messages(history: &[Value]) -> Result<Vec<String>> {
+#[cfg(test)]
+fn section_messages(history: &[Value]) -> Result<Vec<String>> {
     history
         .iter()
         .filter(|m| {
@@ -46,19 +50,75 @@ pub(super) fn section_messages(history: &[Value]) -> Result<Vec<String>> {
 /// What the reviewer reads: the user's messages and the whole input the step
 /// runs with. Never shorten authorization evidence: either the entire request
 /// fits, or the user decides. Earlier messages can still contain restrictions.
-pub(super) fn request(user: Vec<String>, payload: &Value) -> Option<Value> {
-    let step = json!({
+struct ReviewRequest {
+    value: Value,
+    chars: usize,
+}
+
+/// Count serialized Unicode characters, including JSON escapes and punctuation,
+/// without allocating a second copy of the evidence or finishing an overrun.
+struct JsonChars {
+    chars: usize,
+    limit: usize,
+}
+
+impl std::io::Write for JsonChars {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let chars = bytes.iter().filter(|b| **b & 0xc0 != 0x80).count();
+        if chars > self.limit.saturating_sub(self.chars) {
+            return Err(std::io::Error::other("review evidence exceeds limit"));
+        }
+        self.chars += chars;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn json_chars(value: &impl serde::Serialize, limit: usize) -> Option<usize> {
+    let mut counter = JsonChars { chars: 0, limit };
+    serde_json::to_writer(&mut counter, value).ok()?;
+    Some(counter.chars)
+}
+
+impl ReviewRequest {
+    fn new(payload: &Value) -> Option<Self> {
+        let step = json!({
         "tool": payload["tool"],
         "command": payload["command"],
         "input": payload["input"],
         "working_directory": payload["cwd"],
         "overwrites_existing_file": payload["overwrites"],
-    });
-    if step.to_string().chars().count() > STEP_CHARS {
-        return None;
+        });
+        json_chars(&step, STEP_CHARS)?;
+        let value = json!({"user_messages": [], "step": step});
+        let chars = json_chars(&value, REQUEST_CHARS)?;
+        Some(Self { value, chars })
     }
-    let request = json!({"user_messages": user, "step": step});
-    (request.to_string().chars().count() <= REQUEST_CHARS).then_some(request)
+
+    fn push(&mut self, text: &str) -> bool {
+        let messages = self.value["user_messages"].as_array_mut().unwrap();
+        let separator = usize::from(!messages.is_empty());
+        let Some(chars) = json_chars(&text, REQUEST_CHARS.saturating_sub(self.chars + separator))
+        else {
+            return false;
+        };
+        self.chars += chars + separator;
+        messages.push(json!(text));
+        true
+    }
+}
+
+#[cfg(test)]
+pub(super) fn request(user: Vec<String>, payload: &Value) -> Option<Value> {
+    let mut request = ReviewRequest::new(payload)?;
+    for text in user {
+        if !request.push(&text) {
+            return None;
+        }
+    }
+    Some(request.value)
 }
 
 /// None runs the step; Some carries the sentence the card adds. Only a reply
@@ -120,26 +180,36 @@ impl Runtime {
             state.interrupted
         };
         tasks.spawn(async move {
-            let note = if interrupted {
-                None
-            } else {
-                runtime.review(&source, &request["approval_payload"]).await
-            };
-            let Some(note) = note.filter(|_| !interrupted) else {
-                let answer = if interrupted {
-                    json!({"cancelled":true})
-                } else {
-                    json!({"value":"once"})
-                };
+            if interrupted {
                 if let Err(error) = source
                     .process
-                    .respond_extension(&id, answer, DEADLINE)
+                    .respond_extension(&id, json!({"cancelled":true}), DEADLINE)
                     .await
                 {
                     eprintln!("Approval reply failed for {}: {error}", source.stored);
                 }
                 source.state.lock().unwrap().tool_dialogs.remove(&id);
                 return;
+            }
+            let note = match runtime.review(&source, &request["approval_payload"]).await {
+                Ok(evidence) => match runtime.commit_review(
+                    &source,
+                    &id,
+                    &request["approval_payload"],
+                    &evidence,
+                ) {
+                    Ok(Some(write)) => {
+                        // The response is committed. A write failure must never
+                        // retry an approval that may already have executed.
+                        if let Err(error) = write.wait().await {
+                            eprintln!("Approval reply failed for {}: {error}", source.stored);
+                        }
+                        return;
+                    }
+                    Ok(None) => return, // Stop or close owns the dialog now.
+                    Err(_) => UNAVAILABLE.into(),
+                },
+                Err(note) => note,
             };
             let payload = &mut request["approval_payload"];
             let reason = payload["reason"].as_str().unwrap_or("").trim();
@@ -160,9 +230,10 @@ impl Runtime {
             }
             let payload = payload.clone();
             {
+                let _gate = source.event_gate.lock().unwrap();
                 let mut state = source.state.lock().unwrap();
                 // A stop drained the dialog while the reviewer ran.
-                if !state.tool_dialogs.remove(&id) {
+                if state.closed || state.interrupted || !state.tool_dialogs.remove(&id) {
                     return;
                 }
                 state.pending.insert(id.clone(), request);
@@ -180,35 +251,49 @@ impl Runtime {
 
     /// What the section's owner wrote in the room this section serves, oldest
     /// first. Other people in a shared room cannot approve steps on this computer.
-    fn room_messages(&self, s: &Live) -> Result<Vec<String>> {
-        let mut texts = common::rows(
-            &db::open(&self.home)?,
-            "SELECT e.payload_json AS payload FROM room_events e JOIN room_sessions r ON r.room_id=e.room_id
-             WHERE r.stored_session_id=? AND e.kind='message.user' AND e.actor_kind='human' AND e.actor_id=?
-             ORDER BY e.seq DESC",
-            &[&s.stored, &s.owner],
-        )?
-        .into_iter()
-        .map(|row| {
-            let payload: Value = serde_json::from_str(row["payload"].as_str().unwrap_or(""))
-                .map_err(|e| Error::new(5200, e.to_string()))?;
-            payload["text"]
+    fn room_messages(
+        &self,
+        s: &Live,
+        conn: &rusqlite::Connection,
+        request: &mut ReviewRequest,
+    ) -> Result<bool> {
+        let mut stmt = conn.prepare(
+            "SELECT CASE WHEN octet_length(e.payload_json)<=?3 THEN e.payload_json END
+             FROM room_events e
+             WHERE e.room_id IN (SELECT room_id FROM room_sessions WHERE stored_session_id=?1)
+             AND e.kind='message.user' AND e.actor_kind='human' AND e.actor_id=?2
+             ORDER BY e.room_id,e.seq",
+        )?;
+        let mut rows = stmt.query(params![s.stored, s.owner, ROW_BYTES])?;
+        while let Some(row) = rows.next()? {
+            let Some(raw) = row.get::<_, Option<String>>(0)? else {
+                return Err(Error::new(5200, "Evidence row exceeds size limit"));
+            };
+            let payload: Value =
+                serde_json::from_str(&raw).map_err(|e| Error::new(5200, e.to_string()))?;
+            let text = payload["text"]
                 .as_str()
-                .map(str::to_owned)
-                .ok_or_else(|| Error::new(5200, "Room message text is unavailable"))
-        })
-        .collect::<Result<Vec<_>>>()?;
-        texts.reverse();
-        Ok(texts)
+                .ok_or_else(|| Error::new(5200, "Room message text is unavailable"))?;
+            if !request.push(text) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
-    fn review_request(&self, s: &Live, payload: &Value) -> Result<Option<Value>> {
-        let _gate = s.event_gate.lock().unwrap();
+    /// Caller holds event_gate. The final check also reserves room writes on
+    /// this connection until the approval has been synchronously enqueued.
+    pub(super) fn review_request(
+        &self,
+        s: &Live,
+        payload: &Value,
+        conn: &rusqlite::Connection,
+    ) -> Result<Option<Value>> {
         // A failed conversation write must not omit a recent owner restriction.
         self.retry_messages(s);
         let unavailable = {
             let state = s.state.lock().unwrap();
-            !state.unsaved.is_empty() || state.closed
+            !state.unsaved.is_empty() || state.closed || state.interrupted
         };
         if unavailable {
             return Err(Error::new(5201, "Owner evidence is unavailable"));
@@ -222,16 +307,63 @@ impl Runtime {
         if pending {
             return Err(Error::new(5201, "Owner message is pending"));
         }
-        let mut user = section_messages(&store::user_history(&self.home, &s.stored)?)?;
-        user.extend(self.room_messages(s)?);
-        Ok(request(user, payload))
+        let Some(mut request) = ReviewRequest::new(payload) else {
+            return Ok(None);
+        };
+        let complete = store::user_history(&self.home, &s.stored, ROW_BYTES, |message| {
+            let text = message["text"]
+                .as_str()
+                .ok_or_else(|| Error::new(5200, "User message text is unavailable"))?;
+            Ok(request.push(text))
+        })?;
+        if !complete || !self.room_messages(s, conn, &mut request)? {
+            return Ok(None);
+        }
+        Ok(Some(request.value))
     }
 
-    async fn review(&self, s: &Live, payload: &Value) -> Option<String> {
-        let message = match self.review_request(s, payload) {
+    pub(super) fn commit_review(
+        &self,
+        s: &Live,
+        id: &str,
+        payload: &Value,
+        evidence: &Value,
+    ) -> Result<Option<crate::pi::ExtensionWrite>> {
+        let _gate = s.event_gate.lock().unwrap();
+        {
+            let state = s.state.lock().unwrap();
+            if self.stopping.load(Ordering::Acquire)
+                || state.closed
+                || state.interrupted
+                || !state.tool_dialogs.contains(id)
+            {
+                return Ok(None);
+            }
+        }
+        let mut conn = db::open(&self.home)?;
+        conn.busy_timeout(Duration::ZERO)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if self.review_request(s, payload, &tx)?.as_ref() != Some(evidence) {
+            return Err(Error::new(5201, "Owner evidence changed"));
+        }
+        let write = s
+            .process
+            .try_respond_extension(id, json!({"value":"once"}), DEADLINE)
+            .map_err(pi_error)?;
+        s.state.lock().unwrap().tool_dialogs.remove(id);
+        // No database transaction or synchronous lock survives into write.wait().
+        Ok(Some(write))
+    }
+
+    async fn review(&self, s: &Live, payload: &Value) -> std::result::Result<Value, String> {
+        let snapshot = {
+            let _gate = s.event_gate.lock().unwrap();
+            db::open(&self.home).and_then(|conn| self.review_request(s, payload, &conn))
+        };
+        let message = match snapshot {
             Ok(Some(message)) => message,
-            Ok(None) => return Some(TOO_LONG.into()),
-            Err(_) => return Some(UNAVAILABLE.into()),
+            Ok(None) => return Err(TOO_LONG.into()),
+            Err(_) => return Err(UNAVAILABLE.into()),
         };
         let model = s.model.lock().unwrap().clone();
         let saved = json!({"provider": model[0], "model": model[1]});
@@ -239,15 +371,11 @@ impl Runtime {
             .one_shot(&s.bot, &saved, Some(s), PROMPT, &message, TIMEOUT)
             .await
         {
-            Ok((text, false)) => {
-                // A new restriction or pending steer invalidates the verdict.
-                // Reviewer usage is separate and does not change this evidence.
-                if self.review_request(s, payload).ok().flatten().as_ref() != Some(&message) {
-                    return Some(UNAVAILABLE.into());
-                }
-                verdict(&text)
-            }
-            _ => Some(UNAVAILABLE.into()),
+            Ok((text, false)) => match verdict(&text) {
+                Some(note) => Err(note),
+                None => Ok(message),
+            },
+            _ => Err(UNAVAILABLE.into()),
         }
     }
 }
@@ -325,10 +453,15 @@ mod tests {
         for message in &history {
             store::append(home.path(), "section", message.clone()).unwrap();
         }
-        assert_eq!(
-            section_messages(&store::user_history(home.path(), "section").unwrap()).unwrap(),
-            section_messages(&history).unwrap()
+        let mut actual = Vec::new();
+        assert!(
+            store::user_history(home.path(), "section", ROW_BYTES, |message| {
+                actual.push(message["text"].as_str().unwrap().to_owned());
+                Ok(true)
+            })
+            .unwrap()
         );
+        assert_eq!(actual, section_messages(&history).unwrap());
     }
 
     #[test]
@@ -359,5 +492,81 @@ mod tests {
         );
         let payload = json!({"tool":"bash","input":{"command":command}});
         assert!(request(vec![], &payload).is_none());
+    }
+
+    #[test]
+    fn serialized_limit_counts_unicode_escapes_and_array_overhead_exactly() {
+        let payload = json!({"tool":"bash","command":"pwd","input":{"command":"pwd"}});
+        let mut request = ReviewRequest::new(&payload).unwrap();
+        let text = "界".repeat(REQUEST_CHARS - request.chars - 2);
+        assert!(request.push(&text));
+        assert_eq!(request.value.to_string().chars().count(), REQUEST_CHARS);
+        assert_eq!(request.chars, REQUEST_CHARS);
+        assert!(!request.push("")); // Even an empty message needs a comma and quotes.
+        assert_eq!(request.value["user_messages"].as_array().unwrap().len(), 1);
+        for text in ["\0".repeat(14_000), "\"\\\n".repeat(15_000)] {
+            assert!(text.chars().count() < REQUEST_CHARS);
+            assert!(!ReviewRequest::new(&payload).unwrap().push(&text));
+        }
+    }
+
+    #[test]
+    fn section_evidence_stops_at_budget_before_reading_later_corruption() {
+        let home = tempfile::tempdir().unwrap();
+        store::append(
+            home.path(),
+            "section",
+            json!({"role":"user","text":"Never publish this report."}),
+        )
+        .unwrap();
+        for _ in 0..50 {
+            store::append(
+                home.path(),
+                "section",
+                json!({"role":"user","text":"x".repeat(2000)}),
+            )
+            .unwrap();
+        }
+        let conn = store::open(home.path()).unwrap();
+        conn.execute(
+            "INSERT INTO native_messages VALUES('section',100,'broken JSON')",
+            [],
+        )
+        .unwrap();
+        let mut request = ReviewRequest::new(&json!({})).unwrap();
+        let mut visited = 0;
+        assert!(
+            !store::user_history(home.path(), "section", ROW_BYTES, |message| {
+                visited += 1;
+                Ok(request.push(message["text"].as_str().unwrap()))
+            })
+            .unwrap()
+        );
+        assert!(visited < 50);
+        assert_eq!(
+            request.value["user_messages"][0],
+            "Never publish this report."
+        );
+        assert!(request.chars <= REQUEST_CHARS);
+    }
+
+    #[test]
+    fn oversized_native_rows_are_rejected_before_json_parsing_or_visiting() {
+        let home = tempfile::tempdir().unwrap();
+        let conn = store::open(home.path()).unwrap();
+        // Deliberately invalid JSON: parsing this row at all would error.
+        conn.execute(
+            "INSERT INTO native_messages VALUES('section',1,?)",
+            ["!".repeat(ROW_BYTES + 1)],
+        )
+        .unwrap();
+        assert_eq!(
+            store::user_history(home.path(), "section", ROW_BYTES, |_| panic!(
+                "oversized row was allocated"
+            ))
+            .unwrap_err()
+            .message,
+            "Evidence row exceeds size limit"
+        );
     }
 }

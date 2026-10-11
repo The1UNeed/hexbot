@@ -1212,6 +1212,7 @@ impl Runtime {
         let mut command = json!({"type":"prompt","message":text});
         let sent;
         let dropped;
+        let intent;
         {
             let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
@@ -1268,14 +1269,14 @@ impl Runtime {
             if queued {
                 command["streamingBehavior"] = json!("followUp");
             }
+            intent = store::stage_prompt(
+                &self.home,
+                &s.stored,
+                command["message"].as_str().unwrap_or(text),
+                if hidden { "hidden" } else { "normal" },
+            );
         }
         remove_staged(dropped);
-        let intent = store::stage_prompt(
-            &self.home,
-            &s.stored,
-            command["message"].as_str().unwrap_or(text),
-            if hidden { "hidden" } else { "normal" },
-        );
         let response = match &intent {
             Ok(_) => s
                 .process
@@ -1297,6 +1298,7 @@ impl Runtime {
         match response {
             Ok(_) => Ok(json!({"status":"submitted"})),
             Err(error) => {
+                let _gate = s.event_gate.lock().unwrap();
                 if let Ok(id) = intent {
                     let _ = store::reject_prompt(&self.home, &s.stored, &id);
                 }
@@ -1843,13 +1845,19 @@ impl Runtime {
             }
             "session.steer" => {
                 let text = required(p, "text")?;
-                let intent = store::stage_prompt(&self.home, &s.stored, text, "normal")?;
-                {
+                let intent = {
                     let _gate = s.event_gate.lock().unwrap();
-                    s.state.lock().unwrap().display.push_back("normal".into());
-                }
+                    let mut state = s.state.lock().unwrap();
+                    if state.closed {
+                        return Err(Error::new(4001, "session not found"));
+                    }
+                    let intent = store::stage_prompt(&self.home, &s.stored, text, "normal")?;
+                    state.display.push_back("normal".into());
+                    intent
+                };
                 if let Err(error) = Self::command(&s, json!({"type":"steer","message":text})).await
                 {
+                    let _gate = s.event_gate.lock().unwrap();
                     store::reject_prompt(&self.home, &s.stored, &intent)?;
                     s.state.lock().unwrap().display.pop_back();
                     return Err(error);

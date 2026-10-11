@@ -1734,7 +1734,15 @@ const fs=require('node:fs')"#);
         .unwrap();
     // Hidden daemon turns are not owner authorization and do not block review.
     store::stage_prompt(home.path(), "first", "Internal delivery", "hidden").unwrap();
-    for (id, projected) in [("projected-veto", true), ("mid-review-pending-veto", false)] {
+    db::open(home.path()).unwrap().execute_batch("INSERT INTO rooms(id,name,owner_id) VALUES('review-room','Review','alice'); INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('review-room','owl','first');").unwrap();
+    for (id, mode) in [
+        ("projected-veto", 0),
+        ("mid-review-pending-veto", 1),
+        ("mid-review-queued-veto", 2),
+        ("mid-review-room-veto", 3),
+        ("approval-capacity", 4),
+        ("room-writer-busy", 5),
+    ] {
         runtime.event(&s, ask(id)).unwrap();
         let (socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
             .await
@@ -1744,23 +1752,231 @@ const fs=require('node:fs')"#);
         let mut ready = String::new();
         socket.read_line(&mut ready).await.unwrap();
         assert_eq!(ready, "reviewing\n");
-        if projected {
-            runtime.event(&s, json!({"type":"message_end","message":{"role":"user","content":"Do not publish the report."}})).unwrap();
+        let admission = (mode == 4).then(|| s.process.hold_extension_admission());
+        let mut room_connection = db::open(home.path()).unwrap();
+        let room_tx = if mode == 5 {
+            Some(
+                room_connection
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .unwrap(),
+            )
         } else {
+            None
+        };
+        if mode == 0 {
+            runtime.event(&s, json!({"type":"message_end","message":{"role":"user","content":"Do not publish the report."}})).unwrap();
+        } else if mode == 1 || mode == 2 {
             runtime
                 .call(
                     "alice",
-                    "session.steer",
-                    &json!({"session_id":live,"text":"Do not publish or delete anything."}),
+                    if mode == 1 { "session.steer" } else { "prompt.submit" },
+                    &json!({"session_id":live,"text":"Do not publish or delete anything.","queued":true}),
                 )
                 .await
                 .unwrap()
                 .unwrap();
+        } else if mode == 3 {
+            db::open(home.path()).unwrap().execute("INSERT INTO room_events(room_id,seq,kind,actor_kind,actor_id,payload_json) VALUES('review-room',1,'message.user','human','alice',?)", [json!({"text":"Do not publish."}).to_string()]).unwrap();
         }
         socket.get_mut().write_all(b"finish\n").await.unwrap();
         let changed_card = card(&mut events).await;
         assert_eq!(changed_card["payload"]["request_id"], id);
         assert_eq!(changed_card["payload"]["reason"], review::UNAVAILABLE);
+        assert!(s.state.lock().unwrap().pending.contains_key(id));
+        assert!(!s.state.lock().unwrap().tool_dialogs.contains(id));
+        drop(room_tx);
+        drop(admission);
+        store::open(home.path()).unwrap().execute("DELETE FROM native_prompt_intents WHERE session_id='first' AND display_kind<>'hidden' AND consumed_by IS NULL", []).unwrap();
+    }
+    Runtime::command(&s, json!({"type":"get_state"}))
+        .await
+        .unwrap();
+    if let Ok(dialogs) = fs::read_to_string(home.path().join("dialogs.jsonl")) {
+        assert!(
+            dialogs
+                .lines()
+                .all(|line| serde_json::from_str::<Value>(line).unwrap()["value"] != "once")
+        );
+    }
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn final_review_commit_orders_owner_intent_and_rejects_stopped_dialogs() {
+    let (home, runtime, _) = setup();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let payload = json!({"tool":"bash","command":"publish","input":{"command":"publish"}});
+    let evidence = review::request(vec![], &payload).unwrap();
+    s.state
+        .lock()
+        .unwrap()
+        .tool_dialogs
+        .insert("before-veto".into());
+    let intent = {
+        let _gate = s.event_gate.lock().unwrap();
+        store::stage_prompt(home.path(), "first", "Never publish.", "normal").unwrap()
+    };
+    assert!(
+        runtime
+            .commit_review(&s, "before-veto", &payload, &evidence)
+            .is_err()
+    );
+    assert!(s.state.lock().unwrap().tool_dialogs.contains("before-veto"));
+    {
+        let _gate = s.event_gate.lock().unwrap();
+        store::reject_prompt(home.path(), "first", &intent).unwrap();
+        s.state
+            .lock()
+            .unwrap()
+            .tool_dialogs
+            .insert("committed".into());
+    }
+    // A committed approval already occupies the queue when a later owner intent
+    // is accepted, even though its write receipt has not been awaited yet.
+    let write = runtime
+        .commit_review(&s, "committed", &payload, &evidence)
+        .unwrap()
+        .unwrap();
+    assert!(!s.state.lock().unwrap().tool_dialogs.contains("committed"));
+    {
+        let _gate = s.event_gate.lock().unwrap();
+        store::stage_prompt(home.path(), "first", "Do not publish now.", "normal").unwrap();
+        s.state
+            .lock()
+            .unwrap()
+            .tool_dialogs
+            .insert("after-veto".into());
+    }
+    assert!(
+        runtime
+            .commit_review(&s, "after-veto", &payload, &evidence)
+            .is_err()
+    );
+    write.wait().await.unwrap();
+    Runtime::command(&s, json!({"type":"get_state"}))
+        .await
+        .unwrap();
+    let dialogs = fs::read_to_string(home.path().join("dialogs.jsonl")).unwrap();
+    let replies = dialogs
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0]["id"], "committed");
+    assert_eq!(replies[0]["value"], "once");
+    for state in ["interrupted", "closed", "stopping", "removed"] {
+        {
+            let _gate = s.event_gate.lock().unwrap();
+            let mut live = s.state.lock().unwrap();
+            live.interrupted = state == "interrupted";
+            live.closed = state == "closed";
+            if state == "removed" {
+                live.tool_dialogs.remove("after-veto");
+            }
+            runtime
+                .stopping
+                .store(state == "stopping", Ordering::Release);
+        }
+        assert!(
+            runtime
+                .commit_review(&s, "after-veto", &payload, &evidence)
+                .unwrap()
+                .is_none()
+        );
+    }
+    s.state.lock().unwrap().closed = false;
+    runtime.stopping.store(false, Ordering::Release);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn review_evidence_streams_section_and_room_under_one_budget() {
+    let (home, runtime, _) = setup();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let conn = db::open(home.path()).unwrap();
+    conn.execute_batch("INSERT INTO rooms(id,name,owner_id) VALUES('bounded-room','Room','alice'); INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('bounded-room','owl','first');").unwrap();
+    store::append(
+        home.path(),
+        "first",
+        json!({"role":"user","text":"Never publish."}),
+    )
+    .unwrap();
+    for _ in 0..35 {
+        store::append(
+            home.path(),
+            "first",
+            json!({"role":"user","text":"x".repeat(1000)}),
+        )
+        .unwrap();
+    }
+    for seq in [3, 1, 2].into_iter().chain(4..=60) {
+        let text = match seq {
+            1 => "Never send the report.".into(),
+            2 => "Save a local copy.".into(),
+            3 => "Keep the old restriction.".into(),
+            _ => "y".repeat(1000),
+        };
+        conn.execute("INSERT INTO room_events(room_id,seq,kind,actor_kind,actor_id,payload_json) VALUES('bounded-room',?,'message.user','human','alice',?)", params![seq,json!({"text":text}).to_string()]).unwrap();
+    }
+    conn.execute("INSERT INTO room_events(room_id,seq,kind,actor_kind,actor_id,payload_json) VALUES('bounded-room',100,'message.user','human','alice','broken JSON')", []).unwrap();
+    {
+        let _gate = s.event_gate.lock().unwrap();
+        // A malformed later row would error if room history were collected first.
+        assert!(
+            runtime
+                .review_request(&s, &json!({}), &conn)
+                .unwrap()
+                .is_none()
+        );
+    }
+    conn.execute("DELETE FROM room_events WHERE seq>3", [])
+        .unwrap();
+    {
+        let _gate = s.event_gate.lock().unwrap();
+        let evidence = runtime
+            .review_request(&s, &json!({}), &conn)
+            .unwrap()
+            .unwrap();
+        assert_eq!(evidence["user_messages"][0], "Never publish.");
+        assert_eq!(evidence["user_messages"].as_array().unwrap().len(), 39);
+        assert_eq!(evidence["user_messages"][36], "Never send the report.");
+        assert_eq!(evidence["user_messages"][37], "Save a local copy.");
+        assert_eq!(evidence["user_messages"][38], "Keep the old restriction.");
+    }
+    conn.execute(
+        "UPDATE room_events SET payload_json=? WHERE seq=1",
+        ["!".repeat(1_000_000)],
+    )
+    .unwrap();
+    {
+        let _gate = s.event_gate.lock().unwrap();
+        assert_eq!(
+            runtime
+                .review_request(&s, &json!({}), &conn)
+                .unwrap_err()
+                .message,
+            "Evidence row exceeds size limit"
+        );
+    }
+    conn.execute("DELETE FROM room_events", []).unwrap();
+    // Oversized non-owner rows ask safely without loading their JSON metadata.
+    store::append(
+        home.path(),
+        "first",
+        json!({"role":"tool","text":"x".repeat(1_000_000)}),
+    )
+    .unwrap();
+    {
+        let _gate = s.event_gate.lock().unwrap();
+        assert_eq!(
+            runtime
+                .review_request(&s, &json!({}), &conn)
+                .unwrap_err()
+                .message,
+            "Evidence row exceeds size limit"
+        );
     }
     runtime.shutdown().await;
 }

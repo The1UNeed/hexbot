@@ -51,9 +51,11 @@ data model. The native transport and event projection live in
   In Auto, full-access shell commands, outside-workspace file changes,
   changing connected-tool calls and browser page scripts are reviewed against
   complete owner messages before a card is needed. Review failures and evidence
-  that cannot fit whole produce a one-step card. Changed owner messages or
-  queued owner prompts and steers invalidate automatic approval when the
-  evidence is rechecked. ACP review isolates the CLI home/configuration and
+  that cannot fit whole produce a one-step card. History reads stop at the
+  review cap; oversized stored rows also produce a card before parsing.
+  The final evidence check and approval enqueue are ordered with owner prompt,
+  steer and room-message writes. Changed or pending owner messages invalidate
+  automatic approval. ACP review isolates the CLI home/configuration and
   retains explicit GitHub-token authentication; unavailable stored login,
   configured arguments beyond `--acp`/`--stdio`, or incompatible isolation
   flags also produce a one-step card.
