@@ -1232,8 +1232,10 @@ impl Runtime {
             if !state.busy {
                 state.output.clear();
                 state.error = None;
+                state.chain = chain.unwrap_or_default();
             }
-            state.chain = chain.unwrap_or_default();
+            // Queued input joins the unsettled turn, even if a background
+            // result belongs to an older turn. Keep its active requester guard.
             state.busy = true;
             state.interrupted = false;
             state.last_activity = common::now();
@@ -1321,6 +1323,18 @@ impl Runtime {
         text: &str,
         options: &Value,
     ) -> Result<String> {
+        self.run_hidden_job_in_chain(owner, bot, stored, text, options, None)
+            .await
+    }
+    async fn run_hidden_job_in_chain(
+        &self,
+        owner: &str,
+        bot: &str,
+        stored: &str,
+        text: &str,
+        options: &Value,
+        chain: Option<Chain>,
+    ) -> Result<String> {
         common::bot_owner(&self.home, owner, bot)?;
         let restricted = options["enabled_tools"]
             .as_array()
@@ -1334,7 +1348,9 @@ impl Runtime {
             true,
         )
         .await?;
-        let result = self.run_hidden(owner, bot, stored, text).await;
+        let result = self
+            .run_hidden_deadline(owner, bot, stored, text, HIDDEN_TURN_DEADLINE, chain)
+            .await;
         if let Err(error) = self.close_stored(owner, stored).await {
             eprintln!("Could not close background bot {stored}: {}", error.message);
         }
@@ -2079,7 +2095,14 @@ impl Runtime {
             }
         }))
     }
-    async fn return_result(&self, owner: &str, bot: &str, stored: &str, text: &str) {
+    async fn return_result(
+        &self,
+        owner: &str,
+        bot: &str,
+        stored: &str,
+        text: &str,
+        chain: Option<Chain>,
+    ) {
         let result = async {
             let lock = self.open_lock(stored);
             let guard = lock.lock().await;
@@ -2099,7 +2122,7 @@ impl Runtime {
                 .open_session_locked(owner, bot, stored, None, None, true)
                 .await?;
             drop(guard);
-            self.submit(&parent, text, true, true, None, None).await
+            self.submit(&parent, text, true, true, chain, None).await
         }
         .await;
         if let Err(error) = result {
@@ -2749,6 +2772,8 @@ impl Runtime {
                 let text = required(args, "text")?.to_owned();
                 let (stored, message_id, chain) = self.prepare_delivery(s, &to, &text)?;
                 if args["wait"] == false {
+                    let mut continuation = chain.clone();
+                    continuation.askers.pop();
                     let runtime = self
                         .weak
                         .upgrade()
@@ -2766,7 +2791,13 @@ impl Runtime {
                             Err(error) => format!("[delivery to {to} failed] {}", error.message),
                         };
                         runtime
-                            .return_result(&source.owner, &source.bot, &source.stored, &reply)
+                            .return_result(
+                                &source.owner,
+                                &source.bot,
+                                &source.stored,
+                                &reply,
+                                Some(continuation),
+                            )
                             .await;
                     });
                     Ok(json!({"status":"sent","message_id":message_id,"section_id":stored}))

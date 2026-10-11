@@ -133,6 +133,9 @@ The native daemon provides `message_bot {to, text, wait: bool}` for bots:
   request starts a new run. A continuation within the active run defers refresh
   until another compaction. Older sections, or sections whose fixed guidance
   or tool layout no longer matches after an update, keep their prompt.
+  The requester-chain reply guidance changes that layout. Sections created
+  before it shipped keep their frozen prompt and no longer refresh at
+  compaction; new sections receive the guidance and support refresh.
 - Delivery is in-process: resume or create the target bot's thread with the
   sender, a section with `peer_bot` set to the sender (one per pair, titled
   `From <sender>`), submit the text there as a hidden user-role message
@@ -158,10 +161,14 @@ The native daemon provides `message_bot {to, text, wait: bool}` for bots:
   asked it, or any bot further up the chain. That request answers 4202 and
   tells the bot to do the work and reply instead, so a request is never
   handed back. Each delivered turn carries the chain of bots waiting on it.
+  Its delegated work and nested children inherit that chain and the shared
+  hop count. Queued user input and background results keep the active chain
+  until the turn settles. A background result arriving while idle resumes
+  its originating chain; one joining a newer busy turn keeps that active chain.
 - Loops are bounded by the same per-bot daily budget and a hop limit of 8
   messages per originating turn (a user message, a room turn, or a scheduled
   job); every section in the chain shares that count, and each new turn
-  starts a fresh one.
+  starts a fresh one when it begins from idle.
 - `hexbot.activity.pairs` and `hexbot.activity.list {from, to}` read
   `bot_messages` per pair, each row linking to its thread section.
 
