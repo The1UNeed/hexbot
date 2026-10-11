@@ -1719,6 +1719,10 @@ async fn one_shot_preparation_failure_cannot_cache_a_description() {
 #[tokio::test]
 async fn one_shot_deadline_is_shared_by_auth_and_provider_work_and_reaps_pi() {
     use tokio::io::{AsyncBufReadExt, BufReader};
+    const OPERATION_BUDGET: Duration = Duration::from_secs(16);
+    const AUTH_HOLD: Duration = Duration::from_secs(8);
+    const STARTUP_WAIT: Duration = Duration::from_secs(10);
+    const COMPLETION_WAIT: Duration = Duration::from_secs(19);
     let (home, runtime, _) = setup();
     open(&runtime).await;
     let parent = runtime.sessions.lock().unwrap()["first"].clone();
@@ -1749,7 +1753,7 @@ async fn one_shot_deadline_is_shared_by_auth_and_provider_work_and_reaps_pi() {
                         Some(&parent),
                         review::PROMPT,
                         &json!({}),
-                        Duration::from_secs(3),
+                        OPERATION_BUDGET,
                     )
                     .await
             }
@@ -1757,14 +1761,10 @@ async fn one_shot_deadline_is_shared_by_auth_and_provider_work_and_reaps_pi() {
         let mut refresh = one_shot_auth_request(&listener).await;
         if !cancelled {
             // Awaiting the still-pending call spends part of its budget in auth.
-            assert!(
-                tokio::time::timeout(Duration::from_millis(1500), &mut call)
-                    .await
-                    .is_err()
-            );
+            assert!(tokio::time::timeout(AUTH_HOLD, &mut call).await.is_err());
         }
         one_shot_auth_response(&mut refresh, 1).await;
-        let (socket, _) = tokio::time::timeout(Duration::from_secs(2), model.accept())
+        let (socket, _) = tokio::time::timeout(STARTUP_WAIT, model.accept())
             .await
             .unwrap()
             .unwrap();
@@ -1780,7 +1780,9 @@ async fn one_shot_deadline_is_shared_by_auth_and_provider_work_and_reaps_pi() {
             call.abort();
             assert!(call.await.unwrap_err().is_cancelled());
         } else {
-            let remaining = began + Duration::from_secs(4);
+            // The deadline plus bounded cleanup fits in 19 seconds. Resetting
+            // the 16-second budget after the 8-second auth hold needs at least 24.
+            let remaining = began + COMPLETION_WAIT;
             assert_eq!(
                 tokio::time::timeout_at(remaining, &mut call)
                     .await
