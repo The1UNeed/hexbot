@@ -699,6 +699,8 @@ impl Runtime {
             "HEXBOT_SESSION_CONFIG".into(),
             dir.join("config.json").to_string_lossy().into_owned(),
         );
+        // The workdir is a user project. `--no-approve` keeps its `.pi/` settings,
+        // resources, and MCP servers out of the session whatever Pi's trust store says.
         pi.args = vec![
             "--mode".into(),
             "rpc".into(),
@@ -709,6 +711,7 @@ impl Runtime {
             "--no-extensions".into(),
             "--no-skills".into(),
             "--no-prompt-templates".into(),
+            "--no-approve".into(),
         ];
         let has_mcp = options["restricted"].is_null()
             && options["mcpServers"]
@@ -721,7 +724,6 @@ impl Runtime {
                     "builtin:mcp",
                     "--extension",
                     "builtin:codemode",
-                    "--no-approve",
                 ]
                 .map(str::to_owned),
             );
@@ -2136,6 +2138,7 @@ impl Runtime {
             "--no-extensions",
             "--no-skills",
             "--no-prompt-templates",
+            "--no-approve",
             "--no-tools",
             "--system-prompt",
             system_prompt,
