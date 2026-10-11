@@ -109,7 +109,11 @@ when it overrides the default.
 
 `status` is `idle`, `working`, `needs_you`, or `stopped` (priority in that
 reverse order), folded by the daemon from live session state, room turns,
-room `waiting.human` events, and open incidents. `status_detail` is
+room `waiting.human` events, and open incidents. Archived sections do not
+count; their state returns on unarchive. A new turn in a section resolves its
+`turn_failed` incident, and deleting a section resolves all of its incidents.
+The daemon emits `hexbot.bots.changed {name}` when a turn starts, when a
+question or approval arrives, and when one is answered. `status_detail` is
 `{text, section_id, room_id, session_id, since, action}` where `action` is
 null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
 `approval_mode` is `inherit` (the deployment setting), `manual`, `smart`

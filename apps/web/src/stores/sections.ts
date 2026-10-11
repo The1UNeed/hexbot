@@ -138,6 +138,8 @@ function mergeSection(state: SectionsState, section: Section): Partial<SectionsS
   }
 }
 
+let sectionsRequest = 0
+
 export const useSections = create<SectionsState>((set, get) => ({
   byId: {},
   error: null,
@@ -147,10 +149,16 @@ export const useSections = create<SectionsState>((set, get) => ({
   sendingTitles: {},
 
   async refresh(options = {}) {
+    const request = ++sectionsRequest
     set({ error: null, loading: true })
 
     try {
       const result = await sectionsList({ include_archived: true, ...options })
+
+      // Changes arrive in bursts; an older list must not land over a newer one.
+      if (request !== sectionsRequest) {
+        return
+      }
 
       set(state => ({
         ...indexSections(result.sections ?? [], state.sendingTitles),
@@ -165,7 +173,9 @@ export const useSections = create<SectionsState>((set, get) => ({
         loading: false
       }))
     } catch (error) {
-      set({ error: error instanceof Error ? error.message : String(error), loading: false })
+      if (request === sectionsRequest) {
+        set({ error: error instanceof Error ? error.message : String(error), loading: false })
+      }
     }
   },
 
@@ -371,10 +381,10 @@ export async function introduceBot(section: Section, bot: Pick<Bot, 'name'>): Pr
   }
 }
 
-/** Per-section state the open transcripts know before the daemon does. */
+/** Per-section state the open transcripts know before the daemon does; `idle` means open and quiet. */
 export type LiveSections = Record<string, BotStatus>
 
-/** What each open transcript says about its section: a card waiting on you, or a reply streaming. */
+/** What each open transcript says about its section: a card waiting on you, a reply streaming, or neither. */
 export function liveSectionsOf(
   bySession: Record<
     string,
@@ -398,11 +408,11 @@ export function liveSectionsOf(
         item => !item.expired && Object.keys(item.answers).length < item.questions.length
       ) || transcript.approvals.some(item => !item.decision)
 
-    if (asking) {
-      live[transcript.sectionId] = 'needs_you'
-    } else if (transcript.streamingMessageId) {
-      live[transcript.sectionId] = 'working'
-    }
+    live[transcript.sectionId] = asking
+      ? 'needs_you'
+      : transcript.streamingMessageId
+        ? 'working'
+        : 'idle'
   }
 
   return live
@@ -415,7 +425,9 @@ export function botStatus(bot: Bot | undefined): BotStatus {
 
 /**
  * A section's state: the daemon's status when its detail names this section,
- * else what the live transcript says.
+ * else what the live transcript says. An open transcript has your answer
+ * before the daemon's next word, so a section waiting on a question you just
+ * answered reads as working.
  */
 export function sectionStatusOf(
   bot: Bot | undefined,
@@ -423,15 +435,19 @@ export function sectionStatusOf(
   live: LiveSections = {}
 ): BotStatus {
   const status = botStatus(bot)
+  const own = sectionId ? live[sectionId] : undefined
 
   if (status !== 'idle' && sectionId && bot?.status_detail?.section_id === sectionId) {
-    return status
+    return status === 'needs_you' && own && own !== 'needs_you' ? 'working' : status
   }
 
-  return (sectionId && live[sectionId]) || 'idle'
+  return own ?? 'idle'
 }
 
-/** A bot's dot: the daemon's word, unless a live section is waiting on you right now. */
+/**
+ * A bot's dot: the daemon's word for the section it names, unless a live
+ * section is waiting on you right now. Archived sections no longer count.
+ */
 export function botStatusWithLive(bot: Bot, sections: Section[], live: LiveSections): BotStatus {
   const status = botStatus(bot)
 
@@ -439,11 +455,15 @@ export function botStatusWithLive(bot: Bot, sections: Section[], live: LiveSecti
     return status
   }
 
-  const own = sections.map(section => live[section.id])
+  const own = sections.filter(section => !section.archived_at).map(section => live[section.id])
 
   if (own.includes('needs_you')) {
     return 'needs_you'
   }
 
-  return status !== 'idle' ? status : own.includes('working') ? 'working' : 'idle'
+  const named = bot.status_detail?.section_id
+  const archived = sections.some(section => section.id === named && section.archived_at)
+  const reported = archived ? 'idle' : named ? sectionStatusOf(bot, named, live) : status
+
+  return reported !== 'idle' ? reported : own.includes('working') ? 'working' : 'idle'
 }

@@ -104,6 +104,49 @@ async fn active_bot_status_uses_wire_detail_and_prioritizes_waiting_section() {
     runtime.shutdown().await;
 }
 #[tokio::test]
+async fn answering_or_archiving_moves_the_bot_off_waiting() {
+    let (home, runtime, mut events) = setup();
+    let first = open(&runtime, "first").await;
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":first,"text":"wait"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    next(&mut events, "approval.request").await;
+    assert_eq!(
+        runtime.status_for_bot("alice", "owl").unwrap()["status"],
+        "needs_you"
+    );
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":first,"request_id":"a","choice":"once"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    // Clients refresh the roster on this event; it must follow the answer.
+    assert_eq!(
+        next(&mut events, "hexbot.bots.changed").await["payload"]["name"],
+        "owl"
+    );
+    assert_eq!(
+        runtime.status_for_bot("alice", "owl").unwrap()["status"],
+        "working"
+    );
+    db::open(home.path())
+        .unwrap()
+        .execute("UPDATE sections SET archived_at=1 WHERE id='first'", [])
+        .unwrap();
+    assert!(runtime.status_for_bot("alice", "owl").is_none());
+    runtime.shutdown().await;
+}
+#[tokio::test]
 async fn failed_tool_events_include_error_property_expected_by_unchanged_ui() {
     let (_home, runtime, mut events) = setup();
     let session = open(&runtime, "first").await;

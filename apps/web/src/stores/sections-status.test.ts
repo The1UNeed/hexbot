@@ -35,7 +35,35 @@ describe('live section status', () => {
     const quiet = { ...emptyTranscript('l3', 's3') }
     expect(liveSectionsOf({ l1: asking, l2: streaming, l3: quiet } as never)).toEqual({
       s1: 'needs_you',
-      s2: 'working'
+      s2: 'working',
+      s3: 'idle'
     })
+  })
+
+  it('stops waiting as soon as the open transcript has your answer', () => {
+    const waiting = {
+      name: 'a',
+      status: 'needs_you',
+      status_detail: { section_id: 's1' }
+    } as unknown as Bot
+
+    expect(sectionStatusOf(waiting, 's1')).toBe('needs_you')
+    expect(sectionStatusOf(waiting, 's1', { s1: 'needs_you' })).toBe('needs_you')
+    expect(sectionStatusOf(waiting, 's1', { s1: 'idle' })).toBe('working')
+    expect(sectionStatusOf(waiting, 's1', { s1: 'working' })).toBe('working')
+    expect(botStatusWithLive(waiting, sections, {})).toBe('needs_you')
+    expect(botStatusWithLive(waiting, sections, { s1: 'idle' })).toBe('working')
+  })
+
+  it('leaves archived sections out of the bot status', () => {
+    const waiting = {
+      name: 'a',
+      status: 'needs_you',
+      status_detail: { section_id: 's1' }
+    } as unknown as Bot
+
+    const archived = [{ archived_at: 1, id: 's1' }, { id: 's2' }] as Section[]
+    expect(botStatusWithLive(waiting, archived, {})).toBe('idle')
+    expect(botStatusWithLive({ name: 'b' } as Bot, archived, { s1: 'needs_you' })).toBe('idle')
   })
 })

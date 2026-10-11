@@ -34,6 +34,8 @@ function indexBots(bots: Bot[]): Pick<BotsState, 'byName' | 'order'> {
   return { byName, order: bots.map(bot => bot.name) }
 }
 
+let botsRequest = 0
+
 export const useBots = create<BotsState>((set, get) => ({
   byName: {},
   error: null,
@@ -42,14 +44,20 @@ export const useBots = create<BotsState>((set, get) => ({
   order: [],
 
   async refresh() {
+    const request = ++botsRequest
     set({ error: null, loading: true })
 
     try {
       const result = await botsList()
 
-      set({ ...indexBots(result.bots ?? []), loaded: true, loading: false })
+      // Status changes arrive in bursts; an older list must not land over a newer one.
+      if (request === botsRequest) {
+        set({ ...indexBots(result.bots ?? []), loaded: true, loading: false })
+      }
     } catch (error) {
-      set({ error: error instanceof Error ? error.message : String(error), loading: false })
+      if (request === botsRequest) {
+        set({ error: error instanceof Error ? error.message : String(error), loading: false })
+      }
     }
   },
 

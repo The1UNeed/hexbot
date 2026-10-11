@@ -320,7 +320,8 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
         .take(2)
         .cloned()
         .collect::<Vec<_>>();
-    let incident=rows(&db::open(home)?,"SELECT * FROM bot_incidents WHERE bot=? AND resolved_at IS NULL ORDER BY created_at DESC LIMIT 1",&[&name])?.into_iter().next();
+    // An incident in an archived section waits there; it no longer stops the bot.
+    let incident=rows(&db::open(home)?,"SELECT * FROM bot_incidents i WHERE bot=? AND resolved_at IS NULL AND NOT EXISTS(SELECT 1 FROM sections WHERE id=i.section_id AND archived_at IS NOT NULL) ORDER BY created_at DESC LIMIT 1",&[&name])?.into_iter().next();
     let (mut status, mut detail) = ("idle", Value::Null);
     if let Some(i) = incident {
         status = "stopped";
@@ -941,6 +942,11 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<()
         let mut conn = db::open(home)?;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM sections WHERE id=?", [id])?;
+        // Nothing is left to retry.
+        tx.execute(
+            "UPDATE bot_incidents SET resolved_at=? WHERE section_id=? AND resolved_at IS NULL",
+            params![now(), id],
+        )?;
         tx.execute(
             "UPDATE bots SET last_activity_at=? WHERE name=?",
             params![now(), row["bot"].as_str()],

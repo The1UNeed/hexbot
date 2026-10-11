@@ -424,6 +424,32 @@ fn incidents_take_precedence_and_clear_status_resolves_them() {
     );
     assert_eq!(cleared["bot"]["status"], "idle");
 }
+#[test]
+fn incidents_in_archived_or_deleted_sections_do_not_stop_the_bot() {
+    let home = setup();
+    let h = home.path();
+    let id = create(h)["section"]["id"].as_str().unwrap().to_owned();
+    db::open(h).unwrap().execute("INSERT INTO bot_incidents(id,bot,section_id,kind,text,created_at) VALUES ('incident','research-owl',?,'turn_failed','Provider disconnected',1)", [&id]).unwrap();
+    assert_eq!(
+        catalog::bot(h, "alice", "research-owl").unwrap()["status"],
+        "stopped"
+    );
+    call(h, "alice", "hexbot.sections.archive", json!({"id":id}));
+    assert_eq!(
+        catalog::bot(h, "alice", "research-owl").unwrap()["status"],
+        "idle"
+    );
+    call(h, "alice", "hexbot.sections.unarchive", json!({"id":id}));
+    assert_eq!(
+        catalog::bot(h, "alice", "research-owl").unwrap()["status"],
+        "stopped"
+    );
+    call(h, "alice", "hexbot.sections.delete", json!({"id":id}));
+    assert_eq!(
+        catalog::bot(h, "alice", "research-owl").unwrap()["status"],
+        "idle"
+    );
+}
 
 #[test]
 fn create_accepts_explicit_empty_tool_selection_before_registry_insert() {

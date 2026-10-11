@@ -1968,6 +1968,8 @@ impl Runtime {
                         state.pending.remove(id);
                     }
                     self.emit(&s, "status.update", resumed);
+                    self.events
+                        .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
                     return Ok(json!({"resolved":true}));
                 }
                 s.process
@@ -1976,6 +1978,9 @@ impl Runtime {
                     .map_err(pi_error)?;
                 s.state.lock().unwrap().pending.remove(id);
                 self.emit(&s, "status.update", resumed);
+                // The roster stops showing Waiting as soon as the answer lands.
+                self.events
+                    .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
                 Ok(if method == "approval.respond" {
                     json!({"resolved":true})
                 } else {
@@ -2036,11 +2041,25 @@ impl Runtime {
                     .busy
                     .then(|| (session.clone(), !state.pending.is_empty()))
             })
-            .max_by_key(|(session, waiting)| (*waiting, session.stored.clone()));
+            .collect::<Vec<_>>();
         drop(sessions);
-        let (session, waiting) = active?;
-        let context = db::open(&self.home)
-            .ok()
+        let conn = db::open(&self.home).ok();
+        // An archived section may still run or wait, but it no longer speaks for the bot.
+        let archived = |stored: &str| {
+            conn.as_ref().is_some_and(|conn| {
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sections WHERE id=? AND archived_at IS NOT NULL)",
+                    [stored],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false)
+            })
+        };
+        let (session, waiting) = active
+            .into_iter()
+            .filter(|(session, _)| !archived(&session.stored))
+            .max_by_key(|(session, waiting)| (*waiting, session.stored.clone()))?;
+        let context = conn
             .and_then(|conn| {
                 conn.query_row(
                     "SELECT (SELECT id FROM sections WHERE id=?1),(SELECT room_id FROM room_sessions WHERE stored_session_id=?1),(SELECT MAX(started_at) FROM room_turns WHERE bot=?2 AND status='running')",
@@ -3112,12 +3131,19 @@ impl Runtime {
         }
         match event["type"].as_str().unwrap_or("") {
             "agent_start" => {
+                // A new turn answers the last one's failure; another failure records it again.
+                let _ = crate::settings::resolve_incidents(
+                    &self.home,
+                    &json!({"section_id":s.stored,"kind":"turn_failed"}),
+                );
                 self.emit(s, "message.start", json!({}));
                 self.emit(
                     s,
                     "status.update",
                     json!({"kind":"working","text":"Working"}),
                 );
+                self.events
+                    .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
             }
             "message_update" => {
                 let update = &event["assistantMessageEvent"];
