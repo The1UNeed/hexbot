@@ -52,6 +52,19 @@ const waitingBot = (session_id: string | null = 's1') =>
   }) as Bot
 
 describe('accepted request settlement', () => {
+  it('projects only confirmed cards for the supplied live session, even without old roster detail', () => {
+    const state = reduceChat(emptyChat(), question())
+    const idle = { ...waitingBot(), status: 'idle', status_detail: null } as Bot
+    expect(settledBot(idle, state, 's1', 'section')).toMatchObject({
+      status: 'needs_you',
+      status_detail: { session_id: 's1', section_id: 'section', room_id: null, action: null }
+    })
+    expect(settledBot(idle, state, 'other')).toBe(idle)
+    expect(settledBot(idle, state, null)).toBe(idle)
+    const stopped = { ...waitingBot(), status: 'stopped' } as Bot
+    expect(settledBot(stopped, state, 's1')).toBe(stopped)
+  })
+
   it('keeps sibling cards and their wait through a generic Working update', () => {
     let state = reduceChat(reduceChat(emptyChat(), approval()), question())
     state = reduceChat(

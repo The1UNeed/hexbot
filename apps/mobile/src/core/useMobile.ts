@@ -44,7 +44,7 @@ export type { ChatRoute }
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 /** A room opens at its latest events and pages back this many at a time. */
 const ROOM_PAGE = 200
-type BotReadContext = { sessionId: string; sectionId: string; revision: number }
+type BotReadContext = { sessionId: string; sectionId: string; revision: number; archive?: boolean }
 const sameBot = (left: Bot | undefined, right: Bot) =>
   left?.name === right.name &&
   left.owner_id === right.owner_id &&
@@ -64,6 +64,8 @@ export function useMobile() {
   botsRef.current = bots
   const [rooms, setRooms] = useState<Room[]>([])
   const [sections, setSections] = useState<Section[]>([])
+  const sectionsRef = useRef(sections)
+  sectionsRef.current = sections
   const [info, setInfo] = useState<DaemonInfo | null>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
   const [user, setUser] = useState<CurrentUser | null>(null)
@@ -94,42 +96,105 @@ export function useMobile() {
   const pendingBotStatus = useRef(new Map<string, BotReadContext & { next?: BotReadContext }>())
   /** Definitive deletions survive unavailable lists, but belong to this daemon epoch. */
   const deletedSections = useRef(new Map<string, { request: number; active: boolean }>())
-  const rpc: Rpc = useCallback(async (method, params = {}) => {
-    const current = session.current
-    const epoch = replayEpoch.current
-    if (!current || current.client.connectionState !== 'open')
-      throw new Error('Connect to a daemon first.')
-    let value: unknown
-    try {
-      value = await current.client.request(method, params)
-    } catch (error) {
-      if (
-        (method === 'attachments.clear' || method.startsWith('hexbot.jobs.')) &&
-        /unknown method|method not found|unsupported method|not implemented/i.test(errorText(error))
-      )
-        throw new Error('This daemon is older than this app. Update it on that computer.')
-      throw error
-    }
-    if (session.current !== current)
-      throw new Error('The selected daemon changed. Retry on this daemon.')
-    if (
-      replayEpoch.current !== epoch &&
-      ['hexbot.sections.delete', 'approval.respond', 'clarify.respond'].includes(method)
-    )
-      throw new Error('The daemon restarted. Retry on this daemon.')
-    if (method === 'hexbot.sections.delete') {
-      if (
-        mounted.current &&
-        typeof params.id === 'string' &&
-        (value as { deleted?: boolean })?.deleted === true
-      )
-        eventRef.current({
-          type: 'hexbot.sections.changed',
-          payload: { id: params.id, deleted: true }
-        })
-    }
-    return value as never
+  /** Exact accepted archive fields survive an older list or open response. */
+  const sectionArchives = useRef(
+    new Map<string, { request: number; bot: string; archived_at: number | null }>()
+  )
+  const archiveSection = useCallback((section: Section): Section => {
+    const saved = sectionArchives.current.get(section.id)
+    return saved?.bot === section.bot ? { ...section, archived_at: saved.archived_at } : section
   }, [])
+  const acceptArchive = useCallback((section: Section, request: number) => {
+    if (
+      !section.id ||
+      !section.bot ||
+      !(section.archived_at === null || typeof section.archived_at === 'number') ||
+      deletedSections.current.get(section.id)?.active ||
+      request < acceptedRefresh.current ||
+      request < (sectionArchives.current.get(section.id)?.request ?? 0)
+    )
+      return
+    sectionArchives.current.set(section.id, {
+      request,
+      bot: section.bot,
+      archived_at: section.archived_at
+    })
+    const before = sectionsRef.current
+    const rows = before.map(row =>
+      row.id === section.id && row.bot === section.bot && row.archived_at !== section.archived_at
+        ? { ...row, archived_at: section.archived_at }
+        : row
+    )
+    if (rows.some((row, i) => row !== before[i])) {
+      sectionsRef.current = rows
+      setSections(rows)
+    }
+    const here = routeRef.current
+    if (
+      here?.kind === 'section' &&
+      here.section.id === section.id &&
+      here.bot.name === section.bot &&
+      here.section.archived_at !== section.archived_at
+    ) {
+      const next = { ...here, section: { ...here.section, archived_at: section.archived_at } }
+      routeRef.current = next
+      setRoute(next)
+    }
+    return true
+  }, [])
+  const rpc: Rpc = useCallback(
+    async (method, params = {}) => {
+      const current = session.current
+      const epoch = replayEpoch.current
+      const archive = method === 'hexbot.sections.archive' || method === 'hexbot.sections.unarchive'
+      const request = archive ? ++refreshSequence.current : 0
+      if (!current || current.client.connectionState !== 'open')
+        throw new Error('Connect to a daemon first.')
+      let value: unknown
+      try {
+        value = await current.client.request(method, params)
+      } catch (error) {
+        if (
+          (method === 'attachments.clear' || method.startsWith('hexbot.jobs.')) &&
+          /unknown method|method not found|unsupported method|not implemented/i.test(
+            errorText(error)
+          )
+        )
+          throw new Error('This daemon is older than this app. Update it on that computer.')
+        throw error
+      }
+      if (session.current !== current)
+        throw new Error('The selected daemon changed. Retry on this daemon.')
+      if (
+        replayEpoch.current !== epoch &&
+        (archive ||
+          ['hexbot.sections.delete', 'approval.respond', 'clarify.respond'].includes(method))
+      )
+        throw new Error('The daemon restarted. Retry on this daemon.')
+      if (method === 'hexbot.sections.delete') {
+        if (
+          mounted.current &&
+          typeof params.id === 'string' &&
+          (value as { deleted?: boolean })?.deleted === true
+        )
+          eventRef.current({
+            type: 'hexbot.sections.changed',
+            payload: { id: params.id, deleted: true }
+          })
+      }
+      if (archive && mounted.current) {
+        const section = (value as { section?: Section })?.section
+        if (section && section.id === params.id && section.bot && acceptArchive(section, request)) {
+          eventRef.current({
+            type: 'hexbot.sections.changed',
+            payload: { id: section.id, bot: section.bot }
+          })
+        }
+      }
+      return value as never
+    },
+    [acceptArchive]
+  )
   // Forgotten when the lists reload or the daemon changes, so new keys and models show.
   const [models] = useState(() => modelLists(provider => providerModels(rpc, provider)))
   // Each clear hands out a new reader, so a model line already on screen loads again.
@@ -203,10 +268,18 @@ export function useMobile() {
     setBots(nextBots)
     setChat(c => rosterChat(c, rosterRevision.current))
     setRooms(r.rooms)
-    const nextSections = s.sections.filter(section => {
-      const deleted = deletedSections.current.get(section.id)
-      return !deleted || (!deleted.active && deleted.request < request)
-    })
+    const nextSections = s.sections
+      .filter(section => {
+        const deleted = deletedSections.current.get(section.id)
+        return !deleted || (!deleted.active && deleted.request < request)
+      })
+      .map(section => {
+        const saved = sectionArchives.current.get(section.id)
+        if (saved && saved.request > request) return archiveSection(section)
+        sectionArchives.current.delete(section.id)
+        return section
+      })
+    sectionsRef.current = nextSections
     setSections(nextSections)
     setInfo(i)
     setSettings(config)
@@ -218,7 +291,7 @@ export function useMobile() {
     if (!next) return leave()
     routeRef.current = next
     setRoute(next)
-  }, [rpc, clearModels, leave])
+  }, [rpc, clearModels, leave, archiveSection])
   const syncRoom = useCallback(
     async (id: string) => {
       const sequence = ++openSequence.current
@@ -311,7 +384,7 @@ export function useMobile() {
         const restored = { ...replay.state, error: failure }
         loadingEvents.current = null
         setChat(rosterChat(restored, rosterRevision.current))
-        const newRoute: ChatRoute = { ...target, section: result.section }
+        const newRoute: ChatRoute = { ...target, section: archiveSection(result.section) }
         routeRef.current = newRoute
         setRoute(newRoute)
         await rpc('hexbot.sections.mark_read', { id: target.section.id })
@@ -320,18 +393,29 @@ export function useMobile() {
         if (sequence === openSequence.current) loadingEvents.current = null
       }
     }
-  }, [rpc, syncRoom])
+  }, [rpc, syncRoom, archiveSection])
   const syncChatRef = useRef(syncChat)
   syncChatRef.current = syncChat
   const refreshRef = useRef(refresh)
   refreshRef.current = refresh
   const verifyBotStatus = useCallback(
-    async function verify(name: string, sessionId: string, sectionId: string, receipt: number) {
+    async function verify(
+      name: string,
+      sessionId: string,
+      sectionId: string,
+      receipt: number,
+      archive = false
+    ) {
       const cached = botsRef.current.find(bot => bot.name === name)
       if (!cached) return
       const queued = pendingBotStatus.current.get(name)
       if (queued) {
-        queued.next = { sessionId, sectionId, revision: receipt }
+        queued.next = {
+          sessionId,
+          sectionId,
+          revision: receipt,
+          archive: archive || queued.next?.archive || queued.archive
+        }
         return
       }
       const current = session.current
@@ -339,34 +423,51 @@ export function useMobile() {
       const change = botStatusChanges.current.get(name)
       const request = ++refreshSequence.current
       const revision = Math.max(receipt, eventRevision.current)
-      const pending: BotReadContext & { next?: BotReadContext } = { sessionId, sectionId, revision }
+      const pending: BotReadContext & { next?: BotReadContext } = {
+        sessionId,
+        sectionId,
+        revision,
+        archive
+      }
       pendingBotStatus.current.set(name, pending)
+      const stale = () =>
+        !mounted.current ||
+        session.current !== current ||
+        replayEpoch.current !== epoch ||
+        pendingBotStatus.current.get(name) !== pending ||
+        botStatusChanges.current.get(name) !== change ||
+        request < acceptedRefresh.current ||
+        request < (botStatusReads.current.get(name)?.request ?? 0) ||
+        !sameBot(
+          botsRef.current.find(bot => bot.name === name),
+          cached
+        )
       try {
-        const result = await rpc<{ bot: Bot }>('hexbot.bots.get', { name })
-        if (
-          !mounted.current ||
-          session.current !== current ||
-          replayEpoch.current !== epoch ||
-          pendingBotStatus.current.get(name) !== pending ||
-          botStatusChanges.current.get(name) !== change ||
-          request < acceptedRefresh.current ||
-          request < (botStatusReads.current.get(name)?.request ?? 0) ||
-          !sameBot(result.bot, cached) ||
-          !sameBot(
-            botsRef.current.find(bot => bot.name === name),
-            cached
-          ) ||
-          !['working', 'idle', 'needs_you', 'stopped'].includes(String(result.bot.status))
-        )
-          return
-        botStatusReads.current.set(name, { request, revision })
-        const nextBots = botsRef.current.map(bot =>
-          bot.name === name ? statusOf(bot, result.bot) : bot
-        )
-        botsRef.current = nextBots
-        setBots(nextBots)
-      } catch {
-        // An unavailable verification leaves the cached roster authoritative.
+        await Promise.allSettled([
+          rpc<{ bot: Bot }>('hexbot.bots.get', { name }).then(result => {
+            if (
+              stale() ||
+              !sameBot(result.bot, cached) ||
+              !['working', 'idle', 'needs_you', 'stopped'].includes(String(result.bot.status))
+            )
+              return
+            botStatusReads.current.set(name, { request, revision })
+            const nextBots = botsRef.current.map(bot =>
+              bot.name === name ? statusOf(bot, result.bot) : bot
+            )
+            botsRef.current = nextBots
+            setBots(nextBots)
+          }),
+          archive
+            ? rpc<{ sections: Section[] }>('hexbot.sections.list', {
+                ...SECTIONS_QUERY,
+                bot: name
+              }).then(result => {
+                if (stale()) return
+                for (const row of result.sections) if (row.bot === name) acceptArchive(row, request)
+              })
+            : Promise.resolve()
+        ])
       } finally {
         if (pendingBotStatus.current.get(name) === pending) {
           pendingBotStatus.current.delete(name)
@@ -376,11 +477,17 @@ export function useMobile() {
             session.current === current &&
             replayEpoch.current === epoch
           )
-            void verify(name, pending.next.sessionId, pending.next.sectionId, pending.next.revision)
+            void verify(
+              name,
+              pending.next.sessionId,
+              pending.next.sectionId,
+              pending.next.revision,
+              pending.next.archive
+            )
         }
       }
     },
-    [rpc]
+    [rpc, acceptArchive]
   )
   const onEvent = useCallback(
     (event: GatewayEvent) => {
@@ -397,29 +504,11 @@ export function useMobile() {
           botStatusReads.current.clear()
           botStatusChanges.current.clear()
           pendingBotStatus.current.clear()
+          sectionArchives.current.clear()
           for (const deleted of deletedSections.current.values()) deleted.active = false
           setBots(rows => [...rows])
-          // Keep buffered turn lifecycle, but discard proof from the previous daemon process.
-          loadingEvents.current =
-            loadingEvents.current
-              ?.filter(
-                buffered =>
-                  !['gateway.ready', 'approval.resolved', 'clarify.resolved'].includes(
-                    buffered.type
-                  ) &&
-                  !(
-                    buffered.type === 'hexbot.sections.changed' &&
-                    (buffered.payload as { deleted?: boolean })?.deleted === true
-                  )
-              )
-              .map(buffered =>
-                buffered.type === 'message.start'
-                  ? {
-                      ...buffered,
-                      payload: { ...(buffered.payload ?? {}), retry_resolved: false }
-                    }
-                  : buffered
-              ) ?? null
+          // Events from the previous process cannot restore cards or status in a fresh snapshot.
+          if (loadingEvents.current) loadingEvents.current = []
         }
         replayEpoch.current = p.replay_epoch
       }
@@ -439,7 +528,9 @@ export function useMobile() {
               bot.status_detail?.action?.kind === 'retry'
           )
           deletedSections.current.set(p.id, { request: ++refreshSequence.current, active: true })
-          setSections(rows => rows.filter(section => section.id !== p.id))
+          sectionArchives.current.delete(p.id)
+          sectionsRef.current = sectionsRef.current.filter(section => section.id !== p.id)
+          setSections(sectionsRef.current)
           setBots(rows => [...rows])
           if (routeRef.current?.kind === 'section' && routeRef.current.section.id === p.id) leave()
         }
@@ -497,6 +588,35 @@ export function useMobile() {
           p.id as string,
           (event as GatewayEvent & { mobileRevision: number }).mobileRevision
         )
+      if (
+        event.type === 'hexbot.sections.changed' &&
+        p.deleted !== true &&
+        typeof p.id === 'string' &&
+        p.id
+      ) {
+        const name =
+          typeof p.bot === 'string'
+            ? p.bot
+            : (sectionsRef.current.find(row => row.id === p.id)?.bot ??
+              (target?.kind === 'section' && target.section.id === p.id
+                ? target.bot.name
+                : undefined) ??
+              botsRef.current.find(bot => bot.status_detail?.section_id === p.id)?.name)
+        if (name) {
+          const revision = (event as GatewayEvent & { mobileRevision: number }).mobileRevision
+          botStatusChanges.current.set(
+            name,
+            Math.max(botStatusChanges.current.get(name) ?? 0, revision)
+          )
+          void verifyBotStatus(
+            name,
+            '',
+            p.id,
+            (event as GatewayEvent & { mobileRevision: number }).mobileRevision,
+            true
+          )
+        }
+      }
       const canonical =
         event.type === 'approval.resolved'
           ? typeof p.choice === 'string' && ['once', 'session', 'deny'].includes(p.choice)
@@ -609,6 +729,7 @@ export function useMobile() {
       setBots([])
       setRooms([])
       setSections([])
+      sectionsRef.current = []
       setInfo(null)
       setSettings(null)
       setUser(null)
@@ -623,6 +744,7 @@ export function useMobile() {
       botStatusChanges.current.clear()
       pendingBotStatus.current.clear()
       deletedSections.current.clear()
+      sectionArchives.current.clear()
       routeRef.current = null
       liveId.current = null
       setRoute(null)
@@ -857,14 +979,19 @@ export function useMobile() {
     eventRef.current(clarifyResponse(pending, questionId, answer, result))
   }
 
-  const deletedRetryBot = (bot: Bot, siblings: TurnState[] = []): Bot => {
+  const inactiveRetryBot = (bot: Bot, siblings: TurnState[] = []): Bot => {
     const detail = bot.status_detail
+    const section = sectionsRef.current.find(
+      row => row.id === detail?.section_id && row.bot === bot.name
+    )
+    const saved = detail?.section_id && sectionArchives.current.get(detail.section_id)
+    const archived = saved && saved.bot === bot.name ? saved.archived_at : section?.archived_at
     if (
       bot.status !== 'stopped' ||
       detail?.action?.kind !== 'retry' ||
       detail.room_id ||
       !detail.section_id ||
-      !deletedSections.current.get(detail.section_id)?.active
+      (!deletedSections.current.get(detail.section_id)?.active && !archived)
     )
       return bot
     const failure = siblings.find(state => state.error)?.error
@@ -889,26 +1016,32 @@ export function useMobile() {
         : null
     }
   }
-  const projectBot = (bot: Bot, state: TurnState, sessionId: string | null, sectionId?: string) => {
+  const projectBot = (
+    bot: Bot,
+    state: TurnState,
+    sessionId: string | null,
+    section?: Section,
+    roomId?: string
+  ) => {
+    if (section && archiveSection(section).archived_at) return inactiveRetryBot(bot)
     const read = botStatusReads.current.get(bot.name)
     const current = read ? rosterChat({ ...emptyChat(), ...state }, read.revision) : state
-    return settledBot(deletedRetryBot(bot, [current]), current, sessionId, sectionId)
+    return settledBot(inactiveRetryBot(bot, [current]), current, sessionId, section?.id, roomId)
   }
   const visibleBots = bots.map(bot => {
     if (route?.kind === 'section' && route.bot.name === bot.name)
-      return projectBot(bot, chat, liveId.current, route.section.id)
-    const turn =
-      route?.kind === 'room' &&
-      bot.status_detail?.session_id &&
-      chat.turns[bot.status_detail.session_id]
+      return projectBot(bot, chat, liveId.current, route.section)
     if (route?.kind === 'room') {
       const siblings = Object.values(chat.turns).filter(turn => turn.bot === bot.name)
-      const neutral = deletedRetryBot(bot, siblings)
-      if (neutral !== bot) return neutral
+      const neutral = inactiveRetryBot(bot, siblings)
+      const pending = siblings.find(turn =>
+        [...turn.approvals, ...turn.questions].some(card => card.sessionId === turn.sessionId)
+      )
+      const turn =
+        pending ?? siblings.find(turn => turn.sessionId === bot.status_detail?.session_id)
+      return turn ? projectBot(neutral, turn, turn.sessionId, undefined, route.room.id) : neutral
     }
-    return turn && turn.bot === bot.name
-      ? projectBot(bot, turn, turn.sessionId)
-      : deletedRetryBot(bot)
+    return inactiveRetryBot(bot)
   })
   const cachedRouteBot = route?.kind === 'section' && bots.find(bot => sameBot(bot, route.bot))
   const visibleRoute =
@@ -919,7 +1052,7 @@ export function useMobile() {
             cachedRouteBot ? statusOf(route.bot, cachedRouteBot) : route.bot,
             chat,
             liveId.current,
-            route.section.id
+            route.section
           )
         }
       : route

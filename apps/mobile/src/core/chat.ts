@@ -60,16 +60,41 @@ const resumeAnswered = (state: ChatState, accepted: boolean, revision: number): 
     ? { ...state, waiting: false, resumedWaiting: true, waitingRevision: revision, activity: '' }
     : state
 
-/** Accepted answers and retry starts can supersede only their exact roster cause. */
+/** Confirmed cards win; answers and retry starts supersede only their exact roster cause. */
 export function settledBot(
   bot: Bot,
   state: TurnState,
   sessionId: string | null,
-  sectionId?: string | null
+  sectionId?: string | null,
+  roomId?: string | null
 ): Bot {
   const detail = bot.status_detail
-  if (!sessionId || !detail) return bot
-  const pending = state.approvals.length > 0 || state.questions.length > 0
+  if (!sessionId) return bot
+  const pending = [...state.approvals, ...state.questions].some(
+    card => card.sessionId === sessionId
+  )
+  if (pending && bot.status !== 'stopped') {
+    if (
+      bot.status === 'needs_you' &&
+      detail?.session_id === sessionId &&
+      (!sectionId || detail.section_id === sectionId) &&
+      (!roomId || detail.room_id === roomId)
+    )
+      return bot
+    return {
+      ...bot,
+      status: 'needs_you',
+      status_detail: {
+        session_id: sessionId,
+        section_id: sectionId ?? null,
+        room_id: roomId ?? null,
+        since: detail?.since ?? 0,
+        text: state.activity,
+        action: null
+      }
+    }
+  }
+  if (!detail) return bot
   const retried =
     bot.status === 'stopped' &&
     sectionId &&

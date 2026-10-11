@@ -151,6 +151,12 @@ active. A non-idle bot reply must not erase status evidence for a
 sibling session. An accepted Idle reply can retire the bot's older live
 status evidence. Pending questions and approvals remain Waiting through an
 unrelated Working event; answers settle only their matching request IDs.
+Mobile projects confirmed cards from the open conversation and every matching
+bot turn in the current room as Needs you, below Stopped. Archived private
+cards do not count. It reads bot status and section archive fields
+independently when a section changes, so an unrelated roster request failure
+does not retain an old Retry status. Local archive and restore replies update
+the archive field without replacing newer section edits.
 Bot list, get and update replies include the daemon's live status. Older
 daemons can return catalog-only Idle from an update, so a settings save alone
 must not retire confirmed pending cards or a live Working status. A later

@@ -1307,6 +1307,8 @@ describe('mobile status proof across daemon epochs', () => {
         expect(render().bots[0].status).toBe(epoch === 'first' ? 'working' : 'needs_you')
         const state = place === 'private' ? render().chat : render().chat.turns.s1
         expect(state.resumedWaiting).toBe(epoch === 'first')
+        expect(state.approvals).toEqual([])
+        expect(state.questions).toEqual([])
       }
     )
   }
@@ -1413,6 +1415,384 @@ describe('mobile status proof across daemon epochs', () => {
       )
     ).toBe(true)
     expect(render().chat.approvals.map(card => card.sessionId)).toEqual(['s3'])
+  })
+})
+
+describe('mobile confirmed card status', () => {
+  const request = (kind: string, sessionId = 's1') =>
+    kind === 'approval'
+      ? wire('approval.request', { request_id: 'card', choices: ['once'] }, sessionId)
+      : wire('clarify.request', { request_id: 'card', question: 'Where?' }, sessionId)
+
+  it.each([
+    ['idle', 'approval'],
+    ['idle', 'question'],
+    ['working', 'approval'],
+    ['working', 'question']
+  ])(
+    'projects a current card over cached %s for %s without a roster read',
+    async (cached, kind) => {
+      const current = { ...bot, status: cached, status_detail: null } as Bot
+      await unopened(current)
+      await render().openSection(current, section())
+      hooks.clients[0].emit(request(kind))
+      expect(render().bots[0].status).toBe('needs_you')
+      expect(status()).toBe('needs_you')
+      expect(render().bots[0].status_detail).toMatchObject({
+        session_id: 's1',
+        section_id: 'section',
+        room_id: null,
+        action: null
+      })
+    }
+  )
+
+  it('keeps an authoritative failure above a current human card', async () => {
+    await openStopped()
+    hooks.clients[0].emit(request('approval'))
+    expect(render().chat.approvals).toHaveLength(1)
+    expect(render().bots[0].status).toBe('stopped')
+    expect(status()).toBe('stopped')
+  })
+
+  it.each(['approval', 'question'])(
+    'folds another current same-bot room %s independently of the named session',
+    async kind => {
+      const room = {
+        id: 'room',
+        members: [],
+        turns: [
+          { bot: 'alpha', live_session_id: 's1' },
+          { bot: 'alpha', live_session_id: 's2' }
+        ]
+      } as unknown as Room
+      await unopened(bot)
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.rooms.get') return { room }
+        if (method === 'hexbot.rooms.log') return { events: [] }
+        if (method === 'hexbot.bots.get') throw new Error('Verification unavailable')
+        return original(method, params)
+      }
+      await render().openRoom(room)
+      hooks.clients[0].emit(request('approval'))
+      hooks.clients[0].emit(request(kind, 's2'))
+      hooks.clients[0].emit(wire('approval.resolved', { request_id: 'card', choice: 'once' }))
+      expect(render().chat.turns.s1.approvals).toEqual([])
+      expect(
+        render().chat.turns.s2.approvals.length + render().chat.turns.s2.questions.length
+      ).toBe(1)
+      expect(render().bots[0].status).toBe('needs_you')
+      expect(render().bots[0].status_detail).toMatchObject({
+        session_id: 's2',
+        section_id: null,
+        room_id: 'room',
+        action: null
+      })
+    }
+  )
+
+  it('keeps room cards bound to their bot and retains stopped priority', async () => {
+    const current = { ...bot, status: 'idle', status_detail: null } as Bot
+    const room = {
+      id: 'room',
+      members: [],
+      turns: [{ bot: 'beta', live_session_id: 's2' }]
+    } as unknown as Room
+    await unopened(current)
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') return { bots: [current, { ...stoppedBot, name: 'beta' }] }
+      if (method === 'hexbot.rooms.get') return { room }
+      if (method === 'hexbot.rooms.log') return { events: [] }
+      return original(method, params)
+    }
+    await render().refresh()
+    await render().openRoom(room)
+    hooks.clients[0].emit(request('question', 's2'))
+    expect(render().bots.map(row => row.status)).toEqual(['idle', 'stopped'])
+  })
+})
+
+describe('mobile archive status reconciliation', () => {
+  const changed = {
+    type: 'hexbot.sections.changed',
+    payload: { id: 'section', bot: 'alpha', name: 'alpha' }
+  }
+  async function prepare(restore: boolean) {
+    const current = restore
+      ? ({ ...stoppedBot, status: 'idle', status_detail: null } as Bot)
+      : stoppedBot
+    await unopened(current)
+    const original = hooks.handler
+    const accepted = restore
+      ? stoppedBot
+      : ({ ...stoppedBot, status: 'idle', status_detail: null } as Bot)
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.rooms.list') throw new Error('Rooms unavailable')
+      if (method === 'hexbot.bots.get') return { bot: accepted }
+      if (method === 'hexbot.sections.archive' || method === 'hexbot.sections.unarchive')
+        return { section: { ...section(), archived_at: restore ? null : 1 } }
+      return original(method, params)
+    }
+    return restore ? 'stopped' : 'idle'
+  }
+
+  for (const restore of [false, true]) {
+    it.each(['native', 'known'])(
+      'reconciles ' +
+        (restore ? 'restore' : 'archive') +
+        ' from a %s changed event when another list fails',
+      async shape => {
+        const expected = await prepare(restore)
+        hooks.clients[0].emit({
+          type: 'hexbot.sections.changed',
+          payload:
+            shape === 'native' ? { id: 'section', bot: 'alpha', name: 'alpha' } : { id: 'section' }
+        })
+        await flush()
+        await expect(render().refresh()).rejects.toThrow('Rooms unavailable')
+        expect(render().bots[0].status).toBe(expected)
+      }
+    )
+
+    it(
+      'reconciles an accepted local ' +
+        (restore ? 'restore' : 'archive') +
+        ' without a broadcast or bulk refresh',
+      async () => {
+        const expected = await prepare(restore)
+        await render().rpc(restore ? 'hexbot.sections.unarchive' : 'hexbot.sections.archive', {
+          id: 'section'
+        })
+        await flush()
+        expect(render().bots[0].status).toBe(expected)
+      }
+    )
+  }
+
+  it.each(['bot', 'section'])(
+    'applies the accepted %s read without waiting on its companion read',
+    async first => {
+      await openStopped()
+      const held = deferred()
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.bots.get')
+          return first === 'bot'
+            ? { bot: { ...stoppedBot, status: 'idle', status_detail: null } }
+            : held.promise
+        if (method === 'hexbot.sections.list' && params.bot)
+          return first === 'section'
+            ? { sections: [{ ...section(), archived_at: 1 }] }
+            : held.promise
+        return original(method, params)
+      }
+      hooks.clients[0].emit(changed)
+      await flush()
+      expect(render().bots[0].status).toBe('idle')
+      const current = render().route
+      if (first === 'section')
+        expect(current?.kind === 'section' && current.section.archived_at).toBe(1)
+      held.resolve(
+        first === 'bot'
+          ? { sections: [{ ...section(), archived_at: 1 }] }
+          : { bot: { ...stoppedBot, status: 'idle', status_detail: null } }
+      )
+      await flush()
+    }
+  )
+
+  it.each(['remote', 'local'])(
+    'excludes an archived private card after %s confirmation and restores its failure in reverse',
+    async path => {
+      await openStopped()
+      hooks.clients[0].emit(approval)
+      let archived = true
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.rooms.list') throw new Error('Rooms unavailable')
+        if (method === 'hexbot.bots.get')
+          return {
+            bot: archived ? { ...stoppedBot, status: 'idle', status_detail: null } : stoppedBot
+          }
+        if (method === 'hexbot.sections.list' && params.bot)
+          return { sections: [{ ...section(), archived_at: archived ? 1 : null }] }
+        if (method === 'hexbot.sections.archive' || method === 'hexbot.sections.unarchive')
+          return { section: { ...section(), archived_at: archived ? 1 : null } }
+        return original(method, params)
+      }
+      if (path === 'remote') hooks.clients[0].emit(changed)
+      else await render().rpc('hexbot.sections.archive', { id: 'section' })
+      await flush()
+      expect(render().bots[0].status).toBe('idle')
+      expect(status()).toBe('idle')
+      expect(render().chat.approvals).toHaveLength(1)
+      archived = false
+      if (path === 'remote') hooks.clients[0].emit(changed)
+      else await render().rpc('hexbot.sections.unarchive', { id: 'section' })
+      await flush()
+      expect(render().bots[0].status).toBe('stopped')
+      expect(status()).toBe('stopped')
+    }
+  )
+
+  it('retains a newer restore field and profile edit through a delayed archive reply and older full snapshot', async () => {
+    await openStopped()
+    const held = deferred()
+    const snapshots = holdRefreshes()
+    const older = render().refresh()
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.sections.archive') return held.promise
+      if (method === 'hexbot.sections.unarchive')
+        return { section: { ...section(), archived_at: null, title: 'Old reply title' } }
+      if (method === 'hexbot.sections.list' && params.bot) throw new Error('Field unavailable')
+      if (method === 'hexbot.bots.get') throw new Error('Bot unavailable')
+      return original(method, params)
+    }
+    const archiving = render().rpc('hexbot.sections.archive', { id: 'section' })
+    await render().rpc('hexbot.sections.unarchive', { id: 'section' })
+    held.resolve({ section: { ...section(), archived_at: 1 } })
+    await archiving
+    snapshots[0].resolve({ bots: [stoppedBot] })
+    await older
+    const current = render().route
+    expect(current?.kind === 'section' && current.section.archived_at).toBeNull()
+    expect(render().sections[0]).toMatchObject({ archived_at: null, title: 'Snapshot 0' })
+  })
+
+  it('keeps an unchanged archive reply from blocking the full roster’s route rebind', async () => {
+    await openStopped()
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.sections.unarchive')
+        return { section: { ...section(), archived_at: null } }
+      if (method === 'hexbot.sections.list' && params.bot)
+        return { sections: [{ ...section(), archived_at: null }] }
+      if (method === 'hexbot.bots.get') return { bot: stoppedBot }
+      return original(method, params)
+    }
+    await render().rpc('hexbot.sections.unarchive', { id: 'section' })
+    await flush()
+    const snapshots = holdRefreshes()
+    const full = render().refresh()
+    hooks.clients[0].emit(changed)
+    await flush()
+    snapshots[0].resolve({ bots: [{ ...stoppedBot, display_name: 'Updated name' }] })
+    await full
+    const current = render().route
+    expect(current?.kind === 'section' && current.bot.display_name).toBe('Updated name')
+    expect(current?.kind === 'section' && current.section.title).toBe('Snapshot 0')
+  })
+
+  it.each(['epoch', 'daemon'])(
+    'rejects old archive callbacks and held reads after a changed %s',
+    async boundary => {
+      await openStopped()
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+      const held = deferred()
+      const fields = deferred()
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.sections.archive') return held.promise
+        if (method === 'hexbot.sections.list' && params.bot) return fields.promise
+        return original(method, params)
+      }
+      const archiving = render().rpc('hexbot.sections.archive', { id: 'section' })
+      const outcome = archiving.catch(error => error)
+      hooks.clients[0].emit(changed)
+      if (boundary === 'epoch')
+        hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+      else await render().activate({ ...daemon, id: 'other' }, 'token')
+      held.resolve({ section: { ...section(), archived_at: 1 } })
+      fields.resolve({ sections: [{ ...section(), archived_at: 1 }] })
+      expect(await outcome).toBeInstanceOf(Error)
+      await flush()
+      expect(render().sections.some(row => row.archived_at)).toBe(false)
+    }
+  )
+
+  it('invalidates an outside-context held get from the exact bare-id section owner', async () => {
+    const cached = {
+      ...stoppedBot,
+      status_detail: { ...stoppedBot.status_detail!, section_id: 'outside' }
+    } as Bot
+    await unopened(cached)
+    const gets = holdBotGets()
+    hooks.clients[0].emit(namedResolved)
+    hooks.clients[0].emit({ type: 'hexbot.sections.changed', payload: { id: 'section' } })
+    gets[0].resolve({ bot: { ...cached, status: 'working' } })
+    await flush()
+    expect(render().bots[0].status).toBe('stopped')
+    gets[1].reject(new Error('New read unavailable'))
+    await flush()
+    expect(render().bots[0].status).toBe('stopped')
+  })
+
+  it('retains archive verification intent when a later canonical settlement coalesces the next read', async () => {
+    await unopened(stoppedBot)
+    const gets = holdBotGets()
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.sections.list' && params.bot)
+        return { sections: [{ ...section(), archived_at: 1 }] }
+      return original(method, params)
+    }
+    hooks.clients[0].emit(namedResolved)
+    hooks.clients[0].emit(changed)
+    hooks.clients[0].emit(namedResolved)
+    gets[0].reject(new Error('Old read unavailable'))
+    await flush()
+    expect(render().sections[0].archived_at).toBe(1)
+    gets[1].resolve({ bot: { ...stoppedBot, status: 'idle', status_detail: null } })
+    await flush()
+    expect(render().bots[0].status).toBe('idle')
+  })
+
+  it.each(['needs_you', 'stopped'])(
+    'preserves an authoritative unseen sibling %s after archiving the named failure',
+    async status => {
+      await openStopped()
+      hooks.clients[0].emit(approval)
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.bots.get')
+          return {
+            bot: {
+              ...stoppedBot,
+              status,
+              status_detail: {
+                ...stoppedBot.status_detail!,
+                section_id: 'unseen',
+                session_id: 'unseen-live'
+              }
+            }
+          }
+        if (method === 'hexbot.sections.list' && params.bot)
+          return { sections: [{ ...section(), archived_at: 1 }] }
+        if (method === 'hexbot.rooms.list') throw new Error('Rooms unavailable')
+        return original(method, params)
+      }
+      hooks.clients[0].emit(changed)
+      await flush()
+      expect(render().bots[0].status).toBe(status)
+      expect(render().bots[0].status_detail?.section_id).toBe('unseen')
+    }
+  )
+
+  it('never infers archive state from a missing targeted row or an unavailable bot read', async () => {
+    await openStopped()
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.get') throw new Error('Unavailable')
+      if (method === 'hexbot.sections.list' && params.bot) return { sections: [] }
+      return original(method, params)
+    }
+    hooks.clients[0].emit(changed)
+    await flush()
+    expect(status()).toBe('stopped')
+    expect(render().bots[0].status).toBe('stopped')
   })
 })
 
