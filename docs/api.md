@@ -352,7 +352,8 @@ thread with the sender: a section with `peer_bot` set to the sender. With
 `wait: true` the result is `{reply, section_id}`; with `wait: false` it is
 `{status: "sent", message_id, section_id}`, and a background watcher submits
 the eventual reply to the sender section as hidden input prefixed
-`[reply from <bot>]`. `to` naming the sender itself answers 4202; a bot the
+`[reply from <bot>]`. `to` naming the sender itself, or a bot waiting on the sender's reply
+further up the chain, answers 4202; a bot the
 section owner does not own answers 4205 with the names of their other bots.
 
 The `hexbot_soul {action: read | write, text?}` tool lets a bot read or

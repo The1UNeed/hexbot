@@ -1474,14 +1474,17 @@ async fn bot_message_hops_count_per_turn_and_follow_the_chain() {
     let (home, runtime, _) = setup();
     db::open(home.path())
         .unwrap()
-        .execute("INSERT INTO bots(name,owner_id) VALUES('cat','alice')", [])
+        .execute(
+            "INSERT INTO bots(name,owner_id) VALUES('cat','alice'),('fox','alice')",
+            [],
+        )
         .unwrap();
     open(&runtime).await;
     let owl = runtime.sessions.lock().unwrap()["first"].clone();
     for _ in 0..MAX_HOPS {
-        let (stored, _, hops) = runtime.prepare_delivery(&owl, "cat", "hello").unwrap();
+        let (stored, _, chain) = runtime.prepare_delivery(&owl, "cat", "hello").unwrap();
         runtime
-            .deliver_message(&owl, "cat", "hello", &stored, hops)
+            .deliver_message(&owl, "cat", "hello", &stored, chain)
             .await
             .unwrap();
     }
@@ -1504,11 +1507,11 @@ async fn bot_message_hops_count_per_turn_and_follow_the_chain() {
     {
         let owl_state = owl.state.lock().unwrap();
         let cat_state = cat.state.lock().unwrap();
-        assert!(Arc::ptr_eq(&owl_state.hops, &cat_state.hops));
+        assert!(Arc::ptr_eq(&owl_state.chain.hops, &cat_state.chain.hops));
     }
     assert_eq!(
         runtime
-            .prepare_delivery(&cat, "owl", "back")
+            .prepare_delivery(&cat, "fox", "onward")
             .unwrap_err()
             .code,
         4240
@@ -1519,15 +1522,72 @@ async fn bot_message_hops_count_per_turn_and_follow_the_chain() {
         .await
         .unwrap();
     assert!(!Arc::ptr_eq(
-        &owl.state.lock().unwrap().hops,
-        &cat.state.lock().unwrap().hops
+        &owl.state.lock().unwrap().chain.hops,
+        &cat.state.lock().unwrap().chain.hops
     ));
-    let (stored, _, hops) = runtime.prepare_delivery(&owl, "cat", "hello").unwrap();
+    let (stored, _, chain) = runtime.prepare_delivery(&owl, "cat", "hello").unwrap();
     runtime
-        .deliver_message(&owl, "cat", "hello", &stored, hops)
+        .deliver_message(&owl, "cat", "hello", &stored, chain)
         .await
         .unwrap();
-    assert_eq!(owl.state.lock().unwrap().hops.load(Ordering::Acquire), 1);
+    assert_eq!(
+        owl.state.lock().unwrap().chain.hops.load(Ordering::Acquire),
+        1
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_bot_cannot_hand_a_request_back_up_the_chain() {
+    let (home, runtime, _) = setup();
+    db::open(home.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO bots(name,owner_id) VALUES('cat','alice'),('fox','alice')",
+            [],
+        )
+        .unwrap();
+    open(&runtime).await;
+    let owl = runtime.sessions.lock().unwrap()["first"].clone();
+    let live = |bot: &str| {
+        runtime
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .find(|s| s.bot == bot)
+            .cloned()
+            .unwrap()
+    };
+    let (stored, _, chain) = runtime.prepare_delivery(&owl, "cat", "research").unwrap();
+    runtime
+        .deliver_message(&owl, "cat", "research", &stored, chain)
+        .await
+        .unwrap();
+    let cat = live("cat");
+    let error = runtime
+        .prepare_delivery(&cat, "owl", "research")
+        .unwrap_err();
+    assert_eq!(error.code, 4202);
+    assert!(error.message.starts_with("owl is waiting on your reply."));
+    // Asking a bot outside the chain is still fine, and the chain grows with it.
+    let (stored, _, chain) = runtime.prepare_delivery(&cat, "fox", "a detail").unwrap();
+    runtime
+        .deliver_message(&cat, "fox", "a detail", &stored, chain)
+        .await
+        .unwrap();
+    let fox = live("fox");
+    for upstream in ["owl", "cat"] {
+        assert_eq!(
+            runtime
+                .prepare_delivery(&fox, upstream, "over to you")
+                .unwrap_err()
+                .code,
+            4202
+        );
+    }
+    // The bot that started the chain can still ask again.
+    runtime.prepare_delivery(&owl, "cat", "one more").unwrap();
     runtime.shutdown().await;
 }
 
@@ -2581,6 +2641,10 @@ async fn delivered_turn_keeps_its_hops_when_a_user_turn_submits_first() {
     open(&runtime).await;
     let s = runtime.sessions.lock().unwrap()["first"].clone();
     let inherited = Arc::new(AtomicUsize::new(MAX_HOPS));
+    let chain = Chain {
+        hops: inherited.clone(),
+        askers: vec!["cat".into()],
+    };
     let guard = runtime.open_lock("first").lock_owned().await;
     let delivered = runtime.run_hidden_deadline(
         "alice",
@@ -2588,7 +2652,7 @@ async fn delivered_turn_keeps_its_hops_when_a_user_turn_submits_first() {
         "first",
         "delivered",
         Duration::from_secs(30),
-        Some(inherited.clone()),
+        Some(chain),
     );
     tokio::pin!(delivered);
     assert!(futures_util::poll!(&mut delivered).is_pending());
@@ -2602,10 +2666,14 @@ async fn delivered_turn_keeps_its_hops_when_a_user_turn_submits_first() {
     while *settled.borrow() == before {
         settled.changed().await.unwrap();
     }
-    assert!(!Arc::ptr_eq(&s.state.lock().unwrap().hops, &inherited));
+    assert!(!Arc::ptr_eq(
+        &s.state.lock().unwrap().chain.hops,
+        &inherited
+    ));
     drop(guard);
     delivered.await.unwrap();
-    assert!(Arc::ptr_eq(&s.state.lock().unwrap().hops, &inherited));
+    assert!(Arc::ptr_eq(&s.state.lock().unwrap().chain.hops, &inherited));
+    assert_eq!(s.state.lock().unwrap().chain.askers, ["cat"]);
     assert_eq!(inherited.load(Ordering::Acquire), MAX_HOPS);
     runtime.shutdown().await;
 }

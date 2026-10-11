@@ -50,9 +50,8 @@ struct State {
     display: VecDeque<String>,
     /// Uploads waiting for the next prompt, in the order they arrived.
     staged: Vec<Staged>,
-    /// Bot-to-bot messages sent during the turn that started this one. Every
-    /// section in a chain shares the counter; a fresh turn starts a fresh one.
-    hops: Arc<AtomicUsize>,
+    /// The bot-to-bot chain this turn belongs to; a fresh turn starts a fresh one.
+    chain: Chain,
     tool_started: HashMap<String, std::time::Instant>,
     /// Argument previews by tool call id, kept until the tool result row is written.
     tool_context: HashMap<String, String>,
@@ -66,6 +65,14 @@ struct Staged {
     files: Vec<PathBuf>,
 }
 const MAX_HOPS: usize = 8;
+#[derive(Clone, Debug, Default)]
+struct Chain {
+    /// Bot-to-bot messages sent since the turn that started the chain. Every
+    /// section in the chain shares the counter.
+    hops: Arc<AtomicUsize>,
+    /// Bots waiting on this turn's reply, nearest last. Asking one of them would loop.
+    askers: Vec<String>,
+}
 struct Live {
     owner: String,
     bot: String,
@@ -914,7 +921,7 @@ impl Runtime {
                 native_approvals: HashMap::new(),
                 display: VecDeque::new(),
                 staged: vec![],
-                hops: Arc::default(),
+                chain: Chain::default(),
                 tool_started: HashMap::new(),
                 tool_context: HashMap::new(),
                 unsaved: VecDeque::new(),
@@ -1129,7 +1136,7 @@ impl Runtime {
         text: &str,
         hidden: bool,
         queued: bool,
-        hops: Option<Arc<AtomicUsize>>,
+        chain: Option<Chain>,
         uploads: Option<&[String]>,
     ) -> Result<Value> {
         if self.stopping.load(Ordering::Acquire) {
@@ -1226,7 +1233,7 @@ impl Runtime {
                 state.output.clear();
                 state.error = None;
             }
-            state.hops = hops.unwrap_or_default();
+            state.chain = chain.unwrap_or_default();
             state.busy = true;
             state.interrupted = false;
             state.last_activity = common::now();
@@ -1377,14 +1384,14 @@ impl Runtime {
         stored: &str,
         text: &str,
         deadline: Duration,
-        hops: Option<Arc<AtomicUsize>>,
+        chain: Option<Chain>,
     ) -> Result<String> {
         common::bot_owner(&self.home, owner, bot)?;
         let s = self.open_for_input(owner, bot, stored).await?;
         let mut settled = s.settled.subscribe();
         let before = *settled.borrow();
         let finished = tokio::time::timeout(deadline, async {
-            self.submit(&s, text, true, false, hops, None).await?;
+            self.submit(&s, text, true, false, chain, None).await?;
             loop {
                 if *settled.borrow() != before {
                     break;
@@ -2134,14 +2141,18 @@ impl Runtime {
         tx.commit()?;
         Ok((stored, message))
     }
-    fn prepare_delivery(
-        &self,
-        s: &Live,
-        to: &str,
-        text: &str,
-    ) -> Result<(String, String, Arc<AtomicUsize>)> {
+    fn prepare_delivery(&self, s: &Live, to: &str, text: &str) -> Result<(String, String, Chain)> {
         if to == s.bot {
             return Err(Error::new(4202, "A bot cannot message itself."));
+        }
+        let mut chain = s.state.lock().unwrap().chain.clone();
+        if chain.askers.iter().any(|asker| asker == to) {
+            return Err(Error::new(
+                4202,
+                format!(
+                    "{to} is waiting on your reply. Do the work and reply to it directly instead of asking it."
+                ),
+            ));
         }
         let teammates = common::rows(
             &db::open(&self.home)?,
@@ -2159,8 +2170,7 @@ impl Runtime {
                 format!("No bot named {to}. Your teammates: {names}."),
             ));
         }
-        let hops = s.state.lock().unwrap().hops.clone();
-        if hops.fetch_add(1, Ordering::AcqRel) >= MAX_HOPS {
+        if chain.hops.fetch_add(1, Ordering::AcqRel) >= MAX_HOPS {
             return Err(Error::new(
                 4240,
                 format!("bot message hop limit ({MAX_HOPS}) reached"),
@@ -2173,7 +2183,8 @@ impl Runtime {
             "hexbot.sections.changed",
             json!({"id":stored}),
         );
-        Ok((stored, message, hops))
+        chain.askers.push(s.bot.clone());
+        Ok((stored, message, chain))
     }
     async fn deliver_message(
         &self,
@@ -2181,7 +2192,7 @@ impl Runtime {
         to: &str,
         text: &str,
         stored: &str,
-        hops: Arc<AtomicUsize>,
+        chain: Chain,
     ) -> Result<String> {
         common::bot_owner(&self.home, &s.owner, to)?;
         self.run_hidden_deadline(
@@ -2190,7 +2201,7 @@ impl Runtime {
             stored,
             &format!("@{}: {}", s.bot, text),
             HIDDEN_TURN_DEADLINE,
-            Some(hops),
+            Some(chain),
         )
         .await
     }
@@ -2736,7 +2747,7 @@ impl Runtime {
                 }
                 let to = required(args, "to")?.to_owned();
                 let text = required(args, "text")?.to_owned();
-                let (stored, message_id, hops) = self.prepare_delivery(s, &to, &text)?;
+                let (stored, message_id, chain) = self.prepare_delivery(s, &to, &text)?;
                 if args["wait"] == false {
                     let runtime = self
                         .weak
@@ -2748,7 +2759,7 @@ impl Runtime {
                     while tasks.try_join_next().is_some() {}
                     tasks.spawn(async move {
                         let result = runtime
-                            .deliver_message(&source, &to, &text, &thread, hops)
+                            .deliver_message(&source, &to, &text, &thread, chain)
                             .await;
                         let reply = match result {
                             Ok(reply) => format!("[reply from {to}] {reply}"),
@@ -2761,7 +2772,7 @@ impl Runtime {
                     Ok(json!({"status":"sent","message_id":message_id,"section_id":stored}))
                 } else {
                     Ok(
-                        json!({"reply":self.deliver_message(s,&to,&text,&stored,hops).await?,"section_id":stored}),
+                        json!({"reply":self.deliver_message(s,&to,&text,&stored,chain).await?,"section_id":stored}),
                     )
                 }
             }

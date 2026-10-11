@@ -154,6 +154,10 @@ The native daemon provides `message_bot {to, text, wait: bool}` for bots:
   so the room keeps the "<bot> helped" row after the turn ends. Approval and
   question events carry `bot`, so a client honours that bot's Notify me
   for a thread it does not list.
+- A bot cannot message a bot that is waiting on its reply: the one that
+  asked it, or any bot further up the chain. That request answers 4202 and
+  tells the bot to do the work and reply instead, so a request is never
+  handed back. Each delivered turn carries the chain of bots waiting on it.
 - Loops are bounded by the same per-bot daily budget and a hop limit of 8
   messages per originating turn (a user message, a room turn, or a scheduled
   job); every section in the chain shares that count, and each new turn
