@@ -715,7 +715,6 @@ function MobileApp() {
         return
       }
       const q = pending.questions[0]
-      const selectedQuestion = questionRef.current
       act(async () => {
         await mobile.answer(
           pending.requestId,
@@ -723,10 +722,12 @@ function MobileApp() {
           encodeAnswer(q.multiSelect, [], text),
           pending.sessionId
         )
+        const currentRoute = mobileRef.current.route
         if (
-          questionRef.current !== selectedQuestion ||
           mobileRef.current.active?.id !== mobile.active?.id ||
-          mobileRef.current.route !== mobile.route
+          currentRoute?.kind !== mobile.route?.kind ||
+          (currentRoute?.kind === 'section' ? currentRoute.section.id : currentRoute?.room.id) !==
+            (mobile.route?.kind === 'section' ? mobile.route.section.id : mobile.route?.room.id)
         )
           return
         setDraft(current => current.trim() === text.trim() ? '' : current)
@@ -1317,9 +1318,17 @@ function MobileApp() {
                   encodeAnswer(question.multiSelect, questionChoices, questionAnswer),
                   question.sessionId
                 )
-                if (questionRef.current !== question) return
+                const currentRoute = mobileRef.current.route
+                if (
+                  mobileRef.current.active?.id !== mobile.active?.id ||
+                  currentRoute?.kind !== mobile.route?.kind ||
+                  (currentRoute?.kind === 'section' ? currentRoute.section.id : currentRoute?.room.id) !==
+                    (mobile.route?.kind === 'section' ? mobile.route.section.id : mobile.route?.room.id)
+                )
+                  return
                 if (draft.trim() === questionAnswer.trim())
                   setDraft(current => current.trim() === questionAnswer.trim() ? '' : current)
+                if (questionRef.current !== question) return
                 setQuestion(null)
                 setQuestionAnswer('')
                 setQuestionChoices([])

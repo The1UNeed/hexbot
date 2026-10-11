@@ -1,8 +1,10 @@
 import ts from 'typescript'
 import { describe, expect, it, vi } from 'vitest'
 import type { GatewayEvent } from '@hermes/shared'
-import { emptyChat, reduceChat } from './chat'
+import { emptyChat, reduceChat, settledBot } from './chat'
 import { encodeAnswer } from './chat-send'
+import type { ChatRoute } from './routes'
+import type { Bot, Room, Section } from './types'
 
 type Sheet = {
   requestId: string
@@ -116,12 +118,31 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-function sheet() {
+const sectionRoute = (id = 'section'): ChatRoute => ({
+  kind: 'section',
+  section: { id, bot: 'alpha', live_session_id: 'session' } as Section,
+  bot: {
+    name: 'alpha',
+    status: 'needs_you',
+    status_detail: { session_id: 'session', section_id: id }
+  } as Bot
+})
+const roomRoute = (id = 'room'): ChatRoute => ({ kind: 'room', room: { id } as Room })
+const routeChanges = [
+  { label: 'another section', from: sectionRoute(), to: sectionRoute('other-section') },
+  { label: 'another room', from: roomRoute(), to: roomRoute('other-room') },
+  { label: 'a room with the same raw ID', from: sectionRoute('same'), to: roomRoute('same') },
+  { label: 'a section with the same raw ID', from: roomRoute('same'), to: sectionRoute('same') },
+  { label: 'the closed conversation', from: sectionRoute(), to: null }
+]
+
+function sheet(route: ChatRoute | null = sectionRoute()) {
   const ui = { question: null as Sheet | null, answer: '', choices: [] as string[], draft: '', error: '' }
   const questionRef = { current: null as Sheet | null }
   const mobileRef = {
-    current: { chat: emptyChat(), active: { id: 'daemon' }, route: { id: 'section' } }
+    current: { chat: emptyChat(), active: { id: 'daemon' }, route }
   }
+  const attachmentData = { current: new Map<string, unknown>() }
   const setQuestion = callback<(next: Sheet | null) => void>(setter, {
     questionRef,
     setQuestionState: (next: Sheet | null) => { ui.question = next }
@@ -153,7 +174,7 @@ function sheet() {
       draft: ui.draft,
       mobile: { ...mobileRef.current, answer },
       mobileRef,
-      attachmentData: { current: new Map() },
+      attachmentData,
       encodeAnswer,
       setQuestion,
       ...inputs,
@@ -170,7 +191,7 @@ function sheet() {
   receive(request())
   ui.answer = 'Now'
   ui.draft = 'Now'
-  return { ui, receive, send, setQuestion, mobileRef }
+  return { ui, receive, send, setQuestion, mobileRef, attachmentData }
 }
 
 describe('question-sheet submit continuations', () => {
@@ -289,6 +310,97 @@ describe('question-sheet submit continuations', () => {
       question: { questionId: 'second' }, answer: 'Office', choices: ['Office'], draft: 'Next message'
     })
   })
+
+  it('clears delivered composer text without clearing an advanced attachment question sheet', async () => {
+    const state = sheet()
+    state.setQuestion(null)
+    state.attachmentData.current.set('file', {})
+    const opened = state.send('Now')
+    expect(opened.answer).not.toHaveBeenCalled()
+    expect(state.ui).toMatchObject({ question: { questionId: 'first' }, answer: 'Now', draft: 'Now' })
+    const sent = state.send()
+    state.receive(partial())
+    state.mobileRef.current.route = sectionRoute()
+    state.ui.answer = 'Near home'
+    state.ui.choices = ['Library']
+    sent.resolve({ status: 'waiting', answers: { first: 'Now' } })
+    await sent.completion
+    expect(state.ui).toMatchObject({
+      question: { questionId: 'second' }, answer: 'Near home', choices: ['Library'], draft: '', error: ''
+    })
+  })
+
+  it('clears delivered composer text when settlement closes the prefilled attachment sheet before the reply', async () => {
+    const state = sheet()
+    state.receive(event('clarify.request', {
+      request_id: 'batch', questions: [{ qid: 'first', question: 'When?' }]
+    }))
+    state.setQuestion(null)
+    state.attachmentData.current.set('file', {})
+    expect(state.send('Now').answer).not.toHaveBeenCalled()
+    const sent = state.send()
+    state.receive(event('clarify.resolved', {
+      request_id: 'batch', answers: { first: 'Now' }, status: 'answered'
+    }))
+    state.mobileRef.current.route = sectionRoute()
+    expect(state.ui.question).toBeNull()
+    sent.resolve({ status: 'answered', answers: { first: 'Now' } })
+    await sent.completion
+    expect(state.ui).toMatchObject({ question: null, draft: '', error: '' })
+  })
+
+  it('closes the unchanged submitted sheet and clears inputs after a same-section rerender', async () => {
+    const state = sheet()
+    state.ui.choices = ['Saved choice']
+    const sent = state.send()
+    state.mobileRef.current.route = sectionRoute()
+    sent.resolve()
+    await sent.completion
+    expect(state.ui).toMatchObject({ question: null, answer: '', choices: [], draft: '', error: '' })
+  })
+
+  it('preserves newly typed composer text after settlement closes the submitted sheet', async () => {
+    const state = sheet()
+    state.receive(event('clarify.request', {
+      request_id: 'batch', questions: [{ qid: 'first', question: 'When?' }]
+    }))
+    const sent = state.send()
+    state.receive(event('clarify.resolved', {
+      request_id: 'batch', answers: { first: 'Now' }, status: 'answered'
+    }))
+    state.mobileRef.current.route = sectionRoute()
+    state.ui.draft = 'A new message'
+    sent.resolve()
+    await sent.completion
+    expect(state.ui).toMatchObject({ question: null, draft: 'A new message', error: '' })
+  })
+
+  it.each(routeChanges)('preserves another sheet and identical input after switching to $label', async ({ from, to }) => {
+    const state = sheet(from)
+    const previous = state.ui.question!
+    const sent = state.send()
+    state.mobileRef.current.route = to
+    state.setQuestion({ ...previous, sessionId: 'new-session' })
+    state.ui.choices = ['New choice']
+    sent.resolve()
+    await sent.completion
+    expect(state.ui).toMatchObject({
+      question: { sessionId: 'new-session' }, answer: 'Now', choices: ['New choice'], draft: 'Now', error: ''
+    })
+  })
+
+  it('preserves a new daemon sheet and identical composer text after the old answer succeeds', async () => {
+    const state = sheet()
+    const previous = state.ui.question!
+    const sent = state.send()
+    state.mobileRef.current.active = { id: 'other-daemon' }
+    state.setQuestion({ ...previous, sessionId: 'new-session' })
+    sent.resolve()
+    await sent.completion
+    expect(state.ui).toMatchObject({
+      question: { sessionId: 'new-session' }, answer: 'Now', draft: 'Now', error: ''
+    })
+  })
 })
 
 describe('plain clarification composer continuations', () => {
@@ -308,14 +420,15 @@ describe('plain clarification composer continuations', () => {
     })
   })
 
-  it('preserves a newer question draft even if its text equals the old submitted answer', async () => {
+  it('clears delivered text while preserving the advanced question sheet', async () => {
     const state = sheet()
     state.setQuestion(null)
     const sent = state.send('Now')
     state.receive(partial())
+    state.mobileRef.current.route = sectionRoute()
     sent.resolve()
     await sent.completion
-    expect(state.ui).toMatchObject({ question: { questionId: 'second' }, draft: 'Now' })
+    expect(state.ui).toMatchObject({ question: { questionId: 'second' }, draft: '' })
   })
 
   it('clears the submitted draft before a later event opens the next sheet', async () => {
@@ -334,6 +447,7 @@ describe('plain clarification composer continuations', () => {
     const state = sheet()
     state.setQuestion(null)
     const sent = state.send('Now')
+    state.mobileRef.current.route = sectionRoute()
     state.ui.draft = 'A different answer'
     sent.resolve()
     await sent.completion
@@ -349,7 +463,7 @@ describe('plain clarification composer continuations', () => {
     expect(state.ui).toMatchObject({ question: null, draft: 'Now', error: 'Answer not delivered' })
   })
 
-  it('preserves a selected card with reused IDs from another session', async () => {
+  it('clears delivered text while preserving a selected card with reused IDs from another session', async () => {
     const state = sheet()
     const previous = state.ui.question!
     state.setQuestion(null)
@@ -357,7 +471,7 @@ describe('plain clarification composer continuations', () => {
     state.setQuestion({ ...previous, sessionId: 'other-session' })
     sent.resolve()
     await sent.completion
-    expect(state.ui).toMatchObject({ question: { sessionId: 'other-session' }, draft: 'Now' })
+    expect(state.ui).toMatchObject({ question: { sessionId: 'other-session' }, draft: '' })
   })
 
   it.each(['daemon', 'route'] as const)('preserves a new %s draft when both sheets are closed', async boundary => {
@@ -365,9 +479,52 @@ describe('plain clarification composer continuations', () => {
     state.setQuestion(null)
     const sent = state.send('Now')
     if (boundary === 'daemon') state.mobileRef.current.active = { id: 'other-daemon' }
-    else state.mobileRef.current.route = { id: 'other-section' }
+    else state.mobileRef.current.route = sectionRoute('other-section')
     sent.resolve()
     await sent.completion
     expect(state.ui).toMatchObject({ question: null, draft: 'Now' })
+  })
+
+  it('clears unchanged text when canonical settlement recreates the same visible section route before the reply', async () => {
+    const state = sheet()
+    state.receive(event('clarify.request', {
+      request_id: 'batch', questions: [{ qid: 'first', question: 'When?' }]
+    }))
+    state.setQuestion(null)
+    const sent = state.send('Now')
+    state.receive(event('clarify.resolved', {
+      request_id: 'batch', answers: { first: 'Now' }, status: 'answered'
+    }))
+    const before = state.mobileRef.current.route!
+    if (before.kind !== 'section') throw new Error('Expected private section')
+    state.mobileRef.current.route = {
+      ...before,
+      bot: settledBot(before.bot, state.mobileRef.current.chat, 'session', before.section.id)
+    }
+    expect(state.mobileRef.current.route).not.toBe(before)
+    expect(state.mobileRef.current.route.bot.status).toBe('working')
+    sent.resolve({ status: 'answered', answers: { first: 'Now' } })
+    await sent.completion
+    expect(state.ui).toMatchObject({ question: null, draft: '', error: '' })
+  })
+
+  it('clears unchanged text after a same-room snapshot replaces the route object', async () => {
+    const state = sheet(roomRoute())
+    state.setQuestion(null)
+    const sent = state.send('Now')
+    state.mobileRef.current.route = roomRoute()
+    sent.resolve()
+    await sent.completion
+    expect(state.ui).toMatchObject({ question: null, draft: '', error: '' })
+  })
+
+  it.each(routeChanges)('preserves the draft after switching to $label', async ({ from, to }) => {
+    const state = sheet(from)
+    state.setQuestion(null)
+    const sent = state.send('Now')
+    state.mobileRef.current.route = to
+    sent.resolve()
+    await sent.completion
+    expect(state.ui).toMatchObject({ question: null, draft: 'Now', error: '' })
   })
 })
