@@ -53,8 +53,19 @@ data model. The native transport and event projection live in
 
 Events the client renders: `message.start`, `message.delta`, `message.interim`,
 `message.complete` (turn end), `reasoning.delta`, `thinking.delta`, `tool.start`, `tool.complete`,
-`approval.request`, `status.update`, `session.info`, `session.usage {usage,
+`approval.request`, `approval.resolved`, `clarify.request`, `clarify.resolved`,
+`clarify.expire`, `status.update`, `session.info`, `session.usage {usage,
 context}` (the section's totals and its context meter, see Sections), `error`.
+
+Accepted answers publish session-scoped `approval.resolved {request_id,
+choice}` or `clarify.resolved {request_id, answers, status, remaining?}`.
+Approval choices are canonical `once | session | deny`. Clarification answers
+use question IDs (the request ID for a single question); `status` is `waiting`
+for a partial answer and `answered` once every question has an answer. Both
+events include `bot` and `section_id`. They update the matching card on other
+connected clients, including when a roster refresh fails. Other pending
+requests keep Waiting. The answer RPC
+can also return the canonical `choice` or `answers`; older daemons omit them.
 
 When a new agent turn starts, `message.start` includes `retry_resolved: true`
 if resolving that section's `turn_failed` incidents succeeded. Clients can
@@ -229,7 +240,8 @@ roster shows only the title.
   question settled. Match answers and expiry to their own `request_id`.
   Opening can overlap a rename, archive or restore. Clients keep completed
   edits while accepting the live session and history; a successful delete
-  fences earlier opens and retires only that private section's Retry status.
+  fences earlier opens and clears that private section's Stopped status when
+  its action is Retry.
 
 `Context = {tokens, window, compact_at, compacting, recounting, seq}` is how
 full the section's context is: Pi's own estimate of the tokens the next

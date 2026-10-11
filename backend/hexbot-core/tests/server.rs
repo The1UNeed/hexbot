@@ -59,11 +59,15 @@ impl Fixture {
 const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
 const rl=require('node:readline').createInterface({input:process.stdin});
 process.on('SIGTERM',()=>process.exit(0));
-rl.on('line',line=>{const c=JSON.parse(line);emit({type:'response',id:c.id,command:c.type,success:true,data:c.type==='get_available_models'?{models:[{id:'one',provider:'fixture'}]}:{}});if(c.type==='prompt'){
+rl.on('line',line=>{const c=JSON.parse(line);if(c.type==='extension_ui_response')return;emit({type:'response',id:c.id,command:c.type,success:true,data:c.type==='get_available_models'?{models:[{id:'one',provider:'fixture'}]}:{}});if(c.type==='prompt'){
 emit({type:'agent_start'});emit({type:'message_end',message:{role:'user',content:c.message}});
 if(c.message==='working')return;
 if(c.message==='approval'){emit({type:'extension_ui_request',id:'approval-1',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'bash',command:'pwd'}),options:['once','deny']});return;}
 if(c.message==='clarification'){emit({type:'extension_ui_request',id:'clarify-1',method:'input',title:'__HEXBOT_CLARIFY__'+JSON.stringify({questions:[{qid:'color',question:'Color?',choices:['red','blue']}]})});return;}
+if(c.message==='sibling-cards'){
+emit({type:'extension_ui_request',id:'allow',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'bash',command:'pwd'}),options:['once','session','deny']});
+emit({type:'extension_ui_request',id:'confirm',method:'confirm',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'bash',command:'pwd'})});
+emit({type:'extension_ui_request',id:'batch',method:'input',title:'__HEXBOT_CLARIFY__'+JSON.stringify({questions:[{qid:'same',question:'First?'},{qid:'same',question:'Duplicate?'},{qid:'last',question:'Last?'}]})});return;}
 emit({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:'Fixture reply'}});
 emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'Fixture reply'}],usage:{input:5,output:2,cost:{total:0}},stopReason:'stop'}});
 emit({type:'agent_end'});emit({type:'agent_settled'});}});
@@ -148,6 +152,230 @@ async fn request(socket: &mut Socket, id: &str, method: &str, params: Value) -> 
         .await
         .unwrap();
     response(socket, id).await
+}
+
+#[tokio::test]
+async fn sibling_clients_receive_exact_canonical_answers_and_replay() {
+    async fn event(socket: &mut Socket, session: &Value, kind: &str) -> Value {
+        loop {
+            let frame = frame(socket).await;
+            if frame["params"]["session_id"] == *session && frame["params"]["type"] == kind {
+                return frame["params"].clone();
+            }
+        }
+    }
+    let fixture = Fixture::new(false).await;
+    db::open(&fixture.home).unwrap().execute_batch("INSERT INTO bots(name,owner_id,description) VALUES('owl','local','Fixture bot'); INSERT INTO sections(id,bot,owner_id,title) VALUES('shared','owl','local','Shared');").unwrap();
+    fs::create_dir_all(fixture.home.join("profiles/owl")).unwrap();
+    fs::write(
+        fixture.home.join("profiles/owl/config.yaml"),
+        "tools:\n  enabled_toolsets: []\n",
+    )
+    .unwrap();
+    let mut first = fixture.socket(&fixture.token).await;
+    let mut second = fixture.socket(&fixture.token).await;
+    let opened = request(
+        &mut first,
+        "open",
+        "hexbot.sections.open",
+        json!({"id":"shared"}),
+    )
+    .await;
+    let session = &opened["result"]["section"]["live_session_id"];
+    let sibling = request(
+        &mut second,
+        "open",
+        "hexbot.sections.open",
+        json!({"id":"shared"}),
+    )
+    .await;
+    assert_eq!(sibling["result"]["section"]["live_session_id"], *session);
+    request(
+        &mut first,
+        "prompt",
+        "prompt.submit",
+        json!({"session_id":session,"text":"sibling-cards"}),
+    )
+    .await;
+    let approval = event(&mut second, session, "approval.request").await;
+    assert_eq!(approval["payload"]["request_id"], "allow");
+    let other = event(&mut second, session, "approval.request").await;
+    assert_eq!(other["payload"]["request_id"], "confirm");
+    let batch = event(&mut second, session, "clarify.request").await;
+    assert_eq!(batch["payload"]["request_id"], "batch");
+    let invalid = request(
+        &mut first,
+        "invalid",
+        "approval.respond",
+        json!({"session_id":session,"request_id":"allow","choice":"invalid"}),
+    )
+    .await;
+    assert_eq!(invalid["error"]["code"], 4202);
+    let denied = request(
+        &mut first,
+        "confirm",
+        "approval.respond",
+        json!({"session_id":session,"request_id":"confirm","choice":"deny"}),
+    )
+    .await;
+    assert_eq!(denied["result"]["choice"], "deny");
+    let resolved = event(&mut second, session, "approval.resolved").await;
+    assert_eq!(resolved["payload"]["request_id"], "confirm");
+    assert_eq!(resolved["payload"]["choice"], "deny");
+    assert_eq!(resolved["payload"]["bot"], "owl");
+    assert_eq!(resolved["payload"]["section_id"], "shared");
+    let working = event(&mut second, session, "status.update").await;
+    assert_eq!(working["payload"]["kind"], "working");
+    assert!(resolved["seq"].as_u64().unwrap() < working["seq"].as_u64().unwrap());
+    let reopened = request(
+        &mut first,
+        "pending",
+        "hexbot.sections.open",
+        json!({"id":"shared"}),
+    )
+    .await;
+    assert_eq!(reopened["result"]["pending_clarify"]["answers"], json!({}));
+    assert_eq!(
+        event(&mut second, session, "approval.request").await["payload"]["request_id"],
+        "allow"
+    );
+    let partial = request(
+        &mut first,
+        "partial",
+        "clarify.respond",
+        json!({"session_id":session,"request_id":"batch","question_id":"same","answer":"Yes"}),
+    )
+    .await;
+    assert!(partial.get("error").is_none(), "{partial}");
+    assert_eq!(partial["result"]["status"], "waiting");
+    assert_eq!(partial["result"]["remaining"], json!(["last"]));
+    assert_eq!(partial["result"]["answers"], json!({"same":"Yes"}));
+    let resolved = event(&mut second, session, "clarify.resolved").await;
+    assert_eq!(resolved["payload"]["request_id"], "batch");
+    assert_eq!(resolved["payload"]["status"], "waiting");
+    assert_eq!(resolved["payload"]["answers"], json!({"same":"Yes"}));
+    let duplicate = request(
+        &mut first,
+        "duplicate",
+        "clarify.respond",
+        json!({"session_id":session,"request_id":"batch","question_id":"same","answer":"No"}),
+    )
+    .await;
+    assert_eq!(duplicate["error"]["code"], 4202);
+    let unknown = request(
+        &mut first,
+        "unknown",
+        "clarify.respond",
+        json!({"session_id":session,"request_id":"batch","question_id":"unknown","answer":"No"}),
+    )
+    .await;
+    assert_eq!(unknown["error"]["code"], 4202);
+    let replay = request(
+        &mut second,
+        "partial-replay",
+        "session.events.since",
+        json!({"session_id":session,"last_seen":working["seq"]}),
+    )
+    .await;
+    let events = replay["result"]["events"].as_array().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["type"] == "clarify.resolved")
+            .count(),
+        1
+    );
+    assert!(events.iter().all(|event| event["type"] != "status.update"));
+    let reopened = request(
+        &mut first,
+        "partial-open",
+        "hexbot.sections.open",
+        json!({"id":"shared"}),
+    )
+    .await;
+    assert_eq!(
+        reopened["result"]["pending_clarify"]["answers"],
+        json!({"same":"Yes"})
+    );
+    let allowed = request(
+        &mut first,
+        "allow",
+        "approval.respond",
+        json!({"session_id":session,"request_id":"allow","choice":"always"}),
+    )
+    .await;
+    assert_eq!(allowed["result"]["choice"], "session");
+    let resolved = event(&mut second, session, "approval.resolved").await;
+    assert_eq!(resolved["payload"]["request_id"], "allow");
+    assert_eq!(resolved["payload"]["choice"], "session");
+    event(&mut second, session, "status.update").await;
+    let answered = request(
+        &mut first,
+        "final",
+        "clarify.respond",
+        json!({"session_id":session,"request_id":"batch","question_id":"last","answer":"Because"}),
+    )
+    .await;
+    assert_eq!(answered["result"]["status"], "answered");
+    assert_eq!(
+        answered["result"]["answers"],
+        json!({"same":"Yes","last":"Because"})
+    );
+    let resolved = event(&mut second, session, "clarify.resolved").await;
+    assert_eq!(resolved["payload"]["request_id"], "batch");
+    assert_eq!(resolved["payload"]["status"], "answered");
+    assert_eq!(
+        resolved["payload"]["answers"],
+        json!({"same":"Yes","last":"Because"})
+    );
+    event(&mut second, session, "status.update").await;
+    let replay = request(
+        &mut second,
+        "replay",
+        "session.events.since",
+        json!({"session_id":session,"last_seen":batch["seq"]}),
+    )
+    .await;
+    assert_eq!(replay["result"]["truncated"], false);
+    let settlements = replay["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| {
+            matches!(
+                event["type"].as_str(),
+                Some("approval.resolved" | "clarify.resolved")
+            )
+        })
+        .map(|event| {
+            (
+                event["type"].clone(),
+                event["payload"]["request_id"].clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        settlements,
+        vec![
+            (json!("approval.resolved"), json!("confirm")),
+            (json!("clarify.resolved"), json!("batch")),
+            (json!("approval.resolved"), json!("allow")),
+            (json!("clarify.resolved"), json!("batch"))
+        ]
+    );
+    let reopened = request(
+        &mut first,
+        "final-open",
+        "hexbot.sections.open",
+        json!({"id":"shared"}),
+    )
+    .await;
+    assert!(reopened["result"].get("pending_clarify").is_none());
+    assert_eq!(
+        fixture.app.runtime.status_for_bot("local", "owl").unwrap()["status"],
+        "working"
+    );
+    fixture.shutdown().await;
 }
 
 #[tokio::test]

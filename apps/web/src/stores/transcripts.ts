@@ -71,8 +71,11 @@ export interface Transcript {
   /** A fresh daemon transition, never inferred from retained status text. */
   liveStatus?: 'idle' | 'needs_you' | 'working'
   approvals: ApprovalRequest[]
+  /** Canonical settlements also cover an answer arriving before its card replay. */
+  approvalDecisions?: Record<string, ApprovalChoice>
   /** Questions the bot asked through the clarify tool, oldest first. */
   clarifies: ClarifyRequest[]
+  clarifyAnswers?: Record<string, Record<string, string>>
   /** Exact settlement survives same-session snapshots, including expiry before card replay. */
   settledClarifyIds?: string[]
   /** The context meter; null until the daemon has reported it. */
@@ -140,6 +143,17 @@ export interface ApprovalRequestPayload {
   tool?: string
 }
 
+export interface ApprovalResolvedPayload {
+  choice: ApprovalChoice
+  request_id: string
+}
+
+export interface ClarifyResolvedPayload {
+  answers: Record<string, string>
+  request_id: string
+  status: 'answered' | 'waiting'
+}
+
 export interface TranscriptsState {
   clearAnsweredWaiting: (
     sectionIds?: readonly string[],
@@ -158,6 +172,16 @@ export interface TranscriptsState {
     sessionId: string,
     payload: ApprovalRequestPayload,
     options?: { notify?: boolean }
+  ) => void
+  approvalResolved: (
+    sessionId: string,
+    payload: ApprovalResolvedPayload,
+    attempt?: AnswerAttempt
+  ) => void
+  clarifyResolved: (
+    sessionId: string,
+    payload: ClarifyResolvedPayload,
+    attempt?: AnswerAttempt
   ) => void
   clarifyExpire: (
     sessionId: string,
@@ -246,6 +270,8 @@ export function resetTranscriptEffects(): void {
 }
 
 let authorityRevision = 0
+// A settlement can precede a cold card snapshot, but cannot reopen a dropped session.
+const droppedSessions = new Set<string>()
 
 /** A roster RPC can only supersede transcript evidence that existed when it started. */
 export function transcriptRevision(): number {
@@ -340,6 +366,10 @@ const SPINNER_LINE = /^[^a-z]*[a-z]+\.\.\.$/i
 /** A question the bot still waits on: not every answer is in and it has not expired. */
 export const clarifyWaiting = (clarify: ClarifyRequest) =>
   !clarify.expired && !clarifyAnswered(clarify)
+
+const sameAnswers = (left: Record<string, string>, right: Record<string, string>) =>
+  Object.keys(left).length === Object.keys(right).length &&
+  Object.keys(left).every(key => left[key] === right[key])
 
 /**
  * Ends the message the bot is writing: its words become a finished part, and
@@ -463,6 +493,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     open(sessionId, sectionId, messages, throughRevision = Infinity, bot) {
+      droppedSessions.delete(sessionId)
       set(state => {
         const existing = state.bySession[sessionId]
         const newer = existing && existing.authorityRevision > throughRevision
@@ -505,6 +536,8 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
                   }
                 : {}),
               approvals: existing?.approvals ?? [],
+              approvalDecisions: existing?.approvalDecisions,
+              clarifyAnswers: existing?.clarifyAnswers,
               settledClarifyIds: existing?.settledClarifyIds,
               clarifies: (existing?.clarifies ?? []).filter(
                 item =>
@@ -527,6 +560,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     drop(sessionId) {
+      droppedSessions.add(sessionId)
       set(state => {
         const next = { ...state.bySession }
         delete next[sessionId]
@@ -536,6 +570,10 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     dropAll() {
+      for (const sessionId of Object.keys(get().bySession)) {
+        droppedSessions.add(sessionId)
+      }
+
       set({ bySession: {}, warnings: {} })
     },
 
@@ -789,6 +827,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     approvalRequest(sessionId, payload, options = {}) {
+      droppedSessions.delete(sessionId)
       const requestId = String(payload.request_id ?? nextMessageId('ap'))
 
       const approval: ApprovalRequest = {
@@ -800,6 +839,8 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         sessionId,
         toolName: payload.tool
       }
+
+      approval.decision = get().bySession[sessionId]?.approvalDecisions?.[requestId]
 
       let added = false
 
@@ -824,12 +865,14 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         added = true
 
         return {
-          ...advanceAuthority(closeForCard(transcript)),
+          ...(approval.decision ? transcript : advanceAuthority(closeForCard(transcript))),
           liveStatus: transcript.liveStatus,
-          waitingRequests: [
-            ...(transcript.waitingRequests ?? []),
-            { kind: 'approval', requestId, revision: authorityRevision }
-          ],
+          waitingRequests: approval.decision
+            ? transcript.waitingRequests
+            : [
+                ...(transcript.waitingRequests ?? []),
+                { kind: 'approval', requestId, revision: authorityRevision }
+              ],
           approvals: [...transcript.approvals, approval]
         }
       })
@@ -838,7 +881,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
       effects.ackApproval(sessionId, requestId)
 
-      if (!added || options.notify === false) {
+      if (!added || approval.decision || options.notify === false) {
         return
       }
 
@@ -850,6 +893,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     clarifyRequest(sessionId, payload, options = {}) {
+      droppedSessions.delete(sessionId)
       const requestId = String(payload.request_id ?? nextMessageId('cl'))
 
       const questions = clarifyQuestions(payload)
@@ -879,7 +923,15 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
                 }
           }
 
-          const current = { ...existing, answers: { ...payload.answers, ...existing.answers } }
+          const current = {
+            ...existing,
+            answers: {
+              ...payload.answers,
+              ...existing.answers,
+              ...transcript.clarifyAnswers?.[requestId]
+            }
+          }
+
           const waiting = clarifyWaiting(current)
 
           return {
@@ -906,7 +958,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         added = true
 
         const clarify: ClarifyRequest = {
-          answers: payload.answers ?? {},
+          answers: { ...payload.answers, ...transcript.clarifyAnswers?.[requestId] },
           questions,
           receivedAt: Date.now(),
           requestId,
@@ -945,13 +997,135 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       })
     },
 
+    approvalResolved(sessionId, payload, attempt) {
+      if (droppedSessions.has(sessionId)) {
+        return
+      }
+
+      update(sessionId, transcript => {
+        if (attempt && attempt.epoch !== transcript.epoch) {
+          return transcript
+        }
+
+        const requestId = payload.request_id
+        const choice = transcript.approvalDecisions?.[requestId] ?? payload.choice
+        const card = transcript.approvals.find(item => item.requestId === requestId)
+
+        const confirmed = transcript.waitingRequests?.some(
+          item => item.kind === 'approval' && item.requestId === requestId
+        )
+
+        const answered =
+          card &&
+          !card.decision &&
+          confirmed &&
+          (!attempt ||
+            attempt.revision === transcript.authorityRevision ||
+            confirmedReplay(transcript, 'approval', requestId))
+
+        if (
+          transcript.approvalDecisions?.[requestId] === choice &&
+          (!card || card.decision === choice)
+        ) {
+          return transcript
+        }
+
+        return {
+          ...transcript,
+          authorityRevision: answered ? ++authorityRevision : transcript.authorityRevision,
+          approvalDecisions: { ...transcript.approvalDecisions, [requestId]: choice },
+          liveStatus:
+            answered && transcript.liveStatus !== 'working' ? undefined : transcript.liveStatus,
+          answeredWaiting: answered ? { kind: 'approval', requestId } : transcript.answeredWaiting,
+          waitingRequests: transcript.waitingRequests?.filter(
+            item => item.kind !== 'approval' || item.requestId !== requestId
+          ),
+          approvals: transcript.approvals.map(item =>
+            item === card ? { ...item, decision: choice } : item
+          )
+        }
+      })
+    },
+
+    clarifyResolved(sessionId, payload, attempt) {
+      if (droppedSessions.has(sessionId)) {
+        return
+      }
+
+      update(sessionId, transcript => {
+        if (attempt && attempt.epoch !== transcript.epoch) {
+          return transcript
+        }
+
+        const requestId = payload.request_id
+        const saved = transcript.clarifyAnswers?.[requestId] ?? {}
+        const answers = { ...payload.answers, ...saved }
+        const card = transcript.clarifies.find(item => item.requestId === requestId)
+        const updated = card && { ...card, answers: { ...card.answers, ...answers } }
+        const settled = payload.status === 'answered' && (!updated || clarifyAnswered(updated))
+
+        const confirmed = transcript.waitingRequests?.some(
+          item => item.kind === 'clarify' && item.requestId === requestId
+        )
+
+        const changed =
+          !sameAnswers(saved, answers) ||
+          (settled && !transcript.settledClarifyIds?.includes(requestId))
+
+        const answered =
+          settled &&
+          card &&
+          clarifyWaiting(card) &&
+          confirmed &&
+          (!attempt ||
+            attempt.revision === transcript.authorityRevision ||
+            confirmedReplay(transcript, 'clarify', requestId))
+
+        if (!changed) {
+          return transcript
+        }
+
+        const revision = confirmed ? ++authorityRevision : transcript.authorityRevision
+
+        return {
+          ...transcript,
+          authorityRevision: revision,
+          clarifyAnswers: { ...transcript.clarifyAnswers, [requestId]: answers },
+          liveStatus:
+            answered && transcript.liveStatus !== 'working' ? undefined : transcript.liveStatus,
+          answeredWaiting: answered ? { kind: 'clarify', requestId } : transcript.answeredWaiting,
+          settledClarifyIds: settled
+            ? [...new Set([...(transcript.settledClarifyIds ?? []), requestId])]
+            : transcript.settledClarifyIds,
+          waitingRequests: settled
+            ? transcript.waitingRequests?.filter(
+                item => item.kind !== 'clarify' || item.requestId !== requestId
+              )
+            : transcript.waitingRequests?.map(item =>
+                item.kind === 'clarify' && item.requestId === requestId
+                  ? { ...item, revision }
+                  : item
+              ),
+          clarifies: transcript.clarifies.map(item => (item === card ? updated! : item))
+        }
+      })
+    },
+
     async respondApproval(sessionId, requestId, choice) {
       const before = get().bySession[sessionId]
       const attempt = before && { epoch: before.epoch, revision: before.authorityRevision }
       const result = await approvalRespond(sessionId, requestId, choice)
 
       if (result.resolved && attempt && get().bySession[sessionId]) {
-        get().resolveApproval(sessionId, requestId, choice, attempt)
+        if (result.choice) {
+          get().approvalResolved(
+            sessionId,
+            { request_id: requestId, choice: result.choice },
+            attempt
+          )
+        } else {
+          get().resolveApproval(sessionId, requestId, choice, attempt)
+        }
       }
     },
 
@@ -961,10 +1135,18 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       const result = await clarifyRespond(sessionId, requestId, answer, questionId)
 
       if (attempt && get().bySession[sessionId]) {
-        get().answerClarify(sessionId, requestId, questionId ?? requestId, answer, {
-          ...attempt,
-          answered: result.status === 'answered'
-        })
+        if (result.answers && (result.status === 'answered' || result.status === 'waiting')) {
+          get().clarifyResolved(
+            sessionId,
+            { request_id: requestId, answers: result.answers, status: result.status },
+            attempt
+          )
+        } else {
+          get().answerClarify(sessionId, requestId, questionId ?? requestId, answer, {
+            ...attempt,
+            answered: result.status === 'answered'
+          })
+        }
       }
     },
 
@@ -974,9 +1156,20 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           return transcript
         }
 
+        const canonical = transcript.clarifyAnswers?.[requestId]
+
         const clarifies = transcript.clarifies.map(item =>
           item.requestId === requestId
-            ? { ...item, answers: { ...item.answers, [questionId]: answer } }
+            ? {
+                ...item,
+                answers: {
+                  ...item.answers,
+                  [questionId]:
+                    canonical && Object.hasOwn(canonical, questionId)
+                      ? canonical[questionId]!
+                      : answer
+                }
+              }
             : item
         )
 

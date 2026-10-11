@@ -23,6 +23,7 @@ import { KICKOFF_MARKER } from '../lib/bot-kickoff'
 import type { Bot, BotStatus, ClarifyRequest, Message, Section } from '../lib/types'
 
 import { draftsActions } from './drafts'
+import { useRooms } from './rooms'
 import { clarifyWaiting, type Transcript, transcriptRevision, useTranscripts } from './transcripts'
 
 /**
@@ -271,11 +272,9 @@ function openedSection(section: Section, request: number): Section {
     : section
 }
 
-/** A successful edit is newer than any list already in flight for that bot. */
-function sectionChanged(bot: string, id: string): void {
-  const request = ++sectionsRequest
-  botSectionsRequests.set(bot, request)
-  acceptSection(id, request)
+/** A successful edit protects this row without discarding siblings from an in-flight list. */
+function sectionChanged(id: string): void {
+  acceptSection(id, ++sectionsRequest)
 }
 
 export const useSections = create<SectionsState>((set, get) => ({
@@ -311,7 +310,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       }
 
       set(state => {
-        // A full reply can still update other bots after a newer scoped reply or edit.
+        // A full reply can still update other bots after a newer scoped reply.
         const preserve = (name: string) =>
           bot ? name !== bot : (botSectionsRequests.get(name) ?? 0) > request
 
@@ -511,7 +510,7 @@ export const useSections = create<SectionsState>((set, get) => ({
   async create(bot, title) {
     const { section } = await sectionsCreate(bot, title)
 
-    sectionChanged(section.bot, section.id)
+    sectionChanged(section.id)
     set(state => ({
       ...mergeSection(state, section),
       liveSessionId: section.live_session_id
@@ -530,7 +529,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       return
     }
 
-    sectionChanged(section.bot, section.id)
+    sectionChanged(section.id)
     set(state => mergeEditedSection(state, section, true))
   },
 
@@ -542,7 +541,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       return
     }
 
-    sectionChanged(section.bot, section.id)
+    sectionChanged(section.id)
     set(state => mergeEditedSection(state, section))
   },
 
@@ -554,7 +553,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       return
     }
 
-    sectionChanged(section.bot, section.id)
+    sectionChanged(section.id)
     set(state => mergeEditedSection(state, section))
   },
 
@@ -569,10 +568,6 @@ export const useSections = create<SectionsState>((set, get) => ({
     const request = ++sectionsRequest
     removedSectionRequests.set(id, { active: true, bot, request })
     sectionRequests.set(id, request)
-
-    if (bot) {
-      botSectionsRequests.set(bot, request)
-    }
 
     draftsActions().clear(id)
 
@@ -657,11 +652,24 @@ export type LiveSections = Record<
   BotStatus | 'answered' | { status: 'idle' | 'needs_you' | 'working'; retryResolved?: string }
 >
 
+function confirmedWaiting(transcript: Partial<Parameters<typeof liveSectionsOf>[0][string]>) {
+  return Boolean(
+    transcript.waitingRequests?.some(request =>
+      request.kind === 'approval'
+        ? transcript.approvals?.some(item => item.requestId === request.requestId && !item.decision)
+        : transcript.clarifies?.some(
+            item => item.requestId === request.requestId && clarifyWaiting(item)
+          )
+    )
+  )
+}
+
 /** What each open transcript says about its section: a card waiting on you, a reply streaming, or neither. */
 export function liveSectionsOf(
   bySession: Record<
     string,
     {
+      bot?: string
       answeredWaiting?: { kind: 'approval' | 'clarify'; requestId: string }
       waitingRequests?: { kind: 'approval' | 'clarify'; requestId: string }[]
       retryResolved?: boolean
@@ -681,13 +689,7 @@ export function liveSectionsOf(
       continue
     }
 
-    const asking = transcript.waitingRequests?.some(request =>
-      request.kind === 'approval'
-        ? transcript.approvals.some(item => item.requestId === request.requestId && !item.decision)
-        : transcript.clarifies.some(
-            item => item.requestId === request.requestId && clarifyWaiting(item)
-          )
-    )
+    const asking = confirmedWaiting(transcript)
 
     const answered = transcript.answeredWaiting
 
@@ -782,6 +784,25 @@ export function sectionStatusOf(
   return typeof own === 'object' ? own.status : own === 'answered' ? 'working' : (own ?? 'idle')
 }
 
+function freshSessionStatus(
+  session: Partial<Parameters<typeof liveSectionsOf>[0][string]> | undefined
+): BotStatus | undefined {
+  if (!session?.sectionId) {
+    return undefined
+  }
+
+  const fresh = liveSectionsOf({
+    own: {
+      ...session,
+      approvals: session.approvals ?? [],
+      clarifies: session.clarifies ?? [],
+      streamingMessageId: null
+    }
+  })[session.sectionId]
+
+  return fresh === 'answered' ? 'working' : typeof fresh === 'object' ? fresh.status : undefined
+}
+
 /**
  * A bot's dot: the daemon's word for the section it names, unless a live
  * section is waiting on you right now. Archived sections no longer count.
@@ -814,9 +835,15 @@ export function botStatusWithLive(
     .map(section => sectionStatusOf(bot, section.id, live))
 
   const named = bot.status_detail?.section_id
+  const rooms = useRooms.getState()
+  const archivedRoom = detail?.room_id && rooms.byId[detail.room_id]?.archived_at
 
   // Rooms and private threads are absent from the section index but still count.
-  if (!deletedRetry(bot) && (!named || !sections.some(section => section.id === named))) {
+  if (
+    !archivedRoom &&
+    !deletedRetry(bot) &&
+    (!named || !sections.some(section => section.id === named))
+  ) {
     const session = detail?.session_id ? sessions[detail.session_id] : undefined
 
     const ownsSession =
@@ -825,25 +852,49 @@ export function botStatusWithLive(
         ? session.sectionId === `room:${detail.room_id}`
         : named && session.sectionId === named)
 
-    const sessionLive = ownsSession
-      ? liveSectionsOf({
-          own: {
-            ...session,
-            approvals: session.approvals ?? [],
-            clarifies: session.clarifies ?? [],
-            streamingMessageId: null
-          }
-        })[session.sectionId!]
-      : undefined
-
-    const fresh =
-      sessionLive === 'answered'
-        ? 'working'
-        : typeof sessionLive === 'object'
-          ? sessionLive.status
-          : undefined
+    const fresh = ownsSession ? freshSessionStatus(session) : undefined
 
     own.push(fresh ?? (named ? sectionStatusOf(bot, named, live) : status))
+  }
+
+  const indexed = useSections.getState()
+
+  for (const [sessionId, session] of Object.entries(sessions)) {
+    const id = session.sectionId
+
+    if (session.bot !== bot.name || !id || sections.some(section => section.id === id)) {
+      continue
+    }
+
+    const row = indexed.byId[id]
+    const removed = removedSectionRequests.get(id)
+
+    if (
+      row?.archived_at ||
+      (row && row.bot !== bot.name) ||
+      (removed?.active && (!removed.bot || removed.bot === bot.name))
+    ) {
+      continue
+    }
+
+    const roomId = id.startsWith('room:') ? id.slice('room:'.length) : undefined
+
+    if (roomId && rooms.byId[roomId]?.archived_at) {
+      continue
+    }
+
+    const current = roomId
+      ? rooms.liveTurnsByRoom[roomId]?.[bot.name]?.live_session_id
+      : indexed.liveSessionId[id]
+
+    // A thread may ask before any client has opened it; the card confirms its ownership.
+    if (current === sessionId || (!roomId && !current && confirmedWaiting(session))) {
+      const fresh = freshSessionStatus(session)
+
+      if (fresh) {
+        own.push(fresh)
+      }
+    }
   }
 
   return own.includes('needs_you') ? 'needs_you' : own.includes('working') ? 'working' : 'idle'

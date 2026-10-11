@@ -235,9 +235,13 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
   if (
     (event.type === 'approval.request' || event.type === 'clarify.request') &&
     typeof payload.section_id === 'string' &&
-    !transcripts.bySession[sessionId]?.sectionId
+    (!transcripts.bySession[sessionId]?.sectionId || typeof payload.bot === 'string')
   ) {
-    transcripts.setSectionId(sessionId, payload.section_id)
+    transcripts.setSectionId(
+      sessionId,
+      transcripts.bySession[sessionId]?.sectionId ?? payload.section_id,
+      typeof payload.bot === 'string' ? payload.bot : undefined
+    )
   }
 
   switch (event.type) {
@@ -252,6 +256,39 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       transcripts.clarifyRequest(sessionId, payload as ClarifyRequestPayload, {
         notify: botNotifies(cardBot(payload, transcripts.bySession[sessionId]?.sectionId))
       })
+
+      return
+
+    case 'approval.resolved':
+      if (
+        typeof payload.request_id === 'string' &&
+        payload.request_id &&
+        (payload.choice === 'once' || payload.choice === 'session' || payload.choice === 'deny')
+      ) {
+        transcripts.approvalResolved(sessionId, {
+          request_id: payload.request_id,
+          choice: payload.choice
+        })
+      }
+
+      return
+
+    case 'clarify.resolved':
+      if (
+        typeof payload.request_id === 'string' &&
+        payload.request_id &&
+        (payload.status === 'answered' || payload.status === 'waiting') &&
+        payload.answers &&
+        typeof payload.answers === 'object' &&
+        !Array.isArray(payload.answers) &&
+        Object.values(payload.answers).every(answer => typeof answer === 'string')
+      ) {
+        transcripts.clarifyResolved(sessionId, {
+          request_id: payload.request_id,
+          answers: payload.answers as Record<string, string>,
+          status: payload.status
+        })
+      }
 
       return
 

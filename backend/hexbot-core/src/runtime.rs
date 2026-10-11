@@ -77,6 +77,7 @@ struct Live {
     tools: Vec<Value>,
     requests: Mutex<tokio::task::JoinSet<()>>,
     event_gate: Mutex<()>,
+    answer_gate: AsyncMutex<()>,
     attachment_gate: AsyncMutex<()>,
     permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
     /// Provider, model and thinking level the Pi process runs with.
@@ -276,7 +277,11 @@ impl Runtime {
     fn emit(&self, s: &Live, kind: &str, mut payload: Value) {
         // A card names its bot and section, so a client that does not list the section (a
         // private thread) still honours that bot's Notify me and can notify about it.
-        if matches!(kind, "approval.request" | "clarify.request") && payload.is_object() {
+        if matches!(
+            kind,
+            "approval.request" | "clarify.request" | "approval.resolved" | "clarify.resolved"
+        ) && payload.is_object()
+        {
             payload["bot"] = json!(s.bot);
             payload["section_id"] = json!(s.stored);
         }
@@ -921,6 +926,7 @@ impl Runtime {
             }),
             requests: Mutex::new(tokio::task::JoinSet::new()),
             event_gate: Mutex::new(()),
+            answer_gate: AsyncMutex::new(()),
             attachment_gate: AsyncMutex::new(()),
             permit: Mutex::new(Some(permit)),
             settled,
@@ -1891,101 +1897,136 @@ impl Runtime {
             ),
             "approval.respond" | "clarify.respond" => {
                 let id = required(p, "request_id")?;
-                let request = s
-                    .state
-                    .lock()
-                    .unwrap()
-                    .pending
-                    .get(id)
-                    .cloned()
-                    .ok_or_else(|| Error::new(4204, "request is no longer waiting"))?;
-                let answer = if method == "approval.respond" {
-                    if request["kind"] != "approval" {
-                        return Err(Error::new(4202, "not an approval request"));
+                let _answer_guard = s.answer_gate.lock().await;
+                let (request, answer, settlement, response) = {
+                    let _gate = s.event_gate.lock().unwrap();
+                    let mut state = s.state.lock().unwrap();
+                    if state.closed || state.interrupted {
+                        return Err(Error::new(4204, "request is no longer waiting"));
                     }
-                    let offered = |choice: &str| {
-                        request["approval_payload"]["choices"]
-                            .as_array()
-                            .is_some_and(|choices| choices.iter().any(|c| c == choice))
-                    };
-                    // Apps from before Always allow was removed still send it.
-                    let choice = match required(p, "choice")? {
-                        "always" if offered("session") => "session",
-                        "always" => "once",
-                        choice => choice,
-                    };
-                    if !offered(choice) {
-                        return Err(Error::new(4202, "invalid approval choice"));
-                    }
-                    if request["method"] == "confirm" {
-                        json!({"confirmed":choice!="deny"})
+                    let request = state
+                        .pending
+                        .get(id)
+                        .cloned()
+                        .ok_or_else(|| Error::new(4204, "request is no longer waiting"))?;
+                    let (answer, settlement, response) = if method == "approval.respond" {
+                        if request["kind"] != "approval" {
+                            return Err(Error::new(4202, "not an approval request"));
+                        }
+                        let offered = |choice: &str| {
+                            request["approval_payload"]["choices"]
+                                .as_array()
+                                .is_some_and(|choices| choices.iter().any(|c| c == choice))
+                        };
+                        // Apps from before Always allow was removed still send it.
+                        let choice = match required(p, "choice")? {
+                            "always" if offered("session") => "session",
+                            "always" => "once",
+                            choice => choice,
+                        };
+                        if !offered(choice) {
+                            return Err(Error::new(4202, "invalid approval choice"));
+                        }
+                        (
+                            if request["method"] == "confirm" {
+                                json!({"confirmed":choice!="deny"})
+                            } else {
+                                json!({"value":choice})
+                            },
+                            json!({"request_id":id,"choice":choice}),
+                            json!({"resolved":true,"choice":choice}),
+                        )
                     } else {
-                        json!({"value":choice})
-                    }
-                } else {
-                    if request["kind"] != "clarify" {
-                        return Err(Error::new(4202, "not a clarification request"));
-                    }
-                    if let Some(questions) = request["clarify_payload"]["questions"].as_array() {
-                        let question_id = required(p, "question_id")?;
-                        if !questions.iter().any(|q| q["qid"] == question_id) {
-                            return Err(Error::new(4202, "unknown question"));
+                        if request["kind"] != "clarify" {
+                            return Err(Error::new(4202, "not a clarification request"));
                         }
-                        let mut state = s.state.lock().unwrap();
-                        let pending = state
-                            .pending
-                            .get_mut(id)
-                            .ok_or_else(|| Error::new(4204, "question expired"))?;
-                        if !pending["answers"].is_object() {
-                            pending["answers"] = json!({});
+                        let text = p["answer"].as_str().unwrap_or("");
+                        let mut answers =
+                            request["answers"].as_object().cloned().unwrap_or_default();
+                        if let Some(questions) = request["clarify_payload"]["questions"].as_array()
+                        {
+                            let question_id = required(p, "question_id")?;
+                            if !questions.iter().any(|q| q["qid"] == question_id) {
+                                return Err(Error::new(4202, "unknown question"));
+                            }
+                            if answers.contains_key(question_id) {
+                                return Err(Error::new(4202, "question was already answered"));
+                            }
+                            answers.insert(question_id.into(), json!(text));
+                            let remaining = questions
+                                .iter()
+                                .filter_map(|q| q["qid"].as_str())
+                                .filter(|qid| !answers.contains_key(*qid))
+                                .collect::<Vec<_>>();
+                            if !remaining.is_empty() {
+                                state.pending.get_mut(id).unwrap()["answers"] = json!(answers);
+                                drop(state);
+                                self.emit(&s, "clarify.resolved", json!({"request_id":id,"answers":answers,"status":"waiting","remaining":remaining}));
+                                return Ok(
+                                    json!({"status":"waiting","remaining":remaining,"answers":answers}),
+                                );
+                            }
+                        } else {
+                            answers.insert(id.into(), json!(text));
                         }
-                        if pending["answers"].get(question_id).is_some() {
-                            return Err(Error::new(4202, "question was already answered"));
-                        }
-                        pending["answers"][question_id] = json!(p["answer"].as_str().unwrap_or(""));
-                        let remaining = questions
-                            .iter()
-                            .filter_map(|q| q["qid"].as_str())
-                            .filter(|qid| pending["answers"].get(*qid).is_none())
-                            .collect::<Vec<_>>();
-                        if !remaining.is_empty() {
-                            return Ok(json!({"status":"waiting","remaining":remaining}));
-                        }
-                        json!({"value":pending["answers"].to_string()})
-                    } else {
-                        json!({"value":p["answer"].as_str().unwrap_or("")})
-                    }
+                        (
+                            json!({"value":if request["clarify_payload"]["questions"].is_array() { json!(answers).to_string() } else { text.to_owned() }}),
+                            json!({"request_id":id,"answers":answers,"status":"answered"}),
+                            json!({"status":"answered","answers":answers}),
+                        )
+                    };
+                    (request, answer, settlement, response)
                 };
-                // The bot was waiting on the owner; it works again.
-                let resumed = json!({"kind":"working","text":"Working"});
-                if request["method"] == "native" {
+                if request["method"] != "native" {
+                    s.process
+                        .respond_extension(id, answer.clone(), DEADLINE)
+                        .await
+                        .map_err(pi_error)?;
+                }
+                {
+                    let _gate = s.event_gate.lock().unwrap();
+                    let mut state = s.state.lock().unwrap();
+                    if state.closed
+                        || state.interrupted
+                        || state
+                            .pending
+                            .get(id)
+                            .is_some_and(|current| current != &request)
                     {
-                        let mut state = s.state.lock().unwrap();
-                        if let Some(sender) = state.native_approvals.remove(id) {
-                            let _ =
-                                sender.send(answer["value"].as_str().unwrap_or("deny").to_owned());
-                        }
-                        state.pending.remove(id);
+                        return Err(Error::new(4204, "request is no longer waiting"));
                     }
-                    self.emit(&s, "status.update", resumed);
+                    if request["method"] == "native" {
+                        state
+                            .native_approvals
+                            .remove(id)
+                            .ok_or_else(|| Error::new(4204, "request is no longer waiting"))?
+                            .send(answer["value"].as_str().unwrap_or("deny").to_owned())
+                            .map_err(|_| Error::new(4204, "request is no longer waiting"))?;
+                    }
+                    state.pending.remove(id);
+                    let busy = state.busy;
+                    drop(state);
+                    self.emit(
+                        &s,
+                        if method == "approval.respond" {
+                            "approval.resolved"
+                        } else {
+                            "clarify.resolved"
+                        },
+                        settlement,
+                    );
+                    // Pi may have completed while its answer was being written.
+                    if busy {
+                        self.emit(
+                            &s,
+                            "status.update",
+                            json!({"kind":"working","text":"Working"}),
+                        );
+                    }
                     self.events
                         .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
-                    return Ok(json!({"resolved":true}));
                 }
-                s.process
-                    .respond_extension(id, answer, DEADLINE)
-                    .await
-                    .map_err(pi_error)?;
-                s.state.lock().unwrap().pending.remove(id);
-                self.emit(&s, "status.update", resumed);
-                // The roster stops showing Waiting as soon as the answer lands.
-                self.events
-                    .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
-                Ok(if method == "approval.respond" {
-                    json!({"resolved":true})
-                } else {
-                    json!({"status":"answered"})
-                })
+                Ok(response)
             }
             "image.attach_bytes" | "pdf.attach" | "file.attach" => self.attach(&s, method, p).await,
             "attachments.clear" => self.clear_attachments(&s).await,
@@ -2331,8 +2372,9 @@ impl Runtime {
         payload["request_id"] = json!(id);
         payload["choices"] = json!(["once", "deny"]);
         {
+            let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
-            if state.closed {
+            if state.closed || state.interrupted {
                 return Ok(false);
             }
             state.native_approvals.insert(id.clone(), sender);
@@ -2340,10 +2382,11 @@ impl Runtime {
                 id.clone(),
                 json!({"kind":"approval","method":"native","approval_payload":payload}),
             );
+            drop(state);
+            self.emit(s, "approval.request", payload);
+            self.events
+                .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
         }
-        self.emit(s, "approval.request", payload);
-        self.events
-            .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
         let answer = receiver.await.unwrap_or_else(|_| "deny".into());
         s.state.lock().unwrap().pending.remove(&id);
         Ok(answer != "deny")
@@ -4651,8 +4694,17 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         };
         assert_eq!(respond("session").await.unwrap_err().code, 4202);
         // An older app's Always allow approves once where a section choice is not offered.
-        respond("always").await.unwrap();
+        assert_eq!(respond("always").await.unwrap()["choice"], "once");
         assert!(worker.await.unwrap());
+        let replay = hub.since("alice", &s.id, 0);
+        let resolved = replay["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["type"] == "approval.resolved")
+            .unwrap();
+        assert_eq!(resolved["payload"]["request_id"], payload["request_id"]);
+        assert_eq!(resolved["payload"]["choice"], "once");
         db::open(home.path())
             .unwrap()
             .execute_batch("UPDATE bots SET approval_mode='off'")

@@ -29,7 +29,7 @@ Reopen a section to continue the same task. Closing the app or restarting the da
 
 Waiting means a bot needs your answer. If another question or approval still needs an answer, the sidebar keeps Waiting. Once all answers let it resume, the sidebar shows Working even before text starts streaming. Each active section keeps its own status when the bot is also working in another section. Saving bot settings keeps that status. Reconnecting after a brief disconnect keeps Waiting for questions and approvals that still need an answer.
 
-Reopening restores pending approvals and questions. If more than one answer is needed, each card stays available until it is answered or expires.
+Reopening restores pending approvals and questions. Answering in another connected app or browser updates the matching card here too. If more than one answer is needed, each card stays available until it is answered or expires. The bot also shows Waiting when a room or teammate conversation needs your answer.
 
 Soul, selected skills, tool definitions, and the teammate list stay fixed for an existing conversation. Start a new section after changing them so the bot receives the new setup. Credentials and runtime settings can update separately; a temporary section model override does not change the bot's default model.
 

@@ -1,5 +1,143 @@
 use super::*;
 
+#[tokio::test]
+async fn dialog_delivery_failure_keeps_partial_answers_unsettled() {
+    let (_home, runtime, hub) = setup();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    s.state.lock().unwrap().busy = true;
+    runtime.event(&s, json!({"type":"extension_ui_request","id":"batch","method":"input","title":format!("__HEXBOT_CLARIFY__{}",json!({"questions":[{"qid":"first","question":"First?"},{"qid":"last","question":"Last?"}]}))})).unwrap();
+    let partial = runtime.call_inner("alice", "clarify.respond", &json!({"session_id":id,"request_id":"batch","question_id":"first","answer":"Accepted"})).await.unwrap();
+    assert_eq!(partial["status"], "waiting");
+    let pending = s.state.lock().unwrap().pending["batch"].clone();
+    let mut stopped = s.settled.subscribe();
+    let before_stop = *stopped.borrow();
+    s.process.shutdown().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while *stopped.borrow() == before_stop {
+            stopped.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    // Exercise the window where the transport has stopped but the received
+    // card has not yet been cleared by the section's terminal event.
+    {
+        let _gate = s.event_gate.lock().unwrap();
+        let mut state = s.state.lock().unwrap();
+        state.closed = false;
+        state.interrupted = false;
+        state.pending.insert("batch".into(), pending);
+    }
+    runtime
+        .sessions
+        .lock()
+        .unwrap()
+        .insert("first".into(), s.clone());
+    let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+    let failed = runtime.call_inner("alice", "clarify.respond", &json!({"session_id":id,"request_id":"batch","question_id":"last","answer":"Not delivered"})).await.unwrap_err();
+    assert_eq!(failed.code, 5201);
+    assert_eq!(
+        s.state.lock().unwrap().pending["batch"]["answers"],
+        json!({"first":"Accepted"})
+    );
+    assert_eq!(hub.since("alice", &id, before)["count"], 0);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelling_queued_and_inflight_dialog_answers_cannot_publish_settlement() {
+    for queued in [true, false] {
+        let (_home, runtime, hub) = setup();
+        let id = open(&runtime).await;
+        let s = runtime.sessions.lock().unwrap()["first"].clone();
+        s.state.lock().unwrap().busy = true;
+        runtime.event(&s, json!({"type":"extension_ui_request","id":"allow","method":"select","title":format!("__HEXBOT_APPROVAL__{}",json!({"tool":"bash","command":"pwd"})),"options":["once","deny"]})).unwrap();
+        let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+        let guard = if queued {
+            Some(s.answer_gate.lock().await)
+        } else {
+            None
+        };
+        let params = json!({"session_id":id,"request_id":"allow","choice":"once"});
+        let answer = runtime.call_inner("alice", "approval.respond", &params);
+        tokio::pin!(answer);
+        assert!(futures_util::poll!(&mut answer).is_pending());
+        let result = if queued {
+            Runtime::cancel_dialogs(&s).await;
+            drop(guard);
+            answer.await
+        } else {
+            // The answer owns admission and awaits its write acknowledgement.
+            assert!(s.answer_gate.try_lock().is_err());
+            let (_, result) = tokio::join!(Runtime::cancel_dialogs(&s), answer);
+            result
+        };
+        assert_eq!(result.unwrap_err().code, 4204);
+        assert!(s.state.lock().unwrap().pending.is_empty());
+        assert_eq!(hub.since("alice", &id, before)["count"], 0);
+        runtime.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn an_old_dialog_settlement_keeps_newer_questions_waiting() {
+    let (_home, runtime, hub) = setup();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    s.state.lock().unwrap().busy = true;
+    runtime.event(&s, json!({"type":"extension_ui_request","id":"old","method":"input","title":"Old question?"})).unwrap();
+    let params = json!({"session_id":id,"request_id":"old","answer":"Old answer"});
+    let answer = runtime.call_inner("alice", "clarify.respond", &params);
+    tokio::pin!(answer);
+    assert!(futures_util::poll!(&mut answer).is_pending());
+    assert!(s.answer_gate.try_lock().is_err());
+    runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
+    s.state.lock().unwrap().busy = true;
+    runtime.event(&s, json!({"type":"agent_start"})).unwrap();
+    runtime.event(&s, json!({"type":"extension_ui_request","id":"new","method":"input","title":"New question?"})).unwrap();
+    let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+    assert_eq!(answer.await.unwrap()["status"], "answered");
+    let replay = hub.since("alice", &id, before);
+    assert_eq!(replay["events"][0]["type"], "clarify.resolved");
+    assert_eq!(replay["events"][0]["payload"]["request_id"], "old");
+    assert!(s.state.lock().unwrap().pending.contains_key("new"));
+    assert_eq!(
+        runtime.status_for_bot("alice", "owl").unwrap()["status"],
+        "needs_you"
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_late_dialog_settlement_does_not_emit_working_after_completion() {
+    let (_home, runtime, hub) = setup();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    s.state.lock().unwrap().busy = true;
+    runtime
+        .event(
+            &s,
+            json!({"type":"extension_ui_request","id":"single","method":"input","title":"Why?"}),
+        )
+        .unwrap();
+    let params = json!({"session_id":id,"request_id":"single","answer":"Because"});
+    let answer = runtime.call_inner("alice", "clarify.respond", &params);
+    tokio::pin!(answer);
+    assert!(futures_util::poll!(&mut answer).is_pending());
+    assert!(s.answer_gate.try_lock().is_err());
+    runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
+    let after_complete = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+    let response = answer.await.unwrap();
+    assert_eq!(response["answers"], json!({"single":"Because"}));
+    let replay = hub.since("alice", &id, after_complete);
+    assert_eq!(replay["count"], 1);
+    assert_eq!(replay["events"][0]["type"], "clarify.resolved");
+    assert_eq!(replay["events"][0]["payload"]["status"], "answered");
+    assert!(!s.state.lock().unwrap().busy);
+    runtime.shutdown().await;
+}
+
 fn setup() -> (common::TestHome, Arc<Runtime>, EventHub) {
     let home = common::TestHome::new();
     db::migrate(home.path()).unwrap();
