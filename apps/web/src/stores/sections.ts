@@ -139,6 +139,14 @@ function mergeSection(state: SectionsState, section: Section): Partial<SectionsS
 }
 
 let sectionsRequest = 0
+let latestSectionsRefresh = 0
+let fullSectionsRequest = 0
+const botSectionsRequests = new Map<string, number>()
+
+/** A successful edit is newer than any list already in flight for that bot. */
+function sectionChanged(bot: string): void {
+  botSectionsRequests.set(bot, ++sectionsRequest)
+}
 
 export const useSections = create<SectionsState>((set, get) => ({
   byId: {},
@@ -150,31 +158,66 @@ export const useSections = create<SectionsState>((set, get) => ({
 
   async refresh(options = {}) {
     const request = ++sectionsRequest
+    latestSectionsRefresh = request
+    const bot = options.bot
+
+    if (bot) {
+      botSectionsRequests.set(bot, request)
+    } else {
+      fullSectionsRequest = request
+    }
+
     set({ error: null, loading: true })
 
     try {
       const result = await sectionsList({ include_archived: true, ...options })
 
-      // Changes arrive in bursts; an older list must not land over a newer one.
-      if (request !== sectionsRequest) {
+      const current = bot
+        ? botSectionsRequests.get(bot) === request && fullSectionsRequest < request
+        : fullSectionsRequest === request
+
+      if (!current) {
         return
       }
 
-      set(state => ({
-        ...indexSections(result.sections ?? [], state.sendingTitles),
-        liveSessionId: {
-          ...state.liveSessionId,
-          ...Object.fromEntries(
-            (result.sections ?? [])
-              .filter(section => section.live_session_id)
-              .map(section => [section.id, section.live_session_id as string])
-          )
-        },
-        loading: false
-      }))
+      set(state => {
+        // A full reply can still update other bots after a newer scoped request or edit.
+        const preserve = (name: string) =>
+          bot ? name !== bot : (botSectionsRequests.get(name) ?? 0) > request
+
+        const incoming = (result.sections ?? []).filter(section => !preserve(section.bot))
+        const indexed = indexSections(incoming, state.sendingTitles)
+
+        return {
+          byId: {
+            ...Object.fromEntries(
+              Object.entries(state.byId).filter(([, section]) => preserve(section.bot))
+            ),
+            ...indexed.byId
+          },
+          idsByBot: {
+            ...Object.fromEntries(
+              Object.entries(state.idsByBot).filter(([name]) => preserve(name))
+            ),
+            ...indexed.idsByBot
+          },
+          liveSessionId: {
+            ...state.liveSessionId,
+            ...Object.fromEntries(
+              incoming
+                .filter(section => section.live_session_id)
+                .map(section => [section.id, section.live_session_id as string])
+            )
+          }
+        }
+      })
     } catch (error) {
-      if (request === sectionsRequest) {
-        set({ error: error instanceof Error ? error.message : String(error), loading: false })
+      if (request === latestSectionsRefresh) {
+        set({ error: error instanceof Error ? error.message : String(error) })
+      }
+    } finally {
+      if (request === latestSectionsRefresh) {
+        set({ loading: false })
       }
     }
   },
@@ -183,22 +226,21 @@ export const useSections = create<SectionsState>((set, get) => ({
     const { context, messages, pending_clarify, section } = await sectionsOpen(id)
     const live = section.live_session_id
 
+    sectionChanged(section.bot)
     set(state => ({
       ...mergeSection(state, section),
       liveSessionId: live ? { ...state.liveSessionId, [id]: live } : state.liveSessionId
     }))
 
     if (live) {
-      useTranscripts
-        .getState()
-        .open(
-          live,
-          id,
-          messagesFromHistory(messages ?? []).filter(
-            // Hexbot replays an interrupted hidden kickoff as a plain user turn.
-            message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
-          )
+      useTranscripts.getState().open(
+        live,
+        id,
+        messagesFromHistory(messages ?? []).filter(
+          // Hexbot replays an interrupted hidden kickoff as a plain user turn.
+          message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
         )
+      )
 
       if (context) {
         useTranscripts.getState().sessionContext(live, context)
@@ -278,6 +320,7 @@ export const useSections = create<SectionsState>((set, get) => ({
   async create(bot, title) {
     const { section } = await sectionsCreate(bot, title)
 
+    sectionChanged(section.bot)
     set(state => ({
       ...mergeSection(state, section),
       liveSessionId: section.live_session_id
@@ -291,23 +334,32 @@ export const useSections = create<SectionsState>((set, get) => ({
   async rename(id, title) {
     const { section } = await sectionsRename(id, title)
 
+    sectionChanged(section.bot)
     set(state => mergeSection(state, section))
   },
 
   async archive(id) {
     const { section } = await sectionsArchive(id)
 
+    sectionChanged(section.bot)
     set(state => mergeSection(state, section))
   },
 
   async unarchive(id) {
     const { section } = await sectionsUnarchive(id)
 
+    sectionChanged(section.bot)
     set(state => mergeSection(state, section))
   },
 
   async remove(id, purgeMemory = true) {
+    const bot = get().byId[id]?.bot
     await sectionsDelete(id, purgeMemory)
+
+    if (bot) {
+      sectionChanged(bot)
+    }
+
     draftsActions().clear(id)
 
     const live = get().liveSessionId[id]
@@ -381,16 +433,22 @@ export async function introduceBot(section: Section, bot: Pick<Bot, 'name'>): Pr
   }
 }
 
-/** Per-section state the open transcripts know before the daemon does; `idle` means open and quiet. */
-export type LiveSections = Record<string, BotStatus>
+/** `answered` records a successful local answer since the last authoritative roster reply. */
+export type LiveSections = Record<string, BotStatus | 'answered'>
 
 /** What each open transcript says about its section: a card waiting on you, a reply streaming, or neither. */
 export function liveSectionsOf(
   bySession: Record<
     string,
     {
-      approvals: { decision?: unknown }[]
-      clarifies: { answers: Record<string, string>; expired?: boolean; questions: unknown[] }[]
+      answeredWaiting?: { kind: 'approval' | 'clarify'; requestId: string }
+      approvals: { decision?: unknown; requestId?: string }[]
+      clarifies: {
+        answers: Record<string, string>
+        expired?: boolean
+        questions: unknown[]
+        requestId?: string
+      }[]
       sectionId?: string
       streamingMessageId: null | string
     }
@@ -408,11 +466,26 @@ export function liveSectionsOf(
         item => !item.expired && Object.keys(item.answers).length < item.questions.length
       ) || transcript.approvals.some(item => !item.decision)
 
+    const answered = transcript.answeredWaiting
+
+    const hasAnswer =
+      answered?.kind === 'approval'
+        ? transcript.approvals.some(item => item.requestId === answered.requestId && item.decision)
+        : answered?.kind === 'clarify' &&
+          transcript.clarifies.some(
+            item =>
+              item.requestId === answered.requestId &&
+              !item.expired &&
+              Object.keys(item.answers).length >= item.questions.length
+          )
+
     live[transcript.sectionId] = asking
       ? 'needs_you'
-      : transcript.streamingMessageId
-        ? 'working'
-        : 'idle'
+      : hasAnswer
+        ? 'answered'
+        : transcript.streamingMessageId
+          ? 'working'
+          : 'idle'
   }
 
   return live
@@ -438,10 +511,10 @@ export function sectionStatusOf(
   const own = sectionId ? live[sectionId] : undefined
 
   if (status !== 'idle' && sectionId && bot?.status_detail?.section_id === sectionId) {
-    return status === 'needs_you' && own && own !== 'needs_you' ? 'working' : status
+    return status === 'needs_you' && own === 'answered' ? 'working' : status
   }
 
-  return own ?? 'idle'
+  return own === 'answered' ? 'working' : (own ?? 'idle')
 }
 
 /**
@@ -455,15 +528,16 @@ export function botStatusWithLive(bot: Bot, sections: Section[], live: LiveSecti
     return status
   }
 
-  const own = sections.filter(section => !section.archived_at).map(section => live[section.id])
-
-  if (own.includes('needs_you')) {
-    return 'needs_you'
-  }
+  const own = sections
+    .filter(section => !section.archived_at)
+    .map(section => sectionStatusOf(bot, section.id, live))
 
   const named = bot.status_detail?.section_id
-  const archived = sections.some(section => section.id === named && section.archived_at)
-  const reported = archived ? 'idle' : named ? sectionStatusOf(bot, named, live) : status
 
-  return reported !== 'idle' ? reported : own.includes('working') ? 'working' : 'idle'
+  // Rooms and private threads are absent from the section index but still count.
+  if (!named || !sections.some(section => section.id === named)) {
+    own.push(status)
+  }
+
+  return own.includes('needs_you') ? 'needs_you' : own.includes('working') ? 'working' : 'idle'
 }

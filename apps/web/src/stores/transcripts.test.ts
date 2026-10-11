@@ -1,3 +1,4 @@
+import { liveSectionsOf, sectionStatusOf } from './sections'
 import { resetTranscriptEffects, setTranscriptEffects, useTranscripts } from './transcripts'
 
 describe('transcript reducer', () => {
@@ -128,6 +129,50 @@ describe('transcript reducer', () => {
     const message = useTranscripts.getState().bySession.s!.messages[0]!
     expect(message.activity).toBeUndefined()
     expect(message.thinking).toBeUndefined()
+  })
+
+  it('records positive answer evidence only after the final question in a batch', () => {
+    const actions = useTranscripts.getState()
+    actions.open('s', 's1', [])
+    actions.clarifyRequest('s', {
+      request_id: 'q',
+      questions: [
+        { qid: 'a', question: 'One?' },
+        { qid: 'b', question: 'Two?' }
+      ]
+    })
+    actions.answerClarify('s', 'q', 'a', 'Yes')
+    expect(liveSectionsOf(useTranscripts.getState().bySession).s1).toBe('needs_you')
+    actions.answerClarify('s', 'q', 'b', 'No')
+    expect(liveSectionsOf(useTranscripts.getState().bySession).s1).toBe('answered')
+    actions.clearAnsweredWaiting()
+    expect(liveSectionsOf(useTranscripts.getState().bySession).s1).toBe('idle')
+  })
+
+  it('does not treat an expired card or a newly arriving card as answer evidence', () => {
+    const actions = useTranscripts.getState()
+    actions.open('s', 's1', [])
+    actions.clarifyRequest('s', { request_id: 'expired', question: 'Choose?' })
+    actions.clarifyExpire('s', 'expired')
+    expect(liveSectionsOf(useTranscripts.getState().bySession).s1).toBe('idle')
+    actions.approvalRequest('s', { request_id: 'first' })
+    actions.resolveApproval('s', 'first', 'once')
+    expect(liveSectionsOf(useTranscripts.getState().bySession).s1).toBe('answered')
+    actions.approvalRequest('s', { request_id: 'next' })
+    expect(useTranscripts.getState().bySession.s?.answeredWaiting).toBeUndefined()
+    expect(liveSectionsOf(useTranscripts.getState().bySession).s1).toBe('needs_you')
+  })
+
+  it('expires answer evidence when an authoritative status arrives without its card', () => {
+    const actions = useTranscripts.getState()
+    actions.open('s', 's1', [])
+    actions.approvalRequest('s', { request_id: 'first' })
+    actions.resolveApproval('s', 'first', 'deny')
+    actions.statusUpdate('s', { kind: 'waiting', text: 'Waiting for you' })
+    const bot = { status: 'needs_you', status_detail: { section_id: 's1' } } as never
+    expect(sectionStatusOf(bot, 's1', liveSectionsOf(useTranscripts.getState().bySession))).toBe(
+      'needs_you'
+    )
   })
 
   it('keeps an approval after its decision', () => {

@@ -21,6 +21,7 @@ import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
 import { sectionsActions } from '../stores/sections'
 import { settingsActions } from '../stores/settings'
+import { useTranscripts } from '../stores/transcripts'
 import { uiActions } from '../stores/ui'
 
 import { getBridge, type HexbotBridge } from './bridge'
@@ -410,6 +411,7 @@ export class ConnectionSupervisor {
     this.client?.close()
     this.client = null
     setActiveRpc(null)
+    useTranscripts.getState().clearAnsweredWaiting()
   }
 
   private async attemptConnect(): Promise<void> {
@@ -505,6 +507,7 @@ export class ConnectionSupervisor {
       }
     })
 
+    useTranscripts.getState().clearAnsweredWaiting()
     this.adoptEpoch(payload.replay_epoch ?? null)
 
     this.connectedAt = Date.now()
@@ -561,6 +564,7 @@ export class ConnectionSupervisor {
     }
 
     setActiveRpc(null)
+    useTranscripts.getState().clearAnsweredWaiting()
     this.detach?.()
     this.detach = null
     this.client = null

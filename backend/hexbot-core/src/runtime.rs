@@ -2043,6 +2043,9 @@ impl Runtime {
             })
             .collect::<Vec<_>>();
         drop(sessions);
+        if active.is_empty() {
+            return None;
+        }
         let conn = db::open(&self.home).ok();
         // An archived section may still run or wait, but it no longer speaks for the bot.
         let archived = |stored: &str| {

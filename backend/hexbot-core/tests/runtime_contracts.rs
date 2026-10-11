@@ -1,7 +1,8 @@
 use hexbot_core::{
-    db,
+    catalog, db,
     events::{Event, EventHub},
     runtime::Runtime,
+    settings,
 };
 use serde_json::{Value, json};
 use std::{fs, time::Duration};
@@ -139,11 +140,27 @@ async fn answering_or_archiving_moves_the_bot_off_waiting() {
         runtime.status_for_bot("alice", "owl").unwrap()["status"],
         "working"
     );
-    db::open(home.path())
-        .unwrap()
-        .execute("UPDATE sections SET archived_at=1 WHERE id='first'", [])
-        .unwrap();
+    catalog::call(
+        home.path(),
+        "alice",
+        "hexbot.sections.archive",
+        &json!({"id":"first"}),
+    )
+    .unwrap()
+    .unwrap();
     assert!(runtime.status_for_bot("alice", "owl").is_none());
+    catalog::call(
+        home.path(),
+        "alice",
+        "hexbot.sections.unarchive",
+        &json!({"id":"first"}),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        runtime.status_for_bot("alice", "owl").unwrap()["status"],
+        "working"
+    );
     runtime.shutdown().await;
 }
 #[tokio::test]
@@ -165,5 +182,70 @@ async fn failed_tool_events_include_error_property_expected_by_unchanged_ui() {
     assert_eq!(event["payload"]["tool_id"], "t");
     // Failure is read from `result.error`; no summary overwrites the argument preview.
     assert!(event["payload"].get("summary").is_none());
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn retry_clears_failed_turn_before_the_new_turn_finishes() {
+    let (home, runtime, mut events) = setup();
+    let session = open(&runtime, "first").await;
+    settings::record_incident(
+        home.path(),
+        "owl",
+        "turn_failed",
+        "The previous turn failed",
+        &json!({"section_id":"first","session_id":session}),
+    )
+    .unwrap();
+    assert_eq!(
+        catalog::bot(home.path(), "alice", "owl").unwrap()["status"],
+        "stopped"
+    );
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":session,"text":"wait"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    // The fake Pi holds this turn at its approval request. No completion has run.
+    next(&mut events, "approval.request").await;
+    assert_eq!(
+        catalog::bot(home.path(), "alice", "owl").unwrap()["status"],
+        "idle"
+    );
+    assert_eq!(
+        runtime.status_for_bot("alice", "owl").unwrap()["status"],
+        "needs_you"
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn room_sessions_still_count_toward_bot_status() {
+    let (home, runtime, mut events) = setup();
+    let session = open(&runtime, "first").await;
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":session,"text":"wait"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    next(&mut events, "approval.request").await;
+    // Room conversations have a stored id but no row in the private section index.
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("DELETE FROM sections WHERE id='first'; INSERT INTO rooms(id,name,owner_id) VALUES('room','Room','alice'); INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room','owl','first');")
+        .unwrap();
+    let status = runtime.status_for_bot("alice", "owl").unwrap();
+    assert_eq!(status["status"], "needs_you");
+    assert!(status["status_detail"]["section_id"].is_null());
+    assert_eq!(status["status_detail"]["room_id"], "room");
+    assert_eq!(status["status_detail"]["session_id"], session);
     runtime.shutdown().await;
 }

@@ -49,6 +49,8 @@ const INCIDENT_MERGE_MS = 15_000
 export type TranscriptMessage = Message & { errorDetail?: ErrorDetail }
 
 export interface Transcript {
+  /** A successful local answer, valid until the next roster reply or reconnect. */
+  answeredWaiting?: { kind: 'approval' | 'clarify'; requestId: string }
   approvals: ApprovalRequest[]
   /** Questions the bot asked through the clarify tool, oldest first. */
   clarifies: ClarifyRequest[]
@@ -116,6 +118,7 @@ export interface ApprovalRequestPayload {
 }
 
 export interface TranscriptsState {
+  clearAnsweredWaiting: (sectionIds?: readonly string[]) => void
   answerClarify: (sessionId: string, requestId: string, questionId: string, answer: string) => void
   approvalRequest: (
     sessionId: string,
@@ -333,6 +336,27 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
     bySession: {},
 
+    clearAnsweredWaiting(sectionIds) {
+      const shouldClear = (transcript: Transcript) =>
+        transcript.answeredWaiting &&
+        (!sectionIds || (transcript.sectionId && sectionIds.includes(transcript.sectionId)))
+
+      set(state => {
+        if (!Object.values(state.bySession).some(shouldClear)) {
+          return state
+        }
+
+        return {
+          bySession: Object.fromEntries(
+            Object.entries(state.bySession).map(([id, transcript]) => [
+              id,
+              shouldClear(transcript) ? { ...transcript, answeredWaiting: undefined } : transcript
+            ])
+          )
+        }
+      })
+    },
+
     open(sessionId, sectionId, messages) {
       set(state => {
         const existing = state.bySession[sessionId]
@@ -407,6 +431,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
       update(sessionId, transcript => ({
         ...transcript,
+        answeredWaiting: undefined,
         error: null,
         messages: [...transcript.messages, message],
         streamingMessageId: message.id,
@@ -578,6 +603,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
       update(sessionId, transcript => {
         sectionId = transcript.sectionId
+        transcript = { ...transcript, answeredWaiting: undefined }
         const prefix = transcript.turnPrefix ?? ''
 
         const finalText =
@@ -644,7 +670,11 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
         added = true
 
-        return { ...closeForCard(transcript), approvals: [...transcript.approvals, approval] }
+        return {
+          ...closeForCard(transcript),
+          answeredWaiting: undefined,
+          approvals: [...transcript.approvals, approval]
+        }
       })
 
       const transcript = get().bySession[sessionId]
@@ -684,7 +714,11 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           sessionId
         }
 
-        return { ...closeForCard(transcript), clarifies: [...transcript.clarifies, clarify] }
+        return {
+          ...closeForCard(transcript),
+          answeredWaiting: undefined,
+          clarifies: [...transcript.clarifies, clarify]
+        }
       })
 
       if (!added || options.notify === false) {
@@ -699,14 +733,29 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     answerClarify(sessionId, requestId, questionId, answer) {
-      update(sessionId, transcript => ({
-        ...transcript,
-        clarifies: transcript.clarifies.map(item =>
+      update(sessionId, transcript => {
+        const clarifies = transcript.clarifies.map(item =>
           item.requestId === requestId
             ? { ...item, answers: { ...item.answers, [questionId]: answer } }
             : item
         )
-      }))
+
+        const wasWaiting = transcript.clarifies.some(
+          item => item.requestId === requestId && clarifyWaiting(item)
+        )
+
+        const answered =
+          wasWaiting &&
+          clarifies.some(
+            item => item.requestId === requestId && !item.expired && clarifyAnswered(item)
+          )
+
+        return {
+          ...transcript,
+          answeredWaiting: answered ? { kind: 'clarify', requestId } : undefined,
+          clarifies
+        }
+      })
     },
 
     clarifyExpire(sessionId, requestId) {
@@ -721,6 +770,11 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     resolveApproval(sessionId, requestId, choice) {
       update(sessionId, transcript => ({
         ...transcript,
+        answeredWaiting: transcript.approvals.some(
+          approval => approval.requestId === requestId && !approval.decision
+        )
+          ? { kind: 'approval', requestId }
+          : undefined,
         approvals: transcript.approvals.map(approval =>
           approval.requestId === requestId ? { ...approval, decision: choice } : approval
         )
@@ -728,7 +782,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     statusUpdate(sessionId, status) {
-      update(sessionId, transcript => ({ ...transcript, status }))
+      update(sessionId, transcript => ({ ...transcript, answeredWaiting: undefined, status }))
     },
 
     sessionInfo(sessionId, info) {

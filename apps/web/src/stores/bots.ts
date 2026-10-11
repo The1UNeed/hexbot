@@ -9,6 +9,8 @@ import { useShallow } from 'zustand/react/shallow'
 import { botsCreate, botsDelete, botsGet, botsList, botsUpdate } from '../lib/api'
 import type { Bot, BotCreateInput, BotUpdatePatch, Section } from '../lib/types'
 
+import { useSections } from './sections'
+import { useTranscripts } from './transcripts'
 import { uiActions } from './ui'
 
 export interface BotsState {
@@ -34,6 +36,10 @@ function indexBots(bots: Bot[]): Pick<BotsState, 'byName' | 'order'> {
   return { byName, order: bots.map(bot => bot.name) }
 }
 
+function clearBotAnswers(name: string): void {
+  useTranscripts.getState().clearAnsweredWaiting(useSections.getState().idsByBot[name] ?? [])
+}
+
 let botsRequest = 0
 
 export const useBots = create<BotsState>((set, get) => ({
@@ -52,6 +58,7 @@ export const useBots = create<BotsState>((set, get) => ({
 
       // Status changes arrive in bursts; an older list must not land over a newer one.
       if (request === botsRequest) {
+        useTranscripts.getState().clearAnsweredWaiting()
         set({ ...indexBots(result.bots ?? []), loaded: true, loading: false })
       }
     } catch (error) {
@@ -65,6 +72,7 @@ export const useBots = create<BotsState>((set, get) => ({
     try {
       const { bot } = await botsGet(name)
 
+      clearBotAnswers(bot.name)
       set(state => ({
         byName: { ...state.byName, [bot.name]: bot },
         order: state.order.includes(bot.name) ? state.order : [bot.name, ...state.order]
@@ -85,6 +93,7 @@ export const useBots = create<BotsState>((set, get) => ({
   async update(name, patch) {
     const { bot } = await botsUpdate(name, patch)
 
+    clearBotAnswers(bot.name)
     set(state => ({ byName: { ...state.byName, [bot.name]: bot } }))
 
     return bot

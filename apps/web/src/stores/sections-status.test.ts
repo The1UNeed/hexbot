@@ -40,7 +40,7 @@ describe('live section status', () => {
     })
   })
 
-  it('stops waiting as soon as the open transcript has your answer', () => {
+  it('overrides Waiting only after a successful local answer', () => {
     const waiting = {
       name: 'a',
       status: 'needs_you',
@@ -49,10 +49,24 @@ describe('live section status', () => {
 
     expect(sectionStatusOf(waiting, 's1')).toBe('needs_you')
     expect(sectionStatusOf(waiting, 's1', { s1: 'needs_you' })).toBe('needs_you')
-    expect(sectionStatusOf(waiting, 's1', { s1: 'idle' })).toBe('working')
-    expect(sectionStatusOf(waiting, 's1', { s1: 'working' })).toBe('working')
+    expect(sectionStatusOf(waiting, 's1', { s1: 'idle' })).toBe('needs_you')
+    expect(sectionStatusOf(waiting, 's1', { s1: 'working' })).toBe('needs_you')
+    expect(sectionStatusOf(waiting, 's1', { s1: 'answered' })).toBe('working')
     expect(botStatusWithLive(waiting, sections, {})).toBe('needs_you')
-    expect(botStatusWithLive(waiting, sections, { s1: 'idle' })).toBe('working')
+    expect(botStatusWithLive(waiting, sections, { s1: 'idle' })).toBe('needs_you')
+    expect(botStatusWithLive(waiting, sections, { s1: 'answered' })).toBe('working')
+  })
+
+  it('uses the same daemon precedence when another device answers a stale card', () => {
+    expect(sectionStatusOf(bot, 's1', { s1: 'needs_you' })).toBe('working')
+    expect(botStatusWithLive(bot, sections, { s1: 'needs_you' })).toBe('working')
+  })
+
+  it('keeps room and thread status when the daemon names no listed section', () => {
+    const room = { ...bot, status: 'needs_you', status_detail: { room_id: 'r' } } as Bot
+    const thread = { ...bot, status_detail: { section_id: 'thread' } } as Bot
+    expect(botStatusWithLive(room, sections, {})).toBe('needs_you')
+    expect(botStatusWithLive(thread, sections, {})).toBe('working')
   })
 
   it('leaves archived sections out of the bot status', () => {
@@ -65,5 +79,6 @@ describe('live section status', () => {
     const archived = [{ archived_at: 1, id: 's1' }, { id: 's2' }] as Section[]
     expect(botStatusWithLive(waiting, archived, {})).toBe('idle')
     expect(botStatusWithLive({ name: 'b' } as Bot, archived, { s1: 'needs_you' })).toBe('idle')
+    expect(botStatusWithLive(waiting, sections, {})).toBe('needs_you')
   })
 })

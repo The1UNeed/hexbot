@@ -113,7 +113,9 @@ room `waiting.human` events, and open incidents. Archived sections do not
 count; their state returns on unarchive. A new turn in a section resolves its
 `turn_failed` incident, and deleting a section resolves all of its incidents.
 The daemon emits `hexbot.bots.changed {name}` when a turn starts, when a
-question or approval arrives, and when one is answered. `status_detail` is
+question or approval arrives, and when one is answered. Clients also refresh
+bots on `hexbot.sections.changed`, sent when a turn ends or a section is
+archived, unarchived, or deleted. `status_detail` is
 `{text, section_id, room_id, session_id, since, action}` where `action` is
 null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
 `approval_mode` is `inherit` (the deployment setting), `manual`, `smart`
@@ -729,10 +731,14 @@ emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit
 to the owner.
 Dream triggers emit `hexbot.dreaming.changed {bot}`.
 Connector mutations emit `hexbot.connectors.changed {connector, bot?}` and
-`hexbot.bots.changed`. Opening or resolving an incident emits
+`hexbot.bots.changed`. Recording a runtime failure emits
 `hexbot.bots.incident {bot, section_id, room_id, session_id, incident: {id,
-kind, connector, text, created_at, resolved_at}}` followed by
-`hexbot.bots.changed {name}`.
+kind, connector, text, created_at, resolved_at}}`. Incident resolution does
+not emit an incident event. Turn start and clean turn completion resolve
+`turn_failed` incidents. Section deletion and `hexbot.bots.clear_status`
+resolve all incidents for that section or bot; successful connector setup
+resolves that connector's incidents. Clients refresh bots on the corresponding
+bots, sections, or connectors changed event.
 
 ## Pairing and auth over HTTP
 
