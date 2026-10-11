@@ -1737,6 +1737,31 @@ async fn stamps_cannot_hide_a_threat_from_the_memory_scan() {
 }
 
 #[tokio::test]
+async fn a_stamp_inside_a_line_cannot_hide_a_threat() {
+    let (home, runtime, _) = setup();
+    let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+    let memory = MemoryStore::new(home.path().into());
+    memory.set_bot("alice", "owl", "Likes tea.").unwrap();
+    for phrase in MEMORY_THREATS.iter().filter(|phrase| phrase.contains('\n')) {
+        for stamp in [" [2024-05] ", "[2024-05]", " [0000-99][9999-00]\t"] {
+            let text = phrase.replacen('\n', stamp, 1);
+            for args in [
+                json!({"action":"add","text":text}),
+                json!({"action":"set","text":text}),
+            ] {
+                let refused = runtime.tool(&s, "memory", &args).await.unwrap_err();
+                assert_eq!(refused.code, 4202, "{args}");
+                assert_eq!(
+                    memory.get_bot("alice", "owl").unwrap()["memory_md"],
+                    "Likes tea."
+                );
+            }
+        }
+    }
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn stamps_cannot_hide_threats_assembled_across_two_memory_edits() {
     let (home, runtime, _) = setup();
     let s = runtime.open_session("alice", "owl", "first").await.unwrap();

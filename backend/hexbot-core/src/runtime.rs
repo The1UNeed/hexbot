@@ -3693,23 +3693,17 @@ fn check_memory_edit(old: &str, text: &str) -> Result<()> {
         r##"(update|modify|edit|write|change|append|add\s+to)\s+[^\n]{0,2048}\.hermes/(config\.yaml|SOUL\.md)"##,
         r##"(?:api[_-]?key|token|secret|password)\s*[=:]\s*["'][A-Za-z0-9+/=_-]{20,}"##,
     ]).case_insensitive(true).size_limit(64 * 1024 * 1024).build().expect("memory threat patterns"));
-    // Dates from earlier edits or supplied by the model must not split a
-    // threat across lines, so trailing stamps are scanned as one space. Bare
-    // carriage returns end lines too; each line keeps its own terminator.
+    // Dates from earlier edits or supplied by the model must not hide a
+    // threat, so every run of stamps, wherever it sits in a line, is scanned
+    // as one space. Line ends are kept, so a stamp never joins two lines.
+    static STAMPS: OnceLock<regex::Regex> = OnceLock::new();
+    let stamps = STAMPS.get_or_init(|| {
+        regex::Regex::new(r"(?:[^\S\r\n]*\[\d{4}-\d{2}\])+[^\S\r\n]*").expect("stamp pattern")
+    });
     let without_stamps = |text: &str| {
-        text.nfkc()
-            .collect::<String>()
-            .split_inclusive(['\n', '\r'])
-            .map(|line| {
-                let body = line.trim_end_matches(['\n', '\r']);
-                let entry = crate::memory::strip_stamps(body);
-                if entry.len() == body.trim_end().len() {
-                    line.to_owned()
-                } else {
-                    format!("{entry} {}", &line[body.len()..])
-                }
-            })
-            .collect::<String>()
+        stamps
+            .replace_all(&text.nfkc().collect::<String>(), " ")
+            .into_owned()
     };
     let before = without_stamps(old);
     let after = without_stamps(text);

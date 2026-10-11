@@ -96,9 +96,8 @@ The native scheduler and digest builder live in
   and adjacent blank separators remain. `set`, the Memory tab, and
   `hexbot.memory.bot.set` write text as given, so the dream and the user
   keep control. The threat scan reads the old and new
-  memory with each line's trailing stamps turned into one space (a bare
-  carriage return also ends a line), before stamping and again on the final
-  text. A match may remain only when the same exact text matched as often in
+  memory with every run of stamps, anywhere in a line, turned into one space
+  (line ends are kept), before stamping and again on the final text. A match may remain only when the same exact text matched as often in
   the old memory, so existing unchanged threats stay, but dates cannot hide
   a new match and an old prefix cannot exempt its completion. A
   proposal is stored as the job wrote it and stamped when the dream applies
