@@ -38,6 +38,7 @@ import type {
   Settings,
   SavedDaemon,
   TurnState,
+  ChatState,
   Rpc
 } from './types'
 export type { ChatRoute }
@@ -45,6 +46,21 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 /** A room opens at its latest events and pages back this many at a time. */
 const ROOM_PAGE = 200
 type BotReadContext = { sessionId: string; sectionId: string; revision: number; archive?: boolean }
+type SubmittedTurn = {
+  bot: Bot
+  section?: Section
+  roomId?: string
+  sessionId: string
+  revision: number
+  state: ChatState
+  pending: number
+}
+const statusProof = (state: TurnState) => ({
+  resumedWaiting: state.resumedWaiting,
+  waitingRevision: state.waitingRevision,
+  retryResolution: state.retryResolution,
+  settlements: state.settlements
+})
 const sameBot = (left: Bot | undefined, right: Bot) =>
   left?.name === right.name &&
   left.owner_id === right.owner_id &&
@@ -54,6 +70,15 @@ const statusOf = (current: Bot, verified: Bot): Bot => ({
   status: verified.status,
   status_detail: verified.status_detail
 })
+const sameCause = (left: Bot, right: Bot) =>
+  left.status === right.status &&
+  (['session_id', 'section_id', 'room_id', 'since', 'text'] as const).every(
+    key => left.status_detail?.[key] === right.status_detail?.[key]
+  ) &&
+  left.status_detail?.action?.kind === right.status_detail?.action?.kind &&
+  (left.status_detail?.action?.kind !== 'fix_connector' ||
+    (right.status_detail?.action?.kind === 'fix_connector' &&
+      left.status_detail.action.connector === right.status_detail.action.connector))
 const sameArchiveRoute = (before: ChatRoute, current: ChatRoute | null) =>
   before.kind === 'section' &&
   current?.kind === 'section' &&
@@ -105,6 +130,25 @@ export function useMobile() {
   const pendingBotStatus = useRef(new Map<string, BotReadContext & { next?: BotReadContext }>())
   /** Only current room turns can project Working over an older status read. */
   const roomWorking = useRef(new Map<string, number>())
+  /** Only submitted, known cards retain answer proof after their route closes. */
+  const submittedTurns = useRef(new Map<string, SubmittedTurn>())
+  const pruneSubmitted = useCallback(() => {
+    for (const [id, turn] of submittedTurns.current) {
+      const bot = botsRef.current.find(bot => sameBot(bot, turn.bot))
+      turn.state = rosterChat(
+        turn.state,
+        Math.max(rosterRevision.current, botStatusReads.current.get(turn.bot.name)?.revision ?? -1)
+      )
+      if (
+        !turn.pending &&
+        (!bot ||
+          !turn.state.resumedWaiting ||
+          bot.status !== 'needs_you' ||
+          bot.status_detail?.session_id !== id)
+      )
+        submittedTurns.current.delete(id)
+    }
+  }, [])
   /** Definitive deletions survive unavailable lists, but belong to this daemon epoch. */
   const deletedSections = useRef(new Map<string, { request: number; active: boolean }>())
   /** Exact accepted archive fields survive an older list or open response. */
@@ -339,6 +383,7 @@ export function useMobile() {
       if (!nextBots.some(bot => bot.name === name)) pendingBotStatus.current.delete(name)
     botsRef.current = nextBots
     setBots(nextBots)
+    pruneSubmitted()
     setChat(c => rosterChat(c, rosterRevision.current))
     setRooms(r.rooms)
     const nextSections = s.sections
@@ -370,7 +415,8 @@ export function useMobile() {
     archiveSection,
     archiveSnapshot,
     acceptArchive,
-    retireArchiveActivity
+    retireArchiveActivity,
+    pruneSubmitted
   ])
   const syncRoom = useCallback(
     async (id: string) => {
@@ -434,10 +480,13 @@ export function useMobile() {
     if (!target) return
     if (target.kind === 'room') return syncRoom(target.room.id)
     let failure: string | null = null
+    let carried:
+      { sessionId: string; epoch: string | null; proof: ReturnType<typeof statusProof> } | undefined
     for (let attempt = 0; ; attempt++) {
       const sequence = ++openSequence.current
       const request = ++refreshSequence.current
       const archives = archiveSnapshot()
+      const epoch = replayEpoch.current
       loadingEvents.current = []
       try {
         const result = await rpc<{
@@ -457,8 +506,19 @@ export function useMobile() {
           session_id: liveId.current
         })
         if (sequence !== openSequence.current) return
+        const submitted = submittedTurns.current.get(liveId.current!)
+        const owned =
+          epoch === replayEpoch.current &&
+          submitted?.section?.id === target.section.id &&
+          sameBot(submitted.bot, target.bot)
+            ? submitted
+            : undefined
         const snapshot = {
           ...emptyChat(),
+          settlements: owned?.state.settlements ?? {},
+          ...(carried?.sessionId === liveId.current && carried.epoch === replayEpoch.current
+            ? carried.proof
+            : {}),
           busy: status.status === 'working',
           messages: historyMessages(result.messages)
         }
@@ -468,9 +528,30 @@ export function useMobile() {
           result.pending_clarify,
           loadingEvents.current ?? []
         )
+        if (owned) {
+          if (result.pending_clarify)
+            owned.state = reduceChat(owned.state, {
+              type: 'clarify.request',
+              session_id: liveId.current!,
+              payload: result.pending_clarify
+            })
+          owned.state = {
+            ...owned.state,
+            busy: replay.state.busy,
+            error: replay.state.error ?? owned.state.error
+          }
+          pruneSubmitted()
+        }
         failure = replay.state.error ?? failure
         // A turn finished while the history loaded; read it again so its replies show once.
-        if (replay.reread && attempt < 2) continue
+        if (replay.reread && attempt < 2) {
+          carried = {
+            sessionId: liveId.current!,
+            epoch: replayEpoch.current,
+            proof: statusProof(replay.state)
+          }
+          continue
+        }
         straddling.current = replay.state.busy ? liveId.current : null
         const restored = { ...replay.state, error: failure }
         loadingEvents.current = null
@@ -485,7 +566,7 @@ export function useMobile() {
         if (sequence === openSequence.current) loadingEvents.current = null
       }
     }
-  }, [rpc, syncRoom, archiveSection, archiveSnapshot, acceptArchive])
+  }, [rpc, syncRoom, archiveSection, archiveSnapshot, acceptArchive, pruneSubmitted])
   const syncChatRef = useRef(syncChat)
   syncChatRef.current = syncChat
   const refreshRef = useRef(refresh)
@@ -551,6 +632,7 @@ export function useMobile() {
             )
             botsRef.current = nextBots
             setBots(nextBots)
+            pruneSubmitted()
           }),
           archive
             ? rpc<{ sections: Section[] }>('hexbot.sections.list', {
@@ -582,7 +664,7 @@ export function useMobile() {
         }
       }
     },
-    [rpc, acceptArchive, archiveSnapshot, retireArchiveActivity]
+    [rpc, acceptArchive, archiveSnapshot, retireArchiveActivity, pruneSubmitted]
   )
   const onEvent = useCallback(
     (event: GatewayEvent) => {
@@ -600,6 +682,7 @@ export function useMobile() {
           botStatusChanges.current.clear()
           pendingBotStatus.current.clear()
           roomWorking.current.clear()
+          submittedTurns.current.clear()
           sectionArchives.current.clear()
           for (const deleted of deletedSections.current.values()) deleted.active = false
           setBots(rows => [...rows])
@@ -644,7 +727,7 @@ export function useMobile() {
           'hexbot.rooms.changed',
           'hexbot.rooms.turn'
         ].includes(event.type) ||
-          (event.type === 'hexbot.bots.changed' && p.deleted === true) ||
+          event.type === 'hexbot.bots.changed' ||
           (event.type === 'status.update' &&
             ['idle', 'done', 'error', 'interrupted'].includes(String(p.kind))))
       if (contradicts) {
@@ -654,7 +737,7 @@ export function useMobile() {
           const pending = pendingBotStatus.current.get(bot.name)
           if (
             p.bot === bot.name ||
-            (event.type === 'hexbot.bots.changed' && p.deleted === true && p.name === bot.name) ||
+            (event.type === 'hexbot.bots.changed' && p.name === bot.name) ||
             (event.session_id &&
               (event.session_id === detail?.session_id ||
                 event.session_id === pending?.sessionId ||
@@ -675,6 +758,21 @@ export function useMobile() {
               bot.name,
               Math.max(botStatusChanges.current.get(bot.name) ?? 0, revision)
             )
+        }
+      }
+      if (event.type === 'hexbot.bots.changed' && p.deleted !== true) {
+        const name = typeof p.name === 'string' ? p.name : typeof p.bot === 'string' ? p.bot : ''
+        const bot = botsRef.current.find(bot => bot.name === name)
+        if (bot) {
+          const pending = pendingBotStatus.current.get(name)
+          const context = pending?.next ?? pending
+          void verifyBotStatus(
+            name,
+            context?.sessionId ?? bot.status_detail?.session_id ?? '',
+            context?.sectionId ?? bot.status_detail?.section_id ?? '',
+            (event as GatewayEvent & { mobileRevision: number }).mobileRevision,
+            context?.archive
+          )
         }
       }
       if (removedRetry)
@@ -742,6 +840,58 @@ export function useMobile() {
           (event as GatewayEvent & { mobileRevision: number }).mobileRevision
         )
       }
+      let submittedChanged = false
+      for (const [id, turn] of submittedTurns.current) {
+        if (
+          (event.type === 'hexbot.sections.changed' &&
+            p.deleted === true &&
+            p.id === turn.section?.id) ||
+          (event.type === 'hexbot.bots.changed' &&
+            p.deleted === true &&
+            (p.name === turn.bot.name || p.bot === turn.bot.name)) ||
+          (event.type === 'hexbot.rooms.changed' && p.deleted === true && p.id === turn.roomId)
+        ) {
+          submittedTurns.current.delete(id)
+          submittedChanged = true
+        } else if (event.session_id === id) {
+          turn.state = reduceChat(turn.state, event)
+          submittedChanged = true
+        } else if (
+          event.type === 'hexbot.rooms.turn' &&
+          p.room_id === turn.roomId &&
+          p.live_session_id === id
+        ) {
+          turn.state =
+            p.status === 'complete'
+              ? reduceChat(turn.state, { type: 'message.complete', session_id: id, payload: {} })
+              : clearStatusProof(turn.state)
+          submittedChanged = true
+        } else if (
+          p.bot === turn.bot.name &&
+          [
+            'approval.request',
+            'clarify.request',
+            'message.start',
+            'error',
+            'hexbot.bots.incident',
+            'hexbot.rooms.turn'
+          ].includes(event.type)
+        ) {
+          turn.state = clearStatusProof(turn.state)
+          submittedChanged = true
+        }
+      }
+      if (event.type === 'hexbot.rooms.changed' && p.deleted !== true)
+        for (const turn of submittedTurns.current.values())
+          if (turn.roomId === p.id)
+            void verifyBotStatus(
+              turn.bot.name,
+              turn.sessionId,
+              '',
+              (event as GatewayEvent & { mobileRevision: number }).mobileRevision
+            )
+      pruneSubmitted()
+      if (submittedChanged) setBots(rows => [...rows])
       if (event.type.endsWith('.changed')) {
         if (!refreshTimer.current)
           refreshTimer.current = setTimeout(() => {
@@ -812,7 +962,7 @@ export function useMobile() {
         setChat(c => rosterChat(reduceChat(c, event), rosterRevision.current))
       }
     },
-    [rpc, verifyBotStatus, leave]
+    [rpc, verifyBotStatus, leave, pruneSubmitted]
   )
   const acknowledgedApprovals = useRef(new Set<string>())
   useEffect(() => {
@@ -857,6 +1007,7 @@ export function useMobile() {
       botStatusChanges.current.clear()
       pendingBotStatus.current.clear()
       roomWorking.current.clear()
+      submittedTurns.current.clear()
       deletedSections.current.clear()
       sectionArchives.current.clear()
       routeRef.current = null
@@ -1061,18 +1212,80 @@ export function useMobile() {
     if (target?.kind === 'room') await rpc('hexbot.rooms.stop', { id: target.room.id })
     else if (liveId.current) await rpc('session.interrupt', { session_id: liveId.current })
   }
+  const submitTurn = (sessionId: string): SubmittedTurn | undefined => {
+    const target = routeRef.current
+    const state =
+      target?.kind === 'section' && liveId.current === sessionId
+        ? chat
+        : target?.kind === 'room'
+          ? chat.turns[sessionId]
+          : undefined
+    const name = target?.kind === 'section' ? target.bot.name : chat.turns[sessionId]?.bot
+    const bot = botsRef.current.find(bot => bot.name === name)
+    if (!target || !state || !bot || (target.kind === 'section' && !sameBot(bot, target.bot)))
+      return
+    let owned = submittedTurns.current.get(sessionId)
+    if (!owned) {
+      owned = {
+        bot,
+        section: target.kind === 'section' ? target.section : undefined,
+        roomId: target.kind === 'room' ? target.room.id : undefined,
+        sessionId,
+        revision: eventRevision.current,
+        state: { ...emptyChat(), ...state, messages: [], turns: {} },
+        pending: 0
+      }
+      submittedTurns.current.set(sessionId, owned)
+    }
+    owned.pending++
+    return owned
+  }
+  const acceptSubmitted = (owned: SubmittedTurn | undefined, event: GatewayEvent) => {
+    if (!owned) return eventRef.current(event)
+    if (submittedTurns.current.get(owned.sessionId) !== owned) return
+    const latest = botsRef.current.find(bot => sameBot(bot, owned.bot))
+    // A delayed callback settles its card, but cannot resume a newer accepted wait cause.
+    if (
+      latest?.status === 'needs_you' &&
+      latest.status_detail?.session_id === owned.sessionId &&
+      !sameCause(latest, owned.bot)
+    )
+      event = { ...event, mobileRevision: owned.revision } as GatewayEvent
+    const sectionId =
+      owned.section?.id ??
+      (owned.bot.status_detail?.session_id === owned.sessionId &&
+      owned.bot.status_detail.room_id === owned.roomId
+        ? owned.bot.status_detail.section_id
+        : '') ??
+      ''
+    eventRef.current({
+      ...event,
+      payload: {
+        ...(event.payload as Record<string, unknown>),
+        bot: owned.bot.name,
+        section_id: sectionId
+      }
+    })
+    if (!sectionId) void verifyBotStatus(owned.bot.name, owned.sessionId, '', eventRevision.current)
+  }
   const approval = async (requestId: string, choice: string, sessionId?: string) => {
     const pending = chat.approvals.find(
       a => a.requestId === requestId && (!sessionId || a.sessionId === sessionId)
     )
     if (!pending) return
-    const result = await rpc<Record<string, unknown>>('approval.respond', {
-      session_id: pending.sessionId,
-      request_id: requestId,
-      choice
-    })
-    const accepted = approvalResponse(pending, choice, result)
-    if (accepted) eventRef.current(accepted)
+    const owned = submitTurn(pending.sessionId)
+    try {
+      const result = await rpc<Record<string, unknown>>('approval.respond', {
+        session_id: pending.sessionId,
+        request_id: requestId,
+        choice
+      })
+      const accepted = approvalResponse(pending, choice, result)
+      if (accepted) acceptSubmitted(owned, accepted)
+    } finally {
+      if (owned) owned.pending--
+      pruneSubmitted()
+    }
   }
   const answer = async (
     requestId: string,
@@ -1084,13 +1297,19 @@ export function useMobile() {
       q => q.requestId === requestId && (!sessionId || q.sessionId === sessionId)
     )
     if (!pending) return
-    const result = await rpc<Record<string, unknown>>('clarify.respond', {
-      session_id: pending.sessionId,
-      request_id: requestId,
-      question_id: questionId,
-      answer
-    })
-    eventRef.current(clarifyResponse(pending, questionId, answer, result))
+    const owned = submitTurn(pending.sessionId)
+    try {
+      const result = await rpc<Record<string, unknown>>('clarify.respond', {
+        session_id: pending.sessionId,
+        request_id: requestId,
+        question_id: questionId,
+        answer
+      })
+      acceptSubmitted(owned, clarifyResponse(pending, questionId, answer, result))
+    } finally {
+      if (owned) owned.pending--
+      pruneSubmitted()
+    }
   }
 
   const inactiveSectionBot = (bot: Bot, siblings: TurnState[] = []): Bot => {
@@ -1176,6 +1395,9 @@ export function useMobile() {
     return settledBot(active, current, sessionId, section?.id, roomId)
   }
   const visibleBots = bots.map(bot => {
+    for (const turn of submittedTurns.current.values())
+      if (sameBot(bot, turn.bot))
+        bot = projectBot(bot, turn.state, turn.sessionId, turn.section, turn.roomId)
     if (route?.kind === 'section' && route.bot.name === bot.name)
       return projectBot(bot, chat, liveId.current, route.section)
     if (route?.kind === 'room') {
@@ -1216,7 +1438,8 @@ export function useMobile() {
     }
     return inactiveSectionBot(bot)
   })
-  const cachedRouteBot = route?.kind === 'section' && bots.find(bot => sameBot(bot, route.bot))
+  const cachedRouteBot =
+    route?.kind === 'section' && visibleBots.find(bot => sameBot(bot, route.bot))
   const visibleRoute =
     route?.kind === 'section'
       ? {

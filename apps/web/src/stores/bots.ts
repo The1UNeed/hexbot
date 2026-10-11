@@ -69,7 +69,19 @@ function botAnswerScope(name: string, bot?: Bot) {
   return { sectionIds: [...sectionIds], sessionIds: [...sessionIds] }
 }
 
+let idleRevision = 0
+const idleByBot = new Map<string, number>()
+
+/** Aggregate Idle also retires activity for sessions not opened yet. */
+export function botIdleRevision(name?: string): number {
+  return name ? (idleByBot.get(name) ?? 0) : idleRevision
+}
+
 function clearBotAnswers(name: string, bot?: Bot, throughRevision?: number): void {
+  if (!bot || (bot.status ?? 'idle') === 'idle') {
+    idleByBot.set(name, ++idleRevision)
+  }
+
   // Remember ownership before the aggregate moves to a different session or becomes idle.
   const details = [useBots.getState().byName[name]?.status_detail, bot?.status_detail]
   useTranscripts.setState(state => ({

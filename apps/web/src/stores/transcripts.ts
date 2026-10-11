@@ -68,6 +68,8 @@ export interface Transcript {
   waitingRequests?: { kind: 'approval' | 'clarify'; requestId: string; revision: number }[]
   /** A new turn successfully resolved this session's section-scoped retry incident. */
   retryResolved?: boolean
+  /** A current running room turn; weaker than an explicit session status. */
+  roomTurnRunning?: boolean
   /** A fresh daemon transition, never inferred from retained status text. */
   liveStatus?: 'idle' | 'needs_you' | 'working'
   approvals: ApprovalRequest[]
@@ -216,7 +218,7 @@ export interface TranscriptsState {
     messages: Message[],
     throughRevision?: number,
     bot?: string,
-    options?: { preserveWaiting?: boolean }
+    options?: { preserveWaiting?: boolean; roomTurnRunning?: boolean }
   ) => void
   reasoningDelta: (sessionId: string, text: string) => void
   resolveApproval: (
@@ -296,6 +298,7 @@ function retireAuthority(
     ...advanceAuthority(transcript),
     waitingRequests: options.preserveWaiting ? transcript.waitingRequests : [],
     liveStatus: options.idle ? 'idle' : undefined,
+    roomTurnRunning: undefined,
     retryResolved: options.preserveRetryResolved ? transcript.retryResolved : undefined
   }
 }
@@ -517,6 +520,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
               ...state.bySession,
               [sessionId]: {
                 ...(newer ? existing : retireAuthority(existing, { preserveWaiting })),
+                ...(!newer && options.roomTurnRunning ? { roomTurnRunning: true } : {}),
                 sectionId,
                 bot: bot ?? existing.bot
               }
@@ -535,13 +539,15 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
               ...(existing ? { epoch: existing.epoch } : {}),
               bot: bot ?? existing?.bot,
               ...(preserveWaiting ? { waitingRequests: existing.waitingRequests } : {}),
+              ...(options.roomTurnRunning ? { roomTurnRunning: true } : {}),
               ...(newer
                 ? {
                     authorityRevision: existing.authorityRevision,
                     answeredWaiting: existing.answeredWaiting,
                     liveStatus: existing.liveStatus,
                     waitingRequests: existing.waitingRequests,
-                    retryResolved: existing.retryResolved
+                    retryResolved: existing.retryResolved,
+                    roomTurnRunning: existing.roomTurnRunning
                   }
                 : {}),
               approvals: existing?.approvals ?? [],
@@ -787,6 +793,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         transcript = {
           ...advanceAuthority(transcript),
           waitingRequests: [],
+          roomTurnRunning: undefined,
           retryResolved:
             payload.error || payload.status === 'error' ? undefined : transcript.retryResolved,
           liveStatus: payload.error || payload.status === 'error' ? undefined : 'idle'
@@ -1274,6 +1281,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           : {
               ...advanceAuthority(transcript),
               waitingRequests: status.kind === 'idle' ? [] : transcript.waitingRequests,
+              roomTurnRunning: status.kind === 'idle' ? undefined : transcript.roomTurnRunning,
               liveStatus:
                 status.kind === 'working' || status.kind === 'idle'
                   ? status.kind
@@ -1349,6 +1357,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         transcript = {
           ...transcript,
           retryResolved: undefined,
+          roomTurnRunning: undefined,
           authorityRevision: ++authorityRevision
         }
 

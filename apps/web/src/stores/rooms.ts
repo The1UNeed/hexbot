@@ -15,6 +15,7 @@ import {
 import type { RoomCreateInput } from '../lib/api'
 import type { BotStatus, Room, RoomEvent, RoomTurn } from '../lib/types'
 
+import { botIdleRevision } from './bots'
 import { transcriptRevision, useTranscripts } from './transcripts'
 
 export interface RoomsState {
@@ -52,6 +53,8 @@ function roomGone(error: unknown): boolean {
 
 /** Counts turn changes per room, so a refresh keeps turns that moved while it loaded. */
 const turnChanges = new Map<string, number>()
+let roomsRequest = 0
+let acceptedRoomsRequest = 0
 
 function bumpTurns(roomId: string): void {
   turnChanges.set(roomId, (turnChanges.get(roomId) ?? 0) + 1)
@@ -110,23 +113,32 @@ export const useRooms = create<RoomsState>((set, get) => ({
   order: [],
 
   async refresh() {
+    const request = ++roomsRequest
     set({ error: null, loading: true })
     const changes = new Map(turnChanges)
     const revision = transcriptRevision()
+    const idleRevision = botIdleRevision()
 
     try {
       const { rooms } = await roomsList(true)
       const listed = rooms ?? []
       const active = listed.filter(room => !room.archived_at)
       const logs = await Promise.all(active.map(room => roomsLog(room.id, { limit: 1000 })))
+
+      if (request < acceptedRoomsRequest) {
+        return
+      }
+
+      acceptedRoomsRequest = request
       // Turn events are not replayed, so whatever ended while this client was
       // away would stay "working"; the daemon's running turns replace them,
       // except in rooms whose turns changed after the list was read.
       const current = get().liveTurnsByRoom
+      const restored = runningTurns(active)
 
       // A daemon without `turns` cannot say, so those rooms keep what they had.
       const liveTurnsByRoom = Object.fromEntries(
-        Object.entries(runningTurns(active)).map(([id, turns]) => [
+        Object.entries(restored).map(([id, turns]) => [
           id,
           turnChanges.get(id) === changes.get(id) && rooms?.find(room => room.id === id)?.turns
             ? turns
@@ -150,7 +162,9 @@ export const useRooms = create<RoomsState>((set, get) => ({
         for (const turn of Object.values(turns)) {
           if (turn.live_session_id) {
             transcripts.open(turn.live_session_id, `room:${turn.room_id}`, [], revision, turn.bot, {
-              preserveWaiting: true
+              preserveWaiting: true,
+              roomTurnRunning:
+                turns === restored[turn.room_id] && botIdleRevision(turn.bot) <= idleRevision
             })
           }
         }
@@ -165,6 +179,10 @@ export const useRooms = create<RoomsState>((set, get) => ({
         loading: false
       })
     } catch (error) {
+      if (request < acceptedRoomsRequest) {
+        return
+      }
+
       set({ error: error instanceof Error ? error.message : String(error), loading: false })
     }
   },
@@ -317,7 +335,8 @@ export const useRooms = create<RoomsState>((set, get) => ({
         useTranscripts
           .getState()
           .open(turn.live_session_id, `room:${turn.room_id}`, [], undefined, turn.bot, {
-            preserveWaiting: true
+            preserveWaiting: true,
+            roomTurnRunning: turn.status === 'running'
           })
       } else {
         const previous = current[turn.bot]

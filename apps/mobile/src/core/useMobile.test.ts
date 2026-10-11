@@ -2775,3 +2775,468 @@ describe('mobile working room projection', () => {
     expect(render().bots[0].status).toBe('idle')
   })
 })
+
+describe('mobile fallback and snapshot settlement boundaries', () => {
+  it.each(
+    ['approval', 'question'].flatMap(kind =>
+      ['private', 'room'].flatMap(place =>
+        [false, true].map(available => [kind, place, available] as const)
+      )
+    )
+  )(
+    'keeps an older-daemon %s answer from %s after leaving (lookup=%s)',
+    async (kind, place, available) => {
+      const cached =
+        place === 'private'
+          ? namedWait
+          : {
+              ...namedWait,
+              status_detail: { ...namedWait.status_detail!, section_id: null, room_id: 'room' }
+            }
+      await unopened(cached)
+      const base = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.rooms.get')
+          return {
+            room: { id: 'room', members: [], turns: [{ bot: 'alpha', live_session_id: 's1' }] }
+          }
+        if (method === 'hexbot.rooms.log') return { events: [] }
+        return base(method, params)
+      }
+      if (place === 'private') await render().openSection(cached, section())
+      else await render().openRoom({ id: 'room', members: [] } as unknown as Room)
+      hooks.clients[0].emit(
+        kind === 'approval'
+          ? approval
+          : wire('clarify.request', { request_id: 'old', question: 'When?' })
+      )
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'approval.respond') return { resolved: true }
+        if (method === 'clarify.respond') return { status: 'answered' }
+        if (method === 'hexbot.bots.get') {
+          expect(params.name).toBe('alpha')
+          if (available) return { bot: { ...cached, status: 'working' } }
+          throw new Error('Unavailable')
+        }
+        if (method === 'hexbot.bots.list') throw new Error('Unavailable')
+        return original(method, params)
+      }
+      if (kind === 'approval') await render().approval('old', 'once', 's1')
+      else await render().answer('old', 'old', 'Now', 's1')
+      await flush()
+      expect(render().bots[0].status).toBe('working')
+      if (place === 'private') expect(status()).toBe('working')
+      render().back()
+      expect(render().bots[0].status).toBe('working')
+    }
+  )
+
+  it.each([false, true])(
+    'binds a held legacy ACK to its submitted owner after another route opens (lookup=%s)',
+    async available => {
+      const beta = {
+        ...namedWait,
+        name: 'beta',
+        status_detail: { ...namedWait.status_detail!, session_id: 's2', section_id: 'other' }
+      }
+      await unopened()
+      const original = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.bots.list' ? { bots: [namedWait, beta] } : original(method, params)
+      await render().refresh()
+      await render().openSection(namedWait, section())
+      hooks.clients[0].emit(approval)
+      const reply = deferred()
+      const current = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'approval.respond') return reply.promise
+        if (method === 'hexbot.bots.get') {
+          expect(params.name).toBe('alpha')
+          if (!available) throw new Error('Unavailable')
+          return { bot: { ...namedWait, status: 'working' } }
+        }
+        return current(method, params)
+      }
+      const answering = render().approval('old', 'once', 's1')
+      await render().openSection(beta, section('other', 's2'))
+      hooks.clients[0].emit(
+        wire('approval.request', { request_id: 'old', choices: ['once'] }, 's2')
+      )
+      reply.resolve({ resolved: true })
+      await answering
+      await flush()
+      expect(render().bots.map(bot => bot.status)).toEqual(['working', 'needs_you'])
+      expect(render().chat.approvals.map(card => card.sessionId)).toEqual(['s2'])
+      expect(status()).toBe('needs_you')
+    }
+  )
+
+  it('keeps partial questions and retires retained fallback proof on new cards, authority and epoch', async () => {
+    await unopened()
+    await render().openSection(namedWait, section())
+    hooks.clients[0].emit(
+      wire('clarify.request', {
+        request_id: 'batch',
+        questions: [
+          { qid: 'a', question: 'A?' },
+          { qid: 'b', question: 'B?' }
+        ]
+      })
+    )
+    const original = hooks.handler
+    let available = false
+    hooks.handler = async (method, params) => {
+      if (method === 'clarify.respond')
+        return { status: params.question_id === 'a' ? 'waiting' : 'answered' }
+      if (method === 'hexbot.bots.get') {
+        if (!available) throw new Error('Unavailable')
+        return { bot: namedWait }
+      }
+      return original(method, params)
+    }
+    await render().answer('batch', 'a', 'First', 's1')
+    expect(render().chat.questions[0].questions.map(q => q.id)).toEqual(['b'])
+    expect(render().bots[0].status).toBe('needs_you')
+    await render().answer('batch', 'b', 'Second', 's1')
+    render().back()
+    expect(render().bots[0].status).toBe('working')
+    available = true
+    hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: { name: 'alpha' } })
+    await flush()
+    expect(render().bots[0].status).toBe('needs_you')
+    await render().openSection(namedWait, section())
+    hooks.clients[0].emit(approval)
+    hooks.handler = async (method, params) => {
+      if (method === 'approval.respond') return { resolved: true }
+      if (method === 'hexbot.bots.get') throw new Error('Unavailable')
+      return original(method, params)
+    }
+    await render().approval('old', 'once', 's1')
+    render().back()
+    expect(render().bots[0].status).toBe('working')
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+    expect(render().bots[0].status).toBe('needs_you')
+  })
+
+  it.each(['alpha', 'other'])(
+    'rejects a held old status only after an ordinary changed event for %s',
+    async name => {
+      await unopened()
+      const gets = holdBotGets()
+      hooks.clients[0].emit(namedResolved)
+      hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: { name } })
+      gets[0].resolve({ bot: { ...namedWait, status: 'stopped' } })
+      await flush()
+      if (name === 'alpha') {
+        expect(render().bots[0].status).toBe('needs_you')
+        expect(gets).toHaveLength(2)
+        gets[1].resolve({ bot: { ...namedWait, status: 'idle', status_detail: null } })
+        await flush()
+        expect(render().bots[0].status).toBe('idle')
+      } else expect(render().bots[0].status).toBe('stopped')
+    }
+  )
+
+  it.each([false, true].flatMap(changed => [false, true].map(left => [changed, left] as const)))(
+    'keeps a newer same-session wait cause through a held legacy ACK (changed=%s,left=%s)',
+    async (changed, left) => {
+      const initial = {
+        ...namedWait,
+        status_detail: { ...namedWait.status_detail!, text: 'Original approval', since: 1 }
+      }
+      await unopened(initial)
+      await render().openSection(initial, section())
+      hooks.clients[0].emit(approval)
+      const reply = deferred()
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'approval.respond') return reply.promise
+        if (method === 'hexbot.bots.get') throw new Error('Unavailable')
+        if (method === 'hexbot.bots.list')
+          return {
+            bots: [
+              {
+                ...initial,
+                status_detail: {
+                  ...initial.status_detail,
+                  text: changed ? 'Another question' : 'Original approval',
+                  since: changed ? 2 : 1
+                }
+              }
+            ]
+          }
+        return original(method, params)
+      }
+      const answering = render().approval('old', 'once', 's1')
+      if (left) render().back()
+      await render().refresh()
+      reply.resolve({ resolved: true })
+      await answering
+      await flush()
+      expect(render().bots[0].status).toBe(changed ? 'needs_you' : 'working')
+      if (!left) expect(status()).toBe(changed ? 'needs_you' : 'working')
+    }
+  )
+
+  it.each(['s1', 'new-session'])(
+    'retires off-route fallback status when a new card arrives in %s',
+    async sessionId => {
+      await unopened()
+      await render().openSection(namedWait, section())
+      hooks.clients[0].emit(approval)
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'approval.respond') return { resolved: true }
+        if (method === 'hexbot.bots.get') throw new Error('Unavailable')
+        return original(method, params)
+      }
+      await render().approval('old', 'once', 's1')
+      render().back()
+      expect(render().bots[0].status).toBe('working')
+      hooks.clients[0].emit(
+        wire(
+          'clarify.request',
+          {
+            bot: 'alpha',
+            section_id: sessionId === 's1' ? 'section' : 'another',
+            request_id: 'new',
+            question: 'Next?'
+          },
+          sessionId
+        )
+      )
+      expect(render().bots[0].status).toBe('needs_you')
+    }
+  )
+
+  it('preserves an off-route sibling question received before a held approval acknowledgment', async () => {
+    await unopened()
+    await render().openSection(namedWait, section())
+    hooks.clients[0].emit(approval)
+    const reply = deferred()
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'approval.respond') return reply.promise
+      if (method === 'hexbot.bots.get') throw new Error('Unavailable')
+      return original(method, params)
+    }
+    const answering = render().approval('old', 'once', 's1')
+    render().back()
+    hooks.clients[0].emit(
+      wire('clarify.request', {
+        bot: 'alpha',
+        section_id: 'section',
+        request_id: 'new',
+        question: 'Next?'
+      })
+    )
+    reply.resolve({ resolved: true })
+    await answering
+    expect(render().bots[0].status).toBe('needs_you')
+  })
+
+  it('preserves a newer pending history snapshot after leaving a reopened fallback session', async () => {
+    await unopened()
+    await render().openSection(namedWait, section())
+    hooks.clients[0].emit(approval)
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'approval.respond') return { resolved: true }
+      if (method === 'hexbot.bots.get') throw new Error('Unavailable')
+      return original(method, params)
+    }
+    await render().approval('old', 'once', 's1')
+    render().back()
+    const previous = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.sections.open'
+        ? {
+            section: section(),
+            messages: [],
+            pending_clarify: { request_id: 'new', question: 'Next?' }
+          }
+        : previous(method, params)
+    await render().openSection(namedWait, section())
+    expect(render().bots[0].status).toBe('needs_you')
+    render().back()
+    expect(render().bots[0].status).toBe('needs_you')
+  })
+
+  it.each(['absent', 'settled'])(
+    'keeps useful legacy proof while reopening a %s pending snapshot',
+    async pending => {
+      await unopened()
+      await render().openSection(namedWait, section())
+      const card = { request_id: 'old', question: 'When?' }
+      hooks.clients[0].emit(wire('clarify.request', card))
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'clarify.respond') return { status: 'answered' }
+        if (method === 'hexbot.bots.get') throw new Error('Unavailable')
+        return original(method, params)
+      }
+      await render().answer('old', 'old', 'Now', 's1')
+      render().back()
+      const previous = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.sections.open'
+          ? {
+              section: section(),
+              messages: [],
+              pending_clarify: pending === 'settled' ? card : undefined
+            }
+          : previous(method, params)
+      await render().openSection(namedWait, section())
+      expect(render().chat.questions).toEqual([])
+      expect(render().bots[0].status).toBe('working')
+      render().back()
+      expect(render().bots[0].status).toBe('working')
+    }
+  )
+
+  it('settles a held room acknowledgment through a benign room rename', async () => {
+    const cached = {
+      ...namedWait,
+      status_detail: { ...namedWait.status_detail!, section_id: null, room_id: 'room' }
+    }
+    await unopened(cached)
+    const reply = deferred()
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.rooms.log') return { events: [] }
+      if (method === 'hexbot.rooms.get')
+        return {
+          room: { id: 'room', members: [], turns: [{ bot: 'alpha', live_session_id: 's1' }] }
+        }
+      if (method === 'approval.respond') return reply.promise
+      if (method === 'hexbot.bots.get' || method === 'hexbot.rooms.list')
+        throw new Error('Unavailable')
+      return original(method, params)
+    }
+    await render().openRoom({ id: 'room', members: [] } as unknown as Room)
+    hooks.clients[0].emit(approval)
+    const answering = render().approval('old', 'once', 's1')
+    hooks.clients[0].emit({ type: 'hexbot.rooms.changed', payload: { id: 'room' } })
+    reply.resolve({ resolved: true })
+    await answering
+    expect(render().chat.approvals).toEqual([])
+    expect(render().bots[0].status).toBe('working')
+    render().back()
+    expect(render().bots[0].status).toBe('working')
+  })
+
+  it('keeps completed room fallback proof after the native terminal turn event', async () => {
+    const cached = {
+      ...namedWait,
+      status_detail: { ...namedWait.status_detail!, section_id: null, room_id: 'room' }
+    }
+    await unopened(cached)
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.rooms.log') return { events: [] }
+      if (method === 'hexbot.rooms.get')
+        return {
+          room: { id: 'room', members: [], turns: [{ bot: 'alpha', live_session_id: 's1' }] }
+        }
+      if (method === 'approval.respond') return { resolved: true }
+      if (method === 'hexbot.bots.get') throw new Error('Unavailable')
+      return original(method, params)
+    }
+    await render().openRoom({ id: 'room', members: [] } as unknown as Room)
+    hooks.clients[0].emit(approval)
+    await render().approval('old', 'once', 's1')
+    render().back()
+    expect(render().bots[0].status).toBe('working')
+    hooks.clients[0].emit({
+      type: 'hexbot.rooms.turn',
+      payload: { room_id: 'room', bot: 'alpha', live_session_id: 's1', status: 'complete' }
+    })
+    expect(render().bots[0].status).toBe('idle')
+  })
+
+  it.each(['answer', 'question', 'retry'])(
+    'carries exact %s completion proof through the bounded history reread',
+    async kind => {
+      const cached = kind !== 'retry' ? namedWait : { ...stoppedBot, owner_id: 'owner' }
+      await unopened(cached)
+      const statusReply = deferred()
+      const original = hooks.handler
+      let statuses = 0
+      hooks.handler = async (method, params) => {
+        if (method === 'session.status')
+          return ++statuses === 1 ? statusReply.promise : { status: 'idle' }
+        if (method === 'hexbot.bots.get') throw new Error('Unavailable')
+        return original(method, params)
+      }
+      const opening = render().openSection(cached, section())
+      await flush()
+      if (kind === 'answer') {
+        hooks.clients[0].emit(approval)
+        hooks.clients[0].emit(resolved)
+      } else if (kind === 'question') {
+        hooks.clients[0].emit(wire('clarify.request', { request_id: 'old', question: 'When?' }))
+        hooks.clients[0].emit(
+          wire('clarify.resolved', {
+            request_id: 'old',
+            status: 'answered',
+            answers: { old: 'Now' }
+          })
+        )
+      } else hooks.clients[0].emit(wire('message.start', { retry_resolved: true }))
+      hooks.clients[0].emit(wire('message.complete', { text: 'Done' }))
+      statusReply.resolve({ status: 'working' })
+      await opening
+      expect(statuses).toBe(2)
+      expect(status()).toBe('idle')
+      expect(render().chat.approvals).toEqual([])
+    }
+  )
+
+  it.each(['waiting', 'error', 'epoch', 'session', 'authority'])(
+    'keeps newer %s evidence across a proof-carrying reread',
+    async control => {
+      await unopened(namedWait)
+      const first = deferred(),
+        second = deferred()
+      const original = hooks.handler
+      let opens = 0,
+        statuses = 0
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.sections.open')
+          return {
+            section: section('section', ++opens > 1 && control === 'session' ? 's2' : 's1'),
+            messages: opens > 1 ? [{ role: 'assistant', content: 'Done' }] : []
+          }
+        if (method === 'session.status') return ++statuses === 1 ? first.promise : second.promise
+        if (method === 'hexbot.bots.get') return { bot: namedWait }
+        return original(method, params)
+      }
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+      const opening = render().openSection(namedWait, section())
+      await flush()
+      hooks.clients[0].emit(approval)
+      hooks.clients[0].emit(resolved)
+      hooks.clients[0].emit(wire('message.complete', { text: 'Done' }))
+      first.resolve({ status: 'working' })
+      await flush()
+      if (control === 'waiting')
+        hooks.clients[0].emit(wire('clarify.request', { request_id: 'new', question: 'Next?' }))
+      if (control === 'error') hooks.clients[0].emit(wire('error', { message: 'New failure' }))
+      if (control === 'epoch')
+        hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+      if (control === 'authority') {
+        hooks.clients[0].emit(namedResolved)
+        await flush()
+      }
+      second.resolve({ status: 'idle' })
+      await opening
+      expect(status()).toBe(control === 'error' ? 'stopped' : 'needs_you')
+      expect(render().chat.messages.map(m => m.text)).toEqual(['Done'])
+      expect(opens).toBe(2)
+      if (control === 'waiting')
+        expect(render().chat.questions.map(q => q.requestId)).toEqual(['new'])
+    }
+  )
+})

@@ -146,6 +146,7 @@ describe.each(['room', 'thread'] as const)('%s siblings', surface => {
 
   it('accepts current Working while ignoring stale streaming and retained cards', async () => {
     await openSibling(surface)
+    useTranscripts.getState().clearAnsweredWaiting()
     useTranscripts.getState().messageStart('sibling')
     expect(dot(idleBot)).toBe('idle')
     routeEvent({
@@ -173,7 +174,7 @@ describe.each(['room', 'thread'] as const)('%s siblings', surface => {
     expect(dot(idleBot)).toBe('needs_you')
     await openSibling(surface, 'owl', 'new-live')
     expect(useTranscripts.getState().bySession['old-live']?.waitingRequests).toHaveLength(1)
-    expect(dot(idleBot)).toBe('idle')
+    expect(dot(idleBot)).toBe(surface === 'room' ? 'working' : 'idle')
     ask('new-live', 'new-question', 'clarify')
     expect(dot(idleBot)).toBe('needs_you')
   })

@@ -695,6 +695,7 @@ export function liveSectionsOf(
       answeredWaiting?: { kind: 'approval' | 'clarify'; requestId: string }
       waitingRequests?: { kind: 'approval' | 'clarify'; requestId: string }[]
       retryResolved?: boolean
+      roomTurnRunning?: boolean
       liveStatus?: 'idle' | 'needs_you' | 'working'
       approvals: { decision?: unknown; requestId?: string }[]
       clarifies: ClarifyRequest[]
@@ -909,7 +910,13 @@ export function botStatusWithLive(
       ? rooms.liveTurnsByRoom[roomId]?.[bot.name]?.live_session_id
       : indexed.liveSessionId[id]
 
-    const fresh = freshSessionStatus(session)
+    // A running turn certifies activity, not settlement of a human request.
+    const running =
+      roomId &&
+      session.roomTurnRunning &&
+      rooms.liveTurnsByRoom[roomId]?.[bot.name]?.status === 'running'
+
+    const fresh = freshSessionStatus(session) ?? (running ? 'working' : undefined)
 
     // An unopened thread's trusted card ownership survives its answer and
     // fresh progress, until a roster or lifecycle update retires that evidence.

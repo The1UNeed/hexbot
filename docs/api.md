@@ -151,10 +151,17 @@ active. A non-idle bot reply must not erase status evidence for a
 sibling session. An accepted Idle reply can retire the bot's older live
 status evidence. Pending questions and approvals remain Waiting through an
 unrelated Working event; answers settle only their matching request IDs.
+Mobile retains exact local answer evidence after leaving a conversation,
+including replies from daemons without settlement broadcasts. History
+rereads preserve answer and retry evidence received during an earlier
+attempt, until newer authority retires it. Named bot changes fence older
+targeted status reads.
 Mobile projects confirmed cards from the open conversation and every matching
 bot turn in the current room as Needs you, below Stopped. Busy matching room
 turns can show Working, below Needs you and Stopped; newer accepted bot status
 retires older activity evidence. Archived private cards do not count.
+The web client uses accepted running room turns as Working evidence when
+their exact live session matches, below Needs you and Stopped.
 Accepted archive state excludes matching private activity from the bot
 aggregate and makes the open turn eligible again on restore.
 Bot status and archive fields reconcile independently when sections change.
