@@ -1247,6 +1247,8 @@ export function useMobile() {
     const latest = botsRef.current.find(bot => sameBot(bot, owned.bot))
     // A delayed callback settles its card, but cannot resume a newer accepted wait cause.
     if (
+      owned.bot.status === 'needs_you' &&
+      owned.bot.status_detail?.session_id === owned.sessionId &&
       latest?.status === 'needs_you' &&
       latest.status_detail?.session_id === owned.sessionId &&
       !sameCause(latest, owned.bot)

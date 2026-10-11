@@ -3346,3 +3346,100 @@ describe('mobile fallback and snapshot settlement boundaries', () => {
     }
   )
 })
+
+describe('mobile tap before the card roster refresh', () => {
+  const cases = ['approval', 'question'].flatMap(kind => [
+    ...['working', 'idle', 'sibling'].flatMap(cached =>
+      [false, true].map(left => [kind, cached, left, false] as const)
+    ),
+    [kind, 'working', false, true] as const
+  ])
+  it.each(cases)(
+    'settles %s after tapping cached %s before refresh (left=%s,lookup=%s)',
+    async (kind, cached, left, available) => {
+      vi.useFakeTimers()
+      try {
+        const initial: Bot =
+          cached === 'sibling'
+            ? {
+                ...namedWait,
+                status_detail: {
+                  ...namedWait.status_detail!,
+                  session_id: 'sibling',
+                  section_id: 'sibling-section'
+                }
+              }
+            : { ...namedWait, status: cached === 'idle' ? 'idle' : 'working', status_detail: null }
+        const ownWait = {
+          ...namedWait,
+          status_detail: {
+            ...namedWait.status_detail!,
+            since: 100,
+            text: 'Waiting for you',
+            action: null
+          }
+        }
+        await unopened(initial)
+        await render().openSection(initial, section())
+        const firstRead = deferred(),
+          ack = deferred()
+        const original = hooks.handler
+        let gets = 0
+        hooks.handler = async (method, params) => {
+          if (method === 'approval.respond' || method === 'clarify.respond') return ack.promise
+          if (method === 'hexbot.bots.get') {
+            if (++gets === 1) return firstRead.promise
+            if (!available) throw new Error('Lookup unavailable')
+            return { bot: { ...ownWait, status: 'working' } }
+          }
+          if (method === 'hexbot.bots.list') return { bots: [ownWait] }
+          return original(method, params)
+        }
+        const changed = { type: 'hexbot.bots.changed', payload: { name: 'alpha' } }
+        const card =
+          kind === 'approval'
+            ? wire('approval.request', {
+                request_id: 'old',
+                choices: ['once'],
+                bot: 'alpha',
+                section_id: 'section'
+              })
+            : wire('clarify.request', {
+                request_id: 'old',
+                question: 'When?',
+                bot: 'alpha',
+                section_id: 'section'
+              })
+        // The extension changes the bot before its approval card; Pi clarification reverses them.
+        if (kind === 'approval') hooks.clients[0].emit(changed)
+        hooks.clients[0].emit(card)
+        if (kind === 'question') hooks.clients[0].emit(changed)
+        const answering =
+          kind === 'approval'
+            ? render().approval('old', 'once', 's1')
+            : render().answer('old', 'old', 'Now', 's1')
+        if (left) render().back()
+        // The old sibling wait, if present, has settled elsewhere before the own-wait snapshot.
+        firstRead.resolve({ bot: ownWait })
+        await flush()
+        await vi.advanceTimersByTimeAsync(200)
+        await flush()
+        expect(render().bots[0].status).toBe('needs_you')
+        ack.resolve(kind === 'approval' ? { resolved: true } : { status: 'answered' })
+        await answering
+        await flush()
+        expect(render().bots[0].status).toBe('working')
+        if (!left) {
+          expect(status()).toBe('working')
+          expect(render().chat.approvals).toEqual([])
+          expect(render().chat.questions).toEqual([])
+          render().back()
+          expect(render().bots[0].status).toBe('working')
+        }
+      } finally {
+        vi.clearAllTimers()
+        vi.useRealTimers()
+      }
+    }
+  )
+})
