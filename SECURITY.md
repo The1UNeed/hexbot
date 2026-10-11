@@ -74,9 +74,11 @@ in Manual, through three nested folders. It resolves `.env` symlinks and Git
 pointers, and skips dependency/runtime folders listed in `credential-policy.json`
 plus shared temporary roots. Repositories and secrets beyond these limits are
 not covered by the Linux scan. If more than 1,000 directories need scanning,
-only Linux bubblewrap commands refuse to run and require an approved
-`full_access` retry. For `execute_code`, use a smaller workspace or run the
-Python code through the terminal tool with `full_access` and a reason. macOS
+or the folders it reads hold more than 50,000 entries, only Linux bubblewrap
+commands refuse to run and require an approved `full_access` retry. For
+`execute_code`, use a smaller workspace or run the Python code through the
+terminal tool with `full_access` and a reason; a scheduled script needs a
+smaller workspace. macOS
 and file tools use partial results when the budget is reached. File changes ask for approval
 in Auto mode when the scan is incomplete, every time: that approval covers one
 change, is never remembered for the section, and never stands in for the
@@ -87,21 +89,35 @@ File tools refuse protected Git writes; an unreadable Git configuration or
 scan failure asks for approval instead of blocking ordinary writes. Repository
 configs and their includes are parsed with the system Git at `/usr/bin/git`;
 without it, a repository with a config counts as unreadable. Your own Git
-config (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/config` and `/etc/gitconfig`)
-and its includes are read the same way, and a hooks path it sets is resolved in
-each repository, so a global `core.hooksPath = .githooks` protects `.githooks`
-in every scanned repository. Each config file is read once per scan; a scan
-that meets more than 10,000 config files and settings counts as unreadable, so
-include cycles cannot stall it. Included files and
+config and its includes are read the same way, from the files Git reads:
+`$GIT_CONFIG_GLOBAL`, or `~/.gitconfig` and `$XDG_CONFIG_HOME/git/config`, and
+`$GIT_CONFIG_SYSTEM` or `/etc/gitconfig` and Homebrew's
+`/opt/homebrew/etc/gitconfig` and `/usr/local/etc/gitconfig` unless
+`GIT_CONFIG_NOSYSTEM` is set. A Git build that keeps its system config
+elsewhere (for example the one bundled with Xcode) is not read; set
+`core.hooksPath` in one of these files instead. A hooks path your config sets
+is resolved in each repository, so a global `core.hooksPath = .githooks`
+protects `.githooks` in every scanned repository. Each config file is read
+once per scan. A scan that meets more than 64 included files beyond the
+repository and user configs, or more than 10,000 settings, counts as
+unreadable, so include cycles and fan-out cannot stall it. Included files and
 configured hook paths inside the workspace or an output folder are protected,
 with their ancestors up to that folder. Ones outside are already read-only to
 sandboxed commands; a hook path that contains the workspace, such as `/` or the
 home folder, is ignored. FIFOs and other special files in Git metadata stay
 locked and are never read. Bubblewrap can only lock a folder that exists, so on
-Linux a configured hooks folder that does not exist yet is locked through its
-nearest existing parent. When that parent is the workspace itself, the command
-asks for approval instead of running in a read-only workspace; creating the
-folder (for example `mkdir .githooks`) lets commands run in the sandbox again.
+Linux a configured hooks folder or included file that does not exist yet is
+locked through its nearest existing parent inside a repository, such as
+`.husky` for a missing `.husky/_`. When that parent would be a repository's own
+folder, the workspace or an output folder, the command asks for approval
+instead of making all of it read-only. The reason names every missing target
+and one command that creates them (`mkdir -p` for folders, `touch` for
+included files); after that, commands run in the sandbox again. Bubblewrap
+also cannot protect a symbolic link inside the workspace, so on Linux a `.git`
+entry, hooks folder or included file reached through such a link asks for
+approval the same way, until the link is replaced by what it points to. macOS
+locks the link itself. Python code and scheduled scripts cannot ask: they stop
+with the same explanation.
 
 macOS fails closed when its sandbox cannot start. On Linux, if bubblewrap is
 missing or unusable, Hexbot reports the missing isolation and Auto and Manual

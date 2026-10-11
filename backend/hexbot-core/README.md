@@ -349,7 +349,7 @@ ask before browser page scripts and before scheduling an absolute script path.
 The workspace scan is breadth-first, through three nested folders, skipping
 policy dependency/runtime folders and shared temporary roots. Manual searches
 read-only workspaces too. Secret symlinks and Git pointers resolve to their real
-targets. Exceeding 1,000 directories refuses the command with an approval reason;
+targets. Exceeding 1,000 directories or 50,000 entries refuses the command with an approval reason;
 the bot must request an approved full-access retry. Linux protects repositories
 that exist when the command starts. Repositories created during a command are
 not protected on Linux, nor are paths outside the scan limits. macOS filename
@@ -357,9 +357,14 @@ rules cover new repositories and secrets too, and deny secret/browser writes
 and renames. Scanned Git targets and secret ancestors, and browser-store
 ancestors, cannot be renamed on macOS. Tracked hooks such as `.husky` remain
 writable and visible in `git status`. Config includes are read once per scan
-and capped at 10,000 files and settings. On Linux a missing hooks folder that
-would pin the whole workspace read-only refuses the command with an approval
-reason that says to create the folder. When the scan is incomplete, file
+and capped at 64 included files and 10,000 settings. The user's Git config
+follows `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_NOSYSTEM`. On
+Linux a missing hooks folder or include that would pin a repository's own
+folder, the workspace or an output folder read-only, or Git metadata reached
+through a symbolic link inside the workspace, refuses the command with an
+approval reason that names one command to fix it (`mkdir -p` and `touch`).
+Python code and scheduled scripts get the same explanation without the
+approval advice. When the scan is incomplete, file
 changes ask once each and the answer is never remembered for the section. See [SECURITY.md](../../SECURITY.md#tool-isolation).
 
 Python code execution runs in the sandbox the section's commands get: the

@@ -64,8 +64,9 @@ The app follows the track it was installed from; switch in Settings, Updates.
   [SECURITY.md](SECURITY.md#tool-isolation). Linux scans existing repositories
   through three nested folders and skips dependency/runtime folders. Only Linux
   bubblewrap commands require an approved full-access retry when the scan
-  exceeds 1,000 directories. macOS uses partial scan results; file changes
-  ask for approval in Auto mode, one at a time, when the scan is incomplete.
+  exceeds 1,000 directories or 50,000 entries. macOS uses partial scan
+  results; file changes ask for approval in Auto mode, one at a time, when the
+  scan is incomplete.
   Repositories created during a command are not protected on Linux. macOS
   filename rules also cover new `.git` metadata directories.
 - **Your hardware.** The daemon runs where you install it. Pair devices over

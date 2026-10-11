@@ -22,14 +22,23 @@
   workspaces. Hook-path tests set `core.hooksPath` to `/`, a browser store, the
   home folder and a link to `/`, and check that nothing outside the workspace is
   bound or locked, that no bind follows a mask, and that file tools still
-  write. FIFO tests put FIFOs at `.git`, `commondir`, a config and an include
+  write; the link inside the workspace refuses the Linux command and is locked
+  by name on macOS. Link tests make `.git` and a hooks folder symbolic links
+  inside the workspace and check the same, with `sandbox-exec` refusing to
+  remove or replace them. FIFO tests put FIFOs at `.git`, `commondir`, a config and an include
   and check that the scan finishes. Include tests use a cyclic, fanned-out set
-  of includes (12^10 visits without deduplication) and a config with 10,001
-  includes, which must fail the scan quickly. Global-config tests point
-  `XDG_CONFIG_HOME` at a config with `core.hooksPath = .githooks` and check that
-  each worktree's folder is locked, an absolute one outside the workspace is
-  not, and a missing one at the workspace root refuses the Linux command with
-  `mkdir` guidance until the folder exists. The parity test includes that
+  of includes (12^10 visits without deduplication), a config with 64 includes,
+  which scans, and one with 10,001, which must fail the scan within seconds.
+  Entry tests fill one folder past the entry budget. Global-config tests point
+  `GIT_CONFIG_GLOBAL` at a config with `core.hooksPath = .githooks` and check
+  that each worktree's folder is locked, an absolute one outside the workspace
+  is not, and a missing one that would pin a nested repository or the
+  workspace refuses the Linux command with `mkdir` guidance until the folder
+  exists. Pinning tests check that a missing `.husky/_` pins only `.husky`,
+  that a missing include asks for `touch`, and that one message names every
+  missing target. Every other test reads no user or system Git config: the Pi
+  tests set `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`, and the
+  Rust tests read only the files a test names. The parity test includes that
   global setting. Large-workspace tests cover file-tool writes/edits and macOS
   commands after the scan budget is reached. Incomplete scans ask before each
   file change, offer only once or deny, and keep the shell-profile and

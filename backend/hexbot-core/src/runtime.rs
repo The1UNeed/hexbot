@@ -4798,13 +4798,13 @@ fn guarded_file_path(
             && (protected_home
                 || path.components().any(|c| {
                     c.as_os_str().to_str().is_some_and(|v| {
-                        let v = if crate::credentials::FOLD_CASE {
+                        let folded = if crate::credentials::FOLD_CASE {
                             v.to_lowercase()
                         } else {
                             v.to_owned()
                         };
-                        v.starts_with(".env")
-                            || [".git", "node_modules", ".ssh"].contains(&v.as_str())
+                        crate::credentials::secret_file_name(v)
+                            || [".git", "node_modules", ".ssh"].contains(&folded.as_str())
                     })
                 }))
         {
@@ -4993,6 +4993,23 @@ mod file_bridge_tests {
         assert!(ask(&workspace.join("notes.txt"), "manual"));
         assert!(!ask(&workspace.join("notes.txt"), "smart"));
         assert!(ask(&outside.join("notes.txt"), "smart"));
+        // Examples are ordinary files to write; secrets are not.
+        for name in [".env.example", ".env.sample", ".env.template", ".env.dist"] {
+            assert!(!ask(&workspace.join(name), "smart"), "{name}");
+        }
+        for name in [".env.local", ".envrc"] {
+            assert!(
+                guarded_file_path(
+                    &home,
+                    &workspace.join(name),
+                    true,
+                    "smart",
+                    std::slice::from_ref(&workspace)
+                )
+                .is_err(),
+                "{name}"
+            );
+        }
         assert!(
             !guarded_file_path(&home, &outside.join("notes.txt"), false, "manual", &[])
                 .unwrap()

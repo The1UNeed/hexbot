@@ -7,6 +7,11 @@ import {tmpdir, homedir} from 'node:os';
 import {join} from 'node:path';
 import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, sanitizeSearchResult, hostWriteTier, escapeMcpValues} from './extension.ts';
 
+// Scans read the user's own Git configuration. These tests use none, so the
+// developer's ~/.gitconfig and system config cannot change their results.
+process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+process.env.GIT_CONFIG_NOSYSTEM = '1';
+
 // These gates assume the OS sandbox is in place, as it always is on macOS. On
 // Linux the probe looks for bwrap on PATH, so a stand-in that passes the probe
 // and runs the command after "--" plays bubblewrap here. isolation.test.mjs
@@ -176,6 +181,12 @@ test('project secrets and browser stores are private to the file tools; examples
   f.settings.cwd=work;
   assert.equal((await f.gate('read',{path:join(work,'.env')}))?.reason,'Credential files are private.');
   assert.equal(await f.gate('read',{path:join(work,'.env.example')}),undefined);
+  // Examples are ordinary files to write as well; secrets are not.
+  for (const name of ['.env.example','.env.sample','.env.template','.env.dist']) {
+    assert.equal(protectedPath(join(work,name),f.home),false,name);
+    assert.equal(await f.gate('write',{path:join(work,name),content:'ok'}),undefined,name);
+  }
+  for (const name of ['.env.local','.envrc']) assert.equal(protectedPath(join(work,name),f.home),true,name);
 });
 test('primary model changes remain live across fallback restoration', async t => {
   const f=fixture(t);
@@ -853,4 +864,24 @@ test('an incomplete scan asks once per file change and never widens a section ap
   const asked = f.choices.length;
   assert.equal(await f.gate('write', {path:join(homedir(), 'hexbot-outside-test-2.txt'), content:'x'}), undefined);
   assert.equal(f.choices.length, asked);
+});
+
+test('on Linux a command asks when a missing Git target would pin a repository or Git is reached through a link', async t => {
+  const work = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-pin-')));
+  t.after(() => rmSync(work, {recursive:true, force:true}));
+  const f = fixture(t, 'smart', ['terminal'], {cwd:work});
+  mkdirSync(join(work, 'app/.git'), {recursive:true});
+  writeFileSync(join(work, 'app/.git/config'), '[core]\n\thooksPath = .githooks\n');
+  const missing = await f.gate('bash', {command:'echo harmless'});
+  if (process.platform === 'linux') assert.match(missing.reason, /does not exist yet.*retry with full_access.*mkdir -p/);
+  else assert.equal(missing, undefined);
+  mkdirSync(join(work, 'app/.githooks'));
+  assert.equal(await f.gate('bash', {command:'echo harmless'}), undefined);
+  mkdirSync(join(work, 'store'));
+  symlinkSync('../store', join(work, 'app/.githooks-link'));
+  writeFileSync(join(work, 'app/.git/config'), '[core]\n\thooksPath = .githooks-link\n');
+  const linked = await f.gate('bash', {command:'echo harmless'});
+  if (process.platform === 'linux') assert.match(linked.reason, /symbolic link.*githooks-link/);
+  else assert.equal(linked, undefined);
+  assert.equal(f.choices.length, 0);
 });

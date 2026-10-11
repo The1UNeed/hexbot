@@ -227,8 +227,9 @@ export default function hexbot(pi: any) {
         try {
           const scan = workspaceProtected([cwd, ...live.outputDirs ?? []]);
           if (scan.exhausted || scan.failure) return {block: true, reason: scan.exhausted ? SCAN_REASON : 'The workspace safety scan could not finish. Retry with full_access and a reason.'};
-          // A missing hooks folder that would pin the whole workspace read-only asks instead.
-          lockedGit(scan.git, workspace().filter(existsSync).map(root => realpathSync(root)).filter(root => root !== '/tmp'), true);
+          // A missing hooks folder that would pin a whole repository read-only, or a
+          // replaceable link to Git metadata, asks instead.
+          lockedGit(scan, workspace().filter(existsSync).map(root => realpathSync(root)).filter(root => root !== '/tmp'), true);
         }
         catch (error: any) { return {block: true, reason: error.message}; }
       }
@@ -545,7 +546,7 @@ function protectedHomePath(path: string, home: string, writable: string[]): bool
 }
 export function protectedPath(path: string, home: string, writable: string[] = []): boolean {
   path = canonicalPath(path, process.cwd());
-  return protectedHomePath(path, home, writable) || path.split(sep).some(part => fold(part).startsWith('.env') || ['.git', 'node_modules', '.ssh'].includes(fold(part)));
+  return protectedHomePath(path, home, writable) || path.split(sep).some(part => secretFileName(part) || ['.git', 'node_modules', '.ssh'].includes(fold(part)));
 }
 export function shellEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   // Explicit inheritance prevents unfamiliar connector keys and runtime injection

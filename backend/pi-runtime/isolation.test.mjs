@@ -7,6 +7,11 @@ import {tmpdir} from 'node:os';
 import {createInterface} from 'node:readline';
 import {isolatedCommand, probeIsolation} from './isolation.ts';
 
+// Scans read the user's own Git configuration. These tests use none, so the
+// developer's ~/.gitconfig and system config cannot change their results.
+process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+process.env.GIT_CONFIG_NOSYSTEM = '1';
+
 // The Linux tests run the real bubblewrap when it passes the daemon's probe.
 // CI installs it; Ubuntu 24.04 needs the AppArmor profile from the install docs.
 const bubblewrap = process.platform === 'linux' && !!probeIsolation();
@@ -520,7 +525,7 @@ test('repository hook paths outside the workspace never bind, lock or refuse hos
   for (const path of [home, join(work, '.git'), join(work, 'inside-hooks')]) mkdirSync(path, {recursive:true});
   symlinkSync('/', join(work, 'linked-root'));
   const ancestors = path => { const list = []; for (let dir = path; ; dir = join(dir, '..')) { list.push(dir); if (dir === '/') return list; } };
-  for (const target of ['/', readDenied()[0], homedir(), join(work, 'linked-root')]) {
+  for (const target of ['/', readDenied()[0], homedir()]) {
     writeFileSync(join(work, '.git/config'), `[core]\n\thooksPath = ${target}\n`);
     const scan = workspaceProtected([work]);
     assert.equal(scan.failure, undefined, target);
@@ -537,6 +542,20 @@ test('repository hook paths outside the workspace never bind, lock or refuse hos
       const result = spawnSync('/usr/bin/sandbox-exec', ['-p', profile, '/bin/bash', '-c', 'echo ok > notes; cat notes'], {cwd:work, encoding:'utf8'});
       assert.equal(result.stdout, 'ok\n', result.stderr);
     }
+  }
+  // Through a link inside the workspace the target is the host root, but a
+  // command could replace the link with a folder of hooks. Bubblewrap cannot
+  // protect the link, so the command asks; Seatbelt locks the link itself.
+  writeFileSync(join(work, '.git/config'), `[core]\n\thooksPath = ${join(work, 'linked-root')}\n`);
+  assert.deepEqual(workspaceProtected([work]).links, [join(work, 'linked-root')]);
+  assert.throws(() => bwrapArguments(home, [], [work]), /symbolic link.*linked-root.*retry with full_access/);
+  assert.equal(writeDenial(join(work, 'notes'), work, home), undefined);
+  const linkedProfile = sandboxProfile(home, [], [work]);
+  assert.ok(linkedProfile.includes(`(subpath ${JSON.stringify(join(work, 'linked-root'))})`) && !linkedProfile.includes('(subpath "/")'));
+  if (process.platform === 'darwin') {
+    const run = command => spawnSync('/usr/bin/sandbox-exec', ['-p', linkedProfile, '/bin/bash', '-c', command], {cwd:work, encoding:'utf8'});
+    assert.equal(run('echo ok > notes; cat notes').stdout, 'ok\n');
+    for (const command of ['rm linked-root', 'mv linked-root moved', 'ln -sfn inside-hooks linked-root']) assert.notEqual(run(command).status, 0, command);
   }
   // Inside the workspace the configured folder is still locked, before any mask.
   writeFileSync(join(work, '.git/config'), '[core]\n\thooksPath = inside-hooks\n');
@@ -576,7 +595,12 @@ test('cyclic and fanned-out Git includes are read once, and too many stop the sc
   const includes = prefix => '[include]\n' + names.map(name => `\tpath = ${prefix}${name}\n`).join('');
   writeFileSync(join(work, '.git/config'), includes('../'));
   for (const name of names) writeFileSync(join(work, name), `${includes('')}[core]\n\thooksPath = ${name}-hooks\n`);
-  writeFileSync(join(wide, '.git/config'), `[include]\n${Array.from({length:10001}, (_, i) => `\tpath = ../missing${i}\n`).join('')}`);
+  // Beyond the repository and user configs a scan reads 64 include files.
+  const fanOut = count => `[include]\n${Array.from({length:count}, (_, i) => `\tpath = ../missing${i}\n`).join('')}`;
+  const fits = join(base, 'fits');
+  mkdirSync(join(fits, '.git'), {recursive:true});
+  writeFileSync(join(fits, '.git/config'), fanOut(64));
+  writeFileSync(join(wide, '.git/config'), fanOut(10001));
   const scan = roots => {
     const script = `const {workspaceProtected}=await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); console.log(JSON.stringify(workspaceProtected(${JSON.stringify(roots)})));`;
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {encoding:'utf8', timeout:20000});
@@ -586,7 +610,10 @@ test('cyclic and fanned-out Git includes are read once, and too many stop the sc
   const cyclic = scan([work]);
   assert.equal(cyclic.failure, undefined);
   for (const name of names) for (const path of [name, `${name}-hooks`]) assert.ok(cyclic.git.includes(join(work, path)), path);
+  assert.equal(scan([fits]).failure, undefined);
+  const started = Date.now();
   assert.match(scan([wide]).failure, /could not be scanned/);
+  assert.ok(Date.now() - started < 5000);
 });
 
 test('a global core.hooksPath is protected in each worktree inside the workspace, and a missing one asks on Linux', async t => {
@@ -601,7 +628,7 @@ test('a global core.hooksPath is protected in each worktree inside the workspace
   writeFileSync(join(work, 'lib/.git/config'), '[core]\n\thooksPath = tools/hooks\n');
   const run = (code, cwd = work) => {
     const script = `const {bwrapArguments, sandboxProfile, workspaceProtected}=await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); const {writeDenial}=await import(${JSON.stringify(new URL('./extension.ts', import.meta.url).href)}); const [home, work] = process.argv.slice(1); ${code}`;
-    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script, home, cwd], {encoding:'utf8', timeout:20000, env:{...process.env, XDG_CONFIG_HOME:xdg}});
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script, home, cwd], {encoding:'utf8', timeout:20000, env:{...process.env, GIT_CONFIG_GLOBAL:join(xdg, 'git/config')}});
     assert.equal(result.status, 0, result.stderr || String(result.signal));
     return JSON.parse(result.stdout);
   };
@@ -613,17 +640,106 @@ test('a global core.hooksPath is protected in each worktree inside the workspace
   assert.match(scanned.hook, /read-only/);
   assert.equal(scanned.notes, undefined);
   assert.ok(scanned.profile.includes(`(subpath ${JSON.stringify(join(work, 'app/.githooks'))})`));
-  // lib/.githooks does not exist and would pin all of lib, which is not a
-  // writable root; at the root itself it asks instead, and creating it is the fix.
-  const args = run('console.log(JSON.stringify(bwrapArguments(home, [], [work])))');
-  assert.ok(args.some((arg, i) => arg === '--ro-bind' && args[i + 1] === join(work, 'app/.githooks')));
-  assert.ok(args.some((arg, i) => arg === '--ro-bind' && args[i + 1] === join(work, 'lib/tools')));
+  // lib/tools/hooks is missing and pins lib/tools, a folder inside the
+  // repository. lib/.githooks is missing too and would pin the whole lib
+  // repository, so the command asks, and creating it is the fix, whether lib is
+  // the workspace or a repository inside it.
+  const attempt = 'try { console.log(JSON.stringify({args: bwrapArguments(home, [], [work])})); } catch (error) { console.log(JSON.stringify({error: error.message})); }';
   const lib = join(work, 'lib');
-  const missing = run('try { bwrapArguments(home, [], [work]); console.log("null"); } catch (error) { console.log(JSON.stringify(error.message)); }', lib);
-  assert.match(missing, /does not exist yet.*retry with full_access.*mkdir -p/);
-  assert.ok(missing.includes(join(lib, '.githooks')));
+  for (const cwd of [work, lib]) {
+    const {error} = run(attempt, cwd);
+    assert.match(error, /does not exist yet.*retry with full_access.*mkdir -p/);
+    assert.ok(error.includes(`mkdir -p '${join(lib, '.githooks')}'`), error);
+    assert.ok(!error.includes(join(lib, 'tools')), error);
+  }
   mkdirSync(join(lib, '.githooks'));
-  const fixed = run('console.log(JSON.stringify(bwrapArguments(home, [], [work])))', lib);
-  assert.ok(fixed.some((arg, i) => arg === '--ro-bind' && fixed[i + 1] === join(lib, '.githooks')));
-  assert.ok(!fixed.some((arg, i) => arg === '--ro-bind' && fixed[i + 1] === lib));
+  for (const cwd of [work, lib]) {
+    const {args} = run(attempt, cwd);
+    assert.ok(args.some((arg, i) => arg === '--ro-bind' && args[i + 1] === join(lib, '.githooks')));
+    assert.ok(args.some((arg, i) => arg === '--ro-bind' && args[i + 1] === join(lib, 'tools')));
+    assert.ok(!args.some((arg, i) => arg === '--ro-bind' && args[i + 1] === lib));
+    if (cwd === work) assert.ok(args.some((arg, i) => arg === '--ro-bind' && args[i + 1] === join(work, 'app/.githooks')));
+  }
+});
+
+test('Git configuration files follow GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM and GIT_CONFIG_NOSYSTEM', async () => {
+  const {globalGitConfigs} = await import('./isolation.ts');
+  assert.deepEqual(globalGitConfigs({HOME:'/h'}), ['/h/.gitconfig', '/h/.config/git/config', '/etc/gitconfig', '/opt/homebrew/etc/gitconfig', '/usr/local/etc/gitconfig']);
+  assert.deepEqual(globalGitConfigs({HOME:'/h', XDG_CONFIG_HOME:'/x', GIT_CONFIG_SYSTEM:'/s'}), ['/h/.gitconfig', '/x/git/config', '/s']);
+  assert.deepEqual(globalGitConfigs({HOME:'/h', GIT_CONFIG_GLOBAL:'/g', GIT_CONFIG_NOSYSTEM:'1'}), ['/g']);
+  assert.deepEqual(globalGitConfigs({GIT_CONFIG_GLOBAL:'relative', GIT_CONFIG_NOSYSTEM:'false', GIT_CONFIG_SYSTEM:'/s'}), ['/s']);
+});
+
+test('a missing target never pins a repository folder, and links to Git metadata are locked or ask', async t => {
+  const {spawnSync} = await import('node:child_process');
+  const {realpathSync, symlinkSync} = await import('node:fs');
+  const {bwrapArguments, sandboxProfile, workspaceProtected, lockedGit} = await import('./isolation.ts');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-pin-')));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const home = join(base, 'home'), work = join(base, 'work');
+  for (const path of [home, join(work, '.git'), join(work, 'app/.git'), join(work, 'app/src'), join(work, 'lib/.git'), join(work, 'lib/.husky')]) mkdirSync(path, {recursive:true});
+  // The workspace's own repository includes a missing file, a nested repository
+  // names a missing hooks folder, and husky's .husky/_ is missing inside .husky.
+  writeFileSync(join(work, '.git/config'), '[include]\n\tpath = ../.gitconfig.local\n');
+  writeFileSync(join(work, 'app/.git/config'), '[core]\n\thooksPath = .githooks\n');
+  writeFileSync(join(work, 'lib/.git/config'), '[core]\n\thooksPath = .husky/_\n');
+  const binds = args => args.flatMap((arg, i) => arg === '--ro-bind' && args[i + 1] !== '/dev/null' ? [args[i + 1]] : []);
+  let error;
+  try { bwrapArguments(home, [], [work]); } catch (caught) { error = caught.message; }
+  // One message names both targets and creates each as Git reads it.
+  assert.ok(error.includes(`${join(work, '.gitconfig.local')}, ${join(work, 'app/.githooks')}`) || error.includes(`${join(work, 'app/.githooks')}, ${join(work, '.gitconfig.local')}`), error);
+  assert.ok(error.includes(`mkdir -p '${join(work, 'app/.githooks')}' && touch '${join(work, '.gitconfig.local')}'`), error);
+  assert.match(error, /do not exist yet.*retry with full_access/);
+  assert.ok(!error.includes('.husky'), error);
+  // The same scan with the nested repository as the workspace.
+  assert.throws(() => bwrapArguments(home, [], [join(work, 'app')]), /app\/\.githooks/);
+  writeFileSync(join(work, '.gitconfig.local'), '');
+  mkdirSync(join(work, 'app/.githooks'));
+  const args = bwrapArguments(home, [], [work]);
+  for (const path of ['app/.githooks', 'lib/.husky', '.gitconfig.local']) assert.ok(binds(args).includes(join(work, path)), path);
+  for (const path of ['', 'app', 'lib']) assert.ok(!binds(args).includes(join(work, path)), path);
+  // A bare repository's own folder is Git metadata already, so a missing
+  // hooks folder inside it pins nothing new.
+  const bare = join(work, 'bare.git');
+  for (const path of [join(bare, 'objects')]) mkdirSync(path, {recursive:true});
+  writeFileSync(join(bare, 'HEAD'), 'ref: refs/heads/main\n');
+  writeFileSync(join(bare, 'config'), '[core]\n\thooksPath = hooks\n');
+  assert.ok(binds(bwrapArguments(home, [], [work])).includes(bare));
+  // A .git entry or hooks folder that is a link inside the workspace could be
+  // replaced: bubblewrap asks, and Seatbelt locks the link and its target.
+  mkdirSync(join(work, 'store/linked-git'), {recursive:true});
+  mkdirSync(join(work, 'linked'));
+  symlinkSync('../store/linked-git', join(work, 'linked/.git'));
+  mkdirSync(join(work, 'store/hooks'));
+  symlinkSync('../store/hooks', join(work, 'app/hooks-link'));
+  writeFileSync(join(work, 'app/.git/config'), '[core]\n\thooksPath = hooks-link\n');
+  const scan = workspaceProtected([work]);
+  assert.deepEqual([...scan.links].sort(), [join(work, 'app/hooks-link'), join(work, 'linked/.git')]);
+  assert.throws(() => bwrapArguments(home, [], [work]), /symbolic links.*app\/hooks-link.*linked\/\.git.*retry with full_access/s);
+  const locked = lockedGit(scan, [work]);
+  for (const path of ['app/hooks-link', 'linked/.git', 'store/hooks', 'store/linked-git']) assert.ok(locked.includes(join(work, path)), path);
+  if (process.platform === 'darwin') {
+    const profile = sandboxProfile(home, [], [work]);
+    const run = command => spawnSync('/usr/bin/sandbox-exec', ['-p', profile, '/bin/bash', '-c', command], {cwd:work, encoding:'utf8'});
+    for (const command of ['rm linked/.git', 'mv linked/.git linked/moved', 'rm app/hooks-link', 'mv app/hooks-link app/moved', 'echo x > store/hooks/pre-commit', 'echo x > app/hooks-link/pre-commit']) {
+      const result = run(command);
+      assert.notEqual(result.status, 0, command);
+      assert.doesNotMatch(result.stderr, /sandbox_(init|apply)/);
+    }
+    assert.equal(run('echo ok > app/src/notes; cat app/src/notes').stdout, 'ok\n');
+  }
+});
+
+test('the scan reads a bounded number of entries, so a huge flat folder makes it incomplete', async t => {
+  const {realpathSync} = await import('node:fs');
+  const {workspaceProtected} = await import('./isolation.ts');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-entries-')));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const work = join(base, 'work');
+  mkdirSync(join(work, 'flat'), {recursive:true});
+  // Three folders allow 150 entries.
+  for (let i = 0; i < 140; i++) writeFileSync(join(work, 'flat', String(i)), '');
+  assert.equal(workspaceProtected([work], 3).exhausted, false);
+  for (let i = 140; i < 150; i++) writeFileSync(join(work, 'flat', String(i)), '');
+  assert.equal(workspaceProtected([work], 3).exhausted, true);
 });

@@ -1232,7 +1232,7 @@ async fn execute_code(
                 &[artifacts_dir(home, bot)?],
             ).map_err(|mut error| {
                 if cfg!(target_os = "linux") && error.code == 5240 {
-                    error.message.push_str(" If the workspace scan cannot finish, run this Python code with the terminal tool using full_access and a reason, or choose a smaller workspace.");
+                    error.message.push_str(" To run this Python code anyway, use the terminal tool with full_access and a reason.");
                 }
                 error
             })?,
@@ -3275,7 +3275,7 @@ mod safety_tests {
         assert!(
             error
                 .message
-                .contains("terminal tool using full_access and a reason")
+                .contains("terminal tool with full_access and a reason")
         );
         assert!(error.message.contains("smaller workspace"));
         let small = work.join("0");

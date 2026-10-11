@@ -1,7 +1,8 @@
 // Child-process isolation for Pi's bash tool. credentials.rs builds the same
 // profile for Python and scheduled scripts from the same credential-policy.json;
 // a parity test there compares the two outputs.
-import {readFileSync, readdirSync, realpathSync, existsSync, statSync, openSync, fstatSync, readSync, closeSync, constants} from 'node:fs';
+import {readFileSync, readdirSync, realpathSync, existsSync, statSync, lstatSync, openSync, opendirSync, fstatSync, readSync, closeSync, constants, type Dirent} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {join, relative, resolve, dirname, basename} from 'node:path';
 import {homedir, tmpdir} from 'node:os';
 import {spawnSync} from 'node:child_process';
@@ -89,7 +90,10 @@ export function readDenied(): string[] {
   const denied: string[] = [];
   for (const entry of credentialPolicy.readDeny as string[]) {
     const root = policyRoot(entry);
-    for (const path of [root, realRoot(root)]) if (!denied.includes(path)) denied.push(path);
+    // A profile path that cannot be resolved (unreadable, a loop) is denied as named.
+    let real = root;
+    try { real = realRoot(root); } catch { /* Keep the name. */ }
+    for (const path of [root, real]) if (!denied.includes(path)) denied.push(path);
   }
   readCache.set(home, {at: Date.now(), paths: denied});
   return denied;
@@ -99,10 +103,12 @@ export function readDenied(): string[] {
 // user's next commit. Project secrets are unreadable there too. Seatbelt matches
 // these names wherever they appear, including ones created later; bubblewrap
 // cannot match names, so on Linux the workspace is searched when a command
-// starts, a few levels deep.
+// starts, a few levels deep. The search reads at most WORKSPACE_DIRS folders and
+// WORKSPACE_ENTRIES entries for each of them in all (50,000), so a huge flat
+// folder cannot stall it either.
 const GIT_DIR = '/' + regexEscape('.git') + '(/|$)';
 export const bareRepository = (path: string) => fold(basename(path)).endsWith('.git') && existsSync(join(path, 'HEAD')) && existsSync(join(path, 'objects'));
-const WORKSPACE_DEPTH = 3, WORKSPACE_DIRS = 1000;
+const WORKSPACE_DEPTH = 3, WORKSPACE_DIRS = 1000, WORKSPACE_ENTRIES = 50;
 export const SCAN_REASON = 'The workspace safety scan exceeded its directory budget. This command needs approval: retry with full_access and a reason.';
 export const SCAN_FILE_REASON = 'The workspace safety scan reached its directory budget, so Git protection is partial. Approve this file change only if you trust its destination.';
 // Inside a writable root, as the sandboxes and file tools compare paths.
@@ -112,9 +118,11 @@ export const within = (path: string, roots: string[]) => roots.some(root => fold
 // when they are small regular files: a FIFO or device would stall the daemon.
 // Anything else stays locked but unread, which Git cannot load hooks from either.
 // Includes are followed at most this deep. A scan reads each config file once
-// and visits it once per worktree, and gives up after GIT_CONFIG_STEPS config
-// files and settings in all, so include cycles and fan-out cannot stall it.
-const GIT_FILE_BYTES = 1 << 20, GIT_TIMEOUT = 5000, GIT_INCLUDE_DEPTH = 10, GIT_CONFIG_STEPS = 10000;
+// and visits it once per worktree. It reads at most GIT_INCLUDES include files
+// beyond the repository and user configs, which real configurations never
+// reach, and visits at most GIT_CONFIG_STEPS settings, so include cycles and
+// fan-out cannot stall it.
+const GIT_FILE_BYTES = 1 << 20, GIT_TIMEOUT = 5000, GIT_INCLUDE_DEPTH = 10, GIT_INCLUDES = 64, GIT_CONFIG_STEPS = 10000;
 function regularFile(path: string): Buffer | undefined {
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK); }
@@ -130,11 +138,18 @@ function regularFile(path: string): Buffer | undefined {
     return buffer.subarray(0, length);
   } finally { closeSync(fd); }
 }
-// Hook settings by config contents, so unchanged repositories cost no Git process.
+// Hook settings by a hash of the config contents, so unchanged repositories cost
+// no Git process. The least recently used entry goes first, and the cache holds
+// more configs than a scan of the largest workspace reads.
+const GIT_CACHE = 2048;
 const configCache = new Map<string, [string, string][]>();
 function configEntries(text: Buffer): [string, string][] {
-  const key = text.toString('latin1'), cached = configCache.get(key);
-  if (cached) return cached;
+  const key = createHash('sha256').update(text).digest('hex'), cached = configCache.get(key);
+  if (cached) {
+    configCache.delete(key);
+    configCache.set(key, cached);
+    return cached;
+  }
   // git config only parses; it does not run hooks, aliases or commands. Use system
   // Git, never a workspace executable from PATH, and give it the bytes already
   // read: with --no-includes it opens no file, so includes are followed here.
@@ -149,22 +164,49 @@ function configEntries(text: Buffer): [string, string][] {
     const split = field.indexOf('\n');
     if (split > 0) entries.push([field.slice(0, split), field.slice(split + 1)]);
   }
-  if (configCache.size >= 256) configCache.clear();
+  if (configCache.size >= GIT_CACHE) configCache.delete(configCache.keys().next().value!);
   configCache.set(key, entries);
   return entries;
 }
 // The user's own Git configuration applies to every repository: a global
-// core.hooksPath such as .githooks names a folder in each worktree.
-export const globalGitConfigs = () => [join(homedir(), '.gitconfig'), join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'git/config'), '/etc/gitconfig'];
-export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): {git: string[], secrets: string[], exhausted: boolean, failure?: string} {
+// core.hooksPath such as .githooks names a folder in each worktree. The files
+// are the ones Git reads: GIT_CONFIG_GLOBAL replaces ~/.gitconfig and the XDG
+// file, and GIT_CONFIG_SYSTEM or GIT_CONFIG_NOSYSTEM choose the system file,
+// which is otherwise /etc/gitconfig or Homebrew's. Other Git builds keep a
+// system file elsewhere; it is not read.
+const SYSTEM_GIT_CONFIGS = ['/etc/gitconfig', '/opt/homebrew/etc/gitconfig', '/usr/local/etc/gitconfig'];
+export function globalGitConfigs(env: NodeJS.ProcessEnv = process.env): string[] {
+  const set = (name: string) => env[name] || undefined;
+  const files = set('GIT_CONFIG_GLOBAL') ? [set('GIT_CONFIG_GLOBAL')!] : set('HOME') ? [join(set('HOME')!, '.gitconfig'), join(set('XDG_CONFIG_HOME') ?? join(set('HOME')!, '.config'), 'git/config')] : [];
+  const noSystem = set('GIT_CONFIG_NOSYSTEM');
+  if (!noSystem || /^(0|false|no|off)$/i.test(noSystem)) files.push(...set('GIT_CONFIG_SYSTEM') ? [set('GIT_CONFIG_SYSTEM')!] : SYSTEM_GIT_CONFIGS);
+  return files.filter(file => file.startsWith('/'));
+}
+// git: Git metadata, config files and configured folders, as named and as real
+// paths. worktrees: the folders their repositories belong to. files: targets Git
+// reads as files (includes). links: symbolic links inside the scanned roots on
+// the way to any of them.
+export type WorkspaceScan = {git: string[], secrets: string[], worktrees: string[], files: string[], links: string[], exhausted: boolean, failure?: string};
+export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): WorkspaceScan {
   let exhausted = false, failure: string | undefined;
-  const git = new Set<string>(), secrets = new Set<string>();
+  const git = new Set<string>(), secrets = new Set<string>(), worktrees = new Set<string>(), files = new Set<string>(), links = new Set<string>();
   const add = (set: Set<string>, path: string) => { set.add(path); set.add(realRoot(path)); };
-  const pointerTarget = (base: string, value: string) => realRoot(value.startsWith('/') ? value : base + '/' + value);
   const scanned = roots.flatMap(root => { try { return [realRoot(root)]; } catch { return []; } });
+  // A command could replace a link inside the workspace and so swap the metadata
+  // a later ordinary git command trusts.
+  const linked = (path: string) => {
+    for (let dir = path; within(dir, scanned) && !scanned.some(root => fold(root) === fold(dir)); dir = dirname(dir)) {
+      try { if (lstatSync(dir).isSymbolicLink()) links.add(dir); } catch { /* Not there yet. */ }
+    }
+  };
+  const pointerTarget = (base: string, value: string) => {
+    const path = value.startsWith('/') ? value : base + '/' + value;
+    linked(resolve(path));
+    return realRoot(path);
+  };
   const configs = new Map<string, [string, string][]>();
+  const includes = new Set<string>();
   let steps = 0;
-  const step = () => { if (++steps > GIT_CONFIG_STEPS) throw new Error('Git configuration has too many files or includes to scan.'); };
   const configAt = (file: string) => {
     const real = realRoot(file);
     let found = configs.get(real);
@@ -182,21 +224,30 @@ export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): {gi
     const visited = new Set<string>();
     for (let i = 0; i < queue.length; i++) {
       const {file, depth, user} = queue[i];
-      step();
       const {real, found} = configAt(file);
       if (visited.has(real)) continue;
       visited.add(real);
       for (const [key, value] of found) {
         if (!value) continue;
-        step();
-        const target = pointerTarget(key === 'core.hookspath' ? worktree : dirname(file), value);
-        if (!user || within(target, scanned)) add(git, target);
-        if (key !== 'core.hookspath' && depth < GIT_INCLUDE_DEPTH) queue.push({file: target, depth: depth + 1, user});
+        if (++steps > GIT_CONFIG_STEPS) throw new Error('Git configuration has too many settings to scan.');
+        const hooksPath = key === 'core.hookspath';
+        const target = pointerTarget(hooksPath ? worktree : dirname(file), value);
+        if (!hooksPath && !includes.has(target)) {
+          if (includes.size >= GIT_INCLUDES) throw new Error('Git configuration has too many include files to scan.');
+          includes.add(target);
+        }
+        if (!user || within(target, scanned)) {
+          add(git, target);
+          if (!hooksPath) files.add(target);
+        }
+        if (!hooksPath && depth < GIT_INCLUDE_DEPTH) queue.push({file: target, depth: depth + 1, user});
       }
     }
   };
   const metadata = (path: string, worktree = dirname(path)) => {
     add(git, path);
+    worktrees.add(realRoot(worktree));
+    linked(path);
     let dir = path;
     if (!statSync(path, {throwIfNoEntry: false})?.isDirectory()) {
       const pointer = regularFile(path)?.toString('utf8').match(/^gitdir:\s*(.+)\s*$/m);
@@ -230,14 +281,25 @@ export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): {gi
       if (existsSync(marker)) recordMetadata(marker);
     }
   }
-  for (let i = 0; i < queue.length; i++) {
+  let entriesLeft = limit * WORKSPACE_ENTRIES;
+  for (let i = 0; i < queue.length && !exhausted; i++) {
     const {dir, depth} = queue[i];
     if (seen.has(dir)) continue;
     if (seen.size >= limit) { exhausted = true; break; }
     seen.add(dir);
     // Record every entry before visiting any child, even at the budget boundary.
-    let list: ReturnType<typeof entries>;
-    try { list = readdirSync(dir, {withFileTypes:true}); } catch { failure = 'The workspace safety scan could not read a directory. Approve this file change only if you trust its destination.'; continue; }
+    const list: Dirent[] = [];
+    try {
+      const handle = opendirSync(dir);
+      try {
+        for (let entry; (entry = handle.readSync()) !== null;) {
+          if (list.length >= entriesLeft) { exhausted = true; break; }
+          list.push(entry);
+        }
+      } finally { handle.closeSync(); }
+    } catch { failure = 'The workspace safety scan could not read a directory. Approve this file change only if you trust its destination.'; continue; }
+    if (exhausted) break;
+    entriesLeft -= list.length;
     for (const entry of list.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
       const path = join(dir, entry.name);
       if (fold(entry.name) === '.git' || bareRepository(path)) recordMetadata(path, bareRepository(path) ? path : dirname(path));
@@ -253,27 +315,49 @@ export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): {gi
       else if (entry.isDirectory() && depth < WORKSPACE_DEPTH && !credentialPolicy.skip.includes(fold(entry.name))) queue.push({dir: path, depth: depth + 1});
     }
   }
-  return {git: [...git], secrets: [...secrets], exhausted, failure};
+  return {git: [...git], secrets: [...secrets], worktrees: [...worktrees], files: [...files], links: [...links], exhausted, failure};
 }
 // Repository files a command can write choose some Git targets (gitdir:,
 // commondir, core.hooksPath, include.path), so only real paths inside a writable
 // root are locked: anything else is read-only already, and binding or locking it
 // could cover a mask (hooksPath = ~/.config/google-chrome) or the whole file
 // system (hooksPath = /). On Linux a missing target is pinned at its nearest
-// existing parent, never above the writable root. Pinning at the root itself
-// would make the whole workspace read-only, so the command needs approval
-// instead, and creating the folder restores the sandbox.
-export const missingHooksReason = (path: string) => `Git is set to load hooks or settings from ${path}, which does not exist yet. The sandbox could keep it read-only only by making the whole workspace read-only, so this command needs approval: retry with full_access and a reason. Once the folder exists (mkdir -p ${quote(path)}), commands run in the sandbox again.`;
-export function lockedGit(git: string[], roots: string[], pin = false): string[] {
-  const locked = new Set<string>();
-  for (const path of git) {
+// existing parent inside the writable root. A folder inside a repository is fine
+// (.husky for a missing .husky/_), but pinning a repository's own folder, a
+// writable root or a folder holding one would make all of it read-only, so the
+// command needs approval instead, and creating the targets restores the
+// sandbox. A symbolic link on the way to Git metadata inside a writable root
+// could be replaced, which bubblewrap cannot prevent, so that needs approval
+// too; Seatbelt locks the link itself.
+const COMMAND_APPROVAL = {action: 'this command needs approval: retry with full_access and a reason', after: 'commands run in the sandbox again'};
+export function missingGitReason(missing: {path: string, file: boolean}[], approval = COMMAND_APPROVAL): string {
+  const one = missing.length === 1;
+  const files = missing.filter(m => m.file).map(m => m.path);
+  const dirs = [...new Set([...missing.filter(m => !m.file).map(m => m.path), ...files.map(file => dirname(file)).filter(dir => !existsSync(dir))])];
+  const create = [dirs.length ? `mkdir -p ${dirs.map(quote).join(' ')}` : '', files.length ? `touch ${files.map(quote).join(' ')}` : ''].filter(Boolean).join(' && ');
+  return `Git is set to load hooks or settings from ${missing.map(m => m.path).join(', ')}, which ${one ? 'does' : 'do'} not exist yet. The sandbox could keep ${one ? 'it' : 'them'} read-only only by making a whole repository or the workspace read-only, so ${approval.action}. Once ${one ? 'it exists' : 'they exist'} (${create}), ${approval.after}.`;
+}
+export function linkedGitReason(links: string[], approval = COMMAND_APPROVAL): string {
+  return `Git metadata in the workspace is reached through ${links.length === 1 ? 'a symbolic link' : 'symbolic links'} (${links.join(', ')}) that a command could replace, so ${approval.action}. Once ${links.length === 1 ? 'it is' : 'they are'} replaced by the folder or file ${links.length === 1 ? 'it points' : 'they point'} to, ${approval.after}.`;
+}
+export function lockedGit(scan: Pick<WorkspaceScan, 'git' | 'worktrees' | 'files' | 'links'>, roots: string[], pin = false): string[] {
+  const locked = new Set<string>(), missing: {path: string, file: boolean}[] = [];
+  const holders = [...roots, ...scan.worktrees], present = scan.git.filter(path => existsSync(path));
+  for (const path of scan.git) {
     let real: string;
     try { real = realRoot(path); } catch { continue; }
     const target = real;
     if (pin) while (!existsSync(real) && within(dirname(real), roots)) real = dirname(real);
-    if (pin && real !== target && roots.some(root => fold(root) === fold(real))) throw new Error(missingHooksReason(target));
+    if (pin && real !== target && within(real, roots) && holders.some(holder => within(holder, [real])) && !within(real, present)) {
+      if (!missing.some(m => m.path === target)) missing.push({path: target, file: scan.files.includes(target)});
+      continue;
+    }
     if (within(real, roots) && (!pin || existsSync(real))) locked.add(real);
   }
+  const links = scan.links.filter(link => within(link, roots) && !roots.some(root => fold(root) === fold(link)));
+  if (pin && missing.length) throw new Error(missingGitReason(missing));
+  if (pin && links.length) throw new Error(linkedGitReason(links));
+  for (const link of links) locked.add(link);
   return [...locked];
 }
 function pathAncestors(paths: string[]): string[] {
@@ -334,7 +418,7 @@ export function sandboxProfile(home: string, outputs: string[] = [], workspace?:
     const inside = [...DEVICES.map(p => `(literal ${JSON.stringify(p)})`), ...['/dev/fd', ...open].map(p => `(subpath ${JSON.stringify(p)})`)].join(' ');
     const protectedPaths = workspaceProtected(searchRoots);
     const browserRoots = readDenied();
-    const git = lockedGit(protectedPaths.git, open);
+    const git = lockedGit(protectedPaths, open);
     const secretPaths = protectedPaths.secrets.map(p => `(subpath ${JSON.stringify(p)})`).join(' ');
     const locked = git.map(p => `(subpath ${JSON.stringify(p)})`).join(' ');
     const parents = pathAncestors([...browserRoots, ...git, ...protectedPaths.secrets]).map(p => `(literal ${JSON.stringify(p)})`).join(' ');
@@ -360,7 +444,7 @@ export function bwrapArguments(home: string, outputs: string[] = [], workspace?:
   if (scan) {
     if (scan.exhausted) throw new Error(SCAN_REASON);
     if (scan.failure) throw new Error('The workspace safety scan could not finish. Retry with full_access and a reason.');
-    for (const path of lockedGit(scan.git, confine.writable.filter(p => p !== '/tmp'), true)) args.push('--ro-bind', path, path);
+    for (const path of lockedGit(scan, confine.writable.filter(p => p !== '/tmp'), true)) args.push('--ro-bind', path, path);
     for (const path of confine.config) if (existsSync(path)) args.push('--ro-bind', path, path);
   }
   // A store that does not exist yet cannot be bound (bubblewrap would create the
