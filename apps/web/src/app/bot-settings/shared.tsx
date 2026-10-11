@@ -47,6 +47,7 @@ export function Group({
   action,
   children,
   className,
+  description,
   footer,
   title
 }: {
@@ -54,6 +55,8 @@ export function Group({
   action?: React.ReactNode
   children: React.ReactNode
   className?: string
+  /** One short muted line under the label, over the card. */
+  description?: React.ReactNode
   /** One short muted line under the card. */
   footer?: React.ReactNode
   title?: string
@@ -69,6 +72,9 @@ export function Group({
           )}
           {action}
         </div>
+      ) : null}
+      {description ? (
+        <p className="-mt-1 mb-2 px-1 text-[length:var(--text-meta)] text-muted">{description}</p>
       ) : null}
       <div className={cn(cardClass, dividerClass)}>{children}</div>
       {footer ? (

@@ -63,7 +63,9 @@ describe('memoryMarks', () => {
           args: { action: 'write', text: 'You are Scout, blunt.' },
           name: 'hexbot_soul',
           toolId: 'g'
-        })
+        }),
+        call({ args: { action: 'note', text: 'Vendor column is stale.' }, toolId: 'h' }),
+        call({ args: { action: 'read', notes: 'today' }, toolId: 'i' })
       ])
     )
 
@@ -71,7 +73,8 @@ describe('memoryMarks', () => {
       { kind: 'memory', text: 'User prefers short answers' },
       { kind: 'memory', text: 'Lives in Auckland' },
       { kind: 'memory', text: 'Removed: Old\nNew' },
-      { kind: 'soul', text: 'You are Scout, blunt.' }
+      { kind: 'soul', text: 'You are Scout, blunt.' },
+      { kind: 'note', text: 'Vendor column is stale.' }
     ])
   })
 
@@ -95,11 +98,13 @@ describe('MemoryMarks', () => {
             args: { action: 'write', text: 'You are Scout, blunt.' },
             name: 'hexbot_soul',
             toolId: 's'
-          })
+          }),
+          call({ args: { action: 'note', text: 'Vendor column is stale.' }, toolId: 'n' })
         ])}
       />
     )
     expect(screen.getByRole('button', { name: 'Memory updated' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Note added' })).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Soul updated' }))
     expect(screen.getByText('You are Scout, blunt.')).toBeVisible()
     expect(screen.queryByText('User prefers short answers')).toBeNull()

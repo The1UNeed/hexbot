@@ -3,13 +3,19 @@
 
 use serde_json::{Value, json};
 
-use crate::{Error, Result, memory::MemoryStore};
+use crate::{
+    Error, Result,
+    memory::{MemoryStore, parse_note_date},
+};
 
 pub const METHODS: &[&str] = &[
     "hexbot.memory.user.get",
     "hexbot.memory.user.set",
     "hexbot.memory.bot.get",
     "hexbot.memory.bot.set",
+    "hexbot.memory.notes.list",
+    "hexbot.memory.notes.set",
+    "hexbot.memory.notes.delete",
 ];
 
 fn text<'a>(params: &'a Value, key: &str, required: bool) -> Result<&'a str> {
@@ -32,6 +38,20 @@ pub fn call(store: &MemoryStore, caller: &str, method: &str, params: &Value) -> 
             caller,
             text(params, "bot", true)?,
             text(params, "memory_md", false)?,
+        ),
+        "hexbot.memory.notes.list" => store.list_notes(caller, text(params, "bot", true)?),
+        "hexbot.memory.notes.set" => store.set_notes(
+            caller,
+            text(params, "bot", true)?,
+            parse_note_date(text(params, "date", true)?)?,
+            text(params, "text", false)?,
+            params["expected"].as_str(),
+        ),
+        "hexbot.memory.notes.delete" => store.delete_notes(
+            caller,
+            text(params, "bot", true)?,
+            parse_note_date(text(params, "date", true)?)?,
+            params["expected"].as_str(),
         ),
         _ => Err(Error::new(-32601, format!("unknown method: {method}"))),
     }
