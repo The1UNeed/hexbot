@@ -267,11 +267,12 @@ os.close(slave)
 try:
     output = b''
     deadline = time.monotonic() + 15
-    while b'HERMES_BACKEND_READY' not in output:
+    while not any(line.startswith(b'HERMES_BACKEND_READY port=') for line in output.split(b'\n')[:-1]):
         remaining = deadline - time.monotonic()
         if remaining <= 0 or not select.select([master], [], [], remaining)[0]:
             raise RuntimeError('daemon did not become ready')
-        output += os.read(master, 65536)
+        # Fragment every read: the marker alone must not complete the handshake.
+        output += os.read(master, 1)
     os.write(1, output.replace(b'\r\n', b'\n'))
     sys.stdin.readline()
 finally:
