@@ -825,3 +825,32 @@ test('file tools ask and can write and edit when a workspace scan is incomplete'
   assert.match(f.choices.at(-1).reason, /could not be scanned/);
   assert.equal(readFileSync(join(work, 'approved'), 'utf8'), 'ok');
 });
+
+test('an incomplete scan asks once per file change and never widens a section approval', async t => {
+  const work = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-file-scan-once-')));
+  t.after(() => rmSync(work, {recursive:true, force:true}));
+  const f = fixture(t, 'smart', ['file'], {cwd:work});
+  for (let i = 0; i < 1001; i++) mkdirSync(join(work, String(i)));
+  // Only once or deny is offered, and a session answer is not remembered.
+  f.ctx.choice = 'session';
+  for (const path of ['a.txt', 'b.txt']) {
+    assert.equal(await f.gate('write', {path, content:'x'}), undefined);
+    assert.deepEqual(f.choices.at(-1).options, ['once', 'deny']);
+    assert.match(f.choices.at(-1).reason, /directory budget/);
+  }
+  assert.equal(f.choices.length, 2);
+  // Destinations that always ask keep their own reason as well.
+  f.ctx.choice = 'deny';
+  assert.equal((await f.gate('write', {path:join(homedir(), '.zshrc'), content:'x'})).block, true);
+  assert.match(f.choices.at(-1).reason, /shell profile.*directory budget/);
+  assert.equal((await f.gate('write', {path:join(tmpdir(), '..', 'hexbot-outside-' + process.pid), content:'x'})).block, true);
+  assert.match(f.choices.at(-1).reason, /outside the workspace.*directory budget/);
+  // With a complete scan the usual section approval applies again.
+  for (let i = 0; i < 1001; i++) rmSync(join(work, String(i)), {recursive:true});
+  f.ctx.choice = 'session';
+  assert.equal(await f.gate('write', {path:join(homedir(), 'hexbot-outside-test-1.txt'), content:'x'}), undefined);
+  assert.deepEqual(f.choices.at(-1).options, ['once', 'session', 'deny']);
+  const asked = f.choices.length;
+  assert.equal(await f.gate('write', {path:join(homedir(), 'hexbot-outside-test-2.txt'), content:'x'}), undefined);
+  assert.equal(f.choices.length, asked);
+});

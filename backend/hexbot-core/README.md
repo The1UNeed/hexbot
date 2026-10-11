@@ -336,7 +336,8 @@ private extension runs each shell command in a sandbox with no network that
 writes only inside the workspace: the bot's working directory, its artifact
 and attachment folders, and temp folders, with shell profiles and login items
 read-only even there. Existing Git metadata, including linked `gitdir` and
-`commondir` targets and bare `*.git` folders, is read-only within the scan
+`commondir` targets, bare `*.git` folders, and `core.hooksPath` folders set by
+the repository or the user's own Git config, is read-only within the scan
 limits below. `.env` and `.envrc` files, keychains, and browser profiles
 (`readDeny` in the policy) are unreadable and unwritable. No
 level sends Apple Events. A command that needs more sets `full_access` with a
@@ -355,7 +356,11 @@ not protected on Linux, nor are paths outside the scan limits. macOS filename
 rules cover new repositories and secrets too, and deny secret/browser writes
 and renames. Scanned Git targets and secret ancestors, and browser-store
 ancestors, cannot be renamed on macOS. Tracked hooks such as `.husky` remain
-writable and visible in `git status`. See [SECURITY.md](../../SECURITY.md#tool-isolation).
+writable and visible in `git status`. Config includes are read once per scan
+and capped at 10,000 files and settings. On Linux a missing hooks folder that
+would pin the whole workspace read-only refuses the command with an approval
+reason that says to create the folder. When the scan is incomplete, file
+changes ask once each and the answer is never remembered for the section. See [SECURITY.md](../../SECURITY.md#tool-isolation).
 
 Python code execution runs in the sandbox the section's commands get: the
 workspace sandbox in Auto, without asking; in Manual, after asking

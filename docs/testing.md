@@ -23,9 +23,17 @@
   home folder and a link to `/`, and check that nothing outside the workspace is
   bound or locked, that no bind follows a mask, and that file tools still
   write. FIFO tests put FIFOs at `.git`, `commondir`, a config and an include
-  and check that the scan finishes. Large-workspace tests cover file-tool writes/edits and macOS
-  commands after the scan budget is reached. Incomplete scans ask before file
-  changes; cache-marker `.git` files stay locked without failing the scan.
+  and check that the scan finishes. Include tests use a cyclic, fanned-out set
+  of includes (12^10 visits without deduplication) and a config with 10,001
+  includes, which must fail the scan quickly. Global-config tests point
+  `XDG_CONFIG_HOME` at a config with `core.hooksPath = .githooks` and check that
+  each worktree's folder is locked, an absolute one outside the workspace is
+  not, and a missing one at the workspace root refuses the Linux command with
+  `mkdir` guidance until the folder exists. The parity test includes that
+  global setting. Large-workspace tests cover file-tool writes/edits and macOS
+  commands after the scan budget is reached. Incomplete scans ask before each
+  file change, offer only once or deny, and keep the shell-profile and
+  outside-workspace reasons; cache-marker `.git` files stay locked without failing the scan.
   Rust/TypeScript parity checks compare both profiles and Linux argument lists.
   Linux argument tests run on either platform and cover Manual read-only roots,
   secret symlinks, breadth-first scan order and Linux-only budget refusal. Linux

@@ -65,7 +65,7 @@ The app follows the track it was installed from; switch in Settings, Updates.
   through three nested folders and skips dependency/runtime folders. Only Linux
   bubblewrap commands require an approved full-access retry when the scan
   exceeds 1,000 directories. macOS uses partial scan results; file changes
-  ask for approval in Auto mode when the scan is incomplete.
+  ask for approval in Auto mode, one at a time, when the scan is incomplete.
   Repositories created during a command are not protected on Linux. macOS
   filename rules also cover new `.git` metadata directories.
 - **Your hardware.** The daemon runs where you install it. Pair devices over

@@ -1,10 +1,10 @@
 /** Hexbot's frozen session tools and approval bridge. Pi owns the agent loop. */
 import { createHash } from 'node:crypto';
-import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync } from 'node:fs';
+import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync, existsSync } from 'node:fs';
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
-import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, bareRepository, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected} from './isolation.ts';
+import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, bareRepository, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -183,7 +183,8 @@ export default function hexbot(pi: any) {
       }
       if (live.approvalMode === 'off') return;
       const cwd = live.cwd ?? config.cwd;
-      let ask: {key: string, command: string, reason: string} | undefined;
+      // `once` approvals cannot be remembered for the section.
+      let ask: {key: string, command: string, reason: string, once?: boolean} | undefined;
       if (mcp) {
         const tool = pi.getAllTools().find((candidate: any) => candidate.name === event.toolName);
         if (live.approvalMode === 'manual' || tool?.annotations?.readOnlyHint !== true) {
@@ -204,10 +205,13 @@ export default function hexbot(pi: any) {
           const scan = workspaceProtected([cwd, ...live.outputDirs ?? []]);
           const denial = writeDenial(input, cwd, live.home, live.outputDirs, scan);
           if (denial) return {block: true, reason: denial};
-          if (scan.failure || scan.exhausted) ask = {key: 'file:scan', command: path, reason: scan.failure ?? SCAN_FILE_REASON};
-          else if (live.approvalMode === 'manual') ask = {key: 'file', command: path, reason: 'Manual mode asks before every file change.'};
+          if (live.approvalMode === 'manual') ask = {key: 'file', command: path, reason: 'Manual mode asks before every file change.'};
           else if (hostWriteTier(input, cwd) === 'ask') ask = {key: 'file:host-config', command: path, reason: 'This changes a shell profile, login item or other host configuration file.'};
           else if (!inWorkspace(path)) ask = {key: 'file:outside', command: path, reason: 'This changes a file outside the workspace.'};
+          // An incomplete scan is about this destination alone, so it asks every
+          // time and never widens what the section already allows.
+          const uncertain = scan.failure ?? (scan.exhausted ? SCAN_FILE_REASON : undefined);
+          if (uncertain) ask = {key: ask?.key ?? 'file:scan', command: path, reason: ask ? `${ask.reason} ${uncertain}` : uncertain, once: true};
         }
       }
       if (event.toolName === 'bash') {
@@ -223,15 +227,17 @@ export default function hexbot(pi: any) {
         try {
           const scan = workspaceProtected([cwd, ...live.outputDirs ?? []]);
           if (scan.exhausted || scan.failure) return {block: true, reason: scan.exhausted ? SCAN_REASON : 'The workspace safety scan could not finish. Retry with full_access and a reason.'};
+          // A missing hooks folder that would pin the whole workspace read-only asks instead.
+          lockedGit(scan.git, workspace().filter(existsSync).map(root => realpathSync(root)).filter(root => root !== '/tmp'), true);
         }
         catch (error: any) { return {block: true, reason: error.message}; }
       }
       if (browser) ask = {key: 'browser_console', command: event.input.expression, reason: 'This runs code in a web page.'};
       if (!ask) return;
       if (live.canAsk === false) return {block: true, reason: 'This action needs approval. Run it in a visible section.'};
-      if (sessionAllowed.has(ask.key)) return;
+      if (sessionAllowed.has(ask.key) && !ask.once) return;
       const mode = live.approvalMode;
-      const choice = await ctx.ui.select('__HEXBOT_APPROVAL__' + JSON.stringify({tool: event.toolName, command: ask.command, reason: ask.reason}), ['once', 'session', 'deny']);
+      const choice = await ctx.ui.select('__HEXBOT_APPROVAL__' + JSON.stringify({tool: event.toolName, command: ask.command, reason: ask.reason}), ask.once ? ['once', 'deny'] : ['once', 'session', 'deny']);
       if (mcp) {
         // Pi emits execution_start before tool_call. Its public API has no MCP
         // execute wrapper; the last blocking hook is this gate. Recheck after UI.
@@ -240,8 +246,8 @@ export default function hexbot(pi: any) {
         const reason = mcpDenial(event.toolName);
         if (reason) return {block: true, reason};
       }
-      if (choice === 'session') sessionAllowed.add(ask.key);
-      else if (choice !== 'once') return {block: true, reason: 'The user denied this action.'};
+      if (choice === 'session' && !ask.once) sessionAllowed.add(ask.key);
+      else if (choice !== 'once' && choice !== 'session') return {block: true, reason: 'The user denied this action.'};
     } catch {
       return {block: true, reason: 'The approval settings could not be checked. Try again.'};
     }

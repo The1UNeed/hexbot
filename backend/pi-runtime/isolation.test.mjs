@@ -562,3 +562,68 @@ test('FIFOs in Git metadata and config includes do not stall the scan', {skip:pr
   assert.equal(scan.failure, undefined);
   for (const path of ['a/.git', 'b/.git', 'b/include-fifo', 'c/.git', 'd/.git']) assert.ok(scan.git.includes(join(work, path)), path);
 });
+
+test('cyclic and fanned-out Git includes are read once, and too many stop the scan', {skip:process.platform === 'win32'}, async t => {
+  const {spawnSync} = await import('node:child_process');
+  const {realpathSync} = await import('node:fs');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-includes-')));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const work = join(base, 'work'), wide = join(base, 'wide');
+  for (const path of [join(work, '.git'), join(wide, '.git')]) mkdirSync(path, {recursive:true});
+  // Every file includes every other one and itself: without a visited set this
+  // is 12^10 visits at the depth limit.
+  const names = Array.from({length:12}, (_, i) => `inc${i}`);
+  const includes = prefix => '[include]\n' + names.map(name => `\tpath = ${prefix}${name}\n`).join('');
+  writeFileSync(join(work, '.git/config'), includes('../'));
+  for (const name of names) writeFileSync(join(work, name), `${includes('')}[core]\n\thooksPath = ${name}-hooks\n`);
+  writeFileSync(join(wide, '.git/config'), `[include]\n${Array.from({length:10001}, (_, i) => `\tpath = ../missing${i}\n`).join('')}`);
+  const scan = roots => {
+    const script = `const {workspaceProtected}=await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); console.log(JSON.stringify(workspaceProtected(${JSON.stringify(roots)})));`;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {encoding:'utf8', timeout:20000});
+    assert.equal(result.status, 0, result.stderr || String(result.signal));
+    return JSON.parse(result.stdout);
+  };
+  const cyclic = scan([work]);
+  assert.equal(cyclic.failure, undefined);
+  for (const name of names) for (const path of [name, `${name}-hooks`]) assert.ok(cyclic.git.includes(join(work, path)), path);
+  assert.match(scan([wide]).failure, /could not be scanned/);
+});
+
+test('a global core.hooksPath is protected in each worktree inside the workspace, and a missing one asks on Linux', async t => {
+  const {spawnSync} = await import('node:child_process');
+  const {realpathSync} = await import('node:fs');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-global-hooks-')));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const home = join(base, 'home'), work = join(base, 'work'), xdg = join(base, 'xdg');
+  for (const path of [home, join(work, 'app/.git'), join(work, 'app/.githooks'), join(work, 'lib/.git'), join(work, 'lib/tools'), join(xdg, 'git')]) mkdirSync(path, {recursive:true});
+  writeFileSync(join(xdg, 'git/config'), `[include]\n\tpath = more\n[core]\n\thooksPath = .githooks\n`);
+  writeFileSync(join(xdg, 'git/more'), `[core]\n\thooksPath = ${join(base, 'outside-hooks')}\n`);
+  writeFileSync(join(work, 'lib/.git/config'), '[core]\n\thooksPath = tools/hooks\n');
+  const run = (code, cwd = work) => {
+    const script = `const {bwrapArguments, sandboxProfile, workspaceProtected}=await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); const {writeDenial}=await import(${JSON.stringify(new URL('./extension.ts', import.meta.url).href)}); const [home, work] = process.argv.slice(1); ${code}`;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script, home, cwd], {encoding:'utf8', timeout:20000, env:{...process.env, XDG_CONFIG_HOME:xdg}});
+    assert.equal(result.status, 0, result.stderr || String(result.signal));
+    return JSON.parse(result.stdout);
+  };
+  const scanned = run('console.log(JSON.stringify({git: workspaceProtected([work]).git, hook: writeDenial(work + "/app/.githooks/pre-commit", work, home), notes: writeDenial(work + "/app/notes", work, home), profile: sandboxProfile(home, [], [work])}))');
+  // The user's own setting names app/.githooks and lib/.githooks; the absolute
+  // folder outside the workspace is read-only to commands already.
+  for (const path of ['app/.githooks', 'lib/.githooks', 'lib/tools/hooks']) assert.ok(scanned.git.includes(join(work, path)), path);
+  assert.ok(!scanned.git.includes(join(base, 'outside-hooks')));
+  assert.match(scanned.hook, /read-only/);
+  assert.equal(scanned.notes, undefined);
+  assert.ok(scanned.profile.includes(`(subpath ${JSON.stringify(join(work, 'app/.githooks'))})`));
+  // lib/.githooks does not exist and would pin all of lib, which is not a
+  // writable root; at the root itself it asks instead, and creating it is the fix.
+  const args = run('console.log(JSON.stringify(bwrapArguments(home, [], [work])))');
+  assert.ok(args.some((arg, i) => arg === '--ro-bind' && args[i + 1] === join(work, 'app/.githooks')));
+  assert.ok(args.some((arg, i) => arg === '--ro-bind' && args[i + 1] === join(work, 'lib/tools')));
+  const lib = join(work, 'lib');
+  const missing = run('try { bwrapArguments(home, [], [work]); console.log("null"); } catch (error) { console.log(JSON.stringify(error.message)); }', lib);
+  assert.match(missing, /does not exist yet.*retry with full_access.*mkdir -p/);
+  assert.ok(missing.includes(join(lib, '.githooks')));
+  mkdirSync(join(lib, '.githooks'));
+  const fixed = run('console.log(JSON.stringify(bwrapArguments(home, [], [work])))', lib);
+  assert.ok(fixed.some((arg, i) => arg === '--ro-bind' && fixed[i + 1] === join(lib, '.githooks')));
+  assert.ok(!fixed.some((arg, i) => arg === '--ro-bind' && fixed[i + 1] === lib));
+});

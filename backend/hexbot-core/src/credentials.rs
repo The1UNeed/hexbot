@@ -519,7 +519,11 @@ fn within(path: &Path, roots: &[PathBuf]) -> bool {
 /// from either. Matches isolation.ts.
 const GIT_FILE_BYTES: u64 = 1 << 20;
 const GIT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Includes are followed at most this deep. A scan reads each config file once
+/// and visits it once per worktree, and gives up after GIT_CONFIG_STEPS config
+/// files and settings in all, so include cycles and fan-out cannot stall it.
 const GIT_INCLUDE_DEPTH: usize = 10;
+const GIT_CONFIG_STEPS: usize = 10000;
 fn regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
@@ -623,33 +627,110 @@ fn config_entries(text: &[u8]) -> Result<Vec<(String, String)>> {
     cache.insert(text.to_vec(), entries.clone());
     Ok(entries)
 }
-fn git_hooks(git: &mut Vec<PathBuf>, dir: &Path, worktree: &Path) -> Result<()> {
-    let mut configs = vec![(dir.join("config"), 0), (dir.join("config.worktree"), 0)];
-    let mut i = 0;
-    while let Some((file, depth)) = configs.get(i).cloned() {
-        i += 1;
-        let Some(text) = regular_file(&file)? else {
-            continue;
+#[cfg(test)]
+thread_local! {
+    // XDG_CONFIG_HOME for one test thread, so tests choose the user's Git config.
+    static TEST_XDG_CONFIG: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+/// The user's own Git configuration applies to every repository: a global
+/// core.hooksPath such as .githooks names a folder in each worktree.
+fn global_git_configs() -> Vec<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    #[cfg(test)]
+    let xdg = TEST_XDG_CONFIG.with(|xdg| xdg.borrow().clone().map(Into::into));
+    #[cfg(not(test))]
+    let xdg = None;
+    let xdg = xdg
+        .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| home.join(".config"), PathBuf::from);
+    vec![
+        home.join(".gitconfig"),
+        xdg.join("git/config"),
+        PathBuf::from("/etc/gitconfig"),
+    ]
+}
+/// Config files read during one scan, and the files and settings visited.
+#[derive(Default)]
+struct GitConfigs {
+    roots: Vec<PathBuf>,
+    files: HashMap<PathBuf, Vec<(String, String)>>,
+    steps: usize,
+}
+impl GitConfigs {
+    fn step(&mut self) -> Result<()> {
+        self.steps += 1;
+        if self.steps > GIT_CONFIG_STEPS {
+            return Err(Error::new(
+                5240,
+                "Git configuration has too many files or includes to scan.",
+            ));
+        }
+        Ok(())
+    }
+    fn read(&mut self, file: &Path) -> Result<(PathBuf, Vec<(String, String)>)> {
+        let real = real_root(file)?;
+        if let Some(found) = self.files.get(&real) {
+            return Ok((real, found.clone()));
+        }
+        let found = match regular_file(&real)? {
+            Some(text) => config_entries(&text)?,
+            None => vec![],
         };
-        for (key, value) in config_entries(&text)? {
+        self.files.insert(real.clone(), found.clone());
+        Ok((real, found))
+    }
+}
+/// Settings from the user's own configuration matter only where they name a
+/// folder inside the scanned roots; the rest is outside the sandbox already.
+fn git_hooks(
+    git: &mut Vec<PathBuf>,
+    configs: &mut GitConfigs,
+    dirs: &[PathBuf],
+    worktree: &Path,
+) -> Result<()> {
+    let mut queue: Vec<(PathBuf, usize, bool)> = dirs
+        .iter()
+        .flat_map(|dir| [dir.join("config"), dir.join("config.worktree")])
+        .map(|file| (file, 0, false))
+        .chain(global_git_configs().into_iter().map(|file| (file, 0, true)))
+        .collect();
+    let mut visited = HashSet::new();
+    let mut i = 0;
+    while let Some((file, depth, user)) = queue.get(i).cloned() {
+        i += 1;
+        configs.step()?;
+        let (real, found) = configs.read(&file)?;
+        if !visited.insert(real) {
+            continue;
+        }
+        for (key, value) in found {
             if value.is_empty() {
                 continue;
             }
+            configs.step()?;
             let base = if key == "core.hookspath" {
                 worktree
             } else {
                 file.parent().unwrap()
             };
             let target = real_root(&base.join(value))?;
-            add_path(git, &target)?;
+            if !user || within(&target, &configs.roots) {
+                add_path(git, &target)?;
+            }
             if key != "core.hookspath" && depth < GIT_INCLUDE_DEPTH {
-                configs.push((target, depth + 1));
+                queue.push((target, depth + 1, user));
             }
         }
     }
     Ok(())
 }
-fn git_metadata(git: &mut Vec<PathBuf>, path: &Path, worktree: &Path) -> Result<()> {
+fn git_metadata(
+    git: &mut Vec<PathBuf>,
+    configs: &mut GitConfigs,
+    path: &Path,
+    worktree: &Path,
+) -> Result<()> {
     add_path(git, path)?;
     let mut dir = path.to_owned();
     if !path.is_dir() {
@@ -661,16 +742,18 @@ fn git_metadata(git: &mut Vec<PathBuf>, path: &Path, worktree: &Path) -> Result<
         dir = real_root(&path.parent().unwrap().join(pointer.trim()))?;
         add_path(git, &dir)?;
     }
+    let mut dirs = vec![];
     if let Some(common) = regular_file(&dir.join("commondir"))? {
         let common = String::from_utf8_lossy(&common);
         let common = common.trim();
         if !common.is_empty() {
             let target = real_root(&dir.join(common))?;
             add_path(git, &target)?;
-            git_hooks(git, &target, worktree)?;
+            dirs.push(target);
         }
     }
-    git_hooks(git, &dir, worktree)
+    dirs.push(dir);
+    git_hooks(git, configs, &dirs, worktree)
 }
 fn bare_repository(path: &Path) -> bool {
     path.file_name()
@@ -678,13 +761,25 @@ fn bare_repository(path: &Path) -> bool {
         && path.join("HEAD").exists()
         && path.join("objects").exists()
 }
-fn record_metadata(protected: &mut WorkspaceProtected, path: &Path, worktree: &Path) {
-    if git_metadata(&mut protected.git, path, worktree).is_err() {
+fn record_metadata(
+    protected: &mut WorkspaceProtected,
+    configs: &mut GitConfigs,
+    path: &Path,
+    worktree: &Path,
+) {
+    if git_metadata(&mut protected.git, configs, path, worktree).is_err() {
         protected.failure = true;
     }
 }
 fn workspace_protected(roots: &[PathBuf], limit: usize) -> Result<WorkspaceProtected> {
     let mut protected = WorkspaceProtected::default();
+    let mut configs = GitConfigs {
+        roots: roots
+            .iter()
+            .filter_map(|root| real_root(root).ok())
+            .collect(),
+        ..Default::default()
+    };
     let mut queue = VecDeque::new();
     let mut seen = HashSet::new();
     for root in roots
@@ -699,12 +794,12 @@ fn workspace_protected(roots: &[PathBuf], limit: usize) -> Result<WorkspaceProte
             }
         };
         if bare_repository(&dir) {
-            record_metadata(&mut protected, &dir, &dir);
+            record_metadata(&mut protected, &mut configs, &dir, &dir);
         }
         for parent in dir.ancestors().filter(|p| p.parent().is_some()) {
             let marker = parent.join(".git");
             if marker.exists() {
-                record_metadata(&mut protected, &marker, parent);
+                record_metadata(&mut protected, &mut configs, &marker, parent);
             }
         }
         queue.push_back((dir, 0));
@@ -741,7 +836,7 @@ fn workspace_protected(roots: &[PathBuf], limit: usize) -> Result<WorkspaceProte
             let git_name = folded(Path::new(name.as_ref()));
             if git_name == Path::new(".git") || bare_repository(&path) {
                 let worktree = if bare_repository(&path) { &path } else { &dir };
-                record_metadata(&mut protected, &path, worktree);
+                record_metadata(&mut protected, &mut configs, &path, worktree);
             } else if secret_file_name(&name) && !path.is_dir() {
                 // A link that cannot be resolved (a loop) is masked by name alone.
                 if !protected.secrets.contains(&path) {
@@ -808,24 +903,38 @@ pub(crate) fn git_write_protected(path: &Path, roots: &[PathBuf]) -> Result<bool
 /// writable root are locked: anything else is read-only already, and binding or
 /// locking it could cover a mask (hooksPath = ~/.config/google-chrome) or the
 /// whole file system (hooksPath = /). On Linux a missing target is pinned at its
-/// nearest existing parent, never above the writable root.
-fn locked_git(git: &[PathBuf], roots: &[PathBuf], pin: bool) -> Vec<PathBuf> {
+/// nearest existing parent, never above the writable root. Pinning at the root
+/// itself would make the whole workspace read-only, so the program needs
+/// approval instead, and creating the folder restores the sandbox. Matches
+/// isolation.ts.
+fn missing_hooks_reason(path: &Path) -> String {
+    format!(
+        "Git is set to load hooks or settings from {}, which does not exist yet. The sandbox could keep it read-only only by making the whole workspace read-only, so this command needs approval: retry with full_access and a reason. Once the folder exists (mkdir -p {}), commands run in the sandbox again.",
+        path.display(),
+        crate::install_ownership::shell_quote(&path.to_string_lossy())
+    )
+}
+fn locked_git(git: &[PathBuf], roots: &[PathBuf], pin: bool) -> Result<Vec<PathBuf>> {
     let mut locked: Vec<PathBuf> = vec![];
     for path in git {
         let Ok(mut real) = real_root(path) else {
             continue;
         };
+        let target = real.clone();
         while pin && !real.exists() {
             match real.parent() {
                 Some(parent) if within(parent, roots) => real = parent.to_owned(),
                 _ => break,
             }
         }
+        if pin && real != target && roots.iter().any(|root| folded(root) == folded(&real)) {
+            return Err(Error::new(5240, missing_hooks_reason(&target)));
+        }
         if within(&real, roots) && (!pin || real.exists()) && !locked.contains(&real) {
             locked.push(real);
         }
     }
-    locked
+    Ok(locked)
 }
 fn path_ancestors(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut ancestors = vec![];
@@ -984,7 +1093,8 @@ fn sandbox_profile(layout: &Layout) -> String {
             .join(" ");
         let secret_paths = confine.protected.secrets.iter().map(|p| format!("(subpath {})", quoted(p.to_string_lossy()))).collect::<Vec<_>>().join(" ");
         let browser_roots = read_denied();
-        let git = locked_git(&confine.protected.git, &confine.writable, false);
+        // Only pinning (Linux) can fail.
+        let git = locked_git(&confine.protected.git, &confine.writable, false).unwrap_or_default();
         let locked = git.iter().map(|p| format!("(subpath {})", quoted(p.to_string_lossy()))).collect::<Vec<_>>().join(" ");
         let mut protected = browser_roots.clone();
         protected.extend(git.clone());
@@ -1096,7 +1206,7 @@ fn bwrap_arguments(layout: &Layout) -> Result<Vec<OsString>> {
             .filter(|p| *p != Path::new("/tmp"))
             .cloned()
             .collect();
-        for path in locked_git(&confine.protected.git, &open, true) {
+        for path in locked_git(&confine.protected.git, &open, true)? {
             args.extend(["--ro-bind".into(), path.clone().into(), path.into()]);
         }
         for path in confine.config.iter().filter(|p| p.exists()) {
@@ -1928,6 +2038,140 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cyclic_and_fanned_out_git_includes_are_read_once_and_bounded() {
+        let base = tempfile::tempdir().unwrap();
+        let work = base.path().canonicalize().unwrap().join("work");
+        let wide = base.path().canonicalize().unwrap().join("wide");
+        for path in [work.join(".git"), wide.join(".git")] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        // Every file includes every other one and itself: without a visited set
+        // this is 12^10 visits at the depth limit.
+        let names: Vec<String> = (0..12).map(|i| format!("inc{i}")).collect();
+        let includes = |prefix: &str| {
+            names.iter().fold("[include]\n".to_owned(), |text, name| {
+                text + &format!("\tpath = {prefix}{name}\n")
+            })
+        };
+        std::fs::write(work.join(".git/config"), includes("../")).unwrap();
+        for name in &names {
+            std::fs::write(
+                work.join(name),
+                includes("") + &format!("[core]\n\thooksPath = {name}-hooks\n"),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            wide.join(".git/config"),
+            (0..10001).fold("[include]\n".to_owned(), |text, i| {
+                text + &format!("\tpath = ../missing{i}\n")
+            }),
+        )
+        .unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let roots = (vec![work.clone()], vec![wide.clone()]);
+        std::thread::spawn(move || {
+            let scan = |roots: &[PathBuf]| {
+                workspace_protected(roots, WORKSPACE_DIRS).map(|scan| (scan.git, scan.failure))
+            };
+            let _ = sender.send((scan(&roots.0), scan(&roots.1)));
+        });
+        let (cyclic, fanned) = receiver
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the scan finishes");
+        let (git, failure) = cyclic.unwrap();
+        assert!(!failure);
+        for name in &names {
+            assert!(git.contains(&work.join(name)), "{name}");
+            assert!(git.contains(&work.join(format!("{name}-hooks"))), "{name}");
+        }
+        assert!(fanned.unwrap().1);
+    }
+
+    #[test]
+    fn a_global_hooks_path_is_protected_in_each_worktree_and_a_missing_one_asks() {
+        let base = tempfile::tempdir().unwrap();
+        let base = base.path().canonicalize().unwrap();
+        let (home, work, xdg) = (base.join("home"), base.join("work"), base.join("xdg"));
+        for path in [
+            home.clone(),
+            work.join("app/.git"),
+            work.join("app/.githooks"),
+            work.join("lib/.git"),
+            work.join("lib/tools"),
+            xdg.join("git"),
+        ] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::write(
+            xdg.join("git/config"),
+            "[include]\n\tpath = more\n[core]\n\thooksPath = .githooks\n",
+        )
+        .unwrap();
+        std::fs::write(
+            xdg.join("git/more"),
+            format!(
+                "[core]\n\thooksPath = {}\n",
+                base.join("outside-hooks").display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            work.join("lib/.git/config"),
+            "[core]\n\thooksPath = tools/hooks\n",
+        )
+        .unwrap();
+        TEST_XDG_CONFIG.with(|config| *config.borrow_mut() = Some(xdg.clone()));
+        let scan = workspace_protected(std::slice::from_ref(&work), WORKSPACE_DIRS).unwrap();
+        // The user's own setting names app/.githooks and lib/.githooks; the
+        // absolute folder outside the workspace is read-only to programs already.
+        for path in ["app/.githooks", "lib/.githooks", "lib/tools/hooks"] {
+            assert!(scan.git.contains(&work.join(path)), "{path}");
+        }
+        assert!(!scan.git.contains(&base.join("outside-hooks")));
+        assert!(
+            git_write_protected(
+                &work.join("app/.githooks/pre-commit"),
+                std::slice::from_ref(&work)
+            )
+            .unwrap()
+        );
+        assert!(
+            !git_write_protected(&work.join("app/notes"), std::slice::from_ref(&work)).unwrap()
+        );
+        let confined = layout(&home, &[], Some(std::slice::from_ref(&work))).unwrap();
+        assert!(sandbox_profile(&confined).contains(&format!(
+            "(subpath {})",
+            quoted(work.join("app/.githooks").to_string_lossy())
+        )));
+        // lib/.githooks does not exist and pins lib, which is not a writable root;
+        // at the root itself the program asks instead, and creating it is the fix.
+        let args = bwrap_arguments(&confined).unwrap();
+        let bound = |args: &[OsString], path: &Path| {
+            args.windows(2)
+                .any(|w| w[0] == "--ro-bind" && w[1] == path.as_os_str())
+        };
+        assert!(bound(&args, &work.join("app/.githooks")));
+        assert!(bound(&args, &work.join("lib/tools")));
+        let lib = work.join("lib");
+        let error = bwrap_arguments(&layout(&home, &[], Some(std::slice::from_ref(&lib))).unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("does not exist yet"), "{error}");
+        assert!(error.contains("retry with full_access"), "{error}");
+        assert!(
+            error.contains(&format!("mkdir -p '{}'", lib.join(".githooks").display())),
+            "{error}"
+        );
+        std::fs::create_dir(lib.join(".githooks")).unwrap();
+        let args = bwrap_arguments(&layout(&home, &[], Some(std::slice::from_ref(&lib))).unwrap())
+            .unwrap();
+        assert!(bound(&args, &lib.join(".githooks")));
+        assert!(!bound(&args, &lib));
+        TEST_XDG_CONFIG.with(|config| *config.borrow_mut() = None);
+    }
+
     /// The extension builds the same sandbox for Pi's bash tool from the same policy.
     #[test]
     fn sandbox_policy_matches_the_extension() {
@@ -1973,6 +2217,17 @@ mod tests {
         std::fs::create_dir_all(workspace[0].join(".local-hooks")).unwrap();
         std::fs::write(workspace[0].join("app/.env"), "secret").unwrap();
         std::fs::write(workspace[0].join(".env.example"), "example").unwrap();
+        // The user's own Git config names a hooks folder in every worktree.
+        let xdg = base.path().join("xdg");
+        std::fs::create_dir_all(xdg.join("git")).unwrap();
+        std::fs::write(xdg.join("git/config"), "[core]\n hooksPath = .githooks\n").unwrap();
+        for dir in [
+            workspace[0].join(".githooks"),
+            workspace[0].join("linked/.githooks"),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        TEST_XDG_CONFIG.with(|config| *config.borrow_mut() = Some(xdg.clone()));
         let confined = super::layout(
             &home,
             &[attachments.clone(), outputs.clone()],
@@ -1987,6 +2242,7 @@ mod tests {
                 "/../pi-runtime/isolation.ts"
             ))
             .args([&home, &workspace[0], &attachments, &outputs])
+            .env("XDG_CONFIG_HOME", &xdg)
             .output()
             .expect("node runs the extension's isolation module");
         assert!(
@@ -2044,6 +2300,16 @@ mod tests {
         assert!(confined_bwrap.windows(3).any(|w| w[0] == "--ro-bind"
             && w[1] == "/dev/null"
             && w[2] == work.join("app/.env").as_os_str()));
+        for hooks in [work.join(".githooks"), work.join("linked/.githooks")] {
+            assert!(
+                confined_bwrap
+                    .windows(2)
+                    .any(|w| w[0] == "--ro-bind" && w[1] == hooks.as_os_str()),
+                "{}",
+                hooks.display()
+            );
+        }
+        TEST_XDG_CONFIG.with(|config| *config.borrow_mut() = None);
         assert!(
             !confined_bwrap
                 .iter()

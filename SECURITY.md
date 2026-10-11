@@ -41,8 +41,8 @@ redaction, and pattern checks do not provide equivalent containment.
   Writable roots include the working directory, daemon-selected artifact and
   attachment folders, and temporary folders. On macOS these include shared `/tmp`.
   Existing Git metadata (`.git`, linked `gitdir`/`commondir` targets and bare
-  `*.git` repositories with `HEAD` and `objects`, plus configured `core.hooksPath`
-  directories) stays read-only within the scan limits below. A bot
+  `*.git` repositories with `HEAD` and `objects`, plus `core.hooksPath`
+  directories set by the repository or your own Git config) stays read-only within the scan limits below. A bot
   changes protected metadata with an approved `full_access` command. Project
   secrets such as `.env` and `.envrc`, keychains, and browser profiles with
   cookies and saved passwords are unreadable and unwritable. Apple Events are refused, so a command cannot
@@ -63,7 +63,7 @@ renaming a folder cannot expose their contents. Browser rules include the
 Google parent folder, Chrome Beta/unstable, and Snap and Flatpak profiles.
 Denying `~/Library/Application Support/Google` also hides other Google data
 stored there, including Android Studio and Drive data.
-Tracked hook scripts remain writable unless selected by repository
+Tracked hook scripts remain writable unless selected by a configured
 `core.hooksPath`; their edits appear in `git status`. Review those changes
 before running them.
 
@@ -78,18 +78,30 @@ only Linux bubblewrap commands refuse to run and require an approved
 `full_access` retry. For `execute_code`, use a smaller workspace or run the
 Python code through the terminal tool with `full_access` and a reason. macOS
 and file tools use partial results when the budget is reached. File changes ask for approval
-in Auto mode when the scan is incomplete. The cwd-ancestor Git pointer
+in Auto mode when the scan is incomplete, every time: that approval covers one
+change, is never remembered for the section, and never stands in for the
+approval a shell profile or a file outside the workspace needs. The cwd-ancestor Git pointer
 walk is unbudgeted, and macOS `.git` and secret filename rules still apply.
 Bare `*.git` repositories must exist when the scan starts on either platform.
 File tools refuse protected Git writes; an unreadable Git configuration or
 scan failure asks for approval instead of blocking ordinary writes. Repository
 configs and their includes are parsed with the system Git at `/usr/bin/git`;
-without it, a repository with a config counts as unreadable. Included files and
+without it, a repository with a config counts as unreadable. Your own Git
+config (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/config` and `/etc/gitconfig`)
+and its includes are read the same way, and a hooks path it sets is resolved in
+each repository, so a global `core.hooksPath = .githooks` protects `.githooks`
+in every scanned repository. Each config file is read once per scan; a scan
+that meets more than 10,000 config files and settings counts as unreadable, so
+include cycles cannot stall it. Included files and
 configured hook paths inside the workspace or an output folder are protected,
 with their ancestors up to that folder. Ones outside are already read-only to
 sandboxed commands; a hook path that contains the workspace, such as `/` or the
 home folder, is ignored. FIFOs and other special files in Git metadata stay
-locked and are never read.
+locked and are never read. Bubblewrap can only lock a folder that exists, so on
+Linux a configured hooks folder that does not exist yet is locked through its
+nearest existing parent. When that parent is the workspace itself, the command
+asks for approval instead of running in a read-only workspace; creating the
+folder (for example `mkdir .githooks`) lets commands run in the sandbox again.
 
 macOS fails closed when its sandbox cannot start. On Linux, if bubblewrap is
 missing or unusable, Hexbot reports the missing isolation and Auto and Manual

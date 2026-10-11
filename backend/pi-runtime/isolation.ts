@@ -111,7 +111,10 @@ export const within = (path: string, roots: string[]) => roots.some(root => fold
 // configs and their includes), so they are opened without blocking and read only
 // when they are small regular files: a FIFO or device would stall the daemon.
 // Anything else stays locked but unread, which Git cannot load hooks from either.
-const GIT_FILE_BYTES = 1 << 20, GIT_TIMEOUT = 5000, GIT_INCLUDE_DEPTH = 10;
+// Includes are followed at most this deep. A scan reads each config file once
+// and visits it once per worktree, and gives up after GIT_CONFIG_STEPS config
+// files and settings in all, so include cycles and fan-out cannot stall it.
+const GIT_FILE_BYTES = 1 << 20, GIT_TIMEOUT = 5000, GIT_INCLUDE_DEPTH = 10, GIT_CONFIG_STEPS = 10000;
 function regularFile(path: string): Buffer | undefined {
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK); }
@@ -150,22 +153,45 @@ function configEntries(text: Buffer): [string, string][] {
   configCache.set(key, entries);
   return entries;
 }
+// The user's own Git configuration applies to every repository: a global
+// core.hooksPath such as .githooks names a folder in each worktree.
+export const globalGitConfigs = () => [join(homedir(), '.gitconfig'), join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'git/config'), '/etc/gitconfig'];
 export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): {git: string[], secrets: string[], exhausted: boolean, failure?: string} {
   let exhausted = false, failure: string | undefined;
   const git = new Set<string>(), secrets = new Set<string>();
   const add = (set: Set<string>, path: string) => { set.add(path); set.add(realRoot(path)); };
   const pointerTarget = (base: string, value: string) => realRoot(value.startsWith('/') ? value : base + '/' + value);
-  const hooks = (dir: string, worktree: string) => {
-    const configs = [join(dir, 'config'), join(dir, 'config.worktree')].map(file => ({file, depth: 0}));
-    for (let i = 0; i < configs.length; i++) {
-      const {file, depth} = configs[i];
-      const text = regularFile(file);
-      if (!text) continue;
-      for (const [key, value] of configEntries(text)) {
+  const scanned = roots.flatMap(root => { try { return [realRoot(root)]; } catch { return []; } });
+  const configs = new Map<string, [string, string][]>();
+  let steps = 0;
+  const step = () => { if (++steps > GIT_CONFIG_STEPS) throw new Error('Git configuration has too many files or includes to scan.'); };
+  const configAt = (file: string) => {
+    const real = realRoot(file);
+    let found = configs.get(real);
+    if (!found) {
+      const text = regularFile(real);
+      found = text ? configEntries(text) : [];
+      configs.set(real, found);
+    }
+    return {real, found};
+  };
+  // Settings from the user's own configuration matter only where they name a
+  // folder inside the scanned roots; the rest is outside the sandbox already.
+  const hooks = (dirs: string[], worktree: string) => {
+    const queue = [...dirs.flatMap(dir => [join(dir, 'config'), join(dir, 'config.worktree')]).map(file => ({file, depth: 0, user: false})), ...globalGitConfigs().map(file => ({file, depth: 0, user: true}))];
+    const visited = new Set<string>();
+    for (let i = 0; i < queue.length; i++) {
+      const {file, depth, user} = queue[i];
+      step();
+      const {real, found} = configAt(file);
+      if (visited.has(real)) continue;
+      visited.add(real);
+      for (const [key, value] of found) {
         if (!value) continue;
+        step();
         const target = pointerTarget(key === 'core.hookspath' ? worktree : dirname(file), value);
-        add(git, target);
-        if (key !== 'core.hookspath' && depth < GIT_INCLUDE_DEPTH) configs.push({file: target, depth: depth + 1});
+        if (!user || within(target, scanned)) add(git, target);
+        if (key !== 'core.hookspath' && depth < GIT_INCLUDE_DEPTH) queue.push({file: target, depth: depth + 1, user});
       }
     }
   };
@@ -179,12 +205,13 @@ export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): {gi
       add(git, dir);
     }
     const common = regularFile(join(dir, 'commondir'))?.toString('utf8').trim();
+    const dirs = [dir];
     if (common) {
       const target = pointerTarget(dir, common);
       add(git, target);
-      hooks(target, worktree);
+      dirs.unshift(target);
     }
-    hooks(dir, worktree);
+    hooks(dirs, worktree);
   };
   const recordMetadata = (path: string, worktree?: string) => {
     try { metadata(path, worktree); } catch { failure = 'Git metadata or hook configuration could not be scanned. Approve this file change only if you trust its destination.'; }
@@ -233,13 +260,18 @@ export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): {gi
 // root are locked: anything else is read-only already, and binding or locking it
 // could cover a mask (hooksPath = ~/.config/google-chrome) or the whole file
 // system (hooksPath = /). On Linux a missing target is pinned at its nearest
-// existing parent, never above the writable root.
+// existing parent, never above the writable root. Pinning at the root itself
+// would make the whole workspace read-only, so the command needs approval
+// instead, and creating the folder restores the sandbox.
+export const missingHooksReason = (path: string) => `Git is set to load hooks or settings from ${path}, which does not exist yet. The sandbox could keep it read-only only by making the whole workspace read-only, so this command needs approval: retry with full_access and a reason. Once the folder exists (mkdir -p ${quote(path)}), commands run in the sandbox again.`;
 export function lockedGit(git: string[], roots: string[], pin = false): string[] {
   const locked = new Set<string>();
   for (const path of git) {
     let real: string;
     try { real = realRoot(path); } catch { continue; }
+    const target = real;
     if (pin) while (!existsSync(real) && within(dirname(real), roots)) real = dirname(real);
+    if (pin && real !== target && roots.some(root => fold(root) === fold(real))) throw new Error(missingHooksReason(target));
     if (within(real, roots) && (!pin || existsSync(real))) locked.add(real);
   }
   return [...locked];
