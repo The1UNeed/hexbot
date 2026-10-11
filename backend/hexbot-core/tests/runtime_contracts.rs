@@ -46,7 +46,7 @@ fn setup() -> (
     fs::write(&script,r#"#!/usr/bin/env node
 const rl=require('node:readline').createInterface({input:process.stdin});
 const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
-rl.on('line',line=>{const c=JSON.parse(line);emit({type:'response',id:c.id,command:c.type,success:true,data:{}});if(c.type==='prompt'){emit({type:'agent_start'});if(c.message==='wait'){emit({type:'extension_ui_request',id:'a',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'bash',command:'pwd'}),options:['once','deny']});}else if(c.message==='fail'){emit({type:'tool_execution_start',toolCallId:'t',toolName:'web_search',args:{query:'x'}});emit({type:'tool_execution_end',toolCallId:'t',toolName:'web_search',isError:true,result:{content:[{type:'text',text:'Token refused'}]}});emit({type:'agent_settled'});}}if(c.type==='abort'){emit({type:'agent_settled'});}});
+rl.on('line',line=>{const c=JSON.parse(line);emit({type:'response',id:c.id,command:c.type,success:true,data:{}});if(c.type==='prompt'){emit({type:'agent_start'});if(c.message==='wait'){emit({type:'extension_ui_request',id:'a',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'bash',command:'pwd'}),options:['once','deny']});}else if(c.message==='turn-fail'){emit({type:'message_end',message:{role:'user',content:c.message}});emit({type:'message_end',message:{role:'assistant',content:[],stopReason:'error',errorMessage:'Retry failed'}});emit({type:'agent_settled'});}else if(c.message==='fail'){emit({type:'tool_execution_start',toolCallId:'t',toolName:'web_search',args:{query:'x'}});emit({type:'tool_execution_end',toolCallId:'t',toolName:'web_search',isError:true,result:{content:[{type:'text',text:'Token refused'}]}});emit({type:'agent_settled'});}}if(c.type==='abort'){emit({type:'agent_settled'});}});
 "#).unwrap();
     #[cfg(unix)]
     {
@@ -81,6 +81,11 @@ async fn active_bot_status_uses_wire_detail_and_prioritizes_waiting_section() {
         .await
         .unwrap()
         .unwrap();
+    // Empty successful resolution still proves a new turn, unlike compaction.
+    assert_eq!(
+        next(&mut events, "message.start").await["payload"]["retry_resolved"],
+        true
+    );
     next(&mut events, "approval.request").await;
     let second = open(&runtime, "second").await;
     runtime
@@ -210,7 +215,14 @@ async fn retry_clears_failed_turn_before_the_new_turn_finishes() {
         .await
         .unwrap()
         .unwrap();
-    // The fake Pi holds this turn at its approval request. No completion has run.
+    let start = next(&mut events, "message.start").await;
+    assert_eq!(start["session_id"], session);
+    assert_eq!(start["payload"]["retry_resolved"], true);
+    assert_eq!(
+        next(&mut events, "status.update").await["payload"]["kind"],
+        "working"
+    );
+    // The marker and Working precede Waiting; no completion has run.
     next(&mut events, "approval.request").await;
     assert_eq!(
         catalog::bot(home.path(), "alice", "owl").unwrap()["status"],
@@ -220,6 +232,115 @@ async fn retry_clears_failed_turn_before_the_new_turn_finishes() {
         runtime.status_for_bot("alice", "owl").unwrap()["status"],
         "needs_you"
     );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn failed_retry_stops_again_and_manual_compaction_does_not_resolve_it() {
+    let (home, runtime, mut events) = setup();
+    let session = open(&runtime, "first").await;
+    let previous = settings::record_incident(
+        home.path(),
+        "owl",
+        "turn_failed",
+        "The previous turn failed",
+        &json!({"section_id":"first","session_id":session}),
+    )
+    .unwrap();
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":session,"text":"turn-fail"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        next(&mut events, "message.start").await["payload"]["retry_resolved"],
+        true
+    );
+    assert_eq!(
+        next(&mut events, "message.complete").await["payload"]["status"],
+        "error"
+    );
+    next(&mut events, "status.update").await;
+    let failed = catalog::bot(home.path(), "alice", "owl").unwrap();
+    assert_eq!(failed["status"], "stopped");
+    assert_eq!(failed["status_detail"]["text"], "Retry failed");
+    let unresolved: String = db::open(home.path())
+        .unwrap()
+        .query_row(
+            "SELECT id FROM bot_incidents WHERE section_id='first' AND kind='turn_failed' AND resolved_at IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_ne!(json!(unresolved), previous["id"]);
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":session,"text":"/compact"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        next(&mut events, "message.start").await["payload"]
+            .get("retry_resolved")
+            .is_none()
+    );
+    assert_eq!(
+        next(&mut events, "message.complete").await["payload"]["status"],
+        "complete"
+    );
+    assert_eq!(
+        catalog::bot(home.path(), "alice", "owl").unwrap()["status_detail"],
+        failed["status_detail"]
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn failed_incident_resolution_leaves_retry_start_unmarked() {
+    let (home, runtime, mut events) = setup();
+    let session = open(&runtime, "first").await;
+    settings::record_incident(
+        home.path(),
+        "owl",
+        "turn_failed",
+        "The previous turn failed",
+        &json!({"section_id":"first","session_id":session}),
+    )
+    .unwrap();
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("CREATE TRIGGER reject_resolution BEFORE UPDATE ON bot_incidents BEGIN SELECT RAISE(ABORT,'resolution unavailable'); END;")
+        .unwrap();
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":session,"text":"wait"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        next(&mut events, "message.start").await["payload"]
+            .get("retry_resolved")
+            .is_none()
+    );
+    next(&mut events, "approval.request").await;
+    assert_eq!(
+        catalog::bot(home.path(), "alice", "owl").unwrap()["status"],
+        "stopped"
+    );
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("DROP TRIGGER reject_resolution;")
+        .unwrap();
     runtime.shutdown().await;
 }
 

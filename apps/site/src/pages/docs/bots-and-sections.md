@@ -27,7 +27,7 @@ The teammate description tells other bots when to ask this one for help. For exa
 
 Reopen a section to continue the same task. Closing the app or restarting the daemon does not delete it. Each section keeps a persistent Pi conversation; a fresh section starts with a new context window and the bot's current settings.
 
-Waiting means a bot needs your answer. Once your answer lets it resume, the sidebar shows Working even before text starts streaming.
+Waiting means a bot needs your answer. If another question or approval still needs an answer, the sidebar keeps Waiting. Once all answers let it resume, the sidebar shows Working even before text starts streaming. Each active section keeps its own status when the bot is also working in another section.
 
 Reopening restores pending approvals and questions. If more than one answer is needed, each card stays available until it is answered or expires.
 
@@ -50,6 +50,8 @@ Use **Stop** to interrupt a running answer. The section stays available, and you
 Archiving hides a section from the active list and keeps its history. To bring it back, find it in Settings, Archive, where you can search titles, first messages, and bot names, or filter by bot, and choose Restore. The bot's Sections settings list its archived sections too. Deleting removes that section and its history permanently. It leaves the bot's memory alone; edit Memory separately when you want to remove a remembered fact.
 
 A failed turn in an archived or deleted section does not keep its bot Stopped. Restoring an archived section restores any unresolved failure. Problems in rooms or connected services remain visible when you archive a section.
+
+Starting another turn in the failed section clears its Retry status. A new failure can stop it again; summarising the conversation does not clear the failure.
 
 Deleting the bot removes its profile, sections, memory, and scheduled jobs. Stop its active work first. Back up the daemon's data directory before removing a bot you may need again.
 

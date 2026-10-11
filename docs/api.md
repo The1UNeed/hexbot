@@ -56,6 +56,12 @@ Events the client renders: `message.start`, `message.delta`, `message.interim`,
 `approval.request`, `status.update`, `session.info`, `session.usage {usage,
 context}` (the section's totals and its context meter, see Sections), `error`.
 
+When a new agent turn starts, `message.start` includes `retry_resolved: true`
+if resolving that section's `turn_failed` incidents succeeded. Clients can
+retire a cached private-section Retry status for that exact live session.
+Compaction starts and older daemons omit this field; an unmarked start or a
+Working event alone does not prove that a failure was resolved.
+
 ## `hexbot.*` methods
 
 All results are objects. Errors use JSON-RPC error objects with core-style
@@ -122,6 +128,11 @@ bots on `hexbot.sections.changed`, sent when a turn ends or a section is
 archived, unarchived, or deleted. `status_detail` is
 `{text, section_id, room_id, session_id, since, action}` where `action` is
 null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
+The detail names one session even when several sections of the bot are
+active. A non-idle bot reply must not erase status evidence for a
+sibling session. An accepted Idle reply can retire the bot's older live
+status evidence. Pending questions and approvals remain Waiting through an
+unrelated Working event; answers settle only their matching request IDs.
 `approval_mode` is `inherit` (the deployment setting), `manual`, `smart`
 (Auto), or `off` (Bypass); `workdir` overrides the deployment workspace for
 that bot's terminal.

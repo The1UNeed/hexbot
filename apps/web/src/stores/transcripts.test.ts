@@ -60,9 +60,9 @@ describe('transcript reducer', () => {
         },
         { notify: false }
       )
-      expect(useTranscripts.getState().bySession.s?.liveStatus).toBe(
-        complete ? undefined : 'needs_you'
-      )
+      expect(
+        sectionStatusOf(undefined, 's1', liveSectionsOf(useTranscripts.getState().bySession))
+      ).toBe(complete ? 'idle' : 'needs_you')
     }
   )
   it('opens on a delta and does not duplicate streamed interim text', () => {

@@ -263,7 +263,7 @@ describe.each<Kind>(['approval', 'clarify'])('%s answer lifecycle', kind => {
       await answering
       expectSettled(kind)
       expect(transcript().answeredWaiting).toBeUndefined()
-      expect(transcript().liveStatus).toBe(boundary === 'new card' ? 'needs_you' : undefined)
+      expect(transcript().liveStatus).toBe(boundary === 'new card' ? 'working' : undefined)
       expectStatus('needs_you')
     }
   )

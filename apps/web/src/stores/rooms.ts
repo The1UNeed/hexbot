@@ -148,7 +148,7 @@ export const useRooms = create<RoomsState>((set, get) => ({
       for (const turns of Object.values(liveTurnsByRoom)) {
         for (const turn of Object.values(turns)) {
           if (turn.live_session_id) {
-            transcripts.open(turn.live_session_id, `room:${turn.room_id}`, [])
+            transcripts.open(turn.live_session_id, `room:${turn.room_id}`, [], undefined, turn.bot)
           }
         }
       }
@@ -311,7 +311,9 @@ export const useRooms = create<RoomsState>((set, get) => ({
 
       if (turn.live_session_id && !['complete', 'failed', 'stopped'].includes(turn.status)) {
         current[turn.bot] = turn
-        useTranscripts.getState().open(turn.live_session_id, `room:${turn.room_id}`, [])
+        useTranscripts
+          .getState()
+          .open(turn.live_session_id, `room:${turn.room_id}`, [], undefined, turn.bot)
       } else {
         const previous = current[turn.bot]
 

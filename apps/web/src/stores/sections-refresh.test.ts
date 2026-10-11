@@ -14,7 +14,12 @@ import type { Bot, Section } from '../lib/types'
 
 import { useBots } from './bots'
 import { botStatusWithLive, liveSectionsOf, sectionStatusOf, useSections } from './sections'
-import { resetTranscriptEffects, setTranscriptEffects, useTranscripts } from './transcripts'
+import {
+  clarifyWaiting,
+  resetTranscriptEffects,
+  setTranscriptEffects,
+  useTranscripts
+} from './transcripts'
 
 vi.mock('../lib/api', async importOriginal => ({
   ...(await importOriginal<typeof api>()),
@@ -334,7 +339,9 @@ describe.each(['open', 'openThread'] as const)('%s snapshot authority', method =
 
       expect(transcript?.sectionId).toBe('s1')
       expect(transcript?.clarifies.map(card => card.requestId)).toEqual(['question'])
-      expect(transcript?.liveStatus).toBe('needs_you')
+      expect(
+        sectionStatusOf(undefined, 's1', liveSectionsOf(useTranscripts.getState().bySession))
+      ).toBe('needs_you')
       expect(transcript?.approvals.map(card => card.requestId)).toEqual(
         replay === 'approval' ? ['approval'] : []
       )
@@ -448,7 +455,9 @@ describe.each(['open', 'openThread'] as const)('%s snapshot authority', method =
         const transcript = useTranscripts.getState().bySession.live
 
         expect(transcript?.clarifies.filter(card => card.requestId === 'question')).toHaveLength(1)
-        expect(transcript?.liveStatus).toBe('needs_you')
+        expect(
+          sectionStatusOf(undefined, 's1', liveSectionsOf(useTranscripts.getState().bySession))
+        ).toBe('needs_you')
         expect(sectionsOpen).toHaveBeenCalledTimes(1)
 
         if (branch === 'ahead') {
@@ -502,7 +511,9 @@ describe.each(['open', 'openThread'] as const)('%s snapshot authority', method =
         )
         expect(sectionsOpen).toHaveBeenCalledTimes(1)
         actions.clarifyRequest('live', { request_id: 'different', question: 'Still pending?' })
-        expect(useTranscripts.getState().bySession.live?.liveStatus).toBe('needs_you')
+        expect(
+          sectionStatusOf(undefined, 's1', liveSectionsOf(useTranscripts.getState().bySession))
+        ).toBe('needs_you')
         expect(useTranscripts.getState().bySession.live?.clarifies.at(-1)?.requestId).toBe(
           'different'
         )
@@ -524,7 +535,9 @@ describe.each(['open', 'openThread'] as const)('%s snapshot authority', method =
     expect(
       transcript?.messages.some(message => message.toolCalls.some(tool => tool.toolId === 'tool'))
     ).toBe(true)
-    expect(transcript?.liveStatus).toBe('needs_you')
+    expect(
+      sectionStatusOf(undefined, 's1', liveSectionsOf(useTranscripts.getState().bySession))
+    ).toBe('needs_you')
     expect(sectionsOpen).toHaveBeenCalledTimes(1)
   })
 
@@ -626,7 +639,7 @@ describe.each(['open', 'openThread'] as const)('%s snapshot authority', method =
     await openingSecond
     const transcript = useTranscripts.getState().bySession.live
 
-    expect(transcript?.clarifies).toEqual([])
+    expect(transcript?.clarifies.some(clarifyWaiting)).toBe(false)
     expect(transcript?.settledClarifyIds).toContain('question')
     expect(
       sectionStatusOf(
@@ -688,7 +701,9 @@ describe.each(['open', 'openThread'] as const)('%s snapshot authority', method =
       expect(pending?.map(card => card.requestId).sort()).toEqual(
         event === 'expiry' ? [] : event === 'new-card' ? ['different', 'question'] : ['question']
       )
-      expect(transcript?.liveStatus).toBe(event === 'expiry' ? 'idle' : 'needs_you')
+      expect(
+        sectionStatusOf(undefined, 's1', liveSectionsOf(useTranscripts.getState().bySession))
+      ).toBe(event === 'expiry' ? 'idle' : 'needs_you')
       expect(sectionsOpen).toHaveBeenCalledTimes(2)
 
       if (event === 'replacement') {
@@ -751,7 +766,9 @@ describe.each(['open', 'openThread'] as const)('%s snapshot authority', method =
       expect(transcript?.clarifies[0]?.answers).toEqual(
         complete ? { a: 'Yes', b: 'No' } : { a: 'Yes' }
       )
-      expect(transcript?.liveStatus).toBe(complete ? undefined : 'needs_you')
+      expect(
+        sectionStatusOf(undefined, 's1', liveSectionsOf(useTranscripts.getState().bySession))
+      ).toBe(complete ? 'idle' : 'needs_you')
       expect(transcript?.settledClarifyIds?.includes('question') ?? false).toBe(complete)
     }
   )
@@ -773,7 +790,9 @@ describe.each(['open', 'openThread'] as const)('%s snapshot authority', method =
 
     expect(transcript?.settledClarifyIds).toBeUndefined()
     expect(transcript?.clarifies[0]?.answers).toEqual({})
-    expect(transcript?.liveStatus).toBe('needs_you')
+    expect(
+      sectionStatusOf(undefined, 's1', liveSectionsOf(useTranscripts.getState().bySession))
+    ).toBe('needs_you')
   })
 
   describe.each([false, true])('existing completed snapshot card=%s', existing => {
@@ -860,7 +879,7 @@ describe.each(['open', 'openThread'] as const)('%s snapshot authority', method =
       ['approval', false],
       ['question', false]
     ] as const)(
-      'settles its own question while preserving %s freshness=%s',
+      'settles its own question while preserving pending %s (arrived during fetch=%s)',
       async (sibling, fresh) => {
         const actions = useTranscripts.getState()
 
@@ -917,10 +936,10 @@ describe.each(['open', 'openThread'] as const)('%s snapshot authority', method =
           a: 'Yes',
           b: 'No'
         })
-        expect(sectionStatusOf(owner, 's1', live)).toBe(fresh ? 'needs_you' : 'working')
+        expect(sectionStatusOf(owner, 's1', live)).toBe('needs_you')
         expect(
           botStatusWithLive(owner, [section('s1')], live, useTranscripts.getState().bySession)
-        ).toBe(fresh ? 'needs_you' : 'working')
+        ).toBe('needs_you')
       }
     )
   })
@@ -946,7 +965,9 @@ describe.each(['open', 'openThread'] as const)('%s snapshot authority', method =
     await begin()
     const transcript = useTranscripts.getState().bySession.live
     expect(transcript?.sectionId).toBe('s1')
-    expect(transcript?.liveStatus).toBe('needs_you')
+    expect(
+      sectionStatusOf(undefined, 's1', liveSectionsOf(useTranscripts.getState().bySession))
+    ).toBe('needs_you')
     expect(transcript?.clarifies.map(card => card.requestId)).toEqual(['current'])
   })
 })

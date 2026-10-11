@@ -400,8 +400,8 @@ it('scoped authority expires its named thread and room session without touching 
   })
   vi.mocked(botsGet).mockResolvedValueOnce({ bot: bot('idle') })
   await useBots.getState().refreshOne('owl')
-  expect(useTranscripts.getState().bySession['thread-live']?.liveStatus).toBeUndefined()
-  expect(useTranscripts.getState().bySession['owl-room']?.liveStatus).toBeUndefined()
+  expect(useTranscripts.getState().bySession['thread-live']?.liveStatus).toBe('idle')
+  expect(useTranscripts.getState().bySession['owl-room']?.liveStatus).toBe('idle')
   expect(useTranscripts.getState().bySession['cat-room']?.liveStatus).toBe('working')
 })
 

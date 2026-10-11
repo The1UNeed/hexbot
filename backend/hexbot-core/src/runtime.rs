@@ -3135,11 +3135,20 @@ impl Runtime {
         match event["type"].as_str().unwrap_or("") {
             "agent_start" => {
                 // A new turn answers the last one's failure; another failure records it again.
-                let _ = crate::settings::resolve_incidents(
+                let retry_resolved = crate::settings::resolve_incidents(
                     &self.home,
                     &json!({"section_id":s.stored,"kind":"turn_failed"}),
+                )
+                .is_ok();
+                self.emit(
+                    s,
+                    "message.start",
+                    if retry_resolved {
+                        json!({"retry_resolved":true})
+                    } else {
+                        json!({})
+                    },
                 );
-                self.emit(s, "message.start", json!({}));
                 self.emit(
                     s,
                     "status.update",

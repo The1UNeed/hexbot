@@ -292,7 +292,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       return
 
     case 'message.start':
-      transcripts.messageStart(sessionId)
+      transcripts.messageStart(sessionId, payload.retry_resolved === true)
 
       return
 

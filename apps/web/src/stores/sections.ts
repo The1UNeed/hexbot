@@ -9,6 +9,7 @@ import { useShallow } from 'zustand/react/shallow'
 
 import {
   botsIntroduce,
+  clarifyAnswered,
   messagesFromHistory,
   sectionsArchive,
   sectionsCreate,
@@ -19,7 +20,7 @@ import {
   sectionsUnarchive
 } from '../lib/api'
 import { KICKOFF_MARKER } from '../lib/bot-kickoff'
-import type { Bot, BotStatus, Message, Section } from '../lib/types'
+import type { Bot, BotStatus, ClarifyRequest, Message, Section } from '../lib/types'
 
 import { draftsActions } from './drafts'
 import { clarifyWaiting, type Transcript, transcriptRevision, useTranscripts } from './transcripts'
@@ -325,7 +326,8 @@ export const useSections = create<SectionsState>((set, get) => ({
           // Hexbot replays an interrupted hidden kickoff as a plain user turn.
           message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
         ),
-        revision
+        revision,
+        section.bot
       )
 
       if (context) {
@@ -351,7 +353,7 @@ export const useSections = create<SectionsState>((set, get) => ({
     if (live) {
       set(state => ({ liveSessionId: { ...state.liveSessionId, [id]: live } }))
       useTranscripts.getState().clearAnsweredWaiting([], [live], revision)
-      useTranscripts.getState().setSectionId(live, id)
+      useTranscripts.getState().setSectionId(live, id, section.bot)
 
       // The owner answers the receiving bot's questions here: threads have no other view.
       for (const pending of pendingClarifies) {
@@ -532,7 +534,7 @@ export async function introduceBot(section: Section, bot: Pick<Bot, 'name'>): Pr
 /** Fresh transitions and answer evidence expire on newer roster or lifecycle authority. */
 export type LiveSections = Record<
   string,
-  BotStatus | 'answered' | { status: 'idle' | 'needs_you' | 'working' }
+  BotStatus | 'answered' | { status: 'idle' | 'needs_you' | 'working'; retryResolved?: string }
 >
 
 /** What each open transcript says about its section: a card waiting on you, a reply streaming, or neither. */
@@ -541,15 +543,13 @@ export function liveSectionsOf(
     string,
     {
       answeredWaiting?: { kind: 'approval' | 'clarify'; requestId: string }
+      waitingRequests?: { kind: 'approval' | 'clarify'; requestId: string }[]
+      retryResolved?: boolean
       liveStatus?: 'idle' | 'needs_you' | 'working'
       approvals: { decision?: unknown; requestId?: string }[]
-      clarifies: {
-        answers: Record<string, string>
-        expired?: boolean
-        questions: unknown[]
-        requestId?: string
-      }[]
+      clarifies: ClarifyRequest[]
       sectionId?: string
+      sessionId?: string
       streamingMessageId: null | string
     }
   >
@@ -561,10 +561,13 @@ export function liveSectionsOf(
       continue
     }
 
-    const asking =
-      transcript.clarifies.some(
-        item => !item.expired && Object.keys(item.answers).length < item.questions.length
-      ) || transcript.approvals.some(item => !item.decision)
+    const asking = transcript.waitingRequests?.some(request =>
+      request.kind === 'approval'
+        ? transcript.approvals.some(item => item.requestId === request.requestId && !item.decision)
+        : transcript.clarifies.some(
+            item => item.requestId === request.requestId && clarifyWaiting(item)
+          )
+    )
 
     const answered = transcript.answeredWaiting
 
@@ -573,16 +576,18 @@ export function liveSectionsOf(
         ? transcript.approvals.some(item => item.requestId === answered.requestId && item.decision)
         : answered?.kind === 'clarify' &&
           transcript.clarifies.some(
-            item =>
-              item.requestId === answered.requestId &&
-              !item.expired &&
-              Object.keys(item.answers).length >= item.questions.length
+            item => item.requestId === answered.requestId && !item.expired && clarifyAnswered(item)
           )
 
-    live[transcript.sectionId] = transcript.liveStatus
-      ? { status: transcript.liveStatus }
-      : asking
-        ? 'needs_you'
+    live[transcript.sectionId] =
+      asking || transcript.liveStatus || transcript.retryResolved
+        ? {
+            status: asking
+              ? 'needs_you'
+              : (transcript.liveStatus ??
+                (hasAnswer || transcript.streamingMessageId ? 'working' : 'idle')),
+            ...(transcript.retryResolved ? { retryResolved: transcript.sessionId } : {})
+          }
         : hasAnswer
           ? 'answered'
           : transcript.streamingMessageId
@@ -596,6 +601,24 @@ export function liveSectionsOf(
 /** The daemon's word on a bot; a record without the field is idle. */
 export function botStatus(bot: Bot | undefined): BotStatus {
   return bot?.status ?? 'idle'
+}
+
+function resolvedRetry(
+  bot: Bot | undefined,
+  sectionId: string | null,
+  own: LiveSections[string] | undefined
+) {
+  const detail = bot?.status_detail
+
+  return Boolean(
+    sectionId &&
+    detail?.section_id === sectionId &&
+    !detail.room_id &&
+    detail.action?.kind === 'retry' &&
+    typeof own === 'object' &&
+    own.retryResolved &&
+    (!detail.session_id || detail.session_id === own.retryResolved)
+  )
 }
 
 /**
@@ -614,7 +637,7 @@ export function sectionStatusOf(
   const fresh = typeof own === 'object' ? own.status : undefined
 
   if (status !== 'idle' && sectionId && bot?.status_detail?.section_id === sectionId) {
-    return status === 'stopped'
+    return status === 'stopped' && !resolvedRetry(bot, sectionId, own)
       ? status
       : (fresh ?? (status === 'needs_you' && own === 'answered' ? 'working' : status))
   }
@@ -641,7 +664,11 @@ export function botStatusWithLive(
     !detail.room_id &&
     sections.some(section => section.id === detail.section_id && section.archived_at)
 
-  if (status === 'stopped' && !archivedRetry) {
+  if (
+    status === 'stopped' &&
+    !archivedRetry &&
+    !resolvedRetry(bot, detail?.section_id ?? null, live[detail?.section_id ?? ''])
+  ) {
     return status
   }
 

@@ -41,6 +41,12 @@ function botAnswerScope(name: string, bot?: Bot) {
   const sectionIds = new Set(useSections.getState().idsByBot[name] ?? [])
   const sessionIds = new Set<string>()
 
+  for (const transcript of Object.values(useTranscripts.getState().bySession)) {
+    if (transcript.bot === name) {
+      sessionIds.add(transcript.sessionId)
+    }
+  }
+
   for (const detail of [useBots.getState().byName[name]?.status_detail, bot?.status_detail]) {
     if (detail?.section_id && !detail.room_id) {
       sectionIds.add(detail.section_id)
@@ -64,10 +70,42 @@ function botAnswerScope(name: string, bot?: Bot) {
 }
 
 function clearBotAnswers(name: string, bot?: Bot, throughRevision?: number): void {
-  const scope = botAnswerScope(name, bot)
+  // Remember ownership before the aggregate moves to a different session or becomes idle.
+  const details = [useBots.getState().byName[name]?.status_detail, bot?.status_detail]
+  useTranscripts.setState(state => ({
+    bySession: Object.fromEntries(
+      Object.entries(state.bySession).map(([id, transcript]) => [
+        id,
+        details.some(detail =>
+          detail?.session_id
+            ? detail.session_id === id
+            : detail?.section_id && !detail.room_id && detail.section_id === transcript.sectionId
+        )
+          ? { ...transcript, bot: name }
+          : transcript
+      ])
+    )
+  }))
+  // A non-idle aggregate names one session, not every conversation owned by this bot.
+  const detail = bot?.status_detail
+
+  const scope =
+    bot && (bot.status ?? 'idle') !== 'idle'
+      ? {
+          sectionIds:
+            !detail?.session_id && !detail?.room_id && detail?.section_id
+              ? [detail.section_id]
+              : [],
+          sessionIds: detail?.session_id ? [detail.session_id] : []
+        }
+      : botAnswerScope(name, bot)
+
   useTranscripts
     .getState()
-    .clearAnsweredWaiting(scope.sectionIds, scope.sessionIds, throughRevision)
+    .clearAnsweredWaiting(scope.sectionIds, scope.sessionIds, throughRevision, {
+      preserveWaiting: bot?.status === 'needs_you',
+      idle: Boolean(bot && (bot.status ?? 'idle') === 'idle')
+    })
 }
 
 let botsRequest = 0
@@ -97,19 +135,15 @@ export const useBots = create<BotsState>((set, get) => ({
 
       fullBotsRequest = request
       const preserve = (name: string) => (botRequests.get(name) ?? 0) > request
-      const scopes = [...botRequests.keys()].filter(preserve).map(name => botAnswerScope(name))
-      const sections = new Set(scopes.flatMap(scope => scope.sectionIds))
-      const sessions = new Set(scopes.flatMap(scope => scope.sessionIds))
-      const transcripts = useTranscripts.getState()
-
       // A full reply is authoritative only for scopes without a newer accepted reply or edit.
-      transcripts.clearAnsweredWaiting(
-        [],
-        Object.values(transcripts.bySession)
-          .filter(item => !sections.has(item.sectionId ?? '') && !sessions.has(item.sessionId))
-          .map(item => item.sessionId),
-        revision
-      )
+      const returned = indexBots(result.bots ?? []).byName
+
+      for (const name of new Set([...Object.keys(get().byName), ...Object.keys(returned)])) {
+        if (!preserve(name)) {
+          clearBotAnswers(name, returned[name], revision)
+        }
+      }
+
       set(state => {
         const indexed = indexBots((result.bots ?? []).filter(bot => !preserve(bot.name)))
 

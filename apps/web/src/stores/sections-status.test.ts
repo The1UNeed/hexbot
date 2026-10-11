@@ -28,13 +28,14 @@ describe('live section status', () => {
   it('reads a waiting card or a streaming reply off the open transcripts', () => {
     const asking = {
       ...emptyTranscript('l1', 's1'),
+      waitingRequests: [{ kind: 'clarify', requestId: 'r' }],
       clarifies: [{ answers: {}, questions: [{}], requestId: 'r' }]
     }
 
     const streaming = { ...emptyTranscript('l2', 's2'), streamingMessageId: 'm1' }
     const quiet = { ...emptyTranscript('l3', 's3') }
     expect(liveSectionsOf({ l1: asking, l2: streaming, l3: quiet } as never)).toEqual({
-      s1: 'needs_you',
+      s1: { status: 'needs_you' },
       s2: 'working',
       s3: 'idle'
     })
@@ -155,7 +156,15 @@ describe('live section status', () => {
         approvals: kind === 'approval' ? [{ requestId: 'answer', decision: 'once' }] : [],
         clarifies:
           kind === 'clarify'
-            ? [{ requestId: 'answer', answers: { answer: 'Yes' }, questions: [{}] }]
+            ? [
+                {
+                  requestId: 'answer',
+                  sessionId: 'own',
+                  receivedAt: 0,
+                  answers: { answer: 'Yes' },
+                  questions: [{ question: 'Continue?', choices: [], multiSelect: false }]
+                }
+              ]
             : []
       }
 
