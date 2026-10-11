@@ -22,7 +22,8 @@ Native daemon and installer manifests require a signature from a trusted Hexbot
 release key. Their signed checksums pin the downloaded packages. If verification
 fails, the installer or Settings, Updates reports: "The update is not signed by
 the Hexbot release key. Nothing was installed." The existing installation stays
-in place. A missing signature file can instead appear as a download error.
+in place. The installer reports a missing signature file separately from an
+unpublished release.
 Retry later; if it persists, report the error and version to the maintainer.
 
 For HTTPS mirrors, `HEXBOT_UPDATE_URL` selects the base URL. Signed manifests
@@ -53,7 +54,7 @@ A stable install follows the stable track and a nightly install follows the nigh
 
 Dev builds run from a source checkout and do not check for updates.
 
-The [installer](/docs/install/#run-it-again) installs from a track too. A new install uses Stable once it is published and Nightly until then; `--stable` or `--nightly` chooses. Update or repair keeps the installed track and refuses a version older than the install receipt. A fresh install or an explicit track change may install an older version.
+The [installer](/docs/install/#run-it-again) installs from a track too. A new install uses Stable once it is published and Nightly until then; `--stable` or `--nightly` chooses. Update or repair keeps the installed track and refuses a version older than the highest valid version in the receipt, installed apps, or selected native runtime. The installer rechecks after downloading and holds a shared lock until replacement and receipt writing finish. A fresh install or an explicit track change may install an older version.
 
 ## What an update check sends
 

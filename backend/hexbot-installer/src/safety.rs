@@ -117,6 +117,34 @@ fn process_executable(pid: i32) -> Option<PathBuf> {
 }
 
 impl Installer {
+    /// Kept outside HEXBOT_HOME so uninstalling data cannot replace a locked inode.
+    /// All terminal/windowed installers for this user share it, including custom homes.
+    pub(crate) fn lock_installation(&self) -> Result<fs::File> {
+        use std::os::unix::fs::OpenOptionsExt;
+        self.paths.validate()?;
+        fs::create_dir_all(&self.paths.home)?;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(self.paths.home.join(".hexbot-installer.lock"))?;
+        if !file.metadata()?.is_file() {
+            return fail("The installer lock must be a regular file.");
+        }
+        loop {
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+                return Ok(file);
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != ErrorKind::Interrupted {
+                return Err(error.into());
+            }
+        }
+    }
+
     pub(crate) fn preflight_ownership(&self) -> Result<()> {
         install_ownership::check_service(
             &self.paths.service_file(self.target),

@@ -238,9 +238,11 @@ and adds a relative `path`. New clients prefer `path`, resolving it against
 URL syntax. An HTTPS mirror serves the same manifest bytes and signatures;
 downloads and redirects must stay on its origin. The unsigned bootstrap `.txt`
 index keeps absolute URLs.
-The installer refuses versions below its receipt's version on the same track,
-including Update or repair. Fresh installs and explicit track changes may
-install an older version.
+The installer refuses versions below the highest valid version in its receipt,
+installed apps, or selected native runtime on the same track, including Update
+or repair. It rechecks after downloading while holding a shared installation
+lock through replacement and receipt writing. Fresh installs and explicit track
+changes may install an older version.
 
 Not covered by these manifest signatures:
 
@@ -262,8 +264,9 @@ manifest bytes. A verifier accepts any line signed by a trusted key.
 `HEXBOT_UPDATE_SIGNING_KEY` is the required PKCS#8 PEM secret.
 `HEXBOT_UPDATE_SIGNING_KEY_NEXT` is an optional second PEM for key rotation.
 The signer writes one line per configured key and checks each against the
-committed public keys before upload. A missing primary secret fails preflight
-when a build is needed; a mismatched key fails signing. The post-publish check
+committed public keys before upload. When a build is needed, preflight checks
+that every configured secret parses as an Ed25519 key and matches a committed
+public key. Missing, malformed, and mismatched keys fail before package builds. The post-publish check
 verifies signatures again.
 
 ```sh

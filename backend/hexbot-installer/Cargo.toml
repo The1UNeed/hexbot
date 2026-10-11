@@ -12,6 +12,7 @@ name = "hexbot-install"
 path = "src/main.rs"
 
 [dependencies]
+backhand = { version = "=0.25.5", default-features = false, features = ["gzip", "xz", "zstd"] }
 base64 = "=0.22.1"
 chrono = { version = "=0.4.45", default-features = false, features = ["clock"] }
 libc = "=0.2.190"

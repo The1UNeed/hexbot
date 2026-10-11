@@ -2,6 +2,7 @@ mod archive;
 mod detect;
 #[path = "../../hexbot-core/src/install_ownership.rs"]
 mod install_ownership;
+mod installed_version;
 mod safety;
 mod types;
 #[path = "../../hexbot-core/src/update_path.rs"]
@@ -87,11 +88,13 @@ pub fn fetch_manifest(base: &str, track: Track) -> Result<Manifest> {
     https_origin(base)?;
     let base = base.trim_end_matches('/');
     let client = client(base)?;
-    let fetch = |url: String, limit: u64| -> Result<Vec<u8>> {
+    let fetch = |url: String, limit: u64, signature: bool| -> Result<Vec<u8>> {
         let mut body = Vec::new();
-        client
-            .get(url)
-            .send()?
+        let response = client.get(url).send()?;
+        if signature && response.status() == reqwest::StatusCode::NOT_FOUND {
+            return fail("The install manifest signature is missing. Nothing was installed.");
+        }
+        response
             .error_for_status()?
             .take(limit + 1)
             .read_to_end(&mut body)?;
@@ -100,13 +103,14 @@ pub fn fetch_manifest(base: &str, track: Track) -> Result<Manifest> {
         }
         Ok(body)
     };
-    let bytes = fetch(format!("{base}/install/{track}.json"), 1024 * 1024)?;
+    let bytes = fetch(format!("{base}/install/{track}.json"), 1024 * 1024, false)?;
     // Only the version is read before verification, to find the signature.
     let unverified: serde_json::Value = serde_json::from_slice(&bytes)?;
     let release = semver::Version::parse(unverified["version"].as_str().unwrap_or_default())?;
     let signature = fetch(
         format!("{base}/install/{release}/{track}.json.sig"),
         update_signature::SIGNATURE_LIMIT as u64,
+        true,
     )?;
     if !update_signature::verify(&bytes, &signature) {
         return fail(update_signature::INVALID);
@@ -203,7 +207,7 @@ impl Installer {
         progress: &mut ProgressCallback<'_>,
     ) -> Result<InstallResult> {
         let manifest = fetch_manifest(&self.base_url, track)?;
-        let result = self.install(option, &manifest, progress)?;
+        let (result, _install_lock) = self.install(option, &manifest, progress)?;
         self.write_receipt(&result.receipt)?;
         progress(Progress::new("done", done_message(option)));
         Ok(result)
@@ -236,7 +240,12 @@ impl Installer {
             return fail("Change cancelled.");
         }
         let manifest = fetch_manifest(&self.base_url, track)?;
-        let mut result = self.install(to, &manifest, progress)?;
+        let (mut result, _install_lock) = self.install(to, &manifest, progress)?;
+        // Another installer may have changed the old option during the download.
+        let installed = self.detect()?;
+        let old_apps: Vec<_> = installed.apps.iter().filter(|a| a.option == from).collect();
+        self.check_removable(&old_apps)?;
+        self.preflight_home_removal()?;
         if to == InstallOption::Client && installed.service {
             self.remove_service(progress)?;
         }
@@ -258,6 +267,7 @@ impl Installer {
     }
 
     pub fn uninstall(&self, remove_data: bool, progress: &mut ProgressCallback<'_>) -> Result<()> {
+        let _install_lock = self.lock_installation()?;
         if remove_data {
             self.validate_data_removal()?;
         }
@@ -330,15 +340,10 @@ impl Installer {
     /// replayed old one must not move an install back on its own track. A fresh
     /// install and a track change may install an older version.
     fn refuse_downgrade(&self, manifest: &Manifest) -> Result<()> {
-        let Some(receipt) = read_receipt(&self.paths.receipt())? else {
-            return Ok(());
-        };
-        if receipt.channel != manifest.channel {
-            return Ok(());
-        }
-        let installed = semver::Version::parse(&receipt.version)?;
         let offered = semver::Version::parse(&manifest.version)?;
-        if offered.cmp_precedence(&installed).is_lt() {
+        if let Some(installed) = self.installed_version(manifest.channel)?
+            && offered.cmp_precedence(&installed).is_lt()
+        {
             return fail(format!(
                 "The update server offers Hexbot {offered}, older than the installed {installed}. Nothing was installed."
             ));
@@ -355,7 +360,7 @@ impl Installer {
         option: InstallOption,
         manifest: &Manifest,
         progress: &mut ProgressCallback<'_>,
-    ) -> Result<InstallResult> {
+    ) -> Result<(InstallResult, fs::File)> {
         self.paths.validate()?;
         manifest.validate(&version())?;
         validate_artifacts(&self.base_url, manifest)?;
@@ -363,8 +368,6 @@ impl Installer {
         if option == InstallOption::Headless {
             self.preflight_ownership()?;
         }
-        let enable_lan = option == InstallOption::Headless
-            && self.detect()?.option() != Some(InstallOption::Headless);
         let artifact = manifest.artifact(self.target, option)?;
         let identity = if option == InstallOption::Headless {
             None
@@ -376,6 +379,25 @@ impl Installer {
         download_file(&self.base_url, artifact, &download, progress)?;
         progress(Progress::new("verify", "Checking the download."));
         verify_file(&download, artifact, option)?;
+        // Downloads can overlap. Replacement and receipt publication cannot.
+        // Return the lock so apply/change retain it until the receipt is written.
+        let install_lock = self.lock_installation()?;
+        if self.target.is_macos()
+            && let Some((id, name)) = identity
+        {
+            let directory = self.paths.planned_apps_dir(self.target)?;
+            if directory.exists() {
+                // A killed install may have moved the current app into staging.
+                // Restore it before measuring the installed version floor.
+                recover_previous_app(&directory, &directory.join(format!("{name}.app")), id)?;
+            }
+        }
+        self.refuse_downgrade(manifest)?;
+        if option == InstallOption::Headless {
+            self.preflight_ownership()?;
+        }
+        let enable_lan = option == InstallOption::Headless
+            && self.detect()?.option() != Some(InstallOption::Headless);
         let mut warnings = Vec::new();
         let mut status = None;
         let paths = if option == InstallOption::Headless {
@@ -429,17 +451,20 @@ impl Installer {
         for warning in &warnings {
             progress(Progress::new("warning", warning));
         }
-        Ok(InstallResult {
-            receipt: Receipt {
-                option,
-                channel: manifest.channel,
-                version: manifest.version.clone(),
-                paths,
-                installed_at: chrono::Utc::now().to_rfc3339(),
+        Ok((
+            InstallResult {
+                receipt: Receipt {
+                    option,
+                    channel: manifest.channel,
+                    version: manifest.version.clone(),
+                    paths,
+                    installed_at: chrono::Utc::now().to_rfc3339(),
+                },
+                status,
+                warnings,
             },
-            status,
-            warnings,
-        })
+            install_lock,
+        ))
     }
 
     fn app_identity<'a>(
@@ -515,7 +540,6 @@ impl Installer {
         }
         let directory = self.paths.install_apps_dir(self.target)?;
         let destination = directory.join(format!("{name}.app"));
-        recover_previous_app(&directory, &destination, id)?;
         if destination.exists()
             && detect::plist_value(&destination, "CFBundleIdentifier").as_deref() != Some(id)
         {

@@ -104,6 +104,63 @@ pub fn app_artifact_for_track(
     }
 }
 
+/// A version-bearing package in the formats shipped by electron-builder.
+pub fn versioned_app_artifact(
+    root: &Path,
+    base: &str,
+    option: InstallOption,
+    target: Target,
+    version: &str,
+) -> Artifact {
+    let mut artifact = app_artifact(root, base, option, target);
+    let file = if option == InstallOption::Full {
+        "full"
+    } else {
+        "client"
+    };
+    let archive = root.join(format!("{file}.{}", artifact.format.as_deref().unwrap()));
+    if target.is_macos() {
+        let app = root.join(format!("{}.app", artifact.product_name.as_deref().unwrap()));
+        let plist = app.join("Contents/Info.plist");
+        let text = fs::read_to_string(&plist)
+            .unwrap()
+            .replace("0.0.1", version);
+        fs::write(plist, text).unwrap();
+        fs::remove_file(&archive).unwrap();
+        assert!(
+            Command::new("/usr/bin/ditto")
+                .args(["-c", "-k", "--keepParent"])
+                .arg(app)
+                .arg(&archive)
+                .status()
+                .unwrap()
+                .success()
+        );
+    } else {
+        // Type 2 AppImages contain an ELF runtime followed by SquashFS. This
+        // fixture has the same metadata but no executable app discovery code.
+        let mut image = fs::File::create(&archive).unwrap();
+        let mut runtime = vec![0; 4096];
+        runtime[..4].copy_from_slice(b"\x7fELF");
+        runtime[8..11].copy_from_slice(b"AI\x02");
+        image.write_all(&runtime).unwrap();
+        let mut filesystem = backhand::FilesystemWriter::default();
+        let desktop = format!("[Desktop Entry]\nName=Hexbot\nX-AppImage-Version={version}\n");
+        filesystem
+            .push_file(
+                std::io::Cursor::new(desktop),
+                "hexbot.desktop",
+                backhand::NodeHeader::default(),
+            )
+            .unwrap();
+        filesystem.write_with_offset(&mut image, 4096).unwrap();
+    }
+    let bytes = fs::read(&archive).unwrap();
+    artifact.size = bytes.len() as u64;
+    artifact.sha512 = Some(STANDARD.encode(Sha512::digest(&bytes)));
+    artifact
+}
+
 pub fn native_artifact(root: &Path, base: &str) -> Artifact {
     let bytes = br##"#!/bin/sh
 set -eu

@@ -37,6 +37,24 @@ export function verifies(keys, bytes, text) {
   })
 }
 
+function checkedKey(key, expected, name) {
+  let parsed
+  try { parsed = typeof key === 'string' ? createPrivateKey(key) : key }
+  catch { throw new Error(`${name} is not a valid Ed25519 PKCS#8 PEM key.`) }
+  if (parsed?.asymmetricKeyType !== 'ed25519') throw new Error(`${name} must be an Ed25519 key.`)
+  const raw = createPublicKey(parsed).export({ type: 'spki', format: 'der' }).subarray(SPKI.length).toString('base64')
+  if (![expected].flat().includes(raw)) throw new Error(`${name} does not match packaging/update-signing-key.pub`)
+  return parsed
+}
+
+/** Validate both secrets in preflight, before any package builds. */
+export function signingKeys(environment = process.env, expected = releaseKeys()) {
+  if (!environment.HEXBOT_UPDATE_SIGNING_KEY) throw new Error('HEXBOT_UPDATE_SIGNING_KEY is not set. See docs/release.md, "Update signing".')
+  return ['HEXBOT_UPDATE_SIGNING_KEY', 'HEXBOT_UPDATE_SIGNING_KEY_NEXT']
+    .filter(name => environment[name])
+    .map(name => checkedKey(environment[name], expected, name))
+}
+
 /**
  * Signs the manifests clients verify:
  * daemon/native/<version>/<target>/manifest.json beside itself as manifest.json.sig, and
@@ -56,9 +74,10 @@ export function signUpdates(root, { channel, version, key, expected = releaseKey
       if (existsSync(manifest)) manifests.push([manifest, `${manifest}.sig`])
     }
   }
+  const keys = [key].flat().map((key, index) => checkedKey(key, expected, index === 0 ? 'HEXBOT_UPDATE_SIGNING_KEY' : 'HEXBOT_UPDATE_SIGNING_KEY_NEXT'))
   for (const [manifest, destination] of manifests) {
     const bytes = readFileSync(manifest)
-    const signatures = [key].flat().map(key => signature(key, bytes))
+    const signatures = keys.map(key => signature(key, bytes))
     const text = signatures.join('\n')
     // A secret that does not match the committed public key fails here, before upload.
     if (!signatures.every(line => verifies(expected, bytes, line))) throw new Error('HEXBOT_UPDATE_SIGNING_KEY does not match packaging/update-signing-key.pub')
@@ -81,14 +100,15 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const [command, path, ...rest] = process.argv.slice(2)
   const option = name => rest[rest.indexOf(name) + 1]
   if (command === 'sign' && path && rest.includes('--channel') && rest.includes('--version')) {
-    const pem = process.env.HEXBOT_UPDATE_SIGNING_KEY
-    if (!pem) throw new Error('HEXBOT_UPDATE_SIGNING_KEY is not set. See docs/release.md, "Update signing".')
-    const keys = [pem, process.env.HEXBOT_UPDATE_SIGNING_KEY_NEXT].filter(Boolean).map(pem => createPrivateKey(pem))
+    const keys = signingKeys()
     for (const file of signUpdates(resolve(path), { channel: option('--channel'), version: option('--version'), key: keys })) console.log(`Signed ${file}`)
+  } else if (command === 'check') {
+    signingKeys()
+    console.log('Update signing keys match the committed public keys.')
   } else if (command === 'generate' && path) {
     generate(resolve(path))
     console.log(`Wrote ${resolve(path)} and added its public key to ${PUBLIC_KEY}. See docs/release.md, "Update signing".`)
   } else {
-    throw new Error('Usage: node update-signing.mjs sign DIR --channel CHANNEL --version VERSION | generate FILE')
+    throw new Error('Usage: node update-signing.mjs sign DIR --channel CHANNEL --version VERSION | check | generate FILE')
   }
 }

@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { releaseKeys, signUpdates, testKey, testPublicKey, verifies } from './update-signing.mjs'
+import { releaseKeys, signUpdates, signingKeys, testKey, testPublicKey, verifies } from './update-signing.mjs'
 
 const raw = key => createPublicKey(key).export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64')
 
@@ -66,16 +66,32 @@ test('two signature lines support clients trusting either rotation key', t => {
   assert.throws(() => signUpdates(root, { channel: 'nightly', version: '1.2.3', key: [old, next], expected: raw(old) }), /does not match/)
 })
 
-test('release preflight checks the signing secret only after resolving a build', () => {
+test('preflight validates PEMs and identifies the mismatched rotation secret', () => {
+  const old = testKey()
+  const next = generateKeyPairSync('ed25519').privateKey
+  const pem = key => key.export({ type: 'pkcs8', format: 'pem' })
+  const environment = { HEXBOT_UPDATE_SIGNING_KEY: pem(old), HEXBOT_UPDATE_SIGNING_KEY_NEXT: pem(next) }
+  assert.equal(signingKeys(environment, [raw(old), raw(next)]).length, 2)
+  assert.throws(() => signingKeys({}, raw(old)), /HEXBOT_UPDATE_SIGNING_KEY is not set/)
+  assert.throws(() => signingKeys({ HEXBOT_UPDATE_SIGNING_KEY: 'test' }, raw(old)), /HEXBOT_UPDATE_SIGNING_KEY is not a valid/)
+  assert.throws(() => signingKeys(environment, raw(old)), /HEXBOT_UPDATE_SIGNING_KEY_NEXT does not match/)
+  assert.throws(() => signingKeys({ HEXBOT_UPDATE_SIGNING_KEY: pem(next) }, raw(old)), /HEXBOT_UPDATE_SIGNING_KEY does not match/)
+  const rsa = generateKeyPairSync('rsa', { modulusLength: 1024 }).privateKey
+  assert.throws(() => signingKeys({ HEXBOT_UPDATE_SIGNING_KEY: pem(rsa) }, raw(old)), /must be an Ed25519/)
+})
+
+test('release preflight validates signing keys only after resolving a build', () => {
   const workflow = readFileSync(new URL('../../.github/workflows/release.yml', import.meta.url), 'utf8')
   const preflight = workflow.split('  check:')[0]
-  const step = preflight.slice(preflight.indexOf('      - name: Require the update signing key'))
+  const step = preflight.slice(preflight.indexOf('      - name: Validate the update signing keys'))
   assert.ok(preflight.indexOf('      - id: resolve') < preflight.indexOf(step))
   assert.match(step, /if: steps\.resolve\.outputs\.build == 'true'/)
+  assert.match(step, /HEXBOT_UPDATE_SIGNING_KEY_NEXT: \$\{\{ secrets\.HEXBOT_UPDATE_SIGNING_KEY_NEXT \}\}/)
   assert.match(workflow, /needs: preflight\n    if: needs\.preflight\.outputs\.build == 'true'/)
-  const script = step.match(/run: \|\n([\s\S]*)/)[1].replace(/^          /gm, '')
-  const result = spawnSync('bash', ['-c', script], { env: { ...process.env, HEXBOT_UPDATE_SIGNING_KEY: '' }, encoding: 'utf8' })
-  assert.equal(result.status, 1)
-  assert.ok(result.stdout.includes('HEXBOT_UPDATE_SIGNING_KEY is not set. See docs/release.md, "Update signing".'))
-  assert.equal(spawnSync('bash', ['-c', script], { env: { ...process.env, HEXBOT_UPDATE_SIGNING_KEY: 'test' } }).status, 0)
+  const script = step.match(/run: (.+)/)[1]
+  for (const [key, message] of [['', 'is not set'], ['test', 'is not a valid'], [testKey().export({ type: 'pkcs8', format: 'pem' }), 'does not match']]) {
+    const result = spawnSync('bash', ['-c', script], { env: { ...process.env, HEXBOT_UPDATE_SIGNING_KEY: key, HEXBOT_UPDATE_SIGNING_KEY_NEXT: '' }, encoding: 'utf8' })
+    assert.equal(result.status, 1)
+    assert.ok(result.stderr.includes(`HEXBOT_UPDATE_SIGNING_KEY ${message}`), result.stderr)
+  }
 })

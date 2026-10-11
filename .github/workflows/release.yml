@@ -110,15 +110,12 @@ jobs:
             exit 1
           fi
 
-      - name: Require the update signing key
+      - name: Validate the update signing keys
         if: steps.resolve.outputs.build == 'true'
         env:
           HEXBOT_UPDATE_SIGNING_KEY: ${{ secrets.HEXBOT_UPDATE_SIGNING_KEY }}
-        run: |
-          if [ -z "$HEXBOT_UPDATE_SIGNING_KEY" ]; then
-            echo '::error::HEXBOT_UPDATE_SIGNING_KEY is not set. See docs/release.md, "Update signing".'
-            exit 1
-          fi
+          HEXBOT_UPDATE_SIGNING_KEY_NEXT: ${{ secrets.HEXBOT_UPDATE_SIGNING_KEY_NEXT }}
+        run: node scripts/desktop/update-signing.mjs check
 
   check:
     name: Check
