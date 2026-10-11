@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync, realpathSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync, realpathSync, existsSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {once} from 'node:events';
 import {tmpdir, homedir} from 'node:os';
@@ -399,6 +399,77 @@ test('Auto reviews every step outside the sandbox, whatever was allowed before',
   assert.match((await f.gate('bash', {command:'curl -sL https://example.com', full_access:true}))?.reason, /approval mode changed/);
 });
 
+test('a reviewed command cannot run in a working directory changed during review', async t => {
+  const f = fixture(t, 'smart', ['terminal']);
+  const work = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-reviewed-cwd-')));
+  t.after(() => rmSync(work, {recursive:true, force:true}));
+  const first = join(work, 'first'), second = join(work, 'second');
+  mkdirSync(first); mkdirSync(second);
+  f.settings.cwd = first;
+  const select = f.ctx.ui.select;
+  f.ctx.choice = 'once';
+  f.ctx.ui.select = async (title, options) => {
+    const choice = await select(title, options);
+    f.settings.cwd = second;
+    return choice;
+  };
+  const input = {command:'pwd > gate-ran.txt', full_access:true, reason:'Record the project directory.'};
+  const blocked = await f.run('bash', input, 'moved-during-review');
+  assert.equal(f.choices[0].cwd, first);
+  assert.equal(blocked.block, true);
+  assert.match(blocked.reason, /working directory changed/);
+  assert.equal(existsSync(join(first, 'gate-ran.txt')), false);
+  assert.equal(existsSync(join(second, 'gate-ran.txt')), false);
+  await assert.rejects(f.tools.bash.execute('moved-during-review', input, undefined, undefined, f.ctx), /Try again/);
+  // A new review of the new directory can run through the real bash wrapper.
+  f.ctx.ui.select = select;
+  const result = await f.run('bash', {...input, command:'pwd'});
+  assert.equal(f.choices[1].cwd, second);
+  assert.match(JSON.stringify(result), new RegExp(second));
+});
+
+test('a reviewed file create cannot turn into an overwrite before execution', async t => {
+  const f = fixture(t, 'smart', ['file']);
+  const outside = realpathSync(mkdtempSync('/var/tmp/hexbot-reviewed-write-'));
+  t.after(() => rmSync(outside, {recursive:true, force:true}));
+  f.settings.cwd = join(outside, 'workspace'); mkdirSync(f.settings.cwd);
+  const path = join(outside, 'report.txt');
+  const select = f.ctx.ui.select;
+  f.ctx.choice = 'once';
+  f.ctx.ui.select = async (title, options) => {
+    const choice = await select(title, options);
+    writeFileSync(path, 'owner data');
+    return choice;
+  };
+  await assert.rejects(f.run('write', {path, content:'replacement'}), /file changed after it was reviewed/);
+  assert.equal(f.choices[0].review, true);
+  assert.equal(f.choices[0].overwrites, false);
+  assert.equal(readFileSync(path, 'utf8'), 'owner data');
+});
+
+test('a reviewed file write retains its resolved destination when a link changes during review', async t => {
+  const f = fixture(t, 'smart', ['file']);
+  const outside = realpathSync(mkdtempSync('/var/tmp/hexbot-reviewed-target-'));
+  t.after(() => rmSync(outside, {recursive:true, force:true}));
+  f.settings.cwd = join(outside, 'workspace'); mkdirSync(f.settings.cwd);
+  const first = join(outside, 'first.txt'), second = join(outside, 'second.txt');
+  writeFileSync(first, 'first owner data'); writeFileSync(second, 'second owner data');
+  const link = join(f.settings.cwd, 'report.txt'); symlinkSync(first, link);
+  const select = f.ctx.ui.select;
+  f.ctx.choice = 'once';
+  f.ctx.ui.select = async (title, options) => {
+    const choice = await select(title, options);
+    rmSync(link); symlinkSync(second, link);
+    return choice;
+  };
+  await assert.rejects(f.run('write', {path:'report.txt', content:'replacement'}), /file changed after it was checked/);
+  assert.equal(f.choices[0].review, true);
+  assert.equal(f.choices[0].command, first);
+  assert.equal(f.choices[0].overwrites, true);
+  assert.equal(readFileSync(first, 'utf8'), 'first owner data');
+  assert.equal(readFileSync(second, 'utf8'), 'second owner data');
+});
+
 test('Manual asks before every file change and full access, not before reads or sandboxed commands', async t => {
   const f = fixture(t, 'manual', ['terminal', 'file']);
   const work = mkdtempSync(join(tmpdir(), 'hexbot-work-')); t.after(() => rmSync(work, {recursive:true, force:true}));
@@ -500,21 +571,29 @@ test('without an OS sandbox every shell command asks in Manual and Auto', async 
   t.after(() => rmSync(home, {recursive:true, force:true}));
   const bwrap = join(home, 'bwrap'); writeFileSync(bwrap, '#!/bin/sh\nexit 1\n'); chmodSync(bwrap, 0o755);
   const config = join(home, 'config.json');
-  writeFileSync(config, JSON.stringify({home, cwd:home, prompt:'p', tools:[], enabledToolsets:[], provider:'test', model:'m'}));
+  writeFileSync(config, JSON.stringify({home, cwd:home, prompt:'p', tools:[], enabledToolsets:['terminal'], provider:'test', model:'m'}));
   const script = `Object.defineProperty(process, 'platform', {value:'linux'});
     const {default: hexbot} = await import(${JSON.stringify(new URL('./extension.ts', import.meta.url).href)});
-    const handlers = {}, choices = [];
+    const handlers = {}, tools = {}, choices = [];
     const settings = {approvalMode:'manual'};
     const ctx = {choice:'deny', ui:{
       async input(title) {const r = JSON.parse(title.slice('__HEXBOT_TOOL__'.length)); if (r.name === 'hexbot_session_settings') return JSON.stringify({result:settings}); return JSON.stringify({result:{}});},
       async select(title) {choices.push(JSON.parse(title.slice('__HEXBOT_APPROVAL__'.length))); return ctx.choice;}
     }};
-    hexbot({on:(name, handler) => handlers[name] = handler, registerTool() {}, registerProvider() {}});
-    const gate = command => handlers.tool_call({toolName:'bash', input:{command}}, ctx);
+    hexbot({on:(name, handler) => handlers[name] = handler, registerTool:tool => tools[tool.name] = tool, registerProvider() {}});
+    const gate = (command, full_access = false, toolCallId) => handlers.tool_call({toolName:'bash', input:{command, full_access}, toolCallId}, ctx);
     const out = {};
     out.manualDenied = (await gate('echo hi'))?.block === true;
+    out.manualFullAccessDenied = (await gate('printf full-access', true))?.block === true;
+    out.manualFullAccessReview = choices.at(-1).review ?? false;
     settings.approvalMode = 'smart';
     out.smartDenied = (await gate('ls'))?.block === true;
+    out.smartFullAccessDenied = (await gate('printf approved-full-access', true))?.block === true;
+    out.fullAccessReview = choices.at(-1).review ?? false;
+    out.fullAccessReason = choices.at(-1).reason;
+    ctx.choice = 'once';
+    out.fullAccessApproved = (await gate('printf approved-full-access', true, 'approved')) === undefined;
+    out.fullAccessResult = (await tools.bash.execute('approved', {command:'printf approved-full-access', full_access:true}, undefined, undefined, ctx)).content;
     out.reason = choices[0].reason;
     ctx.choice = 'session';
     out.sessionPasses = (await gate('echo hi')) === undefined;
@@ -528,8 +607,9 @@ test('without an OS sandbox every shell command asks in Manual and Auto', async 
     out.offPasses = (await gate('pwd')) === undefined;
     console.log(JSON.stringify(out));`;
   const result = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', script], {env:{...process.env, PATH:home, HEXBOT_SESSION_CONFIG:config}, encoding:'utf8'}));
-  assert.deepEqual(result, {manualDenied:true, smartDenied:true, reason:result.reason, sessionPasses:true, afterSession:true, asked:3, unattendedDenied:'This action needs approval. Run it in a visible section.', askedAfterUnattended:3, offPasses:true});
+  assert.deepEqual(result, {manualDenied:true, manualFullAccessDenied:true, manualFullAccessReview:false, smartDenied:true, smartFullAccessDenied:true, fullAccessReview:false, fullAccessReason:result.reason, fullAccessApproved:true, fullAccessResult:result.fullAccessResult, reason:result.reason, sessionPasses:true, afterSession:true, asked:6, unattendedDenied:'This action needs approval. Run it in a visible section.', askedAfterUnattended:6, offPasses:true});
   assert.match(result.reason, /no OS sandbox/);
+  assert.match(JSON.stringify(result.fullAccessResult), /approved-full-access/);
 });
 
 test('file tools never write credential stores or daemon configuration outside Bypass', async t => {

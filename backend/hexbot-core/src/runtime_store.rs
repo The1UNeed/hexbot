@@ -58,6 +58,17 @@ pub fn history(home: &Path, stored: &str) -> Result<Vec<Value>> {
     })
     .collect()
 }
+/// Reviewer evidence needs user rows only. Avoid loading tool results and bot
+/// replies, but retain every active user row so old restrictions are not lost.
+pub(crate) fn user_history(home: &Path, stored: &str) -> Result<Vec<Value>> {
+    let conn = open(home)?;
+    let mut stmt = conn.prepare(
+        "SELECT m.message_json FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? AND (p.active IS NULL OR p.active=1) AND json_extract(m.message_json,'$.role')='user' ORDER BY m.seq",
+    )?;
+    let rows = stmt.query_map([stored], |r| r.get::<_, String>(0))?;
+    rows.map(|row| serde_json::from_str(&row?).map_err(|e| crate::Error::new(5200, e.to_string())))
+        .collect()
+}
 /// A counter the triggers bump whenever a session's displayed history can change:
 /// a message row, or the journal link that orders it or hides it on another branch.
 /// History search compares it to skip sections it already indexed. A version only

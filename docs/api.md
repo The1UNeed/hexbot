@@ -41,11 +41,25 @@ data model. The native transport and event projection live in
   are capped at 64 MiB per connection.
 - Approvals: `approval.respond {session_id, request_id, choice}`
   with `choice` in `once | session | deny`. `session` quiets the same kind
-  of request for the rest of the section; nothing persists across sections.
-  Requests raised by the daemon offer `once | deny` only. Delegates and
+  of Manual or unreviewed request for the running agent process; nothing
+  persists across sections. Reviewed Auto cards, incomplete file scans and
+  requests raised by the daemon offer `once | deny` only. Clients must use the
+  card's `choices`; `session` is rejected when not offered. Delegates and
   background sections cannot wait for approval; actions that need it are
   refused. Opening a section re-emits its pending approval. Questions arrive as `clarify.request` and
   `pending_clarify` on section open; use `clarify.respond` to answer.
+  In Auto, full-access shell commands, outside-workspace file changes,
+  changing connected-tool calls and browser page scripts are reviewed against
+  complete owner messages before a card is needed. Review failures and evidence
+  that cannot fit whole produce a one-step card. Changed owner messages or
+  queued owner prompts and steers invalidate automatic approval when the
+  evidence is rechecked. ACP review isolates the CLI home/configuration and
+  retains explicit GitHub-token authentication; unavailable stored login,
+  configured arguments beyond `--acp`/`--stdio`, or incompatible isolation
+  flags also produce a one-step card.
+  Without OS isolation, shell commands require user approval even with
+  `full_access`; review cannot replace
+  it. Explicit section grants can cover unreviewed requests when offered.
 - Per-section model override: `config.set {key: "model", value, session_id}`.
 - Model picker source: `model.options`.
 - Keys: `model.save_key`, `model.disconnect`.
@@ -55,6 +69,10 @@ Events the client renders: `message.start`, `message.delta`, `message.interim`,
 `message.complete` (turn end), `reasoning.delta`, `thinking.delta`, `tool.start`, `tool.complete`,
 `approval.request`, `status.update`, `session.info`, `session.usage {usage,
 context}` (the section's totals and its context meter, see Sections), `error`.
+Reported reviewer usage contributes to section totals, room turn budgets and
+the bot's daily token budget without adding reviewer text to the conversation.
+Copilot ACP reports zero token usage and cost, so its reviews add no measured
+usage to these totals or budgets.
 
 ## `hexbot.*` methods
 
@@ -548,8 +566,10 @@ the bot. Pi warning/error notifications use the same event. Clients
 show a dismissible notice under the conversation header.
 
 Manual asks for every connected-tool call, including tools marked read-only.
-Auto runs tools with `readOnlyHint: true` freely and asks for all others. Resource
-tools are read-only. Allow in this section covers one server for the running Pi session. Bypass never asks. Each nested
+Auto runs tools with `readOnlyHint: true` freely and reviews other calls one at
+a time, asking about risky or unreviewable calls with `once | deny` only.
+Resource tools are read-only. In Manual, Allow in this section covers one server
+for the running Pi session. Bypass never asks. Each nested
 codemode call uses the approval gate, including shell and file tools.
 
 Stdio servers run as Pi children in a daemon-owned directory,

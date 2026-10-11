@@ -341,10 +341,34 @@ the repository or the user's own Git config, is read-only within the scan
 limits below. `.env` and `.envrc` files, keychains, and browser profiles
 (`readDeny` in the policy) are unreadable and unwritable. No
 level sends Apple Events. A command that needs more sets `full_access` with a
-`reason` on the bash tool; the user sees both and, if approved, the command
-runs with the sandbox's base layer only (credential paths still masked). In
-Manual the shell sandbox is read-only and every file change asks. Manual scheduled scripts cannot write artifacts. Both modes
-ask before browser page scripts and before scheduling an absolute script path.
+`reason` on the bash tool. Manual asks the user; Auto reviews the command and
+asks about risky or unreviewable steps. An allowed command runs with the
+sandbox's base layer only. File-tool writes to shell profiles and login items
+use user approval, subject to explicit section grants; full-access shell
+commands use model review. In Manual the shell sandbox is read-only and every
+file change asks. Manual scheduled scripts cannot write artifacts. Manual asks
+before browser page scripts; Auto reviews them. Both modes ask before
+scheduling an absolute script path.
+
+Auto's reviewer reads the whole step, including the checked file destination,
+working directory and overwrite status, plus complete visible owner messages
+from the section and complete owner-authored room messages. A step over 20,000
+characters or a complete request over 80,000 characters asks without clipping
+or dropping authorization evidence. Missing or unreadable evidence also asks.
+Before allowing a step, the daemon reads that evidence again. Changed owner
+messages or queued owner prompts and steers invalidate automatic approval.
+Mode and working-directory changes during review block execution, and file
+execution rechecks the resolved destination and reviewed overwrite status.
+
+The reviewer starts Pi in a fresh empty directory with no tools, skills,
+prompt templates or automatically loaded extensions. `--no-context-files`
+excludes project instructions, and `--append-system-prompt ''` excludes
+`APPEND_SYSTEM.md`. Only `one-shot-provider.ts` is loaded explicitly, with a
+restricted bridge for provider authentication, request adaptation and tool-free
+ACP completion. Reported reviewer usage is recorded without chat text and
+counts toward section totals, room turn budgets and daily token budgets.
+Reviewed Auto cards offer Approve and Deny only, and never use remembered
+section grants.
 
 The workspace scan is breadth-first, through three nested folders, skipping
 policy dependency/runtime folders and shared temporary roots. Manual searches
@@ -398,8 +422,10 @@ once, and replaced by the default workspace. SSH private keys are protected; SSH
 config, known hosts, public keys, and the SSH agent remain available. If bubblewrap
 is missing or cannot start, a startup warning records the lack of OS isolation,
 `hexbot.info` reports `sandbox: null` so Settings can show a notice,
-Manual and Auto ask before every shell command and code run, and scheduled
-scripts refuse to run.
+Manual and Auto require user approval for shell commands and code runs,
+including full-access commands. Model review cannot replace that approval;
+an explicit section grant can cover later shell requests. Scheduled scripts
+refuse to run.
 Provider keys reach the agent through its auth file. The selected Bedrock or Vertex provider also receives its cloud environment settings; shell and scheduled script children do not.
 The Python environment does not include `HEXBOT_HOME`.
 
@@ -416,6 +442,19 @@ never granted: permission requests are cancelled and no file bridge is
 offered, so Hexbot actions come back as `<tool_call>` text and run through
 the section's guarded tools.
 
+ACP reviewers additionally use a separate temporary home. `HOME`,
+`USERPROFILE`, `COPILOT_HOME`, and the XDG config, cache, state and data
+directories point there. They retain explicit `GH_TOKEN`, `GITHUB_TOKEN` and
+`COPILOT_GITHUB_TOKEN` authentication, but do not import stored Copilot CLI
+login, settings, instructions, skills, plugins or MCP configuration. The CLI
+must accept `--no-custom-instructions`, `--available-tools=`,
+`--disable-builtin-mcps` and `--no-auto-update`. Configured ACP arguments may
+contain only `--acp` and `--stdio` for review. Additional arguments, missing
+explicit authentication, or a command that rejects the isolation flags make
+review unavailable, so Auto shows a one-step user card. Copilot ACP currently
+reports zero token usage and cost, so its reviews add no measured usage to
+budgets or totals. Ordinary ACP sessions keep their existing login behavior.
+
 New sections freeze connected server names and reach their tools through Pi's
 `builtin:mcp` and `builtin:codemode`. Configs with expanded credentials travel
 through the private bridge in memory on the first prompt, never through the
@@ -424,10 +463,11 @@ Pi's config templates before registration. Existing sections retain their
 frozen Rust bridge tools, including legacy SSE servers. New SSE entries are
 rejected; new sections skip existing SSE entries with a warning.
 
-Manual asks for every connected-tool call. Auto asks unless the server declares
-`readOnlyHint: true`. Resource tools are read-only. Allow in this section
-covers that server until the Pi process ends; Bypass never asks. Codemode
-itself needs no approval, but every nested tool call passes the same gates.
+Manual asks for every connected-tool call. Auto runs tools with
+`readOnlyHint: true` freely and reviews other calls individually. Resource tools
+are read-only. In Manual, Allow in this section covers that server until the Pi
+process ends. Reviewed Auto calls offer no section grant. Bypass never asks.
+Codemode itself needs no approval, but every nested tool call passes the same gates.
 Its QuickJS worker has no Node, filesystem, or network globals. Its `models`
 helpers can call provider APIs using session credentials and incur costs.
 

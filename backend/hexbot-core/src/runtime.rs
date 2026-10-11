@@ -2372,27 +2372,48 @@ impl Runtime {
         &self,
         bot: &str,
         saved: &Value,
-        dir: &Path,
+        parent: Option<&Live>,
         system_prompt: &str,
         message: &Value,
         timeout: Duration,
     ) -> Result<(String, bool)> {
         let profile = self.home.join("profiles").join(bot);
-        let mut options = PiOptions::new(&self.pi_executable, dir, profile.join("pi"));
+        let dir = tempfile::tempdir()?;
+        let call_id = common::id();
+        let extension = self.home.join("runtime/one-shot-provider.ts");
+        common::atomic_write(
+            &extension,
+            include_bytes!("../../pi-runtime/one-shot-provider.ts"),
+        )?;
+        common::atomic_write(
+            &self.home.join("runtime/acp.ts"),
+            include_bytes!("../../pi-runtime/acp.ts"),
+        )?;
+        let mut options = PiOptions::new(&self.pi_executable, dir.path(), profile.join("pi"));
         options.args = [
             "--mode",
             "rpc",
             "--no-session",
             "--no-extensions",
+            "--no-context-files",
             "--no-skills",
             "--no-prompt-templates",
             "--no-approve",
             "--no-tools",
             "--system-prompt",
             system_prompt,
+            "--append-system-prompt",
+            "",
         ]
         .map(str::to_owned)
         .to_vec();
+        options.args.extend([
+            "--extension".into(),
+            extension.to_string_lossy().into_owned(),
+        ]);
+        options
+            .env
+            .insert("HEXBOT_ONE_SHOT_PROVIDER".into(), saved.to_string());
         let (provider, model) = (
             saved["provider"].as_str(),
             saved["model"].as_str().filter(|s| !s.is_empty()),
@@ -2434,12 +2455,55 @@ impl Runtime {
             let mut failed = false;
             loop {
                 let event = events.recv().await.map_err(pi_error)?;
+                if event["type"] == "extension_ui_request" {
+                    let id = event["id"].as_str().unwrap_or("");
+                    let request = event["title"]
+                        .as_str()
+                        .and_then(|title| title.strip_prefix("__HEXBOT_TOOL__"))
+                        .and_then(|body| serde_json::from_str::<Value>(body).ok());
+                    let reply = match request {
+                        Some(request) if event["method"] == "input" => {
+                            let args = &request["args"];
+                            match request["name"].as_str() {
+                                Some("hexbot_acp_complete") if args["context"]["tools"] == json!([]) => {
+                                    crate::provider_acp::complete_reviewer(&self.home, bot, &call_id, args, dir.path()).await
+                                }
+                                Some("hexbot_provider_request") => {
+                                    crate::providers::adapt_request(&self.home, bot, parent.map_or(&call_id, |s| &s.stored), args)
+                                }
+                                Some("hexbot_provider_auth") => {
+                                    crate::providers::request_auth(&self.home, bot, args["provider"].as_str().unwrap_or("")).await
+                                }
+                                _ => Err(Error::new(4302, "One-shot calls cannot use tools")),
+                            }
+                        }
+                        _ => Err(Error::new(4302, "One-shot calls cannot use tools")),
+                    };
+                    failed |= reply.is_err();
+                    let reply = match reply {
+                        Ok(result) => json!({"result":result}),
+                        Err(error) => json!({"error":error.message}),
+                    };
+                    process.respond_extension(id, json!({"value":reply.to_string()}), DEADLINE).await.map_err(pi_error)?;
+                }
                 if event["type"] == "message_end" && event["message"]["role"] == "assistant" {
+                    if let Some(parent) = parent.filter(|_| event["message"]["usage"].is_object()) {
+                        let _gate = parent.event_gate.lock().unwrap();
+                        // Usage has a journal entry but no chat projection. It counts
+                        // in section, room-turn, and daily totals, even for failed verdicts.
+                        self.persist_message(parent, &json!({
+                            "role":"usage", "usage":event["message"]["usage"],
+                            "provider":event["message"]["provider"].as_str().or(provider).unwrap_or(""),
+                            "model":event["message"]["model"].as_str().or(model).unwrap_or(""),
+                            "timestamp":event["message"]["timestamp"],
+                        }), None, None);
+                    }
                     result = store::text(&event["message"]["content"]);
-                    failed = matches!(
+                    failed |= matches!(
                         event["message"]["stopReason"].as_str(),
-                        Some("error" | "aborted")
-                    ) || event["message"]["errorMessage"].is_string();
+                        Some("error" | "aborted" | "toolUse")
+                    ) || event["message"]["errorMessage"].is_string()
+                        || event["message"]["content"].as_array().is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "toolCall"));
                 }
                 if event["type"] == "agent_settled" {
                     return Ok((result, failed));
@@ -2551,7 +2615,7 @@ impl Runtime {
             .one_shot(
                 bot,
                 &saved,
-                &profile,
+                None,
                 crate::team::DESCRIPTION_PROMPT,
                 &message,
                 Duration::from_secs(45),

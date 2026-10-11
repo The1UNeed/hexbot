@@ -13,6 +13,17 @@
   CI runs the Rust and Pi suites on Linux and macOS. Approval tests use a stub
   sandbox; isolation tests use `sandbox-exec` on macOS and working bubblewrap
   on Linux. CI installs bubblewrap with the AppArmor profile from the install docs.
+  Gate regressions change the working directory and resolved file destination
+  during review, check create-to-overwrite changes, and simulate unavailable
+  bubblewrap for both ordinary and full-access shell requests.
+  Reviewer fixtures use local fake provider and ACP endpoints to check that
+  ancestor instructions, `APPEND_SYSTEM.md`, skills and tools stay out. ACP
+  checks verify a separate home and Copilot/XDG directories, disabled
+  instruction/tool/MCP discovery, and failure on extra configured ACP arguments.
+  Explicit GitHub-token login variables remain allowed, but these fixtures use
+  fake transports and do not verify live CLI authentication or compatibility.
+  Daemon regressions change or queue owner messages while review waits and
+  check that its verdict cannot automatically approve the old evidence.
   macOS tests check that Auto and Manual deny IPv4 and IPv6 TCP/UDP listeners,
   while approved full-access commands can still listen. Dummy secret/browser
   fixtures exercise rename, unlink and append denial, ancestor renames, linked

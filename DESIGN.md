@@ -108,20 +108,37 @@ more freedom and more capability than a hosted product can offer.
   the workspace sets `full_access` with a one-sentence `reason`, and runs
   with the sandbox's base layer only (credential files still unreadable).
   File tools change the workspace without asking. Code execution runs in the
-  same workspace sandbox without asking. Absolute cron script paths and shell
-  profiles always ask.
+  same workspace sandbox without asking. Absolute cron script paths ask.
+  File changes to shell profiles and login items use user approval rather than
+  model review. Full-access shell commands can change them after model review,
+  including without a card when the owner requested that exact change.
 - Auto's reviewer (`runtime_review.rs`): a full-access command, a file change
   outside the workspace, a connected tool that changes something, and a
   browser page script go to a tool-free one-shot call on the section's model.
-  It reads the owner's messages (the section's visible user messages, or the
-  owner's room messages for a room section) and the step's whole input, never
-  assistant text, tool output or bot-added messages, where injected
-  instructions arrive. A step over 20,000 characters asks without review. A low or medium risk
-  `allow` runs the step; anything else, including a failure, a timeout (60 s)
-  or unparseable output, shows the card with the reviewer's sentence. Those
+  It reads all visible owner messages in the section and all owner-authored
+  room messages, plus the step's whole input, working directory, checked file
+  destination and overwrite status. It loads no project instruction files,
+  skills or tools. Assistant text, tool output and bot-added messages stay out.
+  Pi starts in an empty directory and explicitly excludes `APPEND_SYSTEM.md`.
+  ACP reviewers also use an isolated temporary home and Copilot/XDG folders,
+  keeping only explicit GitHub-token authentication. Stored CLI login is not
+  imported. Only `--acp` and `--stdio` are accepted as configured ACP arguments.
+  Extra arguments, missing auth or rejected isolation flags fall back to a
+  card; ordinary ACP sessions keep their login behavior.
+  A step over 20,000 characters or a complete request over 80,000 characters
+  asks without review; messages are never clipped or dropped to make it fit.
+  History-read failures also ask. Reported reviewer usage counts toward section,
+  room and daily totals. Changed owner messages or pending owner prompts and steers
+  invalidate automatic approval when the complete evidence is rechecked.
+  Copilot ACP reports zero token usage and cost, so its reviews add no measured
+  usage to budgets or totals.
+  A low or medium risk `allow` runs the step; anything else, including a failure,
+  a timeout (60 s) or unparseable output, shows the card with the reviewer's sentence. Those
   cards offer Approve and Deny only, and reviewed steps ignore section grants
-  from Manual, so one approval never covers the next step. Leaving Auto
-  while a review runs blocks the step. Only visible sections are reviewed; the rest still refuse.
+  from Manual, so one approval never covers the next step. Changing the mode
+  or working directory during review blocks the step. File execution also
+  checks the resolved destination and reviewed overwrite status again.
+  Only visible sections are reviewed; the rest still refuse.
 - Manual: the shell sandbox is read-only, so a command that writes or
   reaches the network sets `full_access` and asks. Every file change and
   every code run asks. Reads are free in both modes except credential files,
@@ -137,20 +154,24 @@ more freedom and more capability than a hosted product can offer.
   change anything the daemon's OS user can, including provider keys.
 - Without an OS sandbox (Linux where bubblewrap fails its startup probe)
   Hexbot warns, Settings shows a notice, Manual and Auto ask before every
-  shell command and code run, and scheduled scripts refuse to run.
+  shell command and code run, including full-access commands, and scheduled
+  scripts refuse to run. Model review cannot replace this user approval;
+  an explicit section grant can cover later shell requests.
 - Connected tools in new sections use Pi's built-in MCP through codemode.
   The section freezes server namespaces and tool declarations. Manual asks for
-  every connected-tool call. Auto asks unless the server marks the tool read-only;
-  Allow in this section covers
-  that server, and Bypass never asks. Every nested codemode call uses the same
-  approval gate. Removal and disable revoke access immediately, including in Bypass.
+  every connected-tool call, and Allow in this section covers that server.
+  Auto runs read-only tools freely and reviews other calls individually;
+  their cards offer Approve and Deny only. Bypass never asks. Every nested
+  codemode call uses the same approval gate. Removal and disable revoke access
+  immediately, including in Bypass.
   Changed credentials block old clients until they reconnect at the next prompt.
   Saved sections keep their existing Rust bridge tools.
 - Approvals render inline in the transcript with Approve, Allow in this
-  section, and Deny. "Allow in this section" quiets the same kind of request
-  for the rest of that section; nothing is saved across sections. Requests
-  the daemon raises itself (code runs, browser scripts, cron) offer Approve
-  and Deny. Native notifications for approvals and mentions.
+  section, and Deny when a section grant is available. "Allow in this section"
+  quiets the same kind of Manual or unreviewed request for the running agent
+  process; nothing is saved across sections. Reviewed Auto cards, incomplete
+  file scans and requests the daemon raises itself (code runs, browser scripts,
+  cron) offer Approve and Deny only. Native notifications for approvals and mentions.
 - New bots get files, web search, browser and terminal (terminal gated by
   approvals). Computer use is off until enabled. Self-authored skills are on,
   with a transcript notice. Bundled and user-shared skills form one library,

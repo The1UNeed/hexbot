@@ -192,7 +192,8 @@ the roster slides in as a drawer.
   section) never appear once finished. The Computer tab in the panel still
   lists every call.
 - Approvals: an inline card with the command or action in monospace, the
-  reason, and three buttons: Approve, Allow in this section, Deny. Requests
+  reason, and Approve and Deny buttons. Manual and unreviewed cards can also
+  offer Allow in this section. Reviewed Auto steps offer no section grant. Requests
   raised by the daemon (code runs, browser scripts, cron) show Approve and
   Deny only. The card stays in the transcript after the decision, marked
   with the outcome.
