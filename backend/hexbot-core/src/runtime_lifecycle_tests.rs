@@ -1632,6 +1632,55 @@ const fs=require('node:fs')"#,
 }
 
 #[tokio::test]
+async fn reviewer_rejects_allow_after_length_or_compaction_recovery() {
+    let (home, runtime, hub) = setup();
+    let script = home.path().join("pi.cjs");
+    let source = fs::read_to_string(&script).unwrap().replace(
+        "const fs=require('node:fs')",
+        r#"if(process.argv.includes('--no-session')){const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');require('node:readline').createInterface({input:process.stdin}).on('line',line=>{const c=JSON.parse(line);emit({type:'response',id:c.id,command:c.type,success:true,data:{}});if(c.type!=='prompt')return;const mode=JSON.parse(c.message).step.input.command;const answer=stopReason=>emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'{"decision":"allow","risk":"low"}'}],usage:{input:7,output:3,cost:{total:.02}},stopReason}});answer(mode==='length'?'length':'stop');if(mode!=='length'){emit({type:mode,reason:'overflow'});emit({type:mode.replace('_start','_end'),reason:'overflow',result:{usage:{input:4,output:2,cost:{total:.01}}},willRetry:true});}answer('stop');emit({type:'agent_settled'});});return;}
+const fs=require('node:fs')"#,
+    );
+    fs::write(script, source).unwrap();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    // Pinned Pi reports compaction_start for automatic overflow/threshold
+    // compaction. Retain the legacy event spelling supported by the daemon too.
+    for mode in ["length", "compaction_start", "auto_compaction_start"] {
+        runtime
+            .event(
+                &s,
+                json!({
+                    "type":"extension_ui_request", "id":mode, "method":"select",
+                    "title":format!("__HEXBOT_APPROVAL__{}", json!({
+                        "tool":"bash", "command":mode, "input":{"command":mode,"full_access":true},
+                        "cwd":"/work", "review":true,
+                    })), "options":["once","session","deny"],
+                }),
+            )
+            .unwrap();
+        let card = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.frame["params"]["type"] == "approval.request" {
+                    break event.frame["params"].clone();
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(card["payload"]["request_id"], mode);
+        assert_eq!(card["payload"]["reason"], review::UNAVAILABLE);
+    }
+    // Every attempt is billed, including the successful retry after compaction.
+    let usage = store::usage(home.path(), "first").unwrap();
+    assert_eq!(usage["total_tokens"], 72);
+    assert!((usage["cost"].as_f64().unwrap() - 0.14).abs() < f64::EPSILON);
+    assert!(store::history(home.path(), "first").unwrap().is_empty());
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn reviewer_rechecks_pending_and_projected_owner_restrictions() {
     use futures_util::FutureExt;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};

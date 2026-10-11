@@ -2455,6 +2455,11 @@ impl Runtime {
             let mut failed = false;
             loop {
                 let event = events.recv().await.map_err(pi_error)?;
+                // A recovered verdict may use summarized owner evidence. Keep
+                // reading to account for calls, but never automatically allow it.
+                if matches!(event["type"].as_str(), Some("compaction_start" | "auto_compaction_start")) {
+                    failed = true;
+                }
                 if event["type"] == "extension_ui_request" {
                     let id = event["id"].as_str().unwrap_or("");
                     let request = event["title"]
@@ -2486,22 +2491,29 @@ impl Runtime {
                     };
                     process.respond_extension(id, json!({"value":reply.to_string()}), DEADLINE).await.map_err(pi_error)?;
                 }
+                let billed = match event["type"].as_str() {
+                    Some("message_end") if event["message"]["role"] == "assistant" => Some(&event["message"]),
+                    Some("compaction_end" | "auto_compaction_end") => Some(&event["result"]),
+                    _ => None,
+                };
+                if let Some(message) = billed.filter(|message| message["usage"].is_object())
+                    && let Some(parent) = parent
+                {
+                    let _gate = parent.event_gate.lock().unwrap();
+                    // Usage has a journal entry but no chat projection. Include
+                    // compaction summaries as well as ordinary provider attempts.
+                    self.persist_message(parent, &json!({
+                        "role":"usage", "usage":message["usage"],
+                        "provider":message["provider"].as_str().or(provider).unwrap_or(""),
+                        "model":message["model"].as_str().or(model).unwrap_or(""),
+                        "timestamp":message["timestamp"].as_f64().unwrap_or_else(|| common::now() * 1000.),
+                    }), None, None);
+                }
                 if event["type"] == "message_end" && event["message"]["role"] == "assistant" {
-                    if let Some(parent) = parent.filter(|_| event["message"]["usage"].is_object()) {
-                        let _gate = parent.event_gate.lock().unwrap();
-                        // Usage has a journal entry but no chat projection. It counts
-                        // in section, room-turn, and daily totals, even for failed verdicts.
-                        self.persist_message(parent, &json!({
-                            "role":"usage", "usage":event["message"]["usage"],
-                            "provider":event["message"]["provider"].as_str().or(provider).unwrap_or(""),
-                            "model":event["message"]["model"].as_str().or(model).unwrap_or(""),
-                            "timestamp":event["message"]["timestamp"],
-                        }), None, None);
-                    }
                     result = store::text(&event["message"]["content"]);
                     failed |= matches!(
                         event["message"]["stopReason"].as_str(),
-                        Some("error" | "aborted" | "toolUse")
+                        Some("error" | "aborted" | "toolUse" | "length")
                     ) || event["message"]["errorMessage"].is_string()
                         || event["message"]["content"].as_array().is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "toolCall"));
                 }
