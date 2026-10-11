@@ -81,4 +81,28 @@ describe('live section status', () => {
     expect(botStatusWithLive({ name: 'b' } as Bot, archived, { s1: 'needs_you' })).toBe('idle')
     expect(botStatusWithLive(waiting, sections, {})).toBe('needs_you')
   })
+
+  it('ignores a delayed retry incident only for an archived private section', () => {
+    const stopped = {
+      ...bot,
+      status: 'stopped',
+      status_detail: { section_id: 's1', action: { kind: 'retry' } }
+    } as Bot
+
+    const archived = [{ archived_at: 1, id: 's1' }, { id: 's2' }] as Section[]
+    expect(botStatusWithLive(stopped, archived, {})).toBe('idle')
+    expect(botStatusWithLive(stopped, archived, { s2: 'working' })).toBe('working')
+    expect(botStatusWithLive(stopped, archived, { s2: 'needs_you' })).toBe('needs_you')
+    expect(botStatusWithLive(stopped, sections, {})).toBe('stopped')
+
+    for (const detail of [
+      { section_id: 's1', action: { kind: 'fix_connector', connector: 'mail' } },
+      { section_id: 's1', action: null },
+      { section_id: null, action: { kind: 'retry' } },
+      { section_id: 's1', room_id: 'r', action: { kind: 'retry' } },
+      { section_id: 'thread', action: { kind: 'retry' } }
+    ]) {
+      expect(botStatusWithLive({ ...stopped, status_detail: detail } as Bot, archived, {})).toBe('stopped')
+    }
+  })
 })

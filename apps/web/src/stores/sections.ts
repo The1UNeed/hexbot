@@ -142,6 +142,7 @@ let sectionsRequest = 0
 let latestSectionsRefresh = 0
 let fullSectionsRequest = 0
 const botSectionsRequests = new Map<string, number>()
+const openedSectionRequests = new Map<string, number>()
 
 /** A successful edit is newer than any list already in flight for that bot. */
 function sectionChanged(bot: string): void {
@@ -161,32 +162,50 @@ export const useSections = create<SectionsState>((set, get) => ({
     latestSectionsRefresh = request
     const bot = options.bot
 
-    if (bot) {
-      botSectionsRequests.set(bot, request)
-    } else {
-      fullSectionsRequest = request
-    }
-
     set({ error: null, loading: true })
 
     try {
       const result = await sectionsList({ include_archived: true, ...options })
 
-      const current = bot
-        ? botSectionsRequests.get(bot) === request && fullSectionsRequest < request
-        : fullSectionsRequest === request
+      const current =
+        fullSectionsRequest < request && (!bot || (botSectionsRequests.get(bot) ?? 0) < request)
 
       if (!current) {
         return
       }
 
+      // Only accepted data supersedes an older reply; failed requests do not hide it.
+      if (bot) {
+        botSectionsRequests.set(bot, request)
+      } else {
+        fullSectionsRequest = request
+      }
+
       set(state => {
-        // A full reply can still update other bots after a newer scoped request or edit.
+        // A full reply can still update other bots after a newer scoped reply or edit.
         const preserve = (name: string) =>
           bot ? name !== bot : (botSectionsRequests.get(name) ?? 0) > request
 
-        const incoming = (result.sections ?? []).filter(section => !preserve(section.bot))
-        const indexed = indexSections(incoming, state.sendingTitles)
+        const openedAfter = (id: string) => (openedSectionRequests.get(id) ?? 0) > request
+
+        const incoming = (result.sections ?? [])
+          .filter(section => !preserve(section.bot))
+          .map(section => {
+            const opened = state.byId[section.id]
+
+            return openedAfter(section.id) && opened
+              ? { ...opened, preview: section.preview || opened.preview }
+              : section
+          })
+
+        const newlyOpened = Object.values(state.byId).filter(
+          section =>
+            !preserve(section.bot) &&
+            openedAfter(section.id) &&
+            !incoming.some(item => item.id === section.id)
+        )
+
+        const indexed = indexSections([...newlyOpened, ...incoming], state.sendingTitles)
 
         return {
           byId: {
@@ -226,7 +245,7 @@ export const useSections = create<SectionsState>((set, get) => ({
     const { context, messages, pending_clarify, section } = await sectionsOpen(id)
     const live = section.live_session_id
 
-    sectionChanged(section.bot)
+    openedSectionRequests.set(section.id, ++sectionsRequest)
     set(state => ({
       ...mergeSection(state, section),
       liveSessionId: live ? { ...state.liveSessionId, [id]: live } : state.liveSessionId
@@ -355,6 +374,7 @@ export const useSections = create<SectionsState>((set, get) => ({
   async remove(id, purgeMemory = true) {
     const bot = get().byId[id]?.bot
     await sectionsDelete(id, purgeMemory)
+    openedSectionRequests.delete(id)
 
     if (bot) {
       sectionChanged(bot)
@@ -524,7 +544,14 @@ export function sectionStatusOf(
 export function botStatusWithLive(bot: Bot, sections: Section[], live: LiveSections): BotStatus {
   const status = botStatus(bot)
 
-  if (status === 'stopped') {
+  const detail = bot.status_detail
+
+  const archivedRetry =
+    detail?.action?.kind === 'retry' &&
+    !detail.room_id &&
+    sections.some(section => section.id === detail.section_id && section.archived_at)
+
+  if (status === 'stopped' && !archivedRetry) {
     return status
   }
 

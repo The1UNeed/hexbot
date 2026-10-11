@@ -4,6 +4,7 @@ import {
   sectionsCreate,
   sectionsDelete,
   sectionsList,
+  sectionsOpen,
   sectionsUnarchive
 } from '../lib/api'
 import type { Section } from '../lib/types'
@@ -16,6 +17,7 @@ vi.mock('../lib/api', async importOriginal => ({
   sectionsCreate: vi.fn(),
   sectionsDelete: vi.fn(),
   sectionsList: vi.fn(),
+  sectionsOpen: vi.fn(),
   sectionsUnarchive: vi.fn()
 }))
 
@@ -24,12 +26,14 @@ const section = (id: string, bot = 'owl', title = id) =>
 
 const deferred = () => {
   let resolve!: (value: Awaited<ReturnType<typeof sectionsList>>) => void
+  let reject!: (error: Error) => void
 
-  const promise = new Promise<Awaited<ReturnType<typeof sectionsList>>>(done => {
+  const promise = new Promise<Awaited<ReturnType<typeof sectionsList>>>((done, fail) => {
     resolve = done
+    reject = fail
   })
 
-  return { promise, resolve }
+  return { promise, resolve, reject }
 }
 
 beforeEach(() => {
@@ -87,6 +91,88 @@ it('lets a newer full reply replace an older scoped reply', async () => {
   scoped.resolve({ sections: [section('old')] })
   await oldRefresh
   expect(useSections.getState().idsByBot).toEqual({ owl: ['new'], cat: ['cat'] })
+})
+
+it.each([true, false])(
+  'accepts a full reply when a newer scoped request fails (failure first=%s)',
+  async failureFirst => {
+    const full = deferred()
+    const scoped = deferred()
+    vi.mocked(sectionsList).mockReturnValueOnce(full.promise).mockReturnValueOnce(scoped.promise)
+    const fullRefresh = useSections.getState().refresh()
+    const scopedRefresh = useSections.getState().refresh({ bot: 'owl' })
+
+    const fail = async () => {
+      scoped.reject(new Error('offline'))
+      await scopedRefresh
+    }
+
+    const accept = async () => {
+      full.resolve({ sections: [section('owl'), section('cat', 'cat')] })
+      await fullRefresh
+    }
+
+    if (failureFirst) {
+      await fail()
+      await accept()
+    } else {
+      await accept()
+      await fail()
+    }
+
+    expect(useSections.getState().idsByBot).toEqual({ owl: ['owl'], cat: ['cat'] })
+  }
+)
+
+it.each([true, false])(
+  'accepts a scoped reply when a newer full request fails (failure first=%s)',
+  async failureFirst => {
+    useSections.setState({ byId: { cat: section('cat', 'cat') }, idsByBot: { cat: ['cat'] } })
+    const scoped = deferred()
+    const full = deferred()
+    vi.mocked(sectionsList).mockReturnValueOnce(scoped.promise).mockReturnValueOnce(full.promise)
+    const scopedRefresh = useSections.getState().refresh({ bot: 'owl' })
+    const fullRefresh = useSections.getState().refresh()
+
+    const fail = async () => {
+      full.reject(new Error('offline'))
+      await fullRefresh
+    }
+
+    const accept = async () => {
+      scoped.resolve({ sections: [section('owl')] })
+      await scopedRefresh
+    }
+
+    if (failureFirst) {
+      await fail()
+      await accept()
+    } else {
+      await accept()
+      await fail()
+    }
+
+    expect(useSections.getState().idsByBot).toEqual({ owl: ['owl'], cat: ['cat'] })
+  }
+)
+
+it.each([undefined, 'owl'])('opening a section preserves a pending list and its older rows (%s)', async bot => {
+  const list = deferred()
+  vi.mocked(sectionsList).mockReturnValueOnce(list.promise)
+  const refresh = useSections.getState().refresh({ bot })
+  const opened = { ...section('current', 'owl', 'Fresh title'), live_session_id: 'live-new' }
+  vi.mocked(sectionsOpen).mockResolvedValueOnce({ section: opened, messages: [] } as never)
+  await useSections.getState().open('current')
+  list.resolve({
+    sections: [
+      { ...section('current', 'owl', 'Stale title'), live_session_id: 'live-old' },
+      section('older')
+    ]
+  })
+  await refresh
+  expect(useSections.getState().idsByBot.owl).toEqual(['current', 'older'])
+  expect(useSections.getState().byId.current?.title).toBe('Fresh title')
+  expect(useSections.getState().liveSessionId.current).toBe('live-new')
 })
 
 it.each([undefined, 'owl'])('discards an older reply in the same scope (%s)', async bot => {

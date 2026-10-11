@@ -2,7 +2,7 @@ import { Check } from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '../../components/ui/button'
-import { clarifyAnswered, clarifyRespond } from '../../lib/api'
+import { clarifyAnswered } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import type { ClarifyQuestion, ClarifyRequest } from '../../lib/types'
 import { transcriptActions } from '../../stores/transcripts'
@@ -166,12 +166,15 @@ export function ClarifyCard({ clarify }: { clarify: ClarifyRequest }) {
       return
     }
 
-    const key = question.questionId ?? clarify.requestId
     setBusy(true)
 
     try {
-      await clarifyRespond(clarify.sessionId, clarify.requestId, value, question.questionId)
-      transcriptActions().answerClarify(clarify.sessionId, clarify.requestId, key, value)
+      await transcriptActions().respondClarify(
+        clarify.sessionId,
+        clarify.requestId,
+        value,
+        question.questionId
+      )
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
