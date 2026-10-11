@@ -26,6 +26,8 @@ import {
   type Section
 } from './core/types'
 import { avatarSrc } from './core/avatar'
+import { scheduleChange } from './core/jobs'
+import { isOpenRoom } from './core/routes'
 import { pickFile } from './core/pickFile'
 import type { useMobile } from './core/useMobile'
 export type Panel = {
@@ -673,6 +675,7 @@ export function Management({
             <View style={styles.inset}>
               <ModelPill
                 disabled={busy || mobile.connection !== 'connected'}
+                models={mobile.models}
                 onChange={next =>
                   setValues(v => ({
                     ...v,
@@ -946,14 +949,15 @@ export function Management({
                   await rpc(room.archived_at ? 'hexbot.rooms.unarchive' : 'hexbot.rooms.archive', {
                     id: room.id
                   })
-                  mobile.back()
+                  // Archiving the open room leaves it; restoring keeps whatever is open.
+                  if (!room.archived_at && isOpenRoom(mobile.route, room.id)) mobile.back()
                   onClose()
                 })}
                 {action(
                   'Delete room',
                   async () => {
                     await rpc('hexbot.rooms.delete', { id: room.id })
-                    mobile.back()
+                    if (isOpenRoom(mobile.route, room.id)) mobile.back()
                     onClose()
                   },
                   true,
@@ -1417,7 +1421,10 @@ export function Management({
           ...(kind === 'job' ? { job_id: panel?.data?.id } : {}),
           name: values.name,
           prompt: values.prompt,
-          schedule: values.schedule,
+          ...scheduleChange(
+            str(values.schedule),
+            kind === 'job' ? str((panel?.data?.schedule as RowData)?.display) : undefined
+          ),
           script: values.script || null,
           workdir: values.workdir || null,
           provider: values.provider || null,

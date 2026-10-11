@@ -309,6 +309,14 @@ try {
   const settle = () => page.waitForTimeout(450)
   page = await context.newPage()
   page.on('pageerror', e => errors.push(e.message))
+  const sent = []
+  page.on('websocket', ws =>
+    ws.on('framesent', ({ payload }) => {
+      try {
+        sent.push(JSON.parse(String(payload)))
+      } catch {}
+    })
+  )
   await page.goto(appUrl, { waitUntil: 'domcontentloaded' })
   await expect(page.getByTestId('connection-screen')).toBeVisible({ timeout: 60000 })
   await page.screenshot({ path: path.join(artifacts, 'connection.png') })
@@ -559,8 +567,34 @@ try {
   await expect(page.getByTestId('main-bot-owl')).toBeVisible()
   await settle()
   await shot('room-settings')
-  await page.getByTestId('management-sheet-close').click()
+  // An archived room stays reachable after the lists reload, and restores from there.
+  // Archiving the open room moves Rooms to the other one.
+  await page.getByTestId('action-archive-room').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
+  await expect(page.getByTestId(`room-chip-${room.id}`)).not.toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Launch week', exact: true })).toBeVisible()
+  // Restoring another room from Archived keeps the open one.
+  await page.getByTestId('rooms-archived').click()
+  await page.getByTestId(`managed-room-${room.id}`).click()
+  await page.getByTestId('action-restore-room').click()
+  await expect
+    .poll(async () => (await rpc('hexbot.rooms.get', { id: room.id })).room.archived_at)
+    .toBe(null)
+  await expect(page.getByTestId('management-sheet')).not.toBeVisible()
+  await expect(page.getByTestId('rooms-archived')).not.toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Launch week', exact: true })).toBeVisible()
+  await expect(page.getByTestId('chat-input')).toBeVisible()
+  // A room archived elsewhere while open stays, and restoring it there keeps it open.
+  await page.getByTestId(`room-chip-${room.id}`).click()
+  await expect(page.getByRole('heading', { name: 'Our team', exact: true })).toBeVisible()
+  await rpc('hexbot.rooms.archive', { id: room.id })
+  await expect(page.getByTestId('chat-archived')).toBeVisible()
+  await page.getByTestId('room-settings').click()
+  await page.getByTestId('action-restore-room').click()
+  await expect(page.getByTestId('management-sheet')).not.toBeVisible()
+  await expect(page.getByTestId('chat-archived')).not.toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Our team', exact: true })).toBeVisible()
+  await expect(page.getByTestId('chat-input')).toBeVisible()
   await page.getByTestId('home-tabs-daemon').click()
   await shot('daemon')
   await page.getByTestId('daemon-about').click()
@@ -633,6 +667,23 @@ try {
   await page.getByTestId('management-sheet-action').click()
   await expect.poll(async () => (await rpc('hexbot.jobs.list', { bot: 'owl' })).jobs.length).toBe(1)
   const job = (await rpc('hexbot.jobs.list', { bot: 'owl' })).jobs[0]
+  // Editing a job keeps its schedule unless the schedule itself changed.
+  await page.getByTestId(`job-${job.id}`).click()
+  await page.getByTestId('field-schedule').fill('in 30m')
+  await page.getByTestId('management-sheet-action').click()
+  await expect
+    .poll(async () => (await rpc('hexbot.jobs.list', { bot: 'owl' })).jobs[0].schedule.display)
+    .toBe('in 30m')
+  await page.getByTestId(`job-${job.id}`).click()
+  await page.getByTestId('field-name').fill('Mobile brief')
+  await page.getByTestId('management-sheet-action').click()
+  await expect
+    .poll(async () => (await rpc('hexbot.jobs.list', { bot: 'owl' })).jobs[0].name)
+    .toBe('Mobile brief')
+  const updates = sent.filter(m => m.method === 'hexbot.jobs.update').map(m => m.params)
+  assert.equal(updates.length, 2)
+  assert.equal(updates[0].schedule, 'in 30m')
+  assert(!('schedule' in updates[1]), 'A name change leaves the schedule out')
   await page.getByTestId(`job-${job.id}`).click()
   await page.getByTestId('action-pause-job').click()
   await expect
@@ -707,8 +758,8 @@ try {
       'About you',
       'daemon management panels and unlimited room turn budget',
       'skill creation',
-      'room chat in the Rooms tab',
-      'scheduled jobs and pause',
+      'room chat in the Rooms tab, archive and restore',
+      'scheduled jobs, edits that keep the schedule, and pause',
       'daemon disconnect and reconnect',
       'history restoration'
     ],
