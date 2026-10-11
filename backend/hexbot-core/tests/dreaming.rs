@@ -712,3 +712,93 @@ fn digest_keeps_private_thread_questions_and_sender_tool_replies() {
     assert!(sender.contains("tool: "));
     assert!(sender.contains("The plan needs a rollback"));
 }
+
+#[tokio::test]
+async fn paired_clients_manage_jobs_through_the_same_owner_scoped_scheduler() {
+    let home = setup();
+    let events = EventHub::default();
+    let runtime = Runtime::new(
+        home.path().into(),
+        events.clone(),
+        fake_pi(home.path(), false),
+    )
+    .unwrap();
+    let scheduler = Dreaming::new(home.path().into(), runtime, events.clone());
+    let mut receiver = events.subscribe();
+    let create = scheduler.call("alice", "hexbot.jobs.create", &json!({
+        "bot": "owl", "name": "Morning notes", "schedule": "every 2h", "prompt": "Write a short note"
+    })).await.unwrap().unwrap();
+    let id = create["job"]["id"].as_str().unwrap();
+    let changed = event(&mut receiver, "hexbot.jobs.changed").await;
+    assert_eq!(changed["bot"], "owl");
+    let refused = scheduler
+        .call("bob", "hexbot.jobs.list", &json!({"bot": "owl"}))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, 4302);
+    scheduler
+        .call(
+            "alice",
+            "hexbot.jobs.pause",
+            &json!({"bot": "owl", "job_id": id}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let paused = scheduler
+        .call(
+            "alice",
+            "hexbot.jobs.list",
+            &json!({"bot": "owl", "include_disabled": true}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(paused["jobs"][0]["enabled"], false);
+    scheduler
+        .call(
+            "alice",
+            "hexbot.jobs.resume",
+            &json!({"bot": "owl", "job_id": id}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    scheduler
+        .call(
+            "alice",
+            "hexbot.jobs.update",
+            &json!({"bot": "owl", "job_id": id, "name": "Evening notes"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let updated = scheduler
+        .call("alice", "hexbot.jobs.list", &json!({"bot": "owl"}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated["jobs"][0]["name"], "Evening notes");
+    scheduler
+        .call(
+            "alice",
+            "hexbot.jobs.remove",
+            &json!({"bot": "owl", "job_id": id}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let removed = scheduler
+        .call("alice", "hexbot.jobs.list", &json!({"bot": "owl"}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(removed["jobs"], json!([]));
+    assert!(
+        scheduler
+            .call("alice", "hexbot.jobs.unknown", &json!({"bot": "owl"}))
+            .await
+            .is_none()
+    );
+}

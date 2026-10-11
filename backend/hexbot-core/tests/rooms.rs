@@ -269,6 +269,32 @@ impl RoomRunner for Asker {
         Box::pin(async { Ok(()) })
     }
 }
+#[test]
+fn log_pages_back_from_the_newest_events() {
+    let h = setup();
+    let room = create(&h);
+    for n in 0..5 {
+        call(&h, "send", json!({"id":room,"text":format!("m{n}")}));
+    }
+    let seqs = |p: Value| -> Vec<i64> {
+        call(&h, "log", p)["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["seq"].as_i64().unwrap())
+            .collect()
+    };
+    let last = *seqs(json!({"id":room,"limit":1000})).last().unwrap();
+    assert_eq!(
+        seqs(json!({"id":room,"before_seq":i64::MAX,"limit":2})),
+        vec![last - 1, last]
+    );
+    assert_eq!(
+        seqs(json!({"id":room,"before_seq":last - 1,"limit":2})),
+        vec![last - 3, last - 2]
+    );
+    assert_eq!(seqs(json!({"id":room,"before_seq":2,"limit":5})), vec![1]);
+}
 #[tokio::test]
 async fn a_room_reply_keeps_the_teammates_its_bot_asked() {
     let h = setup();

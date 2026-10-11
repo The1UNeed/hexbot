@@ -1,0 +1,51 @@
+appId: app.hexbot.mobile
+env:
+  RESET_APP: "true"
+  METRO_HOST: "127.0.0.1:8181"
+---
+- runFlow:
+    when:
+      true: ${RESET_APP === "true"}
+    commands:
+      - clearState
+- launchApp:
+    arguments:
+      RCT_jsLocation: ${METRO_HOST}
+- tapOn:
+    id: connection-address
+- inputText: ${DAEMON_ORIGIN}
+- pressKey: Enter
+- inputText: ${PAIR_CODE}
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: bot-row-owl
+    timeout: 30000
+- takeScreenshot: bots
+- tapOn:
+    id: bot-row-owl
+- extendedWaitUntil:
+    visible:
+      id: threads-new
+    timeout: 15000
+- takeScreenshot: threads
+- tapOn:
+    id: threads-new
+- tapOn:
+    id: chat-input
+- inputText: Hello from native
+- tapOn:
+    id: chat-send
+- extendedWaitUntil:
+    visible: Your native message reached the daemon and Pi.
+    timeout: 30000
+- takeScreenshot: chat
+- tapOn:
+    id: chat-settings
+- extendedWaitUntil:
+    visible:
+      id: field-persona
+    timeout: 15000
+- takeScreenshot: settings
+- tapOn:
+    id: management-sheet-close

@@ -1,0 +1,53 @@
+{
+  "name": "@hexbot/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "dev": "expo start",
+    "ios": "expo run:ios",
+    "android": "expo run:android",
+    "web": "expo start --web",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src App.tsx index.ts",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run lint",
+    "export": "expo export --platform all",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~57.0.0",
+    "@expo/vector-icons": "^15.0.2",
+    "@hermes/shared": "workspace:*",
+    "@noble/curves": "1.9.7",
+    "@noble/hashes": "1.8.0",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "base64-js": "1.5.1",
+    "expo": "~57.0.0",
+    "expo-blur": "~57.0.0",
+    "expo-crypto": "~57.0.0",
+    "expo-document-picker": "~57.0.0",
+    "expo-file-system": "~57.0.0",
+    "expo-font": "~57.0.0",
+    "expo-glass-effect": "~57.0.0",
+    "expo-linking": "~57.0.0",
+    "expo-secure-store": "~57.0.0",
+    "expo-status-bar": "~57.0.0",
+    "expo-web-browser": "~57.0.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-svg": "15.15.4",
+    "react-native-web": "~0.21.0",
+    "react-native-webview": "13.16.1",
+    "expo-system-ui": "~57.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.4",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11",
+    "@babel/core": "7.29.7",
+    "@playwright/test": "1.62.1"
+  }
+}

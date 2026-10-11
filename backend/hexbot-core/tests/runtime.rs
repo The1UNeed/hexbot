@@ -755,6 +755,76 @@ async fn rejected_prompt_retains_staged_images_and_file_references() {
 }
 
 #[tokio::test]
+async fn named_attachments_send_only_those_and_drop_abandoned_uploads() {
+    let home = setup();
+    let executable = fake_pi(home.path());
+    let source = fs::read_to_string(&executable).unwrap().replace("const c=JSON.parse(line);", "const c=JSON.parse(line);if(c.type==='prompt')require('node:fs').appendFileSync(__dirname+'/prompts.jsonl',JSON.stringify(c)+'\\n');");
+    fs::write(&executable, source).unwrap();
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let runtime = Runtime::new(home.path().into(), hub, executable).unwrap();
+    let opened = open(&runtime, "alice").await;
+    let live = opened["section"]["live_session_id"].as_str().unwrap();
+    let attach = async |name: &str| {
+        runtime
+            .call(
+                "alice",
+                "file.attach",
+                &json!({"session_id":live,"data_url":"data:text/plain;base64,bm90ZXM=","name":name}),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    let stale = attach("secret.txt").await;
+    let kept = attach("report.txt").await;
+    assert_ne!(stale["id"], kept["id"]);
+    let submit = async |params: Value| {
+        runtime
+            .call("alice", "prompt.submit", &params)
+            .await
+            .unwrap()
+    };
+    // An id that is not staged is refused before anything is sent or dropped.
+    assert_eq!(
+        submit(json!({"session_id":live,"text":"hi","attachments":["gone"]}))
+            .await
+            .unwrap_err()
+            .code,
+        4204
+    );
+    assert!(Path::new(stale["path"].as_str().unwrap()).exists());
+    submit(json!({"session_id":live,"text":"named","attachments":[kept["id"]]}))
+        .await
+        .unwrap();
+    next_kind(&mut events, "message.complete").await;
+    assert!(!Path::new(stale["path"].as_str().unwrap()).exists());
+    assert!(Path::new(kept["path"].as_str().unwrap()).exists());
+    // Without a list, every staged upload rides the next prompt as before.
+    let later = attach("later.txt").await;
+    submit(json!({"session_id":live,"text":"unnamed"}))
+        .await
+        .unwrap();
+    next_kind(&mut events, "message.complete").await;
+    let prompts = fs::read_to_string(home.path().join("prompts.jsonl")).unwrap();
+    let prompts: Vec<Value> = prompts
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(prompts.len(), 2);
+    let named = prompts[0]["message"].as_str().unwrap();
+    assert!(named.contains(kept["path"].as_str().unwrap()));
+    assert!(!named.contains(stale["path"].as_str().unwrap()));
+    assert!(
+        prompts[1]["message"]
+            .as_str()
+            .unwrap()
+            .contains(later["path"].as_str().unwrap())
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 #[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
 async fn actual_pi_configured_turn_limit_stops_further_requests() {
     use axum::{Json, Router, extract::State, routing::post};

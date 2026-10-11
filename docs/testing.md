@@ -26,6 +26,38 @@
 - Site: `pnpm --filter ./apps/site run check`.
 - Connect: `pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run && pnpm --filter ./apps/connect run lint`.
 
+## Mobile
+
+`pnpm mobile:check` runs the Expo app's TypeScript, lint, protocol and chat-state tests.
+Room regressions cover simultaneous turns, reconnect cleanup, failure and limit
+notices, and former members' names. File tests cover size checks before reads.
+`pnpm --filter @hexbot/mobile run export` bundles iOS, Android and web.
+
+For the integration test:
+
+```sh
+cargo build --locked --manifest-path backend/hexbot-core/Cargo.toml --bin hexbot
+npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund
+pnpm --filter @hexbot/mobile exec playwright install chromium
+pnpm --filter @hexbot/mobile run export
+pnpm --filter @hexbot/mobile run smoke -- --static
+```
+
+The test serves the exported Expo web app at iPhone size, pairs a device with
+DPoP, and uses the real Rust daemon and pinned Pi with a local streaming model.
+It checks chat, attachment-only sends, unlimited room turn budgets, rooms, soul,
+isolated memory, About you, scheduled jobs,
+disconnect, reconnect and history. It writes screenshots and a JSON report to a
+new temporary directory. `HEXBOT_MOBILE_ARTIFACTS` selects an output directory.
+It creates and removes its own daemon home and workspace.
+
+To check a native simulator, start Metro on 8181 and run the smoke without
+`--static`, adding `--keep`. It leaves the test daemon available and writes
+`native-pairing.json` in that temporary output directory. This contains a
+short-lived pairing code. Use the Maestro flow in `apps/mobile/maestro` with
+that origin and code, then stop the smoke process to clean up. Native build
+commands and Hex Connect validation limits are in `apps/mobile/README.md`.
+
 ## Installer
 
 Run `cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml`
