@@ -16,7 +16,7 @@ import { parsePairing, normalizeOrigin } from './links'
 import {
   approvalResponse,
   clarifyResponse,
-  clearRetryResolution,
+  clearStatusProof,
   emptyChat,
   historyMessages,
   reduceChat,
@@ -112,9 +112,12 @@ export function useMobile() {
     }
     if (session.current !== current)
       throw new Error('The selected daemon changed. Retry on this daemon.')
+    if (
+      replayEpoch.current !== epoch &&
+      ['hexbot.sections.delete', 'approval.respond', 'clarify.respond'].includes(method)
+    )
+      throw new Error('The daemon restarted. Retry on this daemon.')
     if (method === 'hexbot.sections.delete') {
-      if (replayEpoch.current !== epoch)
-        throw new Error('The daemon restarted. Retry on this daemon.')
       if (
         mounted.current &&
         typeof params.id === 'string' &&
@@ -390,7 +393,7 @@ export function useMobile() {
       let repeatedDeletion = false
       if (event.type === 'gateway.ready' && typeof p.replay_epoch === 'string' && p.replay_epoch) {
         if (replayEpoch.current && replayEpoch.current !== p.replay_epoch) {
-          setChat(clearRetryResolution)
+          setChat(clearStatusProof)
           botStatusReads.current.clear()
           botStatusChanges.current.clear()
           pendingBotStatus.current.clear()
@@ -401,6 +404,9 @@ export function useMobile() {
             loadingEvents.current
               ?.filter(
                 buffered =>
+                  !['gateway.ready', 'approval.resolved', 'clarify.resolved'].includes(
+                    buffered.type
+                  ) &&
                   !(
                     buffered.type === 'hexbot.sections.changed' &&
                     (buffered.payload as { deleted?: boolean })?.deleted === true

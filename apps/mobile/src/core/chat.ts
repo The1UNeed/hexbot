@@ -96,13 +96,14 @@ export function settledBot(
 const retireRetry = (state: TurnState) =>
   state.retryResolution && { ...state.retryResolution, resolved: false }
 
-/** A new daemon epoch retires retry proof and its old sequence identity. */
-export function clearRetryResolution(state: ChatState): ChatState {
+/** A new daemon epoch retires process-scoped answer and retry status proof. */
+export function clearStatusProof(state: ChatState): ChatState {
+  const cleared = { resumedWaiting: false, waitingRevision: 0, retryResolution: undefined }
   return {
     ...state,
-    retryResolution: undefined,
+    ...cleared,
     turns: Object.fromEntries(
-      Object.entries(state.turns).map(([id, turn]) => [id, { ...turn, retryResolution: undefined }])
+      Object.entries(state.turns).map(([id, turn]) => [id, { ...turn, ...cleared }])
     )
   }
 }

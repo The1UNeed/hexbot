@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { GatewayEvent } from '@hermes/shared'
 import {
-  clearRetryResolution,
+  clearStatusProof,
   emptyChat,
   reduceChat,
   restoreChat,
@@ -177,7 +177,7 @@ describe('exact private retry proof', () => {
     expect(settledBot(retry(), state.turns.live, 'live').status).toBe('stopped')
   })
 
-  it('clears old sequence proof at an epoch boundary while retaining accepted answers', () => {
+  it('clears old status proof at an epoch boundary while retaining accepted cards and pending siblings', () => {
     let state = reduceChat(emptyChat(), event('message.start', { retry_resolved: true }, 2, 100))
     state = reduceChat(
       state,
@@ -187,13 +187,25 @@ describe('exact private retry proof', () => {
       state,
       event('approval.resolved', { request_id: 'approval', choice: 'once' }, 4, 102)
     )
-    const cleared = clearRetryResolution({
+    const pending = reduceChat(
+      emptyChat(),
+      event('approval.request', { request_id: 'pending', choices: ['once'] }, 5, 103)
+    )
+    const cleared = clearStatusProof({
       ...state,
-      turns: { live: { ...state, bot: 'owl', sessionId: 'live' } }
+      turns: {
+        live: { ...state, bot: 'owl', sessionId: 'live' },
+        sibling: { ...pending, bot: 'fox', sessionId: 'sibling' }
+      }
     })
     expect(cleared.retryResolution).toBeUndefined()
     expect(cleared.turns.live.retryResolution).toBeUndefined()
-    expect(cleared.resumedWaiting).toBe(true)
+    expect(cleared.resumedWaiting).toBe(false)
+    expect(cleared.waitingRevision).toBe(0)
+    expect(cleared.turns.live.resumedWaiting).toBe(false)
+    expect(cleared.turns.live.waitingRevision).toBe(0)
+    expect(cleared.turns.sibling.approvals).toBe(pending.approvals)
+    expect(cleared.turns.sibling.waiting).toBe(true)
     expect(cleared.settlements).toBe(state.settlements)
     expect(project(cleared).status).toBe('stopped')
     expect(

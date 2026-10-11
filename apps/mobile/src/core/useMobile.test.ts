@@ -1193,6 +1193,229 @@ describe('mobile retry status consumer', () => {
   )
 })
 
+describe('mobile status proof across daemon epochs', () => {
+  const room = {
+    id: 'room',
+    members: [],
+    turns: [{ bot: 'alpha', live_session_id: 's1' }]
+  } as unknown as Room
+  const cases = [
+    ['private', 'approval'],
+    ['private', 'question'],
+    ['room', 'approval'],
+    ['room', 'question']
+  ] as const
+  const frames = (kind: string, place = 'private') => {
+    const context = {
+      bot: 'alpha',
+      section_id: place === 'private' ? 'section' : 'room-conversation'
+    }
+    return kind === 'approval'
+      ? [
+          wire('approval.request', {
+            ...context,
+            request_id: 'old',
+            choices: ['once', 'session', 'deny']
+          }),
+          wire('approval.resolved', { ...context, request_id: 'old', choice: 'once' })
+        ]
+      : [
+          wire('clarify.request', {
+            ...context,
+            request_id: 'batch',
+            questions: [{ qid: 'first', question: 'When?' }]
+          }),
+          wire('clarify.resolved', {
+            ...context,
+            request_id: 'batch',
+            answers: { first: 'Now' },
+            status: 'answered'
+          })
+        ]
+  }
+  async function open(place: string) {
+    await unopened(bot)
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.rooms.log') return { events: [] }
+      if (method === 'hexbot.rooms.get') return { room }
+      if (method === 'hexbot.bots.get') throw new Error('Bot verification unavailable')
+      return original(method, params)
+    }
+    if (place === 'private') await render().openSection(bot, section())
+    else await render().openRoom(room)
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+  }
+  function failRoster() {
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') throw new Error('Roster unavailable')
+      return original(method, params)
+    }
+  }
+
+  it.each(cases)(
+    'retires accepted %s %s status on a changed epoch even when refresh fails',
+    async (place, kind) => {
+      await open(place)
+      for (const frame of frames(kind, place)) hooks.clients[0].emit(frame)
+      expect(render().bots[0].status).toBe('working')
+      failRoster()
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+      await expect(hooks.clients[0].ready()).rejects.toThrow('Roster unavailable')
+      expect(render().bots[0].status).toBe('needs_you')
+      const state = place === 'private' ? render().chat : render().chat.turns.s1
+      expect(state.resumedWaiting).toBe(false)
+      expect(state.waitingRevision).toBe(0)
+      if (place === 'private') expect(status()).toBe('needs_you')
+    }
+  )
+
+  it.each(cases)(
+    'keeps accepted %s %s status on the same epoch when refresh fails',
+    async (place, kind) => {
+      await open(place)
+      for (const frame of frames(kind, place)) hooks.clients[0].emit(frame)
+      failRoster()
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+      await expect(hooks.clients[0].ready()).rejects.toThrow('Roster unavailable')
+      expect(render().bots[0].status).toBe('working')
+      const state = place === 'private' ? render().chat : render().chat.turns.s1
+      expect(state.resumedWaiting).toBe(true)
+    }
+  )
+
+  for (const epoch of ['first', 'second']) {
+    it.each(cases)(
+      `replays buffered %s %s status only within its ${epoch} epoch`,
+      async (place, kind) => {
+        await open(place)
+        const held = deferred()
+        const original = hooks.handler
+        hooks.handler = (method, params) =>
+          method === (place === 'private' ? 'session.status' : 'hexbot.rooms.get')
+            ? held.promise
+            : original(method, params)
+        const restoring = render().syncChat()
+        await flush()
+        for (const frame of frames(kind, place)) hooks.clients[0].emit(frame)
+        hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: epoch } })
+        failRoster()
+        await expect(hooks.clients[0].ready()).rejects.toThrow('Roster unavailable')
+        held.resolve(place === 'private' ? { status: 'working' } : { room })
+        await restoring
+        expect(render().bots[0].status).toBe(epoch === 'first' ? 'working' : 'needs_you')
+        const state = place === 'private' ? render().chat : render().chat.turns.s1
+        expect(state.resumedWaiting).toBe(epoch === 'first')
+      }
+    )
+  }
+
+  for (const epoch of ['first', 'second']) {
+    it.each(['approval', 'question'])(
+      `accepts a held local %s response only within its ${epoch} epoch`,
+      async kind => {
+        await open('private')
+        hooks.clients[0].emit(frames(kind)[0])
+        const held = deferred()
+        const original = hooks.handler
+        hooks.handler = (method, params) =>
+          method === (kind === 'approval' ? 'approval.respond' : 'clarify.respond')
+            ? held.promise
+            : original(method, params)
+        const answering =
+          kind === 'approval'
+            ? render().approval('old', 'once', 's1')
+            : render().answer('batch', 'first', 'Now', 's1')
+        failRoster()
+        hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: epoch } })
+        await expect(hooks.clients[0].ready()).rejects.toThrow('Roster unavailable')
+        held.resolve(
+          kind === 'approval'
+            ? { resolved: true, choice: 'once' }
+            : { status: 'answered', answers: { first: 'Now' } }
+        )
+        if (epoch === 'second') await expect(answering).rejects.toThrow('daemon restarted')
+        else await answering
+        expect(render().chat.resumedWaiting).toBe(epoch === 'first')
+        expect(render().bots[0].status).toBe(epoch === 'first' ? 'working' : 'needs_you')
+      }
+    )
+  }
+
+  it.each(cases)(
+    'accepts fresh buffered %s %s proof received after the new epoch',
+    async (place, kind) => {
+      await open(place)
+      const held = deferred()
+      const original = hooks.handler
+      hooks.handler = (method, params) =>
+        method === (place === 'private' ? 'session.status' : 'hexbot.rooms.get')
+          ? held.promise
+          : original(method, params)
+      const restoring = render().syncChat()
+      await flush()
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+      for (const frame of frames(kind, place)) hooks.clients[0].emit(frame)
+      failRoster()
+      await expect(hooks.clients[0].ready()).rejects.toThrow('Roster unavailable')
+      held.resolve(place === 'private' ? { status: 'working' } : { room })
+      await restoring
+      expect(render().bots[0].status).toBe('working')
+      const state = place === 'private' ? render().chat : render().chat.turns.s1
+      expect(state.resumedWaiting).toBe(true)
+    }
+  )
+
+  it('retires every answered room turn while keeping a third bot’s pending approval', async () => {
+    await open('room')
+    const beta = { ...bot, name: 'beta', status_detail: { session_id: 's2' } } as Bot
+    const gamma = { ...bot, name: 'gamma', status_detail: { session_id: 's3' } } as Bot
+    const currentRoom = {
+      ...room,
+      turns: [
+        ...room.turns!,
+        { bot: 'beta', live_session_id: 's2' },
+        { bot: 'gamma', live_session_id: 's3' }
+      ]
+    }
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') return { bots: [bot, beta, gamma] }
+      if (method === 'hexbot.rooms.get') return { room: currentRoom }
+      return original(method, params)
+    }
+    await render().refresh()
+    await render().openRoom(currentRoom)
+    for (const frame of frames('approval', 'room')) hooks.clients[0].emit(frame)
+    hooks.clients[0].emit(
+      wire('clarify.request', { request_id: 'batch', question: 'Where?' }, 's2')
+    )
+    hooks.clients[0].emit(
+      wire(
+        'clarify.resolved',
+        { request_id: 'batch', answers: { batch: 'Here' }, status: 'answered' },
+        's2'
+      )
+    )
+    hooks.clients[0].emit(
+      wire('approval.request', { request_id: 'pending', choices: ['once'] }, 's3')
+    )
+    expect(render().bots.map(bot => bot.status)).toEqual(['working', 'working', 'needs_you'])
+    failRoster()
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+    await expect(hooks.clients[0].ready()).rejects.toThrow('Roster unavailable')
+    expect(render().bots.map(bot => bot.status)).toEqual(['needs_you', 'needs_you', 'needs_you'])
+    expect(
+      Object.values(render().chat.turns).every(
+        turn => !turn.resumedWaiting && turn.waitingRevision === 0
+      )
+    ).toBe(true)
+    expect(render().chat.approvals.map(card => card.sessionId)).toEqual(['s3'])
+  })
+})
+
 describe('mobile settlement consumer', () => {
   it('keeps every newer successful snapshot when an older read arrives after an accepted answer', async () => {
     await start()

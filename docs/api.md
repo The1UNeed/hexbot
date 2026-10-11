@@ -154,9 +154,12 @@ unrelated Working event; answers settle only their matching request IDs.
 Bot list, get and update replies include the daemon's live status. Older
 daemons can return catalog-only Idle from an update, so a settings save alone
 must not retire confirmed pending cards or a live Working status. A later
-roster or live event can settle them. Reconnecting within the same replay
-epoch retains confirmed pending cards while retiring optimistic answer
-evidence; a new epoch drops the previous process's live sessions.
+roster or live event can settle them. The web client retains confirmed
+pending cards and retires optimistic answer evidence on same-epoch reconnects.
+Mobile retains answered-status evidence on same-epoch reconnects. A new epoch
+drops the web client's previous live sessions and retires mobile answer and
+retry status evidence, including room turns. Mobile transcript history and
+cards remain for fresh reconciliation.
 `approval_mode` is `inherit` (the deployment setting), `manual`, `smart`
 (Auto), or `off` (Bypass); `workdir` overrides the deployment workspace for
 that bot's terminal.
