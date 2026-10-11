@@ -930,7 +930,7 @@ fn proposals_reject_oversized_serialization_before_storage() {
         &json!({"text":"😀".repeat(2200)}),
     )
     .unwrap();
-    let digest = dreaming::build_digest(h, "owl", 0.0, None).unwrap();
+    let digest = dreaming::build_digest(h, "owl", 0.0, f64::MAX, None).unwrap();
     assert_eq!(digest["proposals"].as_array().unwrap().len(), 1);
     assert_eq!(digest["proposals"][0]["text"], "😀".repeat(2200));
     assert!(digest["proposals"].to_string().len() <= 10_000);
@@ -950,7 +950,7 @@ fn accepted_proposals_near_the_byte_limit_fit_the_digest_array() {
         match dreaming::propose_memory(h, "alice", "owl", "job-1", "note", &json!({"text":text})) {
             Ok(proposal) => {
                 accepted += 1;
-                let digest = dreaming::build_digest(h, "owl", 0.0, None).unwrap();
+                let digest = dreaming::build_digest(h, "owl", 0.0, f64::MAX, None).unwrap();
                 assert_eq!(digest["proposals"].as_array().unwrap().len(), 1);
                 assert_eq!(digest["proposals"][0]["id"], proposal["id"]);
                 assert!(digest["proposals"].to_string().len() <= 10_000);
@@ -1711,8 +1711,8 @@ fn note(home: &Path, bot: &str, date: chrono::NaiveDate, text: &str) {
 fn digest_carries_notes_since_the_last_dream_before_transcripts() {
     let home = setup();
     let h = home.path();
-    let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
-    hexbot_core::memory::fix_today(today);
+    // The daemon's own day: the digest reads notes by date, not by clock.
+    let today = hexbot_core::memory::local_today();
     let day = |back: u64| today - chrono::Days::new(back);
     note(h, "owl", day(5), "five days ago");
     note(h, "owl", day(1), "yesterday");
@@ -1722,7 +1722,7 @@ fn digest_carries_notes_since_the_last_dream_before_transcripts() {
         .earliest()
         .unwrap()
         .timestamp() as f64;
-    let digest = dreaming::build_digest(h, "owl", since, None).unwrap();
+    let digest = dreaming::build_digest(h, "owl", since, f64::MAX, None).unwrap();
     assert_eq!(
         digest["notes"],
         json!([
@@ -1731,14 +1731,14 @@ fn digest_carries_notes_since_the_last_dream_before_transcripts() {
         ])
     );
     assert_eq!(
-        dreaming::build_digest(h, "owl", 0.0, None).unwrap()["notes"]
+        dreaming::build_digest(h, "owl", 0.0, f64::MAX, None).unwrap()["notes"]
             .as_array()
             .unwrap()
             .len(),
         3
     );
     assert_eq!(
-        dreaming::build_digest(h, "owl", 0.0, Some("room")).unwrap()["notes"],
+        dreaming::build_digest(h, "owl", 0.0, f64::MAX, Some("room")).unwrap()["notes"],
         json!([])
     );
     // A busy day: three full note days and eight long sections. The notes all
@@ -1761,7 +1761,7 @@ fn digest_carries_notes_since_the_last_dream_before_transcripts() {
         )
         .unwrap();
     }
-    let digest = dreaming::build_digest(h, "owl", 0.0, None).unwrap();
+    let digest = dreaming::build_digest(h, "owl", 0.0, f64::MAX, None).unwrap();
     assert_eq!(digest["notes"].as_array().unwrap().len(), 4);
     assert_eq!(digest["sections"].as_array().unwrap().len(), 3);
     assert_eq!(digest["omitted_conversations"], 5);
@@ -1770,7 +1770,7 @@ fn digest_carries_notes_since_the_last_dream_before_transcripts() {
     for back in 3..8 {
         note(h, "owl", day(back), &"o".repeat(4000));
     }
-    let digest = dreaming::build_digest(h, "owl", 0.0, None).unwrap();
+    let digest = dreaming::build_digest(h, "owl", 0.0, f64::MAX, None).unwrap();
     let dates: Vec<_> = digest["notes"]
         .as_array()
         .unwrap()
@@ -1789,8 +1789,8 @@ fn digest_carries_notes_since_the_last_dream_before_transcripts() {
 async fn dream_reads_notes_and_prunes_old_days() {
     let home = setup();
     let h = home.path();
-    let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
-    hexbot_core::memory::fix_today(today);
+    // The daemon's own day; a note from the day before stays inside 30 days.
+    let today = hexbot_core::memory::local_today();
     note(h, "owl", today, "Alex wants the short opening.");
     note(h, "owl", today - chrono::Days::new(40), "long ago");
     fs::write(h.join("profiles/owl/memories/notes/README.md"), "keep").unwrap();
@@ -1834,7 +1834,7 @@ fn digest_keeps_the_newest_note_day_even_when_serialized_text_exceeds_the_budget
             today,
             &format!("{}Newest note", character.repeat(3989)),
         );
-        let digest = dreaming::build_digest(home.path(), "owl", 0.0, None).unwrap();
+        let digest = dreaming::build_digest(home.path(), "owl", 0.0, f64::MAX, None).unwrap();
         let notes = digest["notes"].as_array().unwrap();
         let newest = notes.last().unwrap();
         assert_eq!(newest["date"], today.to_string());
@@ -1860,7 +1860,7 @@ fn a_dream_crossing_midnight_leaves_late_notes_for_the_next_digest() {
     let finish = at(day.succ_opt().unwrap(), 0, 1);
     // The first digest predates the append. Its successful dream finishes tomorrow.
     assert_eq!(
-        dreaming::build_digest(h, "owl", 0.0, None).unwrap()["notes"],
+        dreaming::build_digest(h, "owl", 0.0, f64::MAX, None).unwrap()["notes"],
         json!([])
     );
     note(h, "owl", day, "Appended after the digest was built");
@@ -1878,7 +1878,7 @@ fn a_dream_crossing_midnight_leaves_late_notes_for_the_next_digest() {
         "INSERT INTO dreams(id,bot,started_at,finished_at,status,summary,owner_id) VALUES ('restore','owl',?,?, 'complete','Restored memory','alice')",
         rusqlite::params![finish + 120.0, finish + 120.0],
     ).unwrap();
-    let digest = dreaming::build_digest(h, "owl", finish, None).unwrap();
+    let digest = dreaming::build_digest(h, "owl", finish, f64::MAX, None).unwrap();
     assert_eq!(
         digest["notes"],
         json!([{"date":day.to_string(),"text":"Appended after the digest was built"}])
