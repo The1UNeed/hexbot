@@ -357,6 +357,8 @@ try {
   await page.getByTestId('threads-model-menu-backdrop').click({ position: { x: 12, y: 12 } })
   await page.getByTestId(`thread-row-${section}`).click()
   await expect(page.getByTestId('chat-empty')).toBeVisible()
+  // The intro reads the level the model runs at, like the pill.
+  await expect(page.getByTestId('chat-intro-model')).toHaveText('mobile-test, thinking high')
   await expect(page.getByText('Opening conversation', { exact: true })).not.toBeVisible({
     timeout: 30000
   })

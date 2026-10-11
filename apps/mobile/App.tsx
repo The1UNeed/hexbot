@@ -20,7 +20,7 @@ import {
   DaemonSwitcher,
   HomeScreen,
   ModelPill,
-  REASONING_LEVELS,
+  ModelSummary,
   ThreadsScreen,
   ThreadSwitcher,
   type ApprovalChoice,
@@ -805,8 +805,6 @@ function MobileApp() {
   }
   const pageBot = botPage && !demo ? botByName(botPage) : undefined
   const demoBot = demo && botPage ? DEMO_BOTS.find(b => b.id === botPage) : undefined
-  const levelOf = (value?: string | null) =>
-    REASONING_LEVELS.find(level => level.value === value)?.label
   const screen =
     !demo && (!mobile.active || addDaemon) ? (
       <ConnectionScreen
@@ -872,11 +870,15 @@ function MobileApp() {
                 {route.bot.description}
               </Text>
             ) : null}
-            <Text align="center" tone="faint" variant="footnote" testID="chat-intro-model">
-              {[route.bot.model, levelOf(route.bot.reasoning_effort)?.toLowerCase()]
-                .filter(Boolean)
-                .join(', thinking ')}
-            </Text>
+            <ModelSummary
+              rpc={mobile.rpc}
+              testID="chat-intro-model"
+              value={{
+                provider: route.bot.provider ?? '',
+                model: route.bot.model ?? '',
+                reasoning: route.bot.reasoning_effort ?? ''
+              }}
+            />
           </View>
         }
         onBack={back}

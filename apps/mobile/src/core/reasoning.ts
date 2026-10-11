@@ -41,3 +41,9 @@ export function runningLevel(level: string, model?: ModelOption): string {
 }
 
 export const levelLabel = (value: string) => REASONING_LEVELS.find(l => l.value === value)?.label
+
+/** The level to show beside a model, or null when it runs without thinking. */
+export function shownLevel(reasoning: string, model?: ModelOption): string | null {
+  const running = runningLevel(reasoning || 'medium', model)
+  return (model || reasoning) && running !== 'off' ? (levelLabel(running) ?? null) : null
+}

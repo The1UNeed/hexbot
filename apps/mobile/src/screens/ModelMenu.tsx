@@ -11,13 +11,12 @@ import {
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
-import { levelLabel, reasoningOptions, runningLevel } from '../core/reasoning'
+import { reasoningOptions, runningLevel, shownLevel } from '../core/reasoning'
 import type { ModelOption, Rpc } from '../core/types'
-
-type Group = { id: string; label: string; configured: boolean; models: ModelOption[] }
 import { HIT, SearchField, Text, useTheme } from '../ui'
 
-export { REASONING_LEVELS } from '../core/reasoning'
+type Group = { id: string; label: string; configured: boolean; models: ModelOption[] }
+
 
 export interface ModelValue {
   provider: string
@@ -62,6 +61,16 @@ function useCurrentModel(rpc: Rpc, value: ModelValue) {
     : undefined
 }
 
+/** The bot's model and the level it runs at, as one line under a new conversation. */
+export function ModelSummary({ rpc, testID, value }: { rpc: Rpc; testID: string; value: ModelValue }) {
+  const level = shownLevel(value.reasoning, useCurrentModel(rpc, value))
+  return (
+    <Text align="center" tone="faint" variant="footnote" testID={testID}>
+      {[value.model, level?.toLowerCase()].filter(Boolean).join(', thinking ')}
+    </Text>
+  )
+}
+
 /**
  * The bot's model as a small pill. Tapping it opens a compact menu with the
  * thinking levels the daemon says the model supports and the other models.
@@ -82,10 +91,8 @@ export function ModelPill({
   const theme = useTheme()
   const anchor = useRef<View>(null)
   const [frame, setFrame] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
-  const current = useCurrentModel(rpc, value)
   // The level the model runs at, which may differ from the one saved.
-  const running = runningLevel(value.reasoning || 'medium', current)
-  const level = (current || value.reasoning) && running !== 'off' ? levelLabel(running) : null
+  const level = shownLevel(value.reasoning, useCurrentModel(rpc, value))
 
   const open = () => anchor.current?.measureInWindow((x, y, w, h) => setFrame({ h, w, x, y }))
 

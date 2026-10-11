@@ -24,6 +24,6 @@ export { type DaemonArea, HomeScreen, type HomeScreenProps, type HomeTab } from 
 export { type RoomSettings, RoomSheet, type RoomSheetProps } from './RoomSheet'
 export type * from './types'
 export { useDraft } from './useDraft'
-export { type ModelValue, ModelPill, REASONING_LEVELS } from './ModelMenu'
+export { type ModelValue, ModelPill, ModelSummary } from './ModelMenu'
 export { ThreadSwitcher, ThreadsScreen, type ThreadsScreenProps } from './ThreadsScreen'
 export { DaemonSwitcher } from './DaemonSwitcher'

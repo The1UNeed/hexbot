@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { reasoningOptions, runningLevel } from './reasoning'
+import { reasoningOptions, runningLevel, shownLevel } from './reasoning'
 import type { ModelOption } from './types'
 
 const model = (reasoning_levels?: ModelOption['reasoning_levels']): ModelOption => ({
@@ -23,5 +23,11 @@ describe('reasoning levels', () => {
   it('runs a model without levels with thinking off', () => {
     expect(reasoningOptions(model([])).map(l => l.value)).toEqual(['off'])
     expect(runningLevel('high', model([]))).toBe('off')
+  })
+  it('shows the level the model runs at, and none for a model without thinking', () => {
+    expect(shownLevel('high', model())).toBe('High')
+    expect(shownLevel('medium', model(['off', 'low', 'high']))).toBe('High')
+    expect(shownLevel('high', model([]))).toBeNull()
+    expect(shownLevel('', undefined)).toBeNull()
   })
 })

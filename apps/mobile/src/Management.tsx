@@ -848,6 +848,8 @@ export function Management({
         room
           ? room.members.some(m => m.member_kind === 'bot' && m.member_id === name && !m.left_at)
           : values[`member-${name}`] === true
+      // A main bot that has left the room since reads as none, and the daemon clears it on save.
+      const mainBot = joined(str(values.main_bot)) ? str(values.main_bot) : ''
       save = async () => {
         const members = mobile.bots.filter(b => joined(b.name)).map(b => b.name)
         const result = await rpc<{ room: Room }>(
@@ -864,8 +866,7 @@ export function Management({
                 }
               : { members }),
             name: values.name,
-            // A main bot that has left the room since is cleared by the daemon.
-            main_bot: joined(str(values.main_bot)) ? str(values.main_bot) : null
+            main_bot: mainBot || null
           }
         )
         if (!room) await mobile.openRoom(result.room)
@@ -886,7 +887,7 @@ export function Management({
                 key={b.name || 'none'}
                 title={b.display_name}
                 testID={`main-bot-${b.name || 'none'}`}
-                selected={str(values.main_bot) === b.name}
+                selected={mainBot === b.name}
                 onPress={() => set('main_bot', b.name)}
               />
             ))}
