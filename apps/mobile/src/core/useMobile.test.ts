@@ -703,6 +703,28 @@ describe('mobile unopened settlement consumer', () => {
     await flush()
     expect(render().bots[0].status).toBe('needs_you')
   })
+
+  it.each(['alpha', 'unrelated'])(
+    'fences a held bot read only for its named %s incident',
+    async name => {
+      await unopened()
+      const gets = holdBotGets()
+      hooks.clients[0].emit(namedResolved)
+      hooks.clients[0].emit({
+        type: 'hexbot.bots.incident',
+        payload: { bot: name, section_id: 'unopened', session_id: 'unobserved' }
+      })
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.bots.list') throw new Error('Roster unavailable')
+        return original(method, params)
+      }
+      await expect(render().refresh()).rejects.toThrow('Roster unavailable')
+      gets[0].resolve({ bot: { ...namedWait, status: 'working' } })
+      await flush()
+      expect(render().bots[0].status).toBe(name === 'alpha' ? 'needs_you' : 'working')
+    }
+  )
 })
 
 const stoppedBot = {
@@ -722,6 +744,350 @@ async function openStopped(cached = stoppedBot) {
   await render().openSection(cached, section())
   expect(status()).toBe('stopped')
 }
+
+describe('mobile deleted Retry section consumer', () => {
+  const deleted = (id = 'section') => ({
+    type: 'hexbot.sections.changed',
+    payload: { id, deleted: true }
+  })
+  function failReads() {
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.rooms.list' || method === 'hexbot.bots.get')
+        throw new Error('Read unavailable')
+      if (method === 'hexbot.bots.list') return { bots: [{ ...stoppedBot, status: 'idle' }] }
+      return original(method, params)
+    }
+  }
+
+  it('retires only the deleted private Retry even when the combined refresh fails', async () => {
+    await unopened(stoppedBot)
+    failReads()
+    hooks.clients[0].emit(deleted())
+    await expect(render().refresh()).rejects.toThrow('Read unavailable')
+    expect(render().bots[0]).toMatchObject({ status: 'idle', status_detail: null })
+    expect(render().sections).toEqual([])
+  })
+
+  it('preserves a confirmed private sibling card after retiring the deleted Retry', async () => {
+    await unopened(stoppedBot)
+    await render().openSection(stoppedBot, section('other', 's2'))
+    hooks.clients[0].emit(
+      wire('approval.request', { request_id: 'sibling', choices: ['once'] }, 's2')
+    )
+    failReads()
+    hooks.clients[0].emit(deleted())
+    await expect(render().refresh()).rejects.toThrow('Read unavailable')
+    expect(status()).toBe('needs_you')
+    expect(render().bots[0].status).toBe('needs_you')
+    expect(render().chat.approvals.map(card => card.requestId)).toEqual(['sibling'])
+  })
+
+  it.each(['hexbot.sections.open', 'session.status'])(
+    'closes the deleted route and rejects the held %s restoration',
+    async method => {
+      await unopened(stoppedBot)
+      failReads()
+      const held = deferred()
+      const original = hooks.handler
+      hooks.handler = (name, params) => (name === method ? held.promise : original(name, params))
+      const opening = render().openSection(stoppedBot, section())
+      await flush()
+      hooks.clients[0].emit(deleted())
+      held.resolve(
+        method === 'session.status' ? { status: 'working' } : { section: section(), messages: [] }
+      )
+      await opening
+      expect(render().route).toBeNull()
+      expect(render().liveSessionId()).toBeNull()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it('applies a successful local deletion reply without waiting for its event or any refresh', async () => {
+    await openStopped()
+    const original = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.sections.delete' ? { deleted: true } : original(method, params)
+    await render().rpc('hexbot.sections.delete', { id: 'section' })
+    expect(render().route).toBeNull()
+    expect(render().bots[0].status).toBe('idle')
+  })
+
+  it.each(['other section', 'room', 'global', 'connector'])(
+    'preserves an independent %s incident and ignores an untrusted bot hint',
+    async kind => {
+      const cached = {
+        ...stoppedBot,
+        status_detail: {
+          ...stoppedBot.status_detail!,
+          section_id: kind === 'other section' ? 'other' : kind === 'global' ? null : 'section',
+          room_id: kind === 'room' ? 'room' : null,
+          action:
+            kind === 'connector' ? { kind: 'fix_connector', connector: 'mail' } : { kind: 'retry' }
+        }
+      } as Bot
+      await unopened(cached)
+      failReads()
+      hooks.clients[0].emit({ ...deleted(), payload: { ...deleted().payload, bot: 'alpha' } })
+      await expect(render().refresh()).rejects.toThrow('Read unavailable')
+      expect(render().bots[0]).toEqual(cached)
+    }
+  )
+
+  it('uses the exact section ID despite a conflicting bot hint and keeps another bot intact', async () => {
+    await unopened(stoppedBot)
+    const beta = {
+      ...stoppedBot,
+      name: 'beta',
+      status_detail: { ...stoppedBot.status_detail!, section_id: 'beta' }
+    } as Bot
+    const original = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.bots.list' ? { bots: [stoppedBot, beta] } : original(method, params)
+    await render().refresh()
+    failReads()
+    hooks.clients[0].emit({ ...deleted(), payload: { ...deleted().payload, bot: 'beta' } })
+    expect(render().bots.map(bot => bot.status)).toEqual(['idle', 'stopped'])
+  })
+
+  it.each(['approval', 'working', 'error'])(
+    'keeps a current private sibling %s after the failed section is deleted',
+    async activity => {
+      await unopened(stoppedBot)
+      await render().openSection(stoppedBot, section('other', 's2'))
+      if (activity === 'approval')
+        hooks.clients[0].emit(
+          wire('clarify.request', { request_id: 'sibling', question: 'Where?' }, 's2')
+        )
+      if (activity === 'error')
+        hooks.clients[0].emit(
+          wire('message.complete', { error: 'Other conversation failed' }, 's2')
+        )
+      failReads()
+      hooks.clients[0].emit(deleted())
+      const expected =
+        activity === 'approval' ? 'needs_you' : activity === 'working' ? 'working' : 'stopped'
+      expect(status()).toBe(expected)
+      expect(render().bots[0].status).toBe(expected)
+      expect(render().bots[0].status_detail?.action).toBeFalsy()
+      if (activity === 'error')
+        expect(render().bots[0].status_detail?.text).toBe('Other conversation failed')
+    }
+  )
+
+  it.each(['question', 'working', 'error'])(
+    'keeps the same bot’s known room sibling %s after its private failure is deleted',
+    async activity => {
+      const room = {
+        id: 'room',
+        members: [],
+        turns: [{ bot: 'alpha', live_session_id: 'room-session' }]
+      } as unknown as Room
+      await unopened(stoppedBot)
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.rooms.get') return { room }
+        if (method === 'hexbot.rooms.log') return { events: [] }
+        return original(method, params)
+      }
+      await render().openRoom(room)
+      if (activity === 'question')
+        hooks.clients[0].emit(
+          wire('clarify.request', { request_id: 'sibling', question: 'When?' }, 'room-session')
+        )
+      if (activity === 'error')
+        hooks.clients[0].emit(
+          wire('message.complete', { error: 'Room conversation failed' }, 'room-session')
+        )
+      failReads()
+      hooks.clients[0].emit(deleted())
+      expect(render().bots[0].status).toBe(
+        activity === 'question' ? 'needs_you' : activity === 'working' ? 'working' : 'stopped'
+      )
+      expect(render().bots[0].status_detail?.action).toBeFalsy()
+      expect(render().route?.kind).toBe('room')
+      if (activity === 'question')
+        expect(render().chat.questions.map(card => card.sessionId)).toEqual(['room-session'])
+    }
+  )
+
+  it('does not infer deletion from a missing section row or an ordinary changed event', async () => {
+    await unopened(stoppedBot)
+    const original = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.sections.list' ? { sections: [] } : original(method, params)
+    await render().refresh()
+    hooks.clients[0].emit({ type: 'hexbot.sections.changed', payload: { id: 'section' } })
+    expect(render().bots[0].status).toBe('stopped')
+  })
+
+  it('filters deleted rows from older and later same-epoch lists and refuses a cached deleted open', async () => {
+    await unopened(stoppedBot)
+    const reads = holdRefreshes()
+    const older = render().refresh()
+    hooks.clients[0].emit(deleted())
+    reads[0].resolve({ bots: [stoppedBot] })
+    await older
+    expect(render().sections).toEqual([])
+    const later = render().refresh()
+    reads[1].resolve({ bots: [stoppedBot] })
+    await later
+    expect(render().sections).toEqual([])
+    await render().openSection(stoppedBot, section())
+    expect(render().route).toBeNull()
+    expect(render().bots[0].status).toBe('idle')
+  })
+
+  it('allows verified aggregate sibling authority after deletion while an older get cannot restore the failure', async () => {
+    await unopened(stoppedBot)
+    const gets = holdBotGets()
+    hooks.clients[0].emit(namedResolved)
+    hooks.clients[0].emit(deleted())
+    gets[0].resolve({ bot: { ...stoppedBot, status: 'working' } })
+    await flush()
+    expect(render().bots[0].status).toBe('idle')
+    expect(gets).toHaveLength(2)
+    const sibling = {
+      ...stoppedBot,
+      status: 'needs_you',
+      status_detail: { ...namedWait.status_detail!, section_id: 'unseen', session_id: 'unseen' }
+    } as Bot
+    gets[1].resolve({ bot: sibling })
+    await flush()
+    expect(render().bots[0]).toEqual(sibling)
+  })
+
+  it('retains deletion on a same epoch and retires it on a new epoch without replaying an old buffered delete', async () => {
+    await openStopped()
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+    const room = { id: 'room', members: [], turns: [] } as unknown as Room
+    const held = deferred()
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.rooms.log') return { events: [] }
+      if (method === 'hexbot.rooms.get') return held.promise
+      return original(method, params)
+    }
+    const opening = render().openRoom(room)
+    await flush()
+    hooks.clients[0].emit(deleted())
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+    expect(render().bots[0].status).toBe('idle')
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+    expect(render().bots[0].status).toBe('stopped')
+    held.resolve({ room })
+    await opening
+    expect(render().bots[0].status).toBe('stopped')
+    await render().refresh()
+    expect(render().sections.map(section => section.id)).toEqual(['section'])
+  })
+
+  it('rejects an old-epoch full snapshot and an old local delete reply', async () => {
+    await unopened(stoppedBot)
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+    const reads = holdRefreshes()
+    const older = render().refresh()
+    const reply = deferred()
+    const original = hooks.handler
+    hooks.handler = (method, params) =>
+      method === 'hexbot.sections.delete' ? reply.promise : original(method, params)
+    const deleting = render().rpc('hexbot.sections.delete', { id: 'section' })
+    hooks.clients[0].emit(deleted())
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+    reads[0].resolve({ bots: [{ ...stoppedBot, status: 'idle' }] })
+    await older
+    reply.resolve({ deleted: true })
+    await expect(deleting).rejects.toThrow('daemon restarted')
+    expect(render().bots[0].status).toBe('stopped')
+  })
+
+  it('rejects an old daemon’s live deletion callback and local delete reply', async () => {
+    await unopened(stoppedBot)
+    const reply = deferred()
+    const original = hooks.handler
+    hooks.handler = (method, params) =>
+      method === 'hexbot.sections.delete' ? reply.promise : original(method, params)
+    const deleting = render().rpc('hexbot.sections.delete', { id: 'section' })
+    await render().activate({ ...daemon, id: 'other' }, 'token')
+    await render().refresh()
+    hooks.clients[0].emit(deleted())
+    reply.resolve({ deleted: true })
+    await expect(deleting).rejects.toThrow('selected daemon changed')
+    expect(render().bots[0].status).toBe('stopped')
+    expect(render().sections.map(section => section.id)).toEqual(['section'])
+  })
+
+  it('fences a section selection awaiting creation before deletion even after a new epoch', async () => {
+    await unopened(stoppedBot)
+    const held = deferred()
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.sections.list') return { sections: [] }
+      if (method === 'hexbot.sections.create') return held.promise
+      return original(method, params)
+    }
+    await render().refresh()
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+    const opening = render().openSection(stoppedBot)
+    hooks.clients[0].emit(deleted())
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+    held.resolve({ section: section() })
+    await opening
+    expect(render().route).toBeNull()
+    expect(render().error).toBe('This conversation was deleted.')
+  })
+
+  it('does not repeat verification or renew deletion when the canonical event precedes its local reply', async () => {
+    await unopened(stoppedBot)
+    const held = deferred()
+    let reads = 0
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.sections.delete') return held.promise
+      if (method === 'hexbot.bots.get') {
+        reads++
+        throw new Error('Bot unavailable')
+      }
+      return original(method, params)
+    }
+    const deleting = render().rpc('hexbot.sections.delete', { id: 'section' })
+    hooks.clients[0].emit(deleted())
+    await flush()
+    held.resolve({ deleted: true })
+    await deleting
+    await flush()
+    expect(reads).toBe(1)
+    expect(render().bots[0].status).toBe('idle')
+  })
+
+  it('keeps a deletion-triggered verification useful when its local reply confirms the same deletion', async () => {
+    await unopened(stoppedBot)
+    const gets = holdBotGets()
+    const reply = deferred()
+    const original = hooks.handler
+    hooks.handler = (method, params) =>
+      method === 'hexbot.sections.delete' ? reply.promise : original(method, params)
+    const deleting = render().rpc('hexbot.sections.delete', { id: 'section' })
+    hooks.clients[0].emit(deleted())
+    reply.resolve({ deleted: true })
+    await deleting
+    const sibling = {
+      ...stoppedBot,
+      status: 'needs_you',
+      status_detail: {
+        ...stoppedBot.status_detail!,
+        action: null,
+        section_id: 'sibling',
+        session_id: 'sibling'
+      }
+    } as Bot
+    gets[0].resolve({ bot: sibling })
+    await flush()
+    expect(gets).toHaveLength(1)
+    expect(render().bots[0]).toEqual(sibling)
+  })
+})
 
 describe('mobile retry status consumer', () => {
   it('projects an exact resolved retry in both roster and route when refresh fails', async () => {
