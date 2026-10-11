@@ -131,7 +131,7 @@ the roster slides in as a drawer.
   "Recounting after the summary." Nothing is drawn until the daemon has
   measured the section (`hexbot.sections.open`, `session.usage`), and nothing
   in rooms. The bar never animates; it is redrawn when a turn ends, a
-  summarising starts or ends, or the model changes. The conversation column is
+  summary starts or ends, or the model changes. The conversation column is
   a container: under 54rem the word "Context" goes, and the centred title
   truncates before it can reach the pill. The context window is never called
   memory.

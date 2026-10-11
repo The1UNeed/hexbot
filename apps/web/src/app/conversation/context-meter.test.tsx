@@ -102,17 +102,15 @@ describe('readContext', () => {
     expect(reading.high).toBe(false)
   })
 
-  it('reports Pi thresholds when the reserve meets or exceeds the window', () => {
+  it('says a section at or below a zero threshold summarises after every reply', () => {
     const negative = readContext(context({ compact_at: -8192, tokens: 1, window: 8192 }))!
     expect(negative.compactPercent).toBe(0)
     expect(negative.high).toBe(true)
-    expect(negative.detail).toContain(
-      'Older messages are summarised at any context size because the reserve exceeds the window.'
-    )
+    expect(negative.detail).toBe('1 of 8.2k tokens. Older messages are summarised after every reply.')
     const zero = readContext(context({ compact_at: 0, tokens: 1, window: 16384 }))!
     expect(zero.compactPercent).toBe(0)
     expect(zero.high).toBe(true)
-    expect(zero.detail).toContain('Older messages are summarised above 0 tokens.')
+    expect(zero.detail).toBe('1 of 16k tokens. Older messages are summarised after every reply.')
   })
 
   it('never reads past the window', () => {

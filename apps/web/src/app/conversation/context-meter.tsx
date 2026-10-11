@@ -34,10 +34,11 @@ function describe(amount: string, compactAt: null | number, compacting: boolean,
     return amount
   }
 
-  const point =
-    compactAt < 0
-      ? `${amount} Older messages are summarised at any context size because the reserve exceeds the window.`
-      : `${amount} Older messages are summarised above ${formatTokens(compactAt)} tokens.`
+  if (compactAt <= 0) {
+    return `${amount} Older messages are summarised after every reply.`
+  }
+
+  const point = `${amount} Older messages are summarised above ${formatTokens(compactAt)} tokens.`
 
   return high
     ? `${point} Start a new section soon. Long sections make the bot slower and less accurate.`

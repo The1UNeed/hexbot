@@ -233,12 +233,13 @@ pub fn compaction_settings(agent_dir: &Path) -> Value {
 /// what Pi does. A model without an override takes the global value. Keep
 /// zero and negative thresholds: Pi triggers when tokens exceed this value,
 /// even when the configured reserve does not fit the model window.
-pub fn compaction_point(compaction: &Value, provider: &str, model: &str, window: u64) -> i128 {
+pub fn compaction_point(compaction: &Value, provider: &str, model: &str, window: u64) -> i64 {
     let reserve = compaction["modelOverrides"][format!("{provider}/{model}")]["reserveTokens"]
         .as_u64()
         .or_else(|| compaction["reserveTokens"].as_u64())
         .unwrap_or(COMPACTION_RESERVE_TOKENS);
-    i128::from(window) - i128::from(reserve)
+    // Both are non-negative, so the difference cannot overflow.
+    i64::try_from(window).unwrap_or(i64::MAX) - i64::try_from(reserve).unwrap_or(i64::MAX)
 }
 fn key(home: &Path, p: &Value) -> Result<Option<String>> {
     let disabled = read_json(&home.join("providers-disabled.json"))?;
