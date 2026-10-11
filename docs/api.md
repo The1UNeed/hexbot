@@ -109,9 +109,13 @@ when it overrides the default.
 
 `status` is `idle`, `working`, `needs_you`, or `stopped` (priority in that
 reverse order), folded by the daemon from live session state, room turns,
-room `waiting.human` events, and open incidents. Archived sections do not
-count; their state returns on unarchive. A new turn in a section resolves its
-`turn_failed` incident, and deleting a section resolves all of its incidents.
+room `waiting.human` events, and open incidents. Archived private sections and
+their turn failures do not count; their state returns on unarchive. Turn
+failures left by private sections deleted before upgrade are ignored without
+rewriting the incident rows. Room, global and connector incidents remain
+eligible even if their linked section is missing or archived. A new turn
+resolves its `turn_failed` incident, and deleting a section resolves all of
+its incidents.
 The daemon emits `hexbot.bots.changed {name}` when a turn starts, when a
 question or approval arrives, and when one is answered. Clients also refresh
 bots on `hexbot.sections.changed`, sent when a turn ends or a section is

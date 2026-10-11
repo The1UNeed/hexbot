@@ -320,8 +320,19 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
         .take(2)
         .cloned()
         .collect::<Vec<_>>();
-    // An incident in an archived section waits there; it no longer stops the bot.
-    let incident=rows(&db::open(home)?,"SELECT * FROM bot_incidents i WHERE bot=? AND resolved_at IS NULL AND NOT EXISTS(SELECT 1 FROM sections WHERE id=i.section_id AND archived_at IS NOT NULL) ORDER BY created_at DESC LIMIT 1",&[&name])?.into_iter().next();
+    // Private turn failures need a section that can still be retried. Room
+    // sessions live outside sections; connector and global causes remain visible.
+    let incident = rows(
+        &db::open(home)?,
+        "SELECT * FROM bot_incidents i WHERE bot=? AND resolved_at IS NULL AND (
+            i.kind<>'turn_failed' OR i.section_id IS NULL OR i.room_id IS NOT NULL
+            OR EXISTS(SELECT 1 FROM room_sessions r WHERE r.stored_session_id=i.section_id AND r.bot=i.bot)
+            OR EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id AND s.archived_at IS NULL)
+         ) ORDER BY created_at DESC LIMIT 1",
+        &[&name],
+    )?
+    .into_iter()
+    .next();
     let (mut status, mut detail) = ("idle", Value::Null);
     if let Some(i) = incident {
         status = "stopped";

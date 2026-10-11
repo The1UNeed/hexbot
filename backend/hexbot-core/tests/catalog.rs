@@ -452,6 +452,145 @@ fn incidents_in_archived_or_deleted_sections_do_not_stop_the_bot() {
 }
 
 #[test]
+fn legacy_deleted_section_failures_are_ignored_without_resolving_other_threads() {
+    let home = setup();
+    let h = home.path();
+    let id = create(h)["section"]["id"].as_str().unwrap().to_owned();
+    let conn = db::open(h).unwrap();
+    conn.execute("INSERT INTO bot_incidents(id,bot,section_id,kind,text,created_at) VALUES('legacy','research-owl',?,'turn_failed','Old failed turn',2)", [&id]).unwrap();
+    let status = |expected: &str, section: Option<&str>| {
+        let get = call(
+            h,
+            "alice",
+            "hexbot.bots.get",
+            json!({"name":"research-owl"}),
+        );
+        let list = call(h, "alice", "hexbot.bots.list", json!({}));
+        for bot in [&get["bot"], &list["bots"][0]] {
+            assert_eq!(bot["status"], expected);
+            assert_eq!(bot["status_detail"]["section_id"], json!(section));
+        }
+    };
+    status("stopped", Some(&id));
+    call(h, "alice", "hexbot.sections.archive", json!({"id":id}));
+    status("idle", None);
+    call(h, "alice", "hexbot.sections.unarchive", json!({"id":id}));
+    status("stopped", Some(&id));
+    // Emulate deletion before the incident-resolving delete handler existed.
+    conn.execute("DELETE FROM sections WHERE id=?", [&id])
+        .unwrap();
+    status("idle", None);
+    let resolved: Option<f64> = conn
+        .query_row(
+            "SELECT resolved_at FROM bot_incidents WHERE id='legacy'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(resolved.is_none()); // GET/LIST only select; they do not migrate rows.
+
+    conn.execute_batch("INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('private-thread','research-owl','alice','From Writer','writer'); INSERT INTO bot_incidents(id,bot,section_id,kind,text,created_at) VALUES('thread','research-owl','private-thread','turn_failed','Thread failed',1);").unwrap();
+    assert!(
+        call(
+            h,
+            "alice",
+            "hexbot.sections.list",
+            json!({"bot":"research-owl"})
+        )["sections"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    status("stopped", Some("private-thread"));
+    call(
+        h,
+        "alice",
+        "hexbot.sections.archive",
+        json!({"id":"private-thread"}),
+    );
+    status("idle", None);
+    call(
+        h,
+        "alice",
+        "hexbot.sections.unarchive",
+        json!({"id":"private-thread"}),
+    );
+    status("stopped", Some("private-thread"));
+}
+
+#[test]
+fn room_connector_and_global_incidents_survive_missing_or_archived_sections() {
+    let home = setup();
+    let h = home.path();
+    let id = create(h)["section"]["id"].as_str().unwrap().to_owned();
+    let conn = db::open(h).unwrap();
+    conn.execute_batch("INSERT INTO rooms(id,name,owner_id) VALUES('room','Room','alice'); INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room','research-owl','room-session');").unwrap();
+    call(h, "alice", "hexbot.sections.archive", json!({"id":id}));
+    for (label, kind, section, room, connector) in [
+        (
+            "connector deleted",
+            "connector_error",
+            Some("deleted"),
+            None,
+            Some("github"),
+        ),
+        (
+            "connector archived",
+            "connector_error",
+            Some(id.as_str()),
+            None,
+            Some("github"),
+        ),
+        (
+            "room deleted",
+            "turn_failed",
+            Some("deleted"),
+            Some("room"),
+            None,
+        ),
+        (
+            "room archived",
+            "turn_failed",
+            Some(id.as_str()),
+            Some("room"),
+            None,
+        ),
+        (
+            "room stored session",
+            "turn_failed",
+            Some("room-session"),
+            None,
+            None,
+        ),
+        ("global failure", "turn_failed", None, None, None),
+    ] {
+        conn.execute("DELETE FROM bot_incidents", []).unwrap();
+        conn.execute("INSERT INTO bot_incidents(id,bot,section_id,room_id,kind,connector,text,created_at) VALUES('incident','research-owl',?,?,?,?,?,1)", rusqlite::params![section,room,kind,connector,label]).unwrap();
+        let get = call(
+            h,
+            "alice",
+            "hexbot.bots.get",
+            json!({"name":"research-owl"}),
+        );
+        let list = call(h, "alice", "hexbot.bots.list", json!({}));
+        for bot in [&get["bot"], &list["bots"][0]] {
+            assert_eq!(bot["status"], "stopped", "{label}");
+            assert_eq!(bot["status_detail"]["text"], label);
+            assert_eq!(bot["status_detail"]["section_id"], json!(section));
+            assert_eq!(bot["status_detail"]["room_id"], json!(room));
+            assert_eq!(
+                bot["status_detail"]["action"]["kind"],
+                if connector.is_some() {
+                    "fix_connector"
+                } else {
+                    "retry"
+                }
+            );
+        }
+    }
+}
+
+#[test]
 fn create_accepts_explicit_empty_tool_selection_before_registry_insert() {
     let home = setup();
     let created = call(
