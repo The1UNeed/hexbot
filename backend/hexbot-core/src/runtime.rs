@@ -1103,7 +1103,7 @@ impl Runtime {
     /// interrupted check and outside the dialog tasks an interrupt aborts and
     /// answers with a cancellation. Its reply is never cancelled either.
     fn answer_adoption(&self, s: &Arc<Live>, id: &str, adopt: &str) {
-        let response = match common::bot_session_access(&self.home, &s.owner, &s.bot, &s.stored)
+        let response = match common::bot_owner(&self.home, &s.owner, &s.bot)
             .and_then(|_| self.adopt_prompt(s, adopt))
         {
             Ok(result) => json!({"result":result}),

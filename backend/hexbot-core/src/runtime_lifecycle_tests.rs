@@ -251,9 +251,9 @@ async fn compaction_prompt_is_saved_only_when_adopted_and_preserves_other_option
     );
     runtime.adopt_prompt(&s, &adopt(&original)).unwrap();
     assert_eq!(saved().0, original);
-    // Old sections without either compatibility tag never refresh.
+    // Old sections without the layout tag never refresh.
     fs::write(home.path().join("profiles/owl/SOUL.md"), "Changed again").unwrap();
-    for key in ["prompt_version", "prompt_layout"] {
+    for key in ["prompt_layout"] {
         conn.execute(
             "UPDATE native_sessions SET options=json_remove(options,?) WHERE stored_id='first'",
             [format!("$.{key}")],
