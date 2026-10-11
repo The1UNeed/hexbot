@@ -42,6 +42,29 @@ describe('transcript reducer', () => {
       useTranscripts.getState().bySession.s?.clarifies.map(clarify => clarify.requestId)
     ).toEqual(['c'])
   })
+
+  it.each([true, false])(
+    'hydrates only genuinely pending batch questions as fresh Waiting (complete=%s)',
+    complete => {
+      const actions = useTranscripts.getState()
+      actions.open('s', 's1', [])
+      actions.clarifyRequest(
+        's',
+        {
+          request_id: 'batch',
+          questions: [
+            { qid: 'q1', question: 'First?' },
+            { qid: 'q2', question: 'Second?' }
+          ],
+          answers: complete ? { q1: 'Yes', q2: 'No' } : { q1: 'Yes' }
+        },
+        { notify: false }
+      )
+      expect(useTranscripts.getState().bySession.s?.liveStatus).toBe(
+        complete ? undefined : 'needs_you'
+      )
+    }
+  )
   it('opens on a delta and does not duplicate streamed interim text', () => {
     const actions = useTranscripts.getState()
     actions.messageDelta('s', 'hello')
@@ -142,7 +165,7 @@ describe('transcript reducer', () => {
       ]
     })
     actions.answerClarify('s', 'q', 'a', 'Yes')
-    expect(liveSectionsOf(useTranscripts.getState().bySession).s1).toBe('needs_you')
+    expect(liveSectionsOf(useTranscripts.getState().bySession).s1).toEqual({ status: 'needs_you' })
     actions.answerClarify('s', 'q', 'b', 'No')
     expect(liveSectionsOf(useTranscripts.getState().bySession).s1).toBe('answered')
     actions.clearAnsweredWaiting()
@@ -160,7 +183,7 @@ describe('transcript reducer', () => {
     expect(liveSectionsOf(useTranscripts.getState().bySession).s1).toBe('answered')
     actions.approvalRequest('s', { request_id: 'next' })
     expect(useTranscripts.getState().bySession.s?.answeredWaiting).toBeUndefined()
-    expect(liveSectionsOf(useTranscripts.getState().bySession).s1).toBe('needs_you')
+    expect(liveSectionsOf(useTranscripts.getState().bySession).s1).toEqual({ status: 'needs_you' })
   })
 
   it('expires answer evidence when an authoritative status arrives without its card', () => {

@@ -6,7 +6,7 @@ import { useTranscripts } from '../stores/transcripts'
 import { ConnectionSupervisor } from './connection'
 import type { Bot, Section } from './types'
 
-it.each(['quiet', 'streaming', 'answered'])(
+it.each(['quiet', 'streaming', 'answered', 'fresh working', 'fresh idle'])(
   'preserves daemon Waiting after a card was missed offline (%s)',
   async state => {
     const section = {
@@ -112,8 +112,25 @@ it.each(['quiet', 'streaming', 'answered'])(
         expect(liveSectionsOf(useTranscripts.getState().bySession).s1).toBe('answered')
       }
 
+      if (state === 'fresh working' || state === 'fresh idle') {
+        sockets[0]!.frame({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: {
+            type: 'status.update',
+            session_id: 'live-1',
+            seq: 1,
+            payload: { kind: state === 'fresh working' ? 'working' : 'idle', text: '' }
+          }
+        })
+        expect(useTranscripts.getState().bySession['live-1']?.liveStatus).toBe(
+          state === 'fresh working' ? 'working' : 'idle'
+        )
+      }
+
       sockets[0]!.close()
       expect(useTranscripts.getState().bySession['live-1']?.answeredWaiting).toBeUndefined()
+      expect(useTranscripts.getState().bySession['live-1']?.liveStatus).toBeUndefined()
       waiting = true // The daemon asks while this client is disconnected.
       await supervisor.retryNow()
       expect(sockets).toHaveLength(2)

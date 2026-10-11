@@ -62,6 +62,118 @@ describe('live section status', () => {
     expect(botStatusWithLive(bot, sections, { s1: 'needs_you' })).toBe('working')
   })
 
+  it('uses fresh live transitions without treating old streams as fresh authority', () => {
+    const waiting = { ...bot, status: 'needs_you' } as Bot
+
+    for (const stale of [waiting, bot]) {
+      expect(sectionStatusOf(stale, 's1', { s1: { status: 'idle' } })).toBe('idle')
+      expect(botStatusWithLive(stale, sections, { s1: { status: 'idle' } })).toBe('idle')
+    }
+
+    expect(sectionStatusOf(waiting, 's1', { s1: { status: 'working' } })).toBe('working')
+    expect(sectionStatusOf(waiting, 's1', { s1: 'working' })).toBe('needs_you')
+    expect(
+      botStatusWithLive(waiting, sections, { s1: { status: 'working' }, s2: 'needs_you' })
+    ).toBe('needs_you')
+    const stopped = { ...bot, status: 'stopped' } as Bot
+    expect(sectionStatusOf(stopped, 's1', { s1: { status: 'idle' } })).toBe('stopped')
+  })
+
+  it('applies fresh transitions only to an exact named thread and preserves room fallback', () => {
+    const thread = { ...bot, status: 'needs_you', status_detail: { section_id: 'thread' } } as Bot
+    expect(botStatusWithLive(thread, sections, { thread: { status: 'working' } })).toBe('working')
+    expect(botStatusWithLive(thread, sections, { thread: { status: 'idle' } })).toBe('idle')
+    expect(botStatusWithLive(thread, sections, { s2: { status: 'working' } })).toBe('needs_you')
+    const room = { ...bot, status: 'needs_you', status_detail: { room_id: 'r' } } as Bot
+    expect(botStatusWithLive(room, sections, { 'room:r': { status: 'working' } })).toBe('needs_you')
+    expect(
+      botStatusWithLive({ ...room, status: 'working' }, sections, { 'room:r': { status: 'idle' } })
+    ).toBe('working')
+  })
+
+  it('uses exact room-session authority without transferring another bot’s status', () => {
+    const room = {
+      ...bot,
+      status: 'needs_you',
+      status_detail: { room_id: 'r', section_id: null, session_id: 'owl-live' }
+    } as Bot
+
+    const sessions = {
+      'owl-live': { sectionId: 'room:r', liveStatus: 'working' as const },
+      'cat-live': { sectionId: 'room:r', liveStatus: 'needs_you' as const }
+    }
+
+    const shared = { 'room:r': { status: 'needs_you' as const } }
+    expect(botStatusWithLive(room, sections, shared, sessions)).toBe('working')
+    expect(
+      botStatusWithLive({ ...room, status: 'working' }, sections, shared, {
+        ...sessions,
+        'owl-live': { sectionId: 'room:r', liveStatus: 'idle' }
+      })
+    ).toBe('idle')
+
+    const cat = {
+      ...room,
+      status: 'working',
+      status_detail: { ...room.status_detail, session_id: 'cat-live' }
+    } as Bot
+
+    expect(botStatusWithLive(cat, sections, shared, sessions)).toBe('needs_you')
+    expect(
+      botStatusWithLive(
+        { ...room, status_detail: { ...room.status_detail, session_id: null } } as Bot,
+        sections,
+        shared,
+        sessions
+      )
+    ).toBe('needs_you')
+    expect(botStatusWithLive(room, sections, shared, { 'cat-live': sessions['cat-live'] })).toBe(
+      'needs_you'
+    )
+    expect(
+      botStatusWithLive(room, sections, shared, {
+        'owl-live': { sectionId: 'room:other', liveStatus: 'working' }
+      })
+    ).toBe('needs_you')
+    expect(botStatusWithLive({ ...room, status: 'stopped' }, sections, shared, sessions)).toBe(
+      'stopped'
+    )
+  })
+
+  it.each(['approval', 'clarify'] as const)(
+    'uses existing %s answer proof only for the exact room session',
+    kind => {
+      const room = {
+        ...bot,
+        status: 'needs_you',
+        status_detail: { room_id: 'r', section_id: 'r', session_id: 'own' }
+      } as Bot
+
+      const answered = {
+        ...emptyTranscript('own', 'room:r'),
+        answeredWaiting: { kind, requestId: 'answer' },
+        approvals: kind === 'approval' ? [{ requestId: 'answer', decision: 'once' }] : [],
+        clarifies:
+          kind === 'clarify'
+            ? [{ requestId: 'answer', answers: { answer: 'Yes' }, questions: [{}] }]
+            : []
+      }
+
+      const live = liveSectionsOf({ own: answered } as never)
+
+      expect(botStatusWithLive(room, sections, live, { own: answered })).toBe('working')
+      expect(botStatusWithLive(room, sections, live, { other: answered })).toBe('needs_you')
+      expect(
+        botStatusWithLive(
+          { ...room, status_detail: { ...room.status_detail, session_id: null } } as Bot,
+          sections,
+          live,
+          { own: answered }
+        )
+      ).toBe('needs_you')
+    }
+  )
+
   it('keeps room and thread status when the daemon names no listed section', () => {
     const room = { ...bot, status: 'needs_you', status_detail: { room_id: 'r' } } as Bot
     const thread = { ...bot, status_detail: { section_id: 'thread' } } as Bot
@@ -102,7 +214,9 @@ describe('live section status', () => {
       { section_id: 's1', room_id: 'r', action: { kind: 'retry' } },
       { section_id: 'thread', action: { kind: 'retry' } }
     ]) {
-      expect(botStatusWithLive({ ...stopped, status_detail: detail } as Bot, archived, {})).toBe('stopped')
+      expect(botStatusWithLive({ ...stopped, status_detail: detail } as Bot, archived, {})).toBe(
+        'stopped'
+      )
     }
   })
 })

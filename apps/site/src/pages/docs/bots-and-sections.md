@@ -27,6 +27,8 @@ The teammate description tells other bots when to ask this one for help. For exa
 
 Reopen a section to continue the same task. Closing the app or restarting the daemon does not delete it. Each section keeps a persistent Pi conversation; a fresh section starts with a new context window and the bot's current settings.
 
+Waiting means a bot needs your answer. Once your answer lets it resume, the sidebar shows Working even before text starts streaming.
+
 Soul, selected skills, tool definitions, and the teammate list stay fixed for an existing conversation. Start a new section after changing them so the bot receives the new setup. Credentials and runtime settings can update separately; a temporary section model override does not change the bot's default model.
 
 The context meter at the top right of a section shows how much of the model's context window the conversation fills, as a percentage, with the plain numbers on hover. A tick on its bar marks the summary point: when the conversation exceeds it, Hexbot summarises the older messages so the section can go on, and the pill reads "Summarising" while that happens. If the model's window is too small to keep any messages before that point, the tooltip says older messages are summarised after every reply. After a summary, the meter reads "Context" until the next reply is measured, even after the daemon restarts. The summary keeps the thread of the work but not every detail, and a long section makes the bot slower and less accurate, so when the meter is high, start a new section for the next task. The bot can still search earlier sections when it needs them.
@@ -44,6 +46,8 @@ When the bot searches, it leaves out the section it is in, which it already has 
 Use **Stop** to interrupt a running answer. The section stays available, and you can send another message.
 
 Archiving hides a section from the active list and keeps its history. To bring it back, find it in Settings, Archive, where you can search titles, first messages, and bot names, or filter by bot, and choose Restore. The bot's Sections settings list its archived sections too. Deleting removes that section and its history permanently. It leaves the bot's memory alone; edit Memory separately when you want to remove a remembered fact.
+
+A failed turn in an archived or deleted section does not keep its bot Stopped. Restoring an archived section restores any unresolved failure. Problems in rooms or connected services remain visible when you archive a section.
 
 Deleting the bot removes its profile, sections, memory, and scheduled jobs. Stop its active work first. Back up the daemon's data directory before removing a bot you may need again.
 

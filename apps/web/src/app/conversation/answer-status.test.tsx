@@ -3,7 +3,12 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { setActiveRpc } from '../../lib/rpc'
 import type { Bot, Section } from '../../lib/types'
 import { useBots } from '../../stores/bots'
-import { botStatusWithLive, liveSectionsOf, sectionStatusOf, useSections } from '../../stores/sections'
+import {
+  botStatusWithLive,
+  liveSectionsOf,
+  sectionStatusOf,
+  useSections
+} from '../../stores/sections'
 import {
   resetTranscriptEffects,
   setTranscriptEffects,
@@ -65,6 +70,16 @@ function expectSettled(kind: Kind) {
   }
 }
 
+function clickAnswer(kind: Kind) {
+  if (kind === 'approval') {
+    render(<ApprovalCard approval={transcript().approvals[0]!} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+  } else {
+    render(<ClarifyCard clarify={transcript().clarifies[0]!} />)
+    fireEvent.click(screen.getByRole('option', { name: /Yes/ }))
+  }
+}
+
 function expectStatus(status: Bot['status']) {
   const live = liveSectionsOf(actions().bySession)
   expect(sectionStatusOf(useBots.getState().byName.owl, 's1', live)).toBe(status)
@@ -99,13 +114,7 @@ describe.each<Kind>(['approval', 'clarify'])('%s answer lifecycle', kind => {
       setActiveRpc({ call } as never)
       ask(kind)
 
-      if (kind === 'approval') {
-        render(<ApprovalCard approval={transcript().approvals[0]!} />)
-        fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
-      } else {
-        render(<ClarifyCard clarify={transcript().clarifies[0]!} />)
-        fireEvent.click(screen.getByRole('option', { name: /Yes/ }))
-      }
+      clickAnswer(kind)
 
       expect(call).toHaveBeenCalledWith(
         `${kind}.respond`,
@@ -129,10 +138,6 @@ describe.each<Kind>(['approval', 'clarify'])('%s answer lifecycle', kind => {
           actions().open('live', 's1', [])
         }
 
-        if (boundary === 'complete' || boundary === 'status') {
-          useBots.setState({ byName: { owl: bot('owl', 'idle') } })
-        }
-
         response.resolve(result(kind))
       })
       await waitFor(() => expectSettled(kind))
@@ -147,6 +152,134 @@ describe.each<Kind>(['approval', 'clarify'])('%s answer lifecycle', kind => {
     await send(kind)
     expectSettled(kind)
     expectStatus('working')
+  })
+
+  it.each([true, false])(
+    'keeps fresh Working through a failed roster and no-stream gap (status first=%s)',
+    async statusFirst => {
+      const response = deferred()
+      setActiveRpc({
+        call: vi.fn((method: string) =>
+          method === 'hexbot.bots.list' ? Promise.reject(new Error('offline')) : response.promise
+        )
+      } as never)
+      ask(kind)
+      clickAnswer(kind)
+
+      const resumed = async () => {
+        await act(async () => actions().statusUpdate('live', { kind: 'working', text: 'Working' }))
+      }
+
+      const answered = async () => {
+        await act(async () => response.resolve(result(kind)))
+        await waitFor(() => expectSettled(kind))
+      }
+
+      if (statusFirst) {
+        await resumed()
+        await answered()
+      } else {
+        await answered()
+        await resumed()
+      }
+
+      await act(async () => {
+        await useBots.getState().refresh()
+        actions().statusUpdate('live', { kind: 'status', text: 'Still processing the answer' })
+        actions().statusUpdate('live', { kind: 'waiting', text: 'Retrying the model request' })
+      })
+      expect(useBots.getState().byName.owl?.status).toBe('needs_you')
+      expect(transcript().answeredWaiting).toBeUndefined()
+      expect(transcript().liveStatus).toBe('working')
+      expect(transcript().streamingMessageId).toBeNull()
+      vi.useFakeTimers()
+
+      try {
+        await act(async () => vi.advanceTimersByTimeAsync(120_000))
+        expectStatus('working')
+      } finally {
+        vi.useRealTimers()
+      }
+    }
+  )
+
+  it.each(['needs_you', 'working'] as const)(
+    'fresh completion and idle supersede a stale %s roster',
+    async stale => {
+      setActiveRpc({
+        call: vi.fn(async (method: string) => {
+          if (method === 'hexbot.bots.list') {
+            throw new Error('offline')
+          }
+
+          return result(kind)
+        })
+      } as never)
+      ask(kind)
+      clickAnswer(kind)
+      await waitFor(() => expectSettled(kind))
+      useBots.setState({ byName: { owl: bot('owl', stale) } })
+      await act(async () => {
+        actions().statusUpdate('live', { kind: 'working', text: 'Working' })
+        actions().messageComplete('live', { text: 'Done.', status: 'complete' })
+        await useBots.getState().refresh()
+      })
+      expectStatus('idle')
+      await act(async () => actions().statusUpdate('live', { kind: 'idle', text: '' }))
+      expectStatus('idle')
+      expect(transcript().answeredWaiting).toBeUndefined()
+      expect(transcript().liveStatus).toBe('idle')
+    }
+  )
+
+  it.each(['new card', 'new turn', 'reconnect', 'snapshot', 'roster', 'other status'])(
+    'retires fresh Working on %s before a late answer reply',
+    async boundary => {
+      const response = deferred()
+      setActiveRpc({
+        call: vi.fn((method: string) =>
+          method === 'hexbot.bots.list' ? Promise.resolve({ bots: [bot()] }) : response.promise
+        )
+      } as never)
+      ask(kind)
+      const answering = send(kind)
+      actions().statusUpdate('live', { kind: 'working', text: 'Working' })
+
+      if (boundary === 'new card') {
+        ask(kind, 'next')
+      } else if (boundary === 'new turn') {
+        actions().messageStart('live')
+      } else if (boundary === 'reconnect') {
+        actions().clearAnsweredWaiting()
+      } else if (boundary === 'snapshot') {
+        actions().open('live', 's1', [])
+      } else if (boundary === 'roster') {
+        await useBots.getState().refresh()
+      } else {
+        actions().statusUpdate('live', { kind: 'error', text: 'Stopped' })
+      }
+
+      response.resolve(result(kind))
+      await answering
+      expectSettled(kind)
+      expect(transcript().answeredWaiting).toBeUndefined()
+      expect(transcript().liveStatus).toBe(boundary === 'new card' ? 'needs_you' : undefined)
+      expectStatus('needs_you')
+    }
+  )
+
+  it.each(['owl', 'cat'])('a scoped %s roster retires only its own fresh Working', async name => {
+    setActiveRpc({
+      call: vi.fn(async (method: string) =>
+        method === 'hexbot.bots.get' ? { bot: bot(name) } : result(kind)
+      )
+    } as never)
+    ask(kind)
+    await send(kind)
+    actions().statusUpdate('live', { kind: 'working', text: 'Working' })
+    await useBots.getState().refreshOne(name)
+    expectStatus(name === 'owl' ? 'needs_you' : 'working')
+    expect(transcript().liveStatus).toBe(name === 'owl' ? undefined : 'working')
   })
 
   it('cannot settle a replacement card after dropping and reopening the same live id', async () => {
@@ -175,7 +308,9 @@ describe.each<Kind>(['approval', 'clarify'])('%s answer lifecycle', kind => {
   it('leaves a failed answer pending and allows a fresh successful retry', async () => {
     const first = deferred()
     const second = deferred()
-    setActiveRpc({ call: vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise) } as never)
+    setActiveRpc({
+      call: vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    } as never)
     ask(kind)
     const failing = send(kind)
     const rejected = expect(failing).rejects.toThrow('offline')
@@ -191,48 +326,56 @@ describe.each<Kind>(['approval', 'clarify'])('%s answer lifecycle', kind => {
     expectStatus('working')
   })
 
-  it.each(['owl', 'cat'])('a scoped %s roster invalidates only its own in-flight answers', async name => {
-    const response = deferred()
-    setActiveRpc({
-      call: vi.fn((method: string) =>
-        method === 'hexbot.bots.get' ? Promise.resolve({ bot: bot(name) }) : response.promise
+  it.each(['owl', 'cat'])(
+    'a scoped %s roster invalidates only its own in-flight answers',
+    async name => {
+      const response = deferred()
+      setActiveRpc({
+        call: vi.fn((method: string) =>
+          method === 'hexbot.bots.get' ? Promise.resolve({ bot: bot(name) }) : response.promise
+        )
+      } as never)
+      ask(kind)
+      const answering = send(kind)
+      await useBots.getState().refreshOne(name)
+      response.resolve(result(kind))
+      await answering
+      expectSettled(kind)
+      expectStatus(name === 'owl' ? 'needs_you' : 'working')
+    }
+  )
+
+  it.each(['room:r', 'thread'])(
+    'preserves authoritative waiting outside the private roster (%s)',
+    async sectionId => {
+      const response = deferred()
+      setActiveRpc({ call: vi.fn(() => response.promise) } as never)
+      actions().open('live', sectionId, [])
+      ask(kind)
+      const answering = send(kind)
+      actions().clearAnsweredWaiting()
+
+      const owner = {
+        ...bot(),
+        status_detail: {
+          action: null,
+          room_id: sectionId === 'thread' ? null : 'r',
+          section_id: sectionId === 'thread' ? sectionId : null,
+          session_id: 'live',
+          since: 0,
+          text: 'Waiting'
+        }
+      } as Bot
+
+      response.resolve(result(kind))
+      await answering
+      expectSettled(kind)
+      expect(transcript().answeredWaiting).toBeUndefined()
+      expect(botStatusWithLive(owner, [section], liveSectionsOf(actions().bySession))).toBe(
+        'needs_you'
       )
-    } as never)
-    ask(kind)
-    const answering = send(kind)
-    await useBots.getState().refreshOne(name)
-    response.resolve(result(kind))
-    await answering
-    expectSettled(kind)
-    expectStatus(name === 'owl' ? 'needs_you' : 'working')
-  })
-
-  it.each(['room:r', 'thread'])('preserves authoritative waiting outside the private roster (%s)', async sectionId => {
-    const response = deferred()
-    setActiveRpc({ call: vi.fn(() => response.promise) } as never)
-    actions().open('live', sectionId, [])
-    ask(kind)
-    const answering = send(kind)
-    actions().clearAnsweredWaiting()
-
-    const owner = {
-      ...bot(),
-      status_detail: {
-        action: null,
-        room_id: sectionId === 'thread' ? null : 'r',
-        section_id: sectionId === 'thread' ? sectionId : null,
-        session_id: 'live',
-        since: 0,
-        text: 'Waiting'
-      }
-    } as Bot
-
-    response.resolve(result(kind))
-    await answering
-    expectSettled(kind)
-    expect(transcript().answeredWaiting).toBeUndefined()
-    expect(botStatusWithLive(owner, [section], liveSectionsOf(actions().bySession))).toBe('needs_you')
-  })
+    }
+  )
 })
 
 it('records a partial clarification answer without claiming the bot resumed', async () => {

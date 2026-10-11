@@ -51,7 +51,7 @@ import {
   useSections
 } from '../../stores/sections'
 import { useSettings } from '../../stores/settings'
-import { useTranscripts } from '../../stores/transcripts'
+import { type Transcript, useTranscripts } from '../../stores/transcripts'
 import { rememberedTab } from '../bot-settings'
 import { UpdatePill } from '../update-pill'
 
@@ -237,6 +237,7 @@ interface BotRowsProps {
   onStart: (bot: string) => void
   query: string
   sections: Section[]
+  sessions: Record<string, Transcript>
 }
 
 /** Which of a bot's rows match the roster search: the bot itself, or section titles. */
@@ -269,7 +270,8 @@ function BotRows({
   onSettings,
   onStart,
   query,
-  sections
+  sections,
+  sessions
 }: BotRowsProps) {
   const { available, matchesBot, matching } = matchBot(bot, sections, query, drafts)
 
@@ -292,7 +294,7 @@ function BotRows({
     available.some(section => section.id === active) && !rows.some(row => row.id === active)
 
   const label = bot.title || bot.description
-  const status = botStatusWithLive(bot, available, live)
+  const status = botStatusWithLive(bot, available, live, sessions)
 
   const dot =
     status === 'idle' && available.some(section => !section.archived_at && unseen(section, active))
@@ -785,6 +787,7 @@ export function RosterColumn() {
               sections={Object.values(sectionMap).filter(
                 section => section.bot === (entry.item as Bot).name
               )}
+              sessions={streamingSessions}
             />
           )
         )}

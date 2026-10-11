@@ -22,7 +22,7 @@ import { KICKOFF_MARKER } from '../lib/bot-kickoff'
 import type { Bot, BotStatus, Message, Section } from '../lib/types'
 
 import { draftsActions } from './drafts'
-import { useTranscripts } from './transcripts'
+import { transcriptRevision, useTranscripts } from './transcripts'
 
 /**
  * A thread: the private conversation in which `peer_bot` asks `bot` for help.
@@ -242,6 +242,7 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   async open(id) {
+    const revision = transcriptRevision()
     const { context, messages, pending_clarify, section } = await sectionsOpen(id)
     const live = section.live_session_id
 
@@ -252,13 +253,16 @@ export const useSections = create<SectionsState>((set, get) => ({
     }))
 
     if (live) {
-      useTranscripts.getState().open(
+      const transcripts = useTranscripts.getState()
+      const newer = (transcripts.bySession[live]?.authorityRevision ?? 0) > revision
+      transcripts.open(
         live,
         id,
         messagesFromHistory(messages ?? []).filter(
           // Hexbot replays an interrupted hidden kickoff as a plain user turn.
           message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
-        )
+        ),
+        revision
       )
 
       if (context) {
@@ -266,7 +270,10 @@ export const useSections = create<SectionsState>((set, get) => ({
       }
 
       if (pending_clarify) {
-        useTranscripts.getState().clarifyRequest(live, pending_clarify, { notify: false })
+        useTranscripts.getState().clarifyRequest(live, pending_clarify, {
+          notify: false,
+          throughRevision: newer ? revision : undefined
+        })
       }
     }
 
@@ -274,15 +281,22 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   async openThread(id, peer) {
+    const revision = transcriptRevision()
     const { messages, pending_clarify, section } = await sectionsOpen(id)
     const live = section.live_session_id
 
     if (live) {
+      const newer = (useTranscripts.getState().bySession[live]?.authorityRevision ?? 0) > revision
       set(state => ({ liveSessionId: { ...state.liveSessionId, [id]: live } }))
+      useTranscripts.getState().clearAnsweredWaiting([], [live], revision)
+      useTranscripts.getState().setSectionId(live, id)
 
       // The owner answers the receiving bot's questions here: threads have no other view.
       if (pending_clarify) {
-        useTranscripts.getState().clarifyRequest(live, pending_clarify, { notify: false })
+        useTranscripts.getState().clarifyRequest(live, pending_clarify, {
+          notify: false,
+          throughRevision: newer ? revision : undefined
+        })
       }
     }
 
@@ -453,8 +467,11 @@ export async function introduceBot(section: Section, bot: Pick<Bot, 'name'>): Pr
   }
 }
 
-/** `answered` records a successful local answer since the last authoritative roster reply. */
-export type LiveSections = Record<string, BotStatus | 'answered'>
+/** Fresh transitions and answer evidence expire on newer roster or lifecycle authority. */
+export type LiveSections = Record<
+  string,
+  BotStatus | 'answered' | { status: 'idle' | 'needs_you' | 'working' }
+>
 
 /** What each open transcript says about its section: a card waiting on you, a reply streaming, or neither. */
 export function liveSectionsOf(
@@ -462,6 +479,7 @@ export function liveSectionsOf(
     string,
     {
       answeredWaiting?: { kind: 'approval' | 'clarify'; requestId: string }
+      liveStatus?: 'idle' | 'needs_you' | 'working'
       approvals: { decision?: unknown; requestId?: string }[]
       clarifies: {
         answers: Record<string, string>
@@ -499,13 +517,15 @@ export function liveSectionsOf(
               Object.keys(item.answers).length >= item.questions.length
           )
 
-    live[transcript.sectionId] = asking
-      ? 'needs_you'
-      : hasAnswer
-        ? 'answered'
-        : transcript.streamingMessageId
-          ? 'working'
-          : 'idle'
+    live[transcript.sectionId] = transcript.liveStatus
+      ? { status: transcript.liveStatus }
+      : asking
+        ? 'needs_you'
+        : hasAnswer
+          ? 'answered'
+          : transcript.streamingMessageId
+            ? 'working'
+            : 'idle'
   }
 
   return live
@@ -529,19 +549,27 @@ export function sectionStatusOf(
 ): BotStatus {
   const status = botStatus(bot)
   const own = sectionId ? live[sectionId] : undefined
+  const fresh = typeof own === 'object' ? own.status : undefined
 
   if (status !== 'idle' && sectionId && bot?.status_detail?.section_id === sectionId) {
-    return status === 'needs_you' && own === 'answered' ? 'working' : status
+    return status === 'stopped'
+      ? status
+      : (fresh ?? (status === 'needs_you' && own === 'answered' ? 'working' : status))
   }
 
-  return own === 'answered' ? 'working' : (own ?? 'idle')
+  return typeof own === 'object' ? own.status : own === 'answered' ? 'working' : (own ?? 'idle')
 }
 
 /**
  * A bot's dot: the daemon's word for the section it names, unless a live
  * section is waiting on you right now. Archived sections no longer count.
  */
-export function botStatusWithLive(bot: Bot, sections: Section[], live: LiveSections): BotStatus {
+export function botStatusWithLive(
+  bot: Bot,
+  sections: Section[],
+  live: LiveSections,
+  sessions: Record<string, Partial<Parameters<typeof liveSectionsOf>[0][string]>> = {}
+): BotStatus {
   const status = botStatus(bot)
 
   const detail = bot.status_detail
@@ -563,7 +591,33 @@ export function botStatusWithLive(bot: Bot, sections: Section[], live: LiveSecti
 
   // Rooms and private threads are absent from the section index but still count.
   if (!named || !sections.some(section => section.id === named)) {
-    own.push(status)
+    const session = detail?.session_id ? sessions[detail.session_id] : undefined
+
+    const ownsSession =
+      session &&
+      (detail?.room_id
+        ? session.sectionId === `room:${detail.room_id}`
+        : named && session.sectionId === named)
+
+    const sessionLive = ownsSession
+      ? liveSectionsOf({
+          own: {
+            ...session,
+            approvals: session.approvals ?? [],
+            clarifies: session.clarifies ?? [],
+            streamingMessageId: null
+          }
+        })[session.sectionId!]
+      : undefined
+
+    const fresh =
+      sessionLive === 'answered'
+        ? 'working'
+        : typeof sessionLive === 'object'
+          ? sessionLive.status
+          : undefined
+
+    own.push(fresh ?? (named ? sectionStatusOf(bot, named, live) : status))
   }
 
   return own.includes('needs_you') ? 'needs_you' : own.includes('working') ? 'working' : 'idle'

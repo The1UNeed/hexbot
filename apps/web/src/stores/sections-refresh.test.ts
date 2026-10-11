@@ -1,5 +1,6 @@
 import type * as api from '../lib/api'
 import {
+  botsList,
   sectionsArchive,
   sectionsCreate,
   sectionsDelete,
@@ -7,12 +8,15 @@ import {
   sectionsOpen,
   sectionsUnarchive
 } from '../lib/api'
-import type { Section } from '../lib/types'
+import type { Bot, Section } from '../lib/types'
 
-import { useSections } from './sections'
+import { useBots } from './bots'
+import { botStatusWithLive, liveSectionsOf, sectionStatusOf, useSections } from './sections'
+import { resetTranscriptEffects, setTranscriptEffects, useTranscripts } from './transcripts'
 
 vi.mock('../lib/api', async importOriginal => ({
   ...(await importOriginal<typeof api>()),
+  botsList: vi.fn(),
   sectionsArchive: vi.fn(),
   sectionsCreate: vi.fn(),
   sectionsDelete: vi.fn(),
@@ -38,6 +42,9 @@ const deferred = () => {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  useBots.setState({ byName: {}, order: [], loading: false })
+  useTranscripts.getState().dropAll()
+  setTranscriptEffects({ ackApproval: vi.fn(), notify: vi.fn(), touchSection: vi.fn() })
   useSections.setState({
     byId: {},
     idsByBot: {},
@@ -46,6 +53,8 @@ beforeEach(() => {
     loading: false
   })
 })
+
+afterEach(resetTranscriptEffects)
 
 it.each([true, false])(
   'merges full and newer scoped replies in either order (scoped first=%s)',
@@ -156,24 +165,27 @@ it.each([true, false])(
   }
 )
 
-it.each([undefined, 'owl'])('opening a section preserves a pending list and its older rows (%s)', async bot => {
-  const list = deferred()
-  vi.mocked(sectionsList).mockReturnValueOnce(list.promise)
-  const refresh = useSections.getState().refresh({ bot })
-  const opened = { ...section('current', 'owl', 'Fresh title'), live_session_id: 'live-new' }
-  vi.mocked(sectionsOpen).mockResolvedValueOnce({ section: opened, messages: [] } as never)
-  await useSections.getState().open('current')
-  list.resolve({
-    sections: [
-      { ...section('current', 'owl', 'Stale title'), live_session_id: 'live-old' },
-      section('older')
-    ]
-  })
-  await refresh
-  expect(useSections.getState().idsByBot.owl).toEqual(['current', 'older'])
-  expect(useSections.getState().byId.current?.title).toBe('Fresh title')
-  expect(useSections.getState().liveSessionId.current).toBe('live-new')
-})
+it.each([undefined, 'owl'])(
+  'opening a section preserves a pending list and its older rows (%s)',
+  async bot => {
+    const list = deferred()
+    vi.mocked(sectionsList).mockReturnValueOnce(list.promise)
+    const refresh = useSections.getState().refresh({ bot })
+    const opened = { ...section('current', 'owl', 'Fresh title'), live_session_id: 'live-new' }
+    vi.mocked(sectionsOpen).mockResolvedValueOnce({ section: opened, messages: [] } as never)
+    await useSections.getState().open('current')
+    list.resolve({
+      sections: [
+        { ...section('current', 'owl', 'Stale title'), live_session_id: 'live-old' },
+        section('older')
+      ]
+    })
+    await refresh
+    expect(useSections.getState().idsByBot.owl).toEqual(['current', 'older'])
+    expect(useSections.getState().byId.current?.title).toBe('Fresh title')
+    expect(useSections.getState().liveSessionId.current).toBe('live-new')
+  }
+)
 
 it.each([undefined, 'owl'])('discards an older reply in the same scope (%s)', async bot => {
   const old = deferred()
@@ -276,4 +288,95 @@ it('does not resurrect a deleted section when another refresh removed its row du
   await refresh
   expect(useSections.getState().byId.s1).toBeUndefined()
   expect(useSections.getState().loading).toBe(false)
+})
+
+describe.each(['open', 'openThread'] as const)('%s snapshot authority', method => {
+  const begin = () =>
+    method === 'open'
+      ? useSections.getState().open('s1')
+      : useSections.getState().openThread('s1', 'cat')
+
+  it.each(['working', 'idle', 'approval', 'clarify'] as const)(
+    'preserves newer %s and skips an older pending question snapshot',
+    async evidence => {
+      const actions = useTranscripts.getState()
+      actions.open('live', 's1', [])
+
+      if (evidence === 'approval') {
+        actions.approvalRequest('live', { request_id: 'answer' })
+      } else if (evidence === 'clarify') {
+        actions.clarifyRequest('live', { request_id: 'answer', question: 'Continue?' })
+      }
+
+      let resolve!: (value: Awaited<ReturnType<typeof sectionsOpen>>) => void
+      vi.mocked(sectionsOpen).mockReturnValueOnce(
+        new Promise(done => {
+          resolve = done
+        })
+      )
+      const opening = begin()
+
+      if (evidence === 'approval') {
+        actions.resolveApproval('live', 'answer', 'once')
+      } else if (evidence === 'clarify') {
+        actions.answerClarify('live', 'answer', 'answer', 'Yes')
+      } else {
+        actions.statusUpdate('live', { kind: evidence, text: '' })
+      }
+
+      const item = { ...section('s1'), live_session_id: 'live' }
+      resolve({
+        section: item,
+        messages: [],
+        pending_clarify: { request_id: 'stale', question: 'Old question?' }
+      })
+      await opening
+
+      const owner = {
+        name: 'owl',
+        status: 'needs_you',
+        status_detail: { section_id: 's1' }
+      } as Bot
+
+      const transcripts = useTranscripts.getState().bySession
+      const live = liveSectionsOf(transcripts)
+
+      expect(transcripts.live?.clarifies.some(card => card.requestId === 'stale')).toBe(false)
+      expect(sectionStatusOf(owner, 's1', live)).toBe(evidence === 'idle' ? 'idle' : 'working')
+      expect(botStatusWithLive(owner, [item], live, transcripts)).toBe(
+        evidence === 'idle' ? 'idle' : 'working'
+      )
+
+      vi.mocked(botsList).mockResolvedValueOnce({ bots: [{ ...owner, status: 'idle' }] })
+      await useBots.getState().refresh()
+      const settled = liveSectionsOf(useTranscripts.getState().bySession)
+      expect(sectionStatusOf(useBots.getState().byName.owl, 's1', settled)).toBe('idle')
+      expect(botStatusWithLive(useBots.getState().byName.owl!, [item], settled)).toBe('idle')
+    }
+  )
+
+  it('retires evidence that predates a genuinely newer snapshot request', async () => {
+    const actions = useTranscripts.getState()
+    actions.open('live', 's1', [])
+    actions.statusUpdate('live', { kind: 'working', text: '' })
+    vi.mocked(sectionsOpen).mockResolvedValueOnce({
+      section: { ...section('s1'), live_session_id: 'live' },
+      messages: []
+    })
+    await begin()
+    expect(useTranscripts.getState().bySession.live?.liveStatus).toBeUndefined()
+  })
+
+  it('hydrates a current pending question when no newer live event arrived', async () => {
+    vi.mocked(sectionsOpen).mockResolvedValueOnce({
+      section: { ...section('s1'), live_session_id: 'live' },
+      messages: [],
+      pending_clarify: { request_id: 'current', question: 'Continue?' }
+    })
+    await begin()
+    const transcript = useTranscripts.getState().bySession.live
+    expect(transcript?.sectionId).toBe('s1')
+    expect(transcript?.liveStatus).toBe('needs_you')
+    expect(transcript?.clarifies.map(card => card.requestId)).toEqual(['current'])
+  })
 })
