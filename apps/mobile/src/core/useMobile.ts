@@ -16,6 +16,7 @@ import { parsePairing, normalizeOrigin } from './links'
 import {
   approvalResponse,
   clarifyResponse,
+  clearRetryResolution,
   emptyChat,
   historyMessages,
   reduceChat,
@@ -74,6 +75,9 @@ export function useMobile() {
   const straddling = useRef<string | null>(null)
   const eventRevision = useRef(0)
   const rosterRevision = useRef(-1)
+  const refreshSequence = useRef(0)
+  const acceptedRefresh = useRef(0)
+  const replayEpoch = useRef<string | null>(null)
   const rpc: Rpc = useCallback(async (method, params = {}) => {
     const current = session.current
     if (!current || current.client.connectionState !== 'open')
@@ -124,6 +128,7 @@ export function useMobile() {
   }, [releaseStaged])
   const refresh = useCallback(async () => {
     const current = session.current
+    const request = ++refreshSequence.current
     const revision = eventRevision.current
     clearModels()
     const before = routeRef.current
@@ -135,7 +140,9 @@ export function useMobile() {
       rpc<Settings>('hexbot.settings.get'),
       rpc<CurrentUser>('hexbot.users.me')
     ])
-    if (!mounted.current || session.current !== current) return
+    if (!mounted.current || session.current !== current || request < acceptedRefresh.current) return
+    // A newer successful read wins; a failed read leaves older useful results eligible.
+    acceptedRefresh.current = request
     rosterRevision.current = Math.max(rosterRevision.current, revision)
     setBots(b.bots)
     setChat(c => rosterChat(c, rosterRevision.current))
@@ -265,6 +272,22 @@ export function useMobile() {
         event = { ...event, mobileRevision: ++eventRevision.current } as GatewayEvent
       const target = routeRef.current
       const p = (event.payload ?? {}) as Record<string, unknown>
+      if (event.type === 'gateway.ready' && typeof p.replay_epoch === 'string' && p.replay_epoch) {
+        if (replayEpoch.current && replayEpoch.current !== p.replay_epoch) {
+          setChat(clearRetryResolution)
+          // Keep buffered turn lifecycle, but discard proof from the previous daemon process.
+          loadingEvents.current =
+            loadingEvents.current?.map(buffered =>
+              buffered.type === 'message.start'
+                ? {
+                    ...buffered,
+                    payload: { ...(buffered.payload ?? {}), retry_resolved: false }
+                  }
+                : buffered
+            ) ?? null
+        }
+        replayEpoch.current = p.replay_epoch
+      }
       if (event.type.endsWith('.changed')) {
         if (!refreshTimer.current)
           refreshTimer.current = setTimeout(() => {
@@ -355,6 +378,9 @@ export function useMobile() {
       loadingEvents.current = null
       eventRevision.current = 0
       rosterRevision.current = -1
+      refreshSequence.current = 0
+      acceptedRefresh.current = 0
+      replayEpoch.current = null
       routeRef.current = null
       liveId.current = null
       setRoute(null)
@@ -583,7 +609,7 @@ export function useMobile() {
 
   const visibleBots = bots.map(bot => {
     if (route?.kind === 'section' && route.bot.name === bot.name)
-      return settledBot(bot, chat, liveId.current)
+      return settledBot(bot, chat, liveId.current, route.section.id)
     const turn =
       route?.kind === 'room' &&
       bot.status_detail?.session_id &&
@@ -592,7 +618,7 @@ export function useMobile() {
   })
   const visibleRoute =
     route?.kind === 'section'
-      ? { ...route, bot: settledBot(route.bot, chat, liveId.current) }
+      ? { ...route, bot: settledBot(route.bot, chat, liveId.current, route.section.id) }
       : route
 
   return {

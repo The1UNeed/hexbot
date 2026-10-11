@@ -86,6 +86,13 @@ export interface TurnState {
   resumedWaiting: boolean
   /** Receipt order of the exact answer that resumed this wait. */
   waitingRevision: number
+  /** The daemon resolved failed turns in this exact session; separate from accepted answers. */
+  retryResolution?: {
+    sessionId: string
+    revision: number
+    sequence?: number
+    resolved: boolean
+  }
   activity: string
   tools: ChatTool[]
   approvals: PendingApproval[]

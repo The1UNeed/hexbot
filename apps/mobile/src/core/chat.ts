@@ -60,33 +60,73 @@ const resumeAnswered = (state: ChatState, accepted: boolean, revision: number): 
     ? { ...state, waiting: false, resumedWaiting: true, waitingRevision: revision, activity: '' }
     : state
 
-/** Only a roster wait naming this exact session can be superseded by its accepted answer. */
-export function settledBot(bot: Bot, state: TurnState, sessionId: string | null): Bot {
-  if (
-    bot.status !== 'needs_you' ||
-    !sessionId ||
-    bot.status_detail?.session_id !== sessionId ||
-    !state.resumedWaiting ||
-    state.approvals.length ||
-    state.questions.length
-  )
-    return bot
+/** Accepted answers and retry starts can supersede only their exact roster cause. */
+export function settledBot(
+  bot: Bot,
+  state: TurnState,
+  sessionId: string | null,
+  sectionId?: string | null
+): Bot {
+  const detail = bot.status_detail
+  if (!sessionId || !detail) return bot
+  const pending = state.approvals.length > 0 || state.questions.length > 0
+  const retried =
+    bot.status === 'stopped' &&
+    sectionId &&
+    detail?.section_id === sectionId &&
+    !detail.room_id &&
+    detail.action?.kind === 'retry' &&
+    (!detail.session_id || detail.session_id === sessionId) &&
+    state.retryResolution?.sessionId === sessionId &&
+    state.retryResolution.resolved &&
+    !state.error
+  const answered =
+    bot.status === 'needs_you' &&
+    detail?.session_id === sessionId &&
+    state.resumedWaiting &&
+    !pending
+  if (!retried && !answered) return bot
   return {
     ...bot,
-    status: state.busy ? 'working' : state.error ? 'stopped' : 'idle',
-    status_detail: { ...bot.status_detail, text: state.activity, action: null }
+    status: pending ? 'needs_you' : state.busy ? 'working' : state.error ? 'stopped' : 'idle',
+    status_detail: { ...detail, text: state.activity, action: null }
   }
 }
 
-/** A successful roster read retires older evidence, but cannot undo answers accepted during it. */
+const retireRetry = (state: TurnState) =>
+  state.retryResolution && { ...state.retryResolution, resolved: false }
+
+/** A new daemon epoch retires retry proof and its old sequence identity. */
+export function clearRetryResolution(state: ChatState): ChatState {
+  return {
+    ...state,
+    retryResolution: undefined,
+    turns: Object.fromEntries(
+      Object.entries(state.turns).map(([id, turn]) => [id, { ...turn, retryResolution: undefined }])
+    )
+  }
+}
+
+/** A successful roster retires older proof, preserving evidence received during its read. */
 export function rosterChat(state: ChatState, started: number): ChatState {
   return {
     ...state,
     resumedWaiting: state.resumedWaiting && state.waitingRevision > started,
+    retryResolution:
+      state.retryResolution && state.retryResolution.revision > started
+        ? state.retryResolution
+        : retireRetry(state),
     turns: Object.fromEntries(
       Object.entries(state.turns).map(([id, turn]) => [
         id,
-        turn.waitingRevision > started ? turn : { ...turn, resumedWaiting: false }
+        {
+          ...turn,
+          resumedWaiting: turn.resumedWaiting && turn.waitingRevision > started,
+          retryResolution:
+            turn.retryResolution && turn.retryResolution.revision > started
+              ? turn.retryResolution
+              : retireRetry(turn)
+        }
       ])
     )
   }
@@ -168,17 +208,39 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
   const sessionId = event.session_id ?? ''
   const revision = (event as GatewayEvent & { mobileRevision?: number }).mobileRevision ?? 0
   switch (event.type) {
-    case 'message.start':
+    case 'message.start': {
+      const previous =
+        state.retryResolution?.sessionId === sessionId ? state.retryResolution : undefined
+      const rawSequence = (event as GatewayEvent & { seq?: number }).seq
+      const sequence =
+        typeof rawSequence === 'number' && Number.isFinite(rawSequence) ? rawSequence : undefined
+      if (
+        sequence !== undefined &&
+        previous?.sequence !== undefined &&
+        sequence <= previous.sequence
+      )
+        return state
+      const marked = p.retry_resolved === true && Boolean(sessionId)
       return {
         ...state,
         busy: true,
         waiting: false,
         resumedWaiting: false,
+        retryResolution:
+          marked || previous
+            ? {
+                sessionId,
+                revision: marked ? revision : (previous?.revision ?? 0),
+                sequence: sequence ?? previous?.sequence,
+                resolved: marked || previous?.resolved === true
+              }
+            : undefined,
         streaming: '',
         interim: [],
         tools: [],
         error: null
       }
+    }
     case 'message.delta':
       return { ...state, busy: true, streaming: state.streaming + text }
     case 'message.interim':
@@ -217,6 +279,8 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         approvals: [],
         questions: [],
         settlements,
+        retryResolution:
+          p.error || p.status === 'error' ? retireRetry(state) : state.retryResolution,
         error: typeof p.error === 'string' ? p.error : null
       }
     }
@@ -231,6 +295,10 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         // Automatic waits do not revoke an accepted human answer.
         resumedWaiting:
           state.approvals.length || state.questions.length ? false : state.resumedWaiting,
+        retryResolution:
+          p.kind === 'error' || p.kind === 'interrupted'
+            ? retireRetry(state)
+            : state.retryResolution,
         busy:
           p.kind === 'idle' || p.kind === 'done' || p.kind === 'error' || p.kind === 'interrupted'
             ? false
@@ -278,6 +346,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
       return {
         ...state,
         error: typeof p.message === 'string' ? p.message : 'The bot could not finish.',
+        retryResolution: retireRetry(state),
         busy: false
       }
     case 'approval.request': {

@@ -7,7 +7,7 @@ type Handler = (method: string, params: Record<string, unknown>) => Promise<unkn
 const hooks = vi.hoisted(() => ({
   slots: [] as unknown[],
   index: 0,
-  clients: [] as { emit: (event: GatewayEvent) => void }[],
+  clients: [] as { emit: (event: GatewayEvent) => void; ready: () => Promise<void> }[],
   handler: (async () => ({})) as Handler
 }))
 // Deterministic hooks keep the real consumer's refs, callbacks and functional state updates.
@@ -54,7 +54,7 @@ vi.mock('./session', () => ({
       _daemon: unknown,
       _token: unknown,
       _state: unknown,
-      _ready: unknown,
+      public ready: () => Promise<void>,
       public emit: (event: GatewayEvent) => void
     ) {
       hooks.clients.push(this)
@@ -75,10 +75,12 @@ const render = () => {
 }
 const deferred = () => {
   let resolve!: (value: unknown) => void
-  const promise = new Promise<unknown>(done => {
+  let reject!: (error: Error) => void
+  const promise = new Promise<unknown>((done, fail) => {
     resolve = done
+    reject = fail
   })
-  return { promise, resolve }
+  return { promise, resolve, reject }
 }
 const bot = { name: 'alpha', status: 'needs_you', status_detail: { session_id: 's1' } } as Bot
 const section = (id = 'section', live_session_id = 's1') =>
@@ -129,7 +131,255 @@ async function start() {
   return render()
 }
 
+/** Each refresh holds its roster and gives every other snapshot a distinct value. */
+function holdRefreshes() {
+  const reads: ReturnType<typeof deferred>[] = []
+  const original = hooks.handler
+  hooks.handler = async (method, params) => {
+    if (method === 'hexbot.bots.list') {
+      const response = deferred()
+      reads.push(response)
+      return response.promise
+    }
+    const index = reads.length - 1
+    if (method === 'hexbot.rooms.list') return { rooms: [{ id: `room-${index}` }] }
+    if (method === 'hexbot.sections.list')
+      return { sections: [{ ...section(), title: `Snapshot ${index}` }] }
+    if (method === 'hexbot.info') return { version: `snapshot-${index}` }
+    if (method === 'hexbot.settings.get') return { approval_mode: index === 0 ? 'smart' : 'off' }
+    if (method === 'hexbot.users.me') return { id: `user-${index}` }
+    return original(method, params)
+  }
+  return reads
+}
+
+const stoppedBot = {
+  ...bot,
+  status: 'stopped',
+  status_detail: { section_id: 'section', text: 'Model request failed', action: { kind: 'retry' } }
+} as Bot
+async function openStopped(cached = stoppedBot) {
+  const original = hooks.handler
+  hooks.handler = async (method, params) => {
+    if (method === 'hexbot.bots.list') return { bots: [cached] }
+    if (method === 'session.status') return { status: 'idle' }
+    return original(method, params)
+  }
+  await render().activate(daemon, 'token')
+  await render().refresh()
+  await render().openSection(cached, section())
+  expect(status()).toBe('stopped')
+}
+
+describe('mobile retry status consumer', () => {
+  it('projects an exact resolved retry in both roster and route when refresh fails', async () => {
+    await openStopped()
+    hooks.clients[0].emit(wire('message.start', {}))
+    expect(status()).toBe('stopped')
+    hooks.clients[0].emit(wire('message.start', { retry_resolved: true }))
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') throw new Error('Roster unavailable')
+      return original(method, params)
+    }
+    await expect(render().refresh()).rejects.toThrow('Roster unavailable')
+    expect(status()).toBe('working')
+    expect(render().bots[0].status).toBe('working')
+  })
+
+  it('keeps a stopped incident owned by another section or live session', async () => {
+    await openStopped({
+      ...stoppedBot,
+      status_detail: { ...stoppedBot.status_detail!, section_id: 'other', session_id: 's1' }
+    })
+    hooks.clients[0].emit(wire('message.start', { retry_resolved: true }, 's2'))
+    expect(status()).toBe('stopped')
+    hooks.clients[0].emit(wire('message.start', { retry_resolved: true }))
+    expect(status()).toBe('stopped')
+    expect(render().bots[0].status).toBe('stopped')
+  })
+
+  it('preserves a retry received during an older roster read but honors a newer successful incident snapshot', async () => {
+    await openStopped()
+    const reads = holdRefreshes()
+    const older = render().refresh()
+    hooks.clients[0].emit(wire('message.start', { retry_resolved: true }))
+    reads[0].resolve({ bots: [stoppedBot] })
+    await older
+    expect(status()).toBe('working')
+    expect(render().bots[0].status).toBe('working')
+    const newer = render().refresh()
+    reads[1].resolve({ bots: [stoppedBot] })
+    await newer
+    expect(status()).toBe('stopped')
+    expect(render().bots[0].status).toBe('stopped')
+  })
+
+  it('shows a fresh failure after retry rather than retaining the resolved incident proof', async () => {
+    await openStopped()
+    hooks.clients[0].emit(wire('message.start', { retry_resolved: true }))
+    expect(status()).toBe('working')
+    hooks.clients[0].emit(wire('message.complete', { error: 'New model failure' }))
+    expect(status()).toBe('stopped')
+    expect(render().chat.error).toBe('New model failure')
+  })
+
+  it('preserves retry proof on same-epoch reconnect but clears it on a changed epoch even when refresh fails', async () => {
+    await openStopped()
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+    hooks.clients[0].emit(wire('message.start', { retry_resolved: true }))
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') throw new Error('Roster unavailable')
+      return original(method, params)
+    }
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+    await expect(hooks.clients[0].ready()).rejects.toThrow('Roster unavailable')
+    expect(status()).toBe('working')
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+    await expect(hooks.clients[0].ready()).rejects.toThrow('Roster unavailable')
+    expect(status()).toBe('stopped')
+    expect(render().chat.retryResolution).toBeUndefined()
+  })
+
+  it.each(['first', 'second'])(
+    'replays buffered retry proof only within its %s epoch',
+    async epoch => {
+      await openStopped()
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+      const reply = deferred()
+      const original = hooks.handler
+      hooks.handler = (method, params) =>
+        method === 'session.status' ? reply.promise : original(method, params)
+      const restoring = render().syncChat()
+      await Promise.resolve()
+      await Promise.resolve()
+      hooks.clients[0].emit({
+        ...wire('message.start', { retry_resolved: true }),
+        seq: 200
+      } as GatewayEvent)
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: epoch } })
+      reply.resolve({ status: 'working' })
+      await restoring
+      expect(status()).toBe(epoch === 'first' ? 'working' : 'stopped')
+      expect(render().chat.busy).toBe(true)
+      if (epoch === 'second') {
+        hooks.clients[0].emit({
+          ...wire('message.start', { retry_resolved: true }),
+          seq: 1
+        } as GatewayEvent)
+        expect(status()).toBe('working')
+        expect(render().chat.retryResolution?.sequence).toBe(1)
+      }
+    }
+  )
+})
+
 describe('mobile settlement consumer', () => {
+  it('keeps every newer successful snapshot when an older read arrives after an accepted answer', async () => {
+    await start()
+    const reads = holdRefreshes()
+    const older = render().refresh()
+    hooks.clients[0].emit(resolved)
+    const newer = render().refresh()
+    reads[1].resolve({ bots: [{ ...bot, status: 'working', display_name: 'New' }] })
+    await newer
+    expect(render().chat.resumedWaiting).toBe(false)
+    reads[0].resolve({ bots: [{ ...bot, display_name: 'Old' }] })
+    await older
+    const current = render()
+    expect(current.bots[0]).toMatchObject({ status: 'working', display_name: 'New' })
+    expect(current.rooms[0].id).toBe('room-1')
+    expect(current.sections[0].title).toBe('Snapshot 1')
+    expect(current.info?.version).toBe('snapshot-1')
+    expect(current.settings?.approval_mode).toBe('off')
+    expect(current.user?.id).toBe('user-1')
+    expect(current.route?.kind === 'section' && current.route.section.title).toBe('Snapshot 1')
+  })
+
+  it('uses an older successful fallback when a newer refresh fails after the answer', async () => {
+    await start()
+    const reads = holdRefreshes()
+    const older = render().refresh()
+    hooks.clients[0].emit(resolved)
+    const newer = render().refresh()
+    const failed = expect(newer).rejects.toThrow('Roster unavailable')
+    reads[1].reject(new Error('Roster unavailable'))
+    await failed
+    reads[0].resolve({ bots: [{ ...bot, display_name: 'Fallback' }] })
+    await older
+    expect(render().bots[0]).toMatchObject({ status: 'working', display_name: 'Fallback' })
+    expect(render().chat.resumedWaiting).toBe(true)
+    expect(render().info?.version).toBe('snapshot-0')
+  })
+
+  it('accepts older useful data while a newer refresh is still pending and later fails', async () => {
+    await start()
+    const reads = holdRefreshes()
+    const older = render().refresh()
+    const newer = render().refresh()
+    const failed = expect(newer).rejects.toThrow('Roster unavailable')
+    reads[0].resolve({ bots: [{ ...bot, display_name: 'Useful' }] })
+    await older
+    expect(render().bots[0].display_name).toBe('Useful')
+    reads[1].reject(new Error('Roster unavailable'))
+    await failed
+    expect(render().bots[0].display_name).toBe('Useful')
+  })
+
+  it('orders successful refreshes distinctly even when they start at the same event revision', async () => {
+    await start()
+    hooks.clients[0].emit(resolved)
+    const reads = holdRefreshes()
+    const older = render().refresh()
+    const newer = render().refresh()
+    reads[1].resolve({ bots: [{ ...bot, status: 'working', display_name: 'New' }] })
+    await newer
+    reads[0].resolve({ bots: [{ ...bot, display_name: 'Old' }] })
+    await older
+    expect(render().bots[0]).toMatchObject({ status: 'working', display_name: 'New' })
+  })
+
+  it('keeps old daemon refresh responses outside the newly selected client', async () => {
+    await start()
+    const reads = holdRefreshes()
+    const older = render().refresh()
+    const rejected = expect(older).rejects.toThrow('selected daemon changed')
+    await render().activate({ ...daemon, id: 'other' }, 'token')
+    const current = render().refresh()
+    reads[1].resolve({ bots: [{ ...bot, status: 'working', display_name: 'Other daemon' }] })
+    await current
+    reads[0].resolve({ bots: [{ ...bot, display_name: 'Old daemon' }] })
+    await rejected
+    expect(render().active?.id).toBe('other')
+    expect(render().bots[0].display_name).toBe('Other daemon')
+  })
+
+  it('keeps the accepted newer roster and its cutoff when buffered answers restore after both refreshes', async () => {
+    await render().activate(daemon, 'token')
+    const reply = deferred()
+    const original = hooks.handler
+    hooks.handler = (method, params) =>
+      method === 'session.status' ? reply.promise : original(method, params)
+    const opening = render().openSection(bot, section())
+    await Promise.resolve()
+    await Promise.resolve()
+    const reads = holdRefreshes()
+    const older = render().refresh()
+    hooks.clients[0].emit(approval)
+    hooks.clients[0].emit(resolved)
+    const newer = render().refresh()
+    reads[1].resolve({ bots: [bot] })
+    await newer
+    reads[0].resolve({ bots: [{ ...bot, status: 'working' }] })
+    await older
+    reply.resolve({ status: 'working' })
+    await opening
+    expect(render().chat.resumedWaiting).toBe(false)
+    expect(render().chat.approvals).toEqual([])
+    expect(render().bots[0].status).toBe('needs_you')
+  })
+
   it('keeps a room answer through a failed roster read and automatic retry while its sibling still waits for a human', async () => {
     const room: Room = {
       id: 'room',
