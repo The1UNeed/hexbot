@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync, realpathSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {once} from 'node:events';
 import {tmpdir, homedir} from 'node:os';
-import {join, dirname} from 'node:path';
+import {join} from 'node:path';
 import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, sanitizeSearchResult, hostWriteTier, escapeMcpValues} from './extension.ts';
 
 // These gates assume the OS sandbox is in place, as it always is on macOS. On
@@ -409,11 +409,14 @@ test('without an OS sandbox every shell command asks in Manual and Auto', async 
     ctx.choice = 'deny';
     out.afterSession = (await gate('echo again')) === undefined;
     out.asked = choices.length;
+    settings.canAsk = false;
+    out.unattendedDenied = (await gate('echo unattended'))?.reason;
+    out.askedAfterUnattended = choices.length;
     settings.approvalMode = 'off';
     out.offPasses = (await gate('pwd')) === undefined;
     console.log(JSON.stringify(out));`;
   const result = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', script], {env:{...process.env, PATH:home, HEXBOT_SESSION_CONFIG:config}, encoding:'utf8'}));
-  assert.deepEqual(result, {manualDenied:true, smartDenied:true, reason:result.reason, sessionPasses:true, afterSession:true, asked:3, offPasses:true});
+  assert.deepEqual(result, {manualDenied:true, smartDenied:true, reason:result.reason, sessionPasses:true, afterSession:true, asked:3, unattendedDenied:'This action needs approval. Run it in a visible section.', askedAfterUnattended:3, offPasses:true});
   assert.match(result.reason, /no OS sandbox/);
 });
 
@@ -609,6 +612,46 @@ test('connected approvals recheck mode and revocation after the answer, and hidd
   assert.match((await f.gate('mcp__demo__read', {})).reason, /visible section/);
 });
 
+test('jobs and delegates deny file, shell and browser approvals without opening a dialog', async t => {
+  for (const mode of ['smart', 'manual']) {
+    for (const extra of [{job:'job-1'}, {parent_session:'job-root', job:'job-1'}]) {
+      const f = fixture(t, mode, ['file', 'terminal'], {...extra, canAsk:false});
+      // Temp folders are workspace roots too. Only gate these home paths;
+      // no tool executes or creates a file there.
+      const outside = join(homedir(), 'hexbot-outside-work');
+      f.settings.cwd = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-approval-work-')));
+      t.after(() => rmSync(f.settings.cwd, {recursive:true, force:true}));
+      const calls = [
+        ['write', {path:join(outside, 'note.txt'), content:'Changed'}],
+        ['edit', {path:join(outside, 'note.txt'), oldText:'Old', newText:'Changed'}],
+        ['write', {path:join(homedir(), '.bashrc'), content:'Changed'}],
+        ['bash', {command:'echo hello', full_access:true, reason:'Needs network'}],
+        ['browser_console', {expression:'document.title'}],
+      ];
+      if (mode === 'manual') calls.push(['write', {path:join(f.settings.cwd, 'note.txt'), content:'Changed'}]);
+      for (const [name, input] of calls) {
+        const denied = await f.gate(name, input);
+        assert.equal(denied?.block, true, name);
+        assert.match(denied.reason, /needs approval.*visible section/, name);
+      }
+      assert.equal(f.choices.length, 0);
+      assert.equal(await f.gate('bash', {command:'echo confined'}), undefined);
+      assert.equal(await f.gate('read', {path:join(f.settings.cwd, 'note.txt')}), undefined);
+      if (mode === 'smart') assert.equal(await f.gate('write', {path:join(f.settings.cwd, 'note.txt'), content:'Allowed'}), undefined);
+    }
+  }
+});
+
+test('a prior section approval cannot let an unattended call run', async t => {
+  const f = fixture(t, 'smart', ['terminal']);
+  f.ctx.choice = 'session';
+  const input = {command:'echo hello', full_access:true, reason:'Needs network'};
+  assert.equal(await f.gate('bash', input), undefined);
+  f.settings.canAsk = false;
+  assert.match((await f.gate('bash', input)).reason, /needs approval.*visible section/);
+  assert.equal(f.choices.length, 1);
+});
+
 test('a script naming a revoked server is blocked with a plain reason', async t => {
   const f = fixture(t, 'off', [], {mcpServers:['demo-x']});
   await f.handlers.before_agent_start({}, f.ctx);
@@ -643,4 +686,26 @@ test('resource reads stop when their server is revoked or changed, without askin
   assert.equal(await f.handlers.tool_call({...read,input:{server:'other',uri:'other://a'}}, f.ctx), undefined);
   delete f.settings.mcpState.demo;
   assert.match((await f.handlers.tool_call(read, f.ctx)).reason, /removed or disabled/);
+});
+
+// Rust caps a job's live policy at Auto even if its frozen config says Bypass.
+// Exercise that live policy at the file gate and the shell execution boundary.
+test('a job capped at Auto protects memory and soul even with frozen Bypass', {skip: process.platform !== 'darwin'}, async t => {
+  const f = fixture(t, 'smart', ['file', 'terminal'], {approvalMode:'off', job:'job-1', canAsk:false});
+  const work = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-job-work-')));
+  t.after(() => rmSync(work, {recursive:true, force:true}));
+  f.settings.cwd = work;
+  mkdirSync(join(f.home, 'profiles/owl/memories'), {recursive:true});
+  for (const file of ['profiles/owl/memories/MEMORY.md', 'profiles/owl/SOUL.md']) {
+    const path = join(f.home, file);
+    writeFileSync(path, 'Original');
+    for (const name of ['write', 'edit']) {
+      const denied = await f.run(name, {path, content:'Changed', oldText:'Original', newText:'Changed'});
+      assert.equal(denied.block, true);
+      assert.match(denied.reason, /protected/);
+    }
+    const result = await f.run('bash', {command:`printf Changed > '${path}'`});
+    assert.equal(result.isError, true);
+    assert.equal(readFileSync(path, 'utf8'), 'Original');
+  }
 });

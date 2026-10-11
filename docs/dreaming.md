@@ -19,6 +19,44 @@ The native scheduler and digest builder live in
   caps the complete serialized digest at 60,000 bytes, and reports how many
   conversations it left out as `omitted_conversations`. Titles keep their
   first 256 characters.
+- The digest carries what the user and the bot said. It leaves out the bot's
+  own `Dreams` section, so a dream never re-reads its previous summaries, and
+  it leaves out tool results such as `web_extract` output, so fetched pages
+  do not become memory. A teammate's reply through `message_bot` is speech
+  and stays. The `Dreams` section is known by its title everywhere (sidebar,
+  Memory tab, `post_summary`), so a section the user titles "Dreams" is
+  treated as the dream log here as well.
+- Scheduled jobs do not write memory. In a job's session, and in any delegate
+  under it, the memory tool reads as usual, but `add`, `append`, `replace`,
+  `set`, and `remove` are saved as rows in `memory_proposals` (bot, owner,
+  job id, action, arguments, created_at) after the same injection scan and
+  memory cap as an edit on every retained text field, including removal
+  targets and replacement `old_text`, so a proposal the dream could never apply is
+  refused at once. The tool result tells the bot the change waits for its
+  next dream. A bot keeps at most 100 pending proposals; older ones are
+  dropped unread. Reviewed proposals expire after 30 days; inserting a proposal
+  or completing a bot dream removes expired rows. The soul tool reads
+  in a job's session but refuses to write: soul changes need the user, in a
+  section, and the dream never writes the soul either.
+- Jobs and their delegates run in Auto when the bot is set to Bypass; Manual
+  stays Manual. File tools and the shell/code sandbox protect memory and soul
+  from direct writes. Scheduled scripts, including monitor scripts and jobs
+  without an agent, require OS isolation even in Bypass.
+  Actions that need approval are refused immediately because jobs and their
+  delegates have no visible section where the user can answer.
+- Jobs and their delegates cannot use `message_bot`. Delivery reuses the
+  recipient's ordinary section, whose writes would bypass the job's proposal
+  rule. Results stay local; use the memory tool for proposals when available.
+- The next bot dream (not a room dream) puts pending proposals in the digest
+  as `proposals`, newest first, at most 20 and at most 10,000 bytes, counted
+  against the 60,000-byte budget; a proposal that does not fit is skipped
+  and the smaller ones after it still go in. The prompt labels them as suggestions from
+  unattended jobs that may carry text from the web. The dream applies the
+  ones it agrees with through its own memory tool, which scans them again,
+  and says in its summary which it applied or ignored. When the dream
+  completes, the proposals it read are marked consumed with that dream's id;
+  a failed dream leaves them pending, as it leaves `since` where it was.
+  Deleting the bot deletes its proposals.
 - Dream rows in `hexbot.db` record `memory_before`, `memory_after`, status,
   and summary. The Memory tab shows the two versions side by side.
   `hexbot.dreaming.restore {id}` restores `memory_before`.

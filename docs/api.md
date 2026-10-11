@@ -42,8 +42,9 @@ data model. The native transport and event projection live in
 - Approvals: `approval.respond {session_id, request_id, choice}`
   with `choice` in `once | session | deny`. `session` quiets the same kind
   of request for the rest of the section; nothing persists across sections.
-  Requests raised by the daemon offer `once | deny` only. Opening a section
-  re-emits its pending approval. Questions arrive as `clarify.request` and
+  Requests raised by the daemon offer `once | deny` only. Delegates and
+  background sections cannot wait for approval; actions that need it are
+  refused. Opening a section re-emits its pending approval. Questions arrive as `clarify.request` and
   `pending_clarify` on section open; use `clarify.respond` to answer.
 - Per-section model override: `config.set {key: "model", value, session_id}`.
 - Model picker source: `model.options`.
@@ -157,7 +158,7 @@ inside the Hexbot home, symlinks included.
 - `hexbot.bots.clear_status {name}` → `{bot: Bot}`. Closes every open incident
   for the bot.
 - `hexbot.bots.delete {name}` → `{deleted: true}` (deletes the profile
-  directory, all rows, and the bot's scheduled jobs; refuses with 4211 if any of its sections is live
+  directory, all rows, the bot's scheduled jobs, and the memory proposals those jobs left; refuses with 4211 if any of its sections is live
   and mid-turn — `session.active_list` status `working` or `waiting` —
   with `data.sections: [{id, status}]`).
 
@@ -252,6 +253,12 @@ broadcast `hexbot.jobs.changed`.
 The daemon enforces unattended approval rules and script workspace restrictions.
 The mobile app displays the last status, error and up to 12,000 characters of output
 stored on the daemon. Jobs do not send push notifications.
+
+Scheduled jobs and their delegates cannot call `message_bot`. Jobs use Auto
+when the bot's approval mode is Bypass; Manual remains Manual. Scheduled
+scripts require OS isolation in every mode. Actions that need approval are
+refused immediately in jobs and their delegates. Memory writes become proposals
+for the next dream, and soul writes are refused. See [Dreaming](dreaming.md).
 
 ### Rooms
 
