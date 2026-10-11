@@ -70,9 +70,10 @@ const statusOf = (current: Bot, verified: Bot): Bot => ({
   status: verified.status,
   status_detail: verified.status_detail
 })
+/** Display text and the read-time timestamp do not identify a waiting request. */
 const sameCause = (left: Bot, right: Bot) =>
   left.status === right.status &&
-  (['session_id', 'section_id', 'room_id', 'since', 'text'] as const).every(
+  (['session_id', 'section_id', 'room_id'] as const).every(
     key => left.status_detail?.[key] === right.status_detail?.[key]
   ) &&
   left.status_detail?.action?.kind === right.status_detail?.action?.kind &&

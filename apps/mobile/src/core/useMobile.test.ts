@@ -2939,21 +2939,46 @@ describe('mobile fallback and snapshot settlement boundaries', () => {
     }
   )
 
-  it.each([false, true].flatMap(changed => [false, true].map(left => [changed, left] as const)))(
-    'keeps a newer same-session wait cause through a held legacy ACK (changed=%s,left=%s)',
-    async (changed, left) => {
+  it.each(
+    ['approval', 'question'].flatMap(kind =>
+      [false, true].flatMap(left =>
+        [false, true].map(available => [kind, left, available] as const)
+      )
+    )
+  )(
+    'settles a held legacy %s across a newer private wait timestamp (left=%s,lookup=%s)',
+    async (kind, left, available) => {
       const initial = {
         ...namedWait,
-        status_detail: { ...namedWait.status_detail!, text: 'Original approval', since: 1 }
+        status_detail: {
+          ...namedWait.status_detail!,
+          text: 'Waiting for you',
+          since: 100,
+          action: null
+        }
       }
       await unopened(initial)
       await render().openSection(initial, section())
-      hooks.clients[0].emit(approval)
+      hooks.clients[0].emit(
+        kind === 'approval'
+          ? approval
+          : wire('clarify.request', { request_id: 'old', question: 'When?' })
+      )
       const reply = deferred()
       const original = hooks.handler
       hooks.handler = async (method, params) => {
-        if (method === 'approval.respond') return reply.promise
-        if (method === 'hexbot.bots.get') throw new Error('Unavailable')
+        if (method === 'approval.respond' || method === 'clarify.respond') return reply.promise
+        if (method === 'hexbot.bots.get') {
+          expect(params.name).toBe('alpha')
+          if (!available) throw new Error('Unavailable')
+          return {
+            bot: {
+              ...initial,
+              status: 'working',
+              status_detail: { ...initial.status_detail, text: 'Working', since: 120 }
+            }
+          }
+        }
         if (method === 'hexbot.bots.list')
           return {
             bots: [
@@ -2961,22 +2986,103 @@ describe('mobile fallback and snapshot settlement boundaries', () => {
                 ...initial,
                 status_detail: {
                   ...initial.status_detail,
-                  text: changed ? 'Another question' : 'Original approval',
-                  since: changed ? 2 : 1
+                  text: kind === 'question' ? 'Waiting for your answer' : 'Waiting for you',
+                  since: 110
                 }
               }
             ]
           }
         return original(method, params)
       }
-      const answering = render().approval('old', 'once', 's1')
+      const answering =
+        kind === 'approval'
+          ? render().approval('old', 'once', 's1')
+          : render().answer('old', 'old', 'Now', 's1')
       if (left) render().back()
+      await render().refresh()
+      reply.resolve(kind === 'approval' ? { resolved: true } : { status: 'answered' })
+      await answering
+      await flush()
+      expect(render().bots[0].status).toBe('working')
+      if (!left) {
+        expect(status()).toBe('working')
+        expect(render().chat.approvals).toEqual([])
+        expect(render().chat.questions).toEqual([])
+        render().back()
+        expect(render().bots[0].status).toBe('working')
+      }
+    }
+  )
+
+  it.each(['session', 'section', 'room', 'action', 'connector-action', 'connector', 'idle'])(
+    'preserves a newer authoritative %s cause through a held legacy answer',
+    async cause => {
+      const initial: Bot =
+        cause === 'connector-action'
+          ? {
+              ...namedWait,
+              status_detail: {
+                ...namedWait.status_detail!,
+                action: { kind: 'fix_connector', connector: 'mail' }
+              }
+            }
+          : namedWait
+      await unopened(initial)
+      await render().openSection(initial, section())
+      hooks.clients[0].emit(approval)
+      const reply = deferred()
+      const original = hooks.handler
+      const newer: Bot =
+        cause === 'idle'
+          ? { ...namedWait, status: 'idle', status_detail: null }
+          : cause === 'connector'
+            ? {
+                ...namedWait,
+                status: 'stopped',
+                status_detail: {
+                  session_id: null,
+                  section_id: null,
+                  room_id: null,
+                  since: 110,
+                  text: 'Reconnect mail',
+                  action: { kind: 'fix_connector', connector: 'mail' }
+                }
+              }
+            : {
+                ...namedWait,
+                status_detail: {
+                  ...namedWait.status_detail!,
+                  session_id: cause === 'session' ? 'new-session' : 's1',
+                  section_id:
+                    cause === 'section' ? 'new-section' : cause === 'room' ? null : 'section',
+                  room_id: cause === 'room' ? 'new-room' : null,
+                  since: 110,
+                  text: 'Waiting for you',
+                  action:
+                    cause === 'action'
+                      ? { kind: 'retry' }
+                      : cause === 'connector-action'
+                        ? { kind: 'fix_connector', connector: 'calendar' }
+                        : null
+                }
+              }
+      hooks.handler = async (method, params) => {
+        if (method === 'approval.respond') return reply.promise
+        if (method === 'hexbot.bots.list') return { bots: [newer] }
+        if (method === 'hexbot.bots.get') throw new Error('Unavailable')
+        return original(method, params)
+      }
+      const answering = render().approval('old', 'once', 's1')
       await render().refresh()
       reply.resolve({ resolved: true })
       await answering
-      await flush()
-      expect(render().bots[0].status).toBe(changed ? 'needs_you' : 'working')
-      if (!left) expect(status()).toBe(changed ? 'needs_you' : 'working')
+      expect(render().chat.approvals).toEqual([])
+      expect(status()).toBe(newer.status)
+      render().back()
+      expect(render().bots[0]).toMatchObject({
+        status: newer.status,
+        status_detail: newer.status_detail
+      })
     }
   )
 
