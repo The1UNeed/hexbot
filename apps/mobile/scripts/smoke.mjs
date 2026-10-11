@@ -568,9 +568,12 @@ try {
   await settle()
   await shot('room-settings')
   // An archived room stays reachable after the lists reload, and restores from there.
+  // Archiving the open room moves Rooms to the other one.
   await page.getByTestId('action-archive-room').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   await expect(page.getByTestId(`room-chip-${room.id}`)).not.toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Launch week', exact: true })).toBeVisible()
+  // Restoring another room from Archived keeps the open one.
   await page.getByTestId('rooms-archived').click()
   await page.getByTestId(`managed-room-${room.id}`).click()
   await page.getByTestId('action-restore-room').click()
@@ -579,8 +582,19 @@ try {
     .toBe(null)
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   await expect(page.getByTestId('rooms-archived')).not.toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Launch week', exact: true })).toBeVisible()
+  await expect(page.getByTestId('chat-input')).toBeVisible()
+  // A room archived elsewhere while open stays, and restoring it there keeps it open.
   await page.getByTestId(`room-chip-${room.id}`).click()
   await expect(page.getByRole('heading', { name: 'Our team', exact: true })).toBeVisible()
+  await rpc('hexbot.rooms.archive', { id: room.id })
+  await expect(page.getByTestId('chat-archived')).toBeVisible()
+  await page.getByTestId('room-settings').click()
+  await page.getByTestId('action-restore-room').click()
+  await expect(page.getByTestId('management-sheet')).not.toBeVisible()
+  await expect(page.getByTestId('chat-archived')).not.toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Our team', exact: true })).toBeVisible()
+  await expect(page.getByTestId('chat-input')).toBeVisible()
   await page.getByTestId('home-tabs-daemon').click()
   await shot('daemon')
   await page.getByTestId('daemon-about').click()

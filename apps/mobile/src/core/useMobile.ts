@@ -84,6 +84,12 @@ export function useMobile() {
   }, [])
   // Forgotten when the lists reload or the daemon changes, so new keys and models show.
   const [models] = useState(() => modelLists(provider => providerModels(rpc, provider)))
+  // Each clear hands out a new reader, so a model line already on screen loads again.
+  const [listModels, setListModels] = useState(() => models.get)
+  const clearModels = useCallback(() => {
+    models.clear()
+    setListModels(() => models.get)
+  }, [models])
   // Messages sent from here name their files, and the daemon drops the rest.
   // Clearing on leave keeps an abandoned upload off a message sent from
   // another app; it is best effort.
@@ -107,7 +113,7 @@ export function useMobile() {
   }, [releaseStaged])
   const refresh = useCallback(async () => {
     const current = session.current
-    models.clear()
+    clearModels()
     const before = routeRef.current
     const [b, r, s, i, config, me] = await Promise.all([
       rpc<{ bots: Bot[] }>('hexbot.bots.list'),
@@ -131,7 +137,7 @@ export function useMobile() {
     if (!next) return leave()
     routeRef.current = next
     setRoute(next)
-  }, [rpc, models, leave])
+  }, [rpc, clearModels, leave])
   const syncRoom = useCallback(
     async (id: string) => {
       const sequence = ++openSequence.current
@@ -354,11 +360,11 @@ export function useMobile() {
         onEvent
       )
       session.current = next
-      models.clear()
+      clearModels()
       await selectDaemon(daemon.id)
       await next.connect()
     },
-    [onEvent, releaseStaged, models]
+    [onEvent, releaseStaged, clearModels]
   )
   useEffect(() => {
     mounted.current = true
@@ -586,7 +592,7 @@ export function useMobile() {
     loadEarlier,
     rpc,
     /** A provider's models, fetched once for every screen showing them. */
-    models: models.get,
+    models: listModels,
     refresh,
     syncChat,
     accept,

@@ -22,24 +22,28 @@ export async function providerModels(rpc: Rpc, provider: string): Promise<ModelL
 }
 /**
  * Each provider's list, loaded once until cleared, so a new thread's model line
- * and the model pill share one request. A failed load is tried again.
+ * and the model pill share one request. A failed load is tried again. Clearing
+ * also replaces `get`, so a screen that loads with it loads again.
  */
 export function modelLists(load: (provider: string) => Promise<ModelList>) {
   let lists = new Map<string, Promise<ModelList>>()
-  return {
-    get(provider: string) {
-      const known = lists.get(provider)
-      if (known) return known
-      const owner = lists
-      const list = load(provider)
-      owner.set(provider, list)
-      list.catch(() => {
-        if (owner.get(provider) === list) owner.delete(provider)
-      })
-      return list
-    },
+  const reader = () => (provider: string) => {
+    const known = lists.get(provider)
+    if (known) return known
+    const owner = lists
+    const list = load(provider)
+    owner.set(provider, list)
+    list.catch(() => {
+      if (owner.get(provider) === list) owner.delete(provider)
+    })
+    return list
+  }
+  const self = {
+    get: reader(),
     clear() {
       lists = new Map()
+      self.get = reader()
     }
   }
+  return self
 }

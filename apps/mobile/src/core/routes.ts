@@ -10,16 +10,21 @@ export const defaultSection = (sections: Section[], bot: string) =>
   sections.find(s => s.bot === bot && !s.archived_at && !s.peer_bot)
 /**
  * The room Rooms shows: the picked one while it is open or not archived,
- * otherwise the most recent room that is not archived.
+ * otherwise the most recent room that is not archived. An open room the list
+ * does not have yet, such as one just created, stays.
  */
 export function shownRoom(rooms: Room[], picked: string | null, open: string | null) {
+  if (picked && picked === open) return picked
   const room = rooms.find(r => r.id === picked)
-  if (room && (!room.archived_at || room.id === open)) return room.id
+  if (room && !room.archived_at) return room.id
   return (
     rooms.filter(r => !r.archived_at).sort((a, b) => b.last_activity_at - a.last_activity_at)[0]
       ?.id ?? null
   )
 }
+/** Whether this room is the open conversation. */
+export const isOpenRoom = (route: ChatRoute | null, id: string) =>
+  route?.kind === 'room' && route.room.id === id
 /** The open conversation after the lists reload, or null once it is gone. */
 export function rebind(
   route: ChatRoute,

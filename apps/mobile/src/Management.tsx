@@ -27,6 +27,7 @@ import {
 } from './core/types'
 import { avatarSrc } from './core/avatar'
 import { scheduleChange } from './core/jobs'
+import { isOpenRoom } from './core/routes'
 import { pickFile } from './core/pickFile'
 import type { useMobile } from './core/useMobile'
 export type Panel = {
@@ -948,14 +949,15 @@ export function Management({
                   await rpc(room.archived_at ? 'hexbot.rooms.unarchive' : 'hexbot.rooms.archive', {
                     id: room.id
                   })
-                  mobile.back()
+                  // Archiving the open room leaves it; restoring keeps whatever is open.
+                  if (!room.archived_at && isOpenRoom(mobile.route, room.id)) mobile.back()
                   onClose()
                 })}
                 {action(
                   'Delete room',
                   async () => {
                     await rpc('hexbot.rooms.delete', { id: room.id })
-                    mobile.back()
+                    if (isOpenRoom(mobile.route, room.id)) mobile.back()
                     onClose()
                   },
                   true,

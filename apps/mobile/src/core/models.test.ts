@@ -17,6 +17,15 @@ describe('model lists', () => {
     await lists.get('openai')
     expect(loads).toEqual(['openai', 'anthropic', 'openai'])
   })
+  it('gives a new reader after a clear, so a model already on screen loads again', async () => {
+    let calls = 0
+    const lists = modelLists(async provider => list(`${provider}-${++calls}`))
+    const before = lists.get
+    expect((await before('openai')).models[0].id).toBe('openai-1')
+    lists.clear()
+    expect(lists.get).not.toBe(before)
+    expect((await lists.get('openai')).models[0].id).toBe('openai-2')
+  })
   it('tries a failed load again', async () => {
     let calls = 0
     const lists = modelLists(async provider => {

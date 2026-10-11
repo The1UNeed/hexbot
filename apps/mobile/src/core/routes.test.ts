@@ -3,6 +3,7 @@ import {
   ROOMS_QUERY,
   SECTIONS_QUERY,
   defaultSection,
+  isOpenRoom,
   rebind,
   shownRoom,
   type ChatRoute
@@ -49,5 +50,13 @@ describe('rooms', () => {
     expect(shownRoom(rooms, 'shelved', null)).toBe('new')
     expect(shownRoom(rooms, 'shelved', 'shelved')).toBe('shelved')
     expect(shownRoom([rooms[2]], 'shelved', null)).toBeNull()
+    // Opened before the lists reload, such as right after it is created.
+    expect(shownRoom([rooms[0]], 'made', 'made')).toBe('made')
+  })
+  it('knows the open room', () => {
+    const route: ChatRoute = { kind: 'room', room: rooms[0] }
+    expect(isOpenRoom(route, 'old')).toBe(true)
+    expect(isOpenRoom(route, 'new')).toBe(false)
+    expect(isOpenRoom(null, 'old')).toBe(false)
   })
 })
