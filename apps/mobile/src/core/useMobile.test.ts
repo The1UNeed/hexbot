@@ -153,6 +153,558 @@ function holdRefreshes() {
   return reads
 }
 
+const namedWait = {
+  ...bot,
+  owner_id: 'owner',
+  status_detail: { ...bot.status_detail!, section_id: 'section', room_id: null }
+} as Bot
+const namedResolved = wire('approval.resolved', {
+  request_id: 'old',
+  choice: 'once',
+  bot: 'alpha',
+  section_id: 'section'
+})
+const flush = async () => {
+  for (let count = 0; count < 8; count++) await Promise.resolve()
+}
+async function unopened(cached = namedWait) {
+  const original = hooks.handler
+  hooks.handler = async (method, params) => {
+    if (method === 'hexbot.bots.list') return { bots: [cached] }
+    if (method === 'hexbot.bots.get') return { bot: { ...cached, status: 'working' } }
+    return original(method, params)
+  }
+  await render().activate(daemon, 'token')
+  await render().refresh()
+}
+function holdBotGets() {
+  const reads: ReturnType<typeof deferred>[] = []
+  const original = hooks.handler
+  hooks.handler = (method, params) => {
+    if (method !== 'hexbot.bots.get') return original(method, params)
+    const read = deferred()
+    reads.push(read)
+    return read.promise
+  }
+  return reads
+}
+
+describe('mobile unopened settlement consumer', () => {
+  it('verifies a canonical private answer without opening a route when the roster read fails', async () => {
+    await unopened()
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') throw new Error('Roster unavailable')
+      return original(method, params)
+    }
+    hooks.clients[0].emit(namedResolved)
+    await flush()
+    await expect(render().refresh()).rejects.toThrow('Roster unavailable')
+    expect(render().route).toBeNull()
+    expect(render().bots[0].status).toBe('working')
+  })
+
+  it('updates the same bot while another private conversation remains open', async () => {
+    await unopened()
+    await render().openSection(namedWait, section('other', 's2'))
+    hooks.clients[0].emit(namedResolved)
+    await flush()
+    expect(render().bots[0].status).toBe('working')
+    expect(status()).toBe('working')
+    expect(render().chat.approvals).toEqual([])
+  })
+
+  it('verifies a room answer while no room is open', async () => {
+    const cached = {
+      ...namedWait,
+      status_detail: { ...namedWait.status_detail!, room_id: 'room', section_id: null }
+    } as Bot
+    await unopened(cached)
+    hooks.clients[0].emit({
+      ...namedResolved,
+      payload: {
+        ...(namedResolved.payload as Record<string, unknown>),
+        section_id: 'room-stored-session'
+      }
+    })
+    await flush()
+    expect(render().bots[0].status).toBe('working')
+  })
+
+  it('keeps unknown answers conservative when verification fails despite the routine Working event', async () => {
+    await unopened()
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.get') throw new Error('Bot unavailable')
+      return original(method, params)
+    }
+    hooks.clients[0].emit(namedResolved)
+    hooks.clients[0].emit(wire('status.update', { kind: 'working', text: 'Working' }))
+    await flush()
+    expect(render().bots[0].status).toBe('needs_you')
+  })
+
+  it.each(['private', 'room'])(
+    'preserves the verified %s sibling wait that was never observed as a card',
+    async kind => {
+      await unopened()
+      const sibling = {
+        ...namedWait,
+        status_detail: {
+          ...namedWait.status_detail!,
+          session_id: 'unseen',
+          section_id: kind === 'private' ? 'another' : null,
+          room_id: kind === 'room' ? 'another-room' : null
+        }
+      } as Bot
+      const reads = holdBotGets()
+      hooks.clients[0].emit(namedResolved)
+      hooks.clients[0].emit(wire('status.update', { kind: 'working', text: 'Working' }))
+      reads[0].resolve({ bot: sibling })
+      await flush()
+      expect(render().bots[0]).toMatchObject({
+        status: 'needs_you',
+        status_detail: sibling.status_detail
+      })
+    }
+  )
+
+  it('keeps partial clarification waiting according to the authoritative bot read', async () => {
+    await unopened()
+    const reads = holdBotGets()
+    hooks.clients[0].emit(
+      wire('clarify.resolved', {
+        bot: 'alpha',
+        section_id: 'section',
+        request_id: 'batch',
+        status: 'waiting',
+        answers: { first: 'Yes' },
+        remaining: ['second']
+      })
+    )
+    reads[0].resolve({ bot: namedWait })
+    await flush()
+    expect(render().bots[0].status).toBe('needs_you')
+  })
+
+  it.each(['idle', 'stopped'])('preserves verified %s priority after an answer', async status => {
+    await unopened()
+    const reads = holdBotGets()
+    hooks.clients[0].emit(namedResolved)
+    reads[0].resolve({ bot: { ...namedWait, status } })
+    await flush()
+    expect(render().bots[0].status).toBe(status)
+  })
+
+  it.each([
+    wire('approval.request', {
+      bot: 'alpha',
+      section_id: 'section',
+      request_id: 'new',
+      choices: ['once']
+    }),
+    wire('clarify.request', {
+      bot: 'alpha',
+      section_id: 'section',
+      request_id: 'new',
+      question: 'When?'
+    }),
+    wire('message.start', {}),
+    wire('message.complete', { text: 'Done' }),
+    wire('error', { message: 'Failed' }),
+    { type: 'hexbot.sections.changed', payload: { id: 'section' } } as GatewayEvent
+  ])('rejects a Working read superseded by $type', async event => {
+    await unopened()
+    const reads = holdBotGets()
+    hooks.clients[0].emit(namedResolved)
+    hooks.clients[0].emit(event)
+    reads[0].resolve({ bot: { ...namedWait, status: 'working' } })
+    await flush()
+    expect(render().bots[0].status).toBe('needs_you')
+  })
+
+  it('rejects a room status read after the actual rooms.changed id payload', async () => {
+    await unopened({
+      ...namedWait,
+      status_detail: { ...namedWait.status_detail!, room_id: 'room', section_id: null }
+    } as Bot)
+    const reads = holdBotGets()
+    hooks.clients[0].emit(namedResolved)
+    hooks.clients[0].emit({ type: 'hexbot.rooms.changed', payload: { id: 'room' } })
+    reads[0].resolve({ bot: { ...namedWait, status: 'working' } })
+    await flush()
+    expect(render().bots[0].status).toBe('needs_you')
+  })
+
+  it('lets a later successful list defeat an older get while preserving the old get on list failure', async () => {
+    await unopened()
+    const gets = holdBotGets()
+    const lists = holdRefreshes()
+    hooks.clients[0].emit(namedResolved)
+    const newer = render().refresh()
+    lists[0].resolve({ bots: [{ ...namedWait, display_name: 'Fresh' }] })
+    await newer
+    gets[0].resolve({ bot: { ...namedWait, status: 'working', display_name: 'Stale' } })
+    await flush()
+    expect(render().bots[0]).toMatchObject({ status: 'needs_you', display_name: 'Fresh' })
+    hooks.clients[0].emit(namedResolved)
+    const failed = render().refresh()
+    const rejected = expect(failed).rejects.toThrow('Unavailable')
+    lists[1].reject(new Error('Unavailable'))
+    await rejected
+    gets[1].resolve({ bot: { ...namedWait, status: 'working' } })
+    await flush()
+    expect(render().bots[0]).toMatchObject({ status: 'working', display_name: 'Fresh' })
+  })
+
+  it('keeps later verified status when an older list refreshes profiles and rebinds the open route', async () => {
+    await unopened()
+    await render().openSection(namedWait, section())
+    const lists = holdRefreshes()
+    const older = render().refresh()
+    hooks.clients[0].emit(namedResolved)
+    await flush()
+    lists[0].resolve({ bots: [{ ...namedWait, display_name: 'Updated profile' }] })
+    await older
+    expect(render().bots[0]).toMatchObject({ status: 'working', display_name: 'Updated profile' })
+    expect(status()).toBe('working')
+    const route = render().route
+    expect(route?.kind === 'section' && route.section.title).toBe('Snapshot 0')
+  })
+
+  it('coalesces duplicate settlements and retains useful authority if the queued newer read fails', async () => {
+    await unopened()
+    const gets = holdBotGets()
+    hooks.clients[0].emit(namedResolved)
+    hooks.clients[0].emit(namedResolved)
+    expect(gets).toHaveLength(1)
+    gets[0].resolve({ bot: { ...namedWait, status: 'working' } })
+    await flush()
+    expect(gets).toHaveLength(2)
+    gets[1].resolve({ bot: namedWait })
+    await flush()
+    expect(render().bots[0].status).toBe('needs_you')
+    hooks.clients[0].emit(namedResolved)
+    hooks.clients[0].emit(namedResolved)
+    expect(gets).toHaveLength(3)
+    gets[2].resolve({ bot: { ...namedWait, status: 'working' } })
+    await flush()
+    gets[3].reject(new Error('Unavailable'))
+    await flush()
+    expect(render().bots[0].status).toBe('working')
+  })
+
+  it.each(['same', 'changed'])('accepts a held get only across a %s daemon epoch', async kind => {
+    await unopened()
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'one' } })
+    const gets = holdBotGets()
+    hooks.clients[0].emit(namedResolved)
+    hooks.clients[0].emit({
+      type: 'gateway.ready',
+      payload: { replay_epoch: kind === 'same' ? 'one' : 'two' }
+    })
+    gets[0].resolve({ bot: { ...namedWait, status: 'working' } })
+    await flush()
+    expect(render().bots[0].status).toBe(kind === 'same' ? 'working' : 'needs_you')
+  })
+
+  it('does not let an old daemon read remove a new daemon read with a reused request counter', async () => {
+    await unopened()
+    const gets = holdBotGets()
+    hooks.clients[0].emit(namedResolved)
+    await render().activate({ ...daemon, id: 'other' }, 'token')
+    await render().refresh()
+    hooks.clients[1].emit(namedResolved)
+    gets[0].resolve({ bot: { ...namedWait, status: 'idle' } })
+    await flush()
+    gets[1].resolve({ bot: { ...namedWait, status: 'working' } })
+    await flush()
+    expect(render().bots[0].status).toBe('working')
+    expect(render().active?.id).toBe('other')
+  })
+
+  it('never adds a deleted bot or accepts a replaced profile identity', async () => {
+    await unopened()
+    const gets = holdBotGets()
+    hooks.clients[0].emit(namedResolved)
+    gets[0].resolve({ bot: { ...namedWait, status: 'working', created_at: 99 } })
+    await flush()
+    expect(render().bots[0].status).toBe('needs_you')
+    hooks.clients[0].emit(namedResolved)
+    const lists = holdRefreshes()
+    const deleting = render().refresh()
+    lists[0].resolve({ bots: [] })
+    await deleting
+    gets[1].resolve({ bot: { ...namedWait, status: 'working' } })
+    await flush()
+    expect(render().bots).toEqual([])
+  })
+
+  it('accepts independent bot reads in either completion order', async () => {
+    await unopened()
+    const beta = {
+      ...namedWait,
+      name: 'beta',
+      status_detail: { ...namedWait.status_detail!, session_id: 's2' }
+    } as Bot
+    const original = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.bots.list' ? { bots: [namedWait, beta] } : original(method, params)
+    await render().refresh()
+    const gets = holdBotGets()
+    hooks.clients[0].emit(namedResolved)
+    hooks.clients[0].emit(
+      wire(
+        'approval.resolved',
+        { request_id: 'old', choice: 'once', bot: 'beta', section_id: 'beta-section' },
+        's2'
+      )
+    )
+    gets[1].resolve({ bot: { ...beta, status: 'working' } })
+    await flush()
+    gets[0].resolve({ bot: { ...namedWait, status: 'working' } })
+    await flush()
+    expect(render().bots.map(row => row.status)).toEqual(['working', 'working'])
+  })
+
+  it('retires the matching answer projection so it cannot hide a verified sibling wait', async () => {
+    await unopened()
+    await render().openSection(namedWait, section())
+    const gets = holdBotGets()
+    hooks.clients[0].emit(approval)
+    hooks.clients[0].emit(namedResolved)
+    expect(status()).toBe('working')
+    gets[0].resolve({ bot: namedWait })
+    await flush()
+    expect(status()).toBe('needs_you')
+    expect(render().bots[0].status).toBe('needs_you')
+    // A repeated settlement has no card left to create new optimistic proof.
+    hooks.clients[0].emit(resolved)
+    expect(status()).toBe('needs_you')
+  })
+
+  it.each(['answer', 'retry'])('does not retire another bot’s active %s proof', async kind => {
+    const alpha = kind === 'retry' ? ({ ...stoppedBot, owner_id: 'owner' } as Bot) : namedWait
+    const beta = {
+      ...namedWait,
+      name: 'beta',
+      status_detail: { ...namedWait.status_detail!, session_id: 's2' }
+    } as Bot
+    await unopened(alpha)
+    const original = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.bots.list' ? { bots: [alpha, beta] } : original(method, params)
+    await render().refresh()
+    await render().openSection(alpha, section())
+    if (kind === 'answer') {
+      hooks.clients[0].emit(approval)
+      hooks.clients[0].emit(resolved)
+    } else hooks.clients[0].emit(wire('message.start', { retry_resolved: true }))
+    expect(status()).toBe('working')
+    const gets = holdBotGets()
+    hooks.clients[0].emit(
+      wire(
+        'approval.resolved',
+        { request_id: 'old', choice: 'once', bot: 'beta', section_id: 'beta-section' },
+        's2'
+      )
+    )
+    gets[0].resolve({ bot: beta })
+    await flush()
+    expect(status()).toBe('working')
+    expect(render().bots.find(row => row.name === 'beta')?.status).toBe('needs_you')
+  })
+
+  it('retains the accepted bot cutoff through buffered restoration without repeating the lookup', async () => {
+    await unopened()
+    const reply = deferred()
+    const original = hooks.handler
+    hooks.handler = (method, params) =>
+      method === 'session.status' ? reply.promise : original(method, params)
+    const gets = holdBotGets()
+    const opening = render().openSection(namedWait, section())
+    await Promise.resolve()
+    await Promise.resolve()
+    hooks.clients[0].emit(approval)
+    hooks.clients[0].emit(namedResolved)
+    gets[0].resolve({ bot: namedWait })
+    await flush()
+    reply.resolve({ status: 'working' })
+    await opening
+    expect(status()).toBe('needs_you')
+    expect(render().chat.approvals).toEqual([])
+    expect(gets).toHaveLength(1)
+  })
+
+  it('ignores malformed, unbound and unknown-bot settlements', async () => {
+    await unopened()
+    const gets = holdBotGets()
+    for (const payload of [
+      { request_id: 'old', choice: 'always', bot: 'alpha', section_id: 'section' },
+      { request_id: 'old', choice: 'once', section_id: 'section' },
+      { request_id: 'old', choice: 'once', bot: 'alpha' },
+      { request_id: 'old', choice: 'once', bot: 'missing', section_id: 'section' }
+    ])
+      hooks.clients[0].emit(wire('approval.resolved', payload))
+    hooks.clients[0].emit(
+      wire('clarify.resolved', {
+        request_id: 'old',
+        bot: 'alpha',
+        section_id: 'section',
+        status: 'answered',
+        answers: { answer: 123 }
+      })
+    )
+    await flush()
+    expect(gets).toEqual([])
+    expect(render().bots[0].status).toBe('needs_you')
+  })
+
+  it('preserves independent room turn proof while a sibling bot is verified', async () => {
+    await unopened()
+    const beta = {
+      ...namedWait,
+      name: 'beta',
+      status_detail: {
+        ...namedWait.status_detail!,
+        session_id: 's2',
+        room_id: 'room',
+        section_id: null
+      }
+    } as Bot
+    const room = {
+      id: 'room',
+      members: [],
+      turns: [
+        { bot: 'alpha', live_session_id: 's1' },
+        { bot: 'beta', live_session_id: 's2' }
+      ]
+    } as unknown as Room
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') return { bots: [namedWait, beta] }
+      if (method === 'hexbot.rooms.log') return { events: [] }
+      if (method === 'hexbot.rooms.get') return { room }
+      return original(method, params)
+    }
+    await render().refresh()
+    await render().openRoom(room)
+    hooks.clients[0].emit(approval)
+    hooks.clients[0].emit(resolved)
+    hooks.clients[0].emit(wire('clarify.request', { request_id: 'old', question: 'When?' }, 's2'))
+    const gets = holdBotGets()
+    hooks.clients[0].emit(
+      wire(
+        'clarify.resolved',
+        {
+          bot: 'beta',
+          section_id: 'room-stored',
+          request_id: 'batch',
+          status: 'waiting',
+          answers: { first: 'Yes' },
+          remaining: ['second']
+        },
+        's2'
+      )
+    )
+    gets[0].resolve({ bot: beta })
+    await flush()
+    expect(render().bots.map(row => row.status)).toEqual(['working', 'needs_you'])
+    expect(render().chat.turns.s1.resumedWaiting).toBe(true)
+    expect(render().chat.questions.map(card => card.sessionId)).toEqual(['s2'])
+  })
+
+  it('verifies current authority for a late old settlement after completion and a new pending turn', async () => {
+    await unopened()
+    hooks.clients[0].emit(wire('message.complete', { text: 'Done' }))
+    hooks.clients[0].emit(wire('message.start', {}))
+    hooks.clients[0].emit(
+      wire('clarify.request', {
+        bot: 'alpha',
+        section_id: 'section',
+        request_id: 'new',
+        question: 'Where?'
+      })
+    )
+    const gets = holdBotGets()
+    hooks.clients[0].emit(namedResolved)
+    gets[0].resolve({ bot: namedWait })
+    await flush()
+    expect(render().bots[0].status).toBe('needs_you')
+  })
+
+  it('bounds duplicate verification per bot so another bot’s answer is never starved', async () => {
+    await unopened()
+    const beta = {
+      ...namedWait,
+      name: 'beta',
+      status_detail: { ...namedWait.status_detail!, session_id: 's2' }
+    } as Bot
+    const original = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.bots.list' ? { bots: [namedWait, beta] } : original(method, params)
+    await render().refresh()
+    const gets = holdBotGets()
+    for (let count = 0; count < 129; count++) hooks.clients[0].emit(namedResolved)
+    hooks.clients[0].emit(
+      wire(
+        'approval.resolved',
+        { request_id: 'old', choice: 'once', bot: 'beta', section_id: 'beta-section' },
+        's2'
+      )
+    )
+    expect(gets).toHaveLength(2)
+    gets[1].resolve({ bot: { ...beta, status: 'working' } })
+    await flush()
+    expect(render().bots.find(row => row.name === 'beta')?.status).toBe('working')
+    gets[0].resolve({ bot: { ...namedWait, status: 'working' } })
+    await flush()
+    expect(gets).toHaveLength(3)
+    gets[2].resolve({ bot: { ...namedWait, status: 'working' } })
+    await flush()
+    expect(render().bots.map(row => row.status)).toEqual(['working', 'working'])
+  })
+
+  it('uses the latest coalesced session and section for context replacement fencing', async () => {
+    await unopened()
+    const gets = holdBotGets()
+    hooks.clients[0].emit(namedResolved)
+    hooks.clients[0].emit(
+      wire(
+        'approval.resolved',
+        { request_id: 'second', choice: 'once', bot: 'alpha', section_id: 'other' },
+        's2'
+      )
+    )
+    gets[0].resolve({ bot: { ...namedWait, status: 'working' } })
+    await flush()
+    expect(gets).toHaveLength(2)
+    hooks.clients[0].emit({ type: 'hexbot.sections.changed', payload: { id: 'other' } })
+    gets[1].resolve({ bot: { ...namedWait, status: 'idle' } })
+    await flush()
+    expect(render().bots[0].status).toBe('working')
+  })
+
+  it('rejects a read computed before exact bot deletion while a roster refresh fails', async () => {
+    await unopened()
+    const gets = holdBotGets()
+    hooks.clients[0].emit(namedResolved)
+    hooks.clients[0].emit({
+      type: 'hexbot.bots.changed',
+      payload: { name: 'alpha', bot: 'alpha', deleted: true }
+    })
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') throw new Error('Roster unavailable')
+      return original(method, params)
+    }
+    await expect(render().refresh()).rejects.toThrow('Roster unavailable')
+    gets[0].resolve({ bot: { ...namedWait, status: 'working' } })
+    await flush()
+    expect(render().bots[0].status).toBe('needs_you')
+  })
+})
+
 const stoppedBot = {
   ...bot,
   status: 'stopped',

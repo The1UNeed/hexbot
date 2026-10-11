@@ -37,12 +37,23 @@ import type {
   DaemonInfo,
   Settings,
   SavedDaemon,
+  TurnState,
   Rpc
 } from './types'
 export type { ChatRoute }
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 /** A room opens at its latest events and pages back this many at a time. */
 const ROOM_PAGE = 200
+type BotReadContext = { sessionId: string; sectionId: string; revision: number }
+const sameBot = (left: Bot | undefined, right: Bot) =>
+  left?.name === right.name &&
+  left.owner_id === right.owner_id &&
+  left.created_at === right.created_at
+const statusOf = (current: Bot, verified: Bot): Bot => ({
+  ...current,
+  status: verified.status,
+  status_detail: verified.status_detail
+})
 export function useMobile() {
   const [saved, setSaved] = useState<SavedDaemon[]>([])
   const [active, setActive] = useState<SavedDaemon | null>(null)
@@ -78,6 +89,9 @@ export function useMobile() {
   const refreshSequence = useRef(0)
   const acceptedRefresh = useRef(0)
   const replayEpoch = useRef<string | null>(null)
+  const botStatusReads = useRef(new Map<string, { request: number; revision: number }>())
+  const botStatusChanges = useRef(new Map<string, number>())
+  const pendingBotStatus = useRef(new Map<string, BotReadContext & { next?: BotReadContext }>())
   const rpc: Rpc = useCallback(async (method, params = {}) => {
     const current = session.current
     if (!current || current.client.connectionState !== 'open')
@@ -144,7 +158,23 @@ export function useMobile() {
     // A newer successful read wins; a failed read leaves older useful results eligible.
     acceptedRefresh.current = request
     rosterRevision.current = Math.max(rosterRevision.current, revision)
-    setBots(b.bots)
+    // A later verified bot read survives an older list, while other profiles still refresh.
+    const nextBots = b.bots.map(bot => {
+      const current = botsRef.current.find(row => row.name === bot.name)
+      if (!sameBot(current, bot)) botStatusReads.current.delete(bot.name)
+      return (botStatusReads.current.get(bot.name)?.request ?? 0) > request && sameBot(current, bot)
+        ? statusOf(bot, current!)
+        : bot
+    })
+    for (const [name, read] of botStatusReads.current)
+      if (read.request <= request || !nextBots.some(bot => bot.name === name))
+        botStatusReads.current.delete(name)
+    for (const name of botStatusChanges.current.keys())
+      if (!nextBots.some(bot => bot.name === name)) botStatusChanges.current.delete(name)
+    for (const name of pendingBotStatus.current.keys())
+      if (!nextBots.some(bot => bot.name === name)) pendingBotStatus.current.delete(name)
+    botsRef.current = nextBots
+    setBots(nextBots)
     setChat(c => rosterChat(c, rosterRevision.current))
     setRooms(r.rooms)
     setSections(s.sections)
@@ -154,7 +184,7 @@ export function useMobile() {
     // The open conversation follows renames and edits, and closes once it is gone.
     // A route that changed while the lists loaded may be newer than them.
     if (!before || routeRef.current !== before) return
-    const next = rebind(before, { bots: b.bots, rooms: r.rooms, sections: s.sections })
+    const next = rebind(before, { bots: nextBots, rooms: r.rooms, sections: s.sections })
     if (!next) return leave()
     routeRef.current = next
     setRoute(next)
@@ -265,6 +295,63 @@ export function useMobile() {
   syncChatRef.current = syncChat
   const refreshRef = useRef(refresh)
   refreshRef.current = refresh
+  const verifyBotStatus = useCallback(
+    async function verify(name: string, sessionId: string, sectionId: string, receipt: number) {
+      const cached = botsRef.current.find(bot => bot.name === name)
+      if (!cached) return
+      const queued = pendingBotStatus.current.get(name)
+      if (queued) {
+        queued.next = { sessionId, sectionId, revision: receipt }
+        return
+      }
+      const current = session.current
+      const epoch = replayEpoch.current
+      const change = botStatusChanges.current.get(name)
+      const request = ++refreshSequence.current
+      const revision = Math.max(receipt, eventRevision.current)
+      const pending: BotReadContext & { next?: BotReadContext } = { sessionId, sectionId, revision }
+      pendingBotStatus.current.set(name, pending)
+      try {
+        const result = await rpc<{ bot: Bot }>('hexbot.bots.get', { name })
+        if (
+          !mounted.current ||
+          session.current !== current ||
+          replayEpoch.current !== epoch ||
+          pendingBotStatus.current.get(name) !== pending ||
+          botStatusChanges.current.get(name) !== change ||
+          request < acceptedRefresh.current ||
+          request < (botStatusReads.current.get(name)?.request ?? 0) ||
+          !sameBot(result.bot, cached) ||
+          !sameBot(
+            botsRef.current.find(bot => bot.name === name),
+            cached
+          ) ||
+          !['working', 'idle', 'needs_you', 'stopped'].includes(String(result.bot.status))
+        )
+          return
+        botStatusReads.current.set(name, { request, revision })
+        const nextBots = botsRef.current.map(bot =>
+          bot.name === name ? statusOf(bot, result.bot) : bot
+        )
+        botsRef.current = nextBots
+        setBots(nextBots)
+      } catch {
+        // An unavailable verification leaves the cached roster authoritative.
+      } finally {
+        if (pendingBotStatus.current.get(name) === pending) {
+          pendingBotStatus.current.delete(name)
+          if (
+            pending.next &&
+            mounted.current &&
+            session.current === current &&
+            replayEpoch.current === epoch
+          )
+            void verify(name, pending.next.sessionId, pending.next.sectionId, pending.next.revision)
+        }
+      }
+    },
+    [rpc]
+  )
   const onEvent = useCallback(
     (event: GatewayEvent) => {
       // Preserve original receipt order when a loading buffer is replayed.
@@ -275,6 +362,9 @@ export function useMobile() {
       if (event.type === 'gateway.ready' && typeof p.replay_epoch === 'string' && p.replay_epoch) {
         if (replayEpoch.current && replayEpoch.current !== p.replay_epoch) {
           setChat(clearRetryResolution)
+          botStatusReads.current.clear()
+          botStatusChanges.current.clear()
+          pendingBotStatus.current.clear()
           // Keep buffered turn lifecycle, but discard proof from the previous daemon process.
           loadingEvents.current =
             loadingEvents.current?.map(buffered =>
@@ -287,6 +377,79 @@ export function useMobile() {
             ) ?? null
         }
         replayEpoch.current = p.replay_epoch
+      }
+      const contradicts =
+        [
+          'approval.request',
+          'clarify.request',
+          'message.start',
+          'message.complete',
+          'error',
+          'hexbot.sections.changed',
+          'hexbot.rooms.changed',
+          'hexbot.rooms.turn'
+        ].includes(event.type) ||
+        (event.type === 'hexbot.bots.changed' && p.deleted === true) ||
+        (event.type === 'status.update' &&
+          ['idle', 'done', 'error', 'interrupted'].includes(String(p.kind)))
+      if (contradicts) {
+        const revision = (event as GatewayEvent & { mobileRevision: number }).mobileRevision
+        for (const bot of botsRef.current) {
+          const detail = bot.status_detail
+          const pending = pendingBotStatus.current.get(bot.name)
+          if (
+            p.bot === bot.name ||
+            (event.type === 'hexbot.bots.changed' && p.deleted === true && p.name === bot.name) ||
+            (event.session_id &&
+              (event.session_id === detail?.session_id ||
+                event.session_id === pending?.sessionId ||
+                event.session_id === pending?.next?.sessionId)) ||
+            (event.type === 'hexbot.sections.changed' &&
+              typeof p.id === 'string' &&
+              (p.id === detail?.section_id ||
+                p.id === pending?.sectionId ||
+                p.id === pending?.next?.sectionId)) ||
+            (event.type === 'hexbot.rooms.changed' &&
+              typeof p.id === 'string' &&
+              p.id === detail?.room_id) ||
+            (event.type === 'hexbot.rooms.turn' &&
+              typeof p.room_id === 'string' &&
+              p.room_id === detail?.room_id)
+          )
+            botStatusChanges.current.set(
+              bot.name,
+              Math.max(botStatusChanges.current.get(bot.name) ?? 0, revision)
+            )
+        }
+      }
+      const canonical =
+        event.type === 'approval.resolved'
+          ? typeof p.choice === 'string' && ['once', 'session', 'deny'].includes(p.choice)
+          : event.type === 'clarify.resolved' &&
+            typeof p.status === 'string' &&
+            ['waiting', 'answered'].includes(p.status) &&
+            p.answers &&
+            typeof p.answers === 'object' &&
+            !Array.isArray(p.answers) &&
+            Object.values(p.answers).every(answer => typeof answer === 'string')
+      if (
+        canonical &&
+        event.session_id &&
+        typeof p.request_id === 'string' &&
+        p.request_id &&
+        typeof p.bot === 'string' &&
+        p.bot &&
+        typeof p.section_id === 'string' &&
+        p.section_id &&
+        !(event as GatewayEvent & { mobileStatusRead?: boolean }).mobileStatusRead
+      ) {
+        event = { ...event, mobileStatusRead: true } as GatewayEvent
+        void verifyBotStatus(
+          p.bot,
+          event.session_id!,
+          p.section_id,
+          (event as GatewayEvent & { mobileRevision: number }).mobileRevision
+        )
       }
       if (event.type.endsWith('.changed')) {
         if (!refreshTimer.current)
@@ -341,7 +504,7 @@ export function useMobile() {
         setChat(c => rosterChat(reduceChat(c, event), rosterRevision.current))
       }
     },
-    [rpc]
+    [rpc, verifyBotStatus]
   )
   const acknowledgedApprovals = useRef(new Set<string>())
   useEffect(() => {
@@ -381,6 +544,9 @@ export function useMobile() {
       refreshSequence.current = 0
       acceptedRefresh.current = 0
       replayEpoch.current = null
+      botStatusReads.current.clear()
+      botStatusChanges.current.clear()
+      pendingBotStatus.current.clear()
       routeRef.current = null
       liveId.current = null
       setRoute(null)
@@ -607,18 +773,32 @@ export function useMobile() {
     eventRef.current(clarifyResponse(pending, questionId, answer, result))
   }
 
+  const projectBot = (bot: Bot, state: TurnState, sessionId: string | null, sectionId?: string) => {
+    const read = botStatusReads.current.get(bot.name)
+    const current = read ? rosterChat({ ...emptyChat(), ...state }, read.revision) : state
+    return settledBot(bot, current, sessionId, sectionId)
+  }
   const visibleBots = bots.map(bot => {
     if (route?.kind === 'section' && route.bot.name === bot.name)
-      return settledBot(bot, chat, liveId.current, route.section.id)
+      return projectBot(bot, chat, liveId.current, route.section.id)
     const turn =
       route?.kind === 'room' &&
       bot.status_detail?.session_id &&
       chat.turns[bot.status_detail.session_id]
-    return turn && turn.bot === bot.name ? settledBot(bot, turn, turn.sessionId) : bot
+    return turn && turn.bot === bot.name ? projectBot(bot, turn, turn.sessionId) : bot
   })
+  const cachedRouteBot = route?.kind === 'section' && bots.find(bot => sameBot(bot, route.bot))
   const visibleRoute =
     route?.kind === 'section'
-      ? { ...route, bot: settledBot(route.bot, chat, liveId.current, route.section.id) }
+      ? {
+          ...route,
+          bot: projectBot(
+            cachedRouteBot ? statusOf(route.bot, cachedRouteBot) : route.bot,
+            chat,
+            liveId.current,
+            route.section.id
+          )
+        }
       : route
 
   return {
