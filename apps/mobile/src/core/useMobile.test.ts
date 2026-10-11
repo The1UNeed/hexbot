@@ -2111,3 +2111,418 @@ describe('mobile settlement consumer', () => {
     })
   })
 })
+
+describe('mobile archive live projection and completed edits', () => {
+  const changed = {
+    type: 'hexbot.sections.changed',
+    payload: { id: 'section', bot: 'alpha', name: 'alpha' }
+  }
+  async function openLive(current: Bot, archived = false) {
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') return { bots: [current] }
+      if (method === 'hexbot.sections.list')
+        return { sections: [{ ...section(), archived_at: archived ? 1 : null, title: 'Original' }] }
+      if (method === 'hexbot.sections.open')
+        return {
+          section: { ...section(), archived_at: archived ? 1 : null, title: 'Original' },
+          messages: []
+        }
+      return original(method, params)
+    }
+    await render().activate(daemon, 'token')
+    await render().refresh()
+    await render().openSection(current, { ...section(), archived_at: archived ? 1 : null })
+  }
+  function failScoped(archived: boolean) {
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.get' || method === 'hexbot.rooms.list')
+        throw new Error('Unavailable')
+      if (method === 'hexbot.sections.list' && params.bot)
+        return { sections: [{ ...section(), archived_at: archived ? 1 : null }] }
+      if (method === 'hexbot.sections.archive' || method === 'hexbot.sections.unarchive')
+        return { section: { ...section(), archived_at: archived ? 1 : null } }
+      return original(method, params)
+    }
+  }
+
+  for (const path of ['local', 'remote']) {
+    it.each(['working', 'needs_you'])(
+      'excludes exact named %s after ' + path + ' archive even if the bot read fails',
+      async active => {
+        const current = { ...namedWait, status: active } as Bot
+        await openLive(current)
+        if (active === 'needs_you') hooks.clients[0].emit(approval)
+        failScoped(true)
+        if (path === 'local') await render().rpc('hexbot.sections.archive', { id: 'section' })
+        else hooks.clients[0].emit(changed)
+        await flush()
+        expect(render().bots[0]).toMatchObject({ status: 'idle', status_detail: null })
+        expect(status()).toBe('idle')
+        expect(render().chat.busy).toBe(true)
+        await expect(render().refresh()).rejects.toThrow('Unavailable')
+      }
+    )
+    it(
+      'projects a known running restored section after ' +
+        path +
+        ' restore with failed bot verification',
+      async () => {
+        await openLive({ ...bot, status: 'idle', status_detail: null } as Bot, true)
+        failScoped(false)
+        if (path === 'local') await render().rpc('hexbot.sections.unarchive', { id: 'section' })
+        else hooks.clients[0].emit(changed)
+        await flush()
+        expect(render().bots[0].status).toBe('working')
+        expect(status()).toBe('working')
+      }
+    )
+  }
+
+  it.each([
+    {
+      status: 'working',
+      detail: { ...namedWait.status_detail!, section_id: 'outside', session_id: 'outside-live' }
+    },
+    {
+      status: 'needs_you',
+      detail: { ...namedWait.status_detail!, section_id: 'outside', session_id: 'outside-live' }
+    },
+    { status: 'stopped', detail: { ...stoppedBot.status_detail!, section_id: 'outside' } },
+    { status: 'stopped', detail: { ...stoppedBot.status_detail!, room_id: 'room' } },
+    {
+      status: 'stopped',
+      detail: { ...stoppedBot.status_detail!, action: { kind: 'fix_connector', connector: 'mail' } }
+    }
+  ])(
+    'keeps independent aggregate cause $status/$detail after the other live section is archived',
+    async ({ status: active, detail }) => {
+      const current = { ...bot, status: active, status_detail: detail } as Bot
+      await openLive(current)
+      failScoped(true)
+      await render().rpc('hexbot.sections.archive', { id: 'section' })
+      await flush()
+      expect(render().bots[0]).toMatchObject({ status: active, status_detail: detail })
+    }
+  )
+
+  for (const archived of [false, true]) {
+    it.each(['mutation-first', 'snapshot-first'])(
+      'keeps completed ' +
+        (archived ? 'archive' : 'restore') +
+        ' when a precommit snapshot completes %s',
+      async order => {
+        await openLive({ ...bot, status: 'idle', status_detail: null } as Bot, !archived)
+        const mutation = deferred()
+        const info = deferred()
+        const original = hooks.handler
+        hooks.handler = async (method, params) => {
+          if (method === 'hexbot.sections.archive' || method === 'hexbot.sections.unarchive')
+            return mutation.promise
+          if (method === 'hexbot.info') return info.promise
+          if (method === 'hexbot.sections.list') {
+            if (params.bot) throw new Error('Scoped field unavailable')
+            return {
+              sections: [{ ...section(), archived_at: archived ? null : 1, title: 'Fresh title' }]
+            }
+          }
+          if (method === 'hexbot.bots.list')
+            return {
+              bots: [{ ...bot, status: 'idle', status_detail: null, display_name: 'Fresh name' }]
+            }
+          if (method === 'hexbot.bots.get') throw new Error('Bot unavailable')
+          return original(method, params)
+        }
+        const editing = render().rpc(
+          archived ? 'hexbot.sections.archive' : 'hexbot.sections.unarchive',
+          { id: 'section' }
+        )
+        const snapshot = render().refresh()
+        if (order === 'snapshot-first') {
+          info.resolve({})
+          await snapshot
+        }
+        mutation.resolve({ section: { ...section(), archived_at: archived ? 2 : null } })
+        await editing
+        if (order === 'mutation-first') {
+          info.resolve({})
+          await snapshot
+        }
+        const current = render().route
+        expect(render().sections[0]).toMatchObject({
+          archived_at: archived ? 2 : null,
+          title: 'Fresh title'
+        })
+        expect(current?.kind === 'section' && current.section.archived_at).toBe(archived ? 2 : null)
+        expect(current?.kind === 'section' && current.bot.display_name).toBe('Fresh name')
+      }
+    )
+  }
+
+  it.each(['bot-first', 'field-first'])(
+    'honors a same-batch authoritative Idle after remote restore in %s order',
+    async order => {
+      const idle = { ...bot, status: 'idle', status_detail: null } as Bot
+      await openLive(idle, true)
+      const botRead = deferred(),
+        fieldRead = deferred()
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.bots.get') return botRead.promise
+        if (method === 'hexbot.sections.list' && params.bot) return fieldRead.promise
+        return original(method, params)
+      }
+      hooks.clients[0].emit(changed)
+      if (order === 'bot-first') {
+        botRead.resolve({ bot: idle })
+        await flush()
+      }
+      fieldRead.resolve({ sections: [{ ...section(), archived_at: null }] })
+      await flush()
+      if (order === 'field-first') {
+        expect(render().bots[0].status).toBe('working')
+        botRead.resolve({ bot: idle })
+        await flush()
+      }
+      expect(render().chat.busy).toBe(true)
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it.each(['get', 'full'])(
+    'retires restored activity with a genuinely later %s status snapshot',
+    async kind => {
+      const idle = { ...bot, status: 'idle', status_detail: null } as Bot
+      await openLive(idle, true)
+      failScoped(false)
+      await render().rpc('hexbot.sections.unarchive', { id: 'section' })
+      await flush()
+      expect(render().bots[0].status).toBe('working')
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.bots.get') return { bot: idle }
+        if (method === 'hexbot.rooms.list') return { rooms: [] }
+        if (method === 'hexbot.sections.list')
+          return { sections: [{ ...section(), archived_at: null }] }
+        return original(method, params)
+      }
+      if (kind === 'get') {
+        hooks.clients[0].emit(namedResolved)
+        await flush()
+      } else await render().refresh()
+      expect(render().chat.busy).toBe(true)
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it('preserves a newer exact Retry authority and accepts the fresh open after an earlier archive', async () => {
+    await openLive({ ...namedWait, status: 'working' } as Bot)
+    failScoped(true)
+    await render().rpc('hexbot.sections.archive', { id: 'section' })
+    await flush()
+    expect(render().bots[0].status).toBe('idle')
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.get') return { bot: { ...stoppedBot, owner_id: 'owner' } }
+      if (method === 'hexbot.sections.open')
+        return { section: { ...section(), archived_at: null }, messages: [] }
+      return original(method, params)
+    }
+    hooks.clients[0].emit(namedResolved)
+    await flush()
+    expect(render().bots[0].status).toBe('stopped')
+    await render().syncChat()
+    const current = render().route
+    expect(current?.kind === 'section' && current.section.archived_at).toBeNull()
+    expect(status()).toBe('stopped')
+  })
+
+  it.each([false, true])(
+    'accepts a fresh open’s archive=%s field after prior proof without requiring lists',
+    async archived => {
+      await openLive({ ...bot, status: 'idle', status_detail: null } as Bot, !archived)
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.sections.open')
+          return { section: { ...section(), archived_at: archived ? 10 : null }, messages: [] }
+        return original(method, params)
+      }
+      await render().syncChat()
+      const current = render().route
+      expect(current?.kind === 'section' && current.section.archived_at).toBe(archived ? 10 : null)
+      expect(render().sections[0].archived_at).toBe(archived ? 10 : null)
+    }
+  )
+
+  it('fences an older open after a completed edit and a genuinely later full field snapshot', async () => {
+    await openLive({ ...bot, status: 'idle', status_detail: null } as Bot)
+    const oldOpen = deferred()
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.sections.open') return oldOpen.promise
+      return original(method, params)
+    }
+    const restoring = render().syncChat()
+    await flush()
+    failScoped(true)
+    await render().rpc('hexbot.sections.archive', { id: 'section' })
+    await flush()
+    const scoped = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.rooms.list') return { rooms: [] }
+      if (method === 'hexbot.sections.list')
+        return { sections: [{ ...section(), archived_at: 10 }] }
+      return scoped(method, params)
+    }
+    await render().refresh()
+    oldOpen.resolve({ section: { ...section(), archived_at: null }, messages: [] })
+    await restoring
+    const current = render().route
+    expect(current?.kind === 'section' && current.section.archived_at).toBe(10)
+    expect(render().sections[0].archived_at).toBe(10)
+  })
+
+  it.each([false, true])(
+    'fences a scoped field reply captured before completed archive=%s while its companion get is held',
+    async archived => {
+      await openLive({ ...bot, status: 'idle', status_detail: null } as Bot, !archived)
+      const fieldRead = deferred(),
+        botRead = deferred()
+      const original = hooks.handler
+      let fieldCalls = 0
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.bots.get') return botRead.promise
+        if (method === 'hexbot.sections.list' && params.bot) {
+          if (++fieldCalls === 1) return fieldRead.promise
+          throw new Error('Field unavailable')
+        }
+        if (method === 'hexbot.sections.archive' || method === 'hexbot.sections.unarchive')
+          return { section: { ...section(), archived_at: archived ? 2 : null } }
+        return original(method, params)
+      }
+      hooks.clients[0].emit(changed)
+      await render().rpc(archived ? 'hexbot.sections.archive' : 'hexbot.sections.unarchive', {
+        id: 'section'
+      })
+      fieldRead.resolve({ sections: [{ ...section(), archived_at: archived ? null : 1 }] })
+      await flush()
+      expect(render().sections[0].archived_at).toBe(archived ? 2 : null)
+      botRead.reject(new Error('Bot unavailable'))
+      await flush()
+    }
+  )
+
+  it.each(['older-first', 'newer-first', 'newer-fails'])(
+    'orders ordinary overlapping field reads without a mutation in %s order',
+    async order => {
+      await openLive({ ...bot, status: 'idle', status_detail: null } as Bot)
+      const reads: ReturnType<typeof deferred>[] = []
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.bots.list') {
+          reads.push(deferred())
+          return { bots: [{ ...bot, status: 'idle', status_detail: null }] }
+        }
+        if (method === 'hexbot.info') return reads.at(-1)!.promise
+        if (method === 'hexbot.sections.list')
+          return { sections: [{ ...section(), archived_at: reads.length === 1 ? 10 : null }] }
+        return original(method, params)
+      }
+      const first = render().refresh(),
+        second = render().refresh()
+      if (order === 'newer-fails') {
+        reads[1].reject(new Error('Newer unavailable'))
+        await expect(second).rejects.toThrow('Newer unavailable')
+        reads[0].resolve({})
+        await first
+      } else if (order === 'older-first') {
+        reads[0].resolve({})
+        await first
+        reads[1].resolve({})
+        await second
+      } else {
+        reads[1].resolve({})
+        await second
+        reads[0].resolve({})
+        await first
+      }
+      expect(render().sections[0].archived_at).toBe(order === 'newer-fails' ? 10 : null)
+    }
+  )
+
+  it.each([false, true])(
+    'keeps a verified remote change after an older local archive=%s acknowledgment',
+    async archived => {
+      await openLive({ ...bot, status: 'idle', status_detail: null } as Bot, !archived)
+      const mutation = deferred()
+      let field = archived ? 10 : null,
+        unavailable = false
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.sections.archive' || method === 'hexbot.sections.unarchive')
+          return mutation.promise
+        if (method === 'hexbot.bots.get' || method === 'hexbot.rooms.list')
+          throw new Error('Unavailable')
+        if (method === 'hexbot.sections.list' && params.bot) {
+          if (unavailable) throw new Error('Field unavailable')
+          return { sections: [{ ...section(), archived_at: field }] }
+        }
+        return original(method, params)
+      }
+      const editing = render().rpc(
+        archived ? 'hexbot.sections.archive' : 'hexbot.sections.unarchive',
+        { id: 'section' }
+      )
+      hooks.clients[0].emit(changed)
+      await flush()
+      expect(render().sections[0].archived_at).toBe(field)
+      field = archived ? null : 20
+      hooks.clients[0].emit(changed)
+      await flush()
+      expect(render().sections[0].archived_at).toBe(field)
+      unavailable = true
+      mutation.resolve({ section: { ...section(), archived_at: archived ? 10 : null } })
+      await editing
+      await flush()
+      expect(render().sections[0].archived_at).toBe(field)
+      const current = render().route
+      expect(current?.kind === 'section' && current.section.archived_at).toBe(field)
+    }
+  )
+
+  it('does not renew an already-reflected archive acknowledgment over newer Retry authority', async () => {
+    await openLive({ ...namedWait, status: 'idle', status_detail: null } as Bot, true)
+    const mutation = deferred()
+    let restoring = false,
+      unavailable = true
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.sections.archive') return mutation.promise
+      if (method === 'hexbot.bots.get') {
+        if (unavailable) throw new Error('Bot unavailable')
+        return { bot: { ...stoppedBot, owner_id: 'owner' } }
+      }
+      if (method === 'hexbot.sections.list' && params.bot) {
+        if (restoring) throw new Error('Field unavailable')
+        return { sections: [{ ...section(), archived_at: 1 }] }
+      }
+      if (method === 'hexbot.rooms.list') throw new Error('Rooms unavailable')
+      return original(method, params)
+    }
+    const editing = render().rpc('hexbot.sections.archive', { id: 'section' })
+    hooks.clients[0].emit(changed)
+    await flush()
+    restoring = true
+    unavailable = false
+    hooks.clients[0].emit(changed)
+    await flush()
+    expect(render().bots[0].status).toBe('stopped')
+    unavailable = true
+    mutation.resolve({ section: { ...section(), archived_at: 1 } })
+    await editing
+    await flush()
+    expect(render().bots[0].status).toBe('stopped')
+    expect(status()).toBe('stopped')
+  })
+})

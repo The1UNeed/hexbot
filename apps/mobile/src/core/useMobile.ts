@@ -54,6 +54,15 @@ const statusOf = (current: Bot, verified: Bot): Bot => ({
   status: verified.status,
   status_detail: verified.status_detail
 })
+const sameArchiveRoute = (before: ChatRoute, current: ChatRoute | null) =>
+  before.kind === 'section' &&
+  current?.kind === 'section' &&
+  before.bot === current.bot &&
+  Object.keys({ ...before.section, ...current.section }).every(
+    key =>
+      key === 'archived_at' ||
+      before.section[key as keyof Section] === current.section[key as keyof Section]
+  )
 export function useMobile() {
   const [saved, setSaved] = useState<SavedDaemon[]>([])
   const [active, setActive] = useState<SavedDaemon | null>(null)
@@ -98,49 +107,108 @@ export function useMobile() {
   const deletedSections = useRef(new Map<string, { request: number; active: boolean }>())
   /** Exact accepted archive fields survive an older list or open response. */
   const sectionArchives = useRef(
-    new Map<string, { request: number; bot: string; archived_at: number | null }>()
+    new Map<
+      string,
+      {
+        request: number
+        bot: string
+        archived_at: number | null
+        generation: number
+        mutationRequest?: number
+        readChangeRequest?: number
+        proofRequest: number
+        restoredAt: number
+      }
+    >()
+  )
+  const archiveSnapshot = useCallback(
+    () => new Map([...sectionArchives.current].map(([id, saved]) => [id, saved.generation])),
+    []
   )
   const archiveSection = useCallback((section: Section): Section => {
     const saved = sectionArchives.current.get(section.id)
     return saved?.bot === section.bot ? { ...section, archived_at: saved.archived_at } : section
   }, [])
-  const acceptArchive = useCallback((section: Section, request: number) => {
-    if (
-      !section.id ||
-      !section.bot ||
-      !(section.archived_at === null || typeof section.archived_at === 'number') ||
-      deletedSections.current.get(section.id)?.active ||
-      request < acceptedRefresh.current ||
-      request < (sectionArchives.current.get(section.id)?.request ?? 0)
-    )
-      return
-    sectionArchives.current.set(section.id, {
-      request,
-      bot: section.bot,
-      archived_at: section.archived_at
-    })
-    const before = sectionsRef.current
-    const rows = before.map(row =>
-      row.id === section.id && row.bot === section.bot && row.archived_at !== section.archived_at
-        ? { ...row, archived_at: section.archived_at }
-        : row
-    )
-    if (rows.some((row, i) => row !== before[i])) {
-      sectionsRef.current = rows
-      setSections(rows)
-    }
-    const here = routeRef.current
-    if (
-      here?.kind === 'section' &&
-      here.section.id === section.id &&
-      here.bot.name === section.bot &&
-      here.section.archived_at !== section.archived_at
-    ) {
-      const next = { ...here, section: { ...here.section, archived_at: section.archived_at } }
-      routeRef.current = next
-      setRoute(next)
-    }
-    return true
+  const acceptArchive = useCallback(
+    (section: Section, request: number, started?: Map<string, number>, mergeRoute = true) => {
+      const saved = sectionArchives.current.get(section.id)
+      if (
+        !section.id ||
+        !section.bot ||
+        !(section.archived_at === null || typeof section.archived_at === 'number') ||
+        deletedSections.current.get(section.id)?.active ||
+        (started
+          ? (started.get(section.id) ?? 0) !== (saved?.generation ?? 0) ||
+            request < acceptedRefresh.current ||
+            request < (saved?.request ?? 0)
+          : request < Math.max(saved?.mutationRequest ?? 0, saved?.readChangeRequest ?? 0))
+      )
+        return
+      const prior = saved
+        ? saved.archived_at
+        : sectionsRef.current.find(row => row.id === section.id && row.bot === section.bot)
+            ?.archived_at
+      const reflected = !started && saved?.bot === section.bot && prior === section.archived_at
+      const proofRequest = reflected
+        ? saved.proofRequest
+        : started
+          ? request
+          : ++refreshSequence.current
+      const statusRead = Math.max(
+        acceptedRefresh.current,
+        botStatusReads.current.get(section.bot)?.request ?? 0
+      )
+      sectionArchives.current.set(section.id, {
+        request: reflected ? Math.max(saved.request, request) : request,
+        bot: section.bot,
+        archived_at: section.archived_at,
+        generation: (saved?.generation ?? 0) + (started || reflected ? 0 : 1),
+        mutationRequest: started ? saved?.mutationRequest : request,
+        // A verified later transition wins an old acknowledgment; an unchanged snapshot does not.
+        readChangeRequest:
+          started && prior !== undefined && prior !== section.archived_at
+            ? request
+            : saved?.readChangeRequest,
+        proofRequest,
+        restoredAt: reflected
+          ? saved.restoredAt
+          : section.archived_at === null
+            ? prior
+              ? statusRead >= proofRequest
+                ? 0
+                : proofRequest
+              : (saved?.restoredAt ?? 0)
+            : 0
+      })
+      const before = sectionsRef.current
+      const rows = before.map(row =>
+        row.id === section.id && row.bot === section.bot && row.archived_at !== section.archived_at
+          ? { ...row, archived_at: section.archived_at }
+          : row
+      )
+      if (rows.some((row, i) => row !== before[i])) {
+        sectionsRef.current = rows
+        setSections(rows)
+      }
+      const here = routeRef.current
+      if (
+        mergeRoute &&
+        here?.kind === 'section' &&
+        here.section.id === section.id &&
+        here.bot.name === section.bot &&
+        here.section.archived_at !== section.archived_at
+      ) {
+        const next = { ...here, section: { ...here.section, archived_at: section.archived_at } }
+        routeRef.current = next
+        setRoute(next)
+      }
+      return true
+    },
+    []
+  )
+  const retireArchiveActivity = useCallback((name: string, request: number) => {
+    for (const saved of sectionArchives.current.values())
+      if (saved.bot === name && request >= saved.restoredAt) saved.restoredAt = 0
   }, [])
   const rpc: Rpc = useCallback(
     async (method, params = {}) => {
@@ -229,6 +297,7 @@ export function useMobile() {
     const epoch = replayEpoch.current
     const request = ++refreshSequence.current
     const revision = eventRevision.current
+    const archives = archiveSnapshot()
     clearModels()
     const before = routeRef.current
     const [b, r, s, i, config, me] = await Promise.all([
@@ -253,6 +322,7 @@ export function useMobile() {
     const nextBots = b.bots.map(bot => {
       const current = botsRef.current.find(row => row.name === bot.name)
       if (!sameBot(current, bot)) botStatusReads.current.delete(bot.name)
+      retireArchiveActivity(bot.name, request)
       return (botStatusReads.current.get(bot.name)?.request ?? 0) > request && sameBot(current, bot)
         ? statusOf(bot, current!)
         : bot
@@ -274,10 +344,8 @@ export function useMobile() {
         return !deleted || (!deleted.active && deleted.request < request)
       })
       .map(section => {
-        const saved = sectionArchives.current.get(section.id)
-        if (saved && saved.request > request) return archiveSection(section)
-        sectionArchives.current.delete(section.id)
-        return section
+        acceptArchive(section, request, archives, false)
+        return archiveSection(section)
       })
     sectionsRef.current = nextSections
     setSections(nextSections)
@@ -286,12 +354,21 @@ export function useMobile() {
     setUser(me)
     // The open conversation follows renames and edits, and closes once it is gone.
     // A route that changed while the lists loaded may be newer than them.
-    if (!before || routeRef.current !== before) return
+    if (!before || (routeRef.current !== before && !sameArchiveRoute(before, routeRef.current)))
+      return
     const next = rebind(before, { bots: nextBots, rooms: r.rooms, sections: nextSections })
     if (!next) return leave()
     routeRef.current = next
     setRoute(next)
-  }, [rpc, clearModels, leave, archiveSection])
+  }, [
+    rpc,
+    clearModels,
+    leave,
+    archiveSection,
+    archiveSnapshot,
+    acceptArchive,
+    retireArchiveActivity
+  ])
   const syncRoom = useCallback(
     async (id: string) => {
       const sequence = ++openSequence.current
@@ -347,6 +424,8 @@ export function useMobile() {
     let failure: string | null = null
     for (let attempt = 0; ; attempt++) {
       const sequence = ++openSequence.current
+      const request = ++refreshSequence.current
+      const archives = archiveSnapshot()
       loadingEvents.current = []
       try {
         const result = await rpc<{
@@ -384,6 +463,7 @@ export function useMobile() {
         const restored = { ...replay.state, error: failure }
         loadingEvents.current = null
         setChat(rosterChat(restored, rosterRevision.current))
+        acceptArchive(result.section, request, archives, false)
         const newRoute: ChatRoute = { ...target, section: archiveSection(result.section) }
         routeRef.current = newRoute
         setRoute(newRoute)
@@ -393,7 +473,7 @@ export function useMobile() {
         if (sequence === openSequence.current) loadingEvents.current = null
       }
     }
-  }, [rpc, syncRoom, archiveSection])
+  }, [rpc, syncRoom, archiveSection, archiveSnapshot, acceptArchive])
   const syncChatRef = useRef(syncChat)
   syncChatRef.current = syncChat
   const refreshRef = useRef(refresh)
@@ -422,6 +502,7 @@ export function useMobile() {
       const epoch = replayEpoch.current
       const change = botStatusChanges.current.get(name)
       const request = ++refreshSequence.current
+      const archives = archiveSnapshot()
       const revision = Math.max(receipt, eventRevision.current)
       const pending: BotReadContext & { next?: BotReadContext } = {
         sessionId,
@@ -452,6 +533,7 @@ export function useMobile() {
             )
               return
             botStatusReads.current.set(name, { request, revision })
+            retireArchiveActivity(name, request)
             const nextBots = botsRef.current.map(bot =>
               bot.name === name ? statusOf(bot, result.bot) : bot
             )
@@ -464,7 +546,8 @@ export function useMobile() {
                 bot: name
               }).then(result => {
                 if (stale()) return
-                for (const row of result.sections) if (row.bot === name) acceptArchive(row, request)
+                for (const row of result.sections)
+                  if (row.bot === name) acceptArchive(row, request, archives)
               })
             : Promise.resolve()
         ])
@@ -487,7 +570,7 @@ export function useMobile() {
         }
       }
     },
-    [rpc, acceptArchive]
+    [rpc, acceptArchive, archiveSnapshot, retireArchiveActivity]
   )
   const onEvent = useCallback(
     (event: GatewayEvent) => {
@@ -979,19 +1062,27 @@ export function useMobile() {
     eventRef.current(clarifyResponse(pending, questionId, answer, result))
   }
 
-  const inactiveRetryBot = (bot: Bot, siblings: TurnState[] = []): Bot => {
+  const inactiveSectionBot = (bot: Bot, siblings: TurnState[] = []): Bot => {
     const detail = bot.status_detail
     const section = sectionsRef.current.find(
       row => row.id === detail?.section_id && row.bot === bot.name
     )
     const saved = detail?.section_id && sectionArchives.current.get(detail.section_id)
     const archived = saved && saved.bot === bot.name ? saved.archived_at : section?.archived_at
+    const statusRead = Math.max(
+      acceptedRefresh.current,
+      botStatusReads.current.get(bot.name)?.request ?? 0
+    )
     if (
-      bot.status !== 'stopped' ||
-      detail?.action?.kind !== 'retry' ||
-      detail.room_id ||
-      !detail.section_id ||
-      (!deletedSections.current.get(detail.section_id)?.active && !archived)
+      !(
+        bot.status === 'working' ||
+        bot.status === 'needs_you' ||
+        (bot.status === 'stopped' && detail?.action?.kind === 'retry')
+      ) ||
+      detail?.room_id ||
+      !detail?.section_id ||
+      (!deletedSections.current.get(detail.section_id)?.active &&
+        !(archived && saved && saved.proofRequest > statusRead))
     )
       return bot
     const failure = siblings.find(state => state.error)?.error
@@ -1023,17 +1114,42 @@ export function useMobile() {
     section?: Section,
     roomId?: string
   ) => {
-    if (section && archiveSection(section).archived_at) return inactiveRetryBot(bot)
+    if (section && archiveSection(section).archived_at) return inactiveSectionBot(bot)
     const read = botStatusReads.current.get(bot.name)
     const current = read ? rosterChat({ ...emptyChat(), ...state }, read.revision) : state
-    return settledBot(inactiveRetryBot(bot, [current]), current, sessionId, section?.id, roomId)
+    const neutral = inactiveSectionBot(bot, [current])
+    const restored = section && sectionArchives.current.get(section.id)
+    const detail = neutral.status_detail
+    const active =
+      restored?.restoredAt &&
+      current.busy &&
+      sessionId &&
+      neutral.status === 'idle' &&
+      (!detail ||
+        (!detail.room_id &&
+          (!detail.section_id || detail.section_id === section?.id) &&
+          (!detail.session_id || detail.session_id === sessionId)))
+        ? {
+            ...neutral,
+            status: 'working' as const,
+            status_detail: {
+              section_id: section?.id ?? null,
+              session_id: sessionId,
+              room_id: null,
+              since: detail?.since ?? 0,
+              text: current.activity,
+              action: null
+            }
+          }
+        : neutral
+    return settledBot(active, current, sessionId, section?.id, roomId)
   }
   const visibleBots = bots.map(bot => {
     if (route?.kind === 'section' && route.bot.name === bot.name)
       return projectBot(bot, chat, liveId.current, route.section)
     if (route?.kind === 'room') {
       const siblings = Object.values(chat.turns).filter(turn => turn.bot === bot.name)
-      const neutral = inactiveRetryBot(bot, siblings)
+      const neutral = inactiveSectionBot(bot, siblings)
       const pending = siblings.find(turn =>
         [...turn.approvals, ...turn.questions].some(card => card.sessionId === turn.sessionId)
       )
@@ -1041,7 +1157,7 @@ export function useMobile() {
         pending ?? siblings.find(turn => turn.sessionId === bot.status_detail?.session_id)
       return turn ? projectBot(neutral, turn, turn.sessionId, undefined, route.room.id) : neutral
     }
-    return inactiveRetryBot(bot)
+    return inactiveSectionBot(bot)
   })
   const cachedRouteBot = route?.kind === 'section' && bots.find(bot => sameBot(bot, route.bot))
   const visibleRoute =
