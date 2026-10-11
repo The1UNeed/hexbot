@@ -42,8 +42,9 @@ data model. The native transport and event projection live in
 - Approvals: `approval.respond {session_id, request_id, choice}`
   with `choice` in `once | session | deny`. `session` quiets the same kind
   of request for the rest of the section; nothing persists across sections.
-  Requests raised by the daemon offer `once | deny` only. Opening a section
-  re-emits its pending approval. Questions arrive as `clarify.request` and
+  Requests raised by the daemon offer `once | deny` only. Delegates and
+  background sections cannot wait for approval; actions that need it are
+  refused. Opening a section re-emits its pending approval. Questions arrive as `clarify.request` and
   `pending_clarify` on section open; use `clarify.respond` to answer.
 - Per-section model override: `config.set {key: "model", value, session_id}`.
 - Model picker source: `model.options`.

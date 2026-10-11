@@ -64,6 +64,8 @@ helpers can call provider APIs with the section's credentials and incur costs.
 
 Each card shows the command or action and why it asks. Approve runs it once. Allow in this section stops asking for that kind of request, for example full-access commands or file changes outside the workspace, until the section ends. Deny stops it, and the bot sees that you declined. Nothing is saved across sections, so a new section starts asking again. Requests the daemon raises itself (code runs, browser scripts, scheduling) offer Approve and Deny only.
 
+Delegates and background sections cannot wait for approval; actions that need it are refused.
+
 Read the command and the reason before approving. A familiar tool can still do damage with broad arguments.
 
 ## Credential and browser access

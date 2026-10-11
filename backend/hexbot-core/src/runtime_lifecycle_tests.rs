@@ -1180,6 +1180,7 @@ async fn scheduled_job_sessions_propose_memory_instead_of_writing_it() {
             "cron-job-1-run",
             None,
             Some(&json!({"job":"job-1"})),
+            false,
         )
         .await
         .unwrap();
@@ -1211,6 +1212,7 @@ async fn scheduled_job_sessions_propose_memory_instead_of_writing_it() {
             "cron-job-1-run-child",
             None,
             Some(&json!({"parent_session":"cron-job-1-run"})),
+            false,
         )
         .await
         .unwrap();
@@ -1291,6 +1293,7 @@ async fn scheduled_job_sessions_read_the_soul_but_cannot_change_it() {
             "cron-job-1-run",
             None,
             Some(&json!({"job":"job-1"})),
+            false,
         )
         .await
         .unwrap();
@@ -1301,6 +1304,7 @@ async fn scheduled_job_sessions_read_the_soul_but_cannot_change_it() {
             "cron-job-1-run-child",
             None,
             Some(&json!({"parent_session":"cron-job-1-run"})),
+            false,
         )
         .await
         .unwrap();
@@ -2405,6 +2409,7 @@ async fn jobs_and_nested_delegates_cap_bypass_and_refuse_bot_relays() {
             "job-root",
             None,
             Some(&json!({"job":"job-1"})),
+            false,
         )
         .await
         .unwrap();
@@ -2415,6 +2420,7 @@ async fn jobs_and_nested_delegates_cap_bypass_and_refuse_bot_relays() {
             "job-child",
             None,
             Some(&json!({"parent_session":"job-root"})),
+            false,
         )
         .await
         .unwrap();
@@ -2425,6 +2431,7 @@ async fn jobs_and_nested_delegates_cap_bypass_and_refuse_bot_relays() {
             "job-grandchild",
             None,
             Some(&json!({"parent_session":"job-child"})),
+            false,
         )
         .await
         .unwrap();
