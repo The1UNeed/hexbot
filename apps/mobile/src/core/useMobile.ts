@@ -103,6 +103,8 @@ export function useMobile() {
   const botStatusReads = useRef(new Map<string, { request: number; revision: number }>())
   const botStatusChanges = useRef(new Map<string, number>())
   const pendingBotStatus = useRef(new Map<string, BotReadContext & { next?: BotReadContext }>())
+  /** Only current room turns can project Working over an older status read. */
+  const roomWorking = useRef(new Map<string, number>())
   /** Definitive deletions survive unavailable lists, but belong to this daemon epoch. */
   const deletedSections = useRef(new Map<string, { request: number; active: boolean }>())
   /** Exact accepted archive fields survive an older list or open response. */
@@ -287,6 +289,7 @@ export function useMobile() {
     releaseStaged()
     openSequence.current++
     loadingEvents.current = null
+    roomWorking.current.clear()
     routeRef.current = null
     liveId.current = null
     setRoute(null)
@@ -397,8 +400,17 @@ export function useMobile() {
             events.push(...page.events)
             if (page.events.length < 1000) break
           }
+        const revision = ++eventRevision.current
+        const epoch = replayEpoch.current
         const { room } = await rpc<{ room: Room }>('hexbot.rooms.get', { id })
         if (stale()) return
+        roomWorking.current = new Map(
+          epoch === replayEpoch.current
+            ? (room.turns ?? []).flatMap(turn =>
+                turn.live_session_id ? [[turn.live_session_id, revision] as const] : []
+              )
+            : []
+        )
         roomEvents.current = events
         setHasEarlier((events[0]?.seq ?? 1) > 1)
         const buffered = loadingEvents.current ?? []
@@ -587,6 +599,7 @@ export function useMobile() {
           botStatusReads.current.clear()
           botStatusChanges.current.clear()
           pendingBotStatus.current.clear()
+          roomWorking.current.clear()
           sectionArchives.current.clear()
           for (const deleted of deletedSections.current.values()) deleted.active = false
           setBots(rows => [...rows])
@@ -750,17 +763,34 @@ export function useMobile() {
             () => {}
           )
         }
-        setChat(c =>
-          rosterChat(
-            reduceRoom(
-              c,
-              event,
-              target.room,
-              id => botsRef.current.find(b => b.name === id)?.display_name || id
-            ),
-            rosterRevision.current
+        setChat(c => {
+          const next = reduceRoom(
+            c,
+            event,
+            target.room,
+            id => botsRef.current.find(b => b.name === id)?.display_name || id
           )
-        )
+          const id =
+            event.type === 'hexbot.rooms.turn' &&
+            p.room_id === target.room.id &&
+            ['running', 'working'].includes(String(p.status))
+              ? p.live_session_id
+              : event.type === 'message.start' ||
+                  (event.type === 'status.update' && p.kind === 'working')
+                ? event.session_id
+                : undefined
+          if (typeof id === 'string' && next.turns[id]?.busy && !next.turns[id].error)
+            roomWorking.current.set(
+              id,
+              Math.max(
+                roomWorking.current.get(id) ?? -1,
+                (event as GatewayEvent & { mobileRevision: number }).mobileRevision
+              )
+            )
+          for (const id of roomWorking.current.keys())
+            if (!next.turns[id]?.busy) roomWorking.current.delete(id)
+          return rosterChat(next, rosterRevision.current)
+        })
       } else {
         if (!event.session_id || event.session_id !== liveId.current) return
         if (event.type === 'message.complete' && straddling.current === event.session_id) {
@@ -826,6 +856,7 @@ export function useMobile() {
       botStatusReads.current.clear()
       botStatusChanges.current.clear()
       pendingBotStatus.current.clear()
+      roomWorking.current.clear()
       deletedSections.current.clear()
       sectionArchives.current.clear()
       routeRef.current = null
@@ -1149,13 +1180,39 @@ export function useMobile() {
       return projectBot(bot, chat, liveId.current, route.section)
     if (route?.kind === 'room') {
       const siblings = Object.values(chat.turns).filter(turn => turn.bot === bot.name)
-      const neutral = inactiveSectionBot(bot, siblings)
+      let neutral = inactiveSectionBot(bot, siblings)
+      const named = siblings.find(turn => turn.sessionId === bot.status_detail?.session_id)
+      if (named) neutral = projectBot(neutral, named, named.sessionId, undefined, route.room.id)
       const pending = siblings.find(turn =>
         [...turn.approvals, ...turn.questions].some(card => card.sessionId === turn.sessionId)
       )
-      const turn =
-        pending ?? siblings.find(turn => turn.sessionId === bot.status_detail?.session_id)
-      return turn ? projectBot(neutral, turn, turn.sessionId, undefined, route.room.id) : neutral
+      const cutoff = Math.max(
+        rosterRevision.current,
+        botStatusReads.current.get(bot.name)?.revision ?? -1
+      )
+      const working = siblings.find(
+        turn => turn.busy && !turn.error && (roomWorking.current.get(turn.sessionId) ?? -1) > cutoff
+      )
+      const turn = pending ?? working ?? named
+      const active =
+        turn === working &&
+        working &&
+        !siblings.some(turn => turn.error) &&
+        (neutral.status === 'idle' || neutral.status === 'working')
+          ? {
+              ...neutral,
+              status: 'working' as const,
+              status_detail: {
+                session_id: working.sessionId,
+                section_id: null,
+                room_id: route.room.id,
+                since: neutral.status_detail?.since ?? 0,
+                text: working.activity,
+                action: null
+              }
+            }
+          : neutral
+      return turn ? projectBot(active, turn, turn.sessionId, undefined, route.room.id) : neutral
     }
     return inactiveSectionBot(bot)
   })

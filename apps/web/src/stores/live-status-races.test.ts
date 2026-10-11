@@ -477,7 +477,7 @@ describe('retry resolution', () => {
     }
   )
 
-  it.each(['error', 'incident', 'roster', 'reconnect', 'snapshot', 'drop'])(
+  it.each(['error', 'incident', 'roster', 'authority reset', 'snapshot', 'drop'])(
     'retires proof when %s arrives',
     async boundary => {
       useBots.setState({ byName: { owl: stopped() } })
@@ -492,7 +492,7 @@ describe('retry resolution', () => {
       } else if (boundary === 'roster') {
         setActiveRpc({ call: vi.fn(async () => ({ bots: [stopped()] })) } as never)
         await useBots.getState().refresh()
-      } else if (boundary === 'reconnect') {
+      } else if (boundary === 'authority reset') {
         actions().clearAnsweredWaiting()
       } else if (boundary === 'snapshot') {
         actions().open('live', 's1', [])

@@ -2526,3 +2526,252 @@ describe('mobile archive live projection and completed edits', () => {
     expect(status()).toBe('stopped')
   })
 })
+
+describe('mobile working room projection', () => {
+  const idle = { ...namedWait, status: 'idle', status_detail: null } as Bot
+  const outside = {
+    ...namedWait.status_detail!,
+    section_id: 'outside',
+    session_id: 'outside-live'
+  }
+  const running = (sessionId = 'room-live', name = 'alpha', roomId = 'room') => ({
+    type: 'hexbot.rooms.turn',
+    payload: { room_id: roomId, bot: name, live_session_id: sessionId, status: 'running' }
+  })
+  async function open(current: Bot) {
+    const room = { id: 'room', members: [], turns: [] } as unknown as Room
+    await unopened(current)
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.rooms.get') return { room }
+      if (method === 'hexbot.rooms.log') return { events: [] }
+      if (method === 'hexbot.bots.list' || method === 'hexbot.bots.get')
+        throw new Error('Roster unavailable')
+      return original(method, params)
+    }
+    await render().openRoom(room)
+  }
+
+  it.each([
+    { ...idle, status_detail: null },
+    { ...idle, status_detail: outside },
+    { ...idle, status_detail: { ...outside, session_id: 'room-live', room_id: 'room' } },
+    { ...idle, status: 'working', status_detail: outside }
+  ] as Bot[])(
+    'projects the current running room session over cached $status/$status_detail',
+    async cached => {
+      await open(cached)
+      hooks.clients[0].emit(running())
+      hooks.clients[0].emit(wire('message.start', {}, 'room-live'))
+      hooks.clients[0].emit(wire('tool.start', { tool_id: 'read', name: 'read_file' }, 'room-live'))
+      await expect(render().refresh()).rejects.toThrow('Roster unavailable')
+      expect(render().chat.turns['room-live']).toMatchObject({ bot: 'alpha', busy: true })
+      expect(render().bots[0]).toMatchObject({
+        status: 'working',
+        status_detail: {
+          session_id: 'room-live',
+          section_id: null,
+          room_id: 'room',
+          text: 'Using read_file',
+          action: null
+        }
+      })
+      hooks.clients[0].emit({
+        ...running(),
+        payload: { ...running().payload, status: 'complete' }
+      })
+      expect(render().chat.turns).toEqual({})
+      expect(render().bots[0]).toMatchObject({
+        status: cached.status,
+        status_detail: cached.status_detail
+      })
+    }
+  )
+
+  it.each([
+    { ...namedWait, status_detail: outside },
+    { ...stoppedBot, status_detail: { ...stoppedBot.status_detail!, section_id: 'outside' } },
+    { ...stoppedBot, status_detail: { ...stoppedBot.status_detail!, room_id: 'another-room' } },
+    {
+      ...stoppedBot,
+      status_detail: { ...stoppedBot.status_detail!, action: { kind: 'fix_connector' } }
+    }
+  ] as Bot[])(
+    'preserves the independent cached $status cause during a working room turn',
+    async cached => {
+      await open(cached)
+      hooks.clients[0].emit(running())
+      await expect(render().refresh()).rejects.toThrow('Roster unavailable')
+      expect(render().bots[0]).toMatchObject({
+        status: cached.status,
+        status_detail: cached.status_detail
+      })
+    }
+  )
+
+  it('keeps a same-bot sibling human card above another working turn', async () => {
+    await open(idle)
+    hooks.clients[0].emit(running('waiting-live'))
+    hooks.clients[0].emit(
+      wire('clarify.request', { request_id: 'question', question: 'When?' }, 'waiting-live')
+    )
+    hooks.clients[0].emit(running())
+    expect(render().bots[0]).toMatchObject({
+      status: 'needs_you',
+      status_detail: { session_id: 'waiting-live', room_id: 'room' }
+    })
+    expect(render().chat.questions.map(card => card.sessionId)).toEqual(['waiting-live'])
+  })
+
+  it('ignores a different bot, room or unrecognized session as working evidence', async () => {
+    await open(idle)
+    hooks.clients[0].emit(running('beta-live', 'beta'))
+    hooks.clients[0].emit(running('elsewhere', 'alpha', 'other-room'))
+    hooks.clients[0].emit(wire('message.start', {}, 'unknown'))
+    expect(Object.keys(render().chat.turns)).toEqual(['beta-live'])
+    expect(render().bots[0]).toMatchObject({ status: 'idle', status_detail: null })
+  })
+
+  it('includes a busy sibling when the cached named room turn is already complete', async () => {
+    await open({ ...idle, status_detail: { ...outside, session_id: 'old-live', room_id: 'room' } })
+    hooks.clients[0].emit(running('old-live'))
+    hooks.clients[0].emit(wire('message.complete', { text: 'Done' }, 'old-live'))
+    hooks.clients[0].emit(running())
+    expect(render().chat.turns['old-live'].busy).toBe(false)
+    expect(render().bots[0]).toMatchObject({
+      status: 'working',
+      status_detail: { session_id: 'room-live', room_id: 'room' }
+    })
+  })
+
+  it('preserves the named session’s accepted answer before folding a newer busy sibling', async () => {
+    await open({
+      ...namedWait,
+      status_detail: { ...outside, session_id: 'old-live', section_id: null, room_id: 'room' }
+    })
+    hooks.clients[0].emit(running('old-live'))
+    hooks.clients[0].emit(
+      wire('approval.request', { request_id: 'old', choices: ['once'] }, 'old-live')
+    )
+    hooks.clients[0].emit(
+      wire('approval.resolved', { request_id: 'old', choice: 'once' }, 'old-live')
+    )
+    hooks.clients[0].emit(wire('message.complete', { text: 'Done' }, 'old-live'))
+    expect(render().bots[0].status).toBe('idle')
+    hooks.clients[0].emit(running())
+    expect(render().bots[0]).toMatchObject({
+      status: 'working',
+      status_detail: { session_id: 'room-live', room_id: 'room' }
+    })
+    expect(render().chat.approvals).toEqual([])
+    expect(render().chat.turns['old-live'].resumedWaiting).toBe(true)
+  })
+
+  it.each(['get', 'full'])(
+    'retires older room activity after a later accepted %s Idle read',
+    async kind => {
+      await open(idle)
+      hooks.clients[0].emit(running())
+      expect(render().bots[0].status).toBe('working')
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.bots.get') return { bot: idle }
+        if (method === 'hexbot.bots.list') return { bots: [idle] }
+        if (method === 'hexbot.rooms.list')
+          return { rooms: [{ id: 'room', members: [], turns: [] }] }
+        return original(method, params)
+      }
+      if (kind === 'get') {
+        hooks.clients[0].emit(namedResolved)
+        await flush()
+      } else await render().refresh()
+      expect(render().chat.turns['room-live'].busy).toBe(true)
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it('preserves a new working turn received during an older held Idle roster read', async () => {
+    await open(idle)
+    const reply = deferred()
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') return reply.promise
+      if (method === 'hexbot.rooms.list') return { rooms: [{ id: 'room', members: [], turns: [] }] }
+      return original(method, params)
+    }
+    const reading = render().refresh()
+    hooks.clients[0].emit(running())
+    hooks.clients[0].emit(wire('message.start', {}, 'room-live'))
+    reply.resolve({ bots: [idle] })
+    await reading
+    expect(render().bots[0]).toMatchObject({
+      status: 'working',
+      status_detail: { session_id: 'room-live', room_id: 'room' }
+    })
+  })
+
+  it.each(['room-live', 'unknown'])(
+    'accepts newer explicit Working only for the known room session %s',
+    async sessionId => {
+      await open(idle)
+      hooks.clients[0].emit(running())
+      const original = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.bots.get' ? { bot: idle } : original(method, params)
+      hooks.clients[0].emit(namedResolved)
+      await flush()
+      expect(render().bots[0].status).toBe('idle')
+      hooks.clients[0].emit(wire('status.update', { kind: 'working', text: 'Working' }, sessionId))
+      expect(render().bots[0].status).toBe(sessionId === 'room-live' ? 'working' : 'idle')
+      if (sessionId === 'room-live') {
+        hooks.clients[0].emit(
+          wire('approval.request', { request_id: 'card', choices: ['once'] }, sessionId)
+        )
+        hooks.clients[0].emit(
+          wire('status.update', { kind: 'working', text: 'Working' }, sessionId)
+        )
+        expect(render().bots[0].status).toBe('needs_you')
+        expect(render().chat.approvals.map(card => card.sessionId)).toEqual([sessionId])
+      }
+    }
+  )
+
+  it.each([false, true])(
+    'retains room activity only across the same daemon epoch (changed=%s)',
+    async changed => {
+      await open(idle)
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+      hooks.clients[0].emit(running())
+      expect(render().bots[0].status).toBe('working')
+      hooks.clients[0].emit({
+        type: 'gateway.ready',
+        payload: { replay_epoch: changed ? 'second' : 'first' }
+      })
+      await expect(render().refresh()).rejects.toThrow('Roster unavailable')
+      expect(render().bots[0].status).toBe(changed ? 'idle' : 'working')
+    }
+  )
+
+  it('projects a fresh room snapshot’s busy turn before a later status read retires it', async () => {
+    await open(idle)
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.rooms.get')
+        return {
+          room: { id: 'room', members: [], turns: [{ bot: 'alpha', live_session_id: 'room-live' }] }
+        }
+      return original(method, params)
+    }
+    await render().syncChat()
+    expect(render().bots[0]).toMatchObject({
+      status: 'working',
+      status_detail: { session_id: 'room-live', room_id: 'room' }
+    })
+    const held = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.bots.get' ? { bot: idle } : held(method, params)
+    hooks.clients[0].emit(namedResolved)
+    await flush()
+    expect(render().bots[0].status).toBe('idle')
+  })
+})

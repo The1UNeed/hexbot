@@ -146,7 +146,7 @@ describe.each(['approval', 'clarify'] as const)('%s confirmation across reconnec
       const disconnected = useTranscripts.getState().bySession
       expect(disconnected['first-live']?.answeredWaiting).toBeUndefined()
       expect(disconnected['first-live']?.liveStatus).toBeUndefined()
-      expect(disconnected['first-live']?.retryResolved).toBeUndefined()
+      expect(disconnected['first-live']?.retryResolved).toBe(true)
       expect(disconnected['second-live']?.waitingRequests).toEqual(confirmation)
 
       if (boundary === 'new epoch') {

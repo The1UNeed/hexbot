@@ -159,7 +159,7 @@ export interface TranscriptsState {
     sectionIds?: readonly string[],
     sessionIds?: readonly string[],
     throughRevision?: number,
-    options?: { preserveWaiting?: boolean; idle?: boolean }
+    options?: { preserveWaiting?: boolean; preserveRetryResolved?: boolean; idle?: boolean }
   ) => void
   answerClarify: (
     sessionId: string,
@@ -290,13 +290,13 @@ function advanceAuthority(transcript: Transcript): Transcript {
 
 function retireAuthority(
   transcript: Transcript,
-  options: { preserveWaiting?: boolean; idle?: boolean } = {}
+  options: { preserveWaiting?: boolean; preserveRetryResolved?: boolean; idle?: boolean } = {}
 ): Transcript {
   return {
     ...advanceAuthority(transcript),
     waitingRequests: options.preserveWaiting ? transcript.waitingRequests : [],
     liveStatus: options.idle ? 'idle' : undefined,
-    retryResolved: undefined
+    retryResolved: options.preserveRetryResolved ? transcript.retryResolved : undefined
   }
 }
 

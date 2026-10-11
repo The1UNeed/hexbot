@@ -152,9 +152,11 @@ sibling session. An accepted Idle reply can retire the bot's older live
 status evidence. Pending questions and approvals remain Waiting through an
 unrelated Working event; answers settle only their matching request IDs.
 Mobile projects confirmed cards from the open conversation and every matching
-bot turn in the current room as Needs you, below Stopped. Archived private
-cards do not count. Accepted archive state removes the open private turn's
-live activity from the bot aggregate and makes it eligible again on restore.
+bot turn in the current room as Needs you, below Stopped. Busy matching room
+turns can show Working, below Needs you and Stopped; newer accepted bot status
+retires older activity evidence. Archived private cards do not count.
+Accepted archive state excludes matching private activity from the bot
+aggregate and makes the open turn eligible again on restore.
 Bot status and archive fields reconcile independently when sections change.
 Local archive and restore replies preserve newer edits. List and open
 snapshots already in flight cannot undo completed archive edits.
@@ -162,11 +164,12 @@ Bot list, get and update replies include the daemon's live status. Older
 daemons can return catalog-only Idle from an update, so a settings save alone
 must not retire confirmed pending cards or a live Working status. A later
 roster or live event can settle them. The web client retains confirmed
-pending cards and retires optimistic answer evidence on same-epoch reconnects.
-Mobile retains answered-status evidence on same-epoch reconnects. A new epoch
-drops the web client's previous live sessions and retires mobile answer and
-retry status evidence, including room turns. Mobile transcript history and
-cards remain for fresh reconciliation.
+pending cards and retry resolution on same-epoch reconnects while retiring
+optimistic answer evidence. Mobile retains answer and retry status evidence
+on same-epoch reconnects. Fresh roster or lifecycle state can retire retry
+evidence. A new epoch drops the web client's previous live sessions and
+retires mobile answer and retry status evidence, including room turns.
+Mobile transcript history and cards remain for fresh reconciliation.
 `approval_mode` is `inherit` (the deployment setting), `manual`, `smart`
 (Auto), or `off` (Bypass); `workdir` overrides the deployment workspace for
 that bot's terminal.
