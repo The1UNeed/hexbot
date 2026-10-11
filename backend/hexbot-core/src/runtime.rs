@@ -2385,65 +2385,71 @@ impl Runtime {
         message: &Value,
         timeout: Duration,
     ) -> Result<(String, bool)> {
-        let profile = self.home.join("profiles").join(bot);
+        // Credential refresh and its shared grant lock spend the same budget
+        // as Pi startup and provider work. Keep resources alive through cleanup.
+        let deadline = tokio::time::Instant::now() + timeout;
         let dir = tempfile::tempdir()?;
-        let call_id = common::id();
-        let extension = self.home.join("runtime/one-shot-provider.ts");
-        common::atomic_write(
-            &extension,
-            include_bytes!("../../pi-runtime/one-shot-provider.ts"),
-        )?;
-        common::atomic_write(
-            &self.home.join("runtime/acp.ts"),
-            include_bytes!("../../pi-runtime/acp.ts"),
-        )?;
-        let mut options = PiOptions::new(&self.pi_executable, dir.path(), profile.join("pi"));
-        options.args = [
-            "--mode",
-            "rpc",
-            "--no-session",
-            "--no-extensions",
-            "--no-context-files",
-            "--no-skills",
-            "--no-prompt-templates",
-            "--no-approve",
-            "--no-tools",
-            "--system-prompt",
-            system_prompt,
-            "--append-system-prompt",
-            "",
-        ]
-        .map(str::to_owned)
-        .to_vec();
-        options.args.extend([
-            "--extension".into(),
-            extension.to_string_lossy().into_owned(),
-        ]);
-        options
-            .env
-            .insert("HEXBOT_ONE_SHOT_PROVIDER".into(), saved.to_string());
-        let (provider, model) = (
-            saved["provider"].as_str(),
-            saved["model"].as_str().filter(|s| !s.is_empty()),
-        );
-        // Pi refuses --provider without --model; alone it means Pi's default model.
-        if let (Some(provider), Some(_)) = (provider, model) {
+        let mut started = None;
+        let result = tokio::time::timeout_at(deadline, async {
+            let profile = self.home.join("profiles").join(bot);
+            let call_id = common::id();
+            let extension = self.home.join("runtime/one-shot-provider.ts");
+            common::atomic_write(
+                &extension,
+                include_bytes!("../../pi-runtime/one-shot-provider.ts"),
+            )?;
+            common::atomic_write(
+                &self.home.join("runtime/acp.ts"),
+                include_bytes!("../../pi-runtime/acp.ts"),
+            )?;
+            let mut options = PiOptions::new(&self.pi_executable, dir.path(), profile.join("pi"));
+            options.args = [
+                "--mode",
+                "rpc",
+                "--no-session",
+                "--no-extensions",
+                "--no-context-files",
+                "--no-skills",
+                "--no-prompt-templates",
+                "--no-approve",
+                "--no-tools",
+                "--system-prompt",
+                system_prompt,
+                "--append-system-prompt",
+                "",
+            ]
+            .map(str::to_owned)
+            .to_vec();
+            options.args.extend([
+                "--extension".into(),
+                extension.to_string_lossy().into_owned(),
+            ]);
             options
-                .args
-                .extend(["--provider".into(), crate::providers::pi_provider(provider)]);
-        }
-        if let Some(model) = model {
-            options.args.extend(["--model".into(), model.into()]);
-        }
-        crate::providers::prepare_pi_for_request(&self.home, bot, &profile.join("pi"), provider)
-            .await?;
-        options.env.extend(
-            std::env::vars()
-                .chain(crate::connectors::credentials(&self.home, bot)?)
-                .filter(|(name, _)| crate::pi::provider_environment(name, provider.unwrap_or(""))),
-        );
-        let (process, mut events) = PiProcess::spawn(options).map_err(pi_error)?;
-        let result = tokio::time::timeout(timeout, async {
+                .env
+                .insert("HEXBOT_ONE_SHOT_PROVIDER".into(), saved.to_string());
+            let (provider, model) = (
+                saved["provider"].as_str(),
+                saved["model"].as_str().filter(|s| !s.is_empty()),
+            );
+            // Pi refuses --provider without --model; alone it means Pi's default model.
+            if let (Some(provider), Some(_)) = (provider, model) {
+                options
+                    .args
+                    .extend(["--provider".into(), crate::providers::pi_provider(provider)]);
+            }
+            if let Some(model) = model {
+                options.args.extend(["--model".into(), model.into()]);
+            }
+            crate::providers::prepare_pi_for_request(&self.home, bot, &profile.join("pi"), provider)
+                .await?;
+            options.env.extend(
+                std::env::vars()
+                    .chain(crate::connectors::credentials(&self.home, bot)?)
+                    .filter(|(name, _)| crate::pi::provider_environment(name, provider.unwrap_or(""))),
+            );
+            let (process, mut events) = PiProcess::spawn(options).map_err(pi_error)?;
+            started = Some(process);
+            let process = started.as_ref().unwrap();
             let response = process
                 .request(
                     json!({"type":"prompt","message":message.to_string()}),
@@ -2531,7 +2537,9 @@ impl Runtime {
             }
         })
         .await;
-        let _ = process.shutdown().await;
+        if let Some(process) = started {
+            let _ = process.shutdown().await;
+        }
         // A failed call reads as a failed result; callers decide what that means.
         match result {
             Ok(Ok(text)) => Ok(text),

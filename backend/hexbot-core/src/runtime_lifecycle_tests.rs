@@ -1596,6 +1596,282 @@ const fs=require('node:fs')"#,
 }
 
 #[tokio::test]
+async fn one_shot_deadline_covers_refresh_and_waiting_for_its_lock() {
+    use futures_util::FutureExt;
+    let (home, runtime, _) = setup();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    one_shot_oauth_fixture(home.path(), &listener);
+    let saved = json!({"provider":"openai-codex","model":"fixture"});
+    // A stalled refresh must time out before the one-shot starts Pi.
+    let call = tokio::spawn({
+        let runtime = runtime.clone();
+        let saved = saved.clone();
+        async move {
+            runtime
+                .one_shot(
+                    "owl",
+                    &saved,
+                    None,
+                    review::PROMPT,
+                    &json!({}),
+                    Duration::from_secs(1),
+                )
+                .await
+        }
+    });
+    let mut refresh = one_shot_auth_request(&listener).await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(3), call)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+        (String::new(), true)
+    );
+    one_shot_socket_closed(&mut refresh).await;
+    assert!(!home.path().join("one-shot-started").exists());
+
+    // A different request owns the same refresh lock. The waiter must spend
+    // its own deadline waiting for that lock, without starting another refresh.
+    let holder = tokio::spawn({
+        let home = home.path().to_owned();
+        async move { crate::providers::request_auth(&home, "owl", "openai-codex").await }
+    });
+    let mut refresh = one_shot_auth_request(&listener).await;
+    let answer = tokio::time::timeout(
+        Duration::from_secs(2),
+        runtime.one_shot(
+            "owl",
+            &saved,
+            None,
+            review::PROMPT,
+            &json!({}),
+            Duration::from_secs(1),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(answer, (String::new(), true));
+    assert!(listener.accept().now_or_never().is_none());
+    assert!(!home.path().join("one-shot-started").exists());
+    one_shot_auth_response(&mut refresh, 3600).await;
+    assert_eq!(
+        holder.await.unwrap().unwrap()["headers"]["authorization"],
+        "Bearer local-access"
+    );
+    // A subsequent description-style call can use the refreshed credentials;
+    // neither cancelled preparation nor its lock waiter survives the timeout.
+    assert!(
+        !runtime
+            .one_shot(
+                "owl",
+                &saved,
+                None,
+                review::PROMPT,
+                &json!({}),
+                Duration::from_secs(2)
+            )
+            .await
+            .unwrap()
+            .1
+    );
+    let cwd = PathBuf::from(fs::read_to_string(home.path().join("one-shot-started")).unwrap());
+    assert!(!cwd.exists());
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn one_shot_preparation_failure_cannot_cache_a_description() {
+    let (home, runtime, _) = setup();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai-codex\n  default: fixture\ntools:\n  enabled_toolsets: []\n",
+    )
+    .unwrap();
+    fs::write(
+        home.path().join("auth.json"),
+        json!({"providers":{"openai-codex":{"access_token":"expired","expires_at":1}}}).to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        runtime
+            .one_shot(
+                "owl",
+                &json!({"provider":"openai-codex","model":"fixture"}),
+                None,
+                review::PROMPT,
+                &json!({}),
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap(),
+        (String::new(), true)
+    );
+    runtime.refresh_description("owl").await;
+    let row = bot_row(home.path(), "owl").unwrap();
+    assert!(row["auto_description"].is_null());
+    assert!(row["auto_description_key"].is_null());
+    assert!(!home.path().join("processes.jsonl").exists());
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn one_shot_deadline_is_shared_by_auth_and_provider_work_and_reaps_pi() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let (home, runtime, _) = setup();
+    open(&runtime).await;
+    let parent = runtime.sessions.lock().unwrap()["first"].clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    one_shot_oauth_fixture(home.path(), &listener);
+    let model = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    fs::write(
+        home.path().join("one-shot-port"),
+        model.local_addr().unwrap().port().to_string(),
+    )
+    .unwrap();
+    for cancelled in [false, true] {
+        fs::write(home.path().join("auth.json"), json!({"providers":{"openai-codex":{"access_token":"expired","refresh_token":"local-refresh","expires_at":1}}}).to_string()).unwrap();
+        // Remove the previously rotated shared grant to make preparation refresh.
+        let grants = home.path().join("runtime/provider-auth");
+        if grants.exists() {
+            fs::remove_dir_all(grants).unwrap();
+        }
+        let began = tokio::time::Instant::now();
+        let mut call = tokio::spawn({
+            let runtime = runtime.clone();
+            let parent = parent.clone();
+            async move {
+                runtime
+                    .one_shot(
+                        "owl",
+                        &json!({"provider":"openai-codex","model":"fixture"}),
+                        Some(&parent),
+                        review::PROMPT,
+                        &json!({}),
+                        Duration::from_secs(3),
+                    )
+                    .await
+            }
+        });
+        let mut refresh = one_shot_auth_request(&listener).await;
+        if !cancelled {
+            // Awaiting the still-pending call spends part of its budget in auth.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(1500), &mut call)
+                    .await
+                    .is_err()
+            );
+        }
+        one_shot_auth_response(&mut refresh, 1).await;
+        let (socket, _) = tokio::time::timeout(Duration::from_secs(2), model.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut socket = BufReader::new(socket);
+        let mut cwd = String::new();
+        socket.read_line(&mut cwd).await.unwrap();
+        let cwd = PathBuf::from(cwd.trim());
+        assert!(cwd.exists());
+        // The extension requests auth again at its HTTP boundary. Its refresh
+        // has no fresh budget, and cancellation drops this HTTP/grant future too.
+        let mut provider = one_shot_auth_request(&listener).await;
+        if cancelled {
+            call.abort();
+            assert!(call.await.unwrap_err().is_cancelled());
+        } else {
+            let remaining = began + Duration::from_secs(4);
+            assert_eq!(
+                tokio::time::timeout_at(remaining, &mut call)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap(),
+                (String::new(), true)
+            );
+        }
+        one_shot_socket_closed(&mut provider).await;
+        one_shot_socket_closed(&mut socket).await;
+        assert!(!cwd.exists());
+        // Re-entering the same grant proves cancelled provider work released it.
+        let recovered = tokio::spawn({
+            let home = home.path().to_owned();
+            async move { crate::providers::request_auth(&home, "owl", "openai-codex").await }
+        });
+        let mut refresh = one_shot_auth_request(&listener).await;
+        one_shot_auth_response(&mut refresh, 3600).await;
+        assert!(recovered.await.unwrap().is_ok());
+    }
+    assert_eq!(
+        store::usage(home.path(), "first").unwrap()["total_tokens"],
+        20
+    );
+    assert!(store::history(home.path(), "first").unwrap().is_empty());
+    runtime.shutdown().await;
+}
+
+fn one_shot_oauth_fixture(home: &Path, listener: &tokio::net::TcpListener) {
+    common::write_config(home, &json!({"provider_auth":{"openai-codex":{"issuer":format!("http://{}", listener.local_addr().unwrap())}}})).unwrap();
+    fs::write(home.join("auth.json"), json!({"providers":{"openai-codex":{"access_token":"expired","refresh_token":"local-refresh","expires_at":1}}}).to_string()).unwrap();
+    fs::write(home.join("pi.cjs"), r#"#!/usr/bin/env node
+const fs=require('node:fs'),net=require('node:net'),emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
+fs.writeFileSync(__dirname+'/one-shot-started',process.cwd());
+require('node:readline').createInterface({input:process.stdin}).on('line',line=>{const c=JSON.parse(line);if(c.type==='extension_ui_response')return;emit({type:'response',id:c.id,command:c.type,success:true,data:{}});if(c.type!=='prompt')return;
+if(fs.existsSync(__dirname+'/one-shot-port')){const socket=net.connect(Number(fs.readFileSync(__dirname+'/one-shot-port','utf8')),'127.0.0.1',()=>{socket.write(process.cwd()+'\n');emit({type:'message_end',message:{role:'assistant',content:[],usage:{input:7,output:3,cost:{total:.02}},stopReason:'stop'}});emit({type:'extension_ui_request',id:'auth',method:'input',title:'__HEXBOT_TOOL__'+JSON.stringify({name:'hexbot_provider_auth',args:{provider:'openai-codex'}})});});}
+else{emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'{"decision":"allow","risk":"low"}'}],stopReason:'stop'}});emit({type:'agent_settled'});}});
+"#).unwrap();
+}
+
+async fn one_shot_auth_request(
+    listener: &tokio::net::TcpListener,
+) -> tokio::io::BufReader<tokio::net::TcpStream> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = BufReader::new(socket);
+        let mut length = 0;
+        loop {
+            let mut header = String::new();
+            socket.read_line(&mut header).await.unwrap();
+            if header == "\r\n" {
+                break;
+            }
+            if let Some(value) = header.to_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse::<usize>().unwrap();
+            }
+        }
+        let mut body = vec![0; length];
+        socket.read_exact(&mut body).await.unwrap();
+        assert!(String::from_utf8(body).unwrap().contains("refresh_token="));
+        socket
+    })
+    .await
+    .unwrap()
+}
+
+async fn one_shot_auth_response(
+    socket: &mut tokio::io::BufReader<tokio::net::TcpStream>,
+    expires: u64,
+) {
+    use tokio::io::AsyncWriteExt;
+    let body =
+        json!({"access_token":"local-access","refresh_token":"local-refresh","expires_in":expires})
+            .to_string();
+    socket.get_mut().write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+}
+
+async fn one_shot_socket_closed(socket: &mut tokio::io::BufReader<tokio::net::TcpStream>) {
+    use tokio::io::AsyncReadExt;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(3), socket.read(&mut [0; 1]))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
 async fn reviewer_denies_tool_bridges_and_counts_failed_calls() {
     let (home, runtime, _) = setup();
     let script = home.path().join("pi.cjs");

@@ -365,6 +365,12 @@ Neither lock is held while waiting for the transport write to finish.
 Mode and working-directory changes during review block execution, and file
 execution rechecks the resolved destination and reviewed overwrite status.
 
+The review has one 60-second operation budget, including credential refresh,
+Pi startup and provider requests. A timeout falls back to a user card. On that
+timeout path, a started Pi process is terminated and reaped before its temporary
+directory is removed, using the transport's existing one-second graceful
+shutdown and one-second forced-reap limits.
+
 The reviewer starts Pi in a fresh empty directory with no tools, skills,
 prompt templates or automatically loaded extensions. `--no-context-files`
 excludes project instructions, and `--append-system-prompt ''` excludes

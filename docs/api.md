@@ -53,6 +53,9 @@ data model. The native transport and event projection live in
   complete owner messages before a card is needed. Review failures and evidence
   that cannot fit whole produce a one-step card. History reads stop at the
   review cap; oversized stored rows also produce a card before parsing.
+  One 60-second review budget includes credential preparation, process startup
+  and provider requests. On a timeout, a started process has bounded shutdown/reaping
+  cleanup before the fallback card; temporary state is kept until cleanup finishes.
   The final evidence check and approval enqueue are ordered with owner prompt,
   steer and room-message writes. Changed or pending owner messages invalidate
   automatic approval. ACP review isolates the CLI home/configuration and
