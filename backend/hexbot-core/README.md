@@ -356,8 +356,10 @@ not protected on Linux, nor are paths outside the scan limits. macOS filename
 rules cover new repositories and secrets too, and deny secret/browser writes
 and renames. Scanned Git targets and secret ancestors, and browser-store
 ancestors, cannot be renamed on macOS. Tracked hooks such as `.husky` remain
-writable and visible in `git status`. Config includes are read once per scan
-and capped at 64 included files and 10,000 settings. The user's Git config
+writable and visible in `git status`; links named `hooks`, `config`,
+`config.worktree` or `commondir` inside Git metadata lock their targets.
+Config includes are read once per scan and capped at 64 included files for one
+repository, 256 in all and 10,000 settings; the reason names the limit. The user's Git config
 follows `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_NOSYSTEM`. On
 Linux a missing hooks folder or include that would pin a repository's own
 folder, the workspace or an output folder read-only, or Git metadata reached

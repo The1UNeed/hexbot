@@ -4,7 +4,7 @@ import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync, existsSy
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
-import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, bareRepository, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit} from './isolation.ts';
+import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, bareRepository, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -226,7 +226,7 @@ export default function hexbot(pi: any) {
       if (process.platform === 'linux' && event.toolName === 'bash' && levelFor(event.input) === 'confined' && isolationAvailable()) {
         try {
           const scan = workspaceProtected([cwd, ...live.outputDirs ?? []]);
-          if (scan.exhausted || scan.failure) return {block: true, reason: scan.exhausted ? SCAN_REASON : 'The workspace safety scan could not finish. Retry with full_access and a reason.'};
+          if (scan.exhausted || scan.failure) return {block: true, reason: scan.exhausted ? SCAN_REASON : scanFailureReason(scan)};
           // A missing hooks folder that would pin a whole repository read-only, or a
           // replaceable link to Git metadata, asks instead.
           lockedGit(scan, workspace().filter(existsSync).map(root => realpathSync(root)).filter(root => root !== '/tmp'), true);

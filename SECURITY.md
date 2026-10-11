@@ -64,15 +64,18 @@ Google parent folder, Chrome Beta/unstable, and Snap and Flatpak profiles.
 Denying `~/Library/Application Support/Google` also hides other Google data
 stored there, including Android Studio and Drive data.
 Tracked hook scripts remain writable unless selected by a configured
-`core.hooksPath`; their edits appear in `git status`. Review those changes
-before running them.
+`core.hooksPath` or by a `hooks` link in the Git metadata; their edits appear
+in `git status`. Review those changes before running them. When `hooks`,
+`config`, `config.worktree` or `commondir` inside the Git metadata is a
+symbolic link to a folder or file in the workspace, that target is protected
+like the metadata.
 
 Linux protects repositories and secret files that exist when a command starts.
 Repositories created during a command are **not protected** on Linux. The scan
 visits workspace and output roots breadth-first, including read-only workspaces
 in Manual, through three nested folders. It resolves `.env` symlinks and Git
 pointers, and skips dependency/runtime folders listed in `credential-policy.json`
-plus shared temporary roots. Repositories and secrets beyond these limits are
+(such as `node_modules`, `target` and `.venv`) plus shared temporary roots. Repositories and secrets beyond these limits are
 not covered by the Linux scan. If more than 1,000 directories need scanning,
 or the folders it reads hold more than 50,000 entries, only Linux bubblewrap
 commands refuse to run and require an approved `full_access` retry. For
@@ -99,8 +102,9 @@ elsewhere (for example the one bundled with Xcode) is not read; set
 is resolved in each repository, so a global `core.hooksPath = .githooks`
 protects `.githooks` in every scanned repository. Each config file is read
 once per scan. A scan that meets more than 64 included files beyond the
-repository and user configs, or more than 10,000 settings, counts as
-unreadable, so include cycles and fan-out cannot stall it. Included files and
+repository and user configs for one repository, more than 256 in all, or more
+than 10,000 settings, counts as unreadable and says which limit it reached, so
+include cycles and fan-out cannot stall it. Included files and
 configured hook paths inside the workspace or an output folder are protected,
 with their ancestors up to that folder. Ones outside are already read-only to
 sandboxed commands; a hook path that contains the workspace, such as `/` or the
@@ -109,14 +113,17 @@ locked and are never read. Bubblewrap can only lock a folder that exists, so on
 Linux a configured hooks folder or included file that does not exist yet is
 locked through its nearest existing parent inside a repository, such as
 `.husky` for a missing `.husky/_`. When that parent would be a repository's own
-folder, the workspace or an output folder, the command asks for approval
-instead of making all of it read-only. The reason names every missing target
+folder, the workspace or an output folder, and is not already protected as Git
+metadata, the command asks for approval instead of making all of it
+read-only. A dangling link names the folder or file it points to. The reason names every missing target
 and one command that creates them (`mkdir -p` for folders, `touch` for
 included files); after that, commands run in the sandbox again. Bubblewrap
 also cannot protect a symbolic link inside the workspace, so on Linux a `.git`
 entry, hooks folder or included file reached through such a link asks for
-approval the same way, until the link is replaced by what it points to. macOS
-locks the link itself. Python code and scheduled scripts cannot ask: they stop
+approval the same way, until the link is replaced by what it points to. Paths
+are followed as Git follows them, so `hooks-link/../hooks` counts as reaching
+through `hooks-link`. A link inside the Git metadata is protected with it and
+does not ask. macOS locks the link itself. Python code and scheduled scripts cannot ask: they stop
 with the same explanation.
 
 macOS fails closed when its sandbox cannot start. On Linux, if bubblewrap is

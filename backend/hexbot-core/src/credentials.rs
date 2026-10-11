@@ -419,12 +419,23 @@ fn confine(workspace: &[PathBuf], search: &[PathBuf]) -> Result<Confinement> {
             }),
     })
 }
+/// A path that does not exist yet resolves through its existing parent, and a
+/// dangling link to where its target would be. Matches isolation.ts.
+const LINK_HOPS: usize = 40;
 fn real_root(path: &Path) -> std::io::Result<PathBuf> {
+    real_root_after(path, 0)
+}
+fn real_root_after(path: &Path, hops: usize) -> std::io::Result<PathBuf> {
     match std::fs::canonicalize(path) {
         Ok(path) => Ok(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             match (path.parent(), path.file_name()) {
-                (Some(parent), Some(name)) => Ok(real_root(parent)?.join(name)),
+                (Some(parent), Some(name)) => match std::fs::read_link(path) {
+                    Ok(link) if hops < LINK_HOPS => {
+                        real_root_after(&real_root(parent)?.join(link), hops + 1)
+                    }
+                    _ => Ok(real_root(parent)?.join(name)),
+                },
                 _ => Err(error),
             }
         }
@@ -516,7 +527,8 @@ impl std::ops::Deref for PathSet {
 /// git: Git metadata, config files and configured folders, as named and as real
 /// paths. worktrees: the folders their repositories belong to. files: targets
 /// Git reads as files (includes). links: symbolic links inside the scanned
-/// roots on the way to any of them.
+/// roots on the way to any of them. cause: why Git configuration could not be
+/// scanned, when a limit stopped it.
 #[derive(Default)]
 struct WorkspaceProtected {
     git: PathSet,
@@ -526,6 +538,7 @@ struct WorkspaceProtected {
     links: PathSet,
     exhausted: bool,
     failure: bool,
+    cause: Option<String>,
 }
 fn add_path(paths: &mut PathSet, path: &Path) -> Result<()> {
     paths.insert(path.to_owned());
@@ -536,20 +549,6 @@ fn add_path(paths: &mut PathSet, path: &Path) -> Result<()> {
 fn within(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| under(path, root))
 }
-/// `path` with `.` and `..` removed without following links, as Node's resolve.
-fn lexical(path: &Path) -> PathBuf {
-    let mut normal = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::ParentDir => {
-                normal.pop();
-            }
-            std::path::Component::CurDir => {}
-            other => normal.push(other),
-        }
-    }
-    normal
-}
 /// A command can create the files the scan reads (.git pointers, commondir,
 /// configs and their includes), so they are opened without blocking and read
 /// only when they are small regular files: a FIFO or device would stall the
@@ -558,12 +557,14 @@ fn lexical(path: &Path) -> PathBuf {
 const GIT_FILE_BYTES: u64 = 1 << 20;
 const GIT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Includes are followed at most this deep. A scan reads each config file once
-/// and visits it once per worktree. It reads at most GIT_INCLUDES include files
-/// beyond the repository and user configs, which real configurations never
-/// reach, and visits at most GIT_CONFIG_STEPS settings, so include cycles and
-/// fan-out cannot stall it.
+/// and visits it once per worktree. Beyond the repository and user configs it
+/// reads at most GIT_INCLUDES include files for one worktree, which real
+/// configurations never reach, and GIT_SCAN_INCLUDES in all, and visits at
+/// most GIT_CONFIG_STEPS settings, so include cycles and fan-out cannot stall
+/// it.
 const GIT_INCLUDE_DEPTH: usize = 10;
 const GIT_INCLUDES: usize = 64;
+const GIT_SCAN_INCLUDES: usize = 256;
 const GIT_CONFIG_STEPS: usize = 10000;
 fn regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
     use std::io::Read;
@@ -771,15 +772,47 @@ fn pointer_target(
     value: &str,
 ) -> Result<PathBuf> {
     let path = base.join(value);
-    linked(protected, configs, &lexical(&path));
+    linked(protected, configs, &path);
     Ok(real_root(&path)?)
 }
+/// The path is walked as the kernel walks it, so a `..` after a link leaves the
+/// link's target, not the link's folder.
 fn linked(protected: &mut WorkspaceProtected, configs: &GitConfigs, path: &Path) {
-    for dir in path.ancestors().take_while(|dir| {
-        within(dir, &configs.roots) && !configs.roots.iter().any(|root| folded(root) == folded(dir))
-    }) {
-        if std::fs::symlink_metadata(dir).is_ok_and(|meta| meta.file_type().is_symlink()) {
-            protected.links.insert(dir.to_owned());
+    use std::path::Component;
+    let parts = |path: &Path| -> Vec<PathBuf> {
+        path.components()
+            .rev()
+            .map(|part| PathBuf::from(part.as_os_str()))
+            .collect()
+    };
+    let mut rest = parts(path);
+    let mut dir = PathBuf::from("/");
+    let mut hops = 0;
+    while let Some(part) = rest.pop() {
+        match part.components().next() {
+            Some(Component::RootDir) => dir = PathBuf::from("/"),
+            Some(Component::ParentDir) => {
+                dir.pop();
+            }
+            Some(Component::Normal(name)) => {
+                let next = dir.join(name);
+                match std::fs::read_link(&next) {
+                    Ok(link) if hops < LINK_HOPS => {
+                        hops += 1;
+                        if within(&next, &configs.roots)
+                            && !configs
+                                .roots
+                                .iter()
+                                .any(|root| folded(root) == folded(&next))
+                        {
+                            protected.links.insert(next);
+                        }
+                        rest.extend(parts(&link));
+                    }
+                    _ => dir = next,
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -798,6 +831,7 @@ fn git_hooks(
         .chain(global_git_configs().into_iter().map(|file| (file, 0, true)))
         .collect();
     let mut visited = HashSet::new();
+    let mut own = HashSet::new();
     let mut i = 0;
     while let Some((file, depth, user)) = queue.get(i).cloned() {
         i += 1;
@@ -811,9 +845,11 @@ fn git_hooks(
             }
             configs.steps += 1;
             if configs.steps > GIT_CONFIG_STEPS {
-                return Err(Error::new(
-                    5240,
-                    "Git configuration has too many settings to scan.",
+                return Err(stop_scan(
+                    protected,
+                    format!(
+                        "Git configuration in the workspace has more than {GIT_CONFIG_STEPS} settings"
+                    ),
                 ));
             }
             let hooks_path = key == "core.hookspath";
@@ -823,11 +859,25 @@ fn git_hooks(
                 file.parent().unwrap()
             };
             let target = pointer_target(protected, configs, base, &value)?;
-            if !hooks_path && !configs.includes.contains(&target) {
-                if configs.includes.len() >= GIT_INCLUDES {
-                    return Err(Error::new(
-                        5240,
-                        "Git configuration has too many include files to scan.",
+            if !hooks_path && !own.contains(&target) {
+                if own.len() >= GIT_INCLUDES {
+                    return Err(stop_scan(
+                        protected,
+                        format!(
+                            "Git configuration for {} includes more than {GIT_INCLUDES} files",
+                            crate::install_ownership::shell_quote(&worktree.to_string_lossy())
+                        ),
+                    ));
+                }
+                own.insert(target.clone());
+                if !configs.includes.contains(&target)
+                    && configs.includes.len() >= GIT_SCAN_INCLUDES
+                {
+                    return Err(stop_scan(
+                        protected,
+                        format!(
+                            "Git configuration in the workspace includes more than {GIT_SCAN_INCLUDES} files"
+                        ),
                     ));
                 }
                 configs.includes.insert(target.clone());
@@ -844,6 +894,11 @@ fn git_hooks(
         }
     }
     Ok(())
+}
+fn stop_scan(protected: &mut WorkspaceProtected, reason: String) -> Error {
+    let error = Error::new(5240, reason.clone());
+    protected.cause.get_or_insert(reason);
+    error
 }
 fn git_metadata(
     protected: &mut WorkspaceProtected,
@@ -875,6 +930,17 @@ fn git_metadata(
         }
     }
     dirs.push(dir);
+    // The metadata folder itself is locked, but a hooks folder or config in it
+    // can be a link to a folder or file in the workspace, which is locked too.
+    for git_dir in &dirs {
+        for name in ["hooks", "config", "config.worktree", "commondir"] {
+            let entry = git_dir.join(name);
+            add_path(&mut protected.git, &entry)?;
+            if name != "hooks" {
+                protected.files.insert(real_root(&entry)?);
+            }
+        }
+    }
     git_hooks(protected, configs, &dirs, worktree)
 }
 fn bare_repository(path: &Path) -> bool {
@@ -992,6 +1058,12 @@ fn workspace_protected(roots: &[PathBuf], limit: usize) -> Result<WorkspaceProte
     }
     Ok(protected)
 }
+fn because(scan: &WorkspaceProtected) -> String {
+    scan.cause
+        .as_ref()
+        .map(|cause| format!(" because {cause}"))
+        .unwrap_or_default()
+}
 pub(crate) fn git_write_protected(path: &Path, roots: &[PathBuf]) -> Result<bool> {
     if path.ancestors().any(bare_repository) {
         return Ok(true);
@@ -1022,7 +1094,10 @@ pub(crate) fn git_write_protected(path: &Path, roots: &[PathBuf]) -> Result<bool
     if scan.failure {
         return Err(Error::new(
             5240,
-            "Git metadata or hook configuration could not be scanned. Approve this file change only if you trust its destination.",
+            format!(
+                "Git metadata or hook configuration could not be scanned{}. Approve this file change only if you trust its destination.",
+                because(&scan)
+            ),
         ));
     }
     if scan.exhausted {
@@ -1039,7 +1114,7 @@ pub(crate) fn git_write_protected(path: &Path, roots: &[PathBuf]) -> Result<bool
 /// repository is fine (.husky for a missing .husky/_), but pinning a
 /// repository's own folder, a writable root or a folder holding one would make
 /// all of it read-only, so the program cannot run in the sandbox, and creating
-/// the targets restores it. A symbolic link on the way to Git metadata inside a
+/// the targets restores it. A folder already locked can hold one. A symbolic link on the way to Git metadata inside a
 /// writable root could be replaced, which bubblewrap cannot prevent, so that
 /// stops it too; Seatbelt locks the link itself. Matches isolation.ts, which
 /// asks for an approved full_access retry instead.
@@ -1089,7 +1164,7 @@ fn missing_git_reason(missing: &[(PathBuf, bool)]) -> String {
         "Git is set to load hooks or settings from {}, which {} not exist yet. The sandbox could keep {} read-only only by making a whole repository or the workspace read-only, so this code cannot run in the sandbox. Once {} ({}), it runs in the sandbox again.",
         missing
             .iter()
-            .map(|(path, _)| path.display().to_string())
+            .map(|(path, _)| quote(path))
             .collect::<Vec<_>>()
             .join(", "),
         if one { "does" } else { "do" },
@@ -1109,7 +1184,7 @@ fn linked_git_reason(links: &[PathBuf]) -> String {
         },
         links
             .iter()
-            .map(|path| path.display().to_string())
+            .map(|path| crate::install_ownership::shell_quote(&path.to_string_lossy()))
             .collect::<Vec<_>>()
             .join(", "),
         if one { "it is" } else { "they are" },
@@ -1120,11 +1195,12 @@ fn locked_git(scan: &WorkspaceProtected, roots: &[PathBuf], pin: bool) -> Result
     let mut locked = PathSet::default();
     let mut missing: Vec<(PathBuf, bool)> = vec![];
     let holders: Vec<PathBuf> = roots.iter().chain(scan.worktrees.iter()).cloned().collect();
+    // Only targets that are themselves locked can hold a pinned folder.
     let present: Vec<PathBuf> = scan
         .git
         .iter()
-        .filter(|path| path.exists())
-        .cloned()
+        .filter_map(|path| real_root(path).ok())
+        .filter(|real| real.exists() && within(real, roots))
         .collect();
     for path in scan.git.iter() {
         let Ok(mut real) = real_root(path) else {
@@ -1170,7 +1246,19 @@ fn locked_git(scan: &WorkspaceProtected, roots: &[PathBuf], pin: bool) -> Result
     for link in links {
         locked.insert(link);
     }
-    Ok(locked.list)
+    // A path inside a locked folder is locked with it.
+    let folded_locked: HashSet<PathBuf> = locked.iter().map(|path| folded(path)).collect();
+    Ok(locked
+        .list
+        .into_iter()
+        .filter(|path| {
+            !path
+                .ancestors()
+                .skip(1)
+                .filter(|dir| dir.parent().is_some())
+                .any(|dir| folded_locked.contains(&folded(dir)))
+        })
+        .collect())
 }
 fn path_ancestors(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut ancestors = vec![];
@@ -1374,7 +1462,10 @@ fn bwrap_arguments(layout: &Layout) -> Result<Vec<OsString>> {
         if confine.protected.failure {
             return Err(Error::new(
                 5240,
-                "Git metadata or hook configuration could not be scanned, so this code cannot run in the sandbox.",
+                format!(
+                    "Git metadata or hook configuration could not be scanned{}, so this code cannot run in the sandbox.",
+                    because(&confine.protected)
+                ),
             ));
         }
     }
@@ -2329,7 +2420,8 @@ mod tests {
             )
             .unwrap();
         }
-        // Beyond the repository and user configs a scan reads 64 include files.
+        // Beyond the repository and user configs a scan reads 64 include files
+        // for one worktree.
         let fan_out = |count: usize| {
             (0..count).fold("[include]\n".to_owned(), |text, i| {
                 text + &format!("\tpath = ../missing{i}\n")
@@ -2551,8 +2643,8 @@ mod tests {
         // One message names both targets and creates each as Git reads it.
         let (hooks, include) = (work.join("app/.githooks"), work.join(".gitconfig.local"));
         assert!(
-            error.contains(&format!("{}, {}", include.display(), hooks.display()))
-                || error.contains(&format!("{}, {}", hooks.display(), include.display())),
+            error.contains(&format!("'{}', '{}'", include.display(), hooks.display()))
+                || error.contains(&format!("'{}', '{}'", hooks.display(), include.display())),
             "{error}"
         );
         assert!(
@@ -2659,6 +2751,198 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn links_inside_git_metadata_lock_their_targets_and_only_locked_targets_hold_a_missing_one()
+     {
+        let base = tempfile::tempdir().unwrap();
+        let base = base.path().canonicalize().unwrap();
+        let (home, work) = (base.join("home"), base.join("work"));
+        for path in [
+            home.clone(),
+            work.join(".git"),
+            work.join(".githooks"),
+            work.join("src"),
+        ] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        // .git/hooks and .git/config are links to tracked files the program can write.
+        std::fs::write(work.join("repo.gitconfig"), "[core]\n\tbare = false\n").unwrap();
+        std::os::unix::fs::symlink("../repo.gitconfig", work.join(".git/config")).unwrap();
+        std::os::unix::fs::symlink("../.githooks", work.join(".git/hooks")).unwrap();
+        let args =
+            |root: &Path| bwrap_arguments(&layout(&home, &[], Some(&[root.to_owned()])).unwrap());
+        let binds = |args: &[OsString]| -> Vec<PathBuf> {
+            args.windows(2)
+                .filter(|w| w[0] == "--ro-bind" && w[1] != "/dev/null")
+                .map(|w| PathBuf::from(&w[1]))
+                .collect()
+        };
+        let sandboxed = async |root: &Path, command: &str| {
+            let confined = layout(&home, &[], Some(&[root.to_owned()])).unwrap();
+            tokio::process::Command::new("/usr/bin/sandbox-exec")
+                .args([
+                    "-p",
+                    &sandbox_profile(&confined),
+                    "/bin/bash",
+                    "-c",
+                    command,
+                ])
+                .current_dir(root)
+                .output()
+                .await
+                .unwrap()
+        };
+        // The links sit in .git, which is locked, so nothing refuses.
+        let bound = binds(&args(&work).unwrap());
+        for path in [".git", ".githooks", "repo.gitconfig"] {
+            assert!(bound.contains(&work.join(path)), "{path}");
+        }
+        assert!(!bound.contains(&work));
+        if cfg!(target_os = "macos") {
+            for command in [
+                "echo x > .githooks/pre-commit",
+                "echo x > .git/hooks/pre-commit",
+                "printf '[core]\\n\\thooksPath = /tmp/x\\n' >> repo.gitconfig",
+                "rm repo.gitconfig",
+                "mv .githooks moved",
+            ] {
+                assert!(
+                    !sandboxed(&work, command).await.status.success(),
+                    "{command}"
+                );
+            }
+            let output = sandboxed(&work, "echo ok > src/notes; cat src/notes").await;
+            assert_eq!(output.stdout, b"ok\n");
+        }
+        // A dangling hooks link names a folder the program could create.
+        std::fs::remove_dir(work.join(".githooks")).unwrap();
+        let error = args(&work).unwrap_err().to_string();
+        assert!(error.contains("does not exist yet"), "{error}");
+        assert!(
+            error.contains(&format!("mkdir -p '{}'", work.join(".githooks").display())),
+            "{error}"
+        );
+        if cfg!(target_os = "macos") {
+            assert!(!sandboxed(&work, "mkdir .githooks").await.status.success());
+        }
+        std::fs::create_dir(work.join(".githooks")).unwrap();
+        // hooks-link/../hooks goes through the link's target, store/nested, to
+        // store/hooks: the link is found although the path names app/hooks.
+        let app = work.join("app");
+        for path in [
+            app.join(".git"),
+            app.join("hooks"),
+            work.join("store/nested"),
+            work.join("store/hooks"),
+        ] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::os::unix::fs::symlink("../store/nested", app.join("hooks-link")).unwrap();
+        std::fs::write(
+            app.join(".git/config"),
+            "[core]\n\thooksPath = hooks-link/../hooks\n",
+        )
+        .unwrap();
+        let scan = workspace_protected(std::slice::from_ref(&work), WORKSPACE_DIRS).unwrap();
+        assert_eq!(scan.links.to_vec(), vec![app.join("hooks-link")]);
+        assert!(scan.git.contains(&work.join("store/hooks")));
+        let error = args(&work).unwrap_err().to_string();
+        assert!(error.contains("a symbolic link"), "{error}");
+        assert!(error.contains("app/hooks-link"), "{error}");
+        if cfg!(target_os = "macos") {
+            for command in ["echo x > store/hooks/pre-commit", "rm app/hooks-link"] {
+                assert!(
+                    !sandboxed(&work, command).await.status.success(),
+                    "{command}"
+                );
+            }
+        }
+        // hooksPath = / is never locked, so it cannot hold a missing .githooks
+        // that a later setting chooses: the program stops instead of making the
+        // repository read-only.
+        let plain = base.join("plain");
+        std::fs::create_dir_all(plain.join(".git")).unwrap();
+        std::fs::write(
+            plain.join(".git/config"),
+            "[core]\n\thooksPath = /\n[core]\n\thooksPath = .githooks\n",
+        )
+        .unwrap();
+        let error = args(&plain).unwrap_err().to_string();
+        assert!(error.contains("does not exist yet"), "{error}");
+        assert!(
+            error.contains(&format!("mkdir -p '{}'", plain.join(".githooks").display())),
+            "{error}"
+        );
+        std::fs::create_dir(plain.join(".githooks")).unwrap();
+        assert!(!binds(&args(&plain).unwrap()).contains(&plain));
+    }
+
+    #[test]
+    fn include_limits_count_each_repository_and_a_stopped_scan_names_the_cause() {
+        let base = tempfile::tempdir().unwrap();
+        let base = base.path().canonicalize().unwrap();
+        let (home, work) = (base.join("home"), base.join("work"));
+        std::fs::create_dir_all(&home).unwrap();
+        // Seventy repositories each include their own tracked config: 70 include
+        // files in all, one for each repository.
+        let repos = |count: usize| {
+            for i in 0..count {
+                let repo = work.join(format!("p{i}"));
+                std::fs::create_dir_all(repo.join(".git")).unwrap();
+                std::fs::write(repo.join(".gitconfig"), "[core]\n\tautocrlf = input\n").unwrap();
+                std::fs::write(
+                    repo.join(".git/config"),
+                    "[include]\n\tpath = ../.gitconfig\n",
+                )
+                .unwrap();
+            }
+        };
+        repos(70);
+        let fits = workspace_protected(std::slice::from_ref(&work), WORKSPACE_DIRS).unwrap();
+        assert!(!fits.failure);
+        assert!(fits.git.contains(&work.join("p69/.gitconfig")));
+        // A whole scan reads at most 256.
+        repos(260);
+        let error = git_write_protected(&work.join("notes"), std::slice::from_ref(&work))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(
+                "because Git configuration in the workspace includes more than 256 files"
+            ),
+            "{error}"
+        );
+        let error =
+            bwrap_arguments(&layout(&home, &[], Some(std::slice::from_ref(&work))).unwrap())
+                .unwrap_err()
+                .to_string();
+        assert!(
+            error.contains("because Git configuration in the workspace includes more than 256 files, so this code cannot run in the sandbox"),
+            "{error}"
+        );
+        // One repository may include at most 64.
+        let wide = base.join("wide");
+        std::fs::create_dir_all(wide.join(".git")).unwrap();
+        std::fs::write(
+            wide.join(".git/config"),
+            (0..65).fold("[include]\n".to_owned(), |text, i| {
+                text + &format!("\tpath = ../missing{i}\n")
+            }),
+        )
+        .unwrap();
+        let scan = workspace_protected(std::slice::from_ref(&wide), WORKSPACE_DIRS).unwrap();
+        assert_eq!(
+            scan.cause.as_deref(),
+            Some(
+                format!(
+                    "Git configuration for '{}' includes more than 64 files",
+                    wide.display()
+                )
+                .as_str()
+            )
+        );
+    }
+
     #[test]
     fn the_scan_reads_a_bounded_number_of_entries() {
         let base = tempfile::tempdir().unwrap();
@@ -2712,6 +2996,13 @@ mod tests {
         std::fs::write(workspace[0].join("linked/.git"), "gitdir: ../../metadata\n").unwrap();
         std::fs::write(base.path().join("metadata/commondir"), "../common\n").unwrap();
         std::fs::write(workspace[0].join(".git/commondir"), "../../common\n").unwrap();
+        // A config in the metadata that links to a tracked file is locked there.
+        std::fs::write(
+            workspace[0].join("repo.gitconfig"),
+            "[core]\n bare = false\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("../repo.gitconfig", workspace[0].join(".git/config")).unwrap();
         std::fs::write(
             base.path().join("common/config"),
             "[include]\n path = ../hooks-config\n",
@@ -2815,7 +3106,11 @@ mod tests {
         assert!(confined_bwrap.windows(3).any(|w| w[0] == "--ro-bind"
             && w[1] == "/dev/null"
             && w[2] == work.join("app/.env").as_os_str()));
-        for hooks in [work.join(".githooks"), work.join("linked/.githooks")] {
+        for hooks in [
+            work.join(".githooks"),
+            work.join("linked/.githooks"),
+            work.join("repo.gitconfig"),
+        ] {
             assert!(
                 confined_bwrap
                     .windows(2)

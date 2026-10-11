@@ -595,7 +595,8 @@ test('cyclic and fanned-out Git includes are read once, and too many stop the sc
   const includes = prefix => '[include]\n' + names.map(name => `\tpath = ${prefix}${name}\n`).join('');
   writeFileSync(join(work, '.git/config'), includes('../'));
   for (const name of names) writeFileSync(join(work, name), `${includes('')}[core]\n\thooksPath = ${name}-hooks\n`);
-  // Beyond the repository and user configs a scan reads 64 include files.
+  // Beyond the repository and user configs a scan reads 64 include files for
+  // one worktree.
   const fanOut = count => `[include]\n${Array.from({length:count}, (_, i) => `\tpath = ../missing${i}\n`).join('')}`;
   const fits = join(base, 'fits');
   mkdirSync(join(fits, '.git'), {recursive:true});
@@ -612,8 +613,33 @@ test('cyclic and fanned-out Git includes are read once, and too many stop the sc
   for (const name of names) for (const path of [name, `${name}-hooks`]) assert.ok(cyclic.git.includes(join(work, path)), path);
   assert.equal(scan([fits]).failure, undefined);
   const started = Date.now();
-  assert.match(scan([wide]).failure, /could not be scanned/);
+  assert.match(scan([wide]).failure, /could not be scanned because Git configuration for '.*wide' includes more than 64 files/);
   assert.ok(Date.now() - started < 5000);
+});
+
+test('include limits count each repository, and a scan that stops names the cause', {skip:process.platform === 'win32'}, async t => {
+  const {realpathSync} = await import('node:fs');
+  const {bwrapArguments, workspaceProtected} = await import('./isolation.ts');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-repo-includes-')));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const home = join(base, 'home'), work = join(base, 'work');
+  mkdirSync(home);
+  // Seventy repositories each include their own tracked config: 70 include
+  // files in all, one for each repository.
+  const repos = count => { for (let i = 0; i < count; i++) {
+    mkdirSync(join(work, `p${i}/.git`), {recursive:true});
+    writeFileSync(join(work, `p${i}/.gitconfig`), '[core]\n\tautocrlf = input\n');
+    writeFileSync(join(work, `p${i}/.git/config`), '[include]\n\tpath = ../.gitconfig\n');
+  } };
+  repos(70);
+  const fits = workspaceProtected([work]);
+  assert.equal(fits.failure, undefined);
+  assert.ok(fits.git.includes(join(work, 'p69/.gitconfig')));
+  // A whole scan reads at most 256.
+  repos(260);
+  const many = workspaceProtected([work]);
+  assert.match(many.failure, /because Git configuration in the workspace includes more than 256 files/);
+  assert.throws(() => bwrapArguments(home, [], [work]), /could not finish because Git configuration in the workspace includes more than 256 files\. Retry with full_access/);
 });
 
 test('a global core.hooksPath is protected in each worktree inside the workspace, and a missing one asks on Linux', async t => {
@@ -687,7 +713,7 @@ test('a missing target never pins a repository folder, and links to Git metadata
   let error;
   try { bwrapArguments(home, [], [work]); } catch (caught) { error = caught.message; }
   // One message names both targets and creates each as Git reads it.
-  assert.ok(error.includes(`${join(work, '.gitconfig.local')}, ${join(work, 'app/.githooks')}`) || error.includes(`${join(work, 'app/.githooks')}, ${join(work, '.gitconfig.local')}`), error);
+  assert.ok(error.includes(`'${join(work, '.gitconfig.local')}', '${join(work, 'app/.githooks')}'`) || error.includes(`'${join(work, 'app/.githooks')}', '${join(work, '.gitconfig.local')}'`), error);
   assert.ok(error.includes(`mkdir -p '${join(work, 'app/.githooks')}' && touch '${join(work, '.gitconfig.local')}'`), error);
   assert.match(error, /do not exist yet.*retry with full_access/);
   assert.ok(!error.includes('.husky'), error);
@@ -728,6 +754,66 @@ test('a missing target never pins a repository folder, and links to Git metadata
     }
     assert.equal(run('echo ok > app/src/notes; cat app/src/notes').stdout, 'ok\n');
   }
+});
+
+test('links inside Git metadata lock their targets, links before a .. are found, and only locked targets hold a missing one', async t => {
+  const {spawnSync} = await import('node:child_process');
+  const {realpathSync, symlinkSync} = await import('node:fs');
+  const {bwrapArguments, sandboxProfile, workspaceProtected} = await import('./isolation.ts');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-metadata-links-')));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const home = join(base, 'home'), work = join(base, 'work');
+  for (const path of [home, join(work, '.git'), join(work, '.githooks'), join(work, 'src')]) mkdirSync(path, {recursive:true});
+  // .git/hooks and .git/config are links to tracked files the command can write.
+  writeFileSync(join(work, 'repo.gitconfig'), '[core]\n\tbare = false\n');
+  symlinkSync('../repo.gitconfig', join(work, '.git/config'));
+  symlinkSync('../.githooks', join(work, '.git/hooks'));
+  const binds = args => args.flatMap((arg, i) => arg === '--ro-bind' && args[i + 1] !== '/dev/null' ? [args[i + 1]] : []);
+  // The links sit in .git, which is locked, so nothing asks.
+  const args = bwrapArguments(home, [], [work]);
+  for (const path of ['.git', '.githooks', 'repo.gitconfig']) assert.ok(binds(args).includes(join(work, path)), path);
+  assert.ok(!binds(args).includes(work));
+  if (process.platform === 'darwin') {
+    const profile = sandboxProfile(home, [], [work]);
+    const run = command => spawnSync('/usr/bin/sandbox-exec', ['-p', profile, '/bin/bash', '-c', command], {cwd:work, encoding:'utf8'});
+    for (const command of ['echo x > .githooks/pre-commit', 'echo x > .git/hooks/pre-commit', 'printf "[core]\\n\\thooksPath = /tmp/x\\n" >> repo.gitconfig', 'rm repo.gitconfig', 'mv .githooks moved']) {
+      const result = run(command);
+      assert.notEqual(result.status, 0, command);
+      assert.doesNotMatch(result.stderr, /sandbox_(init|apply)/);
+    }
+    assert.equal(run('echo ok > src/notes; cat src/notes').stdout, 'ok\n');
+  }
+  // A dangling hooks link names a folder the command could create.
+  rmSync(join(work, '.githooks'), {recursive:true});
+  assert.throws(() => bwrapArguments(home, [], [work]), new RegExp(`does not exist yet.*mkdir -p '${join(work, '.githooks')}'`));
+  if (process.platform === 'darwin') {
+    const result = spawnSync('/usr/bin/sandbox-exec', ['-p', sandboxProfile(home, [], [work]), '/bin/bash', '-c', 'mkdir .githooks'], {cwd:work, encoding:'utf8'});
+    assert.notEqual(result.status, 0);
+  }
+  mkdirSync(join(work, '.githooks'));
+  // hooks-link/../hooks goes through the link's target, store/nested, to
+  // store/hooks: the link is found although the path names app/hooks.
+  const app = join(work, 'app');
+  for (const path of [join(app, '.git'), join(app, 'hooks'), join(work, 'store/nested'), join(work, 'store/hooks')]) mkdirSync(path, {recursive:true});
+  symlinkSync('../store/nested', join(app, 'hooks-link'));
+  writeFileSync(join(app, '.git/config'), '[core]\n\thooksPath = hooks-link/../hooks\n');
+  const scan = workspaceProtected([work]);
+  assert.deepEqual(scan.links, [join(app, 'hooks-link')]);
+  assert.ok(scan.git.includes(join(work, 'store/hooks')));
+  assert.throws(() => bwrapArguments(home, [], [work]), /symbolic link.*app\/hooks-link.*retry with full_access/);
+  if (process.platform === 'darwin') {
+    const run = command => spawnSync('/usr/bin/sandbox-exec', ['-p', sandboxProfile(home, [], [work]), '/bin/bash', '-c', command], {cwd:work, encoding:'utf8'});
+    for (const command of ['echo x > store/hooks/pre-commit', 'rm app/hooks-link']) assert.notEqual(run(command).status, 0, command);
+  }
+  // hooksPath = / is never locked, so it cannot hold a missing .githooks that a
+  // later setting chooses: the command asks instead of making the repository
+  // read-only.
+  const plain = join(base, 'plain');
+  mkdirSync(join(plain, '.git'), {recursive:true});
+  writeFileSync(join(plain, '.git/config'), '[core]\n\thooksPath = /\n[core]\n\thooksPath = .githooks\n');
+  assert.throws(() => bwrapArguments(home, [], [plain]), new RegExp(`does not exist yet.*mkdir -p '${join(plain, '.githooks')}'`));
+  mkdirSync(join(plain, '.githooks'));
+  assert.ok(!binds(bwrapArguments(home, [], [plain])).includes(plain));
 });
 
 test('the scan reads a bounded number of entries, so a huge flat folder makes it incomplete', async t => {

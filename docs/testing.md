@@ -25,10 +25,16 @@
   write; the link inside the workspace refuses the Linux command and is locked
   by name on macOS. Link tests make `.git` and a hooks folder symbolic links
   inside the workspace and check the same, with `sandbox-exec` refusing to
-  remove or replace them. FIFO tests put FIFOs at `.git`, `commondir`, a config and an include
+  remove or replace them. Metadata link tests make `.git/hooks` and
+  `.git/config` links to tracked files and check that their targets are bound
+  read-only and refuse writes under `sandbox-exec`, that a dangling hooks link
+  asks for `mkdir`, that `hooksPath = hooks-link/../hooks` finds the link, and
+  that `hooksPath = /` cannot hold a missing `.githooks`. FIFO tests put FIFOs at `.git`, `commondir`, a config and an include
   and check that the scan finishes. Include tests use a cyclic, fanned-out set
   of includes (12^10 visits without deduplication), a config with 64 includes,
   which scans, and one with 10,001, which must fail the scan within seconds.
+  Seventy repositories with one include each scan; 260 stop the scan with a
+  reason that names the 256-file limit, and 65 in one repository name it.
   Entry tests fill one folder past the entry budget. Global-config tests point
   `GIT_CONFIG_GLOBAL` at a config with `core.hooksPath = .githooks` and check
   that each worktree's folder is locked, an absolute one outside the workspace
