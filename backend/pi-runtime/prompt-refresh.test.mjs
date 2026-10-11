@@ -89,6 +89,8 @@ async function fixture(t, {midRun = false, prePrompt = false, mcp = false} = {})
       const {name, args} = JSON.parse(title.slice('__HEXBOT_TOOL__'.length));
       if (name === 'hexbot_session_settings') {
         if (state.fail === 'settings') return JSON.stringify({error:'settings unavailable'});
+        // Stop cancels the pending request, which answers with nothing.
+        if (state.fail === 'stop') return undefined;
         // A changed connected-tools state makes the extension fetch servers again.
         return JSON.stringify({result:state.fail === 'connected tools' ? {...config, mcpState:state.requests.length} : config});
       }
@@ -268,6 +270,7 @@ for (const fail of ['settings', 'connected tools']) {
     await f.session.prompt('Loading fails');
     assert.equal(f.state.requests.at(-1), 'Changed prompt');
     assert.equal(f.state.warnings.length, 1);
+    if (fail === 'settings') assert.equal(f.state.warnings[0], "Could not load this bot's latest settings, so this message uses the previous ones.\nsettings unavailable");
     // Failing on the adoption turn itself still adopts the saved prompt.
     f.state.fail = undefined;
     f.state.prompt = 'Third prompt';
@@ -280,3 +283,15 @@ for (const fail of ['settings', 'connected tools']) {
     assertChangesOnlyAtCompaction(f.state);
   });
 }
+
+test('Pi Stop during the settings request keeps the prompt without a warning', {timeout:30000}, async t => {
+  const f = await fixture(t, {mcp:true});
+  await f.session.prompt('First run');
+  await f.session.compact();
+  await f.session.prompt('Adopt');
+  f.state.fail = 'stop';
+  await f.session.prompt('Stopped while loading');
+  assert.equal(f.state.requests.at(-1), 'Changed prompt');
+  assert.deepEqual(f.state.warnings, []);
+  assertChangesOnlyAtCompaction(f.state);
+});

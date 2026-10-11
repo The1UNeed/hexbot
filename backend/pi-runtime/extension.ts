@@ -71,7 +71,8 @@ export default function hexbot(pi: any) {
   });
   const bridge = async (ctx: any, name: string, args: any = {}) => {
     const raw = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({name, args}));
-    if (!raw) throw new Error('Daemon request interrupted');
+    // Stop cancels pending requests; callers skip warnings for it.
+    if (!raw) throw Object.assign(new Error('Daemon request interrupted'), {interrupted: true});
     const reply = JSON.parse(raw);
     if (reply.error) throw new Error(reply.error);
     return reply.result;
@@ -95,7 +96,7 @@ export default function hexbot(pi: any) {
     if (mcpRegistered && state === mcpState) return;
     let servers: any[];
     try { servers = await bridge(ctx, 'hexbot_mcp_servers'); }
-    catch (error: any) { ctx.ui.notify(`Connected tools are unavailable: ${error.message}`, 'warning'); return; }
+    catch (error: any) { if (!error.interrupted) ctx.ui.notify(`Connected tools are unavailable: ${error.message}`, 'warning'); return; }
     for (const name of mcpRevisions.keys()) {
       if (!servers.some(server => server.name === name && server.config)) {
         pi.unregisterMcpServer(name);
@@ -346,7 +347,7 @@ export default function hexbot(pi: any) {
       const model = ctx.modelRegistry.find(live.provider, live.model) ?? primary;
       if (model && (ctx.model?.provider !== model.provider || ctx.model?.id !== model.id)) await pi.setModel(model);
     } catch (error: any) {
-      ctx.ui.notify(`Could not load the latest settings, so this turn uses the previous ones: ${error?.message ?? error}`, 'warning');
+      if (!error?.interrupted) ctx.ui.notify(`Could not load this bot's latest settings, so this message uses the previous ones.\n${error?.message ?? error}`, 'warning');
     }
     fallbackUsed = false; iterations = 0; limitReached = false;
 
