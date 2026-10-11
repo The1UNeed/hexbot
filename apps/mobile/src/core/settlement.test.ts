@@ -245,6 +245,32 @@ describe('owned waiting status', () => {
       mobileRevision: 2
     } as GatewayEvent)
 
+  it('keeps human answer evidence through an automatic wait while newer cards and roster reads remain authoritative', () => {
+    let state = resumed()
+    state = reduceChat(
+      state,
+      event('status.update', { kind: 'waiting', text: 'Retrying the model request' })
+    )
+    expect(state).toMatchObject({ waiting: true, resumedWaiting: true, waitingRevision: 2 })
+    expect(settledBot(waitingBot(), state, 's1').status).toBe('working')
+    for (const bot of [waitingBot('s2'), waitingBot(null)])
+      expect(settledBot(bot, state, 's1')).toBe(bot)
+    const duplicate = reduceChat(state, {
+      ...event('approval.resolved', { request_id: 'approve', choice: 'once' }),
+      mobileRevision: 4
+    } as GatewayEvent)
+    expect(duplicate.waitingRevision).toBe(2)
+    expect(settledBot(waitingBot(), rosterChat(duplicate, 3), 's1').status).toBe('needs_you')
+    const withQuestion = reduceChat(state, question('new'))
+    expect(withQuestion.resumedWaiting).toBe(false)
+    expect(settledBot(waitingBot(), withQuestion, 's1').status).toBe('needs_you')
+    const withApproval = reduceChat(state, approval('new'))
+    expect(withApproval.resumedWaiting).toBe(false)
+    expect(settledBot(waitingBot(), withApproval, 's1').status).toBe('needs_you')
+    const nextTurn = reduceChat(state, event('message.start', {}))
+    expect(settledBot(waitingBot(), nextTurn, 's1').status).toBe('needs_you')
+  })
+
   it('supersedes only a named session whose last card was accepted, preserving later completion and new waits', () => {
     let state = resumed()
     for (const bot of [

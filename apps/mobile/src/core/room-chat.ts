@@ -102,7 +102,8 @@ export function reduceRoom(
       turns[id] = {
         ...turn,
         waiting,
-        resumedWaiting: waiting ? false : turn.resumedWaiting,
+        resumedWaiting:
+          turn.approvals.length || turn.questions.length ? false : turn.resumedWaiting,
         activity: `${botName(bot)} is ${waiting ? 'waiting' : 'working'}`
       }
     } else {

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GatewayEvent } from '@hermes/shared'
-import type { Bot, SavedDaemon, Section } from './types'
+import type { Bot, Room, SavedDaemon, Section } from './types'
+import { chatActivityLabel } from './tools'
 
 type Handler = (method: string, params: Record<string, unknown>) => Promise<unknown>
 const hooks = vi.hoisted(() => ({
@@ -129,6 +130,59 @@ async function start() {
 }
 
 describe('mobile settlement consumer', () => {
+  it('keeps a room answer through a failed roster read and automatic retry while its sibling still waits for a human', async () => {
+    const room: Room = {
+      id: 'room',
+      name: 'Planning',
+      owner_id: 'owner',
+      main_bot: 'alpha',
+      approval_mode: null,
+      limits: {},
+      archived_at: null,
+      created_at: 0,
+      updated_at: 0,
+      last_activity_at: 0,
+      members: [],
+      turns: [
+        { bot: 'alpha', live_session_id: 's1' },
+        { bot: 'beta', live_session_id: 's2' }
+      ]
+    }
+    const beta = { ...bot, name: 'beta', status_detail: { session_id: 's2' } } as Bot
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') return { bots: [bot, beta] }
+      if (method === 'hexbot.rooms.log') return { events: [] }
+      if (method === 'hexbot.rooms.get') return { room }
+      if (method === 'approval.respond') return { resolved: true, choice: 'once' }
+      return original(method, params)
+    }
+    await render().activate(daemon, 'token')
+    await render().refresh()
+    await render().openRoom(room)
+    hooks.clients[0].emit(approval)
+    hooks.clients[0].emit(wire('clarify.request', { request_id: 'old', question: 'When?' }, 's2'))
+    await render().approval('old', 'once', 's1')
+    const current = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') throw new Error('Roster unavailable')
+      return current(method, params)
+    }
+    await expect(render().refresh()).rejects.toThrow('Roster unavailable')
+    hooks.clients[0].emit(wire('thinking.delta', { text: 'Retrying the model request' }))
+    hooks.clients[0].emit(
+      wire('status.update', { kind: 'waiting', text: 'Retrying the model request' })
+    )
+    hooks.clients[0].emit(wire('thinking.delta', { text: 'Checking the file' }))
+    hooks.clients[0].emit(wire('message.delta', { text: 'Checking.' }))
+    hooks.clients[0].emit(wire('message.interim', { text: 'Checking.', already_streamed: true }))
+    hooks.clients[0].emit(wire('tool.start', { tool_id: 'read', name: 'read_file' }))
+    expect(render().bots.find(b => b.name === 'alpha')?.status).toBe('working')
+    expect(render().bots.find(b => b.name === 'beta')?.status).toBe('needs_you')
+    expect(render().chat.questions.map(q => q.sessionId)).toEqual(['s2'])
+    expect(chatActivityLabel(render().chat)).toBe('Waiting')
+  })
+
   it('keeps the latest successful roster cutoff when buffered history is restored later', async () => {
     await render().activate(daemon, 'token')
     const reply = deferred()
@@ -236,6 +290,22 @@ describe('mobile settlement consumer', () => {
     expect(status()).toBe('working')
     expect(render().chat.approvals).toEqual([])
     expect(Object.values(render().chat.settlements)[0].choice).toBe('session')
+    hooks.clients[0].emit(wire('thinking.delta', { text: 'Retrying the model request' }))
+    hooks.clients[0].emit(
+      wire('status.update', { kind: 'waiting', text: 'Retrying the model request' })
+    )
+    expect(render().chat).toMatchObject({ waiting: true, resumedWaiting: true })
+    expect(status()).toBe('working')
+    hooks.clients[0].emit(wire('thinking.delta', { text: 'Checking the file' }))
+    hooks.clients[0].emit(wire('message.delta', { text: 'Checking.' }))
+    hooks.clients[0].emit(wire('message.interim', { text: 'Checking.', already_streamed: true }))
+    hooks.clients[0].emit(wire('tool.start', { tool_id: 'read', name: 'read_file' }))
+    expect(render().chat).toMatchObject({
+      waiting: true,
+      streaming: '',
+      activity: 'Using read_file'
+    })
+    expect(status()).toBe('working')
   })
 
   it('uses canonical local clarification batches while preserving sibling approval cards', async () => {

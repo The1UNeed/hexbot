@@ -67,7 +67,6 @@ export function settledBot(bot: Bot, state: TurnState, sessionId: string | null)
     !sessionId ||
     bot.status_detail?.session_id !== sessionId ||
     !state.resumedWaiting ||
-    state.waiting ||
     state.approvals.length ||
     state.questions.length
   )
@@ -229,7 +228,9 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         ...state,
         activity: p.kind === 'working' && waiting ? state.activity : text,
         waiting,
-        resumedWaiting: waiting ? false : state.resumedWaiting,
+        // Automatic waits do not revoke an accepted human answer.
+        resumedWaiting:
+          state.approvals.length || state.questions.length ? false : state.resumedWaiting,
         busy:
           p.kind === 'idle' || p.kind === 'done' || p.kind === 'error' || p.kind === 'interrupted'
             ? false

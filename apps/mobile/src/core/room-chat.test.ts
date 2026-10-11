@@ -66,6 +66,46 @@ const reduce = (state: ReturnType<typeof restoreRoom>, event: GatewayEvent) =>
   reduceRoom(state, event, room, id => (id === 'beta' ? 'Beta display' : 'Alpha display'))
 
 describe('room sessions', () => {
+  it('keeps one bot’s accepted answer through automatic waiting without changing its sibling’s human wait', () => {
+    let state = restoreRoom(room, [])
+    for (const id of ['a', 'b'])
+      state = reduce(state, wire('approval.request', id, { request_id: 'same' }))
+    state = reduce(state, {
+      ...wire('approval.resolved', 'a', { request_id: 'same', choice: 'once' }),
+      mobileRevision: 2
+    } as GatewayEvent)
+    state = reduce(state, wire('thinking.delta', 'a', { text: 'Retrying the model request' }))
+    state = reduce(
+      state,
+      wire('status.update', 'a', { kind: 'waiting', text: 'Retrying the model request' })
+    )
+    state = reduce(
+      state,
+      wire('hexbot.rooms.turn', '', {
+        room_id: room.id,
+        bot: 'alpha',
+        live_session_id: 'a',
+        status: 'waiting'
+      })
+    )
+    const alpha = { name: 'alpha', status: 'needs_you', status_detail: { session_id: 'a' } } as Bot
+    const beta = { name: 'beta', status: 'needs_you', status_detail: { session_id: 'b' } } as Bot
+    expect(state.turns.a).toMatchObject({ waiting: true, resumedWaiting: true, waitingRevision: 2 })
+    expect(settledBot(alpha, state.turns.a, 'a').status).toBe('working')
+    expect(settledBot(beta, state.turns.b, 'b')).toBe(beta)
+    expect(state.approvals.map(a => a.sessionId)).toEqual(['b'])
+    state = reduce(state, wire('thinking.delta', 'a', { text: 'Checking the file' }))
+    state = reduce(state, wire('message.delta', 'a', { text: 'Checking.' }))
+    state = reduce(
+      state,
+      wire('message.interim', 'a', { text: 'Checking.', already_streamed: true })
+    )
+    state = reduce(state, wire('tool.start', 'a', { tool_id: 'read', name: 'read_file' }))
+    expect(settledBot(alpha, state.turns.a, 'a').status).toBe('working')
+    expect(state.turns.b.waiting).toBe(true)
+    expect(settledBot(alpha, rosterChat(state, 2).turns.a, 'a').status).toBe('needs_you')
+  })
+
   it('settles exact session cards from local RPC results without removing same-ID siblings', () => {
     let state = restoreRoom(room, [])
     for (const id of ['a', 'b']) {

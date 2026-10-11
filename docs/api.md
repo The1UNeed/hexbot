@@ -773,7 +773,7 @@ devices, and removes the invite and update methods.
 broadcast to every connection.
 Section deletion sends `{id, deleted: true}` to the owner. Clients record
 that exact deletion before refreshing lists, so a failed bot refresh cannot
-retain the deleted private section's Retry status. An omitted row in a list
+retain the deleted private section's Stopped status. An omitted row in a list
 does not prove deletion.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
 Room mutations emit `hexbot.rooms.changed {id}`. Every persisted room event
