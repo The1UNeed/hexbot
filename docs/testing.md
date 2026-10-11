@@ -29,8 +29,14 @@
   `.git/config` links to tracked files and check that their targets are bound
   read-only and refuse writes under `sandbox-exec`, that a dangling hooks link
   asks for `mkdir`, that `hooksPath = hooks-link/../hooks` finds the link, and
-  that `hooksPath = /` cannot hold a missing `.githooks`. FIFO tests put FIFOs at `.git`, `commondir`, a config and an include
-  and check that the scan finishes. Include tests use a cyclic, fanned-out set
+  that `hooksPath = /` cannot hold a missing `.githooks`; a chain
+  `.git/hooks -> ../.githooks -> store/hooks` refuses the Linux command for
+  `.githooks` and locks it under `sandbox-exec`. Repository fixtures for hook
+  paths are made by `git init`; nested-repository tests check that husky's
+  `.husky/_` and `.githooks` are bound and locked in each nested repository's
+  own folder and that a missing `.githooks` there asks for `mkdir`. FIFO tests
+  put FIFOs at `.git`, `commondir`, a config and an include and check that the
+  scan finishes. Include tests use a cyclic, fanned-out set
   of includes (12^10 visits without deduplication), a config with 64 includes,
   which scans, and one with 10,001, which must fail the scan within seconds.
   Seventy repositories with one include each scan; 260 stop the scan with a
@@ -45,7 +51,7 @@
   missing target. Every other test reads no user or system Git config: the Pi
   tests set `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`, and the
   Rust tests read only the files a test names. The parity test includes that
-  global setting. Large-workspace tests cover file-tool writes/edits and macOS
+  global setting and a nested husky repository. Large-workspace tests cover file-tool writes/edits and macOS
   commands after the scan budget is reached. Incomplete scans ask before each
   file change, offer only once or deny, and keep the shell-profile and
   outside-workspace reasons; cache-marker `.git` files stay locked without failing the scan.

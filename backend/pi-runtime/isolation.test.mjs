@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {spawn} from 'node:child_process';
+import {spawn, execFileSync} from 'node:child_process';
 import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -11,6 +11,13 @@ import {isolatedCommand, probeIsolation} from './isolation.ts';
 // developer's ~/.gitconfig and system config cannot change their results.
 process.env.GIT_CONFIG_GLOBAL = '/dev/null';
 process.env.GIT_CONFIG_NOSYSTEM = '1';
+// A repository as `git init` makes it (HEAD, objects, refs, config), with
+// settings added to its config.
+const gitInit = (dir, settings = []) => {
+  execFileSync('/usr/bin/git', ['init', '-q', dir]);
+  for (const [key, value] of settings) execFileSync('/usr/bin/git', ['-C', dir, 'config', '--add', key, value]);
+};
+const gitConfig = (dir, key, value) => execFileSync('/usr/bin/git', ['-C', dir, 'config', key, value]);
 
 // The Linux tests run the real bubblewrap when it passes the daemon's probe.
 // CI installs it; Ubuntu 24.04 needs the AppArmor profile from the install docs.
@@ -648,10 +655,11 @@ test('a global core.hooksPath is protected in each worktree inside the workspace
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-global-hooks-')));
   t.after(() => rmSync(base, {recursive:true, force:true}));
   const home = join(base, 'home'), work = join(base, 'work'), xdg = join(base, 'xdg');
-  for (const path of [home, join(work, 'app/.git'), join(work, 'app/.githooks'), join(work, 'lib/.git'), join(work, 'lib/tools'), join(xdg, 'git')]) mkdirSync(path, {recursive:true});
+  gitInit(join(work, 'app'));
+  gitInit(join(work, 'lib'), [['core.hooksPath', 'tools/hooks']]);
+  for (const path of [home, join(work, 'app/.githooks'), join(work, 'lib/tools'), join(xdg, 'git')]) mkdirSync(path, {recursive:true});
   writeFileSync(join(xdg, 'git/config'), `[include]\n\tpath = more\n[core]\n\thooksPath = .githooks\n`);
   writeFileSync(join(xdg, 'git/more'), `[core]\n\thooksPath = ${join(base, 'outside-hooks')}\n`);
-  writeFileSync(join(work, 'lib/.git/config'), '[core]\n\thooksPath = tools/hooks\n');
   const run = (code, cwd = work) => {
     const script = `const {bwrapArguments, sandboxProfile, workspaceProtected}=await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); const {writeDenial}=await import(${JSON.stringify(new URL('./extension.ts', import.meta.url).href)}); const [home, work] = process.argv.slice(1); ${code}`;
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', script, home, cwd], {encoding:'utf8', timeout:20000, env:{...process.env, GIT_CONFIG_GLOBAL:join(xdg, 'git/config')}});
@@ -703,12 +711,12 @@ test('a missing target never pins a repository folder, and links to Git metadata
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-pin-')));
   t.after(() => rmSync(base, {recursive:true, force:true}));
   const home = join(base, 'home'), work = join(base, 'work');
-  for (const path of [home, join(work, '.git'), join(work, 'app/.git'), join(work, 'app/src'), join(work, 'lib/.git'), join(work, 'lib/.husky')]) mkdirSync(path, {recursive:true});
   // The workspace's own repository includes a missing file, a nested repository
   // names a missing hooks folder, and husky's .husky/_ is missing inside .husky.
-  writeFileSync(join(work, '.git/config'), '[include]\n\tpath = ../.gitconfig.local\n');
-  writeFileSync(join(work, 'app/.git/config'), '[core]\n\thooksPath = .githooks\n');
-  writeFileSync(join(work, 'lib/.git/config'), '[core]\n\thooksPath = .husky/_\n');
+  gitInit(work, [['include.path', '../.gitconfig.local']]);
+  gitInit(join(work, 'app'), [['core.hooksPath', '.githooks']]);
+  gitInit(join(work, 'lib'), [['core.hooksPath', '.husky/_']]);
+  for (const path of [home, join(work, 'app/src'), join(work, 'lib/.husky')]) mkdirSync(path, {recursive:true});
   const binds = args => args.flatMap((arg, i) => arg === '--ro-bind' && args[i + 1] !== '/dev/null' ? [args[i + 1]] : []);
   let error;
   try { bwrapArguments(home, [], [work]); } catch (caught) { error = caught.message; }
@@ -738,7 +746,7 @@ test('a missing target never pins a repository folder, and links to Git metadata
   symlinkSync('../store/linked-git', join(work, 'linked/.git'));
   mkdirSync(join(work, 'store/hooks'));
   symlinkSync('../store/hooks', join(work, 'app/hooks-link'));
-  writeFileSync(join(work, 'app/.git/config'), '[core]\n\thooksPath = hooks-link\n');
+  gitConfig(join(work, 'app'), 'core.hooksPath', 'hooks-link');
   const scan = workspaceProtected([work]);
   assert.deepEqual([...scan.links].sort(), [join(work, 'app/hooks-link'), join(work, 'linked/.git')]);
   assert.throws(() => bwrapArguments(home, [], [work]), /symbolic links.*app\/hooks-link.*linked\/\.git.*retry with full_access/s);
@@ -763,8 +771,10 @@ test('links inside Git metadata lock their targets, links before a .. are found,
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-metadata-links-')));
   t.after(() => rmSync(base, {recursive:true, force:true}));
   const home = join(base, 'home'), work = join(base, 'work');
-  for (const path of [home, join(work, '.git'), join(work, '.githooks'), join(work, 'src')]) mkdirSync(path, {recursive:true});
+  gitInit(work);
+  for (const path of [home, join(work, '.githooks'), join(work, 'src')]) mkdirSync(path, {recursive:true});
   // .git/hooks and .git/config are links to tracked files the command can write.
+  for (const name of ['config', 'hooks']) rmSync(join(work, '.git', name), {recursive:true});
   writeFileSync(join(work, 'repo.gitconfig'), '[core]\n\tbare = false\n');
   symlinkSync('../repo.gitconfig', join(work, '.git/config'));
   symlinkSync('../.githooks', join(work, '.git/hooks'));
@@ -794,9 +804,9 @@ test('links inside Git metadata lock their targets, links before a .. are found,
   // hooks-link/../hooks goes through the link's target, store/nested, to
   // store/hooks: the link is found although the path names app/hooks.
   const app = join(work, 'app');
-  for (const path of [join(app, '.git'), join(app, 'hooks'), join(work, 'store/nested'), join(work, 'store/hooks')]) mkdirSync(path, {recursive:true});
+  gitInit(app, [['core.hooksPath', 'hooks-link/../hooks']]);
+  for (const path of [join(app, 'hooks'), join(work, 'store/nested'), join(work, 'store/hooks')]) mkdirSync(path, {recursive:true});
   symlinkSync('../store/nested', join(app, 'hooks-link'));
-  writeFileSync(join(app, '.git/config'), '[core]\n\thooksPath = hooks-link/../hooks\n');
   const scan = workspaceProtected([work]);
   assert.deepEqual(scan.links, [join(app, 'hooks-link')]);
   assert.ok(scan.git.includes(join(work, 'store/hooks')));
@@ -809,11 +819,74 @@ test('links inside Git metadata lock their targets, links before a .. are found,
   // later setting chooses: the command asks instead of making the repository
   // read-only.
   const plain = join(base, 'plain');
-  mkdirSync(join(plain, '.git'), {recursive:true});
-  writeFileSync(join(plain, '.git/config'), '[core]\n\thooksPath = /\n[core]\n\thooksPath = .githooks\n');
+  gitInit(plain, [['core.hooksPath', '/'], ['core.hooksPath', '.githooks']]);
   assert.throws(() => bwrapArguments(home, [], [plain]), new RegExp(`does not exist yet.*mkdir -p '${join(plain, '.githooks')}'`));
   mkdirSync(join(plain, '.githooks'));
   assert.ok(!binds(bwrapArguments(home, [], [plain])).includes(plain));
+});
+
+test('a nested repository made by git init keeps its relative hooks path in its own folder', async t => {
+  const {spawnSync} = await import('node:child_process');
+  const {realpathSync} = await import('node:fs');
+  const {bwrapArguments, sandboxProfile, workspaceProtected} = await import('./isolation.ts');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-nested-hooks-')));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const home = join(base, 'home'), work = join(base, 'work'), web = join(work, 'web'), api = join(work, 'api');
+  mkdirSync(home);
+  // husky sets core.hooksPath = .husky/_; another project uses .githooks.
+  gitInit(web, [['core.hooksPath', '.husky/_']]);
+  gitInit(api, [['core.hooksPath', '.githooks']]);
+  mkdirSync(join(web, '.husky/_'), {recursive:true});
+  const scan = workspaceProtected([work]);
+  assert.deepEqual([...scan.worktrees].sort(), [api, web]);
+  for (const path of [join(web, '.husky/_'), join(api, '.githooks')]) assert.ok(scan.git.includes(path), path);
+  // The missing .githooks would pin the api repository, so Linux asks.
+  assert.throws(() => bwrapArguments(home, [], [work]), new RegExp(`does not exist yet.*mkdir -p '${join(api, '.githooks')}'`));
+  if (process.platform === 'darwin') {
+    const run = (command, cwd) => spawnSync('/usr/bin/sandbox-exec', ['-p', sandboxProfile(home, [], [work]), '/bin/bash', '-c', command], {cwd, encoding:'utf8'});
+    for (const [cwd, command] of [[web, 'echo x > .husky/_/pre-commit'], [web, 'rm -r .husky/_'], [api, 'mkdir -p .githooks']]) {
+      const result = run(command, cwd);
+      assert.notEqual(result.status, 0, command);
+      assert.doesNotMatch(result.stderr, /sandbox_(init|apply)/);
+    }
+    assert.equal(run('echo ok > notes; cat notes', api).stdout, 'ok\n');
+  }
+  mkdirSync(join(api, '.githooks'));
+  const args = bwrapArguments(home, [], [work]);
+  const binds = args.flatMap((arg, i) => arg === '--ro-bind' && args[i + 1] !== '/dev/null' ? [args[i + 1]] : []);
+  for (const path of [join(web, '.husky/_'), join(api, '.githooks'), join(web, '.git'), join(api, '.git')]) assert.ok(binds.includes(path), path);
+  for (const path of [web, api, join(web, '.git/.husky'), join(api, '.git/.githooks')]) assert.ok(!binds.includes(path), path);
+});
+
+test('a link between Git metadata and its target in the workspace is locked or asks', async t => {
+  const {spawnSync} = await import('node:child_process');
+  const {realpathSync, symlinkSync} = await import('node:fs');
+  const {bwrapArguments, sandboxProfile, workspaceProtected, lockedGit} = await import('./isolation.ts');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-metadata-chain-')));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const home = join(base, 'home'), work = join(base, 'work'), app = join(work, 'app');
+  mkdirSync(home);
+  // app/.git/hooks -> ../.githooks -> store/hooks: .githooks could be pointed
+  // somewhere writable, so it is part of the protected path.
+  gitInit(app);
+  rmSync(join(app, '.git/hooks'), {recursive:true});
+  mkdirSync(join(app, 'store/hooks'), {recursive:true});
+  symlinkSync('../.githooks', join(app, '.git/hooks'));
+  symlinkSync('store/hooks', join(app, '.githooks'));
+  const scan = workspaceProtected([work]);
+  assert.deepEqual(scan.links, [join(app, '.githooks')]);
+  assert.throws(() => bwrapArguments(home, [], [work]), /symbolic link.*app\/\.githooks.*retry with full_access/);
+  const locked = lockedGit(scan, [work]);
+  for (const path of ['.git', '.githooks', 'store/hooks']) assert.ok(locked.includes(join(app, path)), path);
+  if (process.platform === 'darwin') {
+    const run = command => spawnSync('/usr/bin/sandbox-exec', ['-p', sandboxProfile(home, [], [work]), '/bin/bash', '-c', command], {cwd:app, encoding:'utf8'});
+    for (const command of ['rm .githooks', 'ln -sfn src .githooks', 'mv .githooks moved', 'echo x > store/hooks/pre-commit']) {
+      const result = run(command);
+      assert.notEqual(result.status, 0, command);
+      assert.doesNotMatch(result.stderr, /sandbox_(init|apply)/);
+    }
+    assert.equal(run('echo ok > notes; cat notes').stdout, 'ok\n');
+  }
 });
 
 test('the scan reads a bounded number of entries, so a huge flat folder makes it incomplete', async t => {

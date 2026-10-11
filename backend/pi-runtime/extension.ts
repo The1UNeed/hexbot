@@ -4,7 +4,7 @@ import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync, existsSy
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
-import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, bareRepository, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
+import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -524,7 +524,7 @@ export function hostWriteTier(input: string, cwd: string, fileTool = false): 'de
 export function writeDenial(input: string, cwd: string, home: string, outputs: string[] = [], scan = workspaceProtected([cwd, ...outputs])): string | undefined {
   const path = canonicalPath(input, cwd);
   for (let parent = path; dirname(parent) !== parent; parent = dirname(parent)) {
-    if (bareRepository(parent)) return 'Git metadata is read-only. Use an approved full_access command.';
+    if (gitDirectory(parent)) return 'Git metadata is read-only. Use an approved full_access command.';
   }
   // A repository config can name any folder as its hooks path. One that holds a
   // writable root (hooksPath = / or the home) would refuse every write, so it is

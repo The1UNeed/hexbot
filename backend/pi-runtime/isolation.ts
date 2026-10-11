@@ -113,7 +113,11 @@ export function readDenied(): string[] {
 // WORKSPACE_ENTRIES entries for each of them in all (50,000), so a huge flat
 // folder cannot stall it either.
 const GIT_DIR = '/' + regexEscape('.git') + '(/|$)';
-export const bareRepository = (path: string) => fold(basename(path)).endsWith('.git') && existsSync(join(path, 'HEAD')) && existsSync(join(path, 'objects'));
+// A folder with HEAD and objects whose name ends in .git is Git metadata. A
+// literal .git belongs to the worktree around it; any other one is a bare
+// repository, its own worktree.
+export const gitDirectory = (path: string) => fold(basename(path)).endsWith('.git') && existsSync(join(path, 'HEAD')) && existsSync(join(path, 'objects'));
+export const bareRepository = (path: string) => fold(basename(path)) !== '.git' && gitDirectory(path);
 const WORKSPACE_DEPTH = 3, WORKSPACE_DIRS = 1000, WORKSPACE_ENTRIES = 50;
 export const SCAN_REASON = 'The workspace safety scan exceeded its directory budget. This command needs approval: retry with full_access and a reason.';
 export const SCAN_FILE_REASON = 'The workspace safety scan reached its directory budget, so Git protection is partial. Approve this file change only if you trust its destination.';
@@ -202,7 +206,8 @@ export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): Wor
   // A command could replace a link inside the workspace and so swap the metadata
   // a later ordinary git command trusts. The path is walked as the kernel walks
   // it, so a `..` after a link leaves the link's target, not the link's folder.
-  const linked = (path: string) => {
+  // Links inside locked Git metadata (exempt) are locked with it.
+  const linked = (path: string, exempt: string[] = []) => {
     const parts = path.split('/').reverse();
     let dir = '/';
     for (let hops = 0; parts.length;) {
@@ -213,7 +218,7 @@ export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): Wor
       let link: string | undefined;
       try { if (lstatSync(next).isSymbolicLink()) link = readlinkSync(next); } catch { /* Not there yet. */ }
       if (link === undefined || ++hops > LINK_HOPS) { dir = next; continue; }
-      if (within(next, scanned) && !scanned.some(root => fold(root) === fold(next))) links.add(next);
+      if (within(next, scanned) && !scanned.some(root => fold(root) === fold(next)) && !within(next, exempt)) links.add(next);
       if (link.startsWith('/')) dir = '/';
       parts.push(...link.split('/').reverse());
     }
@@ -285,9 +290,12 @@ export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): Wor
       dirs.unshift(target);
     }
     // The metadata folder itself is locked, but a hooks folder or config in it
-    // can be a link to a folder or file in the workspace, which is locked too.
+    // can be a link to a folder or file in the workspace, which is locked too,
+    // as is every link in the workspace on the way there.
+    const exempt = dirs.flatMap(gitDir => [gitDir, realRoot(gitDir)]);
     for (const gitDir of dirs) for (const name of ['hooks', 'config', 'config.worktree', 'commondir']) {
       const entry = join(gitDir, name);
+      linked(entry, exempt);
       add(git, entry);
       if (name !== 'hooks') files.add(realRoot(entry));
     }
@@ -331,7 +339,8 @@ export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): Wor
     entriesLeft -= list.length;
     for (const entry of list.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
       const path = join(dir, entry.name);
-      if (fold(entry.name) === '.git' || bareRepository(path)) recordMetadata(path, bareRepository(path) ? path : dirname(path));
+      if (fold(entry.name) === '.git') recordMetadata(path, dir);
+      else if (bareRepository(path)) recordMetadata(path, path);
       else if (secretFileName(entry.name) && !entry.isDirectory()) {
         // Follow valid directory links, but keep unresolved secret names masked.
         let directory = false;

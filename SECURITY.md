@@ -75,7 +75,7 @@ Repositories created during a command are **not protected** on Linux. The scan
 visits workspace and output roots breadth-first, including read-only workspaces
 in Manual, through three nested folders. It resolves `.env` symlinks and Git
 pointers, and skips dependency/runtime folders listed in `credential-policy.json`
-(such as `node_modules`, `target` and `.venv`) plus shared temporary roots. Repositories and secrets beyond these limits are
+plus shared temporary roots. Repositories and secrets beyond these limits are
 not covered by the Linux scan. If more than 1,000 directories need scanning,
 or the folders it reads hold more than 50,000 entries, only Linux bubblewrap
 commands refuse to run and require an approved `full_access` retry. For
@@ -115,16 +115,18 @@ locked through its nearest existing parent inside a repository, such as
 `.husky` for a missing `.husky/_`. When that parent would be a repository's own
 folder, the workspace or an output folder, and is not already protected as Git
 metadata, the command asks for approval instead of making all of it
-read-only. A dangling link names the folder or file it points to. The reason names every missing target
-and one command that creates them (`mkdir -p` for folders, `touch` for
-included files); after that, commands run in the sandbox again. Bubblewrap
-also cannot protect a symbolic link inside the workspace, so on Linux a `.git`
-entry, hooks folder or included file reached through such a link asks for
-approval the same way, until the link is replaced by what it points to. Paths
-are followed as Git follows them, so `hooks-link/../hooks` counts as reaching
-through `hooks-link`. A link inside the Git metadata is protected with it and
-does not ask. macOS locks the link itself. Python code and scheduled scripts cannot ask: they stop
-with the same explanation.
+read-only. A dangling link names the folder or file it points to. The reason
+names every missing target and one command that creates them (`mkdir -p` for
+folders, `touch` for included files); after that, commands run in the sandbox
+again. Bubblewrap also cannot protect a symbolic link inside the workspace, so
+on Linux a `.git` entry, hooks folder or included file reached through such a
+link asks for approval the same way, until the link is replaced by what it
+points to. Paths are followed as Git follows them, so `hooks-link/../hooks`
+counts as reaching through `hooks-link`. A link inside the Git metadata is
+protected with it and does not ask; a link in the workspace that it passes
+through, such as `.githooks` for `.git/hooks -> ../.githooks -> store/hooks`,
+asks. macOS locks the link itself. Python code and scheduled scripts cannot
+ask: they stop with the same explanation.
 
 macOS fails closed when its sandbox cannot start. On Linux, if bubblewrap is
 missing or unusable, Hexbot reports the missing isolation and Auto and Manual

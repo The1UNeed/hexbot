@@ -5,12 +5,20 @@ import {createServer} from 'node:net';
 import {once} from 'node:events';
 import {tmpdir, homedir} from 'node:os';
 import {join} from 'node:path';
+import {execFileSync} from 'node:child_process';
 import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, sanitizeSearchResult, hostWriteTier, escapeMcpValues} from './extension.ts';
 
 // Scans read the user's own Git configuration. These tests use none, so the
 // developer's ~/.gitconfig and system config cannot change their results.
 process.env.GIT_CONFIG_GLOBAL = '/dev/null';
 process.env.GIT_CONFIG_NOSYSTEM = '1';
+// A repository as `git init` makes it (HEAD, objects, refs, config), with
+// settings added to its config.
+const gitInit = (dir, settings = []) => {
+  execFileSync('/usr/bin/git', ['init', '-q', dir]);
+  for (const [key, value] of settings) execFileSync('/usr/bin/git', ['-C', dir, 'config', '--add', key, value]);
+};
+const gitConfig = (dir, key, value) => execFileSync('/usr/bin/git', ['-C', dir, 'config', key, value]);
 
 // These gates assume the OS sandbox is in place, as it always is on macOS. On
 // Linux the probe looks for bwrap on PATH, so a stand-in that passes the probe
@@ -870,8 +878,7 @@ test('on Linux a command asks when a missing Git target would pin a repository o
   const work = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-pin-')));
   t.after(() => rmSync(work, {recursive:true, force:true}));
   const f = fixture(t, 'smart', ['terminal'], {cwd:work});
-  mkdirSync(join(work, 'app/.git'), {recursive:true});
-  writeFileSync(join(work, 'app/.git/config'), '[core]\n\thooksPath = .githooks\n');
+  gitInit(join(work, 'app'), [['core.hooksPath', '.githooks']]);
   const missing = await f.gate('bash', {command:'echo harmless'});
   if (process.platform === 'linux') assert.match(missing.reason, /does not exist yet.*retry with full_access.*mkdir -p/);
   else assert.equal(missing, undefined);
@@ -879,7 +886,7 @@ test('on Linux a command asks when a missing Git target would pin a repository o
   assert.equal(await f.gate('bash', {command:'echo harmless'}), undefined);
   mkdirSync(join(work, 'store'));
   symlinkSync('../store', join(work, 'app/.githooks-link'));
-  writeFileSync(join(work, 'app/.git/config'), '[core]\n\thooksPath = .githooks-link\n');
+  gitConfig(join(work, 'app'), 'core.hooksPath', '.githooks-link');
   const linked = await f.gate('bash', {command:'echo harmless'});
   if (process.platform === 'linux') assert.match(linked.reason, /symbolic link.*githooks-link/);
   else assert.equal(linked, undefined);

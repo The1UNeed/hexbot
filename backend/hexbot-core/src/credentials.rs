@@ -772,12 +772,18 @@ fn pointer_target(
     value: &str,
 ) -> Result<PathBuf> {
     let path = base.join(value);
-    linked(protected, configs, &path);
+    linked(protected, configs, &path, &[]);
     Ok(real_root(&path)?)
 }
 /// The path is walked as the kernel walks it, so a `..` after a link leaves the
-/// link's target, not the link's folder.
-fn linked(protected: &mut WorkspaceProtected, configs: &GitConfigs, path: &Path) {
+/// link's target, not the link's folder. Links inside locked Git metadata
+/// (`exempt`) are locked with it.
+fn linked(
+    protected: &mut WorkspaceProtected,
+    configs: &GitConfigs,
+    path: &Path,
+    exempt: &[PathBuf],
+) {
     use std::path::Component;
     let parts = |path: &Path| -> Vec<PathBuf> {
         path.components()
@@ -804,6 +810,7 @@ fn linked(protected: &mut WorkspaceProtected, configs: &GitConfigs, path: &Path)
                                 .roots
                                 .iter()
                                 .any(|root| folded(root) == folded(&next))
+                            && !within(&next, exempt)
                         {
                             protected.links.insert(next);
                         }
@@ -908,7 +915,7 @@ fn git_metadata(
 ) -> Result<()> {
     add_path(&mut protected.git, path)?;
     protected.worktrees.insert(real_root(worktree)?);
-    linked(protected, configs, path);
+    linked(protected, configs, path, &[]);
     let mut dir = path.to_owned();
     if !path.is_dir() {
         let text = regular_file(path)?.unwrap_or_default();
@@ -931,10 +938,17 @@ fn git_metadata(
     }
     dirs.push(dir);
     // The metadata folder itself is locked, but a hooks folder or config in it
-    // can be a link to a folder or file in the workspace, which is locked too.
+    // can be a link to a folder or file in the workspace, which is locked too,
+    // as is every link in the workspace on the way there.
+    let mut exempt = vec![];
+    for git_dir in &dirs {
+        exempt.push(git_dir.clone());
+        exempt.push(real_root(git_dir)?);
+    }
     for git_dir in &dirs {
         for name in ["hooks", "config", "config.worktree", "commondir"] {
             let entry = git_dir.join(name);
+            linked(protected, configs, &entry, &exempt);
             add_path(&mut protected.git, &entry)?;
             if name != "hooks" {
                 protected.files.insert(real_root(&entry)?);
@@ -943,11 +957,19 @@ fn git_metadata(
     }
     git_hooks(protected, configs, &dirs, worktree)
 }
-fn bare_repository(path: &Path) -> bool {
+/// A folder with HEAD and objects whose name ends in .git is Git metadata. A
+/// literal .git belongs to the worktree around it; any other one is a bare
+/// repository, its own worktree.
+fn git_directory(path: &Path) -> bool {
     path.file_name()
         .is_some_and(|name| folded(Path::new(name)).to_string_lossy().ends_with(".git"))
         && path.join("HEAD").exists()
         && path.join("objects").exists()
+}
+fn bare_repository(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| folded(Path::new(name)) != Path::new(".git"))
+        && git_directory(path)
 }
 fn record_metadata(
     protected: &mut WorkspaceProtected,
@@ -1032,9 +1054,10 @@ fn workspace_protected(roots: &[PathBuf], limit: usize) -> Result<WorkspaceProte
             let name = entry.file_name();
             let name = name.to_string_lossy();
             let git_name = folded(Path::new(name.as_ref()));
-            if git_name == Path::new(".git") || bare_repository(&path) {
-                let worktree = if bare_repository(&path) { &path } else { &dir };
-                record_metadata(&mut protected, &mut configs, &path, worktree);
+            if git_name == Path::new(".git") {
+                record_metadata(&mut protected, &mut configs, &path, &dir);
+            } else if bare_repository(&path) {
+                record_metadata(&mut protected, &mut configs, &path, &path);
             } else if secret_file_name(&name) && !path.is_dir() {
                 // A link that cannot be resolved (a loop) is masked by name alone.
                 if !protected.secrets.contains(&path) {
@@ -1065,7 +1088,7 @@ fn because(scan: &WorkspaceProtected) -> String {
         .unwrap_or_default()
 }
 pub(crate) fn git_write_protected(path: &Path, roots: &[PathBuf]) -> Result<bool> {
-    if path.ancestors().any(bare_repository) {
+    if path.ancestors().any(git_directory) {
         return Ok(true);
     }
     let scan = workspace_protected(roots, WORKSPACE_DIRS)?;
@@ -1111,13 +1134,13 @@ pub(crate) fn git_write_protected(path: &Path, roots: &[PathBuf]) -> Result<bool
 /// locking it could cover a mask (hooksPath = ~/.config/google-chrome) or the
 /// whole file system (hooksPath = /). On Linux a missing target is pinned at its
 /// nearest existing parent inside the writable root. A folder inside a
-/// repository is fine (.husky for a missing .husky/_), but pinning a
-/// repository's own folder, a writable root or a folder holding one would make
-/// all of it read-only, so the program cannot run in the sandbox, and creating
-/// the targets restores it. A folder already locked can hold one. A symbolic link on the way to Git metadata inside a
-/// writable root could be replaced, which bubblewrap cannot prevent, so that
-/// stops it too; Seatbelt locks the link itself. Matches isolation.ts, which
-/// asks for an approved full_access retry instead.
+/// repository is fine (.husky for a missing .husky/_), and so is one already
+/// locked, but pinning a repository's own folder, a writable root or a folder
+/// holding one would make all of it read-only, so the program cannot run in the
+/// sandbox, and creating the targets restores it. A symbolic link on the way to
+/// Git metadata inside a writable root could be replaced, which bubblewrap
+/// cannot prevent, so that stops it too; Seatbelt locks the link itself.
+/// Matches isolation.ts, which asks for an approved full_access retry instead.
 fn missing_git_reason(missing: &[(PathBuf, bool)]) -> String {
     let quote = |path: &PathBuf| crate::install_ownership::shell_quote(&path.to_string_lossy());
     let one = missing.len() == 1;
@@ -1765,6 +1788,23 @@ pub fn check_code(code: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A repository as `git init` makes it (HEAD, objects, refs, config), with
+    /// settings added to its config.
+    fn git_init(dir: &Path, settings: &[(&str, &str)]) {
+        git(&["init", "-q", &dir.to_string_lossy()]);
+        for (key, value) in settings {
+            git(&["-C", &dir.to_string_lossy(), "config", "--add", key, value]);
+        }
+    }
+    fn git(args: &[&str]) {
+        let status = std::process::Command::new("/usr/bin/git")
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap();
+        assert!(status.success(), "{args:?}");
+    }
     #[test]
     fn user_auth_paths_and_child_environment_are_explicit() {
         let user = tempfile::tempdir().unwrap();
@@ -2464,11 +2504,11 @@ mod tests {
         let base = tempfile::tempdir().unwrap();
         let base = base.path().canonicalize().unwrap();
         let (home, work, xdg) = (base.join("home"), base.join("work"), base.join("xdg"));
+        git_init(&work.join("app"), &[]);
+        git_init(&work.join("lib"), &[("core.hooksPath", "tools/hooks")]);
         for path in [
             home.clone(),
-            work.join("app/.git"),
             work.join("app/.githooks"),
-            work.join("lib/.git"),
             work.join("lib/tools"),
             xdg.join("git"),
         ] {
@@ -2485,11 +2525,6 @@ mod tests {
                 "[core]\n\thooksPath = {}\n",
                 base.join("outside-hooks").display()
             ),
-        )
-        .unwrap();
-        std::fs::write(
-            work.join("lib/.git/config"),
-            "[core]\n\thooksPath = tools/hooks\n",
         )
         .unwrap();
         TEST_GIT_CONFIGS.with(|files| *files.borrow_mut() = vec![xdg.join("git/config")]);
@@ -2603,34 +2638,15 @@ mod tests {
         let base = tempfile::tempdir().unwrap();
         let base = base.path().canonicalize().unwrap();
         let (home, work) = (base.join("home"), base.join("work"));
-        for path in [
-            home.clone(),
-            work.join(".git"),
-            work.join("app/.git"),
-            work.join("app/src"),
-            work.join("lib/.git"),
-            work.join("lib/.husky"),
-        ] {
-            std::fs::create_dir_all(path).unwrap();
-        }
         // The workspace's own repository includes a missing file, a nested
         // repository names a missing hooks folder, and husky's .husky/_ is
         // missing inside .husky.
-        std::fs::write(
-            work.join(".git/config"),
-            "[include]\n\tpath = ../.gitconfig.local\n",
-        )
-        .unwrap();
-        std::fs::write(
-            work.join("app/.git/config"),
-            "[core]\n\thooksPath = .githooks\n",
-        )
-        .unwrap();
-        std::fs::write(
-            work.join("lib/.git/config"),
-            "[core]\n\thooksPath = .husky/_\n",
-        )
-        .unwrap();
+        git_init(&work, &[("include.path", "../.gitconfig.local")]);
+        git_init(&work.join("app"), &[("core.hooksPath", ".githooks")]);
+        git_init(&work.join("lib"), &[("core.hooksPath", ".husky/_")]);
+        for path in [home.clone(), work.join("app/src"), work.join("lib/.husky")] {
+            std::fs::create_dir_all(path).unwrap();
+        }
         let args =
             |root: &Path| bwrap_arguments(&layout(&home, &[], Some(&[root.to_owned()])).unwrap());
         let binds = |args: &[OsString]| -> Vec<PathBuf> {
@@ -2687,11 +2703,13 @@ mod tests {
         std::fs::create_dir(work.join("linked")).unwrap();
         std::os::unix::fs::symlink("../store/linked-git", work.join("linked/.git")).unwrap();
         std::os::unix::fs::symlink("../store/hooks", work.join("app/hooks-link")).unwrap();
-        std::fs::write(
-            work.join("app/.git/config"),
-            "[core]\n\thooksPath = hooks-link\n",
-        )
-        .unwrap();
+        git(&[
+            "-C",
+            &work.join("app").to_string_lossy(),
+            "config",
+            "core.hooksPath",
+            "hooks-link",
+        ]);
         let scan = workspace_protected(std::slice::from_ref(&work), WORKSPACE_DIRS).unwrap();
         let mut links = scan.links.to_vec();
         links.sort();
@@ -2757,15 +2775,13 @@ mod tests {
         let base = tempfile::tempdir().unwrap();
         let base = base.path().canonicalize().unwrap();
         let (home, work) = (base.join("home"), base.join("work"));
-        for path in [
-            home.clone(),
-            work.join(".git"),
-            work.join(".githooks"),
-            work.join("src"),
-        ] {
+        git_init(&work, &[]);
+        for path in [home.clone(), work.join(".githooks"), work.join("src")] {
             std::fs::create_dir_all(path).unwrap();
         }
         // .git/hooks and .git/config are links to tracked files the program can write.
+        std::fs::remove_file(work.join(".git/config")).unwrap();
+        std::fs::remove_dir_all(work.join(".git/hooks")).unwrap();
         std::fs::write(work.join("repo.gitconfig"), "[core]\n\tbare = false\n").unwrap();
         std::os::unix::fs::symlink("../repo.gitconfig", work.join(".git/config")).unwrap();
         std::os::unix::fs::symlink("../.githooks", work.join(".git/hooks")).unwrap();
@@ -2829,8 +2845,8 @@ mod tests {
         // hooks-link/../hooks goes through the link's target, store/nested, to
         // store/hooks: the link is found although the path names app/hooks.
         let app = work.join("app");
+        git_init(&app, &[("core.hooksPath", "hooks-link/../hooks")]);
         for path in [
-            app.join(".git"),
             app.join("hooks"),
             work.join("store/nested"),
             work.join("store/hooks"),
@@ -2838,11 +2854,6 @@ mod tests {
             std::fs::create_dir_all(path).unwrap();
         }
         std::os::unix::fs::symlink("../store/nested", app.join("hooks-link")).unwrap();
-        std::fs::write(
-            app.join(".git/config"),
-            "[core]\n\thooksPath = hooks-link/../hooks\n",
-        )
-        .unwrap();
         let scan = workspace_protected(std::slice::from_ref(&work), WORKSPACE_DIRS).unwrap();
         assert_eq!(scan.links.to_vec(), vec![app.join("hooks-link")]);
         assert!(scan.git.contains(&work.join("store/hooks")));
@@ -2861,12 +2872,10 @@ mod tests {
         // that a later setting chooses: the program stops instead of making the
         // repository read-only.
         let plain = base.join("plain");
-        std::fs::create_dir_all(plain.join(".git")).unwrap();
-        std::fs::write(
-            plain.join(".git/config"),
-            "[core]\n\thooksPath = /\n[core]\n\thooksPath = .githooks\n",
-        )
-        .unwrap();
+        git_init(
+            &plain,
+            &[("core.hooksPath", "/"), ("core.hooksPath", ".githooks")],
+        );
         let error = args(&plain).unwrap_err().to_string();
         assert!(error.contains("does not exist yet"), "{error}");
         assert!(
@@ -2875,6 +2884,142 @@ mod tests {
         );
         std::fs::create_dir(plain.join(".githooks")).unwrap();
         assert!(!binds(&args(&plain).unwrap()).contains(&plain));
+    }
+
+    #[tokio::test]
+    async fn a_nested_repository_made_by_git_init_keeps_its_relative_hooks_path_in_its_own_folder()
+    {
+        let base = tempfile::tempdir().unwrap();
+        let base = base.path().canonicalize().unwrap();
+        let (home, work) = (base.join("home"), base.join("work"));
+        let (web, api) = (work.join("web"), work.join("api"));
+        std::fs::create_dir(&home).unwrap();
+        // husky sets core.hooksPath = .husky/_; another project uses .githooks.
+        git_init(&web, &[("core.hooksPath", ".husky/_")]);
+        git_init(&api, &[("core.hooksPath", ".githooks")]);
+        std::fs::create_dir_all(web.join(".husky/_")).unwrap();
+        let scan = workspace_protected(std::slice::from_ref(&work), WORKSPACE_DIRS).unwrap();
+        let mut worktrees: Vec<PathBuf> = scan.worktrees.iter().cloned().collect();
+        worktrees.sort();
+        assert_eq!(worktrees, vec![api.clone(), web.clone()]);
+        for path in [web.join(".husky/_"), api.join(".githooks")] {
+            assert!(scan.git.contains(&path), "{}", path.display());
+        }
+        // The missing .githooks would pin the api repository, so the program
+        // cannot run in the sandbox.
+        let args =
+            || bwrap_arguments(&layout(&home, &[], Some(std::slice::from_ref(&work))).unwrap());
+        let error = args().unwrap_err().to_string();
+        assert!(error.contains("does not exist yet"), "{error}");
+        assert!(
+            error.contains(&format!("mkdir -p '{}'", api.join(".githooks").display())),
+            "{error}"
+        );
+        if cfg!(target_os = "macos") {
+            let confined = layout(&home, &[], Some(std::slice::from_ref(&work))).unwrap();
+            let sandboxed = async |cwd: &Path, command: &str| {
+                tokio::process::Command::new("/usr/bin/sandbox-exec")
+                    .args([
+                        "-p",
+                        &sandbox_profile(&confined),
+                        "/bin/bash",
+                        "-c",
+                        command,
+                    ])
+                    .current_dir(cwd)
+                    .output()
+                    .await
+                    .unwrap()
+            };
+            for (cwd, command) in [
+                (&web, "echo x > .husky/_/pre-commit"),
+                (&web, "rm -r .husky/_"),
+                (&api, "mkdir -p .githooks"),
+            ] {
+                assert!(!sandboxed(cwd, command).await.status.success(), "{command}");
+            }
+            let output = sandboxed(&api, "echo ok > notes; cat notes").await;
+            assert_eq!(output.stdout, b"ok\n");
+        }
+        std::fs::create_dir(api.join(".githooks")).unwrap();
+        let args = args().unwrap();
+        let bound = |path: &Path| {
+            args.windows(2)
+                .any(|w| w[0] == "--ro-bind" && w[1] == path.as_os_str())
+        };
+        for path in [
+            web.join(".husky/_"),
+            api.join(".githooks"),
+            web.join(".git"),
+            api.join(".git"),
+        ] {
+            assert!(bound(&path), "{}", path.display());
+        }
+        for path in [
+            web.clone(),
+            api.clone(),
+            web.join(".git/.husky"),
+            api.join(".git/.githooks"),
+        ] {
+            assert!(!bound(&path), "{}", path.display());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_link_between_git_metadata_and_its_target_in_the_workspace_is_locked_or_refused() {
+        let base = tempfile::tempdir().unwrap();
+        let base = base.path().canonicalize().unwrap();
+        let (home, work) = (base.join("home"), base.join("work"));
+        let app = work.join("app");
+        std::fs::create_dir(&home).unwrap();
+        // app/.git/hooks -> ../.githooks -> store/hooks: .githooks could be
+        // pointed somewhere writable, so it is part of the protected path.
+        git_init(&app, &[]);
+        std::fs::remove_dir_all(app.join(".git/hooks")).unwrap();
+        std::fs::create_dir_all(app.join("store/hooks")).unwrap();
+        std::os::unix::fs::symlink("../.githooks", app.join(".git/hooks")).unwrap();
+        std::os::unix::fs::symlink("store/hooks", app.join(".githooks")).unwrap();
+        let scan = workspace_protected(std::slice::from_ref(&work), WORKSPACE_DIRS).unwrap();
+        assert_eq!(scan.links.to_vec(), vec![app.join(".githooks")]);
+        let error =
+            bwrap_arguments(&layout(&home, &[], Some(std::slice::from_ref(&work))).unwrap())
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("a symbolic link"), "{error}");
+        assert!(error.contains("app/.githooks"), "{error}");
+        let locked = locked_git(&scan, std::slice::from_ref(&work), false).unwrap();
+        for path in [".git", ".githooks", "store/hooks"] {
+            assert!(locked.contains(&app.join(path)), "{path}");
+        }
+        if cfg!(target_os = "macos") {
+            let confined = layout(&home, &[], Some(std::slice::from_ref(&work))).unwrap();
+            let sandboxed = async |command: &str| {
+                tokio::process::Command::new("/usr/bin/sandbox-exec")
+                    .args([
+                        "-p",
+                        &sandbox_profile(&confined),
+                        "/bin/bash",
+                        "-c",
+                        command,
+                    ])
+                    .current_dir(&app)
+                    .output()
+                    .await
+                    .unwrap()
+            };
+            for command in [
+                "rm .githooks",
+                "ln -sfn src .githooks",
+                "mv .githooks moved",
+                "echo x > store/hooks/pre-commit",
+            ] {
+                assert!(!sandboxed(command).await.status.success(), "{command}");
+            }
+            assert_eq!(
+                sandboxed("echo ok > notes; cat notes").await.stdout,
+                b"ok\n"
+            );
+        }
     }
 
     #[test]
@@ -3026,9 +3171,14 @@ mod tests {
         let xdg = base.path().join("xdg");
         std::fs::create_dir_all(xdg.join("git")).unwrap();
         std::fs::write(xdg.join("git/config"), "[core]\n hooksPath = .githooks\n").unwrap();
+        // A nested repository made by git init keeps husky's relative hooks
+        // path in its own folder.
+        git_init(&workspace[0].join("web"), &[("core.hooksPath", ".husky/_")]);
         for dir in [
             workspace[0].join(".githooks"),
             workspace[0].join("linked/.githooks"),
+            workspace[0].join("web/.githooks"),
+            workspace[0].join("web/.husky/_"),
         ] {
             std::fs::create_dir_all(dir).unwrap();
         }
@@ -3110,6 +3260,8 @@ mod tests {
             work.join(".githooks"),
             work.join("linked/.githooks"),
             work.join("repo.gitconfig"),
+            work.join("web/.husky/_"),
+            work.join("web/.githooks"),
         ] {
             assert!(
                 confined_bwrap
