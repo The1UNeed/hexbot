@@ -160,7 +160,7 @@ function MobileApp() {
   const [tool, setTool] = useState<ToolActivity | null>(null)
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<AttachmentView[]>([])
-  const [question, setQuestion] = useState<{
+  const [question, setQuestionState] = useState<{
     requestId: string
     sessionId: string
     questionId: string
@@ -168,6 +168,11 @@ function MobileApp() {
     choices: string[]
     multiSelect: boolean
   } | null>(null)
+  const questionRef = useRef(question)
+  const setQuestion = useCallback((next: typeof question) => {
+    questionRef.current = next
+    setQuestionState(next)
+  }, [])
   const attachmentData = useRef(
     new Map<
       string,
@@ -710,6 +715,7 @@ function MobileApp() {
         return
       }
       const q = pending.questions[0]
+      const selectedQuestion = questionRef.current
       act(async () => {
         await mobile.answer(
           pending.requestId,
@@ -717,7 +723,13 @@ function MobileApp() {
           encodeAnswer(q.multiSelect, [], text),
           pending.sessionId
         )
-        setDraft('')
+        if (
+          questionRef.current !== selectedQuestion ||
+          mobileRef.current.active?.id !== mobile.active?.id ||
+          mobileRef.current.route !== mobile.route
+        )
+          return
+        setDraft(current => current.trim() === text.trim() ? '' : current)
       })
       return
     }
@@ -1305,7 +1317,9 @@ function MobileApp() {
                   encodeAnswer(question.multiSelect, questionChoices, questionAnswer),
                   question.sessionId
                 )
-                if (draft.trim() === questionAnswer.trim()) setDraft('')
+                if (questionRef.current !== question) return
+                if (draft.trim() === questionAnswer.trim())
+                  setDraft(current => current.trim() === questionAnswer.trim() ? '' : current)
                 setQuestion(null)
                 setQuestionAnswer('')
                 setQuestionChoices([])
