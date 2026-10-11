@@ -17,7 +17,6 @@ import { HIT, SearchField, Text, useTheme } from '../ui'
 
 type Group = { id: string; label: string; configured: boolean; models: ModelOption[] }
 
-
 export interface ModelValue {
   provider: string
   model: string
@@ -62,7 +61,15 @@ function useCurrentModel(rpc: Rpc, value: ModelValue) {
 }
 
 /** The bot's model and the level it runs at, as one line under a new conversation. */
-export function ModelSummary({ rpc, testID, value }: { rpc: Rpc; testID: string; value: ModelValue }) {
+export function ModelSummary({
+  rpc,
+  testID,
+  value
+}: {
+  rpc: Rpc
+  testID: string
+  value: ModelValue
+}) {
   const level = shownLevel(value.reasoning, useCurrentModel(rpc, value))
   return (
     <Text align="center" tone="faint" variant="footnote" testID={testID}>
