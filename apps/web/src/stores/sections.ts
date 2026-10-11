@@ -203,15 +203,79 @@ function mergeSection(state: SectionsState, section: Section): Partial<SectionsS
   }
 }
 
+function sectionMetadata(section: Section) {
+  return {
+    archived_at: section.archived_at,
+    title: section.title,
+    title_by: section.title_by,
+    updated_at: section.updated_at
+  }
+}
+
+function mergeEditedSection(state: SectionsState, section: Section, rename = false) {
+  const current = state.byId[section.id]
+
+  return mergeSection(
+    state,
+    current
+      ? {
+          ...current,
+          updated_at: section.updated_at,
+          ...(rename
+            ? { title: section.title, title_by: section.title_by }
+            : { archived_at: section.archived_at })
+        }
+      : section
+  )
+}
+
 let sectionsRequest = 0
 let latestSectionsRefresh = 0
 let fullSectionsRequest = 0
 const botSectionsRequests = new Map<string, number>()
-const openedSectionRequests = new Map<string, number>()
+const sectionRequests = new Map<string, number>()
+const boundSectionRequests = new Map<string, number>()
+const removedSectionRequests = new Map<string, { active: boolean; bot?: string; request: number }>()
+
+export function clearDeletedSections(): void {
+  // A new daemon must not inherit status proof, but old promises stay fenced.
+  for (const removed of removedSectionRequests.values()) {
+    removed.active = false
+  }
+}
+
+function removedAfter(id: string, request: number): boolean {
+  return (removedSectionRequests.get(id)?.request ?? 0) > request
+}
+
+function acceptSection(id: string, request: number): void {
+  sectionRequests.set(id, Math.max(sectionRequests.get(id) ?? 0, request))
+
+  const removed = removedSectionRequests.get(id)
+
+  if (removed && removed.request < request) {
+    // A newer row retires status proof, while pre-delete requests stay fenced.
+    removed.active = false
+  }
+}
+
+function openedSection(section: Section, request: number): Section {
+  if (removedAfter(section.id, request)) {
+    throw new Error('This section was deleted.')
+  }
+
+  const current = useSections.getState().byId[section.id]
+
+  return current && (sectionRequests.get(section.id) ?? 0) > request
+    ? { ...section, ...sectionMetadata(current) }
+    : section
+}
 
 /** A successful edit is newer than any list already in flight for that bot. */
-function sectionChanged(bot: string): void {
-  botSectionsRequests.set(bot, ++sectionsRequest)
+function sectionChanged(bot: string, id: string): void {
+  const request = ++sectionsRequest
+  botSectionsRequests.set(bot, request)
+  acceptSection(id, request)
 }
 
 export const useSections = create<SectionsState>((set, get) => ({
@@ -251,16 +315,27 @@ export const useSections = create<SectionsState>((set, get) => ({
         const preserve = (name: string) =>
           bot ? name !== bot : (botSectionsRequests.get(name) ?? 0) > request
 
-        const openedAfter = (id: string) => (openedSectionRequests.get(id) ?? 0) > request
+        const openedAfter = (id: string) => (sectionRequests.get(id) ?? 0) > request
 
         const incoming = (result.sections ?? [])
-          .filter(section => !preserve(section.bot))
+          .filter(section => !preserve(section.bot) && !removedAfter(section.id, request))
           .map(section => {
             const opened = state.byId[section.id]
+            const boundLive = state.liveSessionId[section.id]
 
-            return openedAfter(section.id) && opened
-              ? { ...opened, preview: section.preview || opened.preview }
-              : section
+            const current =
+              openedAfter(section.id) && opened
+                ? { ...opened, preview: section.preview || opened.preview }
+                : section
+
+            // A list already in flight can carry the live id from before this open completed.
+            return (boundSectionRequests.get(section.id) ?? 0) > request && boundLive
+              ? {
+                  ...current,
+                  live_session_id: boundLive,
+                  message_count: opened?.message_count ?? current.message_count
+                }
+              : current
           })
 
         const newlyOpened = Object.values(state.byId).filter(
@@ -271,6 +346,10 @@ export const useSections = create<SectionsState>((set, get) => ({
         )
 
         const indexed = indexSections([...newlyOpened, ...incoming], state.sendingTitles)
+
+        for (const section of incoming) {
+          acceptSection(section.id, request)
+        }
 
         return {
           byId: {
@@ -307,11 +386,18 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   async open(id) {
+    const request = ++sectionsRequest
     const { pendingClarifies, revision, snapshot } = await openSnapshot(id)
-    const { context, messages, section } = snapshot
+    const { context, messages } = snapshot
+    const section = openedSection(snapshot.section, request)
     const live = section.live_session_id
 
-    openedSectionRequests.set(section.id, ++sectionsRequest)
+    acceptSection(section.id, request)
+
+    if (live) {
+      boundSectionRequests.set(section.id, ++sectionsRequest)
+    }
+
     set(state => ({
       ...mergeSection(state, section),
       liveSessionId: live ? { ...state.liveSessionId, [id]: live } : state.liveSessionId
@@ -346,9 +432,17 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   async openThread(id, peer) {
+    const request = ++sectionsRequest
     const { pendingClarifies, revision, snapshot } = await openSnapshot(id)
-    const { messages, section } = snapshot
+    const { messages } = snapshot
+    const section = openedSection(snapshot.section, request)
     const live = section.live_session_id
+
+    acceptSection(section.id, request)
+
+    if (live) {
+      boundSectionRequests.set(section.id, ++sectionsRequest)
+    }
 
     if (live) {
       set(state => ({ liveSessionId: { ...state.liveSessionId, [id]: live } }))
@@ -417,7 +511,7 @@ export const useSections = create<SectionsState>((set, get) => ({
   async create(bot, title) {
     const { section } = await sectionsCreate(bot, title)
 
-    sectionChanged(section.bot)
+    sectionChanged(section.bot, section.id)
     set(state => ({
       ...mergeSection(state, section),
       liveSessionId: section.live_session_id
@@ -429,41 +523,66 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   async rename(id, title) {
+    const request = ++sectionsRequest
     const { section } = await sectionsRename(id, title)
 
-    sectionChanged(section.bot)
-    set(state => mergeSection(state, section))
+    if (removedAfter(id, request)) {
+      return
+    }
+
+    sectionChanged(section.bot, section.id)
+    set(state => mergeEditedSection(state, section, true))
   },
 
   async archive(id) {
+    const request = ++sectionsRequest
     const { section } = await sectionsArchive(id)
 
-    sectionChanged(section.bot)
-    set(state => mergeSection(state, section))
+    if (removedAfter(id, request)) {
+      return
+    }
+
+    sectionChanged(section.bot, section.id)
+    set(state => mergeEditedSection(state, section))
   },
 
   async unarchive(id) {
+    const request = ++sectionsRequest
     const { section } = await sectionsUnarchive(id)
 
-    sectionChanged(section.bot)
-    set(state => mergeSection(state, section))
+    if (removedAfter(id, request)) {
+      return
+    }
+
+    sectionChanged(section.bot, section.id)
+    set(state => mergeEditedSection(state, section))
   },
 
   async remove(id, purgeMemory = true) {
-    const bot = get().byId[id]?.bot
+    const bot =
+      get().byId[id]?.bot ??
+      Object.values(useTranscripts.getState().bySession).find(
+        transcript => transcript.sectionId === id
+      )?.bot
+
     await sectionsDelete(id, purgeMemory)
-    openedSectionRequests.delete(id)
+    const request = ++sectionsRequest
+    removedSectionRequests.set(id, { active: true, bot, request })
+    sectionRequests.set(id, request)
 
     if (bot) {
-      sectionChanged(bot)
+      botSectionsRequests.set(bot, request)
     }
 
     draftsActions().clear(id)
 
     const live = get().liveSessionId[id]
+    const transcripts = useTranscripts.getState()
 
-    if (live) {
-      useTranscripts.getState().drop(live)
+    for (const transcript of Object.values(transcripts.bySession)) {
+      if (transcript.sectionId === id || transcript.sessionId === live) {
+        transcripts.drop(transcript.sessionId)
+      }
     }
 
     set(state => {
@@ -488,6 +607,7 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   clearLive() {
+    clearDeletedSections()
     set({ liveSessionId: {} })
     useTranscripts.getState().dropAll()
   }
@@ -598,9 +718,22 @@ export function liveSectionsOf(
   return live
 }
 
+function deletedRetry(bot: Bot | undefined): boolean {
+  const detail = bot?.status_detail
+  const removed = detail?.section_id ? removedSectionRequests.get(detail.section_id) : undefined
+
+  return Boolean(
+    bot?.status === 'stopped' &&
+    detail?.action?.kind === 'retry' &&
+    !detail.room_id &&
+    removed?.active &&
+    (!removed.bot || removed.bot === bot.name)
+  )
+}
+
 /** The daemon's word on a bot; a record without the field is idle. */
 export function botStatus(bot: Bot | undefined): BotStatus {
-  return bot?.status ?? 'idle'
+  return deletedRetry(bot) ? 'idle' : (bot?.status ?? 'idle')
 }
 
 function resolvedRetry(
@@ -632,6 +765,10 @@ export function sectionStatusOf(
   sectionId: null | string,
   live: LiveSections = {}
 ): BotStatus {
+  if (deletedRetry(bot) && sectionId === bot?.status_detail?.section_id) {
+    return 'idle'
+  }
+
   const status = botStatus(bot)
   const own = sectionId ? live[sectionId] : undefined
   const fresh = typeof own === 'object' ? own.status : undefined
@@ -679,7 +816,7 @@ export function botStatusWithLive(
   const named = bot.status_detail?.section_id
 
   // Rooms and private threads are absent from the section index but still count.
-  if (!named || !sections.some(section => section.id === named)) {
+  if (!deletedRetry(bot) && (!named || !sections.some(section => section.id === named))) {
     const session = detail?.session_id ? sessions[detail.session_id] : undefined
 
     const ownsSession =

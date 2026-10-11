@@ -227,6 +227,9 @@ roster shows only the title.
   while the separate question still needs an answer. `pending_clarify`
   names one pending question; a different ID does not prove that an earlier
   question settled. Match answers and expiry to their own `request_id`.
+  Opening can overlap a rename, archive or restore. Clients keep completed
+  edits while accepting the live session and history; a successful delete
+  fences earlier opens and retires only that private section's Retry status.
 
 `Context = {tokens, window, compact_at, compacting, recounting, seq}` is how
 full the section's context is: Pi's own estimate of the tokens the next

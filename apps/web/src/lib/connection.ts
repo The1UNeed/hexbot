@@ -19,7 +19,7 @@ import { botsActions } from '../stores/bots'
 import { connectionActions } from '../stores/connection'
 import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
-import { sectionsActions } from '../stores/sections'
+import { clearDeletedSections, sectionsActions } from '../stores/sections'
 import { settingsActions } from '../stores/settings'
 import { useTranscripts } from '../stores/transcripts'
 import { uiActions } from '../stores/ui'
@@ -363,6 +363,7 @@ export class ConnectionSupervisor {
     }
 
     if (this.target && targetOrigin(this.target) !== targetOrigin(target)) {
+      clearDeletedSections()
       useTranscripts.getState().clearAnsweredWaiting()
     }
 

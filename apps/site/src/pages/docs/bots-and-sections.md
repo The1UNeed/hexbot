@@ -27,7 +27,7 @@ The teammate description tells other bots when to ask this one for help. For exa
 
 Reopen a section to continue the same task. Closing the app or restarting the daemon does not delete it. Each section keeps a persistent Pi conversation; a fresh section starts with a new context window and the bot's current settings.
 
-Waiting means a bot needs your answer. If another question or approval still needs an answer, the sidebar keeps Waiting. Once all answers let it resume, the sidebar shows Working even before text starts streaming. Each active section keeps its own status when the bot is also working in another section. Saving bot settings keeps that status. A brief disconnect does not hide unanswered cards when you reconnect.
+Waiting means a bot needs your answer. If another question or approval still needs an answer, the sidebar keeps Waiting. Once all answers let it resume, the sidebar shows Working even before text starts streaming. Each active section keeps its own status when the bot is also working in another section. Saving bot settings keeps that status. Reconnecting after a brief disconnect keeps Waiting for questions and approvals that still need an answer.
 
 Reopening restores pending approvals and questions. If more than one answer is needed, each card stays available until it is answered or expires.
 

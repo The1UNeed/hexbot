@@ -61,7 +61,9 @@ async function fixture(kind: 'approval' | 'clarify') {
                 ? { status: 'answered' }
                 : method === 'approval.respond'
                   ? { resolved: true }
-                  : {}
+                  : method === 'hexbot.sections.delete'
+                    ? { deleted: true }
+                    : {}
 
       queueMicrotask(() => this.frame({ jsonrpc: '2.0', id, result }))
     }
@@ -253,6 +255,36 @@ it('does not revive an expired clarification on same-daemon reconnect', async ()
     await f.supervisor.retryNow()
     expect(useTranscripts.getState().bySession['second-live']?.waitingRequests).toEqual([])
     expect(f.status().section).toBe('idle')
+  } finally {
+    f.supervisor.stop()
+  }
+})
+
+it('does not transfer private deletion status proof to another daemon origin', async () => {
+  const f = await fixture('clarify')
+
+  try {
+    const stopped = {
+      ...f.bot('stopped'),
+      status_detail: {
+        ...f.bot('stopped').status_detail,
+        action: { kind: 'retry' }
+      }
+    } as Bot
+
+    useBots.setState({ byName: { owl: stopped } })
+    await useSections.getState().remove('first')
+    expect(sectionStatusOf(stopped, 'first')).toBe('idle')
+    f.state.roster = stopped
+    await f.supervisor.start({
+      kind: 'remote',
+      host: 'other.test',
+      port: 80,
+      tls: false,
+      deviceToken: ''
+    })
+    expect(useConnection.getState().epoch).toBe('epoch-A')
+    expect(sectionStatusOf(useBots.getState().byName.owl, 'first')).toBe('stopped')
   } finally {
     f.supervisor.stop()
   }
