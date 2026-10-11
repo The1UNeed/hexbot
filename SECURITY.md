@@ -40,12 +40,93 @@ redaction, and pattern checks do not provide equivalent containment.
   with private network and process namespaces and masked credential paths.
   Writable roots include the working directory, daemon-selected artifact and
   attachment folders, and temporary folders. On macOS these include shared `/tmp`.
-  Ordinary files outside the workspace can still be read.
+  Existing Git metadata (`.git`, linked `gitdir`/`commondir` targets and bare
+  `*.git` repositories with `HEAD` and `objects`, plus `core.hooksPath`
+  directories set by the repository or your own Git config) stays read-only within the scan limits below. A bot
+  changes protected metadata with an approved `full_access` command. Project
+  secrets such as `.env` and `.envrc`, keychains, and browser profiles with
+  cookies and saved passwords are unreadable and unwritable. Apple Events are refused, so a command cannot
+  drive Finder or another app. Other files outside the workspace can still be
+  read.
 - Manual uses a read-only shell/code sandbox and asks before file changes.
+  Approved `execute_code` runs can write their own output folder in the Hexbot
+  home. Manual scheduled scripts cannot write artifacts or workspace files.
 - An approved `full_access` shell command leaves the workspace restrictions.
   The base credential-path and Hexbot-home protections still apply. Review both
   the command and its reason before granting more access.
 - Bypass removes prompts and sandboxing and is available only to the admin.
+
+macOS also matches `.git` paths and secret filenames created during a command. It
+blocks renaming protected files and browser stores, and pins the scanned
+ancestors of secrets and Git metadata and the ancestors of browser stores so
+renaming a folder cannot expose their contents. Browser rules include the
+Google parent folder, Chrome Beta/unstable, and Snap and Flatpak profiles.
+Denying `~/Library/Application Support/Google` also hides other Google data
+stored there, including Android Studio and Drive data.
+Tracked hook scripts remain writable unless selected by a configured
+`core.hooksPath` or by a `hooks` link in the Git metadata; their edits appear
+in `git status`. Review those changes before running them. When `hooks`,
+`config`, `config.worktree` or `commondir` inside the Git metadata is a
+symbolic link to a folder or file in the workspace, that target is protected
+like the metadata.
+
+Linux protects repositories and secret files that exist when a command starts.
+Repositories created during a command are **not protected** on Linux. The scan
+visits workspace and output roots breadth-first, including read-only workspaces
+in Manual, through three nested folders. It resolves `.env` symlinks and Git
+pointers, and skips dependency/runtime folders listed in `credential-policy.json`
+plus shared temporary roots. Repositories and secrets beyond these limits are
+not covered by the Linux scan. If more than 1,000 directories need scanning,
+or the folders it reads hold more than 50,000 entries, only Linux bubblewrap
+commands refuse to run and require an approved `full_access` retry. For
+`execute_code`, use a smaller workspace or run the Python code through the
+terminal tool with `full_access` and a reason; a scheduled script needs a
+smaller workspace. macOS
+and file tools use partial results when the budget is reached. File changes ask for approval
+in Auto mode when the scan is incomplete, every time: that approval covers one
+change, is never remembered for the section, and never stands in for the
+approval a shell profile or a file outside the workspace needs. The cwd-ancestor Git pointer
+walk is unbudgeted, and macOS `.git` and secret filename rules still apply.
+Bare `*.git` repositories must exist when the scan starts on either platform.
+File tools refuse protected Git writes; an unreadable Git configuration or
+scan failure asks for approval instead of blocking ordinary writes. Repository
+configs and their includes are parsed with the system Git at `/usr/bin/git`;
+without it, a repository with a config counts as unreadable. Your own Git
+config and its includes are read the same way, from the files Git reads:
+`$GIT_CONFIG_GLOBAL`, or `~/.gitconfig` and `$XDG_CONFIG_HOME/git/config`, and
+`$GIT_CONFIG_SYSTEM` or `/etc/gitconfig` and Homebrew's
+`/opt/homebrew/etc/gitconfig` and `/usr/local/etc/gitconfig` unless
+`GIT_CONFIG_NOSYSTEM` is set. A Git build that keeps its system config
+elsewhere (for example the one bundled with Xcode) is not read; set
+`core.hooksPath` in one of these files instead. A hooks path your config sets
+is resolved in each repository, so a global `core.hooksPath = .githooks`
+protects `.githooks` in every scanned repository. Each config file is read
+once per scan. A scan that meets more than 64 included files beyond the
+repository and user configs for one repository, more than 256 in all, or more
+than 10,000 settings, counts as unreadable and says which limit it reached, so
+include cycles and fan-out cannot stall it. Included files and
+configured hook paths inside the workspace or an output folder are protected,
+with their ancestors up to that folder. Ones outside are already read-only to
+sandboxed commands; a hook path that contains the workspace, such as `/` or the
+home folder, is ignored. FIFOs and other special files in Git metadata stay
+locked and are never read. Bubblewrap can only lock a folder that exists, so on
+Linux a configured hooks folder or included file that does not exist yet is
+locked through its nearest existing parent inside a repository, such as
+`.husky` for a missing `.husky/_`. When that parent would be a repository's own
+folder, the workspace or an output folder, and is not already protected as Git
+metadata, the command asks for approval instead of making all of it
+read-only. A dangling link names the folder or file it points to. The reason
+names every missing target and one command that creates them (`mkdir -p` for
+folders, `touch` for included files); after that, commands run in the sandbox
+again. Bubblewrap also cannot protect a symbolic link inside the workspace, so
+on Linux a `.git` entry, hooks folder or included file reached through such a
+link asks for approval the same way, until the link is replaced by what it
+points to. Paths are followed as Git follows them, so `hooks-link/../hooks`
+counts as reaching through `hooks-link`. A link inside the Git metadata is
+protected with it and does not ask; a link in the workspace that it passes
+through, such as `.githooks` for `.git/hooks -> ../.githooks -> store/hooks`,
+asks. macOS locks the link itself. Python code and scheduled scripts cannot
+ask: they stop with the same explanation.
 
 macOS fails closed when its sandbox cannot start. On Linux, if bubblewrap is
 missing or unusable, Hexbot reports the missing isolation and Auto and Manual

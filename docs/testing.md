@@ -14,7 +14,59 @@
   sandbox; isolation tests use `sandbox-exec` on macOS and working bubblewrap
   on Linux. CI installs bubblewrap with the AppArmor profile from the install docs.
   macOS tests check that Auto and Manual deny IPv4 and IPv6 TCP/UDP listeners,
-  while approved full-access commands can still listen.
+  while approved full-access commands can still listen. Dummy secret/browser
+  fixtures exercise rename, unlink and append denial, ancestor renames, linked
+  `gitdir`/`commondir` targets from both Git directory and file markers,
+  configured hooks in ignored directories and config includes, bare `*.git`
+  repositories, dangling `.env` links, and ordinary writes in `project.git`
+  workspaces. Hook-path tests set `core.hooksPath` to `/`, a browser store, the
+  home folder and a link to `/`, and check that nothing outside the workspace is
+  bound or locked, that no bind follows a mask, and that file tools still
+  write; the link inside the workspace refuses the Linux command and is locked
+  by name on macOS. Link tests make `.git` and a hooks folder symbolic links
+  inside the workspace and check the same, with `sandbox-exec` refusing to
+  remove or replace them. Metadata link tests make `.git/hooks` and
+  `.git/config` links to tracked files and check that their targets are bound
+  read-only and refuse writes under `sandbox-exec`, that a dangling hooks link
+  asks for `mkdir`, that `hooksPath = hooks-link/../hooks` finds the link, and
+  that `hooksPath = /` cannot hold a missing `.githooks`; a chain
+  `.git/hooks -> ../.githooks -> store/hooks` refuses the Linux command for
+  `.githooks` and locks it under `sandbox-exec`. Repository fixtures for hook
+  paths are made by `git init`; nested-repository tests check that husky's
+  `.husky/_` and `.githooks` are bound and locked in each nested repository's
+  own folder and that a missing `.githooks` there asks for `mkdir`. FIFO tests
+  put FIFOs at `.git`, `commondir`, a config and an include and check that the
+  scan finishes. Include tests use a cyclic, fanned-out set
+  of includes (12^10 visits without deduplication), a config with 64 includes,
+  which scans, and one with 10,001, which must fail the scan within seconds.
+  Seventy repositories with one include each scan; 260 stop the scan with a
+  reason that names the 256-file limit, and 65 in one repository name it.
+  Entry tests fill one folder past the entry budget. Global-config tests point
+  `GIT_CONFIG_GLOBAL` at a config with `core.hooksPath = .githooks` and check
+  that each worktree's folder is locked, an absolute one outside the workspace
+  is not, and a missing one that would pin a nested repository or the
+  workspace refuses the Linux command with `mkdir` guidance until the folder
+  exists. Pinning tests check that a missing `.husky/_` pins only `.husky`,
+  that a missing include asks for `touch`, and that one message names every
+  missing target. Every other test reads no user or system Git config: the Pi
+  tests set `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`, and the
+  Rust tests read only the files a test names. The parity test includes that
+  global setting and a nested husky repository. Large-workspace tests cover file-tool writes/edits and macOS
+  commands after the scan budget is reached. Incomplete scans ask before each
+  file change, offer only once or deny, and keep the shell-profile and
+  outside-workspace reasons; cache-marker `.git` files stay locked without failing the scan.
+  Rust/TypeScript parity checks compare both profiles and Linux argument lists.
+  Linux argument tests run on either platform and cover Manual read-only roots,
+  secret symlinks, breadth-first scan order and Linux-only budget refusal. Linux
+  execution runs in Ubuntu CI; macOS cannot validate the bubblewrap kernel
+  boundary. The Linux `execute_code` regression checks its scan-budget recovery
+  guidance and that a smaller workspace can run the code.
+  Scheduled-script tests verify that Manual cannot write artifacts. Run
+  `cargo fmt --manifest-path backend/hexbot-core/Cargo.toml --check` too.
+  See [sandbox behavior and limits](../SECURITY.md#tool-isolation): Linux protects
+  only existing repositories within the bounded scan; repositories created
+  during a command remain unprotected. macOS filename rules cover new `.git`
+  metadata directories.
 - Native browser end to end: `node scripts/dev/native-ui-smoke.mjs` after building
   Rust and the web bundle and installing the locked Pi dependency and Chromium.
   Uses a local streaming model with actual Pi; no provider credentials needed.
