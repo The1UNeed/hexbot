@@ -53,7 +53,7 @@ import { MarkdownText } from './src/MarkdownText'
 import { VisualFrame } from './src/VisualFrame'
 import { visualDocument } from './src/core/visual'
 import { parseArgs } from './src/core/chat'
-import { activityLabel, readableResult, resultLine, toolLabel } from './src/core/tools'
+import { chatActivityLabel, readableResult, resultLine, toolLabel } from './src/core/tools'
 import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
 import { shownRoom } from './src/core/routes'
@@ -774,11 +774,7 @@ function MobileApp() {
     busy: mobile.chat.busy,
     waiting:
       mobile.chat.busy && !mobile.chat.streaming
-        ? {
-            label: mobile.chat.waiting
-              ? 'Waiting'
-              : activityLabel(mobile.chat.activity) || 'Working'
-          }
+        ? { label: chatActivityLabel(mobile.chat) }
         : undefined,
     onSend: send,
     sendWhileBusy: route?.kind === 'room' || mobile.chat.questions.length > 0,

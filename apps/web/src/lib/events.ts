@@ -209,6 +209,10 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       return
 
     case 'hexbot.sections.changed':
+      if (typeof payload.id === 'string' && payload.deleted === true) {
+        useSections.getState().drop(payload.id)
+      }
+
       effects.refreshSections()
       effects.refreshBots()
       // Every ask touches its thread; an open thread panel reads it again (new live session,

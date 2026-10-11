@@ -49,7 +49,7 @@ Use **Stop** to interrupt a running answer. The section stays available, and you
 
 Archiving hides a section from the active list and keeps its history. To bring it back, find it in Settings, Archive, where you can search titles, first messages, and bot names, or filter by bot, and choose Restore. The bot's Sections settings list its archived sections too. Deleting removes that section and its history permanently. It leaves the bot's memory alone; edit Memory separately when you want to remove a remembered fact.
 
-A failed turn in an archived or deleted section does not keep its bot Stopped. Restoring an archived section restores any unresolved failure. Problems in rooms or connected services remain visible when you archive a section.
+A failed turn in an archived or deleted section does not keep its bot Stopped. Deleting it from another connected app or browser clears its Retry status here too. Restoring an archived section restores any unresolved failure. Problems in rooms or connected services remain visible when you archive a section.
 
 Sending another message in the failed section clears Stopped. A new failure stops it again; summarising older messages does not clear it.
 

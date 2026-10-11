@@ -68,6 +68,10 @@ Rooms take messages while bots work. A thread takes one at a time, so Stop
 replaces Send until its bot finishes. Removing a room's last bot deletes the
 room, and the app asks first.
 
+Waiting means a question or approval needs your answer. Automatic model
+retries keep their activity text, such as Retrying the model request, while
+the bot waits for its provider.
+
 Job details show the last status, error and up to 12,000 characters of output
 saved on the daemon. Attachments can be sent without text. The app asks the bot
 to review the files and keeps attachment chips until the send succeeds. A

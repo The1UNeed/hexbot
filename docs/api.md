@@ -57,6 +57,10 @@ Events the client renders: `message.start`, `message.delta`, `message.interim`,
 `clarify.expire`, `status.update`, `session.info`, `session.usage {usage,
 context}` (the section's totals and its context meter, see Sections), `error`.
 
+`status.update {kind: "waiting", text}` can describe an automatic model retry
+without a question or approval. Mobile keeps that activity text; pending human
+cards use Waiting.
+
 Accepted answers publish session-scoped `approval.resolved {request_id,
 choice}` or `clarify.resolved {request_id, answers, status, remaining?}`.
 Approval choices are canonical `once | session | deny`. Clarification answers
@@ -239,9 +243,9 @@ roster shows only the title.
   names one pending question; a different ID does not prove that an earlier
   question settled. Match answers and expiry to their own `request_id`.
   Opening can overlap a rename, archive or restore. Clients keep completed
-  edits while accepting the live session and history; a successful delete
-  fences earlier opens and clears that private section's Stopped status when
-  its action is Retry.
+  edits while accepting the live session and history; a successful delete,
+  including one reported by another connected client, fences earlier opens
+  and clears that private section's Stopped status when its action is Retry.
 
 `Context = {tokens, window, compact_at, compacting, recounting, seq}` is how
 full the section's context is: Pi's own estimate of the tokens the next
@@ -761,9 +765,13 @@ devices, and removes the invite and update methods.
 
 ### Events emitted by the plugin
 
-`hexbot.bots.changed {name}`, `hexbot.sections.changed {id, bot}`,
+`hexbot.bots.changed {name}`, `hexbot.sections.changed {id, bot?, deleted?}`,
 `hexbot.memory.user.changed {}`, `hexbot.network.changed {}`. Session-less,
 broadcast to every connection.
+Section deletion sends `{id, deleted: true}` to the owner. Clients record
+that exact deletion before refreshing lists, so a failed bot refresh cannot
+retain the deleted private section's Retry status. An omitted row in a list
+does not prove deletion.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
 Room mutations emit `hexbot.rooms.changed {id}`. Every persisted room event
 emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit

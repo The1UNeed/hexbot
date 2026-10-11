@@ -103,6 +103,8 @@ export interface SectionsState {
   /** Live ids are process-scoped; a new daemon epoch invalidates them all. */
   clearLive: () => void
   create: (bot: string, title?: string) => Promise<Section>
+  /** A successful delete reply or definitive notification retires this exact section. */
+  drop: (id: string, bot?: string) => void
   error: null | string
   idsByBot: Record<string, string[]>
   liveSessionId: Record<string, string>
@@ -558,6 +560,8 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   async remove(id, purgeMemory = true) {
+    const request = ++sectionsRequest
+
     const bot =
       get().byId[id]?.bot ??
       Object.values(useTranscripts.getState().bySession).find(
@@ -565,8 +569,26 @@ export const useSections = create<SectionsState>((set, get) => ({
       )?.bot
 
     await sectionsDelete(id, purgeMemory)
+
+    // The daemon can broadcast the deletion before this RPC's reply arrives.
+    if (!removedAfter(id, request)) {
+      get().drop(id, bot)
+    }
+  },
+
+  drop(id, bot) {
+    const previous = removedSectionRequests.get(id)
+
+    const owner =
+      bot ??
+      get().byId[id]?.bot ??
+      Object.values(useTranscripts.getState().bySession).find(
+        transcript => transcript.sectionId === id
+      )?.bot ??
+      (previous?.active ? previous.bot : undefined)
+
     const request = ++sectionsRequest
-    removedSectionRequests.set(id, { active: true, bot, request })
+    removedSectionRequests.set(id, { active: true, bot: owner, request })
     sectionRequests.set(id, request)
 
     draftsActions().clear(id)
