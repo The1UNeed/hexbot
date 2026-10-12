@@ -164,6 +164,33 @@ async fn sibling_clients_receive_exact_canonical_answers_and_replay() {
             }
         }
     }
+    async fn waiting(socket: &mut Socket, session: &Value, last_seen: &Value) -> Value {
+        let replay = request(
+            socket,
+            "waiting-replay",
+            "session.events.since",
+            json!({"session_id":session,"last_seen":last_seen}),
+        )
+        .await;
+        assert_eq!(replay["result"]["truncated"], false);
+        assert!(
+            replay["result"]["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|event| event["type"] != "status.update"),
+            "pending cards must not receive Working: {replay}"
+        );
+        let bot = request(
+            socket,
+            "waiting-bot",
+            "hexbot.bots.get",
+            json!({"name":"owl"}),
+        )
+        .await;
+        assert_eq!(bot["result"]["bot"]["status"], "needs_you");
+        replay
+    }
     let fixture = Fixture::new(false).await;
     db::open(&fixture.home).unwrap().execute_batch("INSERT INTO bots(name,owner_id,description) VALUES('owl','local','Fixture bot'); INSERT INTO sections(id,bot,owner_id,title) VALUES('shared','owl','local','Shared');").unwrap();
     fs::create_dir_all(fixture.home.join("profiles/owl")).unwrap();
@@ -219,14 +246,12 @@ async fn sibling_clients_receive_exact_canonical_answers_and_replay() {
     )
     .await;
     assert_eq!(denied["result"]["choice"], "deny");
-    let resolved = event(&mut second, session, "approval.resolved").await;
-    assert_eq!(resolved["payload"]["request_id"], "confirm");
-    assert_eq!(resolved["payload"]["choice"], "deny");
-    assert_eq!(resolved["payload"]["bot"], "owl");
-    assert_eq!(resolved["payload"]["section_id"], "shared");
-    let working = event(&mut second, session, "status.update").await;
-    assert_eq!(working["payload"]["kind"], "working");
-    assert!(resolved["seq"].as_u64().unwrap() < working["seq"].as_u64().unwrap());
+    let confirmation = event(&mut second, session, "approval.resolved").await;
+    assert_eq!(confirmation["payload"]["request_id"], "confirm");
+    assert_eq!(confirmation["payload"]["choice"], "deny");
+    assert_eq!(confirmation["payload"]["bot"], "owl");
+    assert_eq!(confirmation["payload"]["section_id"], "shared");
+    waiting(&mut second, session, &batch["seq"]).await;
     let reopened = request(
         &mut first,
         "pending",
@@ -250,10 +275,13 @@ async fn sibling_clients_receive_exact_canonical_answers_and_replay() {
     assert_eq!(partial["result"]["status"], "waiting");
     assert_eq!(partial["result"]["remaining"], json!(["last"]));
     assert_eq!(partial["result"]["answers"], json!({"same":"Yes"}));
-    let resolved = event(&mut second, session, "clarify.resolved").await;
-    assert_eq!(resolved["payload"]["request_id"], "batch");
-    assert_eq!(resolved["payload"]["status"], "waiting");
-    assert_eq!(resolved["payload"]["answers"], json!({"same":"Yes"}));
+    let partial_resolved = event(&mut second, session, "clarify.resolved").await;
+    assert_eq!(partial_resolved["payload"]["request_id"], "batch");
+    assert_eq!(partial_resolved["payload"]["status"], "waiting");
+    assert_eq!(
+        partial_resolved["payload"]["answers"],
+        json!({"same":"Yes"})
+    );
     let duplicate = request(
         &mut first,
         "duplicate",
@@ -270,13 +298,7 @@ async fn sibling_clients_receive_exact_canonical_answers_and_replay() {
     )
     .await;
     assert_eq!(unknown["error"]["code"], 4202);
-    let replay = request(
-        &mut second,
-        "partial-replay",
-        "session.events.since",
-        json!({"session_id":session,"last_seen":working["seq"]}),
-    )
-    .await;
+    let replay = waiting(&mut second, session, &confirmation["seq"]).await;
     let events = replay["result"]["events"].as_array().unwrap();
     assert_eq!(
         events
@@ -285,7 +307,6 @@ async fn sibling_clients_receive_exact_canonical_answers_and_replay() {
             .count(),
         1
     );
-    assert!(events.iter().all(|event| event["type"] != "status.update"));
     let reopened = request(
         &mut first,
         "partial-open",
@@ -308,7 +329,19 @@ async fn sibling_clients_receive_exact_canonical_answers_and_replay() {
     let resolved = event(&mut second, session, "approval.resolved").await;
     assert_eq!(resolved["payload"]["request_id"], "allow");
     assert_eq!(resolved["payload"]["choice"], "session");
-    event(&mut second, session, "status.update").await;
+    waiting(&mut second, session, &partial_resolved["seq"]).await;
+    let reopened = request(
+        &mut first,
+        "allow-open",
+        "hexbot.sections.open",
+        json!({"id":"shared"}),
+    )
+    .await;
+    assert_eq!(reopened["result"]["pending_clarify"]["request_id"], "batch");
+    assert_eq!(
+        reopened["result"]["pending_clarify"]["answers"],
+        json!({"same":"Yes"})
+    );
     let answered = request(
         &mut first,
         "final",
@@ -328,7 +361,9 @@ async fn sibling_clients_receive_exact_canonical_answers_and_replay() {
         resolved["payload"]["answers"],
         json!({"same":"Yes","last":"Because"})
     );
-    event(&mut second, session, "status.update").await;
+    let working = event(&mut second, session, "status.update").await;
+    assert_eq!(working["payload"]["kind"], "working");
+    assert!(resolved["seq"].as_u64().unwrap() < working["seq"].as_u64().unwrap());
     let replay = request(
         &mut second,
         "replay",
@@ -337,6 +372,15 @@ async fn sibling_clients_receive_exact_canonical_answers_and_replay() {
     )
     .await;
     assert_eq!(replay["result"]["truncated"], false);
+    assert_eq!(
+        replay["result"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["type"] == "status.update")
+            .collect::<Vec<_>>(),
+        vec![&working]
+    );
     let settlements = replay["result"]["events"]
         .as_array()
         .unwrap()

@@ -2004,7 +2004,7 @@ impl Runtime {
                             .map_err(|_| Error::new(4204, "request is no longer waiting"))?;
                     }
                     state.pending.remove(id);
-                    let busy = state.busy;
+                    let working = state.busy && state.pending.is_empty();
                     drop(state);
                     self.emit(
                         &s,
@@ -2015,8 +2015,8 @@ impl Runtime {
                         },
                         settlement,
                     );
-                    // Pi may have completed while its answer was being written.
-                    if busy {
+                    // Completion or another pending card prevents a Working transition.
+                    if working {
                         self.emit(
                             &s,
                             "status.update",

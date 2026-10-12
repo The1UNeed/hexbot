@@ -97,6 +97,34 @@ function cardBot(payload: Record<string, unknown>, sectionId?: string | null): s
   return botOfSection(sectionId) ?? (typeof payload.bot === 'string' ? payload.bot : undefined)
 }
 
+/** A settled card may be the first replayed event from an unopened conversation. */
+function bindSettlementOwner(sessionId: string, payload: Record<string, unknown>): void {
+  const transcripts = useTranscripts.getState()
+  const transcript = transcripts.bySession[sessionId]
+
+  if (!transcript || typeof payload.section_id !== 'string' || !payload.section_id) {
+    return
+  }
+
+  const bot = transcript.bot ?? cardBot(payload, payload.section_id)
+
+  if (!bot) {
+    return
+  }
+
+  const detail = useBots.getState().byName[bot]?.status_detail
+
+  const sectionId =
+    transcript.sectionId ??
+    (detail?.session_id === sessionId && detail.room_id
+      ? `room:${detail.room_id}`
+      : payload.section_id)
+
+  if (sectionId !== transcript.sectionId || bot !== transcript.bot) {
+    transcripts.setSectionId(sessionId, sectionId, bot)
+  }
+}
+
 /** The open transcript for an incident: the section's live session, else the id as sent. */
 function incidentSession(payload: Record<string, unknown>): null | string {
   const sections = useSections.getState()
@@ -211,6 +239,16 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
     case 'hexbot.sections.changed':
       if (typeof payload.id === 'string' && payload.deleted === true) {
         useSections.getState().drop(payload.id)
+
+        // An unopened private session can be known only through the bot's cached cause.
+        for (const bot of Object.values(useBots.getState().byName)) {
+          const detail = bot.status_detail
+
+          if (detail?.section_id === payload.id && !detail.room_id && detail.session_id) {
+            transcripts.drop(detail.session_id)
+          }
+        }
+
       }
 
       effects.refreshSections()
@@ -273,6 +311,15 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
           request_id: payload.request_id,
           choice: payload.choice
         })
+
+        if (
+          Object.hasOwn(
+            useTranscripts.getState().bySession[sessionId]?.approvalDecisions ?? {},
+            payload.request_id
+          )
+        ) {
+          bindSettlementOwner(sessionId, payload)
+        }
       }
 
       return
@@ -292,6 +339,15 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
           answers: payload.answers as Record<string, string>,
           status: payload.status
         })
+
+        if (
+          Object.hasOwn(
+            useTranscripts.getState().bySession[sessionId]?.clarifyAnswers ?? {},
+            payload.request_id
+          )
+        ) {
+          bindSettlementOwner(sessionId, payload)
+        }
       }
 
       return

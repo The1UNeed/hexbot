@@ -63,6 +63,47 @@ const status = () =>
     actions().bySession
   )
 
+const unopenedWait = (room = false) => {
+  const sessionId = `unopened-${++unseenId}`
+  const sectionId = `private-${unseenId}`
+  actions().drop('live')
+  useSections.setState({ byId: {}, idsByBot: {}, liveSessionId: {} })
+  useBots.setState({
+    byName: {
+      owl: {
+        name: 'owl',
+        status: 'needs_you',
+        status_detail: {
+          section_id: sectionId,
+          session_id: sessionId,
+          ...(room ? { room_id: 'cold-room' } : {})
+        }
+      } as Bot
+    }
+  })
+
+  return { sessionId, sectionId }
+}
+
+const coldResolved = (
+  kind: 'approval' | 'clarify',
+  sessionId: string,
+  sectionId: string,
+  waiting = false
+) =>
+  event(
+    `${kind}.resolved`,
+    {
+      bot: 'owl',
+      section_id: sectionId,
+      request_id: 'old-request',
+      ...(kind === 'approval'
+        ? { choice: 'session' }
+        : { answers: { first: 'Yes' }, status: waiting ? 'waiting' : 'answered' })
+    },
+    sessionId
+  )
+
 beforeEach(() => {
   actions().dropAll()
   actions().open('live', 'section', [], undefined, 'owl')
@@ -88,6 +129,210 @@ beforeEach(() => {
 afterEach(() => {
   setActiveRpc(null)
   resetTranscriptEffects()
+})
+
+describe('unopened canonical settlement ownership', () => {
+  it.each([
+    ['approval', 'working'],
+    ['clarify', 'working'],
+    ['approval', 'idle'],
+    ['clarify', 'idle']
+  ] as const)(
+    'binds %s metadata before exact %s progress with an unavailable roster',
+    async (kind, progress) => {
+      const { sessionId, sectionId } = unopenedWait()
+      coldResolved(kind, sessionId, sectionId)
+      expect(status()).toBe('needs_you')
+      event(
+        'status.update',
+        { kind: progress, text: progress === 'working' ? 'Working' : '' },
+        sessionId
+      )
+      await useBots.getState().refresh()
+
+      expect(status()).toBe(progress)
+      const transcript = actions().bySession[sessionId]!
+      expect(transcript.sectionId).toBe(sectionId)
+      expect(transcript.bot).toBe('owl')
+      expect(transcript.approvals).toEqual([])
+      expect(transcript.clarifies).toEqual([])
+      expect(transcript.waitingRequests ?? []).toEqual([])
+    }
+  )
+
+  it('retains a cold partial wait without manufacturing a human card or progress', () => {
+    const { sessionId, sectionId } = unopenedWait()
+    coldResolved('clarify', sessionId, sectionId, true)
+    expect(status()).toBe('needs_you')
+    expect(actions().bySession[sessionId]?.clarifies).toEqual([])
+    expect(actions().bySession[sessionId]?.liveStatus).toBeUndefined()
+  })
+
+  it('uses the exact cached room session rather than its stored section identity', () => {
+    const { sessionId, sectionId } = unopenedWait(true)
+    coldResolved('approval', sessionId, sectionId)
+    event('status.update', { kind: 'working', text: 'Working' }, sessionId)
+    expect(actions().bySession[sessionId]?.sectionId).toBe('room:cold-room')
+    expect(status()).toBe('working')
+  })
+
+  it('preserves established room scope and bot ownership on enriched settlements', () => {
+    actions().open('known-room', 'room:r', [], undefined, 'owl')
+    event(
+      'approval.resolved',
+      {
+        bot: 'fox',
+        section_id: 'stored-room',
+        request_id: 'room-a',
+        choice: 'once'
+      },
+      'known-room'
+    )
+    expect(actions().bySession['known-room']?.sectionId).toBe('room:r')
+    expect(actions().bySession['known-room']?.bot).toBe('owl')
+  })
+
+  it('uses a known section owner before conflicting settlement metadata', () => {
+    const { sessionId, sectionId } = unopenedWait()
+    useSections.setState({ byId: { [sectionId]: { id: sectionId, bot: 'owl' } as Section } })
+    event(
+      'approval.resolved',
+      {
+        bot: 'fox',
+        section_id: sectionId,
+        request_id: 'old-request',
+        choice: 'once'
+      },
+      sessionId
+    )
+    expect(actions().bySession[sessionId]?.bot).toBe('owl')
+  })
+
+  it('keeps a known sibling question Waiting after enriched old settlement and Working', () => {
+    question('new-question')
+    coldResolved('approval', 'live', 'section')
+    event('status.update', { kind: 'working', text: 'Working' })
+    expect(current().waitingRequests?.map(item => item.requestId)).toEqual(['new-question'])
+    expect(status()).toBe('needs_you')
+  })
+
+  it.each(['stopped', 'other-session', 'other-section'] as const)(
+    'preserves a cached %s cause outside matching live progress',
+    cause => {
+      const { sessionId, sectionId } = unopenedWait()
+      useBots.setState(state => ({
+        byName: {
+          owl: {
+            ...state.byName.owl!,
+            ...(cause === 'stopped'
+              ? { status: 'stopped' as const }
+              : {
+                  status_detail: {
+                    ...state.byName.owl!.status_detail!,
+                    ...(cause === 'other-session'
+                      ? { session_id: 'other-session' }
+                      : { section_id: 'other-section' })
+                  }
+                })
+          }
+        }
+      }))
+      coldResolved('approval', sessionId, sectionId)
+      event('status.update', { kind: 'working', text: 'Working' }, sessionId)
+      expect(actions().bySession[sessionId]?.sectionId).toBe(sectionId)
+      expect(actions().bySession[sessionId]?.bot).toBe('owl')
+      expect(status()).toBe(cause === 'stopped' ? 'stopped' : 'needs_you')
+    }
+  )
+
+  it('keeps an indexed section wait from another live session after exact settlement progress', () => {
+    useBots.setState(state => ({
+      byName: {
+        owl: {
+          ...state.byName.owl!,
+          status_detail: { ...state.byName.owl!.status_detail!, session_id: 'other-live' }
+        }
+      }
+    }))
+    coldResolved('approval', 'live', 'section')
+    event('status.update', { kind: 'working', text: 'Working' })
+    expect(status()).toBe('needs_you')
+  })
+
+  it('does not revive later Idle when an enriched unknown settlement arrives', () => {
+    const { sessionId, sectionId } = unopenedWait()
+    event('status.update', { kind: 'idle', text: '' }, sessionId)
+    coldResolved('approval', sessionId, sectionId)
+    expect(status()).toBe('idle')
+    expect(actions().bySession[sessionId]?.answeredWaiting).toBeUndefined()
+  })
+
+  it('does not bind a malformed cold settlement', () => {
+    const { sessionId, sectionId } = unopenedWait()
+    event(
+      'approval.resolved',
+      {
+        bot: 'owl',
+        section_id: sectionId,
+        request_id: 'old-request',
+        choice: 'always'
+      },
+      sessionId
+    )
+    expect(actions().bySession[sessionId]).toBeUndefined()
+    expect(status()).toBe('needs_you')
+  })
+
+  it.each([{ bot: '' }, { section_id: '' }])(
+    'does not bind invalid owner metadata %j',
+    metadata => {
+      const { sessionId, sectionId } = unopenedWait()
+      event(
+        'approval.resolved',
+        {
+          bot: 'owl',
+          section_id: sectionId,
+          request_id: 'old-request',
+          choice: 'once',
+          ...metadata
+        },
+        sessionId
+      )
+      expect(actions().bySession[sessionId]?.sectionId).toBeUndefined()
+      expect(status()).toBe('needs_you')
+    }
+  )
+
+  it.each(['approval', 'clarify'] as const)(
+    'does not bind dropped cold %s even after generic status created an entry',
+    kind => {
+      const { sessionId, sectionId } = unopenedWait()
+      actions().drop(sessionId)
+      event('status.update', { kind: 'working', text: 'Working' }, sessionId)
+      coldResolved(kind, sessionId, sectionId)
+      expect(actions().bySession[sessionId]?.sectionId).toBeUndefined()
+      expect(status()).toBe('needs_you')
+    }
+  )
+
+  it.each(['approval', 'clarify'] as const)(
+    'retires a definitively deleted unopened private session before late %s',
+    kind => {
+      const { sessionId, sectionId } = unopenedWait()
+      event('hexbot.sections.changed', { id: sectionId, deleted: true }, '')
+      coldResolved(kind, sessionId, sectionId)
+      event('status.update', { kind: 'working', text: 'Working' }, sessionId)
+      expect(actions().bySession[sessionId]?.sectionId).toBeUndefined()
+      expect(status()).toBe('needs_you')
+    }
+  )
+
+  it('does not retire a room session when a private section deletion has the same stored id', () => {
+    const { sessionId, sectionId } = unopenedWait(true)
+    event('hexbot.sections.changed', { id: sectionId, deleted: true }, '')
+    coldResolved('approval', sessionId, sectionId)
+    expect(actions().bySession[sessionId]?.sectionId).toBe('room:cold-room')
+  })
 })
 
 it.each(['approval', 'clarify'] as const)(

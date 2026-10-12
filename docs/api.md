@@ -71,8 +71,11 @@ use question IDs (the request ID for a single question); `status` is `waiting`
 for a partial answer and `answered` once every question has an answer. Both
 events include `bot` and `section_id`. They update the matching card on other
 connected clients, including when a roster refresh fails. Other pending
-requests keep Waiting. The answer RPC
-can also return the canonical `choice` or `answers`; older daemons omit them.
+requests keep Waiting. After a complete answer, the daemon emits Working
+only while the turn is busy and no human requests remain pending. Clients
+can bind a valid settlement to its bot and section without having seen the
+original card. The answer RPC can also return the canonical `choice` or
+`answers`; older daemons omit them.
 
 When a new agent turn starts, `message.start` includes `retry_resolved: true`
 if resolving that section's `turn_failed` incidents succeeded. Clients can
@@ -149,8 +152,10 @@ null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
 The detail names one session even when several sections of the bot are
 active. A non-idle bot reply must not erase status evidence for a
 sibling session. An accepted Idle reply can retire the bot's older live
-status evidence. Pending questions and approvals remain Waiting through an
-unrelated Working event; answers settle only their matching request IDs.
+status evidence, but does not settle confirmed questions or approvals in
+archived private sections. Restore makes that pending evidence eligible
+again, including when the next bot refresh fails. Pending questions and
+approvals remain Waiting through an unrelated Working event; answers settle only their matching request IDs.
 Mobile retains exact local answer evidence after leaving a conversation,
 including replies from daemons without settlement broadcasts. History
 rereads preserve answer and retry evidence received during an earlier
@@ -261,8 +266,8 @@ roster shows only the title.
   bot's profile; idempotent if live). If the bot is waiting on an approval,
   the daemon sends its `approval.request` event again so a reloaded client
   gets the card back; clients dedupe on `request_id`. An approval and a
-  question can be pending together. Answering an approval can emit Working
-  while the separate question still needs an answer. `pending_clarify`
+  question can be pending together. Answering one card leaves the session
+  waiting while another card still needs an answer. `pending_clarify`
   names one pending question; a different ID does not prove that an earlier
   question settled. Match answers and expiry to their own `request_id`.
   Opening can overlap a rename, archive or restore. Clients keep completed

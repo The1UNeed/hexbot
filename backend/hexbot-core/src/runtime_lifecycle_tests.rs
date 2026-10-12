@@ -102,8 +102,13 @@ async fn dialog_delivery_failure_keeps_partial_answers_unsettled() {
     let s = runtime.sessions.lock().unwrap()["first"].clone();
     s.state.lock().unwrap().busy = true;
     runtime.event(&s, json!({"type":"extension_ui_request","id":"batch","method":"input","title":format!("__HEXBOT_CLARIFY__{}",json!({"questions":[{"qid":"first","question":"First?"},{"qid":"last","question":"Last?"}]}))})).unwrap();
+    let before_partial = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
     let partial = runtime.call_inner("alice", "clarify.respond", &json!({"session_id":id,"request_id":"batch","question_id":"first","answer":"Accepted"})).await.unwrap();
     assert_eq!(partial["status"], "waiting");
+    let replay = hub.since("alice", &id, before_partial);
+    assert_eq!(replay["count"], 1);
+    assert_eq!(replay["events"][0]["type"], "clarify.resolved");
+    assert_eq!(replay["events"][0]["payload"]["status"], "waiting");
     let pending = s.state.lock().unwrap().pending["batch"].clone();
     let mut stopped = s.settled.subscribe();
     let before_stop = *stopped.borrow();
@@ -177,31 +182,94 @@ async fn cancelling_queued_and_inflight_dialog_answers_cannot_publish_settlement
 
 #[tokio::test]
 async fn an_old_dialog_settlement_keeps_newer_questions_waiting() {
-    let (_home, runtime, hub) = setup();
-    let id = open(&runtime).await;
-    let s = runtime.sessions.lock().unwrap()["first"].clone();
-    s.state.lock().unwrap().busy = true;
-    runtime.event(&s, json!({"type":"extension_ui_request","id":"old","method":"input","title":"Old question?"})).unwrap();
-    let params = json!({"session_id":id,"request_id":"old","answer":"Old answer"});
-    let answer = runtime.call_inner("alice", "clarify.respond", &params);
-    tokio::pin!(answer);
-    assert!(futures_util::poll!(&mut answer).is_pending());
-    assert!(s.answer_gate.try_lock().is_err());
-    runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
-    s.state.lock().unwrap().busy = true;
-    runtime.event(&s, json!({"type":"agent_start"})).unwrap();
-    runtime.event(&s, json!({"type":"extension_ui_request","id":"new","method":"input","title":"New question?"})).unwrap();
-    let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
-    assert_eq!(answer.await.unwrap()["status"], "answered");
-    let replay = hub.since("alice", &id, before);
-    assert_eq!(replay["events"][0]["type"], "clarify.resolved");
-    assert_eq!(replay["events"][0]["payload"]["request_id"], "old");
-    assert!(s.state.lock().unwrap().pending.contains_key("new"));
-    assert_eq!(
-        runtime.status_for_bot("alice", "owl").unwrap()["status"],
-        "needs_you"
-    );
-    runtime.shutdown().await;
+    for (old_approval, new_approval) in [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let (_home, runtime, hub) = setup();
+        let id = open(&runtime).await;
+        let s = runtime.sessions.lock().unwrap()["first"].clone();
+        let request = |request_id: &str, approval: bool| {
+            if approval {
+                json!({"type":"extension_ui_request","id":request_id,"method":"select","title":format!("__HEXBOT_APPROVAL__{}",json!({"tool":"bash","command":"pwd"})),"options":["once","deny"]})
+            } else {
+                json!({"type":"extension_ui_request","id":request_id,"method":"input","title":"Question?"})
+            }
+        };
+        let params = |request_id: &str, approval: bool| {
+            if approval {
+                json!({"session_id":id,"request_id":request_id,"choice":"once"})
+            } else {
+                json!({"session_id":id,"request_id":request_id,"answer":"Accepted"})
+            }
+        };
+        s.state.lock().unwrap().busy = true;
+        runtime.event(&s, request("old", old_approval)).unwrap();
+        let old_params = params("old", old_approval);
+        let old_method = if old_approval {
+            "approval.respond"
+        } else {
+            "clarify.respond"
+        };
+        let answer = runtime.call_inner("alice", old_method, &old_params);
+        tokio::pin!(answer);
+        assert!(futures_util::poll!(&mut answer).is_pending());
+        assert!(s.answer_gate.try_lock().is_err());
+        runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
+        s.state.lock().unwrap().busy = true;
+        runtime.event(&s, json!({"type":"agent_start"})).unwrap();
+        runtime.event(&s, request("new", new_approval)).unwrap();
+        let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+        let global_before = hub.since("alice", "", 0)["latest_seq"].as_u64().unwrap();
+        let response = answer.await.unwrap();
+        assert_eq!(
+            response[if old_approval { "choice" } else { "status" }],
+            if old_approval { "once" } else { "answered" }
+        );
+        let replay = hub.since("alice", &id, before);
+        assert_eq!(
+            replay["events"][0]["type"],
+            if old_approval {
+                "approval.resolved"
+            } else {
+                "clarify.resolved"
+            }
+        );
+        assert_eq!(replay["events"][0]["payload"]["request_id"], "old");
+        assert_eq!(
+            replay["count"], 1,
+            "a pending newer card must not receive Working: {replay}"
+        );
+        assert!(s.state.lock().unwrap().pending.contains_key("new"));
+        assert_eq!(
+            runtime.status_for_bot("alice", "owl").unwrap()["status"],
+            "needs_you"
+        );
+        let changed = hub.since("alice", "", global_before);
+        assert_eq!(changed["count"], 1);
+        assert_eq!(changed["events"][0]["type"], "hexbot.bots.changed");
+        assert_eq!(changed["events"][0]["payload"]["name"], "owl");
+
+        let before_last = replay["latest_seq"].as_u64().unwrap();
+        let new_method = if new_approval {
+            "approval.respond"
+        } else {
+            "clarify.respond"
+        };
+        runtime
+            .call_inner("alice", new_method, &params("new", new_approval))
+            .await
+            .unwrap();
+        let replay = hub.since("alice", &id, before_last);
+        assert_eq!(replay["count"], 2);
+        assert_eq!(replay["events"][0]["payload"]["request_id"], "new");
+        assert_eq!(replay["events"][1]["type"], "status.update");
+        assert_eq!(replay["events"][1]["payload"]["kind"], "working");
+        assert!(s.state.lock().unwrap().pending.is_empty());
+        assert_eq!(
+            runtime.status_for_bot("alice", "owl").unwrap()["status"],
+            "working"
+        );
+        runtime.shutdown().await;
+    }
 }
 
 #[tokio::test]

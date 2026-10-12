@@ -240,6 +240,41 @@ const sectionRequests = new Map<string, number>()
 const boundSectionRequests = new Map<string, number>()
 const removedSectionRequests = new Map<string, { active: boolean; bot?: string; request: number }>()
 
+const pendingSectionReads = new Set<{
+  bot?: string
+  request: number
+  snapshot: Promise<Section[]>
+}>()
+
+/** A bot read can race the metadata read triggered by the same archive notification. */
+export function pendingSectionSnapshots(bot: string): Promise<Section[]>[] {
+  const reads = [...pendingSectionReads].filter(
+    read =>
+      (!read.bot || read.bot === bot) &&
+      fullSectionsRequest < read.request &&
+      (botSectionsRequests.get(bot) ?? 0) < read.request
+  )
+
+  if (!reads.length) {
+    return []
+  }
+
+  const acceptedSections = new Map(sectionRequests)
+
+  return [
+    Promise.all(reads.map(read => read.snapshot)).then(snapshots =>
+      reads.flatMap((read, index) =>
+        fullSectionsRequest <= read.request && (botSectionsRequests.get(bot) ?? 0) <= read.request
+          ? snapshots[index]!.filter(
+              section =>
+                section.bot === bot && (acceptedSections.get(section.id) ?? 0) <= read.request
+            )
+          : []
+      )
+    )
+  ]
+}
+
 export function clearDeletedSections(): void {
   // A new daemon must not inherit status proof, but old promises stay fenced.
   for (const removed of removedSectionRequests.values()) {
@@ -291,11 +326,23 @@ export const useSections = create<SectionsState>((set, get) => ({
     const request = ++sectionsRequest
     latestSectionsRefresh = request
     const bot = options.bot
+    const reading = sectionsList({ include_archived: true, ...options })
+
+    const read = {
+      bot,
+      request,
+      snapshot: reading.then(
+        result => result.sections ?? [],
+        () => []
+      )
+    }
+
+    pendingSectionReads.add(read)
 
     set({ error: null, loading: true })
 
     try {
-      const result = await sectionsList({ include_archived: true, ...options })
+      const result = await reading
 
       const current =
         fullSectionsRequest < request && (!bot || (botSectionsRequests.get(bot) ?? 0) < request)
@@ -380,6 +427,8 @@ export const useSections = create<SectionsState>((set, get) => ({
         set({ error: error instanceof Error ? error.message : String(error) })
       }
     } finally {
+      pendingSectionReads.delete(read)
+
       if (request === latestSectionsRefresh) {
         set({ loading: false })
       }
@@ -853,7 +902,15 @@ export function botStatusWithLive(
 
   const own = sections
     .filter(section => !section.archived_at)
-    .map(section => sectionStatusOf(bot, section.id, live))
+    .map(section => {
+      if (status === 'needs_you' && detail?.section_id === section.id && detail.session_id) {
+        const session = sessions[detail.session_id]
+
+        return session?.sectionId === section.id ? (freshSessionStatus(session) ?? status) : status
+      }
+
+      return sectionStatusOf(bot, section.id, live)
+    })
 
   const named = bot.status_detail?.section_id
   const rooms = useRooms.getState()
@@ -875,7 +932,9 @@ export function botStatusWithLive(
 
     const fresh = ownsSession ? freshSessionStatus(session) : undefined
 
-    own.push(fresh ?? (named ? sectionStatusOf(bot, named, live) : status))
+    own.push(
+      fresh ?? (detail?.session_id ? status : named ? sectionStatusOf(bot, named, live) : status)
+    )
   }
 
   const indexed = useSections.getState()

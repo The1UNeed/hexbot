@@ -10,7 +10,7 @@ import { botsCreate, botsDelete, botsGet, botsList, botsUpdate } from '../lib/ap
 import type { Bot, BotCreateInput, BotUpdatePatch, Section } from '../lib/types'
 
 import { useRooms } from './rooms'
-import { useSections } from './sections'
+import { pendingSectionSnapshots, useSections } from './sections'
 import { transcriptRevision, useTranscripts } from './transcripts'
 import { uiActions } from './ui'
 
@@ -72,12 +72,32 @@ function botAnswerScope(name: string, bot?: Bot) {
 let idleRevision = 0
 const idleByBot = new Map<string, number>()
 
+const pendingIdleByBot = new Map<
+  string,
+  { original: Map<string, number>; retired: Map<string, number> }
+>()
+
 /** Aggregate Idle also retires activity for sessions not opened yet. */
 export function botIdleRevision(name?: string): number {
   return name ? (idleByBot.get(name) ?? 0) : idleRevision
 }
 
-function clearBotAnswers(name: string, bot?: Bot, throughRevision?: number): void {
+function archivedScope(name: string) {
+  return {
+    ids: Object.values(useSections.getState().byId)
+      .filter(section => section.bot === name && section.archived_at)
+      .map(section => section.id),
+    snapshots: pendingSectionSnapshots(name)
+  }
+}
+
+function clearBotAnswers(
+  name: string,
+  bot?: Bot,
+  throughRevision?: number,
+  archived?: ReturnType<typeof archivedScope>,
+  request?: number
+): void {
   if (!bot || (bot.status ?? 'idle') === 'idle') {
     idleByBot.set(name, ++idleRevision)
   }
@@ -112,12 +132,147 @@ function clearBotAnswers(name: string, bot?: Bot, throughRevision?: number): voi
         }
       : botAnswerScope(name, bot)
 
-  useTranscripts
-    .getState()
-    .clearAnsweredWaiting(scope.sectionIds, scope.sessionIds, throughRevision, {
-      preserveWaiting: bot?.status === 'needs_you',
-      idle: Boolean(bot && (bot.status ?? 'idle') === 'idle')
+  const matchesScope = (id: string, section?: string) =>
+    scope.sessionIds.includes(id) || Boolean(section && scope.sectionIds.includes(section))
+
+  const previous = pendingIdleByBot.get(name)
+
+  const inherited = new Map(
+    [...(previous?.retired ?? [])].filter(([id, revision]) => {
+      const transcript = useTranscripts.getState().bySession[id]
+
+      return (
+        transcript?.authorityRevision === revision &&
+        (previous!.original.get(id) ?? Infinity) <= (throughRevision ?? Infinity) &&
+        matchesScope(id, transcript.sectionId)
+      )
     })
+  )
+
+  const clear = (snapshots: Section[][] = [], revisions?: Map<string, number>) => {
+    // Aggregate Idle excludes archived private conversations without stopping them.
+    const excluded = new Set(
+      bot && (bot.status ?? 'idle') === 'idle'
+        ? [
+            ...(archived?.ids ?? []),
+            ...snapshots
+              .flat()
+              .filter(section => section.bot === name && section.archived_at)
+              .map(section => section.id)
+          ]
+        : []
+    )
+
+    const archivedSession = (id: string) => {
+      const section = useTranscripts.getState().bySession[id]?.sectionId
+
+      return Boolean(section && excluded.has(section))
+    }
+
+    const transcripts = useTranscripts.getState()
+
+    if (revisions) {
+      for (const [id, revision] of revisions) {
+        transcripts.clearAnsweredWaiting(
+          [],
+          [id],
+          revision,
+          archivedSession(id)
+            ? { preserveWaiting: true, idle: true }
+            : {
+                preserveWaiting: bot?.status === 'needs_you',
+                idle: Boolean(bot && (bot.status ?? 'idle') === 'idle')
+              }
+        )
+      }
+
+      return
+    }
+
+    transcripts.clearAnsweredWaiting(
+      scope.sectionIds.filter(id => !excluded.has(id)),
+      scope.sessionIds.filter(id => !archivedSession(id)),
+      throughRevision,
+      {
+        preserveWaiting: bot?.status === 'needs_you',
+        idle: Boolean(bot && (bot.status ?? 'idle') === 'idle')
+      }
+    )
+    transcripts.clearAnsweredWaiting(
+      scope.sectionIds.filter(id => excluded.has(id)),
+      scope.sessionIds.filter(archivedSession),
+      throughRevision,
+      { preserveWaiting: true, idle: true }
+    )
+  }
+
+  if (bot && (bot.status ?? 'idle') === 'idle' && archived?.snapshots.length) {
+    const transcripts = useTranscripts.getState()
+
+    const original = new Map(
+      Object.values(transcripts.bySession)
+      .filter(
+        transcript =>
+          (transcript.authorityRevision <= (throughRevision ?? Infinity) ||
+            inherited.has(transcript.sessionId)) &&
+          matchesScope(transcript.sessionId, transcript.sectionId)
+      )
+      .map(transcript => [
+        transcript.sessionId,
+        inherited.has(transcript.sessionId)
+          ? previous!.original.get(transcript.sessionId)!
+          : transcript.authorityRevision
+      ])
+    )
+
+    // Retire optimism now; only confirmed requests await the concurrent archive metadata.
+    for (const id of original.keys()) {
+      transcripts.clearAnsweredWaiting([], [id], inherited.get(id) ?? throughRevision, {
+        preserveWaiting: true,
+        idle: true
+      })
+    }
+
+    const revisions = new Map(
+      [...original.keys()].map(id => [id, useTranscripts.getState().bySession[id]!.authorityRevision])
+    )
+
+    const pending = { original, retired: revisions }
+    pendingIdleByBot.set(name, pending)
+
+    void Promise.all(archived.snapshots).then(snapshots => {
+      if (
+        request !== undefined &&
+        (fullBotsRequest > request || (botRequests.get(name) ?? 0) > request) &&
+        pendingIdleByBot.get(name) !== pending
+      ) {
+        return
+      }
+
+      if (pendingIdleByBot.get(name) === pending) {
+        pendingIdleByBot.delete(name)
+      }
+
+      clear(snapshots, revisions)
+    })
+  } else {
+    clear()
+    clear([], inherited)
+
+    if (previous && pendingIdleByBot.get(name) === previous) {
+      // A named snapshot supersedes only its own sessions, not pending sibling cleanup.
+      for (const id of previous.retired.keys()) {
+        if (matchesScope(id, useTranscripts.getState().bySession[id]?.sectionId)) {
+          previous.original.delete(id)
+          previous.retired.delete(id)
+        }
+      }
+
+      if (!bot || (bot.status ?? 'idle') === 'idle' || !previous.retired.size) {
+        pendingIdleByBot.delete(name)
+      }
+    }
+  }
 }
 
 let botsRequest = 0
@@ -190,6 +345,19 @@ export const useBots = create<BotsState>((set, get) => ({
   async refresh() {
     const request = ++botsRequest
     const revision = transcriptRevision()
+
+    const archives = new Map(
+      [
+        ...new Set([
+          ...Object.keys(get().byName),
+          ...Object.keys(useSections.getState().idsByBot),
+          ...Object.values(useTranscripts.getState().bySession).flatMap(transcript =>
+            transcript.bot ? [transcript.bot] : []
+          )
+        ])
+      ].map(name => [name, archivedScope(name)])
+    )
+
     latestBotsRefresh = request
     set({ error: null, loading: true })
 
@@ -211,7 +379,7 @@ export const useBots = create<BotsState>((set, get) => ({
             forgetBot(name, request)
           }
 
-          clearBotAnswers(name, returned[name], revision)
+          clearBotAnswers(name, returned[name], revision, archives.get(name), request)
         }
       }
 
@@ -249,6 +417,7 @@ export const useBots = create<BotsState>((set, get) => ({
   async refreshOne(name) {
     const request = ++botsRequest
     const revision = transcriptRevision()
+    const archived = archivedScope(name)
 
     try {
       const { bot } = await botsGet(name)
@@ -258,7 +427,7 @@ export const useBots = create<BotsState>((set, get) => ({
       }
 
       botRequests.set(name, request)
-      clearBotAnswers(bot.name, bot, revision)
+      clearBotAnswers(bot.name, bot, revision, archived, request)
       set(state => ({
         byName: { ...state.byName, [bot.name]: withSavedFields(bot, request) },
         order: state.order.includes(bot.name) ? state.order : [bot.name, ...state.order]
