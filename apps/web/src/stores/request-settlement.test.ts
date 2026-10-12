@@ -543,6 +543,145 @@ it('a legacy reply answers a question ID that is also an Object property', async
   expect(current().clarifies[0]?.answers).toEqual({ a: 'Peer', toString: 'Local' })
 })
 
+it('retained partial replay keeps local and canonical answers above older snapshot values', () => {
+  const batch = {
+    request_id: 'batch',
+    questions: [
+      { qid: 'a', question: 'First?' },
+      { qid: 'b', question: 'Second?' },
+      { qid: 'c', question: 'Third?' }
+    ]
+  }
+
+  event('clarify.request', batch)
+  actions().answerClarify('live', 'batch', 'b', 'Local')
+  event('clarify.resolved', { request_id: 'batch', answers: { a: 'Canonical' }, status: 'waiting' })
+  event('clarify.request', { ...batch, answers: { a: 'Stale', b: 'Stale', extra: 'Unrelated' } })
+  expect(current().clarifies[0]?.answers).toEqual({
+    a: 'Canonical',
+    b: 'Local',
+    extra: 'Unrelated'
+  })
+  expect(clarifyWaiting(current().clarifies[0]!)).toBe(true)
+  expect(current().waitingRequests).toEqual([
+    expect.objectContaining({ kind: 'clarify', requestId: 'batch' })
+  ])
+})
+
+it.each(['working', 'idle', 'completion'] as const)(
+  'defensive full-map replay is neutral to newer %s and sibling requests',
+  transition => {
+    const batch = {
+      request_id: 'batch',
+      questions: [
+        { qid: 'a', question: 'First?' },
+        { qid: 'b', question: 'Second?' }
+      ]
+    }
+
+    event('clarify.request', batch)
+
+    if (transition === 'completion') {
+      event('message.complete', { text: 'Done.' })
+    } else {
+      event('status.update', { kind: transition, text: '' })
+    }
+
+    approval('sibling-approval')
+    question('sibling-question')
+    const revision = current().authorityRevision
+    const liveStatus = current().liveStatus
+    event('clarify.request', { ...batch, answers: { a: 'Peer', b: 'Peer' } })
+    expect(current().authorityRevision).toBe(revision)
+    expect(current().liveStatus).toBe(liveStatus)
+    expect(current().answeredWaiting).toBeUndefined()
+    expect(current().settledClarifyIds).toContain('batch')
+    expect(current().waitingRequests?.map(item => item.requestId)).toEqual([
+      'sibling-approval',
+      'sibling-question'
+    ])
+    expect(status()).toBe('needs_you')
+  }
+)
+
+it('retained replay answers duplicate and own-property question IDs with own answer keys', () => {
+  const batch = {
+    request_id: 'batch',
+    questions: [
+      { qid: 'a', question: 'First?' },
+      { qid: 'a', question: 'Also first?' },
+      { qid: 'toString', question: 'Second?' },
+      { qid: '__proto__', question: 'Third?' }
+    ]
+  }
+
+  event('clarify.request', batch)
+  event('clarify.request', { ...batch, answers: { a: 'Peer', toString: '' } })
+  expect(current().clarifies[0]?.answers).toEqual({ a: 'Peer', toString: '' })
+  expect(clarifyWaiting(current().clarifies[0]!)).toBe(true)
+  event('clarify.request', {
+    ...batch,
+    answers: Object.fromEntries([['__proto__', 'Own answer']])
+  })
+  expect(Object.hasOwn(current().clarifies[0]!.answers, '__proto__')).toBe(true)
+  expect(clarifyWaiting(current().clarifies[0]!)).toBe(false)
+  expect(current().waitingRequests).toEqual([])
+})
+
+it.each(['answered', 'expired'] as const)(
+  'does not revive or rewrite an exact %s request through stale partial replay',
+  settlement => {
+    const batch = {
+      request_id: 'batch',
+      questions: [
+        { qid: 'a', question: 'First?' },
+        { qid: 'b', question: 'Second?' }
+      ]
+    }
+
+    event('clarify.request', batch)
+
+    if (settlement === 'answered') {
+      event('clarify.resolved', {
+        request_id: 'batch',
+        status: 'answered',
+        answers: { a: 'Canonical', b: 'Canonical' }
+      })
+    } else {
+      event('clarify.expire', { request_id: 'batch' })
+    }
+
+    event('status.update', { kind: 'idle', text: '' })
+    const before = current()
+    event('clarify.request', { ...batch, answers: { a: 'Stale' } })
+    expect(current()).toBe(before)
+    expect(current().waitingRequests).toEqual([])
+    expect(status()).toBe('idle')
+  }
+)
+
+it('applies replay answers only to the exact session and request', () => {
+  const batch = {
+    request_id: 'shared-id',
+    questions: [
+      { qid: 'a', question: 'First?' },
+      { qid: 'b', question: 'Second?' }
+    ]
+  }
+
+  event('clarify.request', batch)
+  actions().open('other-live', 'room:other', [], undefined, 'owl')
+  event('clarify.request', batch, 'other-live')
+  const other = actions().bySession['other-live']!
+  question('other-request')
+  event('clarify.request', { ...batch, answers: { a: 'Peer' } })
+  expect(current().clarifies.find(item => item.requestId === 'shared-id')?.answers).toEqual({
+    a: 'Peer'
+  })
+  expect(current().clarifies.find(item => item.requestId === 'other-request')?.answers).toEqual({})
+  expect(actions().bySession['other-live']).toBe(other)
+})
+
 it('room ownership survives stored section IDs on request payloads', () => {
   actions().open('room-live', 'room:r', [], undefined, 'owl')
   event(

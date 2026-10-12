@@ -1,3 +1,7 @@
+import { act, fireEvent, render } from '@testing-library/react'
+import { createElement } from 'react'
+
+import { ClarifyCard } from '../app/conversation/clarify-card'
 import { ConnectionSupervisor } from '../lib/connection'
 import { routeEvent } from '../lib/events'
 import { setActiveRpc } from '../lib/rpc'
@@ -78,6 +82,23 @@ function resolveCard(kind: CardKind, requestId = 'pending') {
   )
 }
 
+function batchReplay(answers: Record<string, string> = {}) {
+  routeEvent({
+    type: 'clarify.request',
+    session_id: 'sibling-live',
+    payload: {
+      bot: 'owl',
+      section_id: 'stored-sibling',
+      request_id: 'batch',
+      questions: [
+        { qid: 'a', question: 'First?' },
+        { qid: 'b', question: 'Second?' }
+      ],
+      answers
+    }
+  } as never)
+}
+
 function fixture(kind: CardKind, history: 'empty' | 'live messages') {
   useBots.setState({ byName: { owl: bot }, order: ['owl'] })
   useSections.setState({ byId: {}, idsByBot: {}, liveSessionId: {} })
@@ -110,6 +131,179 @@ function fixture(kind: CardKind, history: 'empty' | 'live messages') {
 }
 
 afterEach(() => resetTranscriptEffects())
+
+describe('retained room batch replay', () => {
+  it.each([
+    ['open', 'empty'],
+    ['open', 'live messages'],
+    ['refreshOne', 'empty'],
+    ['refreshOne', 'live messages']
+  ] as const)('locks another client\'s answer on %s with %s history', async (method, history) => {
+    fixture('clarify', history)
+    useTranscripts.getState().clarifyExpire('sibling-live', 'pending')
+    batchReplay()
+    const before = useTranscripts.getState().bySession['sibling-live']!
+    setActiveRpc({
+      call: vi.fn(async (rpc: string) => {
+        if (rpc === 'hexbot.rooms.get') {
+          // Native rooms.get replays current pending cards before its RPC reply.
+          batchReplay({ a: 'Peer answer' })
+
+          return { room: rooms[1] }
+        }
+
+        return { events: [] }
+      })
+    } as never)
+    await useRooms.getState()[method]('sibling')
+    const after = useTranscripts.getState().bySession['sibling-live']!
+    const batch = after.clarifies.find(item => item.requestId === 'batch')!
+    expect(batch.answers).toEqual({ a: 'Peer answer' })
+    expect(Object.hasOwn(batch.answers, 'b')).toBe(false)
+    expect(after.clarifies.filter(item => item.requestId === 'batch')).toHaveLength(1)
+    expect(after.epoch).toBe(before.epoch)
+    expect(after.sectionId).toBe('room:sibling')
+    expect(after.bot).toBe('owl')
+    expect(after.waitingRequests).toEqual([
+      expect.objectContaining({ kind: 'clarify', requestId: 'batch' })
+    ])
+    expect(status()).toBe('needs_you')
+  })
+
+  it.each(['empty', 'live messages'] as const)(
+    'locks the peer answer after same-daemon reconnect and submits only the remaining question (%s)',
+    async history => {
+      fixture('clarify', history)
+      useTranscripts.getState().clarifyExpire('sibling-live', 'pending')
+      batchReplay()
+      const state = { answers: {} as Record<string, string> }
+      const sockets: TestSocket[] = []
+      const requests: { method: string; params: Record<string, unknown> }[] = []
+
+      class TestSocket extends EventTarget {
+        readyState = 0
+
+        constructor() {
+          super()
+          sockets.push(this)
+          queueMicrotask(() => {
+            this.readyState = 1
+            this.dispatchEvent(new Event('open'))
+            this.frame({
+              jsonrpc: '2.0',
+              method: 'event',
+              params: { type: 'gateway.ready', payload: { replay_epoch: 'epoch-A' } }
+            })
+          })
+        }
+
+        frame(value: unknown) {
+          this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(value) }))
+        }
+
+        event(type: string, payload: Record<string, unknown>) {
+          this.frame({
+            jsonrpc: '2.0',
+            method: 'event',
+            params: { type, session_id: 'sibling-live', payload }
+          })
+        }
+
+        send(data: string) {
+          const { id, method, params } = JSON.parse(data)
+          requests.push({ method, params })
+          let result: unknown = {}
+
+          if (method === 'hexbot.bots.list') {
+            result = { bots: [bot] }
+          } else if (method === 'hexbot.rooms.list') {
+            result = { rooms }
+          } else if (method === 'hexbot.rooms.log') {
+            result = { events: [] }
+          } else if (method === 'hexbot.info') {
+            result = { install_id: 'fixture', daemon_name: 'fixture' }
+          } else if (method === 'hexbot.rooms.get') {
+            this.event('clarify.request', {
+              bot: 'owl',
+              section_id: 'stored-sibling',
+              request_id: 'batch',
+              questions: [
+                { qid: 'a', question: 'First?' },
+                { qid: 'b', question: 'Second?' }
+              ],
+              answers: state.answers
+            })
+            result = { room: rooms[1] }
+          } else if (method === 'clarify.respond') {
+            state.answers = { ...state.answers, [params.question_id]: params.answer }
+            this.event('clarify.resolved', {
+              request_id: 'batch',
+              status: 'answered',
+              answers: state.answers
+            })
+            this.event('status.update', { kind: 'working', text: 'Working' })
+            result = { status: 'answered', answers: state.answers }
+          }
+
+          queueMicrotask(() => this.frame({ jsonrpc: '2.0', id, result }))
+        }
+
+        close() {
+          this.readyState = 3
+          this.dispatchEvent(new CloseEvent('close', { code: 1006 }))
+        }
+      }
+
+      useConnection.setState({ epoch: 'epoch-A', daemon: null })
+
+      const supervisor = new ConnectionSupervisor({
+        bridge: () => null,
+        fetch: async () => new Response(JSON.stringify({ ticket: 'fixture' }), { status: 200 }),
+        socketFactory: () => new TestSocket() as unknown as WebSocket
+      })
+
+      try {
+        await supervisor.start({ kind: 'local' })
+        const epoch = useTranscripts.getState().bySession['sibling-live']!.epoch
+        sockets[0]!.close()
+        state.answers = { a: 'Peer answer' }
+        await supervisor.retryNow()
+        await useRooms.getState().open('sibling')
+
+        const batch = () =>
+          useTranscripts
+            .getState()
+            .bySession['sibling-live']!.clarifies.find(item => item.requestId === 'batch')!
+
+        expect(useTranscripts.getState().bySession['sibling-live']?.epoch).toBe(epoch)
+        expect(batch().answers).toEqual({ a: 'Peer answer' })
+        const view = render(createElement(ClarifyCard, { clarify: batch() }))
+
+        expect(view.getByText('Peer answer')).toBeVisible()
+        expect(view.getAllByRole('textbox', { name: 'Your own answer' })).toHaveLength(1)
+        fireEvent.change(view.getByRole('textbox', { name: 'Your own answer' }), {
+          target: { value: 'Local answer' }
+        })
+        await act(async () => {
+          fireEvent.click(view.getByRole('button', { name: 'Done' }))
+        })
+        expect(batch().answers).toEqual({ a: 'Peer answer', b: 'Local answer' })
+        expect(requests.filter(request => request.method === 'clarify.respond')).toEqual([
+          expect.objectContaining({
+            params: expect.objectContaining({ request_id: 'batch', question_id: 'b' })
+          })
+        ])
+        expect(requests.map(request => request.method)).not.toContain('session.events.since')
+        view.rerender(createElement(ClarifyCard, { clarify: batch() }))
+        expect(view.queryByRole('textbox', { name: 'Your own answer' })).toBeNull()
+        expect(status()).toBe('working')
+        view.unmount()
+      } finally {
+        supervisor.stop()
+      }
+    }
+  )
+})
 
 describe.each(['approval', 'clarify'] as const)('%s confirmation on room refresh', kind => {
   it.each(['empty', 'live messages'] as const)(

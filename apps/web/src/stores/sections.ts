@@ -423,8 +423,7 @@ export const useSections = create<SectionsState>((set, get) => ({
 
       for (const pending of pendingClarifies) {
         useTranscripts.getState().clarifyRequest(live, pending, {
-          notify: false,
-          confirmPending: true
+          notify: false
         })
       }
     }
@@ -453,8 +452,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       // The owner answers the receiving bot's questions here: threads have no other view.
       for (const pending of pendingClarifies) {
         useTranscripts.getState().clarifyRequest(live, pending, {
-          notify: false,
-          confirmPending: true
+          notify: false
         })
       }
     }

@@ -193,7 +193,7 @@ export interface TranscriptsState {
   clarifyRequest: (
     sessionId: string,
     payload: ClarifyRequestPayload & { answers?: Record<string, string> },
-    options?: { notify?: boolean; confirmPending?: boolean }
+    options?: { notify?: boolean }
   ) => void
   appendUserMessage: (sessionId: string, text: string, attachments?: Attachment[]) => Message
   warnings: Record<string, string>
@@ -924,29 +924,15 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         const existing = transcript.clarifies.find(item => item.requestId === requestId)
 
         if (existing) {
-          if (!options.confirmPending) {
-            return !clarifyWaiting(existing)
-              ? transcript
-              : {
-                  ...advanceAuthority(transcript),
-                  liveStatus: transcript.liveStatus,
-                  waitingRequests: [
-                    ...(transcript.waitingRequests ?? []).filter(
-                      item => item.kind !== 'clarify' || item.requestId !== requestId
-                    ),
-                    { kind: 'clarify', requestId, revision: authorityRevision }
-                  ]
-                }
+          const answers = {
+            ...payload.answers,
+            ...existing.answers,
+            ...transcript.clarifyAnswers?.[requestId]
           }
 
-          const current = {
-            ...existing,
-            answers: {
-              ...payload.answers,
-              ...existing.answers,
-              ...transcript.clarifyAnswers?.[requestId]
-            }
-          }
+          const current = sameAnswers(existing.answers, answers)
+            ? existing
+            : { ...existing, answers }
 
           const waiting = clarifyWaiting(current)
 
