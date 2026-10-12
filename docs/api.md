@@ -87,6 +87,8 @@ turn's matching bot and live session. A named room cause can refer to an older
 live session; legacy causes without a room ID require an exact session match.
 Accepted room retry evidence survives successful turn completion until newer
 status or lifecycle authority retires it.
+Markers retire only failures naming the matching stored section; global and
+connector causes remain Stopped.
 Compaction starts and older daemons omit this field; an unmarked start or a
 Working event alone does not prove that a failure was resolved.
 

@@ -7,7 +7,7 @@ import { setActiveRpc } from '../../lib/rpc'
 import type { Bot, Room, RoomMember } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useMe } from '../../stores/me'
-import { useRooms } from '../../stores/rooms'
+import { clearDeletedRooms, useRooms } from '../../stores/rooms'
 import {
   resetTranscriptEffects,
   setTranscriptEffects,
@@ -23,6 +23,8 @@ vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => navigate,
   useParams: () => ({ room: 'r1' })
 }))
+
+beforeEach(clearDeletedRooms)
 
 describe('room composer mentions', () => {
   it('names bot suggestions from member rows without access to their profiles', () => {
@@ -307,13 +309,28 @@ describe('approvals and questions in a room', () => {
 describe('room history', () => {
   it('prefers your renamed identity over stale room member names', () => {
     useMe.setState({ me: { display_name: 'Alex', id: 'local' } })
-    useRooms.setState({ byId: { r1: { id: 'r1', members: [
-      { member_kind: 'human', member_id: 'local', display_name: 'Admin' }
-    ] } as Room } })
-    render(<RoomEventRow event={{
-      actor_id: 'local', actor_kind: 'human', kind: 'member.added',
-      payload: { member_id: 'local', member_kind: 'human' }, room_id: 'r1', seq: 1
-    } as never} />)
+    useRooms.setState({
+      byId: {
+        r1: {
+          id: 'r1',
+          members: [{ member_kind: 'human', member_id: 'local', display_name: 'Admin' }]
+        } as Room
+      }
+    })
+    render(
+      <RoomEventRow
+        event={
+          {
+            actor_id: 'local',
+            actor_kind: 'human',
+            kind: 'member.added',
+            payload: { member_id: 'local', member_kind: 'human' },
+            room_id: 'r1',
+            seq: 1
+          } as never
+        }
+      />
+    )
     expect(screen.getByText(/Alex/)).toBeVisible()
     expect(screen.queryByText(/Admin/)).toBeNull()
   })

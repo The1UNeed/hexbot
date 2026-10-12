@@ -631,3 +631,42 @@ it.each(['list', 'log', 'get'] as const)(
     expect(f.status()).toBe('stopped')
   }
 )
+
+it.each([
+  ['global', false],
+  ['global', true],
+  ['empty section', false],
+  ['empty section', true],
+  ['indexed private section', false],
+  ['indexed private section', true]
+] as const)(
+  'preserves a named room %s Stopped cause with completed retry=%s',
+  async (cause, completed) => {
+    const f = fixture('named')
+    const sectionId = cause === 'global' ? null : cause === 'empty section' ? '' : 'private-section'
+    const detail = { ...f.stopped.status_detail!, section_id: sectionId }
+    useBots.setState({ byName: { owl: { ...f.stopped, status_detail: detail } } })
+
+    if (cause === 'indexed private section') {
+      useSections.setState({
+        byId: {
+          'private-section': { id: 'private-section', bot: 'owl', archived_at: null } as Section
+        },
+        idsByBot: { owl: ['private-section'] },
+        liveSessionId: { 'private-section': 'private-live' }
+      })
+    }
+
+    // agent_start resolves turn_failed by its stored section, not a global or private cause.
+    await f.retry()
+    expect(f.current()?.retryResolved).toBe(true)
+    expect(f.status()).toBe('stopped')
+
+    if (completed) {
+      f.event('message.complete', { text: 'Done', status: 'complete' })
+      f.turn(f.sessionId, 'owl', f.roomId, 'complete')
+      expect(f.current()?.retryResolved).toBe(true)
+      expect(f.status()).toBe('stopped')
+    }
+  }
+)

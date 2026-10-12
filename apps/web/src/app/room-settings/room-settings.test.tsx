@@ -7,13 +7,15 @@ import type { Bot, Room } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useMe } from '../../stores/me'
-import { useRooms } from '../../stores/rooms'
+import { clearDeletedRooms, useRooms } from '../../stores/rooms'
 
 import { RoomSettingsPanel } from './index'
 
 const navigate = vi.fn()
 
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
+
+beforeEach(clearDeletedRooms)
 
 const room = (members: string[], people: string[] = []): Room => ({
   approval_mode: 'manual',
@@ -160,18 +162,21 @@ describe('room settings', () => {
     ['member', 'off', true],
     ['admin', 'smart', true],
     [undefined, 'smart', true]
-  ] as const)('room approvals for role %s, mode %s offer Bypass: %s', async (role, approval_mode, bypass) => {
-    useMe.setState({ me: { display_name: 'Alex', id: 'local', role } })
-    render(<RoomSettingsPanel room={{ ...room(['scout']), approval_mode }} />)
-    const picker = screen.getByRole('combobox', { name: 'Room approval mode' })
-    fireEvent.click(picker)
-    expect(await screen.findByRole('option', { name: 'Auto' })).toBeVisible()
-    expect(screen.queryByRole('option', { name: 'Bypass' }) !== null).toBe(bypass)
+  ] as const)(
+    'room approvals for role %s, mode %s offer Bypass: %s',
+    async (role, approval_mode, bypass) => {
+      useMe.setState({ me: { display_name: 'Alex', id: 'local', role } })
+      render(<RoomSettingsPanel room={{ ...room(['scout']), approval_mode }} />)
+      const picker = screen.getByRole('combobox', { name: 'Room approval mode' })
+      fireEvent.click(picker)
+      expect(await screen.findByRole('option', { name: 'Auto' })).toBeVisible()
+      expect(screen.queryByRole('option', { name: 'Bypass' }) !== null).toBe(bypass)
 
-    if (approval_mode === 'off') {
-      expect(picker).toHaveTextContent('Bypass')
+      if (approval_mode === 'off') {
+        expect(picker).toHaveTextContent('Bypass')
+      }
     }
-  })
+  )
 
   it('deletes the room only after the name is typed back', async () => {
     const one = room(['scout'])

@@ -983,6 +983,8 @@ export function botStatusWithLive(
   const roomRetry = Boolean(
     roomId &&
     detail?.action?.kind === 'retry' &&
+    detail.section_id &&
+    !indexed.byId[detail.section_id] &&
     !archivedRoom &&
     roomSession?.bot === bot.name &&
     roomSession.sectionId === `room:${roomId}` &&
