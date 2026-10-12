@@ -262,7 +262,8 @@ const botSectionsRequests = new Map<string, number>()
 const sectionRequests = new Map<string, number>()
 type MetadataField = 'archive' | 'title'
 const sectionMetadataRequests = new Map<string, Record<MetadataField, number>>()
-const boundSectionRequests = new Map<string, number>()
+// Opens bind a fresh runtime with earlier metadata; exact lookups also observe its lifecycle.
+const boundSectionRequests = new Map<string, { request: number; lifecycle: number }>()
 const removedSectionRequests = new Map<string, { active: boolean; bot?: string; request: number }>()
 
 const pendingSectionReads = new Set<{
@@ -337,6 +338,13 @@ function acceptSection(id: string, request: number, metadata = true): void {
   }
 }
 
+function acceptBinding(id: string, request: number, lifecycle = false): void {
+  boundSectionRequests.set(id, {
+    request,
+    lifecycle: lifecycle ? request : (boundSectionRequests.get(id)?.lifecycle ?? 0)
+  })
+}
+
 function openedSection(section: Section, request: number): Section {
   if (removedAfter(section.id, request)) {
     throw new Error('This section was deleted.')
@@ -346,16 +354,18 @@ function openedSection(section: Section, request: number): Section {
 
   return current && (sectionRequests.get(section.id) ?? 0) > request
     ? { ...section, ...sectionMetadata(current) }
-    : section
+    : current && (boundSectionRequests.get(section.id)?.lifecycle ?? 0) > request
+      ? { ...section, archived_at: current.archived_at }
+      : section
 }
 
-function threadBinding(
+function sectionBinding(
   state: SectionsState,
   section: Section,
-  opened = false,
+  includeIndexed = false,
   request = Infinity
 ): Partial<SectionsState> {
-  if (!opened && !isThread(section)) {
+  if (!includeIndexed && !isThread(section)) {
     return {}
   }
 
@@ -363,7 +373,7 @@ function threadBinding(
   const current = state.byId[section.id]
 
   const live =
-    (boundSectionRequests.get(section.id) ?? 0) > request
+    (boundSectionRequests.get(section.id)?.request ?? 0) > request
       ? (liveSessionId[section.id] ?? current?.live_session_id)
       : section.live_session_id
 
@@ -375,13 +385,14 @@ function threadBinding(
 
   return {
     liveSessionId,
-    ...(isThread(section) && (current || section.archived_at)
+    ...(current || (isThread(section) && section.archived_at)
       ? {
           byId: {
             ...state.byId,
             [section.id]: {
               ...(current ?? section),
               archived_at: section.archived_at,
+              updated_at: section.updated_at,
               live_session_id: live ?? null
             }
           }
@@ -449,7 +460,7 @@ export const useSections = create<SectionsState>((set, get) => ({
         target.epoch !== connection.epoch ||
         removedSectionRequests.get(id)?.active ||
         (sectionMetadataRequests.get(id)?.archive ?? 0) > request ||
-        (boundSectionRequests.get(id) ?? 0) > request ||
+        (boundSectionRequests.get(id)?.request ?? 0) > request ||
         (bound && bound !== sessionId && bound !== boundAtRead) ||
         (get().byId[id] && get().byId[id]?.bot !== bot)
       ) {
@@ -457,7 +468,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       }
 
       // Ownership reads can hide archived activity without superseding pending edits.
-      boundSectionRequests.set(id, request)
+      acceptBinding(id, request, Boolean(section))
 
       if (!section) {
         // Absence can retire known private ownership, not an unclassified room card.
@@ -557,10 +568,12 @@ export const useSections = create<SectionsState>((set, get) => ({
           bot ? name !== bot : (botSectionsRequests.get(name) ?? 0) > request
 
         const openedAfter = (id: string) => (sectionRequests.get(id) ?? 0) > request
-        const boundAfter = (id: string) => (boundSectionRequests.get(id) ?? 0) > request
+        const boundAfter = (id: string) => (boundSectionRequests.get(id)?.request ?? 0) > request
 
         const preserveArchive = (id: string) =>
-          boundAfter(id) && !state.liveSessionId[id] && Boolean(state.byId[id])
+          boundAfter(id) &&
+          Boolean(state.byId[id]) &&
+          (!state.liveSessionId[id] || (boundSectionRequests.get(id)?.lifecycle ?? 0) > request)
 
         const incoming = (result.sections ?? [])
           .filter(section => !preserve(section.bot) && !removedAfter(section.id, request))
@@ -581,7 +594,9 @@ export const useSections = create<SectionsState>((set, get) => ({
                     ? opened!.archived_at
                     : current.archived_at,
                   live_session_id: boundLive ?? opened?.live_session_id ?? null,
-                  message_count: opened?.message_count ?? current.message_count
+                  message_count: boundLive
+                    ? (opened?.message_count ?? current.message_count)
+                    : current.message_count
                 }
               : current
           })
@@ -654,7 +669,7 @@ export const useSections = create<SectionsState>((set, get) => ({
     acceptSection(section.id, request, false)
 
     if (live) {
-      boundSectionRequests.set(section.id, ++sectionsRequest)
+      acceptBinding(section.id, ++sectionsRequest)
     }
 
     set(state => ({
@@ -699,13 +714,13 @@ export const useSections = create<SectionsState>((set, get) => ({
     acceptSection(section.id, request, false)
 
     if (live) {
-      boundSectionRequests.set(section.id, ++sectionsRequest)
+      acceptBinding(section.id, ++sectionsRequest)
     }
 
     if (live) {
       useTranscripts.getState().clearAnsweredWaiting([], [live], revision)
       useTranscripts.getState().setSectionId(live, id, section.bot)
-      set(state => threadBinding(state, section, true))
+      set(state => sectionBinding(state, section, true))
 
       // The owner answers the receiving bot's questions here: threads have no other view.
       for (const pending of pendingClarifies) {
@@ -802,9 +817,9 @@ export const useSections = create<SectionsState>((set, get) => ({
     sectionChanged(section.id, request, 'archive')
     set(state => ({
       ...mergeEditedSection(state, section),
-      ...threadBinding(state, section, false, request)
+      ...sectionBinding(state, section, false, request)
     }))
-    boundSectionRequests.set(id, sectionsRequest)
+    acceptBinding(id, sectionsRequest, true)
   },
 
   async unarchive(id) {
@@ -818,9 +833,9 @@ export const useSections = create<SectionsState>((set, get) => ({
     sectionChanged(section.id, request, 'archive')
     set(state => ({
       ...mergeEditedSection(state, section),
-      ...threadBinding(state, section, false, request)
+      ...sectionBinding(state, section, true, request)
     }))
-    boundSectionRequests.set(id, sectionsRequest)
+    acceptBinding(id, sectionsRequest, true)
   },
 
   async remove(id, purgeMemory = true) {

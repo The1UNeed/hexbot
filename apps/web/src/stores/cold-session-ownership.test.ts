@@ -852,7 +852,12 @@ describe.each(['approval', 'clarify'] as const)('%s catalog lifecycle ordering',
       await flush()
       const sibling = section({ id: 'sibling', peer_bot: null, live_session_id: null })
       catalog.resolve({
-        sections: [...(present ? [{ ...original, title: 'Catalog title' }] : []), sibling]
+        sections: [
+          ...(present
+            ? [{ ...original, title: 'Catalog title', message_count: 5, preview: 'Latest words' }]
+            : []),
+          sibling
+        ]
       })
       await reading
       const sessions = useTranscripts.getState().bySession
@@ -863,7 +868,9 @@ describe.each(['approval', 'clarify'] as const)('%s catalog lifecycle ordering',
       expect(row).toMatchObject({
         archived_at: verified.archived_at,
         live_session_id: verified.live_session_id,
-        title: present ? 'Catalog title' : original.title
+        title: present ? 'Catalog title' : original.title,
+        message_count: present ? 5 : original.message_count,
+        preview: present ? 'Latest words' : original.preview
       })
       expect(useSections.getState().idsByBot.owl).toContain('sibling')
       expect(useSections.getState().idsByBot.owl).toContain('stored')
@@ -1126,3 +1133,133 @@ it.each(['failed', 'missing array', 'malformed row', 'wrong owner'] as const)(
     expect(dot()).toBe('needs_you')
   }
 )
+
+it.each(
+  (['approval', 'clarify'] as const).flatMap(kind =>
+    (['full', 'scoped'] as const).flatMap(scope =>
+      (['live', 'new-live', 'third-live'] as const).flatMap(sid =>
+        [false, true].map(local => ({ kind, scope, sid, local }))
+      )
+    )
+  )
+)(
+  'active $sid ownership protects $kind from an older $scope archived catalog, local restore $local',
+  async ({ kind, scope, sid, local }) => {
+    const archived = section({ peer_bot: null, archived_at: 1 })
+    useSections.setState({ byId: { stored: archived }, idsByBot: { owl: ['stored'] } })
+
+    const saving = deferred(),
+      catalog = deferred(),
+      lookup = deferred()
+
+    setActiveRpc({
+      call: vi.fn((method: string, params: { include_threads?: boolean }) =>
+        method === 'hexbot.sections.unarchive'
+          ? saving.promise
+          : params.include_threads
+            ? lookup.promise
+            : catalog.promise
+      )
+    } as never)
+    const restoring = local ? useSections.getState().unarchive('stored') : undefined
+    const reading = useSections.getState().refresh(scope === 'scoped' ? { bot: 'owl' } : {})
+    event(
+      `${kind}.request`,
+      { bot: 'owl', section_id: 'stored', request_id: 'request', question: 'Continue?' },
+      sid === 'live' ? 'live' : 'new-live'
+    )
+    lookup.resolve({ sections: [{ ...archived, archived_at: null, live_session_id: sid }] })
+    await flush()
+
+    if (sid === 'third-live') {
+      event(
+        `${kind}.request`,
+        { bot: 'owl', section_id: 'stored', request_id: 'current', question: 'Continue?' },
+        sid
+      )
+    }
+
+    catalog.resolve({
+      sections: [
+        { ...archived, title: 'Catalog title' },
+        section({ id: 'sibling', peer_bot: null, live_session_id: null })
+      ]
+    })
+    await reading
+
+    if (local) {
+      saving.resolve({ section: { ...archived, archived_at: null } })
+      await restoring
+    }
+
+    const row = useSections.getState().byId.stored!
+    const sessions = useTranscripts.getState().bySession
+    const live = liveSectionsOf(sessions)
+    expect(row).toMatchObject({ archived_at: null, live_session_id: sid, title: 'Catalog title' })
+    expect(useSections.getState().liveSessionId.stored).toBe(sid)
+    expect(useSections.getState().idsByBot.owl).toContain('sibling')
+    expect(botStatusWithLive(bot, [row], live, sessions)).toBe('needs_you')
+    expect(sectionStatusOf(bot, 'stored', live)).toBe('needs_you')
+  }
+)
+
+it.each(['live', 'third-live'] as const)(
+  'ordinary restore rebinds the accepted %s after an archived lookup',
+  async sid => {
+    const original = await indexedPending()
+    rpc([{ ...original, archived_at: 1, live_session_id: sid }])
+    await useSections.getState().verifySessionOwner('live', true)
+    expect(useSections.getState().liveSessionId.stored).toBeUndefined()
+    setActiveRpc({
+      call: vi
+        .fn()
+        .mockResolvedValue({ section: { ...original, archived_at: null, live_session_id: sid } })
+    } as never)
+    await useSections.getState().unarchive('stored')
+    expect(useSections.getState().liveSessionId.stored).toBe(sid)
+
+    if (sid !== 'live') {
+      event('approval.request', { bot: 'owl', section_id: 'stored', request_id: 'current' }, sid)
+    }
+
+    const row = useSections.getState().byId.stored!
+    const sessions = useTranscripts.getState().bySession
+    const live = liveSectionsOf(sessions)
+    expect(row).toMatchObject({ archived_at: null, live_session_id: sid })
+    expect(botStatusWithLive(bot, [row], live, sessions)).toBe('needs_you')
+    expect(sectionStatusOf(bot, 'stored', live)).toBe('needs_you')
+  }
+)
+
+it('an open with older metadata preserves a later exact active lifecycle observation', async () => {
+  const archived = section({ peer_bot: null, archived_at: 1 })
+  useSections.setState({ byId: { stored: archived }, idsByBot: { owl: ['stored'] } })
+
+  const opening = deferred(),
+    catalog = deferred(),
+    lookup = deferred()
+
+  setActiveRpc({
+    call: vi.fn((method: string, params: { include_threads?: boolean }) =>
+      method === 'hexbot.sections.open'
+        ? opening.promise
+        : params.include_threads
+          ? lookup.promise
+          : catalog.promise
+    )
+  } as never)
+  const opened = useSections.getState().open('stored')
+  const reading = useSections.getState().refresh()
+  pending('approval')
+  lookup.resolve({ sections: [{ ...archived, archived_at: null }] })
+  await flush()
+  opening.resolve({ section: archived, messages: [] })
+  await opened
+  catalog.resolve({ sections: [{ ...archived, title: 'Catalog title' }] })
+  await reading
+  const row = useSections.getState().byId.stored!
+  const sessions = useTranscripts.getState().bySession
+  const live = liveSectionsOf(sessions)
+  expect(row).toMatchObject({ archived_at: null, title: 'Catalog title' })
+  expect(botStatusWithLive(bot, [row], live, sessions)).toBe('needs_you')
+})
