@@ -3835,7 +3835,7 @@ describe('mobile answers when the roster never observed the wait', () => {
   )
 
   it.each(['s1', 'sibling'])(
-    'retires missed-wait proof when a new request arrives in %s after leaving',
+    'keeps a new confirmed card only in its exact retained session %s after leaving',
     async sessionId => {
       await open()
       await request()
@@ -3854,7 +3854,660 @@ describe('mobile answers when the roster never observed the wait', () => {
           sessionId
         )
       )
+      expect(render().bots[0].status).toBe(sessionId === 's1' ? 'needs_you' : 'idle')
+    }
+  )
+})
+
+describe('mobile current room Retry proof', () => {
+  const failed = {
+    ...stoppedBot,
+    owner_id: 'owner',
+    status_detail: {
+      ...stoppedBot.status_detail!,
+      section_id: 'room-conversation',
+      room_id: 'room'
+    }
+  }
+  const room = (sessionId = 's1') =>
+    ({
+      id: 'room',
+      members: [],
+      turns: [{ bot: 'alpha', live_session_id: sessionId }]
+    }) as unknown as Room
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+  })
+  async function open(sessionId = 's1', cached: Bot = failed) {
+    await unopened(cached)
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.rooms.get') return { room: room(sessionId) }
+      if (method === 'hexbot.rooms.log') return { events: [] }
+      if (method === 'hexbot.bots.get' || method === 'hexbot.bots.list')
+        throw new Error('Bot read unavailable')
+      return original(method, params)
+    }
+    await render().openRoom(room(sessionId))
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+  }
+  const turnEvent = (sessionId = 's1', status = 'running', bot = 'alpha', roomId = 'room') => ({
+    type: 'hexbot.rooms.turn',
+    payload: { room_id: roomId, bot, live_session_id: sessionId, status }
+  })
+  it.each(['native', 'explicit', 'rollover', 'missing'])(
+    'resolves the exact current room turn with %s cached ownership despite unavailable reads',
+    async cause => {
+      const sessionId = cause === 'rollover' ? 'reopened-live' : 's1'
+      const cached = {
+        ...failed,
+        status_detail: {
+          ...failed.status_detail,
+          room_id: cause === 'native' ? null : 'room',
+          session_id: cause === 'missing' ? null : 's1'
+        }
+      }
+      await open(sessionId, cached)
+      hooks.clients[0].emit(wire('message.start', { retry_resolved: true }, sessionId))
+      hooks.clients[0].emit(wire('status.update', { kind: 'working', text: 'Working' }, sessionId))
+      hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: { name: 'alpha' } })
+      await flush()
+      await expect(render().refresh()).rejects.toThrow('Bot read unavailable')
+      expect(render().chat.turns[sessionId].retryResolution).toMatchObject({
+        sessionId,
+        resolved: true
+      })
+      expect(chatActivityLabel(render().chat)).toBe('Working')
+      expect(render().bots[0]).toMatchObject({
+        status: 'working',
+        status_detail: { session_id: sessionId, room_id: 'room', action: null }
+      })
+      render().back()
+      await expect(render().refresh()).rejects.toThrow('Bot read unavailable')
+      expect(render().bots[0]).toMatchObject({
+        status: 'working',
+        status_detail: { session_id: sessionId, room_id: 'room' }
+      })
+    }
+  )
+
+  it.each([
+    'connector',
+    'global',
+    'global-room',
+    'other-room',
+    'private',
+    'private-explicit',
+    'unmarked',
+    'unknown',
+    'other-bot',
+    'ambiguous-old'
+  ])('preserves the %s failure or untrusted room marker', async cause => {
+    const cached = {
+      ...failed,
+      status_detail: {
+        ...failed.status_detail,
+        action:
+          cause === 'connector'
+            ? { kind: 'fix_connector' as const, connector: 'mail' }
+            : { kind: 'retry' as const },
+        room_id:
+          cause === 'other-room'
+            ? 'other'
+            : ['global', 'private', 'ambiguous-old'].includes(cause)
+              ? null
+              : 'room',
+        section_id: ['global', 'global-room'].includes(cause)
+          ? null
+          : ['private', 'private-explicit'].includes(cause)
+            ? 'section'
+            : 'room-conversation'
+      }
+    }
+    await open(cause === 'ambiguous-old' ? 'new-live' : 's1', cached)
+    if (cause === 'other-bot') hooks.clients[0].emit(turnEvent('beta-live', 'running', 'beta'))
+    hooks.clients[0].emit(
+      wire(
+        'message.start',
+        cause === 'unmarked' ? {} : { retry_resolved: true },
+        cause === 'unknown'
+          ? 'unknown'
+          : cause === 'other-bot'
+            ? 'beta-live'
+            : cause === 'ambiguous-old'
+              ? 'new-live'
+              : 's1'
+      )
+    )
+    expect(render().bots[0]).toMatchObject({
+      status: 'stopped',
+      status_detail: cached.status_detail
+    })
+    if (['global-room', 'private-explicit'].includes(cause)) {
+      hooks.clients[0].emit(wire('message.complete', { text: 'Done' }))
+      hooks.clients[0].emit(turnEvent('s1', 'complete'))
+      expect(render().bots[0]).toMatchObject({
+        status: 'stopped',
+        status_detail: cached.status_detail
+      })
+      render().back()
+      expect(render().bots[0]).toMatchObject({
+        status: 'stopped',
+        status_detail: cached.status_detail
+      })
+    }
+  })
+
+  it('binds a new running turn and ignores old markers and terminal SIDs while retaining successful completion', async () => {
+    await open('old-live')
+    hooks.clients[0].emit(turnEvent('new-live'))
+    hooks.clients[0].emit(wire('message.start', { retry_resolved: true }, 'old-live'))
+    expect(render().bots[0].status).toBe('stopped')
+    hooks.clients[0].emit(wire('message.start', { retry_resolved: true }, 'new-live'))
+    expect(render().bots[0]).toMatchObject({
+      status: 'working',
+      status_detail: { session_id: 'new-live', room_id: 'room' }
+    })
+    hooks.clients[0].emit(turnEvent('old-live', 'complete'))
+    expect(render().bots[0].status).toBe('working')
+    hooks.clients[0].emit(wire('message.complete', { text: 'Done' }, 'new-live'))
+    expect(render().bots[0].status).toBe('idle')
+    hooks.clients[0].emit(turnEvent('new-live', 'complete'))
+    await expect(render().refresh()).rejects.toThrow('Bot read unavailable')
+    expect(render().chat).toMatchObject({ busy: false, waiting: false })
+    expect(render().bots[0]).toMatchObject({
+      status: 'idle',
+      status_detail: { action: null, room_id: 'room' }
+    })
+    hooks.clients[0].emit(turnEvent('next-live'))
+    expect(render().bots[0].status).toBe('stopped')
+  })
+
+  it('keeps known sibling requests above a resolved room failure without changing another bot', async () => {
+    await open()
+    hooks.clients[0].emit(wire('clarify.request', { request_id: 'sibling', question: 'Next?' }))
+    hooks.clients[0].emit(turnEvent('new-live'))
+    hooks.clients[0].emit(turnEvent('beta-live', 'running', 'beta'))
+    hooks.clients[0].emit(
+      wire('approval.request', { request_id: 'beta', choices: ['once'] }, 'beta-live')
+    )
+    hooks.clients[0].emit(wire('message.start', { retry_resolved: true }, 'new-live'))
+    expect(render().bots[0]).toMatchObject({
+      status: 'needs_you',
+      status_detail: { session_id: 's1', room_id: 'room' }
+    })
+    expect(render().chat.questions.map(card => card.requestId)).toEqual(['sibling'])
+    expect(render().chat.approvals.map(card => card.sessionId)).toEqual(['beta-live'])
+  })
+
+  it.each(['error', 'failed-complete', 'incident', 'room-failed', 'epoch', 'authority', 'delete'])(
+    'retires accepted room Retry proof on %s',
+    async control => {
+      await open()
+      hooks.clients[0].emit(wire('message.start', { retry_resolved: true }))
+      expect(render().bots[0].status).toBe('working')
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+      expect(render().bots[0].status).toBe('working')
+      if (control === 'authority') {
+        const original = hooks.handler
+        hooks.handler = async (method, params) =>
+          method === 'hexbot.bots.get' ? { bot: failed } : original(method, params)
+        hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: { name: 'alpha' } })
+      } else if (control === 'epoch')
+        hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+      else if (control === 'delete')
+        hooks.clients[0].emit({
+          type: 'hexbot.rooms.changed',
+          payload: { id: 'room', deleted: true }
+        })
+      else if (control === 'incident')
+        hooks.clients[0].emit({
+          type: 'hexbot.bots.incident',
+          payload: { bot: 'alpha', session_id: 's1', section_id: 'room-conversation' }
+        })
+      else if (control === 'room-failed') hooks.clients[0].emit(turnEvent('s1', 'failed'))
+      else
+        hooks.clients[0].emit(
+          control === 'error'
+            ? wire('error', { message: 'New failure' })
+            : wire('message.complete', { status: 'error', error: 'New failure' })
+        )
+      await flush()
+      expect(render().bots[0].status).toBe('stopped')
+      if (control === 'delete') expect(render().route).toBeNull()
+    }
+  )
+})
+
+describe('mobile verified private Retry rollover', () => {
+  it.each([false, true])(
+    'resolves the same stored section after reopen (buffered=%s)',
+    async buffered => {
+      const cached = { ...stoppedBot, owner_id: 'owner' }
+      await unopened(cached)
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+      const statusRead = deferred()
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.sections.open')
+          return { section: section('section', 'new-live'), messages: [] }
+        if (method === 'session.status')
+          return buffered ? statusRead.promise : { status: 'working' }
+        if (method === 'hexbot.bots.get' || method === 'hexbot.bots.list')
+          throw new Error('Bot read unavailable')
+        return original(method, params)
+      }
+      const opening = render().openSection(cached, section())
+      if (buffered) await flush()
+      else await opening
+      hooks.clients[0].emit(wire('message.start', { retry_resolved: true }, 'old-live'))
+      expect(render().bots[0].status).toBe('stopped')
+      hooks.clients[0].emit(wire('message.start', { retry_resolved: true }, 'new-live'))
+      if (buffered) {
+        statusRead.resolve({ status: 'working' })
+        await opening
+      }
+      expect(status()).toBe('working')
+      expect(render().bots[0]).toMatchObject({
+        status: 'working',
+        status_detail: {
+          session_id: 'new-live',
+          section_id: 'section',
+          room_id: null,
+          action: null
+        }
+      })
+      await expect(render().refresh()).rejects.toThrow('Bot read unavailable')
+      expect(status()).toBe('working')
+      render().back()
+      expect(render().bots[0].status).toBe('working')
+      await render().openSection(cached, section())
+      expect(status()).toBe('working')
+      const held = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.bots.get' ? { bot: cached } : held(method, params)
+      hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: { name: 'alpha' } })
+      await flush()
+      expect(status()).toBe('stopped')
+    }
+  )
+})
+
+describe('mobile retained partial cards', () => {
+  const idle = { ...namedWait, status: 'idle', status_detail: null } as Bot
+  const room = {
+    id: 'room',
+    members: [],
+    turns: [{ bot: 'alpha', live_session_id: 's1' }]
+  } as unknown as Room
+  const batch = {
+    request_id: 'batch',
+    questions: [
+      { qid: 'first', question: 'When?' },
+      { qid: 'second', question: 'Where?' }
+    ]
+  }
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+  })
+  async function open(place: string) {
+    await unopened(idle)
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.get' || method === 'hexbot.bots.list')
+        throw new Error('Bot read unavailable')
+      if (method === 'hexbot.rooms.get') return { room }
+      if (method === 'hexbot.rooms.log') return { events: [] }
+      return original(method, params)
+    }
+    if (place === 'private') await render().openSection(idle, section())
+    else await render().openRoom(room)
+    hooks.clients[0].emit(
+      wire('clarify.request', {
+        ...batch,
+        bot: 'alpha',
+        section_id: place === 'private' ? 'section' : 'room-conversation'
+      })
+    )
+  }
+  it.each(
+    ['private', 'room'].flatMap(place =>
+      [false, true].flatMap(canonical =>
+        [false, true].map(left => [place, canonical, left] as const)
+      )
+    )
+  )(
+    'keeps remaining cards from %s after a partial answer (canonical=%s,left=%s)',
+    async (place, canonical, left) => {
+      await open(place)
+      const response = deferred()
+      const original = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'clarify.respond' ? response.promise : original(method, params)
+      const answering = render().answer('batch', 'first', 'Typed', 's1')
+      if (left) render().back()
+      response.resolve(
+        canonical
+          ? { status: 'waiting', answers: { first: 'Canonical' }, remaining: ['second'] }
+          : { status: 'waiting' }
+      )
+      await answering
+      await flush()
+      if (!left) {
+        const turn = place === 'private' ? render().chat : render().chat.turns.s1
+        expect(turn.questions[0].questions.map(q => q.id)).toEqual(['second'])
+        expect(turn).toMatchObject({ waiting: true, resumedWaiting: false })
+        render().back()
+      }
+      await expect(render().refresh()).rejects.toThrow('Bot read unavailable')
+      expect(render().bots[0]).toMatchObject({
+        status: 'needs_you',
+        status_detail: { session_id: 's1', room_id: place === 'room' ? 'room' : null }
+      })
+      const held = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.sections.open')
+          return { section: section(), messages: [], pending_clarify: batch }
+        return held(method, params)
+      }
+      if (place === 'private') await render().openSection(idle, section())
+      else await render().openRoom(room)
+      hooks.clients[0].emit(wire('clarify.request', batch))
+      const turn = place === 'private' ? render().chat : render().chat.turns.s1
+      expect(turn.questions[0].questions.map(q => q.id)).toEqual(['second'])
+      expect(turn).toMatchObject({ waiting: true, resumedWaiting: false })
+      const current = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'clarify.respond'
+          ? canonical
+            ? { status: 'answered', answers: { first: 'Canonical', second: 'Here' } }
+            : { status: 'answered' }
+          : current(method, params)
+      await render().answer('batch', 'second', 'Here', 's1')
+      expect(render().chat.questions).toEqual([])
+      expect(render().bots[0].status).toBe('working')
+      render().back()
+      expect(render().bots[0].status).toBe('working')
+    }
+  )
+
+  async function partial(place = 'private') {
+    await open(place)
+    const original = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'clarify.respond'
+        ? { status: 'waiting', answers: { first: 'Canonical' } }
+        : original(method, params)
+    await render().answer('batch', 'first', 'Typed', 's1')
+    render().back()
+    expect(render().bots[0].status).toBe('needs_you')
+  }
+  it.each(['private', 'room'])(
+    'keeps failed answer RPC cards actionable in %s without resumed proof',
+    async place => {
+      await open(place)
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'clarify.respond') throw new Error('Answer unavailable')
+        return original(method, params)
+      }
+      await expect(render().answer('batch', 'first', 'Typed', 's1')).rejects.toThrow(
+        'Answer unavailable'
+      )
+      const turn = place === 'private' ? render().chat : render().chat.turns.s1
+      expect(turn.questions[0].questions.map(q => q.id)).toEqual(['first', 'second'])
+      expect(turn.resumedWaiting).toBe(false)
+      render().back()
+      expect(render().bots[0].status).toBe('needs_you')
+    }
+  )
+  it.each(
+    ['private', 'room'].flatMap(place =>
+      [
+        'start',
+        'complete',
+        'error',
+        'idle',
+        'interrupted',
+        'epoch',
+        'source',
+        'delete',
+        'archive',
+        'full-read',
+        'scoped-read',
+        'missing-bot'
+      ].map(control => [place, control] as const)
+    )
+  )('retires retained partial cards in %s on %s', async (place, control) => {
+    await partial(place)
+    if (control === 'full-read' || control === 'missing-bot') {
+      const original = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.bots.list'
+          ? { bots: control === 'missing-bot' ? [] : [idle] }
+          : original(method, params)
+      await render().refresh()
+    } else if (control === 'scoped-read') {
+      const original = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.bots.get' ? { bot: idle } : original(method, params)
+      hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: { name: 'alpha' } })
+    } else if (control === 'source') {
+      const original = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.bots.list' ? { bots: [idle] } : original(method, params)
+      await render().activate({ ...daemon, id: 'other' }, 'token')
+      await render().refresh()
+    } else if (control === 'epoch') {
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+    } else if (control === 'delete')
+      hooks.clients[0].emit({
+        type: place === 'private' ? 'hexbot.sections.changed' : 'hexbot.rooms.changed',
+        payload: { id: place === 'private' ? 'section' : 'room', bot: 'alpha', deleted: true }
+      })
+    else if (control === 'archive') {
+      const original = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.sections.archive'
+          ? { section: { ...section(), archived_at: 1 } }
+          : original(method, params)
+      if (place === 'private') await render().rpc('hexbot.sections.archive', { id: 'section' })
+      else hooks.clients[0].emit(wire('status.update', { kind: 'idle' }))
+    } else
+      hooks.clients[0].emit(
+        control === 'start'
+          ? wire('message.start', {})
+          : control === 'complete'
+            ? wire('message.complete', {})
+            : control === 'error'
+              ? wire('error', { message: 'Failed' })
+              : wire('status.update', { kind: control })
+      )
+    await flush()
+    expect(render().bots[0]?.status ?? 'idle').toBe('idle')
+  })
+  it.each(['unknown', 'other-sid'])(
+    'does not retain cards from an unsubmitted %s answer',
+    async control => {
+      await open('private')
+      await render().answer(
+        control === 'unknown' ? 'unknown' : 'batch',
+        'first',
+        'Typed',
+        control === 'other-sid' ? 's2' : 's1'
+      )
+      expect(render().chat.questions[0].questions.map(q => q.id)).toEqual(['first', 'second'])
+      render().back()
       expect(render().bots[0].status).toBe('idle')
     }
   )
+  it('keeps hidden partial cards through archive, accepted archived Idle, and restore', async () => {
+    await partial()
+    let archived = true
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.sections.archive' || method === 'hexbot.sections.unarchive')
+        return { section: { ...section(), archived_at: archived ? 1 : null } }
+      if (method === 'hexbot.sections.list')
+        return { sections: [{ ...section(), archived_at: archived ? 1 : null }] }
+      return original(method, params)
+    }
+    await render().rpc('hexbot.sections.archive', { id: 'section' })
+    expect(render().bots[0].status).toBe('idle')
+    const held = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.bots.list' ? { bots: [idle] } : held(method, params)
+    await render().refresh()
+    expect(render().bots[0].status).toBe('idle')
+    hooks.handler = held
+    archived = false
+    await render().rpc('hexbot.sections.unarchive', { id: 'section' })
+    await flush()
+    expect(render().bots[0]).toMatchObject({
+      status: 'needs_you',
+      status_detail: { session_id: 's1', section_id: 'section' }
+    })
+    await render().openSection(idle, section())
+    expect(render().chat.questions[0].questions.map(q => q.id)).toEqual(['second'])
+    expect(render().chat.resumedWaiting).toBe(false)
+  })
+  it.each(['local-newer', 'remote-before'])(
+    'honors archived card/read ordering for %s',
+    async order => {
+      await partial()
+      let archived = order === 'remote-before'
+      const response = deferred()
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.sections.archive' || method === 'hexbot.sections.unarchive')
+          return { section: { ...section(), archived_at: archived ? 1 : null } }
+        if (method === 'hexbot.bots.list') return response.promise
+        if (method === 'hexbot.sections.list')
+          return { sections: [{ ...section(), archived_at: archived ? 1 : null }] }
+        return original(method, params)
+      }
+      const reading = render().refresh()
+      if (order === 'local-newer') {
+        archived = true
+        await render().rpc('hexbot.sections.archive', { id: 'section' })
+      }
+      response.resolve({ bots: [idle] })
+      await reading
+      expect(render().bots[0].status).toBe('idle')
+      archived = false
+      await render().rpc('hexbot.sections.unarchive', { id: 'section' })
+      await flush()
+      expect(render().bots[0].status).toBe(order === 'local-newer' ? 'idle' : 'needs_you')
+    }
+  )
+  it('keeps a genuinely newer exact card through an older accepted roster but ignores another session', async () => {
+    await partial()
+    const roster = deferred()
+    const original = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.bots.list' ? roster.promise : original(method, params)
+    const reading = render().refresh()
+    hooks.clients[0].emit(
+      wire('clarify.request', {
+        request_id: 'new',
+        question: 'Next?',
+        bot: 'alpha',
+        section_id: 'section'
+      })
+    )
+    roster.resolve({ bots: [idle] })
+    await reading
+    expect(render().bots[0].status).toBe('needs_you')
+    hooks.clients[0].emit(
+      wire(
+        'clarify.request',
+        { request_id: 'new', question: 'Elsewhere?', bot: 'alpha', section_id: 'other' },
+        'other-sid'
+      )
+    )
+    expect(render().bots[0]).toMatchObject({
+      status: 'needs_you',
+      status_detail: { session_id: 's1', section_id: 'section' }
+    })
+    const current = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'clarify.respond'
+        ? params.request_id === 'batch'
+          ? { status: 'answered', answers: { first: 'Canonical', second: 'Here' } }
+          : { status: 'answered' }
+        : current(method, params)
+    await render().openSection(idle, section())
+    await render().answer('batch', 'second', 'Here', 's1')
+    expect(status()).toBe('needs_you')
+    await render().answer('new', 'new', 'This', 's1')
+    expect(status()).toBe('working')
+    render().back()
+    expect(render().bots[0].status).toBe('working')
+  })
+  it('preserves canonical partial broadcasts, duplicate qids, other batches and sibling approvals', async () => {
+    await open('private')
+    hooks.clients[0].emit(
+      wire('clarify.request', {
+        ...batch,
+        questions: [batch.questions[0], batch.questions[0], batch.questions[1]]
+      })
+    )
+    hooks.clients[0].emit(wire('approval.request', { request_id: 'approval', choices: ['once'] }))
+    hooks.clients[0].emit(wire('clarify.request', { request_id: 'other', question: 'Which?' }))
+    const response = deferred()
+    const original = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'clarify.respond' ? response.promise : original(method, params)
+    const answering = render().answer('batch', 'first', 'Typed', 's1')
+    render().back()
+    hooks.clients[0].emit(
+      wire('clarify.resolved', {
+        request_id: 'batch',
+        answers: { first: 'Canonical' },
+        status: 'waiting',
+        bot: 'alpha',
+        section_id: 'section'
+      })
+    )
+    response.resolve({ status: 'waiting' })
+    await answering
+    expect(render().bots[0].status).toBe('needs_you')
+    await render().openSection(idle, section())
+    expect(
+      render()
+        .chat.questions.find(card => card.requestId === 'batch')
+        ?.questions.map(q => q.id)
+    ).toEqual(['second'])
+    expect(render().chat.questions.map(card => card.requestId)).toEqual(['batch', 'other'])
+    expect(render().chat.approvals.map(card => card.requestId)).toEqual(['approval'])
+    expect(
+      Object.values(render().chat.settlements).find(saved => saved.answers?.first)?.answers?.first
+    ).toBe('Canonical')
+    const current = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'clarify.respond')
+        return params.request_id === 'batch'
+          ? { status: 'answered', answers: { first: 'Canonical', second: 'Here' } }
+          : { status: 'answered' }
+      if (method === 'approval.respond') return { resolved: true }
+      return current(method, params)
+    }
+    await render().answer('batch', 'second', 'Here', 's1')
+    await render().answer('other', 'other', 'This', 's1')
+    expect(render().bots[0].status).toBe('needs_you')
+    await render().approval('approval', 'once', 's1')
+    expect(render().chat).toMatchObject({
+      questions: [],
+      approvals: [],
+      waiting: false,
+      resumedWaiting: true
+    })
+    render().back()
+    expect(render().bots[0].status).toBe('working')
+  })
 })

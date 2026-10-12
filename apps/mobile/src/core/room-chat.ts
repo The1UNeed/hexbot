@@ -14,7 +14,7 @@ export function roomChat(state: ChatState): ChatState {
   const turns = Object.values(state.turns)
   return {
     ...state,
-    busy: turns.length > 0,
+    busy: turns.some(t => t.busy),
     waiting: turns.some(t => t.waiting),
     activity: turns
       .map(t => t.activity)
@@ -96,6 +96,9 @@ export function reduceRoom(
     const id = typeof p.live_session_id === 'string' ? p.live_session_id : undefined
     const bot = String(p.bot ?? '')
     if (id && ['running', 'working', 'waiting'].includes(String(p.status))) {
+      for (const [key, turn] of Object.entries(turns))
+        if (key !== id && turn.bot === bot && turn.retryResolution)
+          turns[key] = { ...turn, retryResolution: { ...turn.retryResolution, resolved: false } }
       const turn = turns[id] ?? newTurn(bot, id)
       const waiting =
         p.status === 'waiting' || turn.approvals.length > 0 || turn.questions.length > 0
@@ -108,7 +111,23 @@ export function reduceRoom(
       }
     } else {
       for (const [key, turn] of Object.entries(turns))
-        if (key === id || turn.bot === bot) delete turns[key]
+        if (key === id || (!id && turn.bot === bot)) {
+          if (
+            p.status === 'complete' &&
+            turn.retryResolution?.resolved &&
+            turn.retryResolution.roomId === room.id
+          ) {
+            const {
+              messages: _messages,
+              turns: _turns,
+              ...completed
+            } = reduceChat(
+              { ...emptyChat(), ...turn },
+              { type: 'message.complete', session_id: key, payload: {} }
+            )
+            turns[key] = { ...turn, ...completed }
+          } else delete turns[key]
+        }
     }
     return roomChat({ ...state, turns })
   }
@@ -127,10 +146,29 @@ export function reduceRoom(
       messages: message ? [...state.messages, message] : state.messages
     })
   }
+  if (event.type === 'hexbot.bots.incident' && typeof p.bot === 'string') {
+    for (const [id, turn] of Object.entries(turns))
+      if (turn.bot === p.bot && turn.retryResolution)
+        turns[id] = { ...turn, retryResolution: { ...turn.retryResolution, resolved: false } }
+    return roomChat({ ...state, turns })
+  }
   const id = event.session_id
   if (!id || !turns[id]) return state
   const turn = turns[id]
-  const reduced = reduceChat({ ...emptyChat(), ...turn }, event)
+  const current = room.turns?.some(t => t.bot === turn.bot && t.live_session_id === id)
+  const bound = current && (!p.bot || p.bot === turn.bot) && (!p.room_id || p.room_id === room.id)
+  const input =
+    event.type === 'message.start' && p.retry_resolved === true && !bound
+      ? { ...event, payload: { ...p, retry_resolved: false } }
+      : event
+  const reduced = reduceChat({ ...emptyChat(), ...turn }, input)
+  if (reduced.retryResolution && (bound || turn.retryResolution?.roomId === room.id))
+    reduced.retryResolution = {
+      ...reduced.retryResolution,
+      roomId: room.id,
+      bot: turn.bot,
+      sectionId: undefined
+    }
   // Durable room replies arrive separately; session completion retires its pending cards.
   const { messages: _messages, turns: _turns, ...transient } = reduced
   turns[id] = { ...turn, ...transient }

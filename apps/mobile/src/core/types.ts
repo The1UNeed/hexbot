@@ -89,6 +89,11 @@ export interface TurnState {
   /** The daemon resolved failed turns in this exact session; separate from accepted answers. */
   retryResolution?: {
     sessionId: string
+    /** Current route ownership verified when this marker was accepted. */
+    bot?: string
+    sectionId?: string
+    /** Set only by a marker bound to the current bot turn in this room. */
+    roomId?: string
     revision: number
     sequence?: number
     resolved: boolean

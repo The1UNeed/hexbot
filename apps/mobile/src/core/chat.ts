@@ -70,9 +70,11 @@ export function settledBot(
 ): Bot {
   const detail = bot.status_detail
   if (!sessionId) return bot
-  const pending = [...state.approvals, ...state.questions].some(
-    card => card.sessionId === sessionId
-  )
+  const pending =
+    state.busy &&
+    state.waiting &&
+    !state.error &&
+    [...state.approvals, ...state.questions].some(card => card.sessionId === sessionId)
   if (pending && bot.status !== 'stopped') {
     if (
       bot.status === 'needs_you' &&
@@ -96,11 +98,21 @@ export function settledBot(
   }
   const retried =
     bot.status === 'stopped' &&
-    sectionId &&
-    detail?.section_id === sectionId &&
-    !detail.room_id &&
-    detail.action?.kind === 'retry' &&
-    (!detail.session_id || detail.session_id === sessionId) &&
+    detail?.action?.kind === 'retry' &&
+    (roomId
+      ? Boolean(detail.section_id) &&
+        state.retryResolution?.roomId === roomId &&
+        state.retryResolution.bot === bot.name &&
+        (detail.room_id === roomId ||
+          (!detail.room_id && detail.section_id && detail.session_id === sessionId))
+      : sectionId &&
+        detail.section_id === sectionId &&
+        !detail.room_id &&
+        !state.retryResolution?.roomId &&
+        (!detail.session_id ||
+          detail.session_id === sessionId ||
+          (state.retryResolution?.sectionId === sectionId &&
+            state.retryResolution.bot === bot.name))) &&
     state.retryResolution?.sessionId === sessionId &&
     state.retryResolution.resolved &&
     !state.error
@@ -121,7 +133,7 @@ export function settledBot(
     status: pending ? 'needs_you' : state.busy ? 'working' : state.error ? 'stopped' : 'idle',
     status_detail: {
       session_id: sessionId,
-      section_id: sectionId ?? detail?.section_id ?? null,
+      section_id: retried && roomId ? null : (sectionId ?? detail?.section_id ?? null),
       room_id: roomId ?? detail?.room_id ?? null,
       since: detail?.since ?? 0,
       text: state.activity,
@@ -267,6 +279,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         retryResolution:
           marked || previous
             ? {
+                ...previous,
                 sessionId,
                 revision: marked ? revision : (previous?.revision ?? 0),
                 sequence: sequence ?? previous?.sequence,
