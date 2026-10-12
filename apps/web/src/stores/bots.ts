@@ -149,7 +149,11 @@ function clearBotAnswers(
     })
   )
 
-  const clear = (snapshots: Section[][] = [], revisions?: Map<string, number>) => {
+  const clear = (
+    snapshots: Section[][] = [],
+    revisions?: Map<string, number>,
+    confirmations = revisions
+  ) => {
     // Aggregate Idle excludes archived private conversations without stopping them.
     const excluded = new Set(
       bot && (bot.status ?? 'idle') === 'idle'
@@ -173,6 +177,34 @@ function clearBotAnswers(
 
     if (revisions) {
       for (const [id, revision] of revisions) {
+        if (!archivedSession(id) && bot?.status !== 'needs_you') {
+          // Disconnect retires activity before the metadata RPC rejects. Card revisions
+          // still identify the old confirmations without overwriting newer activity.
+          useTranscripts.setState(state => {
+            const transcript = state.bySession[id]
+            const waiting = transcript?.waitingRequests
+            const cutoff = confirmations?.get(id) ?? revision
+
+            if (
+              !transcript ||
+              transcript.authorityRevision <= revision ||
+              !waiting?.some(item => item.revision <= cutoff)
+            ) {
+              return state
+            }
+
+            return {
+              bySession: {
+                ...state.bySession,
+                [id]: {
+                  ...transcript,
+                  waitingRequests: waiting.filter(item => item.revision > cutoff)
+                }
+              }
+            }
+          })
+        }
+
         transcripts.clearAnsweredWaiting(
           [],
           [id],
@@ -211,18 +243,18 @@ function clearBotAnswers(
 
     const original = new Map(
       Object.values(transcripts.bySession)
-      .filter(
-        transcript =>
-          (transcript.authorityRevision <= (throughRevision ?? Infinity) ||
-            inherited.has(transcript.sessionId)) &&
-          matchesScope(transcript.sessionId, transcript.sectionId)
-      )
-      .map(transcript => [
-        transcript.sessionId,
-        inherited.has(transcript.sessionId)
-          ? previous!.original.get(transcript.sessionId)!
-          : transcript.authorityRevision
-      ])
+        .filter(
+          transcript =>
+            (transcript.authorityRevision <= (throughRevision ?? Infinity) ||
+              inherited.has(transcript.sessionId)) &&
+            matchesScope(transcript.sessionId, transcript.sectionId)
+        )
+        .map(transcript => [
+          transcript.sessionId,
+          inherited.has(transcript.sessionId)
+            ? previous!.original.get(transcript.sessionId)!
+            : transcript.authorityRevision
+        ])
     )
 
     // Retire optimism now; only confirmed requests await the concurrent archive metadata.
@@ -234,7 +266,10 @@ function clearBotAnswers(
     }
 
     const revisions = new Map(
-      [...original.keys()].map(id => [id, useTranscripts.getState().bySession[id]!.authorityRevision])
+      [...original.keys()].map(id => [
+        id,
+        useTranscripts.getState().bySession[id]!.authorityRevision
+      ])
     )
 
     const pending = { original, retired: revisions }
@@ -253,7 +288,7 @@ function clearBotAnswers(
         pendingIdleByBot.delete(name)
       }
 
-      clear(snapshots, revisions)
+      clear(snapshots, revisions, original)
     })
   } else {
     clear()

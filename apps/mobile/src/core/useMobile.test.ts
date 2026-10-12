@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GatewayEvent } from '@hermes/shared'
 import type { Bot, Room, SavedDaemon, Section } from './types'
 import { chatActivityLabel } from './tools'
@@ -3440,6 +3440,420 @@ describe('mobile tap before the card roster refresh', () => {
         vi.clearAllTimers()
         vi.useRealTimers()
       }
+    }
+  )
+})
+
+describe('mobile answers when the roster never observed the wait', () => {
+  const idle = { ...namedWait, status: 'idle', status_detail: null } as Bot
+  const room = {
+    id: 'room',
+    members: [],
+    turns: [{ bot: 'alpha', live_session_id: 's1' }]
+  } as unknown as Room
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+  })
+  async function open(place = 'private', cached = idle) {
+    await unopened(cached)
+    const original = hooks.handler
+    const reads = { get: 0, list: 0 }
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.get') {
+        reads.get++
+        throw new Error('Bot read unavailable')
+      }
+      if (method === 'hexbot.bots.list') {
+        reads.list++
+        throw new Error('Roster unavailable')
+      }
+      if (method === 'hexbot.rooms.get') return { room }
+      if (method === 'hexbot.rooms.log') return { events: [] }
+      return original(method, params)
+    }
+    if (place === 'private') await render().openSection(cached, section())
+    else await render().openRoom(room)
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+    return reads
+  }
+  async function request(kind = 'approval', place = 'private', batch = false) {
+    const changed = { type: 'hexbot.bots.changed', payload: { name: 'alpha' } }
+    if (kind === 'approval') hooks.clients[0].emit(changed)
+    hooks.clients[0].emit(
+      wire(kind === 'approval' ? 'approval.request' : 'clarify.request', {
+        bot: 'alpha',
+        section_id: place === 'private' ? 'section' : 'room-conversation',
+        request_id: 'old',
+        ...(kind === 'approval'
+          ? { choices: ['once', 'session', 'deny'] }
+          : batch
+            ? {
+                questions: [
+                  { qid: 'first', question: 'When?' },
+                  { qid: 'second', question: 'Where?' }
+                ]
+              }
+            : { question: 'When?' })
+      })
+    )
+    if (kind === 'question') hooks.clients[0].emit(changed)
+    await flush()
+    await vi.advanceTimersByTimeAsync(200)
+    await flush()
+  }
+  async function answer(kind = 'approval', canonical = false) {
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'approval.respond')
+        return canonical ? { resolved: true, choice: 'once' } : { resolved: true }
+      if (method === 'clarify.respond')
+        return canonical
+          ? { status: 'answered', answers: { old: 'Canonical' } }
+          : { status: 'answered' }
+      return original(method, params)
+    }
+    if (kind === 'approval') await render().approval('old', 'once', 's1')
+    else await render().answer('old', 'old', 'Now', 's1')
+    await flush()
+  }
+
+  it.each(
+    ['approval', 'question'].flatMap(kind => [false, true].map(botRead => [kind, botRead] as const))
+  )(
+    'accepts a fresh %s answer after an Idle read completed before its tap (botRead=%s)',
+    async (kind, botRead) => {
+      await open()
+      await request(kind)
+      const unavailable = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === (botRead ? 'hexbot.bots.get' : 'hexbot.bots.list'))
+          return botRead ? { bot: idle } : { bots: [idle] }
+        return unavailable(method, params)
+      }
+      if (botRead) {
+        hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: { name: 'alpha' } })
+        await flush()
+      } else await render().refresh()
+      expect(status()).toBe('needs_you')
+      hooks.handler = unavailable
+      await answer(kind)
+      expect(status()).toBe('working')
+      render().back()
+      expect(render().bots[0].status).toBe('working')
+    }
+  )
+
+  it.each(
+    ['approval', 'question'].flatMap(kind =>
+      ['private', 'room'].flatMap(place =>
+        [false, true].flatMap(canonical =>
+          [false, true].map(left => [kind, place, canonical, left] as const)
+        )
+      )
+    )
+  )(
+    'retains %s in %s with all reads failing (canonical=%s,left=%s)',
+    async (kind, place, canonical, left) => {
+      const reads = await open(place)
+      await request(kind, place)
+      expect(render().bots[0].status).toBe('needs_you')
+      if (place === 'private') expect(status()).toBe('needs_you')
+      const reply = deferred()
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'approval.respond' || method === 'clarify.respond') return reply.promise
+        return original(method, params)
+      }
+      const answering =
+        kind === 'approval'
+          ? render().approval('old', 'once', 's1')
+          : render().answer('old', 'old', 'Now', 's1')
+      if (left) render().back()
+      reply.resolve(
+        kind === 'approval'
+          ? canonical
+            ? { resolved: true, choice: 'once' }
+            : { resolved: true }
+          : canonical
+            ? { status: 'answered', answers: { old: 'Canonical' } }
+            : { status: 'answered' }
+      )
+      await answering
+      await flush()
+      expect(render().bots[0]).toMatchObject({
+        status: 'working',
+        status_detail: { session_id: 's1', room_id: place === 'room' ? 'room' : null }
+      })
+      if (!left) {
+        const turn = place === 'private' ? render().chat : render().chat.turns.s1
+        expect(turn).toMatchObject({
+          busy: true,
+          waiting: false,
+          resumedWaiting: true,
+          approvals: [],
+          questions: []
+        })
+        if (place === 'private') expect(status()).toBe('working')
+        render().back()
+      }
+      await expect(render().refresh()).rejects.toThrow('Roster unavailable')
+      expect(render().bots[0].status).toBe('working')
+      if (place === 'private') await render().openSection(idle, section())
+      else await render().openRoom(room)
+      expect(render().bots[0].status).toBe('working')
+      if (place === 'private') expect(status()).toBe('working')
+      expect(reads.get).toBeGreaterThanOrEqual(2)
+      expect(reads.list).toBeGreaterThanOrEqual(2)
+      const held = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.bots.get' ? { bot: idle } : held(method, params)
+      hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: { name: 'alpha' } })
+      await flush()
+      expect(render().bots[0].status).toBe('idle')
+      if (place === 'private') expect(status()).toBe('idle')
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it.each(
+    ['approval', 'question'].flatMap(kind =>
+      [false, true].flatMap(canonical =>
+        [false, true].map(botRead => [kind, canonical, botRead] as const)
+      )
+    )
+  )(
+    'does not revive %s after a newer accepted Idle while its ACK is held (canonical=%s,botRead=%s)',
+    async (kind, canonical, botRead) => {
+      await open()
+      await request(kind)
+      const reply = deferred()
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'approval.respond' || method === 'clarify.respond') return reply.promise
+        if (method === (botRead ? 'hexbot.bots.get' : 'hexbot.bots.list'))
+          return botRead ? { bot: idle } : { bots: [idle] }
+        return original(method, params)
+      }
+      const answering =
+        kind === 'approval'
+          ? render().approval('old', 'once', 's1')
+          : render().answer('old', 'old', 'Now', 's1')
+      if (botRead) {
+        hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: { name: 'alpha' } })
+        await flush()
+      } else await render().refresh()
+      reply.resolve(
+        kind === 'approval'
+          ? canonical
+            ? { resolved: true, choice: 'once' }
+            : { resolved: true }
+          : canonical
+            ? { status: 'answered', answers: { old: 'Canonical' } }
+            : { status: 'answered' }
+      )
+      await answering
+      expect(status()).toBe('idle')
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it.each(
+    ['approval', 'question'].flatMap(kind =>
+      ['private', 'room'].map(place => [kind, place] as const)
+    )
+  )(
+    'projects an exact remote %s answer in %s after the old snapshot activity retired',
+    async (kind, place) => {
+      await open(place)
+      const unavailable = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.bots.list') return { bots: [idle] }
+        if (method === 'hexbot.rooms.list') return { rooms: [room] }
+        return unavailable(method, params)
+      }
+      await render().refresh()
+      expect(render().bots[0].status).toBe('idle')
+      hooks.handler = unavailable
+      await request(kind, place)
+      expect(render().bots[0].status).toBe('needs_you')
+      hooks.clients[0].emit(
+        wire(kind === 'approval' ? 'approval.resolved' : 'clarify.resolved', {
+          bot: 'alpha',
+          section_id: place === 'private' ? 'section' : 'room-conversation',
+          request_id: 'old',
+          ...(kind === 'approval'
+            ? { choice: 'once' }
+            : { status: 'answered', answers: { old: 'Canonical' } })
+        })
+      )
+      await flush()
+      const turn = place === 'private' ? render().chat : render().chat.turns.s1
+      expect(turn).toMatchObject({ busy: true, waiting: false, resumedWaiting: true })
+      expect(render().bots[0]).toMatchObject({
+        status: 'working',
+        status_detail: { session_id: 's1', room_id: place === 'room' ? 'room' : null }
+      })
+      if (place === 'private') expect(status()).toBe('working')
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.bots.get' ? { bot: idle } : unavailable(method, params)
+      hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: { name: 'alpha' } })
+      await flush()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it.each(['idle', 'complete', 'error', 'epoch', 'source', 'room-complete'])(
+    'retires the missed-wait proof on %s',
+    async control => {
+      const place = control === 'room-complete' ? 'room' : 'private'
+      await open(place)
+      await request('approval', place)
+      await answer()
+      render().back()
+      expect(render().bots[0].status).toBe('working')
+      if (control === 'source') {
+        const original = hooks.handler
+        hooks.handler = async (method, params) =>
+          method === 'hexbot.bots.list' ? { bots: [idle] } : original(method, params)
+        await render().activate({ ...daemon, id: 'other', origin: 'http://other' }, 'token')
+        await render().refresh()
+      } else if (control === 'epoch') {
+        hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+      } else if (control === 'room-complete') {
+        hooks.clients[0].emit({
+          type: 'hexbot.rooms.turn',
+          payload: { room_id: 'room', bot: 'alpha', live_session_id: 's1', status: 'complete' }
+        })
+      } else {
+        hooks.clients[0].emit(
+          control === 'idle'
+            ? wire('status.update', { kind: 'idle', text: 'Idle' })
+            : control === 'complete'
+              ? wire('message.complete', { text: 'Done' })
+              : wire('error', { message: 'Failed' })
+        )
+      }
+      await flush()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it('keeps a partial batch and a newer sibling card waiting until their exact answers arrive', async () => {
+    await open()
+    await request('question', 'private', true)
+    const original = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'clarify.respond'
+        ? {
+            status: params.question_id === 'first' ? 'waiting' : 'answered',
+            answers: { [String(params.question_id)]: 'Canonical' }
+          }
+        : original(method, params)
+    await render().answer('old', 'first', 'Typed', 's1')
+    expect(render().chat.questions[0].questions.map(q => q.id)).toEqual(['second'])
+    expect(status()).toBe('needs_you')
+    hooks.clients[0].emit(wire('approval.request', { request_id: 'sibling', choices: ['once'] }))
+    await render().answer('old', 'second', 'Typed', 's1')
+    expect(render().chat).toMatchObject({ busy: true, waiting: true, resumedWaiting: false })
+    expect(status()).toBe('needs_you')
+    const held = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'approval.respond' ? { resolved: true } : held(method, params)
+    await render().approval('sibling', 'once', 's1')
+    expect(status()).toBe('working')
+    render().back()
+    expect(render().bots[0].status).toBe('working')
+  })
+
+  it.each(['sibling', 'stopped'])(
+    'preserves the cached stronger %s cause after an exact answer',
+    async control => {
+      const cached =
+        control === 'sibling'
+          ? {
+              ...namedWait,
+              status_detail: {
+                ...namedWait.status_detail!,
+                session_id: 'sibling',
+                section_id: 'other'
+              }
+            }
+          : {
+              ...namedWait,
+              status: 'stopped' as const,
+              status_detail: {
+                ...namedWait.status_detail!,
+                action: { kind: 'fix_connector' as const, connector: 'mail' }
+              }
+            }
+      await open('private', cached)
+      await request()
+      await answer()
+      expect(render().bots[0]).toMatchObject({
+        status: cached.status,
+        status_detail: cached.status_detail
+      })
+      render().back()
+      expect(render().bots[0]).toMatchObject({
+        status: cached.status,
+        status_detail: cached.status_detail
+      })
+    }
+  )
+
+  it.each(['archive', 'delete'])(
+    'excludes retained missed-wait proof after its exact section %s',
+    async control => {
+      await open()
+      await request()
+      await answer()
+      expect(status()).toBe('working')
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.sections.archive')
+          return { section: { ...section(), archived_at: 1 } }
+        return original(method, params)
+      }
+      if (control === 'archive') await render().rpc('hexbot.sections.archive', { id: 'section' })
+      else
+        hooks.clients[0].emit({
+          type: 'hexbot.sections.changed',
+          payload: { id: 'section', bot: 'alpha', deleted: true }
+        })
+      expect(render().bots[0].status).toBe('idle')
+      if (control === 'archive') expect(status()).toBe('idle')
+      else expect(render().route).toBeNull()
+      render().back()
+      await expect(render().refresh()).rejects.toThrow('Roster unavailable')
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it.each(['s1', 'sibling'])(
+    'retires missed-wait proof when a new request arrives in %s after leaving',
+    async sessionId => {
+      await open()
+      await request()
+      await answer()
+      render().back()
+      expect(render().bots[0].status).toBe('working')
+      hooks.clients[0].emit(
+        wire(
+          'clarify.request',
+          {
+            bot: 'alpha',
+            section_id: sessionId === 's1' ? 'section' : 'other',
+            request_id: 'new',
+            question: 'Next?'
+          },
+          sessionId
+        )
+      )
+      expect(render().bots[0].status).toBe('idle')
     }
   )
 })

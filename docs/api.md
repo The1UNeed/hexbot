@@ -155,10 +155,13 @@ sibling session. An accepted Idle reply can retire the bot's older live
 status evidence, but does not settle confirmed questions or approvals in
 archived private sections. Restore makes that pending evidence eligible
 again, including when the next bot refresh fails. Pending questions and
-approvals remain Waiting through an unrelated Working event; answers settle only their matching request IDs.
+approvals remain Waiting through an unrelated Working event; answers settle
+only their matching request IDs.
 Mobile retains exact local answer evidence after leaving a conversation,
-including replies from daemons without settlement broadcasts. History
-rereads preserve answer and retry evidence received during an earlier
+including replies from daemons without settlement broadcasts. A fully
+answered live turn shows Working even if the roster missed its wait and
+the following bot reads fail. A newer accepted Idle retires that evidence.
+History rereads preserve answer and retry evidence received during an earlier
 attempt, until newer authority retires it. Named bot changes fence older
 targeted status reads.
 Mobile projects confirmed cards from the open conversation and every matching
@@ -170,14 +173,19 @@ their exact live session matches, below Needs you and Stopped.
 Accepted archive state excludes matching private activity from the bot
 aggregate and makes the open turn eligible again on restore.
 Bot status and archive fields reconcile independently when sections change.
-Local archive and restore replies preserve newer edits. List and open
-snapshots already in flight cannot undo completed archive edits.
+Local archive, restore and rename replies preserve newer accepted catalog
+metadata and completed edits. List and open snapshots already in flight
+cannot undo completed archive edits; opening still accepts its live session
+and history independently of editable metadata.
 Bot list, get and update replies include the daemon's live status. Older
 daemons can return catalog-only Idle from an update, so a settings save alone
 must not retire confirmed pending cards or a live Working status. A later
 roster or live event can settle them. The web client retains confirmed
 pending cards and retry resolution on same-epoch reconnects while retiring
-optimistic answer evidence. Mobile retains answer and retry status evidence
+optimistic answer evidence. An accepted Idle still retires older confirmed
+cards when a concurrent section read fails during a disconnect; newer cards
+and live activity keep their own authority. Mobile retains answer and retry
+status evidence
 on same-epoch reconnects. Fresh roster or lifecycle state can retire retry
 evidence. A new epoch drops the web client's previous live sessions and
 retires mobile answer and retry status evidence, including room turns.
@@ -273,7 +281,8 @@ roster shows only the title.
   Opening can overlap a rename, archive or restore. Clients keep completed
   edits while accepting the live session and history; a successful delete,
   including one reported by another connected client, fences earlier opens
-  and clears that private section's Stopped status when its action is Retry.
+  and clears that private section's cached Working or Needs you status, and
+  Stopped with a Retry action. Other active sections and rooms still count.
 
 `Context = {tokens, window, compact_at, compacting, recounting, seq}` is how
 full the section's context is: Pi's own estimate of the tokens the next
@@ -798,8 +807,8 @@ devices, and removes the invite and update methods.
 broadcast to every connection.
 Section deletion sends `{id, deleted: true}` to the owner. Clients record
 that exact deletion before refreshing lists, so a failed bot refresh cannot
-retain the deleted private section's Stopped status. An omitted row in a list
-does not prove deletion.
+retain the deleted private section's cached Working or Needs you status, or
+Stopped with a Retry action. An omitted row in a list does not prove deletion.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
 Room mutations emit `hexbot.rooms.changed {id}`. Every persisted room event
 emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit

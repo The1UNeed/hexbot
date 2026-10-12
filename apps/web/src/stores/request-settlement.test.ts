@@ -323,7 +323,7 @@ describe('unopened canonical settlement ownership', () => {
       coldResolved(kind, sessionId, sectionId)
       event('status.update', { kind: 'working', text: 'Working' }, sessionId)
       expect(actions().bySession[sessionId]?.sectionId).toBeUndefined()
-      expect(status()).toBe('needs_you')
+      expect(status()).toBe('idle')
     }
   )
 

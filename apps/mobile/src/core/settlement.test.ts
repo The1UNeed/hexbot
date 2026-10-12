@@ -258,6 +258,40 @@ describe('owned waiting status', () => {
       mobileRevision: 2
     } as GatewayEvent)
 
+  it('projects an unseen Idle wait only from a live accepted answer with compatible scope', () => {
+    const state = resumed()
+    const idle = { ...waitingBot(), status: 'idle', status_detail: null } as Bot
+    expect(settledBot(idle, state, 's1', 'section')).toMatchObject({
+      status: 'working',
+      status_detail: { session_id: 's1', section_id: 'section', room_id: null }
+    })
+    expect(settledBot(idle, state, 's1', null, 'room')).toMatchObject({
+      status: 'working',
+      status_detail: { session_id: 's1', section_id: null, room_id: 'room' }
+    })
+    for (const other of [
+      { ...idle, status: 'needs_you' as const },
+      { ...idle, status: 'stopped' as const },
+      { ...idle, status_detail: { ...waitingBot().status_detail!, session_id: 's2' } },
+      { ...idle, status_detail: { ...waitingBot().status_detail!, section_id: 'other' } },
+      { ...idle, status_detail: { ...waitingBot().status_detail!, room_id: 'other' } },
+      {
+        ...idle,
+        status_detail: { ...waitingBot().status_detail!, action: { kind: 'retry' as const } }
+      }
+    ])
+      expect(settledBot(other, state, 's1', 'section')).toBe(other)
+    for (const unconfirmed of [
+      reduceChat(emptyChat(), event('status.update', { kind: 'working' })),
+      { ...state, resumedWaiting: false },
+      { ...state, busy: false },
+      { ...state, error: 'Failed' },
+      rosterChat(state, 2)
+    ])
+      expect(settledBot(idle, unconfirmed, 's1', 'section')).toBe(idle)
+    expect(settledBot(idle, state, null, 'section')).toBe(idle)
+  })
+
   it('keeps human answer evidence through an automatic wait while newer cards and roster reads remain authoritative', () => {
     let state = resumed()
     state = reduceChat(

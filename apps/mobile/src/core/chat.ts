@@ -60,7 +60,7 @@ const resumeAnswered = (state: ChatState, accepted: boolean, revision: number): 
     ? { ...state, waiting: false, resumedWaiting: true, waitingRevision: revision, activity: '' }
     : state
 
-/** Confirmed cards win; answers and retry starts supersede only their exact roster cause. */
+/** Confirmed cards win; exact answers can resume a wait the older roster never observed. */
 export function settledBot(
   bot: Bot,
   state: TurnState,
@@ -94,7 +94,6 @@ export function settledBot(
       }
     }
   }
-  if (!detail) return bot
   const retried =
     bot.status === 'stopped' &&
     sectionId &&
@@ -106,15 +105,28 @@ export function settledBot(
     state.retryResolution.resolved &&
     !state.error
   const answered =
-    bot.status === 'needs_you' &&
-    detail?.session_id === sessionId &&
     state.resumedWaiting &&
-    !pending
+    !pending &&
+    ((bot.status === 'needs_you' && detail?.session_id === sessionId) ||
+      (bot.status === 'idle' &&
+        state.busy &&
+        !state.error &&
+        !detail?.action &&
+        (!detail?.session_id || detail.session_id === sessionId) &&
+        (!detail?.section_id || detail.section_id === sectionId) &&
+        (!detail?.room_id || detail.room_id === roomId)))
   if (!retried && !answered) return bot
   return {
     ...bot,
     status: pending ? 'needs_you' : state.busy ? 'working' : state.error ? 'stopped' : 'idle',
-    status_detail: { ...detail, text: state.activity, action: null }
+    status_detail: {
+      session_id: sessionId,
+      section_id: sectionId ?? detail?.section_id ?? null,
+      room_id: roomId ?? detail?.room_id ?? null,
+      since: detail?.since ?? 0,
+      text: state.activity,
+      action: null
+    }
   }
 }
 

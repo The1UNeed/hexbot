@@ -117,7 +117,9 @@ function fixture(kind: 'approval' | 'clarify') {
     if (method === 'clarify.respond') {
       return (
         state.heldAnswer?.promise ??
-        (state.canonical ? { status: 'answered', answers: { pending: 'Yes' } } : { status: 'answered' })
+        (state.canonical
+          ? { status: 'answered', answers: { pending: 'Yes' } }
+          : { status: 'answered' })
       )
     }
 
@@ -191,7 +193,12 @@ async function siblingOverlap(
   routeEvent({
     type: `${kind}.request`,
     session_id: 'sibling-live',
-    payload: { request_id: 'sibling-pending', question: 'Continue?', bot: 'owl', section_id: 'sibling' }
+    payload: {
+      request_id: 'sibling-pending',
+      question: 'Continue?',
+      bot: 'owl',
+      section_id: 'sibling'
+    }
   } as never)
 
   if (cause === 'room') {
@@ -225,7 +232,12 @@ async function siblingOverlap(
     routeEvent({
       type: `${kind}.request`,
       session_id: 'sibling-live',
-      payload: { request_id: 'fresh-sibling', question: 'Again?', bot: 'owl', section_id: 'sibling' }
+      payload: {
+        request_id: 'fresh-sibling',
+        question: 'Again?',
+        bot: 'owl',
+        section_id: 'sibling'
+      }
     } as never)
   } else if (boundary === 'new run') {
     routeEvent({ type: 'message.start', session_id: 'sibling-live', payload: {} } as never)
@@ -633,15 +645,11 @@ describe.each(['approval', 'clarify'] as const)('%s archive restoration', kind =
       const newer = deferred()
       f.state.heldSections = older
 
-      const olderRead = useSections.getState().refresh(
-        olderScope === 'full' ? {} : { bot: 'owl' }
-      )
+      const olderRead = useSections.getState().refresh(olderScope === 'full' ? {} : { bot: 'owl' })
 
       f.state.heldSections = newer
 
-      const newerRead = useSections.getState().refresh(
-        olderScope === 'full' ? { bot: 'owl' } : {}
-      )
+      const newerRead = useSections.getState().refresh(olderScope === 'full' ? { bot: 'owl' } : {})
 
       f.state.heldBot = deferred()
       const botRead = useBots.getState().refresh()
@@ -756,9 +764,7 @@ describe.each(['approval', 'clarify'] as const)('%s archive restoration', kind =
       f.state.heldBot = newer
 
       const newRead =
-        scope === 'full'
-          ? useBots.getState().refresh()
-          : useBots.getState().refreshOne('owl')
+        scope === 'full' ? useBots.getState().refresh() : useBots.getState().refreshOne('owl')
 
       older.resolve({ bots: [{ name: 'owl', status: 'idle', status_detail: null }] })
       await oldRead
@@ -784,9 +790,7 @@ describe.each(['approval', 'clarify'] as const)('%s archive restoration', kind =
       f.state.heldBot = newer
 
       const newRead =
-        scope === 'full'
-          ? useBots.getState().refresh()
-          : useBots.getState().refreshOne('owl')
+        scope === 'full' ? useBots.getState().refresh() : useBots.getState().refreshOne('owl')
 
       const idle = { name: 'owl', status: 'idle', status_detail: null }
       older.resolve({ bots: [idle] })
@@ -879,7 +883,11 @@ describe.each(['approval', 'clarify'] as const)('%s archive restoration', kind =
   it('retires a prior stream immediately while Idle metadata is held', async () => {
     const f = fixture(kind)
     routeEvent({ type: 'message.start', session_id: 'target-live', payload: {} } as never)
-    routeEvent({ type: 'status.update', session_id: 'target-live', payload: { kind: 'working' } } as never)
+    routeEvent({
+      type: 'status.update',
+      session_id: 'target-live',
+      payload: { kind: 'working' }
+    } as never)
     expect(f.status().bot).toBe('working')
     f.state.heldSections = deferred()
     f.state.heldBot = deferred()
@@ -941,7 +949,12 @@ describe.each(['approval', 'clarify'] as const)('%s archive restoration', kind =
     routeEvent({
       type: `${kind}.request`,
       session_id: 'target-live',
-      payload: { request_id: 'new-request', question: 'Continue?', bot: 'owl', section_id: 'target' }
+      payload: {
+        request_id: 'new-request',
+        question: 'Continue?',
+        bot: 'owl',
+        section_id: 'target'
+      }
     } as never)
     f.state.heldSections.resolve({ sections: [f.state.row] })
     await reading.sections
@@ -1045,7 +1058,11 @@ describe.each(['approval', 'clarify'] as const)('%s archive restoration', kind =
     f.state.heldBot = deferred()
     const reading = f.changed()
     useTranscripts.getState().open('sibling-live', 'sibling', [], undefined, 'owl')
-    routeEvent({ type: 'status.update', session_id: 'sibling-live', payload: { kind: 'working' } } as never)
+    routeEvent({
+      type: 'status.update',
+      session_id: 'sibling-live',
+      payload: { kind: 'working' }
+    } as never)
     f.state.heldBot.resolve({ bots: [{ name: 'owl', status: 'idle', status_detail: null }] })
     await reading.bots
     f.state.heldSections.resolve({ sections: [f.state.row] })
@@ -1093,8 +1110,7 @@ it.each(['private', 'room'] as const)(
       }
     } as Bot
 
-    const sections =
-      kind === 'room' ? [] : [{ id, bot: 'owl', archived_at: null } as Section]
+    const sections = kind === 'room' ? [] : [{ id, bot: 'owl', archived_at: null } as Section]
 
     const sessions = {
       'sibling-live': { sectionId: id, bot: 'cat', liveStatus: 'working' as const }

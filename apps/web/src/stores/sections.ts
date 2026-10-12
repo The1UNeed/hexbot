@@ -237,6 +237,8 @@ let latestSectionsRefresh = 0
 let fullSectionsRequest = 0
 const botSectionsRequests = new Map<string, number>()
 const sectionRequests = new Map<string, number>()
+type MetadataField = 'archive' | 'title'
+const sectionMetadataRequests = new Map<string, Record<MetadataField, number>>()
 const boundSectionRequests = new Map<string, number>()
 const removedSectionRequests = new Map<string, { active: boolean; bot?: string; request: number }>()
 
@@ -286,8 +288,21 @@ function removedAfter(id: string, request: number): boolean {
   return (removedSectionRequests.get(id)?.request ?? 0) > request
 }
 
-function acceptSection(id: string, request: number): void {
+function acceptMetadata(id: string, request: number, field?: MetadataField): void {
+  const current = sectionMetadataRequests.get(id) ?? { archive: 0, title: 0 }
+
+  sectionMetadataRequests.set(id, {
+    archive: field === 'title' ? current.archive : Math.max(current.archive, request),
+    title: field === 'archive' ? current.title : Math.max(current.title, request)
+  })
+}
+
+function acceptSection(id: string, request: number, metadata = true): void {
   sectionRequests.set(id, Math.max(sectionRequests.get(id) ?? 0, request))
+
+  if (metadata) {
+    acceptMetadata(id, request)
+  }
 
   const removed = removedSectionRequests.get(id)
 
@@ -310,8 +325,10 @@ function openedSection(section: Section, request: number): Section {
 }
 
 /** A successful edit protects this row without discarding siblings from an in-flight list. */
-function sectionChanged(id: string): void {
-  acceptSection(id, ++sectionsRequest)
+function sectionChanged(id: string, request?: number, field?: MetadataField): void {
+  const completed = ++sectionsRequest
+  acceptSection(id, completed, false)
+  acceptMetadata(id, request ?? completed, field)
 }
 
 export const useSections = create<SectionsState>((set, get) => ({
@@ -442,7 +459,8 @@ export const useSections = create<SectionsState>((set, get) => ({
     const section = openedSection(snapshot.section, request)
     const live = section.live_session_id
 
-    acceptSection(section.id, request)
+    // Open metadata is captured before the daemon awaits its fresh runtime binding.
+    acceptSection(section.id, request, false)
 
     if (live) {
       boundSectionRequests.set(section.id, ++sectionsRequest)
@@ -487,7 +505,7 @@ export const useSections = create<SectionsState>((set, get) => ({
     const section = openedSection(snapshot.section, request)
     const live = section.live_session_id
 
-    acceptSection(section.id, request)
+    acceptSection(section.id, request, false)
 
     if (live) {
       boundSectionRequests.set(section.id, ++sectionsRequest)
@@ -574,11 +592,11 @@ export const useSections = create<SectionsState>((set, get) => ({
     const request = ++sectionsRequest
     const { section } = await sectionsRename(id, title)
 
-    if (removedAfter(id, request)) {
+    if (removedAfter(id, request) || (sectionMetadataRequests.get(id)?.title ?? 0) > request) {
       return
     }
 
-    sectionChanged(section.id)
+    sectionChanged(section.id, request, 'title')
     set(state => mergeEditedSection(state, section, true))
   },
 
@@ -586,11 +604,11 @@ export const useSections = create<SectionsState>((set, get) => ({
     const request = ++sectionsRequest
     const { section } = await sectionsArchive(id)
 
-    if (removedAfter(id, request)) {
+    if (removedAfter(id, request) || (sectionMetadataRequests.get(id)?.archive ?? 0) > request) {
       return
     }
 
-    sectionChanged(section.id)
+    sectionChanged(section.id, request, 'archive')
     set(state => mergeEditedSection(state, section))
   },
 
@@ -598,11 +616,11 @@ export const useSections = create<SectionsState>((set, get) => ({
     const request = ++sectionsRequest
     const { section } = await sectionsUnarchive(id)
 
-    if (removedAfter(id, request)) {
+    if (removedAfter(id, request) || (sectionMetadataRequests.get(id)?.archive ?? 0) > request) {
       return
     }
 
-    sectionChanged(section.id)
+    sectionChanged(section.id, request, 'archive')
     set(state => mergeEditedSection(state, section))
   },
 
@@ -790,14 +808,15 @@ export function liveSectionsOf(
   return live
 }
 
-function deletedRetry(bot: Bot | undefined): boolean {
+function deletedSectionStatus(bot: Bot | undefined): boolean {
   const detail = bot?.status_detail
   const removed = detail?.section_id ? removedSectionRequests.get(detail.section_id) : undefined
 
   return Boolean(
-    bot?.status === 'stopped' &&
-    detail?.action?.kind === 'retry' &&
-    !detail.room_id &&
+    (bot?.status === 'working' ||
+      bot?.status === 'needs_you' ||
+      (bot?.status === 'stopped' && detail?.action?.kind === 'retry')) &&
+    !detail?.room_id &&
     removed?.active &&
     (!removed.bot || removed.bot === bot.name)
   )
@@ -805,7 +824,7 @@ function deletedRetry(bot: Bot | undefined): boolean {
 
 /** The daemon's word on a bot; a record without the field is idle. */
 export function botStatus(bot: Bot | undefined): BotStatus {
-  return deletedRetry(bot) ? 'idle' : (bot?.status ?? 'idle')
+  return deletedSectionStatus(bot) ? 'idle' : (bot?.status ?? 'idle')
 }
 
 function resolvedRetry(
@@ -837,7 +856,7 @@ export function sectionStatusOf(
   sectionId: null | string,
   live: LiveSections = {}
 ): BotStatus {
-  if (deletedRetry(bot) && sectionId === bot?.status_detail?.section_id) {
+  if (deletedSectionStatus(bot) && sectionId === bot?.status_detail?.section_id) {
     return 'idle'
   }
 
@@ -919,7 +938,7 @@ export function botStatusWithLive(
   // Rooms and private threads are absent from the section index but still count.
   if (
     !archivedRoom &&
-    !deletedRetry(bot) &&
+    !deletedSectionStatus(bot) &&
     (!named || !sections.some(section => section.id === named))
   ) {
     const session = detail?.session_id ? sessions[detail.session_id] : undefined

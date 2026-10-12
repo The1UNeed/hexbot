@@ -144,8 +144,7 @@ export function useMobile() {
         !turn.pending &&
         (!bot ||
           !turn.state.resumedWaiting ||
-          bot.status !== 'needs_you' ||
-          bot.status_detail?.session_id !== id)
+          settledBot(bot, turn.state, id, turn.section?.id, turn.roomId) === bot)
       )
         submittedTurns.current.delete(id)
     }
@@ -1232,7 +1231,8 @@ export function useMobile() {
         section: target.kind === 'section' ? target.section : undefined,
         roomId: target.kind === 'room' ? target.room.id : undefined,
         sessionId,
-        revision: eventRevision.current,
+        // A tap follows prior reads even when no gateway event arrived between them.
+        revision: ++eventRevision.current,
         state: { ...emptyChat(), ...state, messages: [], turns: {} },
         pending: 0
       }
@@ -1247,11 +1247,14 @@ export function useMobile() {
     const latest = botsRef.current.find(bot => sameBot(bot, owned.bot))
     // A delayed callback settles its card, but cannot resume a newer accepted wait cause.
     if (
-      owned.bot.status === 'needs_you' &&
-      owned.bot.status_detail?.session_id === owned.sessionId &&
-      latest?.status === 'needs_you' &&
-      latest.status_detail?.session_id === owned.sessionId &&
-      !sameCause(latest, owned.bot)
+      (owned.bot.status === 'needs_you' &&
+        owned.bot.status_detail?.session_id === owned.sessionId &&
+        latest?.status === 'needs_you' &&
+        latest.status_detail?.session_id === owned.sessionId &&
+        !sameCause(latest, owned.bot)) ||
+      (latest?.status === 'idle' &&
+        Math.max(rosterRevision.current, botStatusReads.current.get(latest.name)?.revision ?? -1) >=
+          owned.revision)
     )
       event = { ...event, mobileRevision: owned.revision } as GatewayEvent
     const sectionId =
@@ -1418,7 +1421,10 @@ export function useMobile() {
       const working = siblings.find(
         turn => turn.busy && !turn.error && (roomWorking.current.get(turn.sessionId) ?? -1) > cutoff
       )
-      const turn = pending ?? working ?? named
+      const answered = !siblings.some(turn => turn.error)
+        ? siblings.find(turn => turn.busy && turn.resumedWaiting && turn.waitingRevision > cutoff)
+        : undefined
+      const turn = pending ?? working ?? answered ?? named
       const active =
         turn === working &&
         working &&

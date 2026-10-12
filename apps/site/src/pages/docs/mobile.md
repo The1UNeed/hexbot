@@ -68,7 +68,9 @@ Rooms take messages while bots work. A thread takes one at a time, so Stop
 replaces Send until its bot finishes. Removing a room's last bot deletes the
 room, and the app asks first.
 
-Waiting means a question or approval needs your answer. Automatic model
+Waiting means a question or approval needs your answer. Once all cards are
+answered and the turn resumes, the app shows Working even if the bot list
+has not refreshed, including after you leave the conversation. Automatic model
 retries keep their activity text, such as Retrying the model request, while
 the bot waits for its provider.
 

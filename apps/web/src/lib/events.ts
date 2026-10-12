@@ -248,7 +248,6 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
             transcripts.drop(detail.session_id)
           }
         }
-
       }
 
       effects.refreshSections()

@@ -118,6 +118,182 @@ it('retires the remotely deleted private Retry when the bot refresh fails', asyn
   expect(dot()).toBe('idle')
 })
 
+describe.each(['working', 'needs_you'] as const)('deleted private %s', status => {
+  const active = (detail: Partial<NonNullable<Bot['status_detail']>> = {}, name = 'owl') =>
+    ({ ...retry(detail, name), status }) as Bot
+
+  it.each(['local', 'remote'] as const)(
+    'retires exact %s deletion while the following roster fails',
+    async source => {
+      useBots.setState({ byName: { owl: active() } })
+      setActiveRpc({
+        call: vi.fn((method: string) => {
+          if (method === 'hexbot.sections.delete') {
+            return Promise.resolve({ deleted: true })
+          }
+
+          if (method === 'hexbot.sections.list') {
+            return Promise.resolve({ sections: [section('sibling')] })
+          }
+
+          return Promise.reject(new Error('offline'))
+        })
+      } as never)
+
+      if (source === 'local') {
+        await useSections.getState().remove('deleted')
+      }
+
+      let sections!: Promise<void>
+      let bots!: Promise<void>
+      routeEvent(deletedEvent(), {
+        refreshSections: () => {
+          sections = useSections.getState().refresh()
+        },
+        refreshBots: () => {
+          bots = useBots.getState().refresh()
+        }
+      })
+      await Promise.all([sections, bots])
+
+      expect(dot()).toBe('idle')
+      expect(sectionStatusOf(active(), 'deleted')).toBe('idle')
+      expect(useTranscripts.getState().bySession['deleted-live']).toBeUndefined()
+      expect(dot(active({}, 'cat'))).toBe(status)
+    }
+  )
+
+  it.each(['working', 'needs_you'] as const)(
+    'keeps fresh sibling %s above the deleted cached cause',
+    siblingStatus => {
+      useBots.setState({ byName: { owl: active() } })
+      useTranscripts.getState().open('sibling-live', 'sibling', [], undefined, 'owl')
+
+      if (siblingStatus === 'working') {
+        routeEvent({
+          type: 'status.update',
+          session_id: 'sibling-live',
+          payload: { kind: 'working' }
+        } as GatewayEvent)
+      } else {
+        routeEvent({
+          type: 'approval.request',
+          session_id: 'sibling-live',
+          payload: { bot: 'owl', section_id: 'sibling', request_id: 'sibling-ask' }
+        } as GatewayEvent)
+      }
+
+      notifyDelete()
+      expect(dot()).toBe(siblingStatus)
+    }
+  )
+
+  it('keeps a room cause sharing the deleted private section id', () => {
+    useBots.setState({ byName: { owl: active({ room_id: 'r' }) } })
+    notifyDelete()
+    expect(dot()).toBe(status)
+  })
+
+  it('keeps fresh room activity after retiring the deleted private cause', () => {
+    useBots.setState({ byName: { owl: active() } })
+    useRooms.setState({
+      liveTurnsByRoom: { r: { owl: { live_session_id: 'room-live', status: 'running' } } }
+    } as never)
+    useTranscripts.getState().open('room-live', 'room:r', [], undefined, 'owl')
+    routeEvent({
+      type: 'status.update',
+      session_id: 'room-live',
+      payload: { kind: 'working' }
+    } as GatewayEvent)
+    notifyDelete()
+    expect(dot()).toBe('working')
+  })
+
+  it.each([{ deleted: false }, { deleted: 'true' }, { id: undefined }])(
+    'keeps the cached cause for an incomplete deletion event %j',
+    payload => {
+      useBots.setState({ byName: { owl: active() } })
+      notifyDelete(payload)
+      expect(useSections.getState().byId.deleted).toBeDefined()
+      expect(dot()).toBe(status)
+    }
+  )
+
+  it('keeps failed deletion unchanged', async () => {
+    useBots.setState({ byName: { owl: active() } })
+    setActiveRpc({ call: vi.fn().mockRejectedValue(new Error('offline')) } as never)
+    await expect(useSections.getState().remove('deleted')).rejects.toThrow('offline')
+    expect(useSections.getState().byId.deleted).toBeDefined()
+    expect(useTranscripts.getState().bySession['deleted-live']).toBeDefined()
+    expect(dot()).toBe(status)
+  })
+
+  it.each(['full', 'scoped'] as const)(
+    'retires a late %s roster naming only the deleted section',
+    async scope => {
+      useBots.setState({ byName: { owl: active() } })
+      const fetching = deferred()
+      setActiveRpc({ call: vi.fn().mockReturnValue(fetching.promise) } as never)
+
+      const reading =
+        scope === 'full' ? useBots.getState().refresh() : useBots.getState().refreshOne('owl')
+
+      notifyDelete()
+      fetching.resolve(scope === 'full' ? { bots: [active()] } : { bot: active() })
+      await reading
+      routeEvent({
+        type: 'status.update',
+        session_id: 'deleted-live',
+        payload: { kind: 'working' }
+      } as GatewayEvent)
+
+      expect(useSections.getState().byId.deleted).toBeUndefined()
+      expect(dot()).toBe('idle')
+    }
+  )
+
+  it('retires an unlisted owned thread only after its explicit remote deletion', () => {
+    useSections.setState({ byId: {}, idsByBot: {}, liveSessionId: {} })
+    useBots.setState({ byName: { owl: active() } })
+    expect(dot()).toBe(status)
+    notifyDelete()
+    expect(dot()).toBe('idle')
+    expect(dot(active({}, 'cat'))).toBe(status)
+  })
+
+  it.each(['epoch', 'full', 'scoped', 'open'] as const)(
+    'retires the old tombstone after newer %s authority',
+    async source => {
+      useBots.setState({ byName: { owl: active() } })
+      notifyDelete()
+      expect(dot()).toBe('idle')
+
+      if (source === 'epoch') {
+        useSections.getState().clearLive()
+      } else {
+        const row = section('deleted', 'owl', { live_session_id: 'new-live' })
+        setActiveRpc({
+          call: vi.fn((method: string) =>
+            Promise.resolve(
+              method === 'hexbot.sections.open'
+                ? { section: row, messages: [] }
+                : { sections: [row] }
+            )
+          )
+        } as never)
+
+        if (source === 'open') {
+          await useSections.getState().open('deleted')
+        } else {
+          await useSections.getState().refresh({ bot: source === 'scoped' ? 'owl' : undefined })
+        }
+      }
+
+      expect(dot()).toBe(status)
+    }
+  )
+})
+
 it.each(['row', 'transcript', 'unloaded'] as const)(
   'records definite deletion from an event without a bot (%s ownership)',
   source => {
