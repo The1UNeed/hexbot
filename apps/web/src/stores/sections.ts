@@ -286,6 +286,7 @@ export function pendingSectionSnapshots(bot: string): Promise<Section[]>[] {
   }
 
   const acceptedSections = new Map(sectionRequests)
+  const observedLifecycle = new Map(boundSectionRequests)
 
   return [
     Promise.all(reads.map(read => read.snapshot)).then(snapshots =>
@@ -293,7 +294,9 @@ export function pendingSectionSnapshots(bot: string): Promise<Section[]>[] {
         fullSectionsRequest <= read.request && (botSectionsRequests.get(bot) ?? 0) <= read.request
           ? snapshots[index]!.filter(
               section =>
-                section.bot === bot && (acceptedSections.get(section.id) ?? 0) <= read.request
+                section.bot === bot &&
+                (acceptedSections.get(section.id) ?? 0) <= read.request &&
+                (observedLifecycle.get(section.id)?.lifecycle ?? 0) <= read.request
             )
           : []
       )

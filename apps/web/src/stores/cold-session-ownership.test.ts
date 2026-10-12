@@ -1263,3 +1263,81 @@ it('an open with older metadata preserves a later exact active lifecycle observa
   expect(row).toMatchObject({ archived_at: null, title: 'Catalog title' })
   expect(botStatusWithLive(bot, [row], live, sessions)).toBe('needs_you')
 })
+
+it.each(
+  (['approval', 'clarify'] as const).flatMap(kind =>
+    (['full', 'scoped'] as const).flatMap(scope =>
+      (['before', 'after'] as const).flatMap(lookupTiming =>
+        [false, true].map(fresh => ({ kind, scope, lookupTiming, fresh }))
+      )
+    )
+  )
+)(
+  'Idle uses $scope archive evidence from read start: $kind lookup $lookupTiming start, fresh card $fresh',
+  async ({ kind, scope, lookupTiming, fresh }) => {
+    const archived = section({ peer_bot: null, archived_at: 1 })
+    useSections.setState({ byId: { stored: archived }, idsByBot: { owl: ['stored'] } })
+
+    const catalog = deferred(),
+      lookup = deferred(),
+      roster = deferred()
+
+    setActiveRpc({
+      call: vi.fn((method: string, params: { include_threads?: boolean }) => {
+        if (method === 'hexbot.sections.list') {
+          return params.include_threads ? lookup.promise : catalog.promise
+        }
+
+        if (method === 'hexbot.bots.list' || method === 'hexbot.bots.get') {
+          return roster.promise
+        }
+
+        return Promise.reject(new Error('offline'))
+      })
+    } as never)
+    const reading = useSections.getState().refresh(scope === 'scoped' ? { bot: 'owl' } : {})
+    pending(kind)
+
+    const confirmActive = async () => {
+      lookup.resolve({ sections: [{ ...archived, archived_at: null }] })
+      await flush()
+    }
+
+    if (lookupTiming === 'before') {
+      await confirmActive()
+    }
+
+    const idle =
+      scope === 'scoped' ? useBots.getState().refreshOne('owl') : useBots.getState().refresh()
+
+    if (lookupTiming === 'after') {
+      await confirmActive()
+    }
+
+    roster.resolve(scope === 'scoped' ? { bot } : { bots: [bot] })
+    await idle
+
+    if (fresh) {
+      pending(kind, { request_id: 'new-request' })
+    }
+
+    catalog.resolve({ sections: [archived] })
+    await reading
+    await flush()
+    const row = useSections.getState().byId.stored!
+    const sessions = useTranscripts.getState().bySession
+    const live = liveSectionsOf(sessions)
+    const owner = useBots.getState().byName.owl!
+    const expected = lookupTiming === 'after' || fresh ? 'needs_you' : 'idle'
+    expect(row.archived_at).toBeNull()
+    expect(botStatusWithLive(owner, [row], live, sessions)).toBe(expected)
+    expect(sectionStatusOf(owner, 'stored', live)).toBe(expected)
+    expect(sessions.live?.waitingRequests?.map(request => request.requestId)).toEqual([
+      ...(lookupTiming === 'after' ? ['request'] : []),
+      ...(fresh ? ['new-request'] : [])
+    ])
+    expect(kind === 'approval' ? sessions.live?.approvals : sessions.live?.clarifies).toHaveLength(
+      fresh ? 2 : 1
+    )
+  }
+)
