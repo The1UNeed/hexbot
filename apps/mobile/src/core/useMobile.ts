@@ -61,6 +61,8 @@ type SubmittedTurn = {
   sessionId: string
   revision: number
   cardsRevision: number
+  /** An exact daemon start owns this activity until a later status read or turn end. */
+  workingRevision?: number
   state: ChatState
   pending: number
 }
@@ -174,10 +176,12 @@ export function useMobile() {
         turn.state.retryResolution?.resolved &&
         bot &&
         settledBot(bot, turn.state, id, turn.section?.id, turn.roomId) !== bot
+      const working = turn.state.busy && !turn.state.error && (turn.workingRevision ?? -1) > cutoff
       if (
         !turn.pending &&
         (!bot ||
           (!pendingCards &&
+            !working &&
             !retry &&
             (!turn.state.resumedWaiting ||
               settledBot(bot, turn.state, id, turn.section?.id, turn.roomId) === bot)))
@@ -1184,6 +1188,59 @@ export function useMobile() {
         )
       }
       let submittedChanged = false
+      if (
+        event.type === 'message.start' &&
+        event.session_id &&
+        typeof p.bot === 'string' &&
+        p.bot &&
+        typeof p.section_id === 'string' &&
+        p.section_id &&
+        !p.section_id.startsWith('room:') &&
+        p.room_id === null &&
+        !deletedSections.current.get(p.section_id)?.active
+      ) {
+        const bot = botsRef.current.find(bot => bot.name === p.bot)
+        const section =
+          sectionsRef.current.find(section => section.id === p.section_id) ??
+          (target?.kind === 'section' && target.section.id === p.section_id
+            ? target.section
+            : undefined)
+        const bound = submittedTurns.current.get(event.session_id)
+        const sibling = [...submittedTurns.current.values()].find(
+          turn => turn.section?.id === p.section_id && turn.sessionId !== event.session_id
+        )
+        if (
+          bot &&
+          (!section ||
+            (section.bot === bot.name &&
+              !archiveSection(section).archived_at &&
+              (!section.live_session_id || section.live_session_id === event.session_id))) &&
+          !sectionArchives.current.get(p.section_id)?.archived_at &&
+          (!sibling || section?.live_session_id === event.session_id) &&
+          (!bound ||
+            (sameBot(bound.bot, bot) && !bound.roomId && bound.section?.id === p.section_id))
+        ) {
+          const owner =
+            section ??
+            ({
+              id: p.section_id,
+              bot: bot.name,
+              archived_at: null,
+              live_session_id: event.session_id
+            } as Section)
+          submittedTurns.current.set(event.session_id, {
+            bot,
+            section: owner,
+            sessionId: event.session_id,
+            revision: (event as GatewayEvent & { mobileRevision: number }).mobileRevision,
+            cardsRevision: bound?.cardsRevision ?? -1,
+            workingRevision: (event as GatewayEvent & { mobileRevision: number }).mobileRevision,
+            state: bound?.state ?? emptyChat(),
+            pending: bound?.pending ?? 0
+          })
+          submittedChanged = true
+        }
+      }
       for (const [id, turn] of submittedTurns.current) {
         if (
           (event.type === 'hexbot.sections.changed' &&
@@ -1200,6 +1257,20 @@ export function useMobile() {
           if (turn.roomId && !acceptsRoomSession(turn.state, event)) continue
           const known = new Set(pendingKeys(turn.state))
           turn.state = reduceChat(turn.state, event)
+          if (
+            event.type === 'message.start' &&
+            turn.state.retryResolution &&
+            turn.section &&
+            p.bot === turn.bot.name &&
+            p.section_id === turn.section.id &&
+            p.room_id === null
+          )
+            turn.state.retryResolution = {
+              ...turn.state.retryResolution,
+              bot: turn.bot.name,
+              sectionId: turn.section.id,
+              roomId: undefined
+            }
           if (
             ['approval.request', 'clarify.request'].includes(event.type) &&
             pendingKeys(turn.state).some(key => !known.has(key))
@@ -1373,7 +1444,7 @@ export function useMobile() {
         })
       }
     },
-    [rpc, verifyBotStatus, leave, pruneSubmitted, retainRetry]
+    [rpc, verifyBotStatus, leave, pruneSubmitted, retainRetry, archiveSection]
   )
   const acknowledgedApprovals = useRef(new Set<string>())
   useEffect(() => {
@@ -1816,8 +1887,10 @@ export function useMobile() {
       current = { ...current, retryResolution: { ...current.retryResolution, resolved: false } }
     const restored = section && sectionArchives.current.get(section.id)
     const detail = neutral.status_detail
+    const working = sessionId ? submittedTurns.current.get(sessionId)?.workingRevision : undefined
+    const cutoff = Math.max(rosterRevision.current, read?.revision ?? -1)
     const active =
-      restored?.restoredAt &&
+      (restored?.restoredAt || (working !== undefined && working !== null && working > cutoff)) &&
       current.busy &&
       sessionId &&
       neutral.status === 'idle' &&

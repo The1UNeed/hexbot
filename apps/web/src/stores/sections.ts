@@ -100,6 +100,8 @@ async function openSnapshot(id: string) {
 
 export interface SectionsState {
   archive: (id: string) => Promise<void>
+  /** A daemon start can bind an active private section without opening it. */
+  bindTurn: (sessionId: string, id: string, bot: string) => boolean
   byId: Record<string, Section>
   /** Live ids are process-scoped; a new daemon epoch invalidates them all. */
   clearLive: () => void
@@ -418,6 +420,34 @@ export const useSections = create<SectionsState>((set, get) => ({
   liveSessionId: {},
   loading: false,
   sendingTitles: {},
+
+  bindTurn(sessionId, id, bot) {
+    const section = get().byId[id]
+    const bound = get().liveSessionId[id]
+    const transcript = useTranscripts.getState().bySession[sessionId]
+
+    if (
+      !sessionId ||
+      !id ||
+      !bot ||
+      id.startsWith('room:') ||
+      removedSectionRequests.get(id)?.active ||
+      section?.archived_at ||
+      (section && section.bot !== bot) ||
+      (bound && bound !== sessionId) ||
+      (!bound && section?.live_session_id && section.live_session_id !== sessionId) ||
+      (transcript?.sectionId && transcript.sectionId !== id) ||
+      (transcript?.bot && transcript.bot !== bot)
+    ) {
+      return false
+    }
+
+    acceptBinding(id, ++sectionsRequest)
+    set(state => ({ liveSessionId: { ...state.liveSessionId, [id]: sessionId } }))
+    useTranscripts.getState().setSectionId(sessionId, id, bot)
+
+    return true
+  },
 
   async verifySessionOwner(sessionId, refresh = false) {
     const transcript = useTranscripts.getState().bySession[sessionId]

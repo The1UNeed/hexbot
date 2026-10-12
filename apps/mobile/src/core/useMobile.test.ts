@@ -5533,3 +5533,184 @@ describe('mobile deleted room consumer', () => {
     expect(render().bots[0]).toEqual(failed)
   })
 })
+
+describe('mobile unopened ordinary starts', () => {
+  async function ordinary(indexed = true) {
+    const idle = { ...namedWait, status: 'idle', status_detail: null } as Bot
+    await unopened(idle)
+    if (!indexed) {
+      const original = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.sections.list' ? { sections: [] } : original(method, params)
+      await render().refresh()
+    }
+    hooks.handler = async () => {
+      throw new Error('Read unavailable')
+    }
+    return idle
+  }
+  const start = (marked = false) =>
+    hooks.clients[0].emit(
+      wire('message.start', {
+        bot: 'alpha',
+        section_id: 'section',
+        room_id: null,
+        ...(marked ? { retry_resolved: true } : {})
+      })
+    )
+
+  it.each([false, true])(
+    'projects Working with indexed=%s when the roster missed an ordinary turn',
+    async indexed => {
+      await ordinary(indexed)
+      start()
+      hooks.clients[0].emit(wire('status.update', { kind: 'working', text: 'Working' }))
+      await flush()
+      expect(render().route).toBeNull()
+      expect(render().bots[0]).toMatchObject({
+        status: 'working',
+        status_detail: { session_id: 's1', section_id: 'section' }
+      })
+      hooks.clients[0].emit(wire('message.complete', { text: 'Finished' }))
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it.each([
+    {},
+    { bot: 'alpha', section_id: 'section' },
+    { bot: 'alpha', section_id: 'section', room_id: 'room' },
+    { bot: 'alpha', section_id: 'room:room', room_id: null },
+    { bot: '', section_id: 'section', room_id: null }
+  ])('ignores incomplete or room metadata %j', async payload => {
+    await ordinary(false)
+    hooks.clients[0].emit(wire('message.start', payload))
+    expect(render().bots[0].status).toBe('idle')
+  })
+
+  it.each(['archived', 'deleted', 'foreign', 'newer session'] as const)(
+    'preserves %s ownership guards',
+    async guard => {
+      const idle = { ...namedWait, status: 'idle', status_detail: null } as Bot
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.bots.list') return { bots: [idle] }
+        if (method === 'hexbot.sections.list')
+          return {
+            sections: [
+              {
+                ...section(),
+                archived_at: guard === 'archived' ? 1 : null,
+                bot: guard === 'foreign' ? 'other' : 'alpha',
+                live_session_id: guard === 'newer session' ? 'newer-live' : 's1'
+              }
+            ]
+          }
+        return original(method, params)
+      }
+      await render().activate(daemon, 'token')
+      await render().refresh()
+      hooks.handler = async () => {
+        throw new Error('Read unavailable')
+      }
+      if (guard === 'deleted')
+        hooks.clients[0].emit({
+          type: 'hexbot.sections.changed',
+          payload: { id: 'section', deleted: true }
+        })
+      start()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it.each([false, true])('preserves old activity across same epoch=%s', async sameEpoch => {
+    await ordinary(false)
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'epoch-a' } })
+    start()
+    expect(render().bots[0].status).toBe('working')
+    hooks.clients[0].emit({
+      type: 'gateway.ready',
+      payload: { replay_epoch: sameEpoch ? 'epoch-a' : 'epoch-b' }
+    })
+    expect(render().bots[0].status).toBe(sameEpoch ? 'working' : 'idle')
+  })
+
+  it('retires activity after a successful later status read', async () => {
+    const idle = await ordinary(false)
+    start()
+    expect(render().bots[0].status).toBe('working')
+    hooks.handler = async method => (method === 'hexbot.bots.get' ? { bot: idle } : {})
+    hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: { name: 'alpha' } })
+    await flush()
+    expect(render().bots[0].status).toBe('idle')
+  })
+
+  it('preserves a newer start over an older in-flight roster', async () => {
+    const idle = await ordinary(false)
+    const older = deferred()
+    hooks.handler = async method => {
+      if (method === 'hexbot.bots.list') return older.promise
+      if (method === 'hexbot.rooms.list') return { rooms: [] }
+      if (method === 'hexbot.sections.list') return { sections: [] }
+      if (method === 'hexbot.bots.get') throw new Error('Read unavailable')
+      return {}
+    }
+    const refreshing = render().refresh()
+    start()
+    older.resolve({ bots: [idle] })
+    await refreshing
+    expect(render().bots[0].status).toBe('working')
+  })
+
+  it('keeps a confirmed sibling question ahead of a new ordinary start', async () => {
+    const idle = { ...namedWait, status: 'idle', status_detail: null } as Bot
+    await unopened(idle)
+    await render().openSection(idle, section('other', 's2'))
+    hooks.clients[0].emit(
+      wire(
+        'clarify.request',
+        { request_id: 'question', question: 'Why?', bot: 'alpha', section_id: 'other' },
+        's2'
+      )
+    )
+    hooks.handler = async () => {
+      throw new Error('Read unavailable')
+    }
+    start()
+    expect(render().bots[0].status).toBe('needs_you')
+    expect(render().chat.questions).toHaveLength(1)
+  })
+
+  it('accepts a fresh ordinary start after a verified live session rollover', async () => {
+    const idle = { ...namedWait, status: 'idle', status_detail: null } as Bot
+    await unopened(idle)
+    start()
+    expect(render().bots[0].status).toBe('working')
+    const original = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.sections.list'
+        ? { sections: [section('section', 'newer-live')] }
+        : original(method, params)
+    await render().refresh()
+    hooks.handler = async () => {
+      throw new Error('Read unavailable')
+    }
+    hooks.clients[0].emit(
+      wire('message.start', { bot: 'alpha', section_id: 'section', room_id: null }, 'newer-live')
+    )
+    expect(render().bots[0]).toMatchObject({
+      status: 'working',
+      status_detail: { session_id: 'newer-live' }
+    })
+    start()
+    expect(render().bots[0].status_detail?.session_id).toBe('newer-live')
+  })
+
+  it('projects an ordinary start carrying the daemon retry-resolution marker', async () => {
+    await ordinary(false)
+    start(true)
+    expect(render().bots[0].status).toBe('working')
+    hooks.clients[0].emit(wire('message.complete', { text: 'Finished' }))
+    expect(render().bots[0].status).toBe('idle')
+  })
+})

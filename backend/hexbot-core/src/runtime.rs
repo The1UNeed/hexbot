@@ -285,6 +285,29 @@ impl Runtime {
             payload["bot"] = json!(s.bot);
             payload["section_id"] = json!(s.stored);
         }
+        if kind == "message.start" && payload.is_object() {
+            // Only a real private section can establish ownership without a roster read.
+            // Room sessions and background jobs retain their existing turn routing.
+            let current = store::open(&self.home).ok().is_some_and(|conn| {
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM native_live_sessions WHERE stored_id=? AND live_id=?)",
+                    params![s.stored, s.id],
+                    |row| row.get::<_, bool>(0),
+                ).unwrap_or(false)
+            });
+            let private = current && db::open(&self.home).ok().is_some_and(|conn| {
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sections WHERE id=? AND bot=? AND owner_id=? AND archived_at IS NULL)",
+                    params![s.stored, s.bot, s.owner],
+                    |row| row.get::<_, bool>(0),
+                ).unwrap_or(false)
+            });
+            if private {
+                payload["bot"] = json!(s.bot);
+                payload["section_id"] = json!(s.stored);
+                payload["room_id"] = Value::Null;
+            }
+        }
         self.events.emit(&s.owner, Some(&s.id), kind, payload);
     }
     /// The name the UI shows for a bot.

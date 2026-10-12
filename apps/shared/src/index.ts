@@ -4,6 +4,7 @@ export {
   type GatewayClientOptions,
   type GatewayEvent,
   type GatewayEventName,
+  type MessageStartPayload,
   JsonRpcGatewayClient,
   JsonRpcGatewayError
 } from './json-rpc-gateway'

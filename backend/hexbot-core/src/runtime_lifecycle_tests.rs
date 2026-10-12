@@ -4141,3 +4141,84 @@ async fn notes_are_written_by_sections_and_proposed_by_jobs() {
     );
     runtime.shutdown().await;
 }
+
+#[tokio::test]
+async fn ordinary_private_start_names_its_owner_without_a_roster_read() {
+    let (_home, runtime, hub) = setup();
+    let id = open(&runtime).await;
+    let mut events = hub.subscribe();
+    runtime
+        .call_inner(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"wait"}),
+        )
+        .await
+        .unwrap();
+    let start = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "message.start" {
+                break event;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    runtime.shutdown().await;
+    assert_eq!(start.owner, "alice");
+    assert_eq!(start.frame["params"]["session_id"], id);
+    assert_eq!(start.frame["params"]["payload"]["bot"], "owl");
+    assert_eq!(start.frame["params"]["payload"]["section_id"], "first");
+    assert!(
+        start.frame["params"]["payload"]
+            .get("room_id")
+            .is_some_and(Value::is_null)
+    );
+}
+
+#[tokio::test]
+async fn private_start_metadata_excludes_archived_and_unowned_runtime_sessions() {
+    let (home, runtime, hub) = setup();
+    let id = open(&runtime).await;
+    let live = runtime.sessions.lock().unwrap()["first"].clone();
+    for update in [
+        "UPDATE sections SET archived_at=1 WHERE id='first'",
+        "UPDATE sections SET archived_at=NULL,bot='other' WHERE id='first'",
+        "UPDATE sections SET bot='owl',owner_id='bob' WHERE id='first'",
+        "DELETE FROM sections WHERE id='first'",
+    ] {
+        db::open(home.path()).unwrap().execute(update, []).unwrap();
+        let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+        runtime.emit(&live, "message.start", json!({"retry_resolved":true}));
+        let replay = hub.since("alice", &id, before);
+        let payload = &replay["events"][0]["payload"];
+        assert_eq!(payload["retry_resolved"], true);
+        assert!(payload.get("section_id").is_none(), "{update}: {payload}");
+        assert!(payload.get("bot").is_none());
+        assert!(payload.get("room_id").is_none());
+    }
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn private_start_metadata_requires_the_current_live_session() {
+    let (home, runtime, hub) = setup();
+    let id = open(&runtime).await;
+    let live = runtime.sessions.lock().unwrap()["first"].clone();
+    store::open(home.path())
+        .unwrap()
+        .execute(
+            "UPDATE native_live_sessions SET live_id='newer-live' WHERE stored_id='first'",
+            [],
+        )
+        .unwrap();
+    let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+    runtime.emit(&live, "message.start", json!({"retry_resolved":true}));
+    let replay = hub.since("alice", &id, before);
+    let payload = &replay["events"][0]["payload"];
+    assert_eq!(payload["retry_resolved"], true);
+    assert!(payload.get("section_id").is_none());
+    assert!(payload.get("bot").is_none());
+    runtime.shutdown().await;
+}

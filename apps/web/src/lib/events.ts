@@ -465,6 +465,16 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       return
 
     case 'message.start':
+      if (
+        typeof payload.bot === 'string' &&
+        payload.bot &&
+        typeof payload.section_id === 'string' &&
+        payload.section_id &&
+        payload.room_id === null
+      ) {
+        useSections.getState().bindTurn(sessionId, payload.section_id, payload.bot)
+      }
+
       transcripts.messageStart(
         sessionId,
         payload.retry_resolved === true && bindRetryOwner(sessionId)

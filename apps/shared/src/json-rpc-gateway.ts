@@ -26,6 +26,14 @@ export type GatewayEventName =
   | 'skin.changed'
   | (string & {})
 
+/** Optional ownership metadata for an active private section's start. */
+export interface MessageStartPayload {
+  bot?: string
+  section_id?: string
+  room_id?: null
+  retry_resolved?: boolean
+}
+
 export interface GatewayEvent<P = unknown> {
   payload?: P
   /** Renderer-side source tag added by the Desktop gateway registry. */

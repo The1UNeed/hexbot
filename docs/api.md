@@ -77,6 +77,15 @@ can bind a valid settlement to its bot and section without having seen the
 original card. The answer RPC can also return the canonical `choice` or
 `answers`; older daemons omit them.
 
+For an active private section, `message.start` also names `bot`, `section_id`,
+and `room_id: null`. The daemon verifies that section's owner and current live
+session before adding these fields. Clients can bind an unopened conversation and
+show Working even when a roster read fails. Archived sections, room sessions, and
+background jobs omit this private ownership metadata. Older daemons omit it too.
+A conflicting current session, an archived section, or a deletion prevents a start
+from rebinding it. A later accepted status read or turn completion retires the
+activity proof.
+
 When a new agent turn starts, `message.start` includes `retry_resolved: true`
 if resolving that section's `turn_failed` incidents succeeded. Clients can
 retire a matching cached Stopped status with a Retry action. For an unopened
