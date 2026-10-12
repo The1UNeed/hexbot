@@ -64,6 +64,8 @@ export interface Transcript {
   epoch: number
   /** Advances on authoritative state, including while an answer RPC is in flight. */
   authorityRevision: number
+  /** Accepted private ownership has replaced this session; retained frames cannot revive it. */
+  superseded?: boolean
   /** A successful local answer, valid until a newer authoritative update or reconnect. */
   answeredWaiting?: { kind: 'approval' | 'clarify'; requestId: string }
   /** Exact requests confirmed pending; an unrelated Working event does not settle them. */
@@ -159,6 +161,8 @@ export interface ClarifyResolvedPayload {
 }
 
 export interface TranscriptsState {
+  /** Bind a verified private runtime without dropping older readable transcripts. */
+  bindPrivateSession: (sectionId: string, sessionId: string, throughRevision?: number) => void
   clearAnsweredWaiting: (
     sectionIds?: readonly string[],
     sessionIds?: readonly string[],
@@ -479,9 +483,26 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
     bySession: {},
 
+    bindPrivateSession(sectionId, sessionId, throughRevision = Infinity) {
+      set(state => ({
+        bySession: Object.fromEntries(
+          Object.entries(state.bySession).map(([id, transcript]) => [
+            id,
+            transcript.sectionId === sectionId && !sectionId.startsWith('room:')
+              ? id === sessionId
+                ? { ...transcript, superseded: undefined }
+                : !transcript.waitingRequests?.some(request => request.revision > throughRevision)
+                  ? { ...transcript, superseded: true }
+                  : transcript
+              : transcript
+          ])
+        )
+      }))
+    },
+
     clearAnsweredWaiting(sectionIds, sessionIds, throughRevision = Infinity, options = {}) {
       const matches = (transcript: Transcript) =>
-        transcript.authorityRevision <= throughRevision &&
+        (transcript.superseded || transcript.authorityRevision <= throughRevision) &&
         ((!sectionIds && !sessionIds) ||
           (transcript.sectionId && sectionIds?.includes(transcript.sectionId)) ||
           sessionIds?.includes(transcript.sessionId))
@@ -543,6 +564,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
                   : retireAuthority(existing, { preserveWaiting, preserveRetryResolved })),
                 ...(!newer && options.roomTurnRunning ? { roomTurnRunning: true } : {}),
                 sectionId,
+                superseded: sectionId.startsWith('room:') ? undefined : existing.superseded,
                 bot: bot ?? existing.bot
               }
             }
@@ -558,6 +580,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
             [sessionId]: {
               ...emptyTranscript(sessionId, sectionId),
               ...(existing ? { epoch: existing.epoch } : {}),
+              superseded: sectionId.startsWith('room:') ? undefined : existing?.superseded,
               bot: bot ?? existing?.bot,
               ...(preserveWaiting ? { waitingRequests: existing.waitingRequests } : {}),
               ...(preserveRetryResolved ? { retryResolved: existing?.retryResolved } : {}),
@@ -890,6 +913,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
             ? transcript
             : {
                 ...advanceAuthority(transcript),
+                superseded: undefined,
                 liveStatus: transcript.liveStatus,
                 waitingRequests: [
                   ...(transcript.waitingRequests ?? []).filter(
@@ -904,6 +928,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
         return {
           ...(approval.decision ? transcript : advanceAuthority(closeForCard(transcript))),
+          superseded: approval.decision ? transcript.superseded : undefined,
           liveStatus: transcript.liveStatus,
           waitingRequests: approval.decision
             ? transcript.waitingRequests
@@ -960,6 +985,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
           return {
             ...(waiting ? advanceAuthority(transcript) : transcript),
+            superseded: waiting ? undefined : transcript.superseded,
             waitingRequests: waiting
               ? [
                   ...(transcript.waitingRequests ?? []).filter(
@@ -993,6 +1019,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
         return {
           ...(waiting ? advanceAuthority(closeForCard(transcript)) : transcript),
+          superseded: waiting ? undefined : transcript.superseded,
           waitingRequests: waiting
             ? [
                 ...(transcript.waitingRequests ?? []),
@@ -1284,7 +1311,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     statusUpdate(sessionId, status) {
       // Status text is informational; provider retry keeps an already confirmed Working state.
       update(sessionId, transcript =>
-        status.kind === 'status'
+        status.kind === 'status' || transcript.superseded
           ? { ...transcript, status }
           : {
               ...advanceAuthority(transcript),

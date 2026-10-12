@@ -520,6 +520,10 @@ export const useSections = create<SectionsState>((set, get) => ({
         }
       })
 
+      if (section.live_session_id) {
+        useTranscripts.getState().bindPrivateSession(id, section.live_session_id, revision)
+      }
+
       if (!section.archived_at && !section.live_session_id) {
         // A closed runtime retires old activity, while cards remain readable.
         useTranscripts.getState().clearAnsweredWaiting([id], [], revision, { idle: true })
@@ -531,6 +535,7 @@ export const useSections = create<SectionsState>((set, get) => ({
 
   async refresh(options = {}) {
     const request = ++sectionsRequest
+    const revision = transcriptRevision()
     latestSectionsRefresh = request
     const bot = options.bot
     const reading = sectionsList({ include_archived: true, ...options })
@@ -564,6 +569,8 @@ export const useSections = create<SectionsState>((set, get) => ({
       } else {
         fullSectionsRequest = request
       }
+
+      const adoptedSessions: { id: string; live: string }[] = []
 
       set(state => {
         // A full reply can still update other bots after a newer scoped reply.
@@ -614,6 +621,10 @@ export const useSections = create<SectionsState>((set, get) => ({
         const indexed = indexSections([...newlyOpened, ...incoming], state.sendingTitles)
 
         for (const section of incoming) {
+          if (section.live_session_id && !boundAfter(section.id)) {
+            adoptedSessions.push({ id: section.id, live: section.live_session_id })
+          }
+
           // Advance each editable field only if this reply installed it.
           const metadata = !openedAfter(section.id) || !state.byId[section.id]
           acceptSection(section.id, request, false)
@@ -648,6 +659,10 @@ export const useSections = create<SectionsState>((set, get) => ({
           }
         }
       })
+
+      for (const { id, live } of adoptedSessions) {
+        useTranscripts.getState().bindPrivateSession(id, live, revision)
+      }
     } catch (error) {
       if (request === latestSectionsRefresh) {
         set({ error: error instanceof Error ? error.message : String(error) })
@@ -682,6 +697,7 @@ export const useSections = create<SectionsState>((set, get) => ({
 
     if (live) {
       const transcripts = useTranscripts.getState()
+      transcripts.bindPrivateSession(id, live, revision)
       transcripts.open(
         live,
         id,
@@ -724,6 +740,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       useTranscripts.getState().clearAnsweredWaiting([], [live], revision)
       useTranscripts.getState().setSectionId(live, id, section.bot)
       set(state => sectionBinding(state, section, true))
+      useTranscripts.getState().bindPrivateSession(id, live, revision)
 
       // The owner answers the receiving bot's questions here: threads have no other view.
       for (const pending of pendingClarifies) {
@@ -856,6 +873,12 @@ export const useSections = create<SectionsState>((set, get) => ({
       useTranscripts.getState().clearAnsweredWaiting([id], [], revision, { idle: true })
     }
 
+    const current = get().liveSessionId[id] ?? get().byId[id]?.live_session_id
+
+    if (current) {
+      useTranscripts.getState().bindPrivateSession(id, current, revision)
+    }
+
     acceptBinding(id, sectionsRequest, true)
   },
 
@@ -974,6 +997,7 @@ export function liveSectionsOf(
     string,
     {
       bot?: string
+      superseded?: boolean
       answeredWaiting?: { kind: 'approval' | 'clarify'; requestId: string }
       waitingRequests?: { kind: 'approval' | 'clarify'; requestId: string }[]
       retryResolved?: boolean
@@ -990,7 +1014,7 @@ export function liveSectionsOf(
   const live: LiveSections = {}
 
   for (const transcript of Object.values(bySession)) {
-    if (!transcript.sectionId) {
+    if (!transcript.sectionId || transcript.superseded) {
       continue
     }
 

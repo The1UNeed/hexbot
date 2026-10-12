@@ -1,5 +1,6 @@
 import type { GatewayEvent } from '@hermes/shared'
 
+import { ConnectionSupervisor } from '../lib/connection'
 import { routeEvent } from '../lib/events'
 import { setActiveRpc } from '../lib/rpc'
 import type { Bot, Room, Section } from '../lib/types'
@@ -1505,3 +1506,427 @@ it.each(['card', 'Working', 'binding', 'epoch', 'target', 'failed'] as const)(
     )
   }
 )
+
+async function supersededRestore(kind: 'approval' | 'clarify', surface: 'indexed' | 'thread') {
+  const original = section({
+    peer_bot: surface === 'thread' ? 'cat' : null,
+    live_session_id: 'old-live'
+  })
+
+  setActiveRpc({ call: vi.fn().mockResolvedValue({ section: original, messages: [] }) } as never)
+
+  if (surface === 'thread') {
+    await useSections.getState().openThread('stored', 'cat')
+  } else {
+    await useSections.getState().open('stored')
+  }
+
+  event(
+    `${kind}.request`,
+    {
+      bot: 'owl',
+      section_id: 'stored',
+      request_id: 'old',
+      questions: [
+        { qid: 'one', question: 'First?' },
+        { qid: 'two', question: 'Second?' }
+      ]
+    },
+    'old-live'
+  )
+
+  if (kind === 'clarify') {
+    event(
+      'clarify.resolved',
+      {
+        request_id: 'old',
+        status: 'waiting',
+        answers: { one: 'Accepted' }
+      },
+      'old-live'
+    )
+  }
+
+  const current = { ...original, live_session_id: 'current-live' }
+  rpc([current])
+  await useSections.getState().verifySessionOwner('old-live', true)
+  expect(useSections.getState().liveSessionId.stored).toBe('current-live')
+  expect(dot()).toBe('idle')
+  setActiveRpc({
+    call: vi.fn().mockResolvedValue({ section: { ...current, archived_at: 1 } })
+  } as never)
+  await useSections.getState().archive('stored')
+
+  const held = deferred()
+  setActiveRpc({
+    call: vi.fn((method: string) =>
+      method === 'hexbot.sections.unarchive'
+        ? held.promise
+        : Promise.reject(new Error('metadata offline'))
+    )
+  } as never)
+  const restoring = useSections.getState().unarchive('stored')
+
+  const finish = async (live_session_id: string | null = null) => {
+    held.resolve({ section: { ...current, live_session_id } })
+    await restoring
+  }
+
+  return { original, current, finish }
+}
+
+function expectReadableSuperseded(kind: 'approval' | 'clarify') {
+  const transcript = useTranscripts.getState().bySession['old-live']!
+  expect(kind === 'approval' ? transcript.approvals : transcript.clarifies).toHaveLength(1)
+
+  if (kind === 'clarify') {
+    expect(transcript.clarifies[0]?.answers).toEqual({ one: 'Accepted' })
+  }
+}
+
+it.each(
+  (['indexed', 'thread'] as const).flatMap(surface =>
+    (['approval', 'clarify'] as const).flatMap(kind =>
+      (['before', 'after'] as const).flatMap(timing =>
+        (['status', 'turn frames'] as const).map(progress => ({ surface, kind, timing, progress }))
+      )
+    )
+  )
+)(
+  'late superseded $surface $kind $progress $timing a null restore never revives old ownership',
+  async ({ surface, kind, timing, progress }) => {
+    const restoring = await supersededRestore(kind, surface)
+
+    if (timing === 'after') {
+      await restoring.finish()
+    }
+
+    if (progress === 'turn frames') {
+      event('message.start', {}, 'old-live')
+      event('message.delta', { text: 'Retained old reply' }, 'old-live')
+    }
+
+    event('status.update', { kind: 'working', text: 'Working' }, 'old-live')
+
+    if (timing === 'before') {
+      await restoring.finish()
+    }
+
+    const sessions = useTranscripts.getState().bySession
+    const live = liveSectionsOf(sessions)
+    expect(botStatusWithLive(bot, Object.values(useSections.getState().byId), live, sessions)).toBe(
+      'idle'
+    )
+    expect(sectionStatusOf(bot, 'stored', live)).toBe('idle')
+    expect(sessions['old-live']?.waitingRequests).toEqual([])
+    expectReadableSuperseded(kind)
+
+    if (progress === 'turn frames') {
+      expect(
+        sessions['old-live']?.messages.some(message => message.text === 'Retained old reply')
+      ).toBe(true)
+    }
+  }
+)
+
+it.each(
+  (['old-live', 'current-live'] as const).flatMap(session =>
+    (['before', 'after'] as const).flatMap(timing =>
+      (['approval', 'clarify'] as const).map(kind => ({ session, timing, kind }))
+    )
+  )
+)(
+  'a fresh $kind card on $session $timing a closed restore retains its own evidence',
+  async ({ session, timing, kind }) => {
+    const restoring = await supersededRestore('clarify', 'indexed')
+
+    if (timing === 'after') {
+      await restoring.finish()
+    }
+
+    event(
+      `${kind}.request`,
+      {
+        bot: 'owl',
+        section_id: 'stored',
+        request_id: 'fresh',
+        question: 'Still needed?'
+      },
+      session
+    )
+    await flush()
+
+    if (timing === 'before') {
+      await restoring.finish()
+    }
+
+    const sessions = useTranscripts.getState().bySession
+    const live = liveSectionsOf(sessions)
+    expect(botStatusWithLive(bot, Object.values(useSections.getState().byId), live, sessions)).toBe(
+      'needs_you'
+    )
+    expect(sectionStatusOf(bot, 'stored', live)).toBe('needs_you')
+    expect(sessions[session]?.waitingRequests).toContainEqual(
+      expect.objectContaining({ requestId: 'fresh' })
+    )
+    expect(sessions['old-live']?.clarifies.find(card => card.requestId === 'old')?.answers).toEqual(
+      { one: 'Accepted' }
+    )
+  }
+)
+
+it.each(['lookup', 'open', 'nonnull restore'] as const)(
+  'an accepted %s can make a previously replaced SID current again',
+  async binding => {
+    const restoring = await supersededRestore('approval', 'indexed')
+
+    if (binding === 'lookup') {
+      rpc([restoring.original])
+      await useSections.getState().verifySessionOwner('old-live', true)
+    } else if (binding === 'open') {
+      setActiveRpc({
+        call: vi.fn().mockResolvedValue({ section: restoring.original, messages: [] })
+      } as never)
+      await useSections.getState().open('stored')
+    }
+
+    await restoring.finish(binding === 'nonnull restore' ? 'old-live' : null)
+    event('approval.resolved', { request_id: 'old', choice: 'once' }, 'old-live')
+    event('status.update', { kind: 'working', text: 'Working' }, 'old-live')
+    const sessions = useTranscripts.getState().bySession
+    const live = liveSectionsOf(sessions)
+    expect(useSections.getState().liveSessionId.stored).toBe('old-live')
+    expect(botStatusWithLive(bot, Object.values(useSections.getState().byId), live, sessions)).toBe(
+      'working'
+    )
+    expect(sectionStatusOf(bot, 'stored', live)).toBe('working')
+  }
+)
+
+it.each(['working', 'needs_you'] as const)(
+  'retiring superseded progress preserves a sibling section that is %s',
+  async status => {
+    const restoring = await supersededRestore('clarify', 'indexed')
+    const sibling = section({ id: 'sibling', peer_bot: null, live_session_id: 'sibling-live' })
+    useSections.setState(state => ({
+      byId: { ...state.byId, sibling },
+      liveSessionId: { ...state.liveSessionId, sibling: 'sibling-live' }
+    }))
+    useTranscripts.getState().setSectionId('sibling-live', 'sibling', 'owl')
+
+    if (status === 'working') {
+      event('message.start', {}, 'sibling-live')
+      event('status.update', { kind: 'working', text: 'Working' }, 'sibling-live')
+    } else {
+      event(
+        'approval.request',
+        { bot: 'owl', section_id: 'sibling', request_id: 'sibling' },
+        'sibling-live'
+      )
+    }
+
+    event('status.update', { kind: 'working', text: 'Working' }, 'old-live')
+    await restoring.finish()
+    const sessions = useTranscripts.getState().bySession
+    const live = liveSectionsOf(sessions)
+    expect(botStatusWithLive(bot, Object.values(useSections.getState().byId), live, sessions)).toBe(
+      status
+    )
+    expect(sectionStatusOf(bot, 'stored', live)).toBe('idle')
+    expect(sectionStatusOf(bot, 'sibling', live)).toBe(status)
+    expectReadableSuperseded('clarify')
+  }
+)
+
+it.each(
+  (['lookup', 'full', 'scoped'] as const).flatMap(source =>
+    (['status', 'turn frames'] as const).flatMap(progress =>
+      (['approval', 'clarify'] as const).map(kind => ({ source, progress, kind }))
+    )
+  )
+)(
+  'an accepted $source SID replacement supersedes weak $progress during its $kind read',
+  async ({ source, progress, kind }) => {
+    const original = section({ peer_bot: null, live_session_id: 'old-live' })
+    setActiveRpc({ call: vi.fn().mockResolvedValue({ section: original, messages: [] }) } as never)
+    await useSections.getState().open('stored')
+    event(
+      `${kind}.request`,
+      {
+        bot: 'owl',
+        section_id: 'stored',
+        request_id: 'old',
+        questions: [
+          { qid: 'one', question: 'First?' },
+          { qid: 'two', question: 'Second?' }
+        ]
+      },
+      'old-live'
+    )
+
+    if (kind === 'clarify') {
+      event(
+        'clarify.resolved',
+        {
+          request_id: 'old',
+          status: 'waiting',
+          answers: { one: 'Accepted' }
+        },
+        'old-live'
+      )
+    }
+
+    const held = deferred()
+    setActiveRpc({ call: vi.fn(() => held.promise) } as never)
+
+    const reading =
+      source === 'lookup'
+        ? useSections.getState().verifySessionOwner('old-live', true)
+        : useSections.getState().refresh(source === 'full' ? {} : { bot: 'owl' })
+
+    if (progress === 'turn frames') {
+      event('message.start', {}, 'old-live')
+      event('message.delta', { text: 'Earlier queued turn' }, 'old-live')
+    }
+
+    event('status.update', { kind: 'working', text: 'Working' }, 'old-live')
+    const current = { ...original, live_session_id: 'current-live' }
+    held.resolve({ sections: [current] })
+    await reading
+    setActiveRpc({
+      call: vi.fn().mockResolvedValue({ section: { ...current, archived_at: 1 } })
+    } as never)
+    await useSections.getState().archive('stored')
+    setActiveRpc({
+      call: vi.fn().mockResolvedValue({ section: { ...current, live_session_id: null } })
+    } as never)
+    await useSections.getState().unarchive('stored')
+    event('status.update', { kind: 'working', text: 'Working' }, 'old-live')
+    const sessions = useTranscripts.getState().bySession
+    const live = liveSectionsOf(sessions)
+    expect(botStatusWithLive(bot, Object.values(useSections.getState().byId), live, sessions)).toBe(
+      'idle'
+    )
+    expect(sectionStatusOf(bot, 'stored', live)).toBe('idle')
+    expectReadableSuperseded(kind)
+  }
+)
+
+it.each(['same', 'new'] as const)(
+  'superseded ownership follows an actual %s daemon epoch reconnect',
+  async epoch => {
+    const restoring = await supersededRestore('clarify', 'indexed')
+    await restoring.finish()
+    const originalEpoch = useTranscripts.getState().bySession['old-live']!.epoch
+    const sockets: TestSocket[] = []
+
+    class TestSocket extends EventTarget {
+      readyState = 0
+      constructor() {
+        super()
+        sockets.push(this)
+        queueMicrotask(() => {
+          this.readyState = 1
+          this.dispatchEvent(new Event('open'))
+          this.frame({
+            jsonrpc: '2.0',
+            method: 'event',
+            params: {
+              type: 'gateway.ready',
+              payload: { replay_epoch: epoch === 'same' ? 'cold-epoch' : 'new-daemon' }
+            }
+          })
+        })
+      }
+      frame(value: unknown) {
+        this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(value) }))
+      }
+      send(data: string) {
+        const { id } = JSON.parse(data)
+        queueMicrotask(() =>
+          this.frame({
+            jsonrpc: '2.0',
+            id,
+            error: { code: -32000, message: 'Metadata unavailable' }
+          })
+        )
+      }
+      close() {
+        this.readyState = 3
+        this.dispatchEvent(new CloseEvent('close', { code: 1006 }))
+      }
+      event(type: string, payload: Record<string, unknown>) {
+        this.frame({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { type, payload, session_id: 'old-live' }
+        })
+      }
+    }
+
+    const supervisor = new ConnectionSupervisor({
+      bridge: () => ({ daemon: { localToken: async () => 'fixture' } }) as never,
+      fetch: async () => new Response(JSON.stringify({ ticket: 'fixture' }), { status: 200 }),
+      socketFactory: () => new TestSocket() as unknown as WebSocket
+    })
+
+    try {
+      await supervisor.start(useConnection.getState().target!)
+      expect(useConnection.getState().status).toBe('connected')
+
+      if (epoch === 'new') {
+        expect(useTranscripts.getState().bySession['old-live']).toBeUndefined()
+        sockets[0]!.event('clarify.request', {
+          bot: 'owl',
+          section_id: 'stored',
+          request_id: 'new-epoch',
+          question: 'Continue?'
+        })
+        sockets[0]!.event('clarify.resolved', {
+          bot: 'owl',
+          section_id: 'stored',
+          request_id: 'new-epoch',
+          status: 'answered',
+          answers: { 'new-epoch': 'Yes' }
+        })
+      }
+
+      sockets[0]!.event('status.update', { kind: 'working', text: 'Working' })
+      await flush()
+      const sessions = useTranscripts.getState().bySession
+      const live = liveSectionsOf(sessions)
+      const expected = epoch === 'same' ? 'idle' : 'working'
+      expect(
+        botStatusWithLive(bot, Object.values(useSections.getState().byId), live, sessions)
+      ).toBe(expected)
+      expect(sectionStatusOf(bot, 'stored', live)).toBe(expected)
+
+      if (epoch === 'same') {
+        expectReadableSuperseded('clarify')
+        expect(sessions['old-live']?.epoch).toBe(originalEpoch)
+      } else {
+        expect(sessions['old-live']?.epoch).not.toBe(originalEpoch)
+        expect(sessions['old-live']?.clarifies.map(card => card.requestId)).toEqual(['new-epoch'])
+      }
+    } finally {
+      supervisor.stop()
+    }
+  }
+)
+
+it('a current room turn rebinds a replaced private session without suppressing its Working', async () => {
+  const restoring = await supersededRestore('approval', 'indexed')
+  await restoring.finish()
+  event('message.start', {}, 'old-live')
+  event('message.delta', { text: 'Retained old turn' }, 'old-live')
+  useRooms
+    .getState()
+    .handleTurn({ room_id: 'room', bot: 'owl', status: 'running', live_session_id: 'old-live' })
+  event('status.update', { kind: 'working', text: 'Working' }, 'old-live')
+  const sessions = useTranscripts.getState().bySession
+  const live = liveSectionsOf(sessions)
+  expect(sessions['old-live']?.sectionId).toBe('room:room')
+  expect(sectionStatusOf(bot, 'room:room', live)).toBe('working')
+  expect(sectionStatusOf(bot, 'stored', live)).toBe('idle')
+  expectReadableSuperseded('approval')
+})
