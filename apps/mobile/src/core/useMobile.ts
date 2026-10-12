@@ -214,6 +214,7 @@ export function useMobile() {
   )
   /** Definitive deletions survive unavailable lists, but belong to this daemon epoch. */
   const deletedSections = useRef(new Map<string, { request: number; active: boolean }>())
+  const deletedRooms = useRef(new Map<string, { request: number; active: boolean }>())
   /** Exact accepted archive fields survive an older list or open response. */
   const sectionArchives = useRef(
     new Map<
@@ -464,7 +465,11 @@ export function useMobile() {
       if (!nextBots.some(bot => bot.name === name)) pendingBotStatus.current.delete(name)
     botsRef.current = nextBots
     setBots(nextBots)
-    setRooms(r.rooms)
+    const nextRooms = r.rooms.filter(room => {
+      const deleted = deletedRooms.current.get(room.id)
+      return !deleted || (!deleted.active && deleted.request < request)
+    })
+    setRooms(nextRooms)
     const nextSections = s.sections
       .filter(section => {
         const deleted = deletedSections.current.get(section.id)
@@ -485,7 +490,7 @@ export function useMobile() {
     // A route that changed while the lists loaded may be newer than them.
     if (!before || (routeRef.current !== before && !sameArchiveRoute(before, routeRef.current)))
       return
-    const next = rebind(before, { bots: nextBots, rooms: r.rooms, sections: nextSections })
+    const next = rebind(before, { bots: nextBots, rooms: nextRooms, sections: nextSections })
     if (!next) return leave()
     routeRef.current = next
     setRoute(next)
@@ -985,6 +990,7 @@ export function useMobile() {
       const target = routeRef.current
       const p = (event.payload ?? {}) as Record<string, unknown>
       let removedRetry: Bot | undefined
+      let removedRoomBots: Bot[] = []
       let repeatedDeletion = false
       if (event.type === 'gateway.ready' && typeof p.replay_epoch === 'string' && p.replay_epoch) {
         if (replayEpoch.current && replayEpoch.current !== p.replay_epoch) {
@@ -996,6 +1002,7 @@ export function useMobile() {
           submittedTurns.current.clear()
           sectionArchives.current.clear()
           for (const deleted of deletedSections.current.values()) deleted.active = false
+          for (const deleted of deletedRooms.current.values()) deleted.active = false
           setBots(rows => [...rows])
           // Events from the previous process cannot restore cards or status in a fresh snapshot.
           if (loadingEvents.current) loadingEvents.current = []
@@ -1005,10 +1012,21 @@ export function useMobile() {
       if (
         event.type === 'hexbot.rooms.changed' &&
         p.deleted === true &&
-        target?.kind === 'room' &&
-        p.id === target.room.id
-      )
-        leave()
+        typeof p.id === 'string' &&
+        p.id
+      ) {
+        repeatedDeletion = Boolean(deletedRooms.current.get(p.id)?.active)
+        if (!repeatedDeletion) {
+          deletedRooms.current.set(p.id, { request: ++refreshSequence.current, active: true })
+          removedRoomBots = botsRef.current.filter(bot => bot.status_detail?.room_id === p.id)
+          setRooms(rows => rows.filter(room => room.id !== p.id))
+          setBots(rows => [...rows])
+          if (target?.kind === 'room' && p.id === target.room.id) {
+            setChat(clearStatusProof)
+            leave()
+          }
+        }
+      }
       if (
         event.type === 'hexbot.sections.changed' &&
         p.deleted === true &&
@@ -1098,6 +1116,13 @@ export function useMobile() {
           removedRetry.name,
           removedRetry.status_detail?.session_id ?? '',
           p.id as string,
+          (event as GatewayEvent & { mobileRevision: number }).mobileRevision
+        )
+      for (const bot of removedRoomBots)
+        void verifyBotStatus(
+          bot.name,
+          bot.status_detail?.session_id ?? '',
+          bot.status_detail?.section_id ?? '',
           (event as GatewayEvent & { mobileRevision: number }).mobileRevision
         )
       if (
@@ -1395,6 +1420,7 @@ export function useMobile() {
       roomWorking.current.clear()
       submittedTurns.current.clear()
       deletedSections.current.clear()
+      deletedRooms.current.clear()
       sectionArchives.current.clear()
       routeRef.current = null
       liveId.current = null
@@ -1502,6 +1528,11 @@ export function useMobile() {
   const openRoom = async (room: Room) => {
     setLoading(true)
     setError(null)
+    if (deletedRooms.current.get(room.id)?.active) {
+      setError('This room was deleted.')
+      setLoading(false)
+      return
+    }
     releaseStaged()
     roomEvents.current = []
     setHasEarlier(false)
@@ -1709,7 +1740,7 @@ export function useMobile() {
     }
   }
 
-  const inactiveSectionBot = (bot: Bot, siblings: TurnState[] = []): Bot => {
+  const inactiveConversationBot = (bot: Bot, siblings: TurnState[] = []): Bot => {
     const detail = bot.status_detail
     const section = sectionsRef.current.find(
       row => row.id === detail?.section_id && row.bot === bot.name
@@ -1721,15 +1752,17 @@ export function useMobile() {
       botStatusReads.current.get(bot.name)?.request ?? 0
     )
     if (
+      !detail ||
       !(
         bot.status === 'working' ||
         bot.status === 'needs_you' ||
         (bot.status === 'stopped' && detail?.action?.kind === 'retry')
       ) ||
-      detail?.room_id ||
-      !detail?.section_id ||
-      (!deletedSections.current.get(detail.section_id)?.active &&
-        !(archived && saved && saved.proofRequest > statusRead))
+      !(detail?.room_id
+        ? deletedRooms.current.get(detail.room_id)?.active
+        : detail?.section_id &&
+          (deletedSections.current.get(detail.section_id)?.active ||
+            (archived && saved && saved.proofRequest > statusRead)))
     )
       return bot
     const failure = siblings.find(state => state.error)?.error
@@ -1761,7 +1794,7 @@ export function useMobile() {
     section?: Section,
     roomId?: string
   ) => {
-    if (section && archiveSection(section).archived_at) return inactiveSectionBot(bot)
+    if (section && archiveSection(section).archived_at) return inactiveConversationBot(bot)
     if (
       roomId &&
       ((route?.kind === 'room' && route.room.id === roomId && route.room.archived_at) ||
@@ -1770,7 +1803,7 @@ export function useMobile() {
       return bot
     const read = botStatusReads.current.get(bot.name)
     let current = read ? rosterChat({ ...emptyChat(), ...state }, read.revision) : state
-    const neutral = inactiveSectionBot(bot, [current])
+    const neutral = inactiveConversationBot(bot, [current])
     if (
       roomId &&
       current.retryResolution?.roomId === roomId &&
@@ -1815,7 +1848,7 @@ export function useMobile() {
       return projectBot(bot, chat, liveId.current, route.section)
     if (route?.kind === 'room') {
       const siblings = Object.values(chat.turns).filter(turn => turn.bot === bot.name)
-      let neutral = inactiveSectionBot(bot, siblings)
+      let neutral = inactiveConversationBot(bot, siblings)
       const named = siblings.find(turn => turn.sessionId === bot.status_detail?.session_id)
       if (named) neutral = projectBot(neutral, named, named.sessionId, undefined, route.room.id)
       const pending = siblings.find(turn =>
@@ -1862,7 +1895,7 @@ export function useMobile() {
           : neutral
       return turn ? projectBot(active, turn, turn.sessionId, undefined, route.room.id) : neutral
     }
-    return inactiveSectionBot(bot)
+    return inactiveConversationBot(bot)
   })
   const cachedRouteBot =
     route?.kind === 'section' && visibleBots.find(bot => sameBot(bot, route.bot))

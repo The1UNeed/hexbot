@@ -4420,8 +4420,11 @@ describe('mobile current room Retry proof', () => {
           })
         held.resolve({ room: current })
         await opening
-        expect(render().bots[0].status).toBe('stopped')
-        if (event === 'delete') expect(render().route).toBeNull()
+        expect(render().bots[0].status).toBe(event === 'delete' ? 'idle' : 'stopped')
+        if (event === 'delete') {
+          expect(render().route).toBeNull()
+          expect(render().bots[0].status_detail).toBeNull()
+        }
         expect(render().chat.turns.s1?.retryResolution?.resolved).not.toBe(true)
       }
     )
@@ -4744,9 +4747,14 @@ describe('mobile current room Retry proof', () => {
           : wire('status.update', { kind: control === 'interrupted' ? 'interrupted' : 'error' })
       )
     await flush()
-    expect(render().bots[0].status).toBe('stopped')
+    expect(render().bots[0].status).toBe(control === 'room-delete' ? 'idle' : 'stopped')
     await render().openRoom(completed)
-    expect(render().bots[0].status).toBe('stopped')
+    expect(render().bots[0].status).toBe(control === 'room-delete' ? 'idle' : 'stopped')
+    if (control === 'room-delete') {
+      expect(render().route).toBeNull()
+      expect(render().error).toBe('This room was deleted.')
+      expect(render().bots[0].status_detail).toBeNull()
+    }
     expect(render().chat.turns.s1?.retryResolution?.resolved).not.toBe(true)
   })
 
@@ -4800,8 +4808,11 @@ describe('mobile current room Retry proof', () => {
             : wire('message.complete', { status: 'error', error: 'New failure' })
         )
       await flush()
-      expect(render().bots[0].status).toBe('stopped')
-      if (control === 'delete') expect(render().route).toBeNull()
+      expect(render().bots[0].status).toBe(control === 'delete' ? 'idle' : 'stopped')
+      if (control === 'delete') {
+        expect(render().route).toBeNull()
+        expect(render().bots[0].status_detail).toBeNull()
+      }
     }
   )
 })
@@ -5234,5 +5245,291 @@ describe('mobile retained partial cards', () => {
     })
     render().back()
     expect(render().bots[0].status).toBe('working')
+  })
+})
+
+describe('mobile deleted room consumer', () => {
+  const failed = {
+    ...stoppedBot,
+    status_detail: {
+      ...stoppedBot.status_detail!,
+      section_id: 'room-stored',
+      room_id: 'failed-room',
+      session_id: 'failed-live'
+    }
+  } as Bot
+  const deleted = (id = 'failed-room') => ({
+    type: 'hexbot.rooms.changed',
+    payload: { id, deleted: true }
+  })
+  const room = (id = 'failed-room', live = false) =>
+    ({
+      id,
+      archived_at: null,
+      members: [{ member_kind: 'bot', member_id: 'alpha', left_at: null }],
+      turns: live ? [{ bot: 'alpha', live_session_id: 'room-sibling' }] : []
+    }) as unknown as Room
+  async function setup(cached = failed) {
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') return { bots: [cached] }
+      if (method === 'hexbot.rooms.list') return { rooms: [room(), room('other-room', true)] }
+      if (method === 'hexbot.rooms.get')
+        return { room: room(String(params.id), params.id === 'other-room') }
+      if (method === 'hexbot.rooms.log') return { events: [] }
+      return original(method, params)
+    }
+    await render().activate(daemon, 'token')
+    await render().refresh()
+  }
+  function unavailable() {
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.rooms.list' || method === 'hexbot.bots.get')
+        throw new Error('Room read unavailable')
+      return original(method, params)
+    }
+  }
+
+  it.each(['closed', 'current', 'other-room', 'private'])(
+    'retires a remotely deleted room and its Retry while %s is selected and refresh fails',
+    async selected => {
+      await setup()
+      if (selected === 'current') await render().openRoom(room())
+      if (selected === 'other-room') await render().openRoom(room('other-room'))
+      if (selected === 'private') await render().openSection(failed, section())
+      unavailable()
+      hooks.clients[0].emit(deleted())
+      await expect(render().refresh()).rejects.toThrow('Room read unavailable')
+      expect(render().rooms.map(row => row.id)).toEqual(['other-room'])
+      expect(render().bots[0].status).toBe(
+        selected === 'other-room' || selected === 'private' ? 'working' : 'idle'
+      )
+      expect(render().bots[0].status_detail?.action).toBeFalsy()
+      if (selected === 'closed' || selected === 'current') expect(render().route).toBeNull()
+      if (selected === 'other-room')
+        expect(render().route).toMatchObject({ kind: 'room', room: { id: 'other-room' } })
+      if (selected === 'private')
+        expect(render().route).toMatchObject({ kind: 'section', section: { id: 'section' } })
+    }
+  )
+
+  it('rejects a held full room list and never reopens a cached deleted room', async () => {
+    await setup()
+    const held = deferred()
+    const original = hooks.handler
+    hooks.handler = (method, params) =>
+      method === 'hexbot.bots.list' ? held.promise : original(method, params)
+    const reading = render().refresh()
+    hooks.clients[0].emit(deleted())
+    held.resolve({ bots: [failed] })
+    await reading
+    expect(render().rooms.map(row => row.id)).toEqual(['other-room'])
+    expect(render().bots[0].status).toBe('idle')
+    await render().openRoom(room())
+    expect(render().route).toBeNull()
+    expect(render().error).toBe('This room was deleted.')
+  })
+
+  it.each(['hexbot.rooms.log', 'hexbot.rooms.get'])(
+    'rejects a held %s open after deletion',
+    async method => {
+      await setup()
+      const held = deferred()
+      const original = hooks.handler
+      hooks.handler = (name, params) => (name === method ? held.promise : original(name, params))
+      const opening = render().openRoom(room())
+      await flush()
+      hooks.clients[0].emit(deleted())
+      held.resolve(method === 'hexbot.rooms.log' ? { events: [] } : { room: room() })
+      await opening
+      expect(render().route).toBeNull()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it('rejects a held targeted status read and accepts the later sibling status', async () => {
+    await setup()
+    const gets = holdBotGets()
+    hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: { name: 'alpha' } })
+    hooks.clients[0].emit(deleted())
+    gets[0].resolve({ bot: failed })
+    await flush()
+    expect(render().bots[0].status).toBe('idle')
+    expect(gets).toHaveLength(2)
+    const sibling = {
+      ...failed,
+      status: 'needs_you',
+      status_detail: { ...namedWait.status_detail!, section_id: 'unseen', session_id: 'unseen' }
+    } as Bot
+    gets[1].resolve({ bot: sibling })
+    await flush()
+    expect(render().bots[0]).toEqual(sibling)
+  })
+
+  it.each(['private', 'room'])(
+    'preserves the known %s sibling card or error when the failed room disappears',
+    async place => {
+      await setup()
+      const sid = place === 'private' ? 's1' : 'room-sibling'
+      if (place === 'private') await render().openSection(failed, section())
+      else await render().openRoom(room('other-room', true))
+      hooks.clients[0].emit(
+        wire('clarify.request', { request_id: 'sibling', question: 'Where?' }, sid)
+      )
+      unavailable()
+      hooks.clients[0].emit(deleted())
+      expect(render().bots[0].status).toBe('needs_you')
+      expect(render().chat.questions.map(card => card.requestId)).toEqual(['sibling'])
+      hooks.clients[0].emit(wire('message.complete', { error: 'Sibling failed' }, sid))
+      expect(render().bots[0]).toMatchObject({
+        status: 'stopped',
+        status_detail: { text: 'Sibling failed', action: null }
+      })
+    }
+  )
+
+  it.each(['connector', 'global', 'other-room', 'private'])(
+    'preserves an independent %s status',
+    async cause => {
+      const cached = {
+        ...failed,
+        status_detail: {
+          ...failed.status_detail!,
+          room_id:
+            cause === 'other-room' ? 'other-room' : cause === 'connector' ? 'failed-room' : null,
+          section_id: cause === 'private' ? 'section' : null,
+          action:
+            cause === 'connector' ? { kind: 'fix_connector', connector: 'mail' } : { kind: 'retry' }
+        }
+      } as Bot
+      await setup(cached)
+      unavailable()
+      hooks.clients[0].emit(deleted())
+      expect(render().bots[0]).toEqual(cached)
+    }
+  )
+
+  it('retains deletion within the epoch and permits a genuinely newer restarted inventory', async () => {
+    await setup()
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+    hooks.clients[0].emit(deleted())
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+    await render().refresh()
+    expect(render().rooms.map(row => row.id)).toEqual(['other-room'])
+    expect(render().bots[0].status).toBe('idle')
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+    await render().refresh()
+    expect(render().rooms.map(row => row.id)).toEqual(['failed-room', 'other-room'])
+    expect(render().bots[0].status).toBe('stopped')
+  })
+  it.each(['working', 'needs_you'] as const)(
+    'retires cached %s from the deleted room without touching private activity',
+    async status => {
+      await setup({ ...failed, status, status_detail: { ...failed.status_detail!, action: null } })
+      unavailable()
+      hooks.clients[0].emit(deleted())
+      expect(render().rooms.map(row => row.id)).toEqual(['other-room'])
+      expect(render().bots[0]).toMatchObject({ status: 'idle', status_detail: null })
+    }
+  )
+
+  it('verifies every bot whose cached status names the deleted room and preserves another room', async () => {
+    await setup()
+    const beta = { ...failed, name: 'beta' } as Bot
+    const gamma = {
+      ...failed,
+      name: 'gamma',
+      status_detail: { ...failed.status_detail!, room_id: 'other-room' }
+    } as Bot
+    const names: string[] = []
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') return { bots: [failed, beta, gamma] }
+      if (method === 'hexbot.bots.get') {
+        names.push(String(params.name))
+        throw new Error('Unavailable')
+      }
+      return original(method, params)
+    }
+    await render().refresh()
+    hooks.clients[0].emit({ ...deleted(), payload: { ...deleted().payload, bot: 'gamma' } })
+    await flush()
+    expect(names).toEqual(['alpha', 'beta'])
+    expect(render().bots.map(row => row.status)).toEqual(['idle', 'idle', 'stopped'])
+    expect(render().bots[2]).toEqual(gamma)
+  })
+
+  it.each([
+    {},
+    { id: '' },
+    { id: 1 },
+    { id: 'failed-room' },
+    { id: 'failed-room', deleted: false }
+  ])('never infers a room deletion from a noncanonical event %j', async payload => {
+    await setup()
+    unavailable()
+    hooks.clients[0].emit({ type: 'hexbot.rooms.changed', payload })
+    expect(render().rooms.map(row => row.id)).toEqual(['failed-room', 'other-room'])
+    expect(render().bots[0]).toEqual(failed)
+  })
+
+  it('does not repeat verification or invalidate a useful read for the same deletion', async () => {
+    await setup()
+    const gets = holdBotGets()
+    hooks.clients[0].emit(deleted())
+    hooks.clients[0].emit(deleted())
+    expect(gets).toHaveLength(1)
+    const sibling = {
+      ...failed,
+      status: 'working',
+      status_detail: { ...failed.status_detail!, action: null, room_id: 'other-room' }
+    } as Bot
+    gets[0].resolve({ bot: sibling })
+    await flush()
+    expect(gets).toHaveLength(1)
+    expect(render().bots[0]).toEqual(sibling)
+  })
+
+  it('keeps the deleted room out after an unnamed bot invalidation and an unsuccessful aggregate refresh', async () => {
+    await setup()
+    unavailable()
+    hooks.clients[0].emit(deleted())
+    hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: {} })
+    await expect(render().refresh()).rejects.toThrow('Room read unavailable')
+    expect(render().rooms.map(row => row.id)).toEqual(['other-room'])
+    expect(render().bots[0]).toMatchObject({ status: 'idle', status_detail: null })
+  })
+
+  it('rejects an old-epoch snapshot even though a new epoch releases the tombstone', async () => {
+    await setup()
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+    const held = deferred()
+    const original = hooks.handler
+    hooks.handler = (method, params) =>
+      method === 'hexbot.bots.list' ? held.promise : original(method, params)
+    const reading = render().refresh()
+    hooks.clients[0].emit(deleted())
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+    held.resolve({ bots: [{ ...failed, status: 'idle' }] })
+    await reading
+    expect(render().rooms.map(row => row.id)).toEqual(['other-room'])
+    expect(render().bots[0].status).toBe('stopped')
+    hooks.handler = original
+    await render().refresh()
+    expect(render().rooms.map(row => row.id)).toEqual(['failed-room', 'other-room'])
+  })
+
+  it('ignores deletion callbacks and held status replies from the previous daemon', async () => {
+    await setup()
+    const gets = holdBotGets()
+    hooks.clients[0].emit(deleted())
+    await render().activate({ ...daemon, id: 'other' }, 'token')
+    await render().refresh()
+    hooks.clients[0].emit(deleted())
+    gets[0].resolve({ bot: { ...failed, status: 'idle' } })
+    await flush()
+    expect(render().rooms.map(row => row.id)).toEqual(['failed-room', 'other-room'])
+    expect(render().bots[0]).toEqual(failed)
   })
 })
