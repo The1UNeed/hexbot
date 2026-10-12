@@ -1341,3 +1341,167 @@ it.each(
     )
   }
 )
+
+it.each(
+  (['thread', 'indexed'] as const).flatMap(surface =>
+    (['approval', 'clarify'] as const).flatMap(kind =>
+      (['same', 'two', 'three'] as const).map(rollover => ({ surface, kind, rollover }))
+    )
+  )
+)(
+  'a closed $surface restore retires older $kind through $rollover SID history',
+  async ({ surface, kind, rollover }) => {
+    const original = section({
+      peer_bot: surface === 'thread' ? 'cat' : null,
+      live_session_id: 'old-live'
+    })
+
+    setActiveRpc({ call: vi.fn().mockResolvedValue({ section: original, messages: [] }) } as never)
+
+    if (surface === 'thread') {
+      await useSections.getState().openThread('stored', 'cat')
+    } else {
+      await useSections.getState().open('stored')
+    }
+
+    event(
+      `${kind}.request`,
+      {
+        bot: 'owl',
+        section_id: 'stored',
+        request_id: 'old',
+        questions: [
+          { id: 'one', question: 'First?' },
+          { id: 'two', question: 'Second?' }
+        ]
+      },
+      'old-live'
+    )
+
+    if (kind === 'clarify') {
+      event(
+        'clarify.resolved',
+        { request_id: 'old', status: 'waiting', answers: { one: 'Accepted' } },
+        'old-live'
+      )
+    }
+
+    const current = {
+      ...original,
+      live_session_id:
+        rollover === 'same' ? 'old-live' : rollover === 'two' ? 'new-live' : 'third-live'
+    }
+
+    rpc([current])
+
+    if (rollover === 'three') {
+      event(
+        'approval.request',
+        { bot: 'owl', section_id: 'stored', request_id: 'middle' },
+        'new-live'
+      )
+      await flush()
+    } else {
+      await useSections.getState().verifySessionOwner('old-live', true)
+    }
+
+    setActiveRpc({
+      call: vi.fn().mockResolvedValue({ section: { ...current, archived_at: 1 } })
+    } as never)
+    await useSections.getState().archive('stored')
+    setActiveRpc({
+      call: vi
+        .fn()
+        .mockResolvedValue({ section: { ...current, live_session_id: null, archived_at: null } })
+    } as never)
+    await useSections.getState().unarchive('stored')
+    const sessions = useTranscripts.getState().bySession
+    const live = liveSectionsOf(sessions)
+    const rows = surface === 'thread' ? [] : [useSections.getState().byId.stored!]
+    expect(botStatusWithLive(bot, rows, live, sessions)).toBe('idle')
+    expect(sectionStatusOf(bot, 'stored', live)).toBe('idle')
+    expect(useSections.getState().liveSessionId.stored).toBeUndefined()
+    expect(sessions['old-live']?.waitingRequests).toEqual([])
+    expect(
+      kind === 'approval' ? sessions['old-live']?.approvals : sessions['old-live']?.clarifies
+    ).toHaveLength(1)
+
+    if (kind === 'clarify') {
+      expect(sessions['old-live']?.clarifies[0]?.answers).toEqual({ one: 'Accepted' })
+    }
+  }
+)
+
+it.each(['card', 'Working', 'binding', 'epoch', 'target', 'failed'] as const)(
+  'a held closed restore preserves newer %s evidence',
+  async boundary => {
+    const original = await indexedPending()
+    setActiveRpc({
+      call: vi.fn().mockResolvedValue({ section: { ...original, archived_at: 1 } })
+    } as never)
+    await useSections.getState().archive('stored')
+    const held = deferred()
+    setActiveRpc({ call: vi.fn(() => held.promise) } as never)
+    const restoring = useSections.getState().unarchive('stored')
+    const failure = boundary === 'failed' ? expect(restoring).rejects.toThrow('offline') : undefined
+
+    if (boundary === 'card') {
+      pending('approval', { request_id: 'new-request' })
+    } else if (boundary === 'Working') {
+      resolved('approval')
+      event('status.update', { kind: 'working', text: 'Working' })
+    } else if (boundary === 'binding') {
+      setActiveRpc({
+        call: vi.fn().mockResolvedValue({
+          section: { ...original, live_session_id: 'new-live' },
+          messages: []
+        })
+      } as never)
+      await useSections.getState().open('stored')
+      event(
+        'approval.request',
+        { bot: 'owl', section_id: 'stored', request_id: 'new-request' },
+        'new-live'
+      )
+    } else if (boundary === 'epoch') {
+      useConnection.setState({ epoch: 'new-daemon' })
+    } else if (boundary === 'target') {
+      useConnection.setState({ target: { kind: 'local', origin: 'http://other.test' } })
+    }
+
+    if (boundary === 'failed') {
+      held.reject(new Error('offline'))
+      await failure
+    } else {
+      held.resolve({ section: { ...original, archived_at: null, live_session_id: null } })
+      await restoring
+    }
+
+    if (boundary === 'epoch' || boundary === 'target' || boundary === 'failed') {
+      expect(useSections.getState().byId.stored?.archived_at).toBe(1)
+      expect(useTranscripts.getState().bySession.live?.waitingRequests).toHaveLength(1)
+    } else {
+      const sessions = useTranscripts.getState().bySession
+      const live = liveSectionsOf(sessions)
+      const expected = boundary === 'Working' ? 'working' : 'needs_you'
+      expect(botStatusWithLive(bot, [useSections.getState().byId.stored!], live, sessions)).toBe(
+        expected
+      )
+      expect(sectionStatusOf(bot, 'stored', live)).toBe(expected)
+
+      if (boundary === 'binding') {
+        expect(useSections.getState().liveSessionId.stored).toBe('new-live')
+      }
+
+      if (boundary === 'card') {
+        expect(sessions.live?.waitingRequests).toContainEqual(
+          expect.objectContaining({ requestId: 'new-request' })
+        )
+      }
+    }
+
+    expect(useTranscripts.getState().bySession.live?.approvals).toHaveLength(
+      boundary === 'card' ? 2 : 1
+    )
+  }
+)

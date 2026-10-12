@@ -827,9 +827,18 @@ export const useSections = create<SectionsState>((set, get) => ({
 
   async unarchive(id) {
     const request = ++sectionsRequest
+    const revision = transcriptRevision()
+    const connection = useConnection.getState()
     const { section } = await sectionsUnarchive(id)
 
-    if (removedAfter(id, request) || (sectionMetadataRequests.get(id)?.archive ?? 0) > request) {
+    const target = useConnection.getState()
+
+    if (
+      removedAfter(id, request) ||
+      (sectionMetadataRequests.get(id)?.archive ?? 0) > request ||
+      target.target !== connection.target ||
+      target.epoch !== connection.epoch
+    ) {
       return
     }
 
@@ -838,6 +847,15 @@ export const useSections = create<SectionsState>((set, get) => ({
       ...mergeEditedSection(state, section),
       ...sectionBinding(state, section, true, request)
     }))
+
+    if (
+      !section.archived_at &&
+      !section.live_session_id &&
+      (boundSectionRequests.get(id)?.request ?? 0) <= request
+    ) {
+      useTranscripts.getState().clearAnsweredWaiting([id], [], revision, { idle: true })
+    }
+
     acceptBinding(id, sectionsRequest, true)
   },
 
