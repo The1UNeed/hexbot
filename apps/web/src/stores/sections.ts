@@ -511,6 +511,10 @@ export const useSections = create<SectionsState>((set, get) => ({
           bot ? name !== bot : (botSectionsRequests.get(name) ?? 0) > request
 
         const openedAfter = (id: string) => (sectionRequests.get(id) ?? 0) > request
+        const boundAfter = (id: string) => (boundSectionRequests.get(id) ?? 0) > request
+
+        const preserveArchive = (id: string) =>
+          boundAfter(id) && !state.liveSessionId[id] && Boolean(state.byId[id])
 
         const incoming = (result.sections ?? [])
           .filter(section => !preserve(section.bot) && !removedAfter(section.id, request))
@@ -523,11 +527,14 @@ export const useSections = create<SectionsState>((set, get) => ({
                 ? { ...opened, preview: section.preview || opened.preview }
                 : section
 
-            // A list already in flight can carry the live id from before this open completed.
-            return (boundSectionRequests.get(section.id) ?? 0) > request && boundLive
+            // Older inventory must also preserve a verified closed or archived runtime.
+            return boundAfter(section.id) && (boundLive || opened)
               ? {
                   ...current,
-                  live_session_id: boundLive,
+                  archived_at: preserveArchive(section.id)
+                    ? opened!.archived_at
+                    : current.archived_at,
+                  live_session_id: boundLive ?? opened?.live_session_id ?? null,
                   message_count: opened?.message_count ?? current.message_count
                 }
               : current
@@ -536,15 +543,20 @@ export const useSections = create<SectionsState>((set, get) => ({
         const newlyOpened = Object.values(state.byId).filter(
           section =>
             !preserve(section.bot) &&
-            openedAfter(section.id) &&
+            (openedAfter(section.id) || boundAfter(section.id)) &&
             !incoming.some(item => item.id === section.id)
         )
 
         const indexed = indexSections([...newlyOpened, ...incoming], state.sendingTitles)
 
         for (const section of incoming) {
-          // A preserved row did not install this read's editable metadata.
-          acceptSection(section.id, request, !openedAfter(section.id) || !state.byId[section.id])
+          // Advance each editable field only if this reply installed it.
+          const metadata = !openedAfter(section.id) || !state.byId[section.id]
+          acceptSection(section.id, request, false)
+
+          if (metadata) {
+            acceptMetadata(section.id, request, preserveArchive(section.id) ? 'title' : undefined)
+          }
         }
 
         return {
@@ -566,7 +578,7 @@ export const useSections = create<SectionsState>((set, get) => ({
             ...state.liveSessionId,
             ...Object.fromEntries(
               incoming
-                .filter(section => section.live_session_id)
+                .filter(section => section.live_session_id && !boundAfter(section.id))
                 .map(section => [section.id, section.live_session_id as string])
             )
           }

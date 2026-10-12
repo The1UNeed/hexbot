@@ -801,3 +801,153 @@ describe.each(['approval', 'clarify'] as const)('%s lifecycle authority', kind =
     }
   )
 })
+
+// A list can arrive after a private lookup has disproved its captured live id.
+describe.each(['approval', 'clarify'] as const)('%s catalog lifecycle ordering', kind => {
+  it.each([
+    ['full', 'archived', true],
+    ['full', 'closed', true],
+    ['scoped', 'archived', true],
+    ['scoped', 'closed', true],
+    ['full', 'archived', false],
+    ['full', 'closed', false],
+    ['scoped', 'archived', false],
+    ['scoped', 'closed', false]
+  ] as const)(
+    'keeps an older %s catalog behind newer %s lookup metadata with row present %s',
+    async (scope, lifecycle, present) => {
+      const original = section({ peer_bot: null, live_session_id: 'old-live' })
+      setActiveRpc({
+        call: vi.fn().mockResolvedValue({ section: original, messages: [] })
+      } as never)
+      await useSections.getState().open('stored')
+      event(
+        `${kind}.request`,
+        { bot: 'owl', section_id: 'stored', request_id: 'old-request', question: 'Continue?' },
+        'old-live'
+      )
+
+      const catalog = deferred(),
+        lookup = deferred()
+
+      setActiveRpc({
+        call: vi.fn((method: string, params: { include_threads?: boolean }) =>
+          method === 'hexbot.sections.list'
+            ? params.include_threads
+              ? lookup.promise
+              : catalog.promise
+            : Promise.reject(new Error('offline'))
+        )
+      } as never)
+      const reading = useSections.getState().refresh(scope === 'scoped' ? { bot: 'owl' } : {})
+      pending(kind)
+
+      const verified = {
+        ...original,
+        live_session_id: lifecycle === 'closed' ? null : 'third-live',
+        archived_at: lifecycle === 'archived' ? 1 : null
+      }
+
+      lookup.resolve({ sections: [verified] })
+      await flush()
+      const sibling = section({ id: 'sibling', peer_bot: null, live_session_id: null })
+      catalog.resolve({
+        sections: [...(present ? [{ ...original, title: 'Catalog title' }] : []), sibling]
+      })
+      await reading
+      const sessions = useTranscripts.getState().bySession
+      const live = liveSectionsOf(sessions)
+      const row = useSections.getState().byId.stored!
+      expect(botStatusWithLive(bot, [row], live, sessions)).toBe('idle')
+      expect(sectionStatusOf(bot, 'stored', live)).toBe('idle')
+      expect(row).toMatchObject({
+        archived_at: verified.archived_at,
+        live_session_id: verified.live_session_id,
+        title: present ? 'Catalog title' : original.title
+      })
+      expect(useSections.getState().idsByBot.owl).toContain('sibling')
+      expect(useSections.getState().idsByBot.owl).toContain('stored')
+      expect(useSections.getState().liveSessionId.stored).toBeUndefined()
+      expect(
+        kind === 'approval' ? sessions['old-live']?.approvals : sessions['old-live']?.clarifies
+      ).toHaveLength(1)
+    }
+  )
+})
+
+it.each(['full', 'scoped'] as const)(
+  'accepts a later %s catalog after an exact archived ownership lookup',
+  async scope => {
+    const original = section({ peer_bot: null, archived_at: 1 })
+    useSections.setState({ byId: { stored: original }, idsByBot: { owl: ['stored'] } })
+    rpc([original])
+    pending('approval')
+    await flush()
+    expect(useSections.getState().liveSessionId.stored).toBeUndefined()
+    rpc([section({ peer_bot: null, title: 'Restored', live_session_id: 'new-live' })])
+    await useSections.getState().refresh(scope === 'scoped' ? { bot: 'owl' } : {})
+    event(
+      'approval.request',
+      { bot: 'owl', section_id: 'stored', request_id: 'new-request' },
+      'new-live'
+    )
+    const row = useSections.getState().byId.stored!
+    const sessions = useTranscripts.getState().bySession
+    const live = liveSectionsOf(sessions)
+    expect(row).toMatchObject({ archived_at: null, live_session_id: 'new-live', title: 'Restored' })
+    expect(useSections.getState().liveSessionId.stored).toBe('new-live')
+    expect(botStatusWithLive(bot, [row], live, sessions)).toBe('needs_you')
+    expect(sectionStatusOf(bot, 'stored', live)).toBe('needs_you')
+  }
+)
+
+it.each([
+  ['full', 'approval'],
+  ['full', 'clarify'],
+  ['scoped', 'approval'],
+  ['scoped', 'clarify']
+] as const)(
+  'a %s catalog retaining archived %s proof does not veto a pending unarchive',
+  async (scope, kind) => {
+    const original = section({ peer_bot: null, archived_at: 1 })
+
+    const saving = deferred(),
+      catalog = deferred(),
+      lookup = deferred()
+
+    setActiveRpc({
+      call: vi.fn((method: string, params: { include_threads?: boolean }) => {
+        if (method === 'hexbot.sections.open') {
+          return Promise.resolve({ section: original, messages: [] })
+        }
+
+        if (method === 'hexbot.sections.unarchive') {
+          return saving.promise
+        }
+
+        if (method === 'hexbot.sections.list') {
+          return params.include_threads ? lookup.promise : catalog.promise
+        }
+
+        return Promise.reject(new Error('offline'))
+      })
+    } as never)
+    await useSections.getState().open('stored')
+    pending(kind)
+    const restoring = useSections.getState().unarchive('stored')
+    const reading = useSections.getState().refresh(scope === 'scoped' ? { bot: 'owl' } : {})
+    const checking = useSections.getState().verifySessionOwner('live', true)
+    lookup.resolve({ sections: [original] })
+    await checking
+    catalog.resolve({ sections: [{ ...original, archived_at: null, title: 'Catalog title' }] })
+    await reading
+    saving.resolve({ section: { ...original, archived_at: null } })
+    await restoring
+    const row = useSections.getState().byId.stored!
+    const sessions = useTranscripts.getState().bySession
+    const live = liveSectionsOf(sessions)
+    expect(row).toMatchObject({ archived_at: null, title: 'Catalog title' })
+    expect(botStatusWithLive(bot, [row], live, sessions)).toBe('needs_you')
+    expect(sectionStatusOf(bot, 'stored', live)).toBe('needs_you')
+  }
+)
