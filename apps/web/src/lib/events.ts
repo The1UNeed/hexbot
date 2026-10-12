@@ -123,6 +123,8 @@ function bindSettlementOwner(sessionId: string, payload: Record<string, unknown>
   if (sectionId !== transcript.sectionId || bot !== transcript.bot) {
     transcripts.setSectionId(sessionId, sectionId, bot)
   }
+
+  void useSections.getState().verifySessionOwner(sessionId)
 }
 
 /** Retry starts carry only a session id; use exact known ownership before recording proof. */
@@ -298,6 +300,14 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       return
 
     case 'hexbot.sections.changed':
+      if (typeof payload.id === 'string' && payload.deleted !== true) {
+        for (const transcript of Object.values(transcripts.bySession)) {
+          if (transcript.sectionId === payload.id && !useSections.getState().byId[payload.id]) {
+            void useSections.getState().verifySessionOwner(transcript.sessionId, true)
+          }
+        }
+      }
+
       if (typeof payload.id === 'string' && payload.deleted === true) {
         useSections.getState().drop(payload.id)
 
@@ -342,7 +352,9 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
     transcripts.setSectionId(
       sessionId,
       transcripts.bySession[sessionId]?.sectionId ?? payload.section_id,
-      typeof payload.bot === 'string' ? payload.bot : undefined
+      botOfSection(transcripts.bySession[sessionId]?.sectionId ?? payload.section_id) ??
+        transcripts.bySession[sessionId]?.bot ??
+        cardBot(payload, payload.section_id)
     )
   }
 
@@ -351,6 +363,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       transcripts.approvalRequest(sessionId, payload as ApprovalRequestPayload, {
         notify: botNotifies(cardBot(payload, transcripts.bySession[sessionId]?.sectionId))
       })
+      void useSections.getState().verifySessionOwner(sessionId)
 
       return
 
@@ -358,6 +371,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       transcripts.clarifyRequest(sessionId, payload as ClarifyRequestPayload, {
         notify: botNotifies(cardBot(payload, transcripts.bySession[sessionId]?.sectionId))
       })
+      void useSections.getState().verifySessionOwner(sessionId)
 
       return
 

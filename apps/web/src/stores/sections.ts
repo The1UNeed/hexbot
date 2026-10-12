@@ -22,6 +22,7 @@ import {
 import { KICKOFF_MARKER } from '../lib/bot-kickoff'
 import type { Bot, BotStatus, ClarifyRequest, Message, Section } from '../lib/types'
 
+import { useConnection } from './connection'
 import { draftsActions } from './drafts'
 import { clearDeletedRooms, completedRoomRetry, useRooms } from './rooms'
 import { clarifyWaiting, type Transcript, transcriptRevision, useTranscripts } from './transcripts'
@@ -132,6 +133,8 @@ export interface SectionsState {
   /** The first message reached the daemon, or failed: take the daemon's title again. */
   settleTitle: (id: string) => Promise<void>
   unarchive: (id: string) => Promise<void>
+  /** Confirm an unlisted session against real private section metadata, without opening it. */
+  verifySessionOwner: (sessionId: string, refresh?: boolean) => Promise<void>
 }
 
 /** What the daemon calls a section nobody has named yet. */
@@ -326,6 +329,33 @@ function openedSection(section: Section, request: number): Section {
     : section
 }
 
+function threadBinding(
+  state: SectionsState,
+  section: Section,
+  opened = false
+): Partial<SectionsState> {
+  if (!opened && !isThread(section)) {
+    return {}
+  }
+
+  const liveSessionId = { ...state.liveSessionId }
+  const live = section.live_session_id
+  const transcript = live ? useTranscripts.getState().bySession[live] : undefined
+
+  delete liveSessionId[section.id]
+
+  if (
+    !section.archived_at &&
+    live &&
+    transcript?.sectionId === section.id &&
+    transcript.bot === section.bot
+  ) {
+    liveSessionId[section.id] = live
+  }
+
+  return { liveSessionId }
+}
+
 /** A successful edit protects this row without discarding siblings from an in-flight list. */
 function sectionChanged(id: string, request?: number, field?: MetadataField): void {
   const completed = ++sectionsRequest
@@ -340,6 +370,70 @@ export const useSections = create<SectionsState>((set, get) => ({
   liveSessionId: {},
   loading: false,
   sendingTitles: {},
+
+  async verifySessionOwner(sessionId, refresh = false) {
+    const transcript = useTranscripts.getState().bySession[sessionId]
+    const id = transcript?.sectionId
+    const bot = transcript?.bot
+
+    if (
+      !id ||
+      !bot ||
+      id.startsWith('room:') ||
+      (!refresh && get().liveSessionId[id] === sessionId)
+    ) {
+      return
+    }
+
+    const boundAtRead = get().liveSessionId[id]
+    const request = ++sectionsRequest
+    const connection = useConnection.getState()
+
+    try {
+      const result = await sectionsList({ bot, include_archived: true, include_threads: true })
+      const section = result.sections?.find(row => row.id === id && row.bot === bot)
+      const current = useTranscripts.getState().bySession[sessionId]
+      const target = useConnection.getState()
+      const bound = get().liveSessionId[id]
+
+      if (
+        !Array.isArray(result.sections) ||
+        current?.epoch !== transcript.epoch ||
+        current.sectionId !== id ||
+        current.bot !== bot ||
+        target.target !== connection.target ||
+        target.epoch !== connection.epoch ||
+        removedSectionRequests.get(id)?.active ||
+        (sectionMetadataRequests.get(id)?.archive ?? 0) > request ||
+        (boundSectionRequests.get(id) ?? 0) > request ||
+        (bound && bound !== sessionId && bound !== boundAtRead) ||
+        (get().byId[id] && get().byId[id]?.bot !== bot)
+      ) {
+        return
+      }
+
+      // This read installs ownership only, never editable catalog metadata.
+      boundSectionRequests.set(id, request)
+
+      if (!section) {
+        return
+      }
+
+      set(state => {
+        const liveSessionId = { ...state.liveSessionId }
+
+        if (!section.archived_at && section.live_session_id === sessionId) {
+          liveSessionId[id] = sessionId
+        } else if (liveSessionId[id] === sessionId) {
+          delete liveSessionId[id]
+        }
+
+        return { liveSessionId }
+      })
+    } catch {
+      // Failed metadata cannot establish ownership or retire a pending card.
+    }
+  },
 
   async refresh(options = {}) {
     const request = ++sectionsRequest
@@ -515,9 +609,9 @@ export const useSections = create<SectionsState>((set, get) => ({
     }
 
     if (live) {
-      set(state => ({ liveSessionId: { ...state.liveSessionId, [id]: live } }))
       useTranscripts.getState().clearAnsweredWaiting([], [live], revision)
       useTranscripts.getState().setSectionId(live, id, section.bot)
+      set(state => threadBinding(state, section, true))
 
       // The owner answers the receiving bot's questions here: threads have no other view.
       for (const pending of pendingClarifies) {
@@ -612,7 +706,7 @@ export const useSections = create<SectionsState>((set, get) => ({
     }
 
     sectionChanged(section.id, request, 'archive')
-    set(state => mergeEditedSection(state, section))
+    set(state => ({ ...mergeEditedSection(state, section), ...threadBinding(state, section) }))
   },
 
   async unarchive(id) {
@@ -624,7 +718,7 @@ export const useSections = create<SectionsState>((set, get) => ({
     }
 
     sectionChanged(section.id, request, 'archive')
-    set(state => mergeEditedSection(state, section))
+    set(state => ({ ...mergeEditedSection(state, section), ...threadBinding(state, section) }))
   },
 
   async remove(id, purgeMemory = true) {
@@ -1086,13 +1180,8 @@ export function botStatusWithLive(
 
     const fresh = freshSessionStatus(session, Boolean(running)) ?? (running ? 'working' : undefined)
 
-    // An unopened thread's trusted card ownership survives its answer and
-    // fresh progress, until a roster or lifecycle update retires that evidence.
-    if (
-      fresh &&
-      (current === sessionId ||
-        (!roomId && !current && (fresh === 'needs_you' || fresh === 'working')))
-    ) {
+    // Only a current room turn or verified private section owns this activity.
+    if (fresh && current === sessionId) {
       own.push(fresh)
     }
   }

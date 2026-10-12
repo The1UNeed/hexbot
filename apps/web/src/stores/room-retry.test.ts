@@ -52,6 +52,20 @@ function fixture(
   setTranscriptEffects({ ackApproval: vi.fn(), notify: vi.fn(), touchSection: vi.fn() })
   setActiveRpc({
     call: vi.fn(async (method: string) => {
+      if (method === 'hexbot.sections.list') {
+        return {
+          sections: [
+            {
+              id: 'private',
+              bot: 'owl',
+              peer_bot: 'cat',
+              archived_at: null,
+              live_session_id: 'private-live'
+            }
+          ]
+        }
+      }
+
       if (method === 'hexbot.rooms.delete') {
         return { deleted: true }
       }

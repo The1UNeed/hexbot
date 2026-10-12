@@ -185,6 +185,11 @@ turns can show Working, below Needs you and Stopped; newer accepted bot status
 retires older activity evidence. Archived private cards do not count.
 The web client uses accepted running room turns as Working evidence when
 their exact live session matches, below Needs you and Stopped.
+Unindexed private activity counts only after section metadata confirms its
+section ID, bot and live session. A room's stored session ID does not establish
+private thread ownership.
+A room binding that confirms the same bot and live session preserves pending
+cards first received under an unverified stored session ID.
 Accepted archive state excludes matching private activity from the bot
 aggregate and makes the open turn eligible again on restore.
 Bot status and archive fields reconcile independently when sections change.
@@ -820,7 +825,7 @@ devices, and removes the invite and update methods.
 
 ### Events emitted by the plugin
 
-`hexbot.bots.changed {name}`, `hexbot.sections.changed {id, bot?, deleted?}`,
+`hexbot.bots.changed {name?}`, `hexbot.sections.changed {id, bot?, deleted?}`,
 `hexbot.memory.user.changed {}`, `hexbot.network.changed {}`. Session-less,
 broadcast to every connection.
 Section deletion sends `{id, deleted: true}` to the owner. Clients record
@@ -828,8 +833,11 @@ that exact deletion before refreshing lists, so a failed bot refresh cannot
 retain the deleted private section's cached Working or Needs you status, or
 Stopped with a Retry action. An omitted row in a list does not prove deletion.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
-Room mutations emit `hexbot.rooms.changed {id}`. Every persisted room event
-emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit
+Room mutations emit `hexbot.rooms.changed {id}`.
+Successful room deletion also emits owner-scoped `hexbot.bots.changed {}`,
+including deletion by removing the last bot, so clients refresh bot status.
+Every persisted room event emits `hexbot.rooms.event {room_id, event}`.
+Turn state changes emit
 `hexbot.rooms.turn {room_id, bot, live_session_id, status}`. Room events go
 to the owner.
 Dream triggers emit `hexbot.dreaming.changed {bot}`.

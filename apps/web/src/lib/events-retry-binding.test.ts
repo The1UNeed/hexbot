@@ -57,6 +57,14 @@ function fixture(
   setTranscriptEffects({ ackApproval: vi.fn(), notify: vi.fn(), touchSection: vi.fn() })
   setActiveRpc({
     call: vi.fn(async (method: string) => {
+      if (method === 'hexbot.sections.list') {
+        return {
+          sections: [
+            { ...section, id: 'sibling', peer_bot: 'cat', live_session_id: 'sibling-live' }
+          ]
+        }
+      }
+
       if (method === 'hexbot.bots.list') {
         if (state.heldBot) {
           return state.heldBot

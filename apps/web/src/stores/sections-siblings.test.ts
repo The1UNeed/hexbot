@@ -333,6 +333,16 @@ it('ignores acknowledged deletion even if a queued replay creates a later transc
 })
 
 describe.each(['approval', 'clarify'] as const)('an unopened private sibling %s', kind => {
+  beforeEach(async () => {
+    useTranscripts.getState().setSectionId('never-opened', 'thread', 'owl')
+    setActiveRpc({
+      call: vi.fn().mockResolvedValue({
+        sections: [section('thread', { peer_bot: 'cat', live_session_id: 'never-opened' })]
+      })
+    } as never)
+    await useSections.getState().verifySessionOwner('never-opened')
+  })
+
   it.each(['RPC first', 'events first'] as const)(
     'continues Working after its answer with %s while its roster fails',
     async order => {
@@ -377,7 +387,7 @@ describe.each(['approval', 'clarify'] as const)('an unopened private sibling %s'
 
       reply.resolve(result)
       await answering
-      expect(useSections.getState().liveSessionId.thread).toBeUndefined()
+      expect(useSections.getState().liveSessionId.thread).toBe('never-opened')
       expect(useTranscripts.getState().bySession['never-opened']?.waitingRequests).toEqual([])
       expect(dot(useBots.getState().byName.owl!)).toBe('working')
 
@@ -571,7 +581,7 @@ describe.each(['approval', 'clarify'] as const)('an unopened private sibling %s'
     useBots.setState({ byName: { owl: bot }, order: ['owl'] })
     setActiveRpc({ call: vi.fn().mockRejectedValue(new Error('offline')) } as never)
     ask('never-opened', 'pending', kind)
-    expect(useSections.getState().liveSessionId.thread).toBeUndefined()
+    expect(useSections.getState().liveSessionId.thread).toBe('never-opened')
     await useBots.getState().refresh()
     expect(dot(useBots.getState().byName.owl!)).toBe('needs_you')
     expect(dot({ ...idleBot, name: 'cat' })).toBe('idle')

@@ -36,6 +36,8 @@ import type {
   Usage
 } from '../lib/types'
 
+import { useSections } from './sections'
+
 /** Why an error row exists, when the daemon knows more than the text. */
 export interface ErrorDetail {
   /** Connector catalog id, when the failure came from one (drives "Fix <name>"). */
@@ -509,8 +511,17 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         // A running-room snapshot identifies the session, but says nothing
         // about which human requests are still pending within that turn.
         const preserveWaiting =
+          existing &&
           options.preserveWaiting &&
-          existing?.sectionId === sectionId &&
+          (existing?.sectionId === sectionId ||
+            Boolean(
+              existing?.sectionId &&
+              sectionId.startsWith('room:') &&
+              !existing.sectionId.startsWith('room:') &&
+              existing.bot === bot &&
+              !useSections.getState().byId[existing.sectionId] &&
+              !useSections.getState().liveSessionId[existing.sectionId]
+            )) &&
           (!existing.bot || !bot || existing.bot === bot)
 
         const preserveRetryResolved = Boolean(

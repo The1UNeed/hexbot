@@ -1057,6 +1057,13 @@ describe.each(['approval', 'clarify'] as const)('%s archive restoration', kind =
     f.state.heldSections = deferred()
     f.state.heldBot = deferred()
     const reading = f.changed()
+    useSections.setState(state => ({
+      byId: {
+        ...state.byId,
+        sibling: { ...f.state.row, id: 'sibling', live_session_id: 'sibling-live' }
+      },
+      liveSessionId: { ...state.liveSessionId, sibling: 'sibling-live' }
+    }))
     useTranscripts.getState().open('sibling-live', 'sibling', [], undefined, 'owl')
     routeEvent({
       type: 'status.update',
