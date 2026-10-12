@@ -81,7 +81,7 @@ bot list has not refreshed.
 A retry that finishes during a room refresh also stays settled.
 If a room message cannot be sent, the room stays idle when no bots are working.
 A room deleted from another device leaves Rooms at once and closes if you are
-in it. Its bots stop showing Working, Needs you, or a model retry for that
+in it. Its bots stop showing Working, Needs you, or Stopped for that
 room, even if the bot list cannot refresh.
 
 Job details show the last status, error and up to 12,000 characters of output

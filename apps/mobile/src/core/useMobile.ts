@@ -431,6 +431,8 @@ export function useMobile() {
       const current = session.current
       const epoch = replayEpoch.current
       const archive = method === 'hexbot.sections.archive' || method === 'hexbot.sections.unarchive'
+      const target = archive ? routeRef.current : null
+      const opening = openSequence.current
       const request = archive ? ++refreshSequence.current : 0
       if (!current || current.client.connectionState !== 'open')
         throw new Error('Connect to a daemon first.')
@@ -468,11 +470,46 @@ export function useMobile() {
       }
       if (archive && mounted.current) {
         const section = (value as { section?: Section })?.section
+        const here = routeRef.current
+        const restoring =
+          method === 'hexbot.sections.unarchive' &&
+          target?.kind === 'section' &&
+          here?.kind === 'section' &&
+          target.section.id === params.id &&
+          here.section.id === target.section.id &&
+          sameBot(here.bot, target.bot) &&
+          here.section.archived_at &&
+          opening === openSequence.current
         if (section && section.id === params.id && section.bot && acceptArchive(section, request)) {
           eventRef.current({
             type: 'hexbot.sections.changed',
             payload: { id: section.id, bot: section.bot }
           })
+          if (restoring && section.bot === target.bot.name && section.archived_at === null) {
+            const accepted = sectionArchives.current.get(section.id)!
+            const sessionId = liveId.current
+            const stillCurrent = () => {
+              const route = routeRef.current
+              const saved = sectionArchives.current.get(section.id)
+              const row = sectionsRef.current.find(row => row.id === section.id)
+              return (
+                session.current === current &&
+                replayEpoch.current === epoch &&
+                route?.kind === 'section' &&
+                route.section.id === section.id &&
+                sameBot(route.bot, target.bot) &&
+                (!row?.live_session_id || row.live_session_id === sessionId) &&
+                saved?.generation === accepted.generation &&
+                saved.readChangeRequest === accepted.readChangeRequest &&
+                saved.archived_at === null &&
+                !deletedSections.current.get(section.id)?.active
+              )
+            }
+            // Opening reconfirms exact pending keys, including cards received while archived.
+            await syncChatRef.current(stillCurrent).catch(e => {
+              if (stillCurrent()) setError(errorText(e))
+            })
+          }
         }
       }
       return value as never
@@ -836,213 +873,235 @@ export function useMobile() {
     },
     [rpc]
   )
-  const syncChat = useCallback(async () => {
-    const target = routeRef.current
-    if (!target) return
-    if (target.kind === 'room') return syncRoom(target.room.id)
-    let failure: string | null = null
-    let carried:
-      | {
-          sessionId: string
-          epoch: string | null
-          proof: ReturnType<typeof statusProof>
-          state: ChatState
-          cards: Map<string, number>
-        }
-      | undefined
-    for (let attempt = 0; ; attempt++) {
-      const sequence = ++openSequence.current
-      const request = ++refreshSequence.current
-      const archives = archiveSnapshot()
-      const epoch = replayEpoch.current
-      const cardsRevision = ++eventRevision.current
-      loadingEvents.current = []
-      try {
-        const result = await rpc<{
-          section: Section
-          messages: unknown[]
-          pending_clarify?: Record<string, unknown>
-        }>('hexbot.sections.open', { id: target.section.id })
-        if (
-          sequence !== openSequence.current ||
-          routeRef.current?.kind !== 'section' ||
-          routeRef.current.section.id !== target.section.id
-        )
-          return
-        const snapshotRevision = eventRevision.current
-        liveId.current = result.section.live_session_id
-        setHasEarlier(false)
-        const status = await rpc<{ status: string }>('session.status', {
-          session_id: liveId.current
-        })
-        if (sequence !== openSequence.current) return
-        const submitted = submittedTurns.current.get(liveId.current!)
-        const owned =
-          epoch === replayEpoch.current &&
-          submitted?.section?.id === target.section.id &&
-          sameBot(submitted.bot, target.bot)
-            ? submitted
-            : undefined
-        const previous =
-          carried?.sessionId === liveId.current && carried.epoch === replayEpoch.current
-            ? carried
-            : undefined
-        const pendingState = owned?.state ?? previous?.state
-        const snapshot = {
-          ...emptyChat(),
-          ...(previous?.proof ?? {}),
-          settlements: { ...previous?.proof.settlements, ...owned?.state.settlements },
-          busy: status.status === 'working',
-          ...(pendingState && status.status === 'working'
-            ? {
-                approvals: pendingState.approvals,
-                questions: pendingState.questions,
-                waiting: pendingState.waiting,
-                activity: pendingState.activity
+  const syncChat = useCallback(
+    async (stillCurrent?: () => boolean) => {
+      const target = routeRef.current
+      if (!target || (stillCurrent && !stillCurrent())) return
+      if (target.kind === 'room') return syncRoom(target.room.id)
+      let failure: string | null = null
+      let carried:
+        | {
+            sessionId: string
+            epoch: string | null
+            proof: ReturnType<typeof statusProof>
+            state: ChatState
+            cards: Map<string, number>
+          }
+        | undefined
+      for (let attempt = 0; ; attempt++) {
+        const sequence = ++openSequence.current
+        const request = ++refreshSequence.current
+        const archives = archiveSnapshot()
+        const epoch = replayEpoch.current
+        const cardsRevision = ++eventRevision.current
+        loadingEvents.current = []
+        try {
+          const result = await rpc<{
+            section: Section
+            messages: unknown[]
+            pending_clarify?: Record<string, unknown>
+          }>('hexbot.sections.open', { id: target.section.id })
+          if (
+            (stillCurrent &&
+              (!stillCurrent() ||
+                result.section.id !== target.section.id ||
+                result.section.bot !== target.bot.name ||
+                result.section.archived_at)) ||
+            sequence !== openSequence.current ||
+            routeRef.current?.kind !== 'section' ||
+            routeRef.current.section.id !== target.section.id
+          )
+            return
+          const snapshotRevision = eventRevision.current
+          if (!stillCurrent) liveId.current = result.section.live_session_id
+          const status = await rpc<{ status: string }>('session.status', {
+            session_id: result.section.live_session_id
+          })
+          if (sequence !== openSequence.current || (stillCurrent && !stillCurrent())) return
+          liveId.current = result.section.live_session_id
+          setHasEarlier(false)
+          const submitted = submittedTurns.current.get(liveId.current!)
+          const owned =
+            epoch === replayEpoch.current &&
+            submitted?.section?.id === target.section.id &&
+            sameBot(submitted.bot, target.bot)
+              ? submitted
+              : undefined
+          const previous =
+            carried?.sessionId === liveId.current && carried.epoch === replayEpoch.current
+              ? carried
+              : undefined
+          const pendingState = owned?.state ?? previous?.state
+          const snapshot = {
+            ...emptyChat(),
+            ...(previous?.proof ?? {}),
+            settlements: { ...previous?.proof.settlements, ...owned?.state.settlements },
+            busy: status.status === 'working',
+            ...(pendingState && status.status === 'working'
+              ? {
+                  approvals: pendingState.approvals,
+                  questions: pendingState.questions,
+                  waiting: pendingState.waiting,
+                  activity: pendingState.activity
+                }
+              : {}),
+            messages: historyMessages(result.messages)
+          }
+          // Receipt proof follows the accepted pending keys, not the age of their history read.
+          const receipts = new Map(previous?.cards)
+          for (const key of pendingKeys(snapshot))
+            receipts.set(key, owned?.cards.get(key) ?? receipts.get(key) ?? cardsRevision)
+          const received = new Set(pendingKeys(snapshot))
+          if (result.pending_clarify) {
+            const pending = reduceChat(
+              { ...emptyChat(), settlements: snapshot.settlements },
+              {
+                type: 'clarify.request',
+                session_id: liveId.current!,
+                payload: result.pending_clarify
               }
-            : {}),
-          messages: historyMessages(result.messages)
-        }
-        // Receipt proof follows the accepted pending keys, not the age of their history read.
-        const receipts = new Map(previous?.cards)
-        for (const key of pendingKeys(snapshot))
-          receipts.set(key, owned?.cards.get(key) ?? receipts.get(key) ?? cardsRevision)
-        const received = new Set(pendingKeys(snapshot))
-        if (result.pending_clarify) {
-          const pending = reduceChat(
-            { ...emptyChat(), settlements: snapshot.settlements },
-            {
-              type: 'clarify.request',
-              session_id: liveId.current!,
-              payload: result.pending_clarify
+            )
+            for (const key of pendingKeys(pending))
+              if (!previous?.cards.has(key))
+                receipts.set(key, Math.max(receipts.get(key) ?? -1, cardsRevision))
+          }
+          const replay = restoreChat(
+            snapshot,
+            liveId.current!,
+            result.pending_clarify,
+            loadingEvents.current ?? [],
+            (before, after, event) => {
+              if (!['approval.request', 'clarify.request'].includes(event.type)) return
+              const payload = (event.payload ?? {}) as Record<string, unknown>
+              if (
+                (payload.bot && payload.bot !== target.bot.name) ||
+                (payload.section_id && payload.section_id !== target.section.id) ||
+                payload.room_id
+              )
+                return
+              const revision = (event as GatewayEvent & { mobileRevision?: number }).mobileRevision
+              if (revision === undefined) return
+              const known = new Set(pendingKeys(before))
+              const requested = new Set(pendingKeys(reduceChat(emptyChat(), event)))
+              for (const key of pendingKeys(after))
+                if (
+                  requested.has(key) &&
+                  (!known.has(key) || (!received.has(key) && revision <= snapshotRevision))
+                )
+                  receipts.set(key, revision)
+              for (const key of requested) received.add(key)
             }
           )
-          for (const key of pendingKeys(pending))
-            if (!previous?.cards.has(key))
-              receipts.set(key, Math.max(receipts.get(key) ?? -1, cardsRevision))
-        }
-        const replay = restoreChat(
-          snapshot,
-          liveId.current!,
-          result.pending_clarify,
-          loadingEvents.current ?? [],
-          (before, after, event) => {
-            if (!['approval.request', 'clarify.request'].includes(event.type)) return
-            const payload = (event.payload ?? {}) as Record<string, unknown>
-            if (
-              (payload.bot && payload.bot !== target.bot.name) ||
-              (payload.section_id && payload.section_id !== target.section.id) ||
-              payload.room_id
-            )
-              return
-            const revision = (event as GatewayEvent & { mobileRevision?: number }).mobileRevision
-            if (revision === undefined) return
-            const known = new Set(pendingKeys(before))
-            const requested = new Set(pendingKeys(reduceChat(emptyChat(), event)))
-            for (const key of pendingKeys(after))
-              if (
-                requested.has(key) &&
-                (!known.has(key) || (!received.has(key) && revision <= snapshotRevision))
-              )
-                receipts.set(key, revision)
-            for (const key of requested) received.add(key)
-          }
-        )
-        const pendingReceipts = new Map(
-          pendingKeys(replay.state).map(key => [key, receipts.get(key) ?? cardsRevision])
-        )
-        const latestCard = Math.max(-1, ...pendingReceipts.values())
-        if (
-          replay.state.retryResolution?.sessionId === liveId.current &&
-          epoch === replayEpoch.current &&
-          result.section.id === target.section.id &&
-          result.section.bot === target.bot.name &&
-          sameBot(
-            botsRef.current.find(bot => bot.name === target.bot.name),
-            target.bot
+          const pendingReceipts = new Map(
+            pendingKeys(replay.state).map(key => [key, receipts.get(key) ?? cardsRevision])
           )
-        )
-          replay.state.retryResolution = {
-            ...replay.state.retryResolution,
-            bot: target.bot.name,
-            sectionId: target.section.id,
-            roomId: undefined
+          const latestCard = Math.max(-1, ...pendingReceipts.values())
+          if (
+            replay.state.retryResolution?.sessionId === liveId.current &&
+            epoch === replayEpoch.current &&
+            result.section.id === target.section.id &&
+            result.section.bot === target.bot.name &&
+            sameBot(
+              botsRef.current.find(bot => bot.name === target.bot.name),
+              target.bot
+            )
+          )
+            replay.state.retryResolution = {
+              ...replay.state.retryResolution,
+              bot: target.bot.name,
+              sectionId: target.section.id,
+              roomId: undefined
+            }
+          if (owned) {
+            if (result.pending_clarify)
+              owned.state = reduceChat(owned.state, {
+                type: 'clarify.request',
+                session_id: liveId.current!,
+                payload: result.pending_clarify
+              })
+            owned.state = {
+              ...owned.state,
+              busy: replay.state.busy,
+              error: replay.state.error ?? owned.state.error
+            }
+            pruneSubmitted()
           }
-        if (owned) {
-          if (result.pending_clarify)
-            owned.state = reduceChat(owned.state, {
-              type: 'clarify.request',
-              session_id: liveId.current!,
-              payload: result.pending_clarify
-            })
-          owned.state = {
-            ...owned.state,
-            busy: replay.state.busy,
-            error: replay.state.error ?? owned.state.error
+          failure = replay.state.error ?? failure
+          // A turn finished while the history loaded; read it again so its replies show once.
+          if (replay.reread && attempt < 2) {
+            carried = {
+              sessionId: liveId.current!,
+              epoch: replayEpoch.current,
+              proof: statusProof(replay.state),
+              state: replay.state,
+              cards: pendingReceipts
+            }
+            continue
           }
-          pruneSubmitted()
+          straddling.current = replay.state.busy ? liveId.current : null
+          const restored = { ...replay.state, error: failure }
+          const bot = botsRef.current.find(bot => sameBot(bot, target.bot))
+          loadingEvents.current = null
+          setChat(rosterChat(restored, rosterRevision.current))
+          acceptArchive(result.section, request, archives, false)
+          const newRoute: ChatRoute = { ...target, section: archiveSection(result.section) }
+          if (
+            epoch === replayEpoch.current &&
+            request >= acceptedRefresh.current &&
+            result.section.id === target.section.id &&
+            result.section.bot === target.bot.name
+          )
+            retireSectionTurns(result.section, cardsRevision)
+          routeRef.current = newRoute
+          setRoute(newRoute)
+          if (
+            bot &&
+            liveId.current &&
+            epoch === replayEpoch.current &&
+            result.section.id === target.section.id &&
+            result.section.bot === bot.name &&
+            (request >= acceptedRefresh.current ||
+              (latestCard > cardsRevision &&
+                sectionsRef.current.some(
+                  section =>
+                    section.id === result.section.id &&
+                    section.bot === bot.name &&
+                    !archiveSection(section).archived_at &&
+                    (!section.live_session_id || section.live_session_id === liveId.current)
+                )))
+          )
+            retainTurn(restored, bot, liveId.current, newRoute.section, undefined, pendingReceipts)
+          await rpc('hexbot.sections.mark_read', { id: target.section.id })
+          return
+        } finally {
+          if (sequence === openSequence.current) {
+            const buffered = loadingEvents.current
+            loadingEvents.current = null
+            // A superseding archive can reject this read while the same chat still receives events.
+            if (
+              stillCurrent &&
+              buffered &&
+              epoch === replayEpoch.current &&
+              routeRef.current?.kind === 'section' &&
+              routeRef.current.section.id === target.section.id &&
+              sameBot(routeRef.current.bot, target.bot)
+            )
+              for (const event of buffered) eventRef.current(event)
+          }
         }
-        failure = replay.state.error ?? failure
-        // A turn finished while the history loaded; read it again so its replies show once.
-        if (replay.reread && attempt < 2) {
-          carried = {
-            sessionId: liveId.current!,
-            epoch: replayEpoch.current,
-            proof: statusProof(replay.state),
-            state: replay.state,
-            cards: pendingReceipts
-          }
-          continue
-        }
-        straddling.current = replay.state.busy ? liveId.current : null
-        const restored = { ...replay.state, error: failure }
-        const bot = botsRef.current.find(bot => sameBot(bot, target.bot))
-        loadingEvents.current = null
-        setChat(rosterChat(restored, rosterRevision.current))
-        acceptArchive(result.section, request, archives, false)
-        const newRoute: ChatRoute = { ...target, section: archiveSection(result.section) }
-        if (
-          epoch === replayEpoch.current &&
-          request >= acceptedRefresh.current &&
-          result.section.id === target.section.id &&
-          result.section.bot === target.bot.name
-        )
-          retireSectionTurns(result.section, cardsRevision)
-        routeRef.current = newRoute
-        setRoute(newRoute)
-        if (
-          bot &&
-          liveId.current &&
-          epoch === replayEpoch.current &&
-          result.section.id === target.section.id &&
-          result.section.bot === bot.name &&
-          (request >= acceptedRefresh.current ||
-            (latestCard > cardsRevision &&
-              sectionsRef.current.some(
-                section =>
-                  section.id === result.section.id &&
-                  section.bot === bot.name &&
-                  !archiveSection(section).archived_at &&
-                  (!section.live_session_id || section.live_session_id === liveId.current)
-              )))
-        )
-          retainTurn(restored, bot, liveId.current, newRoute.section, undefined, pendingReceipts)
-        await rpc('hexbot.sections.mark_read', { id: target.section.id })
-        return
-      } finally {
-        if (sequence === openSequence.current) loadingEvents.current = null
       }
-    }
-  }, [
-    rpc,
-    syncRoom,
-    archiveSection,
-    archiveSnapshot,
-    acceptArchive,
-    pruneSubmitted,
-    retainTurn,
-    retireSectionTurns
-  ])
+    },
+    [
+      rpc,
+      syncRoom,
+      archiveSection,
+      archiveSnapshot,
+      acceptArchive,
+      pruneSubmitted,
+      retainTurn,
+      retireSectionTurns
+    ]
+  )
   const syncChatRef = useRef(syncChat)
   syncChatRef.current = syncChat
   const refreshRef = useRef(refresh)

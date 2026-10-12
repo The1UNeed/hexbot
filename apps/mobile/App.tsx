@@ -730,7 +730,7 @@ function MobileApp() {
             (mobile.route?.kind === 'section' ? mobile.route.section.id : mobile.route?.room.id)
         )
           return
-        setDraft(current => current.trim() === text.trim() ? '' : current)
+        setDraft(current => (current.trim() === text.trim() ? '' : current))
       })
       return
     }
@@ -820,7 +820,7 @@ function MobileApp() {
           route.kind === 'section' ? 'hexbot.sections.unarchive' : 'hexbot.rooms.unarchive',
           { id: route.kind === 'section' ? route.section.id : route.room.id }
         )
-        await mobile.syncChat()
+        if (route.kind === 'room') await mobile.syncChat()
         await mobile.refresh()
       })
   }
@@ -1322,12 +1322,16 @@ function MobileApp() {
                 if (
                   mobileRef.current.active?.id !== mobile.active?.id ||
                   currentRoute?.kind !== mobile.route?.kind ||
-                  (currentRoute?.kind === 'section' ? currentRoute.section.id : currentRoute?.room.id) !==
-                    (mobile.route?.kind === 'section' ? mobile.route.section.id : mobile.route?.room.id)
+                  (currentRoute?.kind === 'section'
+                    ? currentRoute.section.id
+                    : currentRoute?.room.id) !==
+                    (mobile.route?.kind === 'section'
+                      ? mobile.route.section.id
+                      : mobile.route?.room.id)
                 )
                   return
                 if (draft.trim() === questionAnswer.trim())
-                  setDraft(current => current.trim() === questionAnswer.trim() ? '' : current)
+                  setDraft(current => (current.trim() === questionAnswer.trim() ? '' : current))
                 if (questionRef.current !== question) return
                 setQuestion(null)
                 setQuestionAnswer('')

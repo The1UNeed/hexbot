@@ -6846,3 +6846,412 @@ describe('mobile retained cards follow verified session rollover', () => {
     expect(render().bots[0].status).toBe('idle')
   })
 })
+
+describe('mobile open section restore reconfirms pending cards', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+  })
+
+  async function archived(kind: 'question' | 'approval' = 'question') {
+    const idle = { ...namedWait, status: 'idle', status_detail: null } as Bot
+    let row: Section = { ...section(), archived_at: 1 }
+    let reads = true
+    let opens = 0
+    const question = {
+      bot: 'alpha',
+      section_id: 'section',
+      request_id: 'archived-card',
+      questions: [
+        { qid: 'first', question: 'Where?' },
+        { qid: 'last', question: 'When?' }
+      ]
+    }
+    const approval = {
+      bot: 'alpha',
+      section_id: 'section',
+      request_id: 'archived-card',
+      choices: ['once', 'deny']
+    }
+    let pending: Record<string, unknown> | undefined = kind === 'question' ? question : undefined
+    let reemit = kind === 'approval'
+    const messages = [{ id: 'readable', role: 'assistant', content: 'Earlier reply' }]
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') {
+        if (!reads) throw new Error('Roster unavailable')
+        return { bots: [idle] }
+      }
+      if (method === 'hexbot.bots.get') throw new Error('Bot read unavailable')
+      if (method === 'hexbot.rooms.list') return { rooms: [] }
+      if (method === 'hexbot.sections.list') return { sections: [row] }
+      if (method === 'hexbot.sections.open') {
+        opens++
+        if (params.id !== row.id)
+          return {
+            section: { ...section(String(params.id), 's2'), archived_at: null },
+            messages: []
+          }
+        if (opens > 1 && reemit) hooks.clients[0].emit(wire('approval.request', approval))
+        return { section: row, messages, ...(opens > 1 ? { pending_clarify: pending } : {}) }
+      }
+      if (method === 'session.status') return { status: 'working' }
+      if (method === 'hexbot.sections.unarchive') {
+        row = { ...row, archived_at: null }
+        return { section: row }
+      }
+      if (method === 'hexbot.sections.archive') {
+        row = { ...row, archived_at: 2 }
+        return { section: row }
+      }
+      if (method === 'clarify.respond')
+        return { status: 'waiting', answers: { first: 'Here' }, remaining: ['last'] }
+      return {}
+    }
+    await render().activate(daemon, 'token')
+    hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'one' } })
+    await render().refresh()
+    reads = false
+    await render().openSection(idle, row)
+    hooks.clients[0].emit(
+      wire(
+        kind === 'question' ? 'clarify.request' : 'approval.request',
+        kind === 'question' ? question : approval
+      )
+    )
+    expect(render().chat.questions.length + render().chat.approvals.length).toBe(1)
+    expect(render().bots[0].status).toBe('idle')
+    return {
+      idle,
+      question,
+      restore: () => render().rpc('hexbot.sections.unarchive', { id: 'section' }),
+      opens: () => opens,
+      row: () => row,
+      catalog: async (archived_at: number | null, live_session_id = 's1') => {
+        row = { ...row, archived_at, live_session_id }
+        reads = true
+        await render().refresh()
+        reads = false
+      },
+      empty: () => {
+        pending = undefined
+        reemit = false
+      }
+    }
+  }
+
+  it.each(['question', 'approval'] as const)(
+    'reconfirms an unanswered archived-time %s without a bot read',
+    async kind => {
+      const f = await archived(kind)
+      await f.restore()
+      expect(f.opens()).toBe(2)
+      expect(render().route).toMatchObject({
+        kind: 'section',
+        section: { id: 'section', archived_at: null }
+      })
+      expect(render().chat.messages).toMatchObject([{ id: 'readable', text: 'Earlier reply' }])
+      render().back()
+      expect(render().bots[0].status).toBe('needs_you')
+    }
+  )
+
+  it('keeps the remaining exact question after a partial answer and leave', async () => {
+    const f = await archived()
+    await f.restore()
+    await render().answer('archived-card', 'first', 'Here', 's1')
+    expect(render().chat.questions[0].questions.map(q => q.id)).toEqual(['last'])
+    expect(
+      render().chat.settlements[JSON.stringify(['clarify', 's1', 'archived-card'])]?.answers
+    ).toEqual({ first: 'Here' })
+    render().back()
+    expect(render().bots[0].status).toBe('needs_you')
+  })
+
+  it.each(['question', 'approval'] as const)(
+    'keeps the restored %s after a fresh sibling approval settles',
+    async kind => {
+      const f = await archived(kind)
+      await f.restore()
+      hooks.clients[0].emit(
+        wire('approval.request', { request_id: 'sibling', bot: 'alpha', section_id: 'section' })
+      )
+      render().back()
+      hooks.clients[0].emit(
+        wire('approval.resolved', {
+          request_id: 'sibling',
+          bot: 'alpha',
+          section_id: 'section',
+          choice: 'once'
+        })
+      )
+      expect(render().bots[0].status).toBe('needs_you')
+      hooks.clients[0].emit(
+        wire(kind === 'question' ? 'clarify.expire' : 'approval.resolved', {
+          request_id: 'archived-card',
+          bot: 'alpha',
+          section_id: 'section',
+          choice: 'once'
+        })
+      )
+      expect(render().bots[0].status).not.toBe('needs_you')
+    }
+  )
+
+  it.each(['question', 'approval'] as const)(
+    'reconciles an authoritative empty reopen of the archived-time %s',
+    async kind => {
+      const f = await archived(kind)
+      f.empty()
+      const previous = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'session.status' ? { status: 'idle' } : previous(method, params)
+      await f.restore()
+      expect(render().chat.questions).toEqual([])
+      expect(render().chat.approvals).toEqual([])
+      expect(render().chat.messages).toMatchObject([{ id: 'readable', text: 'Earlier reply' }])
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it.each(['hexbot.sections.open', 'session.status'])(
+    'keeps readable cards without making receipt proof when %s fails',
+    async failed => {
+      const f = await archived()
+      const previous = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === failed) throw new Error('Reopen unavailable')
+        return previous(method, params)
+      }
+      await f.restore()
+      expect(render().route).toMatchObject({ kind: 'section', section: { archived_at: null } })
+      expect(render().chat.questions[0].requestId).toBe('archived-card')
+      expect(render().chat.messages[0].text).toBe('Earlier reply')
+      expect(render().error).toBe('Reopen unavailable')
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it.each(['rejected', 'wrong id', 'wrong bot', 'still archived'])(
+    'does not reopen a %s restore',
+    async response => {
+      const f = await archived()
+      const previous = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method !== 'hexbot.sections.unarchive') return previous(method, params)
+        if (response === 'rejected') throw new Error('Restore rejected')
+        return {
+          section: {
+            ...f.row(),
+            id: response === 'wrong id' ? 'other' : 'section',
+            bot: response === 'wrong bot' ? 'other' : 'alpha',
+            archived_at: response === 'still archived' ? 1 : null
+          }
+        }
+      }
+      if (response === 'rejected') await expect(f.restore()).rejects.toThrow('Restore rejected')
+      else await f.restore()
+      expect(f.opens()).toBe(1)
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it.each(['closed', 'other section', 'already active'])(
+    'does not reopen a %s route on a restore ACK',
+    async route => {
+      const f = await archived()
+      if (route === 'closed') render().back()
+      else if (route === 'other section') await render().openSection(f.idle, section('other', 's2'))
+      else await f.catalog(null)
+      const before = f.opens()
+      await f.restore()
+      expect(f.opens()).toBe(before)
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  const boundaries = [
+    'other route',
+    'same route reopened',
+    'deleted',
+    'epoch',
+    'daemon',
+    'archived again',
+    'catalog archive and restore',
+    'catalog new session'
+  ] as const
+  async function boundary(
+    kind: (typeof boundaries)[number],
+    f: Awaited<ReturnType<typeof archived>>
+  ) {
+    if (kind === 'other route') await render().openSection(f.idle, section('other', 's2'))
+    else if (kind === 'same route reopened') await render().openSection(f.idle, f.row())
+    else if (kind === 'deleted')
+      hooks.clients[0].emit({
+        type: 'hexbot.sections.changed',
+        payload: { id: 'section', deleted: true }
+      })
+    else if (kind === 'epoch')
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'two' } })
+    else if (kind === 'daemon') await render().activate({ ...daemon, id: 'other-daemon' }, 'token')
+    else if (kind === 'archived again')
+      await render().rpc('hexbot.sections.archive', { id: 'section' })
+    else if (kind === 'catalog new session') await f.catalog(null, 's2')
+    else {
+      await f.catalog(2)
+      await f.catalog(null)
+    }
+  }
+
+  it.each(boundaries)('does not reopen after a held ACK crosses %s', async kind => {
+    const f = await archived()
+    const ack = deferred()
+    const previous = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.sections.unarchive' ? ack.promise : previous(method, params)
+    const restoring = f.restore().catch(e => e)
+    await boundary(kind, f)
+    const before = f.opens()
+    ack.resolve({ section: { ...section(), archived_at: null } })
+    await restoring
+    expect(f.opens()).toBe(before)
+    if (kind !== 'daemon') {
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    } else expect(render().bots).toEqual([])
+  })
+
+  it.each(
+    (['open', 'status'] as const).flatMap(phase =>
+      boundaries.filter(kind => kind !== 'same route reopened').map(kind => [phase, kind] as const)
+    )
+  )('does not apply a held restore %s after %s', async (phase, kind) => {
+    const f = await archived()
+    const held = deferred()
+    const previous = hooks.handler
+    let holding = true
+    hooks.handler = async (method, params) => {
+      if (holding && method === (phase === 'open' ? 'hexbot.sections.open' : 'session.status')) {
+        holding = false
+        return held.promise
+      }
+      return previous(method, params)
+    }
+    const restoring = f.restore()
+    await flush()
+    holding = false
+    await boundary(kind, f)
+    held.resolve(
+      phase === 'open'
+        ? {
+            section: { ...section(), archived_at: null },
+            messages: [],
+            pending_clarify: f.question
+          }
+        : { status: 'working' }
+    )
+    await restoring
+    if (kind === 'other route')
+      expect(render().route).toMatchObject({ kind: 'section', section: { id: 'other' } })
+    if (kind === 'deleted' || kind === 'daemon') expect(render().route).toBeNull()
+    if (kind === 'archived again')
+      expect(render().route).toMatchObject({ kind: 'section', section: { archived_at: 2 } })
+    if (kind !== 'daemon') {
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    } else expect(render().bots).toEqual([])
+  })
+
+  it('accepts the current new session returned by restore without reviving the old one', async () => {
+    const f = await archived()
+    const previous = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.sections.open')
+        return {
+          section: { ...section(), archived_at: null, live_session_id: 'new-live' },
+          messages: [{ id: 'readable', role: 'assistant', content: 'Earlier reply' }],
+          pending_clarify: { ...f.question, request_id: 'new-card' }
+        }
+      return previous(method, params)
+    }
+    await f.restore()
+    expect(render().liveSessionId()).toBe('new-live')
+    expect(render().chat.questions.map(q => [q.sessionId, q.requestId])).toEqual([
+      ['new-live', 'new-card']
+    ])
+    render().back()
+    hooks.clients[0].emit(wire('clarify.expire', { ...f.question }))
+    expect(render().bots[0].status).toBe('needs_you')
+    hooks.clients[0].emit(
+      wire('clarify.expire', { ...f.question, request_id: 'new-card' }, 'new-live')
+    )
+    expect(render().bots[0].status).not.toBe('needs_you')
+  })
+
+  it.each(['approval', 'question'] as const)(
+    'keeps a fresh buffered %s readable when a newer archive rejects the restore read',
+    async kind => {
+      const f = await archived()
+      const held = deferred()
+      const previous = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.sections.open' ? held.promise : previous(method, params)
+      const restoring = f.restore()
+      await flush()
+      await render().rpc('hexbot.sections.archive', { id: 'section' })
+      hooks.clients[0].emit(
+        wire(kind === 'approval' ? 'approval.request' : 'clarify.request', {
+          bot: 'alpha',
+          section_id: 'section',
+          request_id: 'fresh',
+          question: 'Fresh?'
+        })
+      )
+      held.resolve({
+        section: { ...section(), archived_at: null },
+        messages: [],
+        pending_clarify: f.question
+      })
+      await restoring
+      expect(
+        render().chat.approvals.some(card => card.requestId === 'fresh') ||
+          render().chat.questions.some(card => card.requestId === 'fresh')
+      ).toBe(true)
+      expect(render().chat.questions[0].requestId).toBe('archived-card')
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it('retains only a fresh buffered approval when the restore read fails', async () => {
+    const f = await archived()
+    const held = deferred()
+    const previous = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.sections.open' ? held.promise : previous(method, params)
+    const restoring = f.restore()
+    await flush()
+    hooks.clients[0].emit(
+      wire('approval.request', { bot: 'alpha', section_id: 'section', request_id: 'fresh' })
+    )
+    held.reject(new Error('Reopen unavailable'))
+    await restoring
+    expect(render().chat.approvals.map(card => card.requestId)).toEqual(['fresh'])
+    expect(render().chat.questions[0].requestId).toBe('archived-card')
+    render().back()
+    expect(render().bots[0].status).toBe('needs_you')
+    hooks.clients[0].emit(
+      wire('approval.resolved', {
+        bot: 'alpha',
+        section_id: 'section',
+        request_id: 'fresh',
+        choice: 'once'
+      })
+    )
+    expect(render().bots[0].status).not.toBe('needs_you')
+  })
+})
