@@ -158,7 +158,9 @@ impl App {
         if method == "hexbot.sections.delete" {
             let stored = common::required(p, "id")?;
             catalog::section(&self.home, owner, stored)?;
-            self.runtime.delete_stored(owner, stored).await?;
+            self.runtime
+                .delete_stored(owner, stored, p["purge_memory"].as_bool().unwrap_or(true))
+                .await?;
         }
         if method == "hexbot.bots.delete" {
             let bot = common::required(p, "name")?;
@@ -200,6 +202,7 @@ impl App {
                     .delete_stored(
                         common::required(&session, "owner")?,
                         common::required(&session, "stored_id")?,
+                        true,
                     )
                     .await?;
             }

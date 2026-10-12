@@ -1744,39 +1744,54 @@ async fn reopening_a_section_replays_the_approval_it_is_waiting_on() {
 
 #[tokio::test]
 async fn delete_finishes_bookkeeping_when_the_bot_cannot_be_reaped() {
-    let (home, runtime, hub) = setup();
-    let id = open(&runtime).await;
-    let s = runtime.sessions.lock().unwrap()["first"].clone();
-    s.process.fail_cleanup();
-    runtime.delete_stored("alice", "first").await.unwrap();
-    assert!(runtime.sessions.lock().unwrap().is_empty());
-    assert_eq!(runtime.capacity.available_permits(), 16);
-    assert!(
-        hub.since("alice", &id, 0)["events"]
-            .as_array()
+    for purge in [true, false] {
+        let (home, runtime, hub) = setup();
+        let id = open(&runtime).await;
+        let s = runtime.sessions.lock().unwrap()["first"].clone();
+        store::append(
+            home.path(),
+            "first",
+            json!({"role":"user","text":"Keep or purge"}),
+        )
+        .unwrap();
+        s.process.fail_cleanup();
+        runtime
+            .delete_stored("alice", "first", purge)
+            .await
+            .unwrap();
+        assert!(runtime.sessions.lock().unwrap().is_empty());
+        assert_eq!(runtime.capacity.available_permits(), 16);
+        assert!(
+            hub.since("alice", &id, 0)["events"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(home.path().join("runtime/sessions/first").exists(), !purge);
+        assert_eq!(
+            store::history(home.path(), "first").unwrap().len(),
+            usize::from(!purge)
+        );
+        let live: Option<String> = db::open(home.path())
             .unwrap()
-            .is_empty()
-    );
-    assert!(!home.path().join("runtime/sessions/first").exists());
-    let live: Option<String> = db::open(home.path())
-        .unwrap()
-        .query_row(
-            "SELECT last_live_session_id FROM sections WHERE id='first'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(live, None);
-    let deleted: bool = store::open(home.path())
-        .unwrap()
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM native_deleted WHERE session_id='first')",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(deleted);
-    runtime.shutdown().await;
+            .query_row(
+                "SELECT last_live_session_id FROM sections WHERE id='first'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(live, None);
+        let deleted: bool = store::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_deleted WHERE session_id='first')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(deleted);
+        runtime.shutdown().await;
+    }
 }
 
 #[tokio::test]
@@ -2825,7 +2840,7 @@ async fn selected_cloud_provider_environment_reaches_agent() {
 
 #[tokio::test]
 async fn failed_deletion_rolls_back_root_and_descendant_tombstones() {
-    for close_failure in [true, false] {
+    for (close_failure, purge) in [(true, true), (true, false), (false, true)] {
         let (home, runtime, _) = setup();
         open(&runtime).await;
         let conn = store::open(home.path()).unwrap();
@@ -2839,7 +2854,7 @@ async fn failed_deletion_rolls_back_root_and_descendant_tombstones() {
         }
         assert!(
             runtime
-                .delete_stored(if close_failure { "bob" } else { "alice" }, "first")
+                .delete_stored(if close_failure { "bob" } else { "alice" }, "first", purge)
                 .await
                 .is_err()
         );

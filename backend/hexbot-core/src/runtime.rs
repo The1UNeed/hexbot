@@ -1464,7 +1464,7 @@ impl Runtime {
         }
         Ok(false)
     }
-    pub async fn delete_stored(&self, owner: &str, stored: &str) -> Result<()> {
+    pub async fn delete_stored(&self, owner: &str, stored: &str, purge: bool) -> Result<()> {
         // Serialize the tombstone with open, then let close acquire the same lock.
         let targets = {
             let lock = self.open_lock(stored);
@@ -1473,7 +1473,8 @@ impl Runtime {
         };
         // Keep the original set: a partial purge can remove descendant relationships.
         let result = match self.close_stored(owner, stored).await {
-            Ok(_) => store::delete(&self.home, stored),
+            Ok(_) if purge => store::delete(&self.home, stored),
+            Ok(_) => Ok(()),
             Err(error) => Err(error),
         };
         if result.is_err() {

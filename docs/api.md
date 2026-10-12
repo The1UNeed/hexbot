@@ -79,7 +79,9 @@ original card. The answer RPC can also return the canonical `choice` or
 
 When a new agent turn starts, `message.start` includes `retry_resolved: true`
 if resolving that section's `turn_failed` incidents succeeded. Clients can
-retire a cached private-section Stopped status with a Retry action for that exact live session.
+retire a cached private-section Stopped status with a Retry action for that
+exact live session. For an unopened section, clients bind the marker using
+its known live-session mapping or an exact cached bot/session cause.
 Compaction starts and older daemons omit this field; an unmarked start or a
 Working event alone does not prove that a failure was resolved.
 
@@ -310,9 +312,10 @@ context of its own; the meter belongs to bot sections.
 - `hexbot.sections.rename {id, title}` → `{section: Section}`
 - `hexbot.sections.archive {id}` / `hexbot.sections.unarchive {id}` → `{section}`
 - `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true}`
-  (closes the live session, `session.delete` on the stored row). With
-  `purge_memory: false` only the Hexbot row goes and the core transcript
-  is left in place. The bot's memory is not touched either way.
+  Closes its live sessions and removes the section. By default its stored
+  transcript and Pi session files are deleted. With `purge_memory: false`
+  those records remain, but the deleted sessions cannot resume or receive
+  new transcript messages. The bot's memory is not touched either way.
 - `hexbot.sections.touch {id}` is internal; activity is stamped by the plugin
   on `message.complete`. It also sets the section's `done_at`.
 - `hexbot.sections.mark_read {id}` → `{section: Section}` clears `done_at`:
@@ -822,10 +825,11 @@ Connector mutations emit `hexbot.connectors.changed {connector, bot?}` and
 `hexbot.bots.incident {bot, section_id, room_id, session_id, incident: {id,
 kind, connector, text, created_at, resolved_at}}`. Incident resolution does
 not emit an incident event. Turn start and clean turn completion resolve
-`turn_failed` incidents. Section deletion and `hexbot.bots.clear_status`
-resolve all incidents for that section or bot; successful connector setup
-resolves that connector's incidents. Clients refresh bots on the corresponding
-bots, sections, or connectors changed event.
+`turn_failed` incidents. Section deletion resolves only its bot's private
+turn failures; connector, room and global incidents remain open.
+`hexbot.bots.clear_status` resolves all incidents for the bot; successful
+connector setup resolves that connector's incidents. Clients refresh bots on
+the corresponding bots, sections, or connectors changed event.
 
 ## Pairing and auth over HTTP
 
