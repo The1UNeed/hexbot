@@ -18,13 +18,14 @@ vi.mock('react', () => ({
   },
   useState<T>(value: T | (() => T)) {
     const index = hooks.index++
-    if (!(index in hooks.slots))
-      hooks.slots[index] = typeof value === 'function' ? (value as () => T)() : value
+    // Old setters belong to their fixture after beforeEach starts the next one.
+    const slots = hooks.slots
+    if (!(index in slots)) slots[index] = typeof value === 'function' ? (value as () => T)() : value
     return [
-      hooks.slots[index],
+      slots[index],
       (next: T | ((previous: T) => T)) => {
-        hooks.slots[index] =
-          typeof next === 'function' ? (next as (previous: T) => T)(hooks.slots[index] as T) : next
+        slots[index] =
+          typeof next === 'function' ? (next as (previous: T) => T)(slots[index] as T) : next
       }
     ]
   },
