@@ -49,6 +49,40 @@ async fn event(
     .await
     .unwrap_or_else(|_| panic!("missing {kind}; received {seen:?}"))
 }
+fn notifications(
+    events: &mut tokio::sync::broadcast::Receiver<hexbot_core::events::Event>,
+) -> Vec<hexbot_core::events::Event> {
+    let mut received = Vec::new();
+    loop {
+        match events.try_recv() {
+            Ok(event) => received.push(event),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => return received,
+            Err(error) => panic!("notification stream failed: {error}"),
+        }
+    }
+}
+fn deletion_refresh(events: &[hexbot_core::events::Event], owner: &str, room: &str) {
+    let changed = events
+        .iter()
+        .find(|event| event.frame["params"]["type"] == "hexbot.rooms.changed")
+        .expect("room deletion notification");
+    assert_eq!(changed.frame["params"]["payload"]["id"], room);
+    assert_eq!(changed.frame["params"]["payload"]["deleted"], true);
+    let refreshes = events
+        .iter()
+        .filter(|event| event.frame["params"]["type"] == "hexbot.bots.changed")
+        .collect::<Vec<_>>();
+    assert_eq!(refreshes.len(), 1, "one bot roster refresh after deletion");
+    let refresh = refreshes[0];
+    assert_eq!(refresh.frame["params"]["payload"], json!({}));
+    assert!(refresh.frame["params"]["session_id"].is_null());
+    assert!(refresh.frame["params"]["seq"].as_u64() > changed.frame["params"]["seq"].as_u64());
+    for event in [changed, refresh] {
+        assert_eq!(event.owner, owner);
+        assert!(event.visible_to(owner));
+        assert!(!event.visible_to("other-owner"));
+    }
+}
 async fn failed_room(app: &Arc<App>) -> (String, Value) {
     failed_room_as(app, "local", "owl").await
 }
@@ -119,11 +153,14 @@ async fn deleted_room_case(last_member: bool) {
         "hexbot.rooms.delete"
     };
     let params = json!({"id":room,"bot":"owl"});
+    let mut events = app.events.subscribe();
     assert_eq!(
         app.call("bob", method, &params).await.unwrap_err().code,
         4302
     );
+    assert!(notifications(&mut events).is_empty());
     let result = app.call("local", method, &params).await.unwrap();
+    let emitted = notifications(&mut events);
     assert_eq!(
         if last_member {
             &result["room"]["deleted"]
@@ -156,11 +193,14 @@ async fn deleted_room_case(last_member: bool) {
         )
         .unwrap();
     assert!(resolved.is_none());
+    assert!(app.call("local", method, &params).await.is_err());
+    assert!(notifications(&mut events).is_empty());
     app.shutdown().await;
     for bot in rows {
         assert_eq!(bot["status"], "idle", "{bot}");
         assert!(bot["status_detail"].is_null());
     }
+    deletion_refresh(&emitted, "local", &room);
 }
 
 #[tokio::test]
@@ -170,6 +210,52 @@ async fn public_deleted_room_explicit_delete_retires_retry() {
 #[tokio::test]
 async fn public_deleted_room_last_member_removal_retires_retry() {
     deleted_room_case(true).await;
+}
+
+#[tokio::test]
+async fn public_room_delete_refreshes_all_failed_members_once() {
+    let (_home, app) = fixture().await;
+    let (room, _) = failed_room(&app).await;
+    app.call(
+        "local",
+        "hexbot.rooms.add_member",
+        &json!({"id":room,"bot":"fox"}),
+    )
+    .await
+    .unwrap();
+    let mut turn_events = app.events.subscribe();
+    app.call(
+        "local",
+        "hexbot.rooms.send",
+        &json!({"id":room,"text":"@fox Fail this turn"}),
+    )
+    .await
+    .unwrap();
+    let incident = event(&mut turn_events, "hexbot.bots.incident").await;
+    assert_eq!(incident["bot"], "fox");
+    loop {
+        let turn = event(&mut turn_events, "hexbot.rooms.turn").await;
+        if turn["room_id"] == room && turn["status"] != "running" {
+            break;
+        }
+    }
+    for name in ["owl", "fox"] {
+        for bot in bot_rows(&app, "local", name).await {
+            assert_eq!(bot["status"], "stopped");
+        }
+    }
+    let mut events = app.events.subscribe();
+    app.call("local", "hexbot.rooms.delete", &json!({"id":room}))
+        .await
+        .unwrap();
+    let emitted = notifications(&mut events);
+    let mut rows = bot_rows(&app, "local", "owl").await;
+    rows.extend(bot_rows(&app, "local", "fox").await);
+    app.shutdown().await;
+    for bot in rows {
+        assert_eq!(bot["status"], "idle");
+    }
+    deletion_refresh(&emitted, "local", &room);
 }
 
 #[tokio::test]
@@ -282,9 +368,16 @@ async fn deleted_room_preserves_connector_private_global_and_sibling_causes() {
 
 #[tokio::test]
 async fn archived_or_surviving_room_keeps_retry_and_failed_delete_keeps_incident() {
-    for action in ["archive", "remove-one", "failed-delete"] {
+    for action in [
+        "archive",
+        "remove-one",
+        "failed-delete",
+        "failed-last-remove",
+        "missing-member",
+    ] {
         let (home, app) = fixture().await;
         let (room, incident) = failed_room(&app).await;
+        let mut events = app.events.subscribe();
         match action {
             "archive" => {
                 app.call("local", "hexbot.rooms.archive", &json!({"id":room}))
@@ -303,16 +396,32 @@ async fn archived_or_surviving_room_keeps_retry_and_failed_delete_keeps_incident
                     .call(
                         "local",
                         "hexbot.rooms.remove_member",
-                        &json!({"id":room,"bot":"owl"}),
+                        &json!({"id":room,"bot":"owl","deleted":true}),
                     )
                     .await
                     .unwrap();
                 assert_ne!(removed["room"]["deleted"], true);
             }
+            "missing-member" => {
+                assert!(
+                    app.call(
+                        "local",
+                        "hexbot.rooms.remove_member",
+                        &json!({"id":room,"bot":"missing"})
+                    )
+                    .await
+                    .is_err()
+                );
+            }
             _ => {
                 db::open(home.path()).unwrap().execute_batch("CREATE TRIGGER refuse_room_delete BEFORE DELETE ON rooms BEGIN SELECT RAISE(FAIL,'fixture'); END;").unwrap();
+                let method = if action == "failed-last-remove" {
+                    "hexbot.rooms.remove_member"
+                } else {
+                    "hexbot.rooms.delete"
+                };
                 assert!(
-                    app.call("local", "hexbot.rooms.delete", &json!({"id":room}))
+                    app.call("local", method, &json!({"id":room,"bot":"owl"}))
                         .await
                         .is_err()
                 );
@@ -335,7 +444,21 @@ async fn archived_or_surviving_room_keeps_retry_and_failed_delete_keeps_incident
             )
             .unwrap();
         assert!(resolved.is_none(), "{action}");
+        let emitted = notifications(&mut events);
         app.shutdown().await;
+        assert!(
+            emitted
+                .iter()
+                .all(|event| event.frame["params"]["type"] != "hexbot.bots.changed"),
+            "{action} must not invalidate the bot roster as a deletion"
+        );
+        if action.starts_with("failed-") || action == "missing-member" {
+            assert!(
+                emitted
+                    .iter()
+                    .all(|event| event.frame["params"]["type"] != "hexbot.rooms.changed")
+            );
+        }
     }
 }
 
