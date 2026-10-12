@@ -77,6 +77,7 @@ retries keep their activity text, such as Retrying the model request, while
 the bot waits for its provider.
 A successfully retried room stays settled when you reopen it, even if the
 bot list has not refreshed.
+A retry that finishes during a room refresh also stays settled.
 If a room message cannot be sent, the room stays idle when no bots are working.
 
 Job details show the last status, error and up to 12,000 characters of output

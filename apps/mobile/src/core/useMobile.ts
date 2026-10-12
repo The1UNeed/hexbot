@@ -529,7 +529,7 @@ export function useMobile() {
           }
         const revision = ++eventRevision.current
         const epoch = replayEpoch.current
-        const { room } = await rpc<{ room: Room }>('hexbot.rooms.get', { id })
+        let { room } = await rpc<{ room: Room }>('hexbot.rooms.get', { id })
         if (stale()) return
         roomWorking.current = new Map(
           epoch === replayEpoch.current
@@ -543,6 +543,7 @@ export function useMobile() {
         const buffered = loadingEvents.current ?? []
         loadingEvents.current = null
         const restored = restoreRoom(room, events)
+        const priorTurns = new Map(submittedTurns.current)
         for (const [sessionId, owned] of submittedTurns.current) {
           if (owned.roomId !== id) continue
           const turn = restored.turns[sessionId]
@@ -561,10 +562,31 @@ export function useMobile() {
                 member.left_at != null
             )
           const completed = completedRoomRetry(owned.state, id)
+          const completedDuringRead =
+            completed &&
+            turn?.bot === owned.bot.name &&
+            buffered.some(event => {
+              const payload = (event.payload ?? {}) as Record<string, unknown>
+              return (
+                ((event as GatewayEvent & { mobileRevision?: number }).mobileRevision ?? 0) >
+                  revision &&
+                (!payload.bot || payload.bot === owned.bot.name) &&
+                (!payload.room_id || payload.room_id === id) &&
+                ((event.type === 'message.complete' &&
+                  event.session_id === sessionId &&
+                  !payload.error &&
+                  payload.status !== 'error') ||
+                  (event.type === 'hexbot.rooms.turn' &&
+                    payload.room_id === id &&
+                    payload.bot === owned.bot.name &&
+                    payload.live_session_id === sessionId &&
+                    payload.status === 'complete'))
+              )
+            })
           if (
             valid &&
             completed &&
-            !turn &&
+            (!turn || completedDuringRead) &&
             owned.state.retryResolution?.bot === owned.bot.name &&
             owned.state.retryResolution.sessionId === sessionId &&
             room.members.some(
@@ -573,8 +595,21 @@ export function useMobile() {
                 member.member_id === owned.bot.name &&
                 member.left_at === null
             ) &&
-            !room.turns?.some(turn => turn.bot === owned.bot.name)
+            !room.turns?.some(
+              turn =>
+                turn.bot === owned.bot.name &&
+                (!completedDuringRead || turn.live_session_id !== sessionId)
+            )
           ) {
+            if (completedDuringRead) {
+              room = {
+                ...room,
+                turns: room.turns?.filter(
+                  turn => turn.bot !== owned.bot.name || turn.live_session_id !== sessionId
+                )
+              }
+              roomWorking.current.delete(sessionId)
+            }
             restored.turns[sessionId] = {
               ...emptyTurn(),
               bot: owned.bot.name,
@@ -607,7 +642,77 @@ export function useMobile() {
         setChat(roomChat(restored))
         routeRef.current = { kind: 'room', room }
         // Replayed approvals and events received during history loading go through the same reducer.
-        for (const event of buffered) eventRef.current(event)
+        for (const event of buffered) {
+          const payload = (event.payload ?? {}) as Record<string, unknown>
+          if (
+            event.type === 'hexbot.rooms.turn' &&
+            payload.room_id === id &&
+            ['running', 'working', 'waiting'].includes(String(payload.status)) &&
+            typeof payload.live_session_id === 'string' &&
+            room.turns?.some(
+              turn => turn.bot === payload.bot && turn.live_session_id === payload.live_session_id
+            )
+          )
+            priorTurns.delete(payload.live_session_id)
+          const terminal =
+            event.type === 'message.complete' ||
+            event.type === 'error' ||
+            (event.type === 'status.update' &&
+              ['idle', 'done', 'error', 'interrupted'].includes(String(payload.kind))) ||
+            (event.type === 'hexbot.rooms.turn' &&
+              payload.room_id === id &&
+              !['running', 'working', 'waiting'].includes(String(payload.status)))
+          const sessionId =
+            event.type === 'hexbot.rooms.turn' ? payload.live_session_id : event.session_id
+          const active = terminal && room.turns?.find(turn => turn.live_session_id === sessionId)
+          const prior =
+            typeof sessionId === 'string' &&
+            (submittedTurns.current.get(sessionId) ?? priorTurns.get(sessionId))
+          if (
+            active &&
+            ((payload.bot && payload.bot !== active.bot) ||
+              (payload.room_id && payload.room_id !== id) ||
+              (!payload.bot && prior && prior.roomId === id && prior.bot.name !== active.bot))
+          )
+            continue
+          if (
+            active &&
+            typeof sessionId === 'string' &&
+            ((event as GatewayEvent & { mobileRevision?: number }).mobileRevision ?? 0) <= revision
+          ) {
+            // Keep exact card settlements without ending a newer snapshot's running turn.
+            setChat(c => {
+              const turn = c.turns[sessionId]
+              if (!turn || turn.bot !== active.bot) return c
+              const settled = reduceChat(
+                { ...emptyChat(), ...turn },
+                event.type === 'hexbot.rooms.turn'
+                  ? { type: 'message.complete', session_id: sessionId, payload: {} }
+                  : event
+              )
+              return roomChat({
+                ...c,
+                turns: {
+                  ...c.turns,
+                  [sessionId]: {
+                    ...turn,
+                    streaming: settled.streaming,
+                    interim: settled.interim,
+                    tools: settled.tools,
+                    activity: '',
+                    approvals: settled.approvals,
+                    questions: settled.questions,
+                    settlements: settled.settlements,
+                    waiting: settled.waiting,
+                    resumedWaiting: false,
+                    waitingRevision: 0,
+                    retryResolution: undefined
+                  }
+                }
+              })
+            })
+          } else eventRef.current(event)
+        }
         if (stale()) return
         const updated = routeRef.current
         setRoute(updated)
