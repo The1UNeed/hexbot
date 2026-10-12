@@ -953,10 +953,13 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<()
         let mut conn = db::open(home)?;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM sections WHERE id=?", [id])?;
-        // Nothing is left to retry.
+        // Only private turn failures lose their retry when a section is deleted.
         tx.execute(
-            "UPDATE bot_incidents SET resolved_at=? WHERE section_id=? AND resolved_at IS NULL",
-            params![now(), id],
+            "UPDATE bot_incidents SET resolved_at=? WHERE section_id=? AND bot=?
+             AND kind='turn_failed' AND room_id IS NULL AND resolved_at IS NULL
+             AND NOT EXISTS(SELECT 1 FROM room_sessions r
+                 WHERE r.stored_session_id=bot_incidents.section_id AND r.bot=bot_incidents.bot)",
+            params![now(), id, row["bot"].as_str()],
         )?;
         tx.execute(
             "UPDATE bots SET last_activity_at=? WHERE name=?",

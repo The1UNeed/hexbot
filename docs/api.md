@@ -141,8 +141,8 @@ their turn failures do not count; their state returns on unarchive. Turn
 failures left by private sections deleted before upgrade are ignored without
 rewriting the incident rows. Room, global and connector incidents remain
 eligible even if their linked section is missing or archived. A new turn
-resolves its `turn_failed` incident, and deleting a section resolves all of
-its incidents.
+resolves its `turn_failed` incident. Deleting a private section resolves its
+retryable turn failures; connector, room and global incidents remain open.
 The daemon emits `hexbot.bots.changed {name}` when a turn starts, when a
 question or approval arrives, and when one is answered. Clients also refresh
 bots on `hexbot.sections.changed`, sent when a turn ends or a section is
