@@ -437,10 +437,6 @@ export function useMobile() {
         archive && typeof params.id === 'string'
           ? sectionArchives.current.get(params.id)
           : undefined
-      const catalogSession =
-        archive && typeof params.id === 'string'
-          ? sectionsRef.current.find(row => row.id === params.id)?.live_session_id
-          : undefined
       const request = archive ? ++refreshSequence.current : 0
       if (!current || current.client.connectionState !== 'open')
         throw new Error('Connect to a daemon first.')
@@ -509,6 +505,9 @@ export function useMobile() {
             section.archived_at === null
           ) {
             const accepted = sectionArchives.current.get(section.id)!
+            const catalogSession = sectionsRef.current.find(
+              row => row.id === section.id
+            )?.live_session_id
             const stillCurrent = () => {
               const route = routeRef.current
               const saved = sectionArchives.current.get(section.id)

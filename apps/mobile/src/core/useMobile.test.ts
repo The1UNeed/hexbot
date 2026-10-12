@@ -7107,23 +7107,50 @@ describe('mobile open section restore reconfirms pending cards', () => {
     }
   }
 
-  it.each(boundaries)('does not reopen after a held ACK crosses %s', async kind => {
-    const f = await archived()
-    const ack = deferred()
-    const previous = hooks.handler
-    hooks.handler = async (method, params) =>
-      method === 'hexbot.sections.unarchive' ? ack.promise : previous(method, params)
-    const restoring = f.restore().catch(e => e)
-    await boundary(kind, f)
-    const before = f.opens()
-    ack.resolve({ section: { ...section(), archived_at: null } })
-    await restoring
-    expect(f.opens()).toBe(before)
-    if (kind !== 'daemon') {
-      render().back()
-      expect(render().bots[0].status).toBe('idle')
-    } else expect(render().bots).toEqual([])
-  })
+  it.each(boundaries)(
+    'rejects an obsolete restore when a held read or ACK crosses %s',
+    async kind => {
+      const f = await archived()
+      const ack = deferred()
+      const previous = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.sections.unarchive' ? ack.promise : previous(method, params)
+      const restoring = f.restore().catch(e => e)
+      if (kind === 'catalog new session') {
+        const heldOpen = deferred()
+        let reading = false
+        const handler = hooks.handler
+        hooks.handler = async (method, params) => {
+          if (method === 'hexbot.sections.open') {
+            reading = true
+            return heldOpen.promise
+          }
+          return handler(method, params)
+        }
+        ack.resolve({ section: { ...section(), archived_at: null } })
+        await flush()
+        expect(reading).toBe(true)
+        await boundary(kind, f)
+        heldOpen.resolve({
+          section: { ...section(), archived_at: null },
+          messages: [],
+          pending_clarify: f.question
+        })
+        await restoring
+        expect(render().liveSessionId()).toBe('s1')
+      } else {
+        await boundary(kind, f)
+        const before = f.opens()
+        ack.resolve({ section: { ...section(), archived_at: null } })
+        await restoring
+        expect(f.opens()).toBe(before)
+      }
+      if (kind !== 'daemon') {
+        render().back()
+        expect(render().bots[0].status).toBe('idle')
+      } else expect(render().bots).toEqual([])
+    }
+  )
 
   it.each(
     (['open', 'status'] as const).flatMap(phase =>
@@ -7428,4 +7455,41 @@ describe('mobile open section restore reconfirms pending cards', () => {
       expect(render().bots[0].status).not.toBe('needs_you')
     })
   })
+
+  it.each(
+    (['question', 'approval'] as const).flatMap(kind =>
+      ['s2', 's3'].map(runtime => [kind, runtime] as const)
+    )
+  )(
+    'adopts fresh %s %s after the catalog changed while the restore ACK waited',
+    async (kind, runtime) => {
+      const f = await archived(kind)
+      const ack = deferred()
+      const previous = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.sections.unarchive') return ack.promise
+        const result = await previous(method, params)
+        if (method !== 'hexbot.sections.open') return result
+        if (kind === 'approval')
+          hooks.clients[0].emit(
+            wire(
+              'approval.request',
+              { bot: 'alpha', section_id: 'section', request_id: 'archived-card' },
+              runtime
+            )
+          )
+        return { ...(result as object), section: { ...f.row(), live_session_id: runtime } }
+      }
+      const restoring = f.restore()
+      await f.catalog(null, 's2')
+      ack.resolve({ section: { ...f.row(), archived_at: null } })
+      await restoring
+      expect(render().liveSessionId()).toBe(runtime)
+      expect(
+        [...render().chat.questions, ...render().chat.approvals].map(card => card.sessionId)
+      ).toEqual([runtime])
+      render().back()
+      expect(render().bots[0].status).toBe('needs_you')
+    }
+  )
 })
