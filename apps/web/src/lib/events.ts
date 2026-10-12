@@ -26,7 +26,7 @@ import { useBots } from '../stores/bots'
 import { useConnectors } from '../stores/connectors'
 import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
-import { useSections } from '../stores/sections'
+import { botStatus, useSections } from '../stores/sections'
 import { useSettings } from '../stores/settings'
 import type {
   ApprovalRequestPayload,
@@ -123,6 +123,51 @@ function bindSettlementOwner(sessionId: string, payload: Record<string, unknown>
   if (sectionId !== transcript.sectionId || bot !== transcript.bot) {
     transcripts.setSectionId(sessionId, sectionId, bot)
   }
+}
+
+/** Retry starts carry only a session id; use exact known ownership before recording proof. */
+function bindRetryOwner(sessionId: string): boolean {
+  const transcripts = useTranscripts.getState()
+  const transcript = transcripts.bySession[sessionId]
+  const sections = useSections.getState()
+
+  const owners = Object.entries(sections.liveSessionId).flatMap(([id, live]) => {
+    const section = sections.byId[id]
+
+    return live === sessionId && section ? [{ sectionId: id, bot: section.bot }] : []
+  })
+
+  for (const bot of Object.values(useBots.getState().byName)) {
+    const detail = bot.status_detail
+
+    if (
+      detail?.session_id === sessionId &&
+      detail.section_id &&
+      !detail.room_id &&
+      detail.action?.kind === 'retry' &&
+      botStatus(bot) === 'stopped'
+    ) {
+      owners.push({ sectionId: detail.section_id, bot: bot.name })
+    }
+  }
+
+  const owner = owners[0]
+
+  if (!owner) {
+    return true
+  }
+
+  if (
+    owners.some(item => item.sectionId !== owner.sectionId || item.bot !== owner.bot) ||
+    (transcript?.sectionId && transcript.sectionId !== owner.sectionId) ||
+    (transcript?.bot && transcript.bot !== owner.bot)
+  ) {
+    return false
+  }
+
+  transcripts.setSectionId(sessionId, owner.sectionId, owner.bot)
+
+  return true
 }
 
 /** The open transcript for an incident: the section's live session, else the id as sent. */
@@ -388,7 +433,10 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       return
 
     case 'message.start':
-      transcripts.messageStart(sessionId, payload.retry_resolved === true)
+      transcripts.messageStart(
+        sessionId,
+        payload.retry_resolved === true && bindRetryOwner(sessionId)
+      )
 
       return
 

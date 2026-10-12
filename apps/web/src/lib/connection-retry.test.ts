@@ -7,7 +7,7 @@ import { resetTranscriptEffects, setTranscriptEffects, useTranscripts } from '..
 import { ConnectionSupervisor } from './connection'
 import type { Bot, Section } from './types'
 
-async function fixture(marked = true) {
+async function fixture(marked = true, unopened?: 'indexed' | 'cached') {
   const section = {
     id: 'retry-section',
     bot: 'owl',
@@ -103,22 +103,28 @@ async function fixture(marked = true) {
   useConnection.setState({ epoch: 'epoch-A', daemon: null, target })
   useBots.setState({ byName: {}, order: [], error: null })
   useSections.setState({
-    byId: { [section.id]: section },
-    idsByBot: { owl: [section.id] },
-    liveSessionId: { [section.id]: section.live_session_id! }
+    byId: unopened === 'cached' ? {} : { [section.id]: section },
+    idsByBot: unopened === 'cached' ? {} : { owl: [section.id] },
+    liveSessionId: unopened === 'cached' ? {} : { [section.id]: section.live_session_id! }
   })
   useRooms.setState({ byId: {}, liveTurnsByRoom: {} })
   useTranscripts.getState().dropAll()
   setTranscriptEffects({ ackApproval: vi.fn(), notify: vi.fn(), touchSection: vi.fn() })
-  useTranscripts.getState().open('retry-live', section.id, [], undefined, 'owl')
+
+  if (!unopened) {
+    useTranscripts.getState().open('retry-live', section.id, [], undefined, 'owl')
+  }
 
   const supervisor = new ConnectionSupervisor({
     bridge: () => null,
     fetch: async input =>
       String(input).endsWith('/api/auth/ws-ticket') && state.proofCode
-        ? new Response(JSON.stringify({ code: state.proofCode, server_time: 500, proof_time: 100 }), {
-            status: 401
-          })
+        ? new Response(
+            JSON.stringify({ code: state.proofCode, server_time: 500, proof_time: 100 }),
+            {
+              status: 401
+            }
+          )
         : new Response(JSON.stringify({ ticket: 'fixture' }), {
             status: state.unauthorized ? 401 : 200
           }),
@@ -140,7 +146,7 @@ async function fixture(marked = true) {
 
     return {
       section: sectionStatusOf(bot, section.id, live),
-      bot: botStatusWithLive(bot, [section], live, transcripts)
+      bot: botStatusWithLive(bot, unopened === 'cached' ? [] : [section], live, transcripts)
     }
   }
 
@@ -148,6 +154,35 @@ async function fixture(marked = true) {
 }
 
 afterEach(() => resetTranscriptEffects())
+
+it.each(['indexed', 'cached'] as const)(
+  'binds an unopened %s retry before failed hydration and preserves its proof on reconnect',
+  async lookup => {
+    const f = await fixture(true, lookup)
+
+    try {
+      expect(f.status()).toEqual({ section: 'working', bot: 'working' })
+      expect(f.transcript()).toMatchObject({
+        sectionId: f.section.id,
+        bot: 'owl',
+        retryResolved: true
+      })
+      f.sockets[0]!.close()
+      await f.supervisor.retryNow()
+      expect(useConnection.getState().status).toBe('connected')
+      expect(f.status().section).toBe('working')
+      expect(f.transcript()?.retryResolved).toBe(true)
+      f.sockets[1]!.event('message.complete', { text: 'Done' })
+      expect(f.status()).toEqual({ section: 'idle', bot: 'idle' })
+      f.sockets[1]!.close()
+      f.state.epoch = 'epoch-B'
+      await f.supervisor.retryNow()
+      expect(f.status()).toEqual({ section: 'stopped', bot: 'stopped' })
+    } finally {
+      f.supervisor.stop()
+    }
+  }
+)
 
 it.each(['approval', 'clarify'] as const)(
   'preserves resolved Retry through a failed same-daemon reconnect while retiring %s answer evidence',
@@ -372,41 +407,44 @@ it.each(['full', 'scoped'] as const)(
   }
 )
 
-it.each(['full roster', 'scoped roster', 'new error', 'new incident', 'failed completion'] as const)(
-  'retires preserved retry proof after %s',
-  async boundary => {
-    const f = await fixture()
+it.each([
+  'full roster',
+  'scoped roster',
+  'new error',
+  'new incident',
+  'failed completion'
+] as const)('retires preserved retry proof after %s', async boundary => {
+  const f = await fixture()
 
-    try {
-      f.sockets[0]!.close()
-      await f.supervisor.retryNow()
-      expect(f.transcript()?.retryResolved).toBe(true)
+  try {
+    f.sockets[0]!.close()
+    await f.supervisor.retryNow()
+    expect(f.transcript()?.retryResolved).toBe(true)
 
-      if (boundary === 'full roster' || boundary === 'scoped roster') {
-        f.state.failHydration = false
+    if (boundary === 'full roster' || boundary === 'scoped roster') {
+      f.state.failHydration = false
 
-        if (boundary === 'full roster') {
-          await useBots.getState().refresh()
-        } else {
-          await useBots.getState().refreshOne('owl')
-        }
-      } else if (boundary === 'new error') {
-        f.sockets[1]!.event('error', { message: 'Failed again' })
-      } else if (boundary === 'new incident') {
-        f.sockets[1]!.event('hexbot.bots.incident', {
-          bot: 'owl',
-          section_id: f.section.id,
-          session_id: 'retry-live',
-          incident: { id: 'next-failure', text: 'Failed again' }
-        })
+      if (boundary === 'full roster') {
+        await useBots.getState().refresh()
       } else {
-        f.sockets[1]!.event('message.complete', { status: 'error', error: 'Failed again' })
+        await useBots.getState().refreshOne('owl')
       }
-
-      expect(f.transcript()?.retryResolved).toBeUndefined()
-      expect(f.status()).toEqual({ section: 'stopped', bot: 'stopped' })
-    } finally {
-      f.supervisor.stop()
+    } else if (boundary === 'new error') {
+      f.sockets[1]!.event('error', { message: 'Failed again' })
+    } else if (boundary === 'new incident') {
+      f.sockets[1]!.event('hexbot.bots.incident', {
+        bot: 'owl',
+        section_id: f.section.id,
+        session_id: 'retry-live',
+        incident: { id: 'next-failure', text: 'Failed again' }
+      })
+    } else {
+      f.sockets[1]!.event('message.complete', { status: 'error', error: 'Failed again' })
     }
+
+    expect(f.transcript()?.retryResolved).toBeUndefined()
+    expect(f.status()).toEqual({ section: 'stopped', bot: 'stopped' })
+  } finally {
+    f.supervisor.stop()
   }
-)
+})
