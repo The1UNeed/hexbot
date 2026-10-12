@@ -1930,3 +1930,258 @@ it('a current room turn rebinds a replaced private session without suppressing i
   expect(sectionStatusOf(bot, 'stored', live)).toBe('idle')
   expectReadableSuperseded('approval')
 })
+
+it.each(
+  (['approval', 'clarify'] as const).flatMap(kind =>
+    (['full', 'scoped'] as const).flatMap(scope =>
+      [false, true].map(local => ({ kind, scope, local }))
+    )
+  )
+)(
+  'cold active ownership protects $kind from an older $scope archive, local restore $local',
+  async ({ kind, scope, local }) => {
+    const archived = section({ peer_bot: null, archived_at: 1 })
+
+    const saving = deferred(),
+      catalog = deferred(),
+      lookup = deferred()
+
+    setActiveRpc({
+      call: vi.fn((method: string, params: { include_threads?: boolean }) =>
+        method === 'hexbot.sections.unarchive'
+          ? saving.promise
+          : params.include_threads
+            ? lookup.promise
+            : catalog.promise
+      )
+    } as never)
+    const restoring = local ? useSections.getState().unarchive('stored') : undefined
+    const reading = useSections.getState().refresh(scope === 'scoped' ? { bot: 'owl' } : {})
+    pending(kind)
+    lookup.resolve({ sections: [{ ...archived, archived_at: null }] })
+    await flush()
+    expect(useSections.getState().byId.stored).toBeUndefined()
+    expect(useSections.getState().liveSessionId.stored).toBe('live')
+    expect(dot()).toBe('needs_you')
+    catalog.resolve({
+      sections: [
+        { ...archived, title: 'Catalog title' },
+        section({ id: 'sibling', peer_bot: null, live_session_id: null })
+      ]
+    })
+    await reading
+
+    if (local) {
+      saving.resolve({ section: { ...archived, archived_at: null } })
+      await restoring
+    }
+
+    const row = useSections.getState().byId.stored!
+    const sessions = useTranscripts.getState().bySession
+    const live = liveSectionsOf(sessions)
+    expect(row).toMatchObject({
+      archived_at: null,
+      live_session_id: 'live',
+      title: 'Catalog title'
+    })
+    expect(useSections.getState().idsByBot.owl).toContain('sibling')
+    expect(useSections.getState().liveSessionId.stored).toBe('live')
+    expect(botStatusWithLive(bot, [row], live, sessions)).toBe('needs_you')
+    expect(sectionStatusOf(bot, 'stored', live)).toBe('needs_you')
+    expect(kind === 'approval' ? sessions.live?.approvals : sessions.live?.clarifies).toHaveLength(
+      1
+    )
+  }
+)
+
+it.each(
+  (['approval', 'clarify'] as const).flatMap(kind =>
+    (['full', 'scoped'] as const).map(scope => ({ kind, scope }))
+  )
+)('accepted $kind inventory stays fresh over an older $scope catalog', async ({ kind, scope }) => {
+  const archived = section({ peer_bot: null, archived_at: 1, preview: 'Existing' })
+  useSections.setState({ byId: { stored: archived }, idsByBot: { owl: ['stored'] } })
+
+  const catalog = deferred(),
+    lookup = deferred()
+
+  setActiveRpc({
+    call: vi.fn((_method: string, params: { include_threads?: boolean }) =>
+      params.include_threads ? lookup.promise : catalog.promise
+    )
+  } as never)
+  const reading = useSections.getState().refresh(scope === 'scoped' ? { bot: 'owl' } : {})
+  pending(kind)
+  lookup.resolve({
+    sections: [{ ...archived, archived_at: null, message_count: 7, preview: 'Lookup' }]
+  })
+  await flush()
+  expect
+    .soft(useSections.getState().byId.stored)
+    .toMatchObject({ message_count: 7, preview: 'Lookup' })
+  catalog.resolve({ sections: [{ ...archived, message_count: 5, preview: 'Catalog' }] })
+  await reading
+  expect(useSections.getState().byId.stored).toMatchObject({
+    archived_at: null,
+    message_count: 7,
+    preview: 'Catalog'
+  })
+  expect(useSections.getState().liveSessionId.stored).toBe('live')
+})
+
+it.each(
+  (['approval', 'clarify'] as const).flatMap(kind =>
+    (['full', 'scoped'] as const).map(scope => ({ kind, scope }))
+  )
+)(
+  'cold $kind ownership still accepts a genuinely newer $scope archive',
+  async ({ kind, scope }) => {
+    rpc([section({ peer_bot: null })])
+    pending(kind)
+    await flush()
+    expect(useSections.getState().byId.stored).toBeUndefined()
+    expect(dot()).toBe('needs_you')
+    rpc([section({ peer_bot: null, archived_at: 1 })])
+    await useSections.getState().refresh(scope === 'scoped' ? { bot: 'owl' } : {})
+    expect(useSections.getState().byId.stored?.archived_at).toBe(1)
+    expect(dot()).toBe('idle')
+    const transcript = useTranscripts.getState().bySession.live
+    expect(kind === 'approval' ? transcript?.approvals : transcript?.clarifies).toHaveLength(1)
+  }
+)
+
+it.each([0, 2])('lookup count %s preserves manual title and nonempty inventory', async count => {
+  const original = section({
+    peer_bot: null,
+    archived_at: 1,
+    title: 'Named by you',
+    message_count: 7,
+    preview: 'Existing'
+  })
+
+  useSections.setState({ byId: { stored: original }, idsByBot: { owl: ['stored'] } })
+  rpc([
+    {
+      ...original,
+      archived_at: null,
+      title: 'Older title',
+      live_session_id: 'new-live',
+      message_count: count,
+      preview: count ? 'Lookup' : ''
+    }
+  ])
+  pending('approval')
+  await flush()
+  expect(useSections.getState().byId.stored).toMatchObject({
+    title: 'Named by you',
+    archived_at: null,
+    live_session_id: 'new-live',
+    message_count: count || 7,
+    preview: count ? 'Lookup' : 'Existing'
+  })
+  expect(useSections.getState().liveSessionId.stored).toBe('new-live')
+})
+
+it.each(['live', 'new-live'])('later %s open fences a held lookup inventory reply', async sid => {
+  const original = await indexedPending()
+  const lookup = deferred()
+  setActiveRpc({
+    call: vi.fn((method: string) =>
+      method === 'hexbot.sections.open'
+        ? Promise.resolve({
+            section: { ...original, live_session_id: sid, message_count: 9, preview: 'Opened' },
+            messages: []
+          })
+        : lookup.promise
+    )
+  } as never)
+  const checking = useSections.getState().verifySessionOwner('live', true)
+  await useSections.getState().open('stored')
+  lookup.resolve({ sections: [{ ...original, message_count: 2, preview: 'Lookup' }] })
+  await checking
+  expect(useSections.getState().byId.stored).toMatchObject({
+    live_session_id: sid,
+    message_count: 9,
+    preview: 'Opened'
+  })
+  expect(useSections.getState().liveSessionId.stored).toBe(sid)
+})
+
+it('lookup inventory preserves a later title edit over an older catalog', async () => {
+  const original = section({ peer_bot: null, archived_at: 1, title: 'Old title' })
+  useSections.setState({ byId: { stored: original }, idsByBot: { owl: ['stored'] } })
+  const catalog = deferred()
+  setActiveRpc({
+    call: vi.fn((method: string, params: { include_threads?: boolean }) => {
+      if (method === 'hexbot.sections.rename') {
+        return Promise.resolve({ section: { ...original, title: 'Edited title' } })
+      }
+
+      return params.include_threads
+        ? Promise.resolve({
+            sections: [{ ...original, archived_at: null, message_count: 7, preview: 'Lookup' }]
+          })
+        : catalog.promise
+    })
+  } as never)
+  const reading = useSections.getState().refresh()
+  pending('approval')
+  await flush()
+  await useSections.getState().rename('stored', 'Edited title')
+  catalog.resolve({
+    sections: [{ ...original, title: 'Catalog title', message_count: 5, preview: 'Catalog' }]
+  })
+  await reading
+  expect(useSections.getState().byId.stored).toMatchObject({
+    title: 'Edited title',
+    archived_at: null,
+    message_count: 7,
+    preview: 'Catalog'
+  })
+})
+
+it('a held zero-count lookup keeps the first message sent after its read starts', async () => {
+  const original = section({ peer_bot: null, title: 'New section' })
+  setActiveRpc({ call: vi.fn().mockResolvedValue({ section: original, messages: [] }) } as never)
+  await useSections.getState().open('stored')
+  const lookup = deferred()
+  setActiveRpc({ call: vi.fn(() => lookup.promise) } as never)
+  const checking = useSections.getState().verifySessionOwner('live', true)
+  useTranscripts.getState().appendUserMessage('live', 'First prompt')
+  useSections.getState().markTouched('stored', 'First prompt')
+  lookup.resolve({ sections: [original] })
+  await checking
+  expect(useSections.getState().byId.stored).toMatchObject({
+    title: 'First prompt',
+    message_count: 1
+  })
+})
+
+it('a cold foreign-owner lookup cannot overwrite inventory or block a catalog archive', async () => {
+  const original = section({ peer_bot: null })
+  const catalog = deferred()
+  setActiveRpc({
+    call: vi.fn((_method: string, params: { include_threads?: boolean }) =>
+      params.include_threads
+        ? Promise.resolve({
+            sections: [{ ...original, bot: 'cat', message_count: 77, preview: 'Foreign' }]
+          })
+        : catalog.promise
+    )
+  } as never)
+  const reading = useSections.getState().refresh()
+  pending('approval')
+  await flush()
+  expect(useSections.getState().byId.stored).toBeUndefined()
+  expect(useSections.getState().liveSessionId.stored).toBeUndefined()
+  catalog.resolve({
+    sections: [{ ...original, archived_at: 1, message_count: 5, preview: 'Catalog' }]
+  })
+  await reading
+  expect(useSections.getState().byId.stored).toMatchObject({
+    archived_at: 1,
+    message_count: 5,
+    preview: 'Catalog'
+  })
+  expect(dot()).toBe('idle')
+})

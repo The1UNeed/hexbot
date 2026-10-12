@@ -512,7 +512,9 @@ export const useSections = create<SectionsState>((set, get) => ({
                   [id]: {
                     ...(state.byId[id] ?? section),
                     archived_at: section.archived_at,
-                    live_session_id: section.live_session_id
+                    live_session_id: section.live_session_id,
+                    message_count: section.message_count || state.byId[id]?.message_count || 0,
+                    preview: section.preview || state.byId[id]?.preview || ''
                   }
                 }
               }
@@ -582,8 +584,9 @@ export const useSections = create<SectionsState>((set, get) => ({
 
         const preserveArchive = (id: string) =>
           boundAfter(id) &&
-          Boolean(state.byId[id]) &&
-          (!state.liveSessionId[id] || (boundSectionRequests.get(id)?.lifecycle ?? 0) > request)
+          (state.liveSessionId[id]
+            ? (boundSectionRequests.get(id)?.lifecycle ?? 0) > request
+            : Boolean(state.byId[id]))
 
         const incoming = (result.sections ?? [])
           .filter(section => !preserve(section.bot) && !removedAfter(section.id, request))
@@ -601,7 +604,7 @@ export const useSections = create<SectionsState>((set, get) => ({
               ? {
                   ...current,
                   archived_at: preserveArchive(section.id)
-                    ? opened!.archived_at
+                    ? (opened?.archived_at ?? null)
                     : current.archived_at,
                   live_session_id: boundLive ?? opened?.live_session_id ?? null,
                   message_count: boundLive
