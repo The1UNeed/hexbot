@@ -6117,3 +6117,444 @@ describe('mobile unanswered card retention', () => {
     expect(render().bots[0].status_detail?.session_id).toBe('other-room-live')
   })
 })
+
+describe('mobile buffered card receipt retention', () => {
+  type Place = 'private' | 'named room' | 'unnamed room'
+  type Kind = 'approval' | 'question'
+  type Read = 'get' | 'list'
+  async function pending(
+    place: Place = 'private',
+    kind: Kind = 'question',
+    history?: Record<string, unknown>
+  ) {
+    const room = {
+      id: 'buffer-room',
+      owner_id: 'owner',
+      archived_at: null,
+      members: [{ member_kind: 'bot', member_id: 'alpha', left_at: null }],
+      turns: [{ bot: 'alpha', live_session_id: 'room-live' }]
+    } as unknown as Room
+    const idle = {
+      ...namedWait,
+      status: 'idle',
+      status_detail:
+        place === 'named room'
+          ? { room_id: room.id, session_id: 'room-live', section_id: null, action: null }
+          : null
+    } as Bot
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') return { bots: [idle] }
+      if (method === 'hexbot.rooms.list') return { rooms: [room] }
+      if (method === 'hexbot.rooms.get') return { room }
+      if (method === 'hexbot.rooms.log') return { events: [] }
+      return original(method, params)
+    }
+    await render().activate(daemon, 'token')
+    await render().refresh()
+    const held = deferred(),
+      readReply = deferred()
+    const before = hooks.handler
+    let read: Read = 'get'
+    let overlap = false
+    let allowedReads = 0
+    let currentRoom = room
+    let snapshot = history
+    let currentSection = section()
+    let statusCalls = 0
+    let secondStatus: ReturnType<typeof deferred> | undefined
+    hooks.handler = async (method, params) => {
+      if (method === (place === 'private' ? 'session.status' : 'hexbot.rooms.get')) {
+        if (++statusCalls === 1) return held.promise
+        return (
+          secondStatus?.promise ??
+          (place === 'private' ? { status: 'working' } : { room: currentRoom })
+        )
+      }
+      if (method === 'hexbot.sections.open')
+        return { section: currentSection, messages: [], pending_clarify: snapshot }
+      if (
+        method === (read === 'get' ? 'hexbot.bots.get' : 'hexbot.bots.list') &&
+        allowedReads-- > 0
+      )
+        return overlap ? readReply.promise : read === 'get' ? { bot: idle } : { bots: [idle] }
+      if (method === 'hexbot.bots.get' || method === 'hexbot.bots.list')
+        throw new Error('Read unavailable')
+      return before(method, params)
+    }
+    const opening =
+      place === 'private' ? render().openSection(idle, section()) : render().openRoom(room)
+    await flush()
+    const sessionId = place === 'private' ? 's1' : 'room-live'
+    const context = { bot: 'alpha', section_id: place === 'private' ? 'section' : 'room-stored' }
+    const frame = (requestId = 'buffer-card', otherKind: Kind = kind) =>
+      wire(
+        otherKind === 'approval' ? 'approval.request' : 'clarify.request',
+        {
+          ...context,
+          request_id: requestId,
+          ...(otherKind === 'approval'
+            ? { choices: ['once', 'deny'] }
+            : {
+                questions: [
+                  { qid: 'first', question: 'Why?' },
+                  { qid: 'last', question: 'When?' }
+                ]
+              })
+        },
+        sessionId
+      )
+    const card = (id = 'buffer-card', type: Kind = kind) => hooks.clients[0].emit(frame(id, type))
+    const reading = async (mode: Read = 'get', heldRead = false) => {
+      read = mode
+      overlap = heldRead
+      allowedReads = 1
+      const action =
+        mode === 'get'
+          ? (hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: { name: 'alpha' } }),
+            Promise.resolve())
+          : render().refresh()
+      await flush()
+      return { action }
+    }
+    const finish = async () => {
+      held.resolve(place === 'private' ? { status: 'working' } : { room: currentRoom })
+      await opening
+    }
+    const event = (type: string, payload: Record<string, unknown> = {}, sid = sessionId) =>
+      hooks.clients[0].emit(wire(type, payload, sid))
+    return {
+      idle,
+      room,
+      context,
+      sessionId,
+      card,
+      frame,
+      event,
+      reading,
+      finish,
+      readReply,
+      opening,
+      setSection: (value: Section) => {
+        currentSection = value
+      },
+      setSnapshot: (value: Record<string, unknown>) => {
+        snapshot = value
+      },
+      holdReread: () => {
+        secondStatus = deferred()
+        return secondStatus
+      },
+      statusCalls: () => statusCalls,
+      setRoom: (value: Room) => {
+        currentRoom = value
+      }
+    }
+  }
+
+  it.each(
+    (['private', 'named room', 'unnamed room'] as const).flatMap(place =>
+      (['approval', 'question'] as const).flatMap(kind =>
+        (['get', 'list'] as const).flatMap(read =>
+          (['before', 'overlaps', 'after'] as const).map(
+            order => [place, kind, read, order] as const
+          )
+        )
+      )
+    )
+  )('keeps %s %s only when the %s read is %s its receipt', async (place, kind, read, order) => {
+    const f = await pending(place, kind)
+    let action: Promise<unknown> | undefined
+    if (order !== 'after') action = (await f.reading(read, order === 'overlaps')).action
+    f.card()
+    if (order === 'after') action = (await f.reading(read)).action
+    if (order === 'overlaps')
+      f.readReply.resolve(read === 'get' ? { bot: f.idle } : { bots: [f.idle] })
+    await action
+    await flush()
+    await f.finish()
+    render().back()
+    expect(render().bots[0].status).toBe(order === 'after' ? 'idle' : 'needs_you')
+  })
+
+  it.each(['approval', 'question'] as const)(
+    'does not make duplicate buffered %s fresh after an Idle confirmation',
+    async kind => {
+      const f = await pending('private', kind)
+      f.card()
+      await f.reading()
+      f.card()
+      await f.finish()
+      expect(render().chat.approvals.length + render().chat.questions.length).toBe(1)
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it.each(['settled', 'expired'] as const)(
+    'does not lend a later %s card receipt to an older remaining question',
+    async control => {
+      const f = await pending()
+      f.card('old')
+      await f.reading()
+      f.card('new')
+      f.event(control === 'settled' ? 'clarify.resolved' : 'clarify.expire', {
+        ...f.context,
+        request_id: 'new',
+        status: 'answered',
+        answers: { first: 'Yes', last: 'Now' }
+      })
+      await f.finish()
+      expect(render().chat.questions.map(q => q.requestId)).toEqual(['old'])
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it.each(['settled', 'expired'] as const)(
+    'retains a genuinely later card after the older one is %s',
+    async control => {
+      const f = await pending()
+      f.card('old')
+      await f.reading()
+      f.card('new')
+      f.event(control === 'settled' ? 'clarify.resolved' : 'clarify.expire', {
+        ...f.context,
+        request_id: 'old',
+        status: 'answered',
+        answers: { first: 'Yes', last: 'Now' }
+      })
+      await f.finish()
+      expect(render().chat.questions.map(q => q.requestId)).toEqual(['new'])
+      render().back()
+      expect(render().bots[0].status).toBe('needs_you')
+    }
+  )
+
+  it.each(['status.update', 'message.delta', 'thinking.delta'] as const)(
+    'does not mint card receipt proof from %s',
+    async type => {
+      const f = await pending()
+      f.card()
+      await f.reading()
+      f.event(type, { kind: 'working', text: 'Working' })
+      await f.finish()
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it.each(['approval', 'question'] as const)(
+    'carries a new %s and its receipt through a history reread',
+    async kind => {
+      const f = await pending('private', kind)
+      await f.reading()
+      f.event('message.complete', { text: 'Previous turn completed' })
+      f.event('message.start', {})
+      f.card()
+      await f.finish()
+      expect(f.statusCalls()).toBe(2)
+      expect(render().chat.approvals.length + render().chat.questions.length).toBe(1)
+      render().back()
+      expect(render().bots[0].status).toBe('needs_you')
+    }
+  )
+
+  it.each(['approval', 'question'] as const)(
+    'does not renew a carried %s over Idle during the reread',
+    async kind => {
+      const f = await pending('private', kind)
+      await f.reading()
+      f.event('message.complete', {})
+      f.event('message.start', {})
+      f.card()
+      const second = f.holdReread()
+      const finishing = f.finish()
+      await flush()
+      expect(f.statusCalls()).toBe(2)
+      await f.reading()
+      f.event('status.update', { kind: 'working', text: 'Working' })
+      second.resolve({ status: 'working' })
+      await finishing
+      expect(render().chat.approvals.length + render().chat.questions.length).toBe(1)
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it('keeps old history-only questions behind a newer Idle read', async () => {
+    const f = await pending()
+    f.setSnapshot({
+      request_id: 'snapshot',
+      questions: [{ qid: 'first', question: 'From history?' }]
+    })
+    // The pending question belongs to a later reread, but keeps the original history receipt.
+    f.event('message.complete', {})
+    f.event('message.start', {})
+    const second = f.holdReread()
+    const finishing = f.finish()
+    await flush()
+    await f.reading()
+    second.resolve({ status: 'working' })
+    await finishing
+    expect(render().chat.questions).toHaveLength(1)
+    render().back()
+    expect(render().bots[0].status).toBe('idle')
+  })
+
+  it.each(['wrong session', 'foreign bot', 'foreign section', 'room hint'] as const)(
+    'rejects buffered private card receipt for %s',
+    async control => {
+      const f = await pending()
+      await f.reading()
+      const request = f.frame()
+      hooks.clients[0].emit({
+        ...request,
+        session_id: control === 'wrong session' ? 'unopened-room-live' : request.session_id,
+        payload: {
+          ...(request.payload as Record<string, unknown>),
+          ...(control === 'foreign bot' ? { bot: 'other' } : {}),
+          ...(control === 'foreign section' ? { section_id: 'room-stored' } : {}),
+          ...(control === 'room hint' ? { room_id: 'unknown-room' } : {})
+        }
+      })
+      await f.finish()
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it('rejects old-session buffered cards when a reread returns a different live session', async () => {
+    const f = await pending()
+    await f.reading()
+    f.event('message.complete', {})
+    f.event('message.start', {})
+    f.card()
+    f.setSection(section('section', 'replacement-live'))
+    await f.finish()
+    expect(f.statusCalls()).toBe(2)
+    expect(render().chat.questions).toEqual([])
+    render().back()
+    expect(render().bots[0].status).toBe('idle')
+  })
+
+  it.each(['target', 'epoch'] as const)(
+    'does not carry pending card receipt across a changed %s',
+    async control => {
+      const f = await pending()
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'one' } })
+      await f.reading()
+      f.card()
+      if (control === 'target') {
+        const prior = hooks.handler
+        hooks.handler = async (method, params) =>
+          method === 'hexbot.bots.list' ? { bots: [f.idle] } : prior(method, params)
+        await render().activate({ ...daemon, id: 'next' }, 'token')
+        await render().refresh()
+      } else hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'two' } })
+      await f.finish()
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it.each(['named room', 'unnamed room'] as const)(
+    'does not give unknown or foreign room frames proof in %s',
+    async place => {
+      const f = await pending(place)
+      await f.reading()
+      f.event('clarify.request', {
+        ...f.context,
+        bot: 'other',
+        request_id: 'foreign-bot',
+        question: 'Foreign?'
+      })
+      f.event('clarify.request', {
+        ...f.context,
+        room_id: 'unknown-room',
+        request_id: 'foreign-room',
+        question: 'Other room?'
+      })
+      f.event(
+        'clarify.request',
+        { ...f.context, request_id: 'unknown-session', question: 'Unbound?' },
+        'unknown-live'
+      )
+      await f.finish()
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it('keeps a card received after history closes on the ordinary live path', async () => {
+    const f = await pending()
+    await f.reading()
+    await f.finish()
+    f.card()
+    render().back()
+    expect(render().bots[0].status).toBe('needs_you')
+  })
+
+  it.each(['approval', 'question'] as const)(
+    'does not renew the original %s receipt when Idle preceded the reread start',
+    async kind => {
+      const f = await pending('private', kind)
+      f.event('message.complete', {})
+      f.event('message.start', {})
+      f.card()
+      await f.reading()
+      await f.finish()
+      expect(f.statusCalls()).toBe(2)
+      expect(render().chat.approvals.length + render().chat.questions.length).toBe(1)
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it('does not turn a replay of an existing history-only question into a live receipt', async () => {
+    const f = await pending('private', 'question', {
+      request_id: 'buffer-card',
+      questions: [
+        { qid: 'first', question: 'Why?' },
+        { qid: 'last', question: 'When?' }
+      ]
+    })
+    await f.reading()
+    f.card()
+    await f.finish()
+    expect(render().chat.questions[0].questions.map(q => q.id)).toEqual(['first', 'last'])
+    render().back()
+    expect(render().bots[0].status).toBe('idle')
+  })
+
+  it.each([false, true])(
+    'tracks only the later question ID when its partial settlement completes=%s',
+    async settleNew => {
+      const f = await pending('private', 'question', {
+        request_id: 'batch',
+        questions: [{ qid: 'first', question: 'Old?' }]
+      })
+      await f.reading()
+      f.event('clarify.request', {
+        ...f.context,
+        request_id: 'batch',
+        questions: [
+          { qid: 'first', question: 'Old?' },
+          { qid: 'new', question: 'New?' }
+        ]
+      })
+      f.event('clarify.resolved', {
+        ...f.context,
+        request_id: 'batch',
+        status: 'waiting',
+        answers: settleNew ? { new: 'Yes' } : { first: 'Yes' }
+      })
+      await f.finish()
+      expect(render().chat.questions[0].questions.map(q => q.id)).toEqual([
+        settleNew ? 'first' : 'new'
+      ])
+      render().back()
+      expect(render().bots[0].status).toBe(settleNew ? 'idle' : 'needs_you')
+    }
+  )
+})

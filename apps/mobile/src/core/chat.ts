@@ -532,14 +532,17 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
  */
 export function replayChat(
   state: ChatState,
-  events: GatewayEvent[]
+  events: GatewayEvent[],
+  observe?: (before: ChatState, after: ChatState, event: GatewayEvent) => void
 ): { state: ChatState; reread: boolean } {
   const shown = new Set(state.messages.flatMap(m => m.tools?.map(t => t.id) ?? []))
   let reread = false
   for (const event of events) {
+    const before = state
     if (event.type === 'message.complete') {
       state = { ...reduceChat(state, event), messages: state.messages }
       reread = true
+      observe?.(before, state, event)
       continue
     }
     const next =
@@ -552,6 +555,7 @@ export function replayChat(
           }
         : reduceChat(state, event)
     state = { ...next, tools: next.tools.filter(t => !shown.has(t.id)) }
+    observe?.(before, state, event)
   }
   return { state, reread }
 }
@@ -561,12 +565,14 @@ export function restoreChat(
   state: ChatState,
   sessionId: string,
   pending: Record<string, unknown> | undefined,
-  events: GatewayEvent[]
+  events: GatewayEvent[],
+  observe?: (before: ChatState, after: ChatState, event: GatewayEvent) => void
 ): { state: ChatState; reread: boolean } {
   if (pending)
     state = reduceChat(state, { type: 'clarify.request', session_id: sessionId, payload: pending })
   return replayChat(
     state,
-    events.filter(event => event.session_id === sessionId)
+    events.filter(event => event.session_id === sessionId),
+    observe
   )
 }

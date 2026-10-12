@@ -792,7 +792,14 @@ export function useMobile() {
     if (target.kind === 'room') return syncRoom(target.room.id)
     let failure: string | null = null
     let carried:
-      { sessionId: string; epoch: string | null; proof: ReturnType<typeof statusProof> } | undefined
+      | {
+          sessionId: string
+          epoch: string | null
+          proof: ReturnType<typeof statusProof>
+          state: ChatState
+          cards: Map<string, number>
+        }
+      | undefined
     for (let attempt = 0; ; attempt++) {
       const sequence = ++openSequence.current
       const request = ++refreshSequence.current
@@ -825,29 +832,54 @@ export function useMobile() {
           sameBot(submitted.bot, target.bot)
             ? submitted
             : undefined
+        const previous =
+          carried?.sessionId === liveId.current && carried.epoch === replayEpoch.current
+            ? carried
+            : undefined
+        const pendingState = owned?.state ?? previous?.state
         const snapshot = {
           ...emptyChat(),
-          settlements: owned?.state.settlements ?? {},
-          ...(carried?.sessionId === liveId.current && carried.epoch === replayEpoch.current
-            ? carried.proof
-            : {}),
+          ...(previous?.proof ?? {}),
+          settlements: { ...previous?.proof.settlements, ...owned?.state.settlements },
           busy: status.status === 'working',
-          ...(owned && status.status === 'working'
+          ...(pendingState && status.status === 'working'
             ? {
-                approvals: owned.state.approvals,
-                questions: owned.state.questions,
-                waiting: owned.state.waiting,
-                activity: owned.state.activity
+                approvals: pendingState.approvals,
+                questions: pendingState.questions,
+                waiting: pendingState.waiting,
+                activity: pendingState.activity
               }
             : {}),
           messages: historyMessages(result.messages)
         }
+        // Receipt proof follows the accepted pending keys, not the age of their history read.
+        const receipts = new Map(previous?.cards)
+        for (const key of pendingKeys(snapshot))
+          if (!receipts.has(key)) receipts.set(key, owned?.cardsRevision ?? cardsRevision)
         const replay = restoreChat(
           snapshot,
           liveId.current!,
           result.pending_clarify,
-          loadingEvents.current ?? []
+          loadingEvents.current ?? [],
+          (before, after, event) => {
+            if (!['approval.request', 'clarify.request'].includes(event.type)) return
+            const payload = (event.payload ?? {}) as Record<string, unknown>
+            if (
+              (payload.bot && payload.bot !== target.bot.name) ||
+              (payload.section_id && payload.section_id !== target.section.id) ||
+              payload.room_id
+            )
+              return
+            const revision = (event as GatewayEvent & { mobileRevision?: number }).mobileRevision
+            if (revision === undefined) return
+            const known = new Set(pendingKeys(before))
+            for (const key of pendingKeys(after)) if (!known.has(key)) receipts.set(key, revision)
+          }
         )
+        const pendingReceipts = new Map(
+          pendingKeys(replay.state).map(key => [key, receipts.get(key) ?? cardsRevision])
+        )
+        const latestCard = Math.max(-1, ...pendingReceipts.values())
         if (
           replay.state.retryResolution?.sessionId === liveId.current &&
           epoch === replayEpoch.current &&
@@ -884,7 +916,9 @@ export function useMobile() {
           carried = {
             sessionId: liveId.current!,
             epoch: replayEpoch.current,
-            proof: statusProof(replay.state)
+            proof: statusProof(replay.state),
+            state: replay.state,
+            cards: pendingReceipts
           }
           continue
         }
@@ -903,9 +937,17 @@ export function useMobile() {
           epoch === replayEpoch.current &&
           result.section.id === target.section.id &&
           result.section.bot === bot.name &&
-          request >= acceptedRefresh.current
+          (request >= acceptedRefresh.current ||
+            (latestCard > cardsRevision &&
+              sectionsRef.current.some(
+                section =>
+                  section.id === result.section.id &&
+                  section.bot === bot.name &&
+                  !archiveSection(section).archived_at &&
+                  (!section.live_session_id || section.live_session_id === liveId.current)
+              )))
         )
-          retainTurn(restored, bot, liveId.current, newRoute.section, undefined, cardsRevision)
+          retainTurn(restored, bot, liveId.current, newRoute.section, undefined, latestCard)
         await rpc('hexbot.sections.mark_read', { id: target.section.id })
         return
       } finally {
