@@ -4089,6 +4089,178 @@ describe('mobile current room Retry proof', () => {
     return completed
   }
 
+  describe('mobile room send rollback', () => {
+    const rejected = 'Room send rejected'
+    const profiles = [
+      failed,
+      ...['beta', 'gamma'].map(name => ({
+        ...failed,
+        name,
+        status: 'idle' as const,
+        status_detail: null
+      }))
+    ]
+    async function completedSendRoom(reopen = true) {
+      const initial = room()
+      let current = {
+        ...initial,
+        members: profiles.map(bot => ({ ...initial.members[0], member_id: bot.name }))
+      }
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.bots.list') return { bots: profiles }
+        if (method === 'hexbot.rooms.list') return { rooms: [current] }
+        return original(method, params)
+      }
+      await render().activate(daemon, 'token')
+      await render().refresh()
+      const catalog = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.rooms.get') return { room: current }
+        if (method === 'hexbot.rooms.log') return { events: [] }
+        if (method === 'hexbot.bots.get' || method === 'hexbot.bots.list')
+          throw new Error('Bot read unavailable')
+        return catalog(method, params)
+      }
+      await render().openRoom(current)
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+      hooks.clients[0].emit(wire('message.start', { retry_resolved: true }))
+      hooks.clients[0].emit(wire('message.complete', { text: 'Done' }))
+      hooks.clients[0].emit(turnEvent('s1', 'complete'))
+      expect(render().bots[0].status).toBe('idle')
+      current = { ...current, turns: [] }
+      if (reopen) await render().openRoom(current)
+      return current
+    }
+    function rejectSend() {
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.rooms.send') throw new Error(rejected)
+        return original(method, params)
+      }
+    }
+
+    it.each([false, true])(
+      'keeps completed retry inactive after rejected send (reopen=%s)',
+      async reopen => {
+        await completedSendRoom(reopen)
+        rejectSend()
+        const sending = render().send('Next')
+        expect(render().chat.busy).toBe(true)
+        await expect(sending).rejects.toThrow(rejected)
+        expect(render().chat).toMatchObject({
+          busy: false,
+          waiting: false,
+          error: rejected,
+          approvals: [],
+          questions: []
+        })
+        expect(render().chat.turns.s1).toMatchObject({ busy: false })
+        expect(render().bots[0].status).toBe('idle')
+      }
+    )
+
+    it.each(['empty', 'working', 'approval', 'question', 'error', 'mixed'])(
+      'preserves current %s room turns when the send fails',
+      async kind => {
+        const completed = await completedSendRoom()
+        if (kind === 'empty') {
+          hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+          await render().openRoom(completed)
+        } else {
+          hooks.clients[0].emit(turnEvent('beta-live', 'running', 'beta'))
+          if (kind === 'approval')
+            hooks.clients[0].emit(
+              wire('approval.request', { request_id: 'beta', choices: ['once'] }, 'beta-live')
+            )
+          if (kind === 'question')
+            hooks.clients[0].emit(
+              wire('clarify.request', { request_id: 'beta', question: 'Next?' }, 'beta-live')
+            )
+          if (['error', 'mixed'].includes(kind))
+            hooks.clients[0].emit(wire('error', { message: 'Beta failed' }, 'beta-live'))
+          if (kind === 'mixed') hooks.clients[0].emit(turnEvent('gamma-live', 'running', 'gamma'))
+        }
+        const before = render().chat
+        rejectSend()
+        await expect(render().send('Next')).rejects.toThrow(rejected)
+        expect(render().chat).toMatchObject({
+          busy: !['empty', 'error'].includes(kind),
+          waiting: ['approval', 'question'].includes(kind),
+          error: rejected
+        })
+        expect(render().chat.turns).toEqual(before.turns)
+        expect(render().chat.approvals).toEqual(before.approvals)
+        expect(render().chat.questions).toEqual(before.questions)
+      }
+    )
+
+    it.each(['start', 'complete', 'wait', 'error'])(
+      'uses the current turns after %s arrives during a held failed send',
+      async event => {
+        await completedSendRoom()
+        if (['complete', 'error'].includes(event))
+          hooks.clients[0].emit(turnEvent('beta-live', 'running', 'beta'))
+        const held = deferred()
+        const original = hooks.handler
+        hooks.handler = async (method, params) =>
+          method === 'hexbot.rooms.send' ? held.promise : original(method, params)
+        const sending = render().send('Next')
+        const rejection = expect(sending).rejects.toThrow(rejected)
+        if (['start', 'wait'].includes(event))
+          hooks.clients[0].emit(turnEvent('beta-live', 'running', 'beta'))
+        if (event === 'wait')
+          hooks.clients[0].emit(
+            wire('clarify.request', { request_id: 'beta', question: 'Next?' }, 'beta-live')
+          )
+        if (event === 'complete') {
+          hooks.clients[0].emit(wire('message.complete', { text: 'Done' }, 'beta-live'))
+          hooks.clients[0].emit(turnEvent('beta-live', 'complete', 'beta'))
+        }
+        if (event === 'error')
+          hooks.clients[0].emit(wire('error', { message: 'Beta failed' }, 'beta-live'))
+        const before = render().chat
+        held.reject(new Error(rejected))
+        await rejection
+        expect(render().chat).toMatchObject({
+          busy: ['start', 'wait'].includes(event),
+          waiting: event === 'wait',
+          error: rejected
+        })
+        expect(render().chat.turns).toEqual(before.turns)
+        expect(render().chat.questions).toEqual(before.questions)
+      }
+    )
+
+    it('does not revive retry proof after an epoch change during a held failed send', async () => {
+      await completedSendRoom()
+      const held = deferred()
+      const original = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.rooms.send' ? held.promise : original(method, params)
+      const rejection = expect(render().send('Next')).rejects.toThrow(rejected)
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+      held.reject(new Error(rejected))
+      await rejection
+      expect(render().chat).toMatchObject({ busy: false, error: rejected })
+      expect(render().chat.turns.s1.retryResolution).toBeUndefined()
+      expect(render().bots[0].status).toBe('stopped')
+    })
+
+    it('keeps private send failure behavior and removes its optimistic message', async () => {
+      await openStopped(failed)
+      hooks.clients[0].emit(wire('message.complete', { text: 'Done' }))
+      const messages = render().chat.messages
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'prompt.submit') throw new Error('Private send rejected')
+        return original(method, params)
+      }
+      await expect(render().send('Next')).rejects.toThrow('Private send rejected')
+      expect(render().chat).toMatchObject({ busy: false, error: 'Private send rejected', messages })
+    })
+  })
+
   it.each(['new-live', 's1'])(
     'retires completed Retry when the reopened snapshot has a new bot turn at %s',
     async sessionId => {

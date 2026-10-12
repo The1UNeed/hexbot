@@ -89,6 +89,7 @@ Accepted room retry evidence survives successful turn completion, leaving,
 and reopening the room until newer status or lifecycle authority retires it.
 Reopening retains only completed proof for a valid bot in that room; a current
 newer turn replaces it.
+A rejected room send leaves the room busy only while another turn is active.
 Markers retire only failures naming the matching stored section; global and
 connector causes remain Stopped.
 Compaction starts and older daemons omit this field; an unmarked start or a

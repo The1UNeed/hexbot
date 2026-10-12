@@ -1428,7 +1428,7 @@ export function useMobile() {
       setChat(c => ({
         ...c,
         messages: c.messages.filter(m => m.id !== messageId),
-        busy: target.kind === 'room' && Object.keys(c.turns).length > 0,
+        busy: target.kind === 'room' && Object.values(c.turns).some(turn => turn.busy),
         error: errorText(error)
       }))
       throw error
