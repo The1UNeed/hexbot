@@ -7254,4 +7254,178 @@ describe('mobile open section restore reconfirms pending cards', () => {
     )
     expect(render().bots[0].status).not.toBe('needs_you')
   })
+
+  describe('restore read completion', () => {
+    it.each(
+      (['older catalog', 'newer catalog'] as const).flatMap(catalog =>
+        (['question', 'approval'] as const).map(kind => [catalog, kind] as const)
+      )
+    )('reconfirms %s with a %s after the catalog and runtime diverged', async (catalog, kind) => {
+      const f = await archived(kind)
+      const runtime = catalog === 'older catalog' ? 's1' : 's2'
+      await f.catalog(1, catalog === 'older catalog' ? 'old-live' : 's2')
+      expect(render().liveSessionId()).toBe('s1')
+      const previous = hooks.handler
+      hooks.handler = async (method, params) => {
+        const result = await previous(method, params)
+        if (method !== 'hexbot.sections.open') return result
+        if (kind === 'approval')
+          hooks.clients[0].emit(
+            wire(
+              'approval.request',
+              { bot: 'alpha', section_id: 'section', request_id: 'archived-card' },
+              runtime
+            )
+          )
+        return { ...(result as object), section: { ...f.row(), live_session_id: runtime } }
+      }
+      await f.restore()
+      expect(render().liveSessionId()).toBe(runtime)
+      const cards = [...render().chat.questions, ...render().chat.approvals]
+      expect(cards.map(card => [card.sessionId, card.requestId])).toEqual([
+        [runtime, 'archived-card']
+      ])
+      render().back()
+      expect(render().bots[0].status).toBe('needs_you')
+    })
+
+    it.each(['question', 'approval'] as const)(
+      'reconfirms a %s when a remote restore is accepted before the local ACK',
+      async kind => {
+        const f = await archived(kind)
+        const ack = deferred()
+        const previous = hooks.handler
+        hooks.handler = async (method, params) =>
+          method === 'hexbot.sections.unarchive' ? ack.promise : previous(method, params)
+        const restoring = f.restore()
+        await f.catalog(null)
+        ack.resolve({ section: { ...f.row(), archived_at: null } })
+        await restoring
+        expect(f.opens()).toBe(2)
+        render().back()
+        expect(render().bots[0].status).toBe('needs_you')
+      }
+    )
+
+    it.each(['question', 'approval'] as const)(
+      'does not use a superseded %s restore after another archive and restore',
+      async kind => {
+        const f = await archived(kind)
+        const ack = deferred()
+        const previous = hooks.handler
+        hooks.handler = async (method, params) =>
+          method === 'hexbot.sections.unarchive' ? ack.promise : previous(method, params)
+        const restoring = f.restore()
+        await f.catalog(null)
+        await f.catalog(2)
+        await f.catalog(null)
+        ack.resolve({ section: { ...f.row(), archived_at: null } })
+        await restoring
+        expect(f.opens()).toBe(1)
+        render().back()
+        expect(render().bots[0].status).toBe('idle')
+      }
+    )
+
+    it.each(
+      (['restore', 'ordinary open'] as const).flatMap(flow =>
+        (['approval', 'partial question'] as const).map(kind => [flow, kind] as const)
+      )
+    )('folds settled snapshots once during %s with a fresh %s', async (flow, kind) => {
+      const f = await archived()
+      if (flow === 'ordinary open') await f.catalog(null)
+      const held = deferred()
+      const previous = hooks.handler
+      let opens = 0
+      let gets = 0
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.bots.get') gets++
+        if (method !== 'hexbot.sections.open') return previous(method, params)
+        if (++opens === 1) return held.promise
+        const result = await previous(method, params)
+        if (kind === 'approval') {
+          hooks.clients[0].emit(
+            wire('approval.request', { bot: 'alpha', section_id: 'section', request_id: 'fresh' })
+          )
+          return { ...(result as object), pending_clarify: undefined }
+        }
+        return {
+          ...(result as object),
+          pending_clarify: { ...f.question, request_id: 'fresh', answers: { first: 'Here' } }
+        }
+      }
+      const reading = flow === 'restore' ? f.restore() : render().syncChat()
+      await flush()
+      hooks.clients[0].emit(
+        wire('clarify.resolved', {
+          ...f.question,
+          status: 'answered',
+          answers: { first: 'Here', last: 'Now' }
+        })
+      )
+      hooks.clients[0].emit(wire('message.complete', { bot: 'alpha', section_id: 'section' }))
+      hooks.clients[0].emit(
+        wire('message.start', { bot: 'alpha', section_id: 'section', room_id: null })
+      )
+      hooks.clients[0].emit(
+        wire(
+          kind === 'approval' ? 'approval.request' : 'clarify.request',
+          kind === 'approval'
+            ? { bot: 'alpha', section_id: 'section', request_id: 'fresh' }
+            : { ...f.question, request_id: 'fresh' }
+        )
+      )
+      if (kind === 'partial question')
+        hooks.clients[0].emit(
+          wire('clarify.resolved', {
+            ...f.question,
+            request_id: 'fresh',
+            status: 'waiting',
+            answers: { first: 'Here' }
+          })
+        )
+      hooks.clients[0].emit({
+        type: 'hexbot.sections.changed',
+        payload: { id: 'section', bot: 'alpha' }
+      })
+      await flush()
+      await flush()
+      const before = gets
+      held.resolve({
+        section: { ...f.row(), archived_at: null },
+        messages: [{ id: 'readable', role: 'assistant', content: 'Earlier reply' }],
+        pending_clarify: f.question
+      })
+      await reading
+      await flush()
+      expect(opens).toBe(2)
+      expect(gets).toBe(before)
+      expect(render().chat.messages.map(message => message.text)).toEqual(['Earlier reply'])
+      expect(
+        render().chat.questions.map(card => [
+          card.requestId,
+          card.questions.map(question => question.id)
+        ])
+      ).toEqual(kind === 'approval' ? [] : [['fresh', ['last']]])
+      expect(render().chat.approvals.map(card => card.requestId)).toEqual(
+        kind === 'approval' ? ['fresh'] : []
+      )
+      expect(
+        render().chat.settlements[JSON.stringify(['clarify', 's1', 'archived-card'])]?.answers
+      ).toEqual({ first: 'Here', last: 'Now' })
+      render().back()
+      expect(render().bots[0].status).toBe('needs_you')
+      hooks.clients[0].emit(
+        wire(kind === 'approval' ? 'approval.resolved' : 'clarify.resolved', {
+          bot: 'alpha',
+          section_id: 'section',
+          request_id: 'fresh',
+          choice: 'once',
+          status: 'answered',
+          answers: { last: 'Now' }
+        })
+      )
+      expect(render().bots[0].status).not.toBe('needs_you')
+    })
+  })
 })

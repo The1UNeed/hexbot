@@ -385,7 +385,7 @@ export function useMobile() {
           ? saved && prior === section.archived_at
             ? saved.cardArchiveRequest
             : proofRequest
-          : 0,
+          : (saved?.cardArchiveRequest ?? 0),
         restoredAt: reflected
           ? saved.restoredAt
           : section.archived_at === null
@@ -433,6 +433,14 @@ export function useMobile() {
       const archive = method === 'hexbot.sections.archive' || method === 'hexbot.sections.unarchive'
       const target = archive ? routeRef.current : null
       const opening = openSequence.current
+      const beforeArchive =
+        archive && typeof params.id === 'string'
+          ? sectionArchives.current.get(params.id)
+          : undefined
+      const catalogSession =
+        archive && typeof params.id === 'string'
+          ? sectionsRef.current.find(row => row.id === params.id)?.live_session_id
+          : undefined
       const request = archive ? ++refreshSequence.current : 0
       if (!current || current.client.connectionState !== 'open')
         throw new Error('Connect to a daemon first.')
@@ -478,16 +486,29 @@ export function useMobile() {
           target.section.id === params.id &&
           here.section.id === target.section.id &&
           sameBot(here.bot, target.bot) &&
-          here.section.archived_at &&
+          target.section.archived_at &&
           opening === openSequence.current
-        if (section && section.id === params.id && section.bot && acceptArchive(section, request)) {
-          eventRef.current({
-            type: 'hexbot.sections.changed',
-            payload: { id: section.id, bot: section.bot }
-          })
-          if (restoring && section.bot === target.bot.name && section.archived_at === null) {
+        if (section && section.id === params.id && section.bot) {
+          const accepted = acceptArchive(section, request)
+          const saved = sectionArchives.current.get(section.id)
+          const reflectedRestore =
+            !accepted &&
+            saved?.bot === section.bot &&
+            saved.archived_at === null &&
+            saved.generation === beforeArchive?.generation &&
+            saved.cardArchiveRequest === beforeArchive?.cardArchiveRequest
+          if (accepted)
+            eventRef.current({
+              type: 'hexbot.sections.changed',
+              payload: { id: section.id, bot: section.bot }
+            })
+          if (
+            restoring &&
+            (accepted || reflectedRestore) &&
+            section.bot === target.bot.name &&
+            section.archived_at === null
+          ) {
             const accepted = sectionArchives.current.get(section.id)!
-            const sessionId = liveId.current
             const stillCurrent = () => {
               const route = routeRef.current
               const saved = sectionArchives.current.get(section.id)
@@ -498,7 +519,7 @@ export function useMobile() {
                 route?.kind === 'section' &&
                 route.section.id === section.id &&
                 sameBot(route.bot, target.bot) &&
-                (!row?.live_session_id || row.live_session_id === sessionId) &&
+                row?.live_session_id === catalogSession &&
                 saved?.generation === accepted.generation &&
                 saved.readChangeRequest === accepted.readChangeRequest &&
                 saved.archived_at === null &&
@@ -894,6 +915,7 @@ export function useMobile() {
         const archives = archiveSnapshot()
         const epoch = replayEpoch.current
         const cardsRevision = ++eventRevision.current
+        let folded = false
         loadingEvents.current = []
         try {
           const result = await rpc<{
@@ -931,9 +953,11 @@ export function useMobile() {
             carried?.sessionId === liveId.current && carried.epoch === replayEpoch.current
               ? carried
               : undefined
-          const pendingState = owned?.state ?? previous?.state
+          const pendingState =
+            previous?.state ?? (owned && owned.revision <= cardsRevision ? owned.state : undefined)
           const snapshot = {
             ...emptyChat(),
+            ...(owned ? statusProof(owned.state) : {}),
             ...(previous?.proof ?? {}),
             settlements: { ...previous?.proof.settlements, ...owned?.state.settlements },
             busy: status.status === 'working',
@@ -992,6 +1016,7 @@ export function useMobile() {
               for (const key of requested) received.add(key)
             }
           )
+          folded = true
           const pendingReceipts = new Map(
             pendingKeys(replay.state).map(key => [key, receipts.get(key) ?? cardsRevision])
           )
@@ -1013,17 +1038,13 @@ export function useMobile() {
               roomId: undefined
             }
           if (owned) {
-            if (result.pending_clarify)
-              owned.state = reduceChat(owned.state, {
-                type: 'clarify.request',
-                session_id: liveId.current!,
-                payload: result.pending_clarify
-              })
             owned.state = {
-              ...owned.state,
-              busy: replay.state.busy,
+              ...replay.state,
+              messages: [],
+              turns: {},
               error: replay.state.error ?? owned.state.error
             }
+            owned.cards = pendingReceipts
             pruneSubmitted()
           }
           failure = replay.state.error ?? failure
@@ -1080,6 +1101,7 @@ export function useMobile() {
             // A superseding archive can reject this read while the same chat still receives events.
             if (
               stillCurrent &&
+              !folded &&
               buffered &&
               epoch === replayEpoch.current &&
               routeRef.current?.kind === 'section' &&
