@@ -209,6 +209,26 @@ function mergeSection(state: SectionsState, section: Section): Partial<SectionsS
   }
 }
 
+function withoutSection(state: SectionsState, id: string): Partial<SectionsState> {
+  const byId = { ...state.byId }
+  const section = byId[id]
+  delete byId[id]
+
+  const liveSessionId = { ...state.liveSessionId }
+  delete liveSessionId[id]
+
+  return {
+    byId,
+    idsByBot: section
+      ? {
+          ...state.idsByBot,
+          [section.bot]: (state.idsByBot[section.bot] ?? []).filter(item => item !== id)
+        }
+      : state.idsByBot,
+    liveSessionId
+  }
+}
+
 function sectionMetadata(section: Section) {
   return {
     archived_at: section.archived_at,
@@ -406,13 +426,22 @@ export const useSections = create<SectionsState>((set, get) => ({
 
     try {
       const result = await sectionsList({ bot, include_archived: true, include_threads: true })
-      const section = result.sections?.find(row => row.id === id && row.bot === bot)
+
+      if (
+        !Array.isArray(result.sections) ||
+        result.sections.some(
+          row => !row || typeof row.id !== 'string' || typeof row.bot !== 'string'
+        )
+      ) {
+        return
+      }
+
+      const section = result.sections.find(row => row.id === id && row.bot === bot)
       const current = useTranscripts.getState().bySession[sessionId]
       const target = useConnection.getState()
       const bound = get().liveSessionId[id]
 
       if (
-        !Array.isArray(result.sections) ||
         current?.epoch !== transcript.epoch ||
         current.sectionId !== id ||
         current.bot !== bot ||
@@ -431,6 +460,23 @@ export const useSections = create<SectionsState>((set, get) => ({
       boundSectionRequests.set(id, request)
 
       if (!section) {
+        // Absence can retire known private ownership, not an unclassified room card.
+        if (
+          (!boundAtRead && !get().byId[id]) ||
+          result.sections.some(row => row.id === id) ||
+          (sectionRequests.get(id) ?? 0) > request ||
+          Object.values(useTranscripts.getState().bySession).some(
+            item => item.sectionId === id && item.authorityRevision > revision
+          )
+        ) {
+          return
+        }
+
+        removedSectionRequests.set(id, { active: true, bot, request })
+        sectionRequests.set(id, request)
+        useTranscripts.getState().clearAnsweredWaiting([id], [], revision, { idle: true })
+        set(state => withoutSection(state, id))
+
         return
       }
 
@@ -820,25 +866,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       }
     }
 
-    set(state => {
-      const byId = { ...state.byId }
-      const section = byId[id]
-      delete byId[id]
-
-      const liveSessionId = { ...state.liveSessionId }
-      delete liveSessionId[id]
-
-      return {
-        byId,
-        idsByBot: section
-          ? {
-              ...state.idsByBot,
-              [section.bot]: (state.idsByBot[section.bot] ?? []).filter(item => item !== id)
-            }
-          : state.idsByBot,
-        liveSessionId
-      }
-    })
+    set(state => withoutSection(state, id))
   },
 
   clearLive() {

@@ -951,3 +951,178 @@ it.each([
     expect(sectionStatusOf(bot, 'stored', live)).toBe('needs_you')
   }
 )
+
+it.each(
+  (['thread', 'indexed'] as const).flatMap(surface =>
+    (['approval', 'clarify', 'working'] as const).map(kind => ({ surface, kind }))
+  )
+)(
+  'retires a missing $surface with $kind after deletion while disconnected',
+  async ({ surface, kind }) => {
+    const original = section({ peer_bot: surface === 'thread' ? 'cat' : null })
+    setActiveRpc({ call: vi.fn().mockResolvedValue({ section: original, messages: [] }) } as never)
+
+    if (surface === 'thread') {
+      await useSections.getState().openThread('stored', 'cat')
+    } else {
+      await useSections.getState().open('stored')
+    }
+
+    pending(kind === 'working' ? 'approval' : kind)
+
+    if (kind === 'working') {
+      resolved('approval')
+      event('status.update', { kind: 'working', text: 'Working' })
+    }
+
+    // The connection missed the deletion notification; its next catalog refresh fails.
+    const owner = {
+      ...bot,
+      status: kind === 'working' ? 'working' : 'needs_you',
+      status_detail: { section_id: 'stored', session_id: 'live' }
+    } as Bot
+
+    const call = vi.fn((method: string, params: { include_threads?: boolean }) =>
+      method === 'hexbot.sections.list' && params.include_threads
+        ? Promise.resolve({ sections: [] })
+        : Promise.reject(new Error('offline'))
+    )
+
+    setActiveRpc({ call } as never)
+    await Promise.all([
+      useSections.getState().refresh(),
+      useSections.getState().verifySessionOwner('live', true)
+    ])
+    const sessions = useTranscripts.getState().bySession
+    const live = liveSectionsOf(sessions)
+    expect(botStatusWithLive(owner, [], live, sessions)).toBe('idle')
+    expect(sectionStatusOf(owner, 'stored', live)).toBe('idle')
+    expect(useSections.getState().byId.stored).toBeUndefined()
+    expect(useSections.getState().liveSessionId.stored).toBeUndefined()
+    expect(useSections.getState().idsByBot.owl ?? []).not.toContain('stored')
+    expect(kind === 'clarify' ? sessions.live?.clarifies : sessions.live?.approvals).toHaveLength(1)
+  }
+)
+
+async function indexedPending() {
+  const original = section({ peer_bot: null })
+  setActiveRpc({ call: vi.fn().mockResolvedValue({ section: original, messages: [] }) } as never)
+  await useSections.getState().open('stored')
+  pending('approval')
+
+  return original
+}
+
+it.each(['full', 'scoped'] as const)(
+  'an older %s list cannot restore an absent private section or remove its sibling',
+  async scope => {
+    const original = await indexedPending()
+    const sibling = section({ id: 'sibling', peer_bot: null, live_session_id: null })
+    const catalog = deferred()
+    setActiveRpc({
+      call: vi.fn((method: string, params: { include_threads?: boolean }) =>
+        method === 'hexbot.sections.list' && params.include_threads
+          ? Promise.resolve({ sections: [sibling] })
+          : catalog.promise
+      )
+    } as never)
+    const reading = useSections.getState().refresh(scope === 'scoped' ? { bot: 'owl' } : {})
+    await useSections.getState().verifySessionOwner('live', true)
+    catalog.resolve({ sections: [original, sibling] })
+    await reading
+    expect(useSections.getState().byId.stored).toBeUndefined()
+    expect(useSections.getState().liveSessionId.stored).toBeUndefined()
+    expect(useSections.getState().idsByBot.owl).toEqual(['sibling'])
+    expect(dot()).toBe('idle')
+    expect(useTranscripts.getState().bySession.live?.approvals).toHaveLength(1)
+    rpc([{ ...original, live_session_id: 'new-live' }, sibling])
+    await useSections.getState().refresh(scope === 'scoped' ? { bot: 'owl' } : {})
+    event('approval.request', { bot: 'owl', section_id: 'stored', request_id: 'new' }, 'new-live')
+    expect(useSections.getState().liveSessionId.stored).toBe('new-live')
+    expect(dot()).toBe('needs_you')
+  }
+)
+
+it.each([
+  'open',
+  'ownership',
+  'rename',
+  'archive',
+  'unarchive',
+  'target',
+  'epoch',
+  'new request',
+  'Working'
+] as const)('held absence preserves newer %s proof', async boundary => {
+  const original = await indexedPending()
+  const held = deferred()
+  setActiveRpc({ call: vi.fn(() => held.promise) } as never)
+  const checking = useSections.getState().verifySessionOwner('live', true)
+
+  if (boundary === 'open') {
+    setActiveRpc({
+      call: vi
+        .fn()
+        .mockResolvedValue({ section: { ...original, live_session_id: 'new-live' }, messages: [] })
+    } as never)
+    await useSections.getState().open('stored')
+  } else if (boundary === 'ownership') {
+    rpc([{ ...original, live_session_id: 'new-live' }])
+    event('approval.request', { bot: 'owl', section_id: 'stored', request_id: 'new' }, 'new-live')
+    await flush()
+  } else if (boundary === 'rename' || boundary === 'archive' || boundary === 'unarchive') {
+    setActiveRpc({
+      call: vi.fn().mockResolvedValue({
+        section: { ...original, title: 'Edited', archived_at: boundary === 'archive' ? 1 : null }
+      })
+    } as never)
+
+    if (boundary === 'rename') {
+      await useSections.getState().rename('stored', 'Edited')
+    } else {
+      await useSections.getState()[boundary]('stored')
+    }
+  } else if (boundary === 'target') {
+    useConnection.setState({ target: { kind: 'local', origin: 'http://different.test' } })
+  } else if (boundary === 'epoch') {
+    useConnection.setState({ epoch: 'new-epoch' })
+  } else if (boundary === 'new request') {
+    pending('approval', { request_id: 'new' })
+  } else {
+    resolved('approval')
+    event('status.update', { kind: 'working', text: 'Working' })
+  }
+
+  held.resolve({ sections: [] })
+  await checking
+  expect(useSections.getState().byId.stored).toBeDefined()
+  expect(useSections.getState().liveSessionId.stored).toBe(
+    boundary === 'open' || boundary === 'ownership' ? 'new-live' : 'live'
+  )
+
+  if (boundary !== 'archive' && boundary !== 'open') {
+    expect(dot()).toBe(boundary === 'Working' ? 'working' : 'needs_you')
+  }
+})
+
+it.each(['failed', 'missing array', 'malformed row', 'wrong owner'] as const)(
+  '%s ownership cannot retire known private activity',
+  async result => {
+    const original = await indexedPending()
+    setActiveRpc({
+      call: vi.fn(() =>
+        result === 'failed'
+          ? Promise.reject(new Error('offline'))
+          : Promise.resolve(
+              result === 'missing array'
+                ? {}
+                : { sections: result === 'malformed row' ? [{}] : [{ ...original, bot: 'cat' }] }
+            )
+      )
+    } as never)
+    await useSections.getState().verifySessionOwner('live', true)
+    expect(useSections.getState().byId.stored).toEqual(original)
+    expect(useSections.getState().liveSessionId.stored).toBe('live')
+    expect(dot()).toBe('needs_you')
+  }
+)
