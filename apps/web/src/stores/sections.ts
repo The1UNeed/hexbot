@@ -445,6 +445,7 @@ export const useSections = create<SectionsState>((set, get) => ({
     acceptBinding(id, ++sectionsRequest)
     set(state => ({ liveSessionId: { ...state.liveSessionId, [id]: sessionId } }))
     useTranscripts.getState().setSectionId(sessionId, id, bot)
+    useTranscripts.getState().bindPrivateSession(id, sessionId)
 
     return true
   },

@@ -206,6 +206,7 @@ it('fences a held older section snapshot after a confirmed start', async () => {
       if (method === 'hexbot.sections.list') {
         return response
       }
+
       throw new Error('Read unavailable')
     })
   } as never)
@@ -252,4 +253,31 @@ it('accepts a fresh start after a verified session rollover', async () => {
   // A delayed event from the old turn cannot reclaim the accepted new binding.
   f.start()
   expect(useSections.getState().liveSessionId[f.sectionId]).toBe('newer-live')
+})
+
+it.each([false, true])(
+  'reactivates an accepted ordinary start after private retirement indexed=%s',
+  indexed => {
+    const f = fixture(indexed)
+    const transcripts = useTranscripts.getState()
+    transcripts.open(f.sessionId, f.sectionId, [], undefined, 'owl')
+    transcripts.bindPrivateSession(f.sectionId, 'replacement-live')
+    transcripts.clearAnsweredWaiting([f.sectionId], [], undefined, { idle: true })
+    expect(useTranscripts.getState().bySession[f.sessionId]?.superseded).toBe(true)
+    f.start()
+    expect(useTranscripts.getState().bySession[f.sessionId]?.superseded).toBeUndefined()
+    expect(f.status()).toBe('working')
+  }
+)
+
+it('keeps retired private ownership when a queued start has no binding metadata', () => {
+  const f = fixture(false)
+  const transcripts = useTranscripts.getState()
+  transcripts.open(f.sessionId, f.sectionId, [], undefined, 'owl')
+  transcripts.bindPrivateSession(f.sectionId, 'replacement-live')
+  transcripts.clearAnsweredWaiting([f.sectionId], [], undefined, { idle: true })
+  f.start({})
+  expect(useTranscripts.getState().bySession[f.sessionId]?.superseded).toBe(true)
+  expect(useSections.getState().liveSessionId).toEqual({})
+  expect(f.status()).toBe('idle')
 })
