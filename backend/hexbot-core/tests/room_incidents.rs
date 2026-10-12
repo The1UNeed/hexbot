@@ -50,18 +50,21 @@ async fn event(
     .unwrap_or_else(|_| panic!("missing {kind}; received {seen:?}"))
 }
 async fn failed_room(app: &Arc<App>) -> (String, Value) {
+    failed_room_as(app, "local", "owl").await
+}
+async fn failed_room_as(app: &Arc<App>, owner: &str, bot: &str) -> (String, Value) {
     let room = app
         .call(
-            "local",
+            owner,
             "hexbot.rooms.create",
-            &json!({"name":"Room","members":["owl"],"main_bot":"owl"}),
+            &json!({"name":"Room","members":[bot],"main_bot":bot}),
         )
         .await
         .unwrap();
     let id = room["room"]["id"].as_str().unwrap().to_owned();
     let mut events = app.events.subscribe();
     app.call(
-        "local",
+        owner,
         "hexbot.rooms.send",
         &json!({"id":id,"text":"Fail this turn"}),
     )
@@ -75,6 +78,329 @@ async fn failed_room(app: &Arc<App>) -> (String, Value) {
         }
     }
     (id, incident)
+}
+
+async fn bot_rows(app: &Arc<App>, owner: &str, name: &str) -> Vec<Value> {
+    let get = app
+        .call(owner, "hexbot.bots.get", &json!({"name":name}))
+        .await
+        .unwrap();
+    let list = app
+        .call(owner, "hexbot.bots.list", &json!({}))
+        .await
+        .unwrap();
+    vec![
+        get["bot"].clone(),
+        list["bots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|bot| bot["name"] == name)
+            .unwrap()
+            .clone(),
+    ]
+}
+async fn deleted_room_case(last_member: bool) {
+    let (home, app) = fixture().await;
+    let (room, incident) = failed_room(&app).await;
+    for bot in bot_rows(&app, "local", "owl").await {
+        assert_eq!(bot["status"], "stopped");
+        assert_eq!(bot["status_detail"]["action"], json!({"kind":"retry"}));
+    }
+    let conn = db::open(home.path()).unwrap();
+    conn.execute(
+        "INSERT INTO users(id,display_name,role,created_at) VALUES('bob','Bob','member',0)",
+        [],
+    )
+    .unwrap();
+    let method = if last_member {
+        "hexbot.rooms.remove_member"
+    } else {
+        "hexbot.rooms.delete"
+    };
+    let params = json!({"id":room,"bot":"owl"});
+    assert_eq!(
+        app.call("bob", method, &params).await.unwrap_err().code,
+        4302
+    );
+    let result = app.call("local", method, &params).await.unwrap();
+    assert_eq!(
+        if last_member {
+            &result["room"]["deleted"]
+        } else {
+            &result["deleted"]
+        },
+        &json!(true)
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM rooms WHERE id=?", [&room], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM room_sessions WHERE room_id=?",
+            [&room],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    let rows = bot_rows(&app, "local", "owl").await;
+    let resolved: Option<f64> = conn
+        .query_row(
+            "SELECT resolved_at FROM bot_incidents WHERE id=?",
+            [incident["incident"]["id"].as_str().unwrap()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(resolved.is_none());
+    app.shutdown().await;
+    for bot in rows {
+        assert_eq!(bot["status"], "idle", "{bot}");
+        assert!(bot["status_detail"].is_null());
+    }
+}
+
+#[tokio::test]
+async fn public_deleted_room_explicit_delete_retires_retry() {
+    deleted_room_case(false).await;
+}
+#[tokio::test]
+async fn public_deleted_room_last_member_removal_retires_retry() {
+    deleted_room_case(true).await;
+}
+
+#[tokio::test]
+async fn named_room_null_section_failure_is_not_a_global_failure() {
+    let (home, app) = fixture().await;
+    let (room, _) = failed_room(&app).await;
+    let incident = settings::record_incident(
+        home.path(),
+        "owl",
+        "turn_failed",
+        "Named room failure",
+        &json!({"room_id":room,"session_id":"named-room-live"}),
+    )
+    .unwrap();
+    status(
+        &app,
+        "owl",
+        json!(room),
+        json!("named-room-live"),
+        json!({"kind":"retry"}),
+    )
+    .await;
+    app.call("local", "hexbot.rooms.delete", &json!({"id":room}))
+        .await
+        .unwrap();
+    let rows = bot_rows(&app, "local", "owl").await;
+    let resolved: Option<f64> = db::open(home.path())
+        .unwrap()
+        .query_row(
+            "SELECT resolved_at FROM bot_incidents WHERE id=?",
+            [incident["id"].as_str().unwrap()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(resolved.is_none());
+    app.shutdown().await;
+    for bot in rows {
+        assert_eq!(bot["status"], "idle", "{bot}");
+    }
+}
+
+#[tokio::test]
+async fn deleted_room_preserves_connector_private_global_and_sibling_causes() {
+    for cause in ["connector", "private", "global", "sibling"] {
+        let (home, app) = fixture().await;
+        let (deleted, _) = failed_room(&app).await;
+        let (kind, context, room, sid, action) = match cause {
+            "connector" => (
+                "connector_error",
+                json!({"room_id":deleted,"connector":"github"}),
+                json!(deleted),
+                Value::Null,
+                json!({"kind":"fix_connector","connector":"github"}),
+            ),
+            "private" => {
+                let private = catalog::call(
+                    home.path(),
+                    "local",
+                    "hexbot.sections.create",
+                    &json!({"bot":"owl"}),
+                )
+                .unwrap()
+                .unwrap()["section"]["id"]
+                    .clone();
+                (
+                    "turn_failed",
+                    json!({"section_id":private,"session_id":"private-live"}),
+                    Value::Null,
+                    json!("private-live"),
+                    json!({"kind":"retry"}),
+                )
+            }
+            "sibling" => {
+                let (room, incident) = failed_room(&app).await;
+                (
+                    "turn_failed",
+                    json!({"room_id":room,"section_id":incident["section_id"],"session_id":incident["session_id"]}),
+                    json!(room),
+                    incident["session_id"].clone(),
+                    json!({"kind":"retry"}),
+                )
+            }
+            _ => (
+                "turn_failed",
+                json!({}),
+                Value::Null,
+                Value::Null,
+                json!({"kind":"retry"}),
+            ),
+        };
+        let kept =
+            settings::record_incident(home.path(), "owl", kind, "Keep this failure", &context)
+                .unwrap();
+        app.call("local", "hexbot.rooms.delete", &json!({"id":deleted}))
+            .await
+            .unwrap();
+        status(&app, "owl", room, sid, action).await;
+        let resolved: Option<f64> = db::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT resolved_at FROM bot_incidents WHERE id=?",
+                [kept["id"].as_str().unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(resolved.is_none(), "{cause}");
+        app.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn archived_or_surviving_room_keeps_retry_and_failed_delete_keeps_incident() {
+    for action in ["archive", "remove-one", "failed-delete"] {
+        let (home, app) = fixture().await;
+        let (room, incident) = failed_room(&app).await;
+        match action {
+            "archive" => {
+                app.call("local", "hexbot.rooms.archive", &json!({"id":room}))
+                    .await
+                    .unwrap();
+            }
+            "remove-one" => {
+                app.call(
+                    "local",
+                    "hexbot.rooms.add_member",
+                    &json!({"id":room,"bot":"fox"}),
+                )
+                .await
+                .unwrap();
+                let removed = app
+                    .call(
+                        "local",
+                        "hexbot.rooms.remove_member",
+                        &json!({"id":room,"bot":"owl"}),
+                    )
+                    .await
+                    .unwrap();
+                assert_ne!(removed["room"]["deleted"], true);
+            }
+            _ => {
+                db::open(home.path()).unwrap().execute_batch("CREATE TRIGGER refuse_room_delete BEFORE DELETE ON rooms BEGIN SELECT RAISE(FAIL,'fixture'); END;").unwrap();
+                assert!(
+                    app.call("local", "hexbot.rooms.delete", &json!({"id":room}))
+                        .await
+                        .is_err()
+                );
+            }
+        }
+        status(
+            &app,
+            "owl",
+            json!(room),
+            incident["session_id"].clone(),
+            json!({"kind":"retry"}),
+        )
+        .await;
+        let resolved: Option<f64> = db::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT resolved_at FROM bot_incidents WHERE id=?",
+                [incident["incident"]["id"].as_str().unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(resolved.is_none(), "{action}");
+        app.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn deleted_room_does_not_retire_another_owners_failure() {
+    let (home, app) = fixture().await;
+    let (deleted, _) = failed_room(&app).await;
+    db::open(home.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO users(id,display_name,role,created_at) VALUES('bob','Bob','member',0)",
+            [],
+        )
+        .unwrap();
+    app.call("bob","hexbot.bots.create",&json!({"name":"other-owl","description":"Manual fixture","provider":"openai","model":"fixture","tools":[]})).await.unwrap();
+    let (other, incident) = failed_room_as(&app, "bob", "other-owl").await;
+    app.call("local", "hexbot.rooms.delete", &json!({"id":deleted}))
+        .await
+        .unwrap();
+    for bot in bot_rows(&app, "bob", "other-owl").await {
+        assert_eq!(bot["status"], "stopped");
+        assert_eq!(bot["status_detail"]["room_id"], other);
+        assert_eq!(bot["status_detail"]["session_id"], incident["session_id"]);
+        assert_eq!(bot["status_detail"]["action"], json!({"kind":"retry"}));
+    }
+    app.shutdown().await;
+}
+
+#[tokio::test]
+async fn deleted_room_failure_reveals_an_older_private_retry() {
+    let (home, app) = fixture().await;
+    let private = catalog::call(
+        home.path(),
+        "local",
+        "hexbot.sections.create",
+        &json!({"bot":"owl"}),
+    )
+    .unwrap()
+    .unwrap()["section"]["id"]
+        .clone();
+    let kept = settings::record_incident(
+        home.path(),
+        "owl",
+        "turn_failed",
+        "Older private failure",
+        &json!({"section_id":private,"session_id":"private-live"}),
+    )
+    .unwrap();
+    let (room, _) = failed_room(&app).await;
+    app.call("local", "hexbot.rooms.delete", &json!({"id":room}))
+        .await
+        .unwrap();
+    status(
+        &app,
+        "owl",
+        Value::Null,
+        json!("private-live"),
+        json!({"kind":"retry"}),
+    )
+    .await;
+    for bot in bot_rows(&app, "local", "owl").await {
+        assert_eq!(bot["status_detail"]["section_id"], private);
+        assert_eq!(bot["status_detail"]["since"], kept["created_at"]);
+    }
+    app.shutdown().await;
 }
 async fn status(app: &Arc<App>, name: &str, room: Value, sid: Value, action: Value) {
     let get = app

@@ -37,6 +37,8 @@ You can add or remove bots after creating a room, from Room settings (the info b
 A daemon belongs to one person, so you are the only person in its rooms. Rooms with people who run their own Hexbot will come through [Hex Connect](/docs/connect/).
 
 Archiving hides a room but keeps its history. Deleting it removes the room and its history; each bot's own memory is left as it is.
+Turn failures from a deleted room no longer show Stopped in the bot list.
+Connector errors still need attention.
 
 ## Bots working together
 

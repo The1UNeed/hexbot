@@ -85,8 +85,10 @@ or an exact cached bot/session cause. A current same-bot section mapping can
 supersede the incident's older live session. Room markers require the current room
 turn's matching bot and live session. A named room cause can refer to an older
 live session; legacy causes without a room ID require an exact session match.
-Accepted room retry evidence survives successful turn completion until newer
-status or lifecycle authority retires it.
+Accepted room retry evidence survives successful turn completion, leaving,
+and reopening the room until newer status or lifecycle authority retires it.
+Reopening retains only completed proof for a valid bot in that room; a current
+newer turn replaces it.
 Markers retire only failures naming the matching stored section; global and
 connector causes remain Stopped.
 Compaction starts and older daemons omit this field; an unmarked start or a
@@ -839,6 +841,10 @@ turn failures while the same bot's stored room session still exists.
 Turn start and clean turn completion resolve
 `turn_failed` incidents. Section deletion resolves only its bot's private
 turn failures; connector, room and global incidents remain open.
+Bot status excludes room-scoped `turn_failed` incidents once their room is
+deleted, including deletion by removing its last bot. This does not rewrite
+incident history. Connector failures and failures without a room keep their
+existing eligibility; archiving keeps the room available for restore.
 `hexbot.bots.clear_status` resolves all incidents for the bot; successful
 connector setup resolves that connector's incidents. Clients refresh bots on
 the corresponding bots, sections, or connectors changed event.

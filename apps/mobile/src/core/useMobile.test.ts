@@ -3872,7 +3872,19 @@ describe('mobile current room Retry proof', () => {
   const room = (sessionId = 's1') =>
     ({
       id: 'room',
-      members: [],
+      owner_id: 'owner',
+      archived_at: null,
+      members: [
+        {
+          room_id: 'room',
+          member_kind: 'bot',
+          member_id: 'alpha',
+          added_at: 1,
+          added_by: 'owner',
+          last_read_seq: 0,
+          left_at: null
+        }
+      ],
       turns: [{ bot: 'alpha', live_session_id: sessionId }]
     }) as unknown as Room
   beforeEach(() => vi.useFakeTimers())
@@ -4023,6 +4035,209 @@ describe('mobile current room Retry proof', () => {
     })
     hooks.clients[0].emit(turnEvent('next-live'))
     expect(render().bots[0].status).toBe('stopped')
+  })
+
+  it.each([false, true])(
+    'keeps completed room Retry proof after reopening (leave=%s)',
+    async leave => {
+      await open()
+      hooks.clients[0].emit(wire('message.start', { retry_resolved: true }))
+      expect(render().bots[0].status).toBe('working')
+      hooks.clients[0].emit(wire('clarify.request', { request_id: 'old', question: 'Next?' }))
+      hooks.clients[0].emit(wire('message.complete', { text: 'Done' }))
+      hooks.clients[0].emit(turnEvent('s1', 'complete'))
+      expect(render().bots[0].status).toBe('idle')
+      const completed = { ...room(), turns: [] }
+      const original = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.rooms.get' ? { room: completed } : original(method, params)
+      if (leave) render().back()
+      expect(render().bots[0].status).toBe('idle')
+      await render().openRoom(completed)
+      expect(render().bots[0]).toMatchObject({
+        status: 'idle',
+        status_detail: { session_id: 's1', room_id: 'room', action: null }
+      })
+      expect(render().chat).toMatchObject({
+        busy: false,
+        waiting: false,
+        approvals: [],
+        questions: []
+      })
+      expect(render().chat.turns.s1.retryResolution).toMatchObject({
+        sessionId: 's1',
+        roomId: 'room',
+        bot: 'alpha',
+        resolved: true
+      })
+      await expect(render().refresh()).rejects.toThrow('Bot read unavailable')
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  async function completedRoom() {
+    await open()
+    hooks.clients[0].emit(wire('message.start', { retry_resolved: true }))
+    hooks.clients[0].emit(wire('message.complete', { text: 'Done' }))
+    hooks.clients[0].emit(turnEvent('s1', 'complete'))
+    expect(render().bots[0].status).toBe('idle')
+    const completed = { ...room(), turns: [] }
+    const original = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.rooms.get' ? { room: completed } : original(method, params)
+    await render().openRoom(completed)
+    return completed
+  }
+
+  it.each(['new-live', 's1'])(
+    'retires completed Retry when the reopened snapshot has a new bot turn at %s',
+    async sessionId => {
+      await completedRoom()
+      const current = room(sessionId)
+      const original = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.rooms.get' ? { room: current } : original(method, params)
+      await render().openRoom(current)
+      expect(render().bots[0].status).toBe('stopped')
+      expect(render().chat.turns[sessionId]).toMatchObject({ busy: true })
+      expect(render().chat.turns[sessionId].retryResolution).toBeUndefined()
+      hooks.clients[0].emit(wire('message.start', {}, sessionId))
+      expect(render().bots[0].status).toBe('stopped')
+      hooks.clients[0].emit(wire('message.start', { retry_resolved: true }, sessionId))
+      expect(render().bots[0].status).toBe('working')
+    }
+  )
+
+  it('does not replace another bot current owner of the completed SID', async () => {
+    await completedRoom()
+    const current = { ...room(), turns: [{ bot: 'beta', live_session_id: 's1' }] }
+    const original = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.rooms.get' ? { room: current } : original(method, params)
+    await render().openRoom(current)
+    expect(render().bots[0].status).toBe('stopped')
+    expect(render().chat.turns.s1).toMatchObject({ bot: 'beta', busy: true })
+    expect(render().chat.turns.s1.retryResolution).toBeUndefined()
+  })
+
+  it('keeps completed room proof inert until a trusted running turn reuses its SID', async () => {
+    const completed = await completedRoom()
+    expect(render().bots[0].status).toBe('idle')
+    hooks.clients[0].emit(wire('message.start', { retry_resolved: true }))
+    hooks.clients[0].emit(wire('approval.request', { request_id: 'old', choices: ['once'] }))
+    hooks.clients[0].emit(wire('clarify.request', { request_id: 'old', question: 'Next?' }))
+    hooks.clients[0].emit(wire('status.update', { kind: 'working', text: 'Working' }))
+    expect(render().bots[0].status).toBe('idle')
+    expect(render().chat).toMatchObject({
+      busy: false,
+      waiting: false,
+      approvals: [],
+      questions: []
+    })
+    render().back()
+    hooks.clients[0].emit(wire('message.start', { retry_resolved: true }))
+    expect(render().bots[0].status).toBe('idle')
+    await render().openRoom(completed)
+    hooks.clients[0].emit(turnEvent())
+    expect(render().bots[0].status).toBe('stopped')
+    expect(render().chat.turns.s1).toMatchObject({ busy: true })
+    expect(render().chat.turns.s1.retryResolution).toBeUndefined()
+    hooks.clients[0].emit(wire('message.start', { retry_resolved: true }))
+    expect(render().bots[0].status).toBe('working')
+  })
+
+  it('preserves completed proof beside another bot current turn and pending card', async () => {
+    await completedRoom()
+    const current = { ...room(), turns: [{ bot: 'beta', live_session_id: 'beta-live' }] }
+    const original = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.rooms.get' ? { room: current } : original(method, params)
+    await render().openRoom(current)
+    expect(render().bots[0].status).toBe('idle')
+    hooks.clients[0].emit(
+      wire('clarify.request', { request_id: 'beta', question: 'Next?' }, 'beta-live')
+    )
+    expect(render().bots[0].status).toBe('idle')
+    expect(render().chat.questions.map(card => card.sessionId)).toEqual(['beta-live'])
+  })
+
+  it.each([
+    'error',
+    'status-error',
+    'interrupted',
+    'room-failed',
+    'incident',
+    'epoch',
+    'scoped-read',
+    'full-read',
+    'archive',
+    'bot-delete',
+    'changed-owner',
+    'changed-room-owner',
+    'removed-member',
+    'missing-member',
+    'room-delete'
+  ])('retires reopened completed proof on %s', async control => {
+    const completed = await completedRoom()
+    expect(render().bots[0].status).toBe('idle')
+    if (['archive', 'removed-member', 'missing-member', 'changed-room-owner'].includes(control)) {
+      const inactive = {
+        ...completed,
+        owner_id: control === 'changed-room-owner' ? 'new-owner' : 'owner',
+        archived_at: control === 'archive' ? 12 : null,
+        members:
+          control === 'removed-member'
+            ? [{ member_kind: 'bot', member_id: 'alpha', left_at: 12 }]
+            : control === 'missing-member'
+              ? [{ member_kind: 'bot', member_id: 'beta', left_at: null }]
+              : completed.members
+      } as unknown as Room
+      const original = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.rooms.get' ? { room: inactive } : original(method, params)
+      await render().openRoom(inactive)
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.rooms.get' ? { room: completed } : original(method, params)
+    } else if (control === 'scoped-read') {
+      const original = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.bots.get' ? { bot: failed } : original(method, params)
+      hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: { name: 'alpha' } })
+    } else if (['full-read', 'changed-owner'].includes(control)) {
+      const original = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.bots.list'
+          ? { bots: [{ ...failed, owner_id: control === 'changed-owner' ? 'new-owner' : 'owner' }] }
+          : method === 'hexbot.rooms.list'
+            ? { rooms: [completed] }
+            : original(method, params)
+      await render().refresh()
+    } else if (control === 'epoch')
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'second' } })
+    else if (control === 'room-failed') hooks.clients[0].emit(turnEvent('s1', 'failed'))
+    else if (control === 'incident')
+      hooks.clients[0].emit({ type: 'hexbot.bots.incident', payload: { bot: 'alpha' } })
+    else if (control === 'bot-delete')
+      hooks.clients[0].emit({
+        type: 'hexbot.bots.changed',
+        payload: { name: 'alpha', deleted: true }
+      })
+    else if (control === 'room-delete')
+      hooks.clients[0].emit({
+        type: 'hexbot.rooms.changed',
+        payload: { id: 'room', deleted: true }
+      })
+    else
+      hooks.clients[0].emit(
+        control === 'error'
+          ? wire('error', { message: 'New failure' })
+          : wire('status.update', { kind: control === 'interrupted' ? 'interrupted' : 'error' })
+      )
+    await flush()
+    expect(render().bots[0].status).toBe('stopped')
+    await render().openRoom(completed)
+    expect(render().bots[0].status).toBe('stopped')
+    expect(render().chat.turns.s1?.retryResolution?.resolved).not.toBe(true)
   })
 
   it('keeps known sibling requests above a resolved room failure without changing another bot', async () => {

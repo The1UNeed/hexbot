@@ -75,6 +75,8 @@ only part of a question batch, the remaining questions keep the bot's Needs you
 status after you leave. Automatic model
 retries keep their activity text, such as Retrying the model request, while
 the bot waits for its provider.
+A successfully retried room stays settled when you reopen it, even if the
+bot list has not refreshed.
 
 Job details show the last status, error and up to 12,000 characters of output
 saved on the daemon. Attachments can be sent without text. The app asks the bot

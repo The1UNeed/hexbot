@@ -320,14 +320,17 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
         .take(2)
         .cloned()
         .collect::<Vec<_>>();
-    // Private turn failures need a section that can still be retried. Room
-    // sessions live outside sections; connector and global causes remain visible.
+    // Room retries need an existing room; private retries need an open section.
+    // Connector incidents and failures without either context remain visible.
     let incident = rows(
         &db::open(home)?,
         "SELECT * FROM bot_incidents i WHERE bot=? AND resolved_at IS NULL AND (
-            i.kind<>'turn_failed' OR i.section_id IS NULL OR i.room_id IS NOT NULL
-            OR EXISTS(SELECT 1 FROM room_sessions r WHERE r.stored_session_id=i.section_id AND r.bot=i.bot)
-            OR EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id AND s.archived_at IS NULL)
+            i.kind<>'turn_failed' OR CASE WHEN i.room_id IS NOT NULL
+                THEN EXISTS(SELECT 1 FROM rooms r WHERE r.id=i.room_id)
+                ELSE i.section_id IS NULL
+                    OR EXISTS(SELECT 1 FROM room_sessions r WHERE r.stored_session_id=i.section_id AND r.bot=i.bot)
+                    OR EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id AND s.archived_at IS NULL)
+                END
          ) ORDER BY created_at DESC LIMIT 1",
         &[&name],
     )?

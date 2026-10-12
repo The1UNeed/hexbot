@@ -1,6 +1,6 @@
 import type { GatewayEvent } from '@hermes/shared'
 import { emptyChat, emptyTurn, reduceChat } from './chat'
-import type { ChatMessage, ChatState, Room, RoomEvent, RoomTurnState } from './types'
+import type { ChatMessage, ChatState, Room, RoomEvent, RoomTurnState, TurnState } from './types'
 
 const newTurn = (bot: string, sessionId: string): RoomTurnState => ({
   ...emptyTurn(),
@@ -8,6 +8,28 @@ const newTurn = (bot: string, sessionId: string): RoomTurnState => ({
   sessionId,
   busy: true
 })
+
+export const completedRoomRetry = (state: TurnState, roomId: string) =>
+  state.retryResolution?.roomId === roomId &&
+  state.retryResolution.resolved &&
+  !state.busy &&
+  !state.waiting &&
+  !state.error &&
+  !state.approvals.length &&
+  !state.questions.length
+
+/** A completed retry accepts terminal updates, never replayed activity or cards. */
+export function acceptsRoomSession(state: TurnState, event: GatewayEvent): boolean {
+  if (!state.retryResolution?.roomId || !completedRoomRetry(state, state.retryResolution.roomId))
+    return true
+  const payload = (event.payload ?? {}) as Record<string, unknown>
+  return (
+    event.type === 'error' ||
+    event.type === 'message.complete' ||
+    (event.type === 'status.update' &&
+      ['idle', 'done', 'error', 'interrupted'].includes(String(payload.kind)))
+  )
+}
 
 /** A room stays busy until every bot's turn has ended, including waiting turns. */
 export function roomChat(state: ChatState): ChatState {
@@ -97,9 +119,9 @@ export function reduceRoom(
     const bot = String(p.bot ?? '')
     if (id && ['running', 'working', 'waiting'].includes(String(p.status))) {
       for (const [key, turn] of Object.entries(turns))
-        if (key !== id && turn.bot === bot && turn.retryResolution)
+        if ((key !== id || !turn.busy) && turn.bot === bot && turn.retryResolution)
           turns[key] = { ...turn, retryResolution: { ...turn.retryResolution, resolved: false } }
-      const turn = turns[id] ?? newTurn(bot, id)
+      const turn = turns[id]?.busy ? turns[id] : newTurn(bot, id)
       const waiting =
         p.status === 'waiting' || turn.approvals.length > 0 || turn.questions.length > 0
       turns[id] = {
@@ -146,15 +168,22 @@ export function reduceRoom(
       messages: message ? [...state.messages, message] : state.messages
     })
   }
-  if (event.type === 'hexbot.bots.incident' && typeof p.bot === 'string') {
+  const failedBot =
+    event.type === 'hexbot.bots.incident'
+      ? p.bot
+      : event.type === 'hexbot.bots.changed' && p.deleted === true
+        ? (p.name ?? p.bot)
+        : undefined
+  if (typeof failedBot === 'string') {
     for (const [id, turn] of Object.entries(turns))
-      if (turn.bot === p.bot && turn.retryResolution)
+      if (turn.bot === failedBot && turn.retryResolution)
         turns[id] = { ...turn, retryResolution: { ...turn.retryResolution, resolved: false } }
     return roomChat({ ...state, turns })
   }
   const id = event.session_id
   if (!id || !turns[id]) return state
   const turn = turns[id]
+  if (!acceptsRoomSession(turn, event)) return state
   const current = room.turns?.some(t => t.bot === turn.bot && t.live_session_id === id)
   const bound = current && (!p.bot || p.bot === turn.bot) && (!p.room_id || p.room_id === room.id)
   const input =

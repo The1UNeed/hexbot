@@ -18,13 +18,21 @@ import {
   clarifyResponse,
   clearStatusProof,
   emptyChat,
+  emptyTurn,
   historyMessages,
   reduceChat,
   restoreChat,
   rosterChat,
   settledBot
 } from './chat'
-import { reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
+import {
+  acceptsRoomSession,
+  completedRoomRetry,
+  reduceRoom,
+  restoreRoom,
+  roomChat,
+  roomMessage
+} from './room-chat'
 import { attachmentPrompt } from './chat-send'
 import { modelLists, providerModels } from './models'
 import { ROOMS_QUERY, SECTIONS_QUERY, defaultSection, rebind, type ChatRoute } from './routes'
@@ -538,7 +546,46 @@ export function useMobile() {
         for (const [sessionId, owned] of submittedTurns.current) {
           if (owned.roomId !== id) continue
           const turn = restored.turns[sessionId]
+          const valid =
+            epoch === replayEpoch.current &&
+            !room.archived_at &&
+            (!room.owner_id || !owned.bot.owner_id || room.owner_id === owned.bot.owner_id) &&
+            sameBot(
+              botsRef.current.find(bot => bot.name === owned.bot.name),
+              owned.bot
+            ) &&
+            !room.members.some(
+              member =>
+                member.member_kind === 'bot' &&
+                member.member_id === owned.bot.name &&
+                member.left_at != null
+            )
+          const completed = completedRoomRetry(owned.state, id)
           if (
+            valid &&
+            completed &&
+            !turn &&
+            owned.state.retryResolution?.bot === owned.bot.name &&
+            owned.state.retryResolution.sessionId === sessionId &&
+            room.members.some(
+              member =>
+                member.member_kind === 'bot' &&
+                member.member_id === owned.bot.name &&
+                member.left_at === null
+            ) &&
+            !room.turns?.some(turn => turn.bot === owned.bot.name)
+          ) {
+            restored.turns[sessionId] = {
+              ...emptyTurn(),
+              bot: owned.bot.name,
+              sessionId,
+              retryResolution: owned.state.retryResolution
+            }
+            continue
+          }
+          if (
+            !valid ||
+            completed ||
             !turn ||
             !sameBot(
               botsRef.current.find(bot => bot.name === turn.bot),
@@ -1002,6 +1049,7 @@ export function useMobile() {
           submittedTurns.current.delete(id)
           submittedChanged = true
         } else if (event.session_id === id) {
+          if (turn.roomId && !acceptsRoomSession(turn.state, event)) continue
           const known = new Set(pendingKeys(turn.state))
           turn.state = reduceChat(turn.state, event)
           if (
