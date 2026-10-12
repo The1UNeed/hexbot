@@ -544,6 +544,7 @@ export function useMobile() {
         loadingEvents.current = null
         const restored = restoreRoom(room, events)
         const priorTurns = new Map(submittedTurns.current)
+        const ownedCards: { sessionId: string; bot: string; state: ChatState }[] = []
         for (const [sessionId, owned] of submittedTurns.current) {
           if (owned.roomId !== id) continue
           const turn = restored.turns[sessionId]
@@ -630,20 +631,24 @@ export function useMobile() {
             submittedTurns.current.delete(sessionId)
             continue
           }
-          restored.turns[sessionId] = {
-            ...turn,
-            approvals: owned.state.approvals,
-            questions: owned.state.questions,
-            waiting: owned.state.waiting,
-            activity: owned.state.activity,
-            settlements: owned.state.settlements
-          }
+          ownedCards.push({ sessionId, bot: turn.bot, state: owned.state })
         }
         setChat(roomChat(restored))
         routeRef.current = { kind: 'room', room }
         // Replayed approvals and events received during history loading go through the same reducer.
         for (const event of buffered) {
           const payload = (event.payload ?? {}) as Record<string, unknown>
+          const beforeRead =
+            ((event as GatewayEvent & { mobileRevision?: number }).mobileRevision ?? 0) <= revision
+          // An older failed startup had no session to bind; the later snapshot owns this bot.
+          if (
+            beforeRead &&
+            event.type === 'hexbot.rooms.turn' &&
+            payload.room_id === id &&
+            payload.live_session_id == null &&
+            room.turns?.some(turn => turn.bot === payload.bot && turn.live_session_id)
+          )
+            continue
           if (
             event.type === 'hexbot.rooms.turn' &&
             payload.room_id === id &&
@@ -675,11 +680,7 @@ export function useMobile() {
               (!payload.bot && prior && prior.roomId === id && prior.bot.name !== active.bot))
           )
             continue
-          if (
-            active &&
-            typeof sessionId === 'string' &&
-            ((event as GatewayEvent & { mobileRevision?: number }).mobileRevision ?? 0) <= revision
-          ) {
+          if (active && typeof sessionId === 'string' && beforeRead) {
             // Keep exact card settlements without ending a newer snapshot's running turn.
             setChat(c => {
               const turn = c.turns[sessionId]
@@ -714,6 +715,23 @@ export function useMobile() {
           } else eventRef.current(event)
         }
         if (stale()) return
+        // Owned cards already include live receipts; older replay must finish before copying them.
+        setChat(c => {
+          const turns = { ...c.turns }
+          for (const { sessionId, bot, state } of ownedCards) {
+            const turn = turns[sessionId]
+            if (!turn || turn.bot !== bot) continue
+            turns[sessionId] = {
+              ...turn,
+              approvals: state.approvals,
+              questions: state.questions,
+              waiting: state.waiting,
+              activity: state.activity,
+              settlements: { ...turn.settlements, ...state.settlements }
+            }
+          }
+          return roomChat({ ...c, turns })
+        })
         const updated = routeRef.current
         setRoute(updated)
         if (events.length) await rpc('hexbot.rooms.mark_read', { id, seq: events.at(-1)!.seq })

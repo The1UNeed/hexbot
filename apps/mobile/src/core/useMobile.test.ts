@@ -4269,6 +4269,127 @@ describe('mobile current room Retry proof', () => {
       }
     )
 
+    it.each(['approval', 'question'].flatMap(card => [false, true].map(left => ({ card, left }))))(
+      'keeps newer owned $card after an older held answer (leave=$left)',
+      async ({ card, left }) => {
+        const current = await runningRetry()
+        const old = wire('clarify.request', {
+          request_id: 'old-batch',
+          questions: [
+            { qid: 'a', question: 'First?' },
+            { qid: 'b', question: 'Second?' }
+          ]
+        })
+        hooks.clients[0].emit(old)
+        const ack = deferred()
+        const log = deferred()
+        const original = hooks.handler
+        hooks.handler = async (method, params) => {
+          if (method === 'clarify.respond') return ack.promise
+          if (method === 'hexbot.rooms.log') return log.promise
+          if (method === 'hexbot.rooms.get') return { room: current }
+          return original(method, params)
+        }
+        const answer = render().answer('old-batch', 'a', 'local', 's1')
+        if (left) render().back()
+        const opening = render().openRoom(current)
+        await flush()
+        hooks.clients[0].emit(
+          wire('clarify.resolved', {
+            request_id: 'old-batch',
+            status: 'answered',
+            answers: { a: 'local', b: 'remote' }
+          })
+        )
+        complete()
+        hooks.clients[0].emit(turnEvent())
+        hooks.clients[0].emit(wire('message.start', {}))
+        const fresh =
+          card === 'approval'
+            ? wire('approval.request', {
+                request_id: 'fresh',
+                choices: ['once', 'deny'],
+                command: 'pwd'
+              })
+            : wire('clarify.request', {
+                request_id: 'fresh',
+                questions: [
+                  { qid: 'x', question: 'Next first?' },
+                  { qid: 'y', question: 'Next second?' }
+                ]
+              })
+        hooks.clients[0].emit(fresh)
+        if (card === 'question')
+          hooks.clients[0].emit(
+            wire('clarify.resolved', {
+              request_id: 'fresh',
+              status: 'waiting',
+              answers: { x: 'accepted' }
+            })
+          )
+        ack.resolve({ status: 'waiting', answers: { a: 'local' } })
+        await answer
+        log.resolve({ events: [] })
+        await opening
+        const retained = render().chat.turns.s1
+        expect(retained).toMatchObject({ busy: true, waiting: true })
+        expect(retained.approvals.map(a => a.requestId)).toEqual(
+          card === 'approval' ? ['fresh'] : []
+        )
+        expect(
+          retained.questions.map(q => [q.requestId, q.questions.map(item => item.id)])
+        ).toEqual(card === 'question' ? [['fresh', ['y']]] : [])
+        expect(retained.settlements[JSON.stringify(['clarify', 's1', 'old-batch'])]).toMatchObject({
+          answered: true,
+          answers: { a: 'local', b: 'remote' }
+        })
+        const freshReceipt =
+          retained.settlements[
+            JSON.stringify([card === 'question' ? 'clarify' : 'approval', 's1', 'fresh'])
+          ]
+        expect(freshReceipt?.closed).not.toBe(true)
+        if (card === 'question') expect(freshReceipt).toMatchObject({ answers: { x: 'accepted' } })
+        hooks.clients[0].emit(old)
+        hooks.clients[0].emit(fresh)
+        expect(render().chat.turns.s1.approvals).toEqual(retained.approvals)
+        expect(render().chat.turns.s1.questions).toEqual(retained.questions)
+        expect(render().chat.turns.s1.settlements).toEqual(retained.settlements)
+      }
+    )
+
+    it.each(['before-log', 'during-get', 'other-room', 'other-bot'])(
+      'orders a null-SID failed startup against %s metadata',
+      async order => {
+        const current = await runningRetry()
+        const newer = { ...current, turns: [{ bot: 'alpha', live_session_id: 'new-live' }] }
+        const held = deferred()
+        const original = hooks.handler
+        hooks.handler = async (method, params) => {
+          if (method === `hexbot.rooms.${order === 'during-get' ? 'get' : 'log'}`)
+            return held.promise
+          if (method === 'hexbot.rooms.get') return { room: newer }
+          return original(method, params)
+        }
+        const opening = render().openRoom(current)
+        await flush()
+        for (const status of ['running', 'failed'])
+          hooks.clients[0].emit({
+            type: 'hexbot.rooms.turn',
+            payload: {
+              room_id: order === 'other-room' ? 'other-room' : 'room',
+              bot: order === 'other-bot' ? 'beta' : 'alpha',
+              live_session_id: null,
+              status
+            }
+          })
+        held.resolve(order === 'during-get' ? { room: newer } : { events: [] })
+        await opening
+        if (order === 'during-get') expect(render().chat.turns['new-live']).toBeUndefined()
+        else expect(render().chat.turns['new-live']).toMatchObject({ bot: 'alpha', busy: true })
+        expect(render().bots[0].status).toBe('stopped')
+      }
+    )
+
     it.each(['error', 'epoch', 'authority', 'delete'])(
       'retires completion received during the read on newer %s',
       async event => {
