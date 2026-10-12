@@ -60,7 +60,7 @@ type SubmittedTurn = {
   roomId?: string
   sessionId: string
   revision: number
-  cardsRevision: number
+  cards: Map<string, number>
   /** An exact daemon start owns this activity until a later status read or turn end. */
   workingRevision?: number
   state: ChatState
@@ -80,6 +80,33 @@ const pendingKeys = (state: TurnState) => [
     )
   )
 ]
+/** Keep readable cards separate from the exact pending keys that can still establish status. */
+const confirmedCards = (state: ChatState, receipts: Map<string, number>, cutoff: number) => ({
+  ...state,
+  approvals: state.approvals.filter(
+    card =>
+      (receipts.get(JSON.stringify(['approval', card.sessionId, card.requestId])) ?? -1) > cutoff
+  ),
+  questions: state.questions.flatMap(card => {
+    const questions = card.questions.filter(
+      question =>
+        (receipts.get(JSON.stringify(['clarify', card.sessionId, card.requestId, question.id])) ??
+          -1) > cutoff
+    )
+    return questions.length ? [{ ...card, questions }] : []
+  })
+})
+const requestReceipts = (
+  before: TurnState,
+  after: TurnState,
+  revision: number,
+  receipts: Map<string, number> = new Map()
+) => {
+  const known = new Set(pendingKeys(before))
+  return new Map(
+    pendingKeys(after).map(key => [key, receipts.get(key) ?? (known.has(key) ? -1 : revision)])
+  )
+}
 const sameBot = (left: Bot | undefined, right: Bot) =>
   left?.name === right.name &&
   left.owner_id === right.owner_id &&
@@ -166,12 +193,13 @@ export function useMobile() {
         botStatusReads.current.get(turn.bot.name)?.request ?? 0
       )
       const archived = archive?.archived_at && archive.cardArchiveRequest <= statusRead
+      for (const [key, revision] of turn.cards)
+        if (!archived && revision <= cutoff) turn.cards.set(key, -1)
       const pendingCards =
         turn.state.busy &&
         turn.state.waiting &&
         !turn.state.error &&
-        (turn.cardsRevision > cutoff || archived) &&
-        [...turn.state.approvals, ...turn.state.questions].some(card => card.sessionId === id)
+        pendingKeys(turn.state).some(key => (turn.cards.get(key) ?? -1) > (archived ? -1 : cutoff))
       const retry =
         turn.state.retryResolution?.resolved &&
         bot &&
@@ -189,6 +217,17 @@ export function useMobile() {
         submittedTurns.current.delete(id)
     }
   }, [])
+  const retireSectionTurns = useCallback((section: Section, revision: number) => {
+    if (!section.live_session_id) return
+    for (const [id, turn] of submittedTurns.current)
+      if (
+        turn.section?.id === section.id &&
+        turn.bot.name === section.bot &&
+        id !== section.live_session_id &&
+        turn.revision <= revision
+      )
+        submittedTurns.current.delete(id)
+  }, [])
   const retainTurn = useCallback(
     (
       state: ChatState,
@@ -196,7 +235,7 @@ export function useMobile() {
       sessionId: string,
       section?: Section,
       roomId?: string,
-      receipt?: number
+      receipts?: Map<string, number>
     ) => {
       const proof = state.retryResolution
       const retry =
@@ -204,22 +243,30 @@ export function useMobile() {
         proof.sessionId === sessionId &&
         proof.bot === bot.name &&
         (roomId ? proof.roomId === roomId : proof.sectionId === section?.id)
+      const owned = submittedTurns.current.get(sessionId)
+      const pending = new Map(
+        pendingKeys(state).map(key => [key, receipts?.get(key) ?? owned?.cards.get(key) ?? -1])
+      )
+      const receipt = Math.max(-1, ...pending.values())
+      const cutoff = Math.max(
+        rosterRevision.current,
+        botStatusReads.current.get(bot.name)?.revision ?? -1
+      )
+      const answered =
+        state.busy && !state.error && state.resumedWaiting && state.waitingRevision > cutoff
       const cards =
-        receipt !== undefined &&
-        receipt >
-          Math.max(rosterRevision.current, botStatusReads.current.get(bot.name)?.revision ?? -1) &&
+        receipt > cutoff &&
         state.busy &&
         state.waiting &&
         !state.error &&
         [...state.approvals, ...state.questions].some(card => card.sessionId === sessionId)
-      if (!retry && !cards) return
-      const owned = submittedTurns.current.get(sessionId)
+      if (!retry && !cards && !answered) return
       if (
         owned &&
         (!sameBot(owned.bot, bot) || owned.section?.id !== section?.id || owned.roomId !== roomId)
       )
         return
-      if (cards && section) {
+      if ((cards || answered) && section) {
         const here = routeRef.current
         const current =
           here?.kind === 'section' && here.section.id === section.id
@@ -237,15 +284,15 @@ export function useMobile() {
       const current = { ...state, messages: [], turns: {} }
       if (owned) {
         owned.state = current
-        if (cards) owned.cardsRevision = Math.max(owned.cardsRevision, receipt!)
+        owned.cards = pending
       } else
         submittedTurns.current.set(sessionId, {
           bot,
           section,
           roomId,
           sessionId,
-          revision: retry ? proof!.revision : receipt!,
-          cardsRevision: cards ? receipt! : proof!.revision,
+          revision: retry ? proof!.revision : answered ? state.waitingRevision : receipt,
+          cards: pending,
           state: current,
           pending: 0
         })
@@ -311,7 +358,8 @@ export function useMobile() {
             !turn.state.error &&
             pendingKeys(turn.state).length
           )
-            turn.cardsRevision = ++eventRevision.current
+            for (const [key, revision] of turn.cards)
+              if (revision >= 0) turn.cards.set(key, ++eventRevision.current)
       const proofRequest = reflected
         ? saved.proofRequest
         : started
@@ -521,6 +569,7 @@ export function useMobile() {
       })
     sectionsRef.current = nextSections
     setSections(nextSections)
+    for (const section of nextSections) retireSectionTurns(section, revision)
     pruneSubmitted()
     setChat(c => rosterChat(c, rosterRevision.current))
     setInfo(i)
@@ -542,7 +591,8 @@ export function useMobile() {
     archiveSnapshot,
     acceptArchive,
     retireArchiveActivity,
-    pruneSubmitted
+    pruneSubmitted,
+    retireSectionTurns
   ])
   const syncRoom = useCallback(
     async (id: string) => {
@@ -819,6 +869,7 @@ export function useMobile() {
           routeRef.current.section.id !== target.section.id
         )
           return
+        const snapshotRevision = eventRevision.current
         liveId.current = result.section.live_session_id
         setHasEarlier(false)
         const status = await rpc<{ status: string }>('session.status', {
@@ -855,7 +906,21 @@ export function useMobile() {
         // Receipt proof follows the accepted pending keys, not the age of their history read.
         const receipts = new Map(previous?.cards)
         for (const key of pendingKeys(snapshot))
-          if (!receipts.has(key)) receipts.set(key, owned?.cardsRevision ?? cardsRevision)
+          receipts.set(key, owned?.cards.get(key) ?? receipts.get(key) ?? cardsRevision)
+        const received = new Set(pendingKeys(snapshot))
+        if (result.pending_clarify) {
+          const pending = reduceChat(
+            { ...emptyChat(), settlements: snapshot.settlements },
+            {
+              type: 'clarify.request',
+              session_id: liveId.current!,
+              payload: result.pending_clarify
+            }
+          )
+          for (const key of pendingKeys(pending))
+            if (!previous?.cards.has(key))
+              receipts.set(key, Math.max(receipts.get(key) ?? -1, cardsRevision))
+        }
         const replay = restoreChat(
           snapshot,
           liveId.current!,
@@ -873,7 +938,14 @@ export function useMobile() {
             const revision = (event as GatewayEvent & { mobileRevision?: number }).mobileRevision
             if (revision === undefined) return
             const known = new Set(pendingKeys(before))
-            for (const key of pendingKeys(after)) if (!known.has(key)) receipts.set(key, revision)
+            const requested = new Set(pendingKeys(reduceChat(emptyChat(), event)))
+            for (const key of pendingKeys(after))
+              if (
+                requested.has(key) &&
+                (!known.has(key) || (!received.has(key) && revision <= snapshotRevision))
+              )
+                receipts.set(key, revision)
+            for (const key of requested) received.add(key)
           }
         )
         const pendingReceipts = new Map(
@@ -929,6 +1001,13 @@ export function useMobile() {
         setChat(rosterChat(restored, rosterRevision.current))
         acceptArchive(result.section, request, archives, false)
         const newRoute: ChatRoute = { ...target, section: archiveSection(result.section) }
+        if (
+          epoch === replayEpoch.current &&
+          request >= acceptedRefresh.current &&
+          result.section.id === target.section.id &&
+          result.section.bot === target.bot.name
+        )
+          retireSectionTurns(result.section, cardsRevision)
         routeRef.current = newRoute
         setRoute(newRoute)
         if (
@@ -947,14 +1026,23 @@ export function useMobile() {
                   (!section.live_session_id || section.live_session_id === liveId.current)
               )))
         )
-          retainTurn(restored, bot, liveId.current, newRoute.section, undefined, latestCard)
+          retainTurn(restored, bot, liveId.current, newRoute.section, undefined, pendingReceipts)
         await rpc('hexbot.sections.mark_read', { id: target.section.id })
         return
       } finally {
         if (sequence === openSequence.current) loadingEvents.current = null
       }
     }
-  }, [rpc, syncRoom, archiveSection, archiveSnapshot, acceptArchive, pruneSubmitted, retainTurn])
+  }, [
+    rpc,
+    syncRoom,
+    archiveSection,
+    archiveSnapshot,
+    acceptArchive,
+    pruneSubmitted,
+    retainTurn,
+    retireSectionTurns
+  ])
   const syncChatRef = useRef(syncChat)
   syncChatRef.current = syncChat
   const refreshRef = useRef(refresh)
@@ -1048,7 +1136,8 @@ export function useMobile() {
               !turn.state.error &&
               pendingKeys(turn.state).length
             )
-              turn.cardsRevision = ++eventRevision.current
+              for (const [key, revision] of turn.cards)
+                if (revision >= 0) turn.cards.set(key, ++eventRevision.current)
           }
         }
         pruneSubmitted()
@@ -1187,7 +1276,12 @@ export function useMobile() {
             )
         }
       }
-      if (event.type === 'hexbot.bots.changed' && p.deleted !== true) {
+      if (
+        event.type === 'hexbot.bots.changed' &&
+        p.deleted !== true &&
+        !(event as GatewayEvent & { mobileStatusRead?: boolean }).mobileStatusRead
+      ) {
+        event = { ...event, mobileStatusRead: true } as GatewayEvent
         const name = typeof p.name === 'string' ? p.name : typeof p.bot === 'string' ? p.bot : ''
         const bot = botsRef.current.find(bot => bot.name === name)
         if (bot) {
@@ -1294,7 +1388,11 @@ export function useMobile() {
             : undefined)
         const bound = submittedTurns.current.get(event.session_id)
         const sibling = [...submittedTurns.current.values()].find(
-          turn => turn.section?.id === p.section_id && turn.sessionId !== event.session_id
+          turn =>
+            bot &&
+            sameBot(turn.bot, bot) &&
+            turn.section?.id === p.section_id &&
+            turn.sessionId !== event.session_id
         )
         if (
           bot &&
@@ -1303,24 +1401,29 @@ export function useMobile() {
               !archiveSection(section).archived_at &&
               (!section.live_session_id || section.live_session_id === event.session_id))) &&
           !sectionArchives.current.get(p.section_id)?.archived_at &&
-          (!sibling || section?.live_session_id === event.session_id) &&
+          (!sibling ||
+            sibling.revision <
+              (event as GatewayEvent & { mobileRevision: number }).mobileRevision) &&
           (!bound ||
             (sameBot(bound.bot, bot) && !bound.roomId && bound.section?.id === p.section_id))
         ) {
-          const owner =
-            section ??
-            ({
-              id: p.section_id,
-              bot: bot.name,
-              archived_at: null,
-              live_session_id: event.session_id
-            } as Section)
+          const owner = {
+            ...section,
+            id: p.section_id,
+            bot: bot.name,
+            archived_at: section?.archived_at ?? null,
+            live_session_id: event.session_id
+          } as Section
+          retireSectionTurns(
+            owner,
+            (event as GatewayEvent & { mobileRevision: number }).mobileRevision
+          )
           submittedTurns.current.set(event.session_id, {
             bot,
             section: owner,
             sessionId: event.session_id,
             revision: (event as GatewayEvent & { mobileRevision: number }).mobileRevision,
-            cardsRevision: bound?.cardsRevision ?? -1,
+            cards: bound?.cards ?? new Map(),
             workingRevision: (event as GatewayEvent & { mobileRevision: number }).mobileRevision,
             state: bound?.state ?? emptyChat(),
             pending: bound?.pending ?? 0
@@ -1341,9 +1444,15 @@ export function useMobile() {
           submittedTurns.current.delete(id)
           submittedChanged = true
         } else if (event.session_id === id) {
-          if (turn.roomId && !acceptsRoomSession(turn.state, event)) continue
-          const known = new Set(pendingKeys(turn.state))
-          turn.state = reduceChat(turn.state, event)
+          if (
+            (p.bot && p.bot !== turn.bot.name) ||
+            (turn.roomId
+              ? (p.room_id && p.room_id !== turn.roomId) || !acceptsRoomSession(turn.state, event)
+              : p.room_id || (p.section_id && p.section_id !== turn.section?.id))
+          )
+            continue
+          const before = turn.state
+          turn.state = reduceChat(before, event)
           if (
             event.type === 'message.start' &&
             turn.state.retryResolution &&
@@ -1358,11 +1467,14 @@ export function useMobile() {
               sectionId: turn.section.id,
               roomId: undefined
             }
-          if (
-            ['approval.request', 'clarify.request'].includes(event.type) &&
-            pendingKeys(turn.state).some(key => !known.has(key))
+          turn.cards = requestReceipts(
+            before,
+            turn.state,
+            ['approval.request', 'clarify.request'].includes(event.type)
+              ? (event as GatewayEvent & { mobileRevision: number }).mobileRevision
+              : -1,
+            turn.cards
           )
-            turn.cardsRevision = (event as GatewayEvent & { mobileRevision: number }).mobileRevision
           submittedChanged = true
         } else if (
           event.type === 'hexbot.rooms.turn' &&
@@ -1497,7 +1609,12 @@ export function useMobile() {
                 event.session_id,
                 undefined,
                 currentRoom.id,
-                (event as GatewayEvent & { mobileRevision: number }).mobileRevision
+                requestReceipts(
+                  c,
+                  next,
+                  (event as GatewayEvent & { mobileRevision: number }).mobileRevision,
+                  submittedTurns.current.get(event.session_id)?.cards
+                )
               )
           }
           const id =
@@ -1575,14 +1692,19 @@ export function useMobile() {
               target.section,
               undefined,
               ['approval.request', 'clarify.request'].includes(event.type)
-                ? (event as GatewayEvent & { mobileRevision: number }).mobileRevision
+                ? requestReceipts(
+                    c,
+                    next,
+                    (event as GatewayEvent & { mobileRevision: number }).mobileRevision,
+                    submittedTurns.current.get(event.session_id)?.cards
+                  )
                 : undefined
             )
           return rosterChat(next, rosterRevision.current)
         })
       }
     },
-    [rpc, verifyBotStatus, leave, pruneSubmitted, retainTurn, archiveSection]
+    [rpc, verifyBotStatus, leave, pruneSubmitted, retainTurn, archiveSection, retireSectionTurns]
   )
   const acknowledgedApprovals = useRef(new Set<string>())
   useEffect(() => {
@@ -1853,7 +1975,6 @@ export function useMobile() {
     let owned = submittedTurns.current.get(sessionId)
     if (owned && !owned.pending) {
       owned.revision = ++eventRevision.current
-      owned.cardsRevision = Math.max(owned.cardsRevision, owned.revision)
     }
     if (!owned) {
       owned = {
@@ -1863,7 +1984,7 @@ export function useMobile() {
         sessionId,
         // A tap follows prior reads even when no gateway event arrived between them.
         revision: ++eventRevision.current,
-        cardsRevision: eventRevision.current,
+        cards: new Map(),
         state: { ...emptyChat(), ...state, messages: [], turns: {} },
         pending: 0
       }
@@ -2054,7 +2175,17 @@ export function useMobile() {
   const visibleBots = bots.map(bot => {
     for (const turn of submittedTurns.current.values())
       if (sameBot(bot, turn.bot))
-        bot = projectBot(bot, turn.state, turn.sessionId, turn.section, turn.roomId)
+        bot = projectBot(
+          bot,
+          confirmedCards(
+            turn.state,
+            turn.cards,
+            Math.max(rosterRevision.current, botStatusReads.current.get(bot.name)?.revision ?? -1)
+          ),
+          turn.sessionId,
+          turn.section,
+          turn.roomId
+        )
     if (route?.kind === 'section' && route.bot.name === bot.name)
       return projectBot(bot, chat, liveId.current, route.section)
     if (route?.kind === 'room') {

@@ -6557,4 +6557,292 @@ describe('mobile buffered card receipt retention', () => {
       expect(render().bots[0].status).toBe(settleNew ? 'idle' : 'needs_you')
     }
   )
+
+  it.each(
+    (['private', 'named room', 'unnamed room'] as const).flatMap(place =>
+      (['buffered', 'live', 'reopened'] as const).flatMap(flow =>
+        (['approval', 'question'] as const).map(kind => [place, flow, kind] as const)
+      )
+    )
+  )('keeps %s %s %s authority separate after leaving', async (place, flow, kind) => {
+    const f = await pending(place)
+    f.card('old')
+    if (flow !== 'buffered') await f.finish()
+    await f.reading()
+    f.card('fresh', kind)
+    if (flow === 'buffered') await f.finish()
+    if (flow === 'reopened') {
+      render().back()
+      if (place === 'private') await render().openSection(f.idle, section())
+      else await render().openRoom(f.room)
+    }
+    expect(render().chat.questions.some(card => card.requestId === 'old')).toBe(true)
+    render().back()
+    expect(render().bots[0].status).toBe('needs_you')
+    f.event(kind === 'approval' ? 'approval.resolved' : 'clarify.resolved', {
+      ...f.context,
+      request_id: 'fresh',
+      ...(kind === 'approval'
+        ? { choice: 'once' }
+        : { status: 'answered', answers: { first: 'Yes', last: 'Now' } })
+    })
+    await flush()
+    expect(render().bots[0].status).not.toBe('needs_you')
+  })
+
+  it.each(['private', 'named room', 'unnamed room'] as const)(
+    'expires only fresh question authority in %s',
+    async place => {
+      const f = await pending(place)
+      f.card('old')
+      await f.reading()
+      f.card('fresh')
+      await f.finish()
+      render().back()
+      f.event('clarify.expire', { ...f.context, request_id: 'fresh' })
+      expect(render().bots[0].status).not.toBe('needs_you')
+    }
+  )
+
+  it('does not lend the fresh question ID authority to older IDs after a partial answer', async () => {
+    const f = await pending('private', 'question', {
+      request_id: 'batch',
+      questions: [{ qid: 'first', question: 'Old?' }]
+    })
+    await f.reading()
+    f.event('clarify.request', {
+      ...f.context,
+      request_id: 'batch',
+      questions: [
+        { qid: 'first', question: 'Old?' },
+        { qid: 'fresh', question: 'New?' },
+        { qid: 'fresh', question: 'Duplicate new ID?' }
+      ]
+    })
+    await f.finish()
+    render().back()
+    expect(render().bots[0].status).toBe('needs_you')
+    f.event('clarify.resolved', {
+      ...f.context,
+      request_id: 'batch',
+      status: 'waiting',
+      answers: { fresh: 'Yes' }
+    })
+    expect(render().bots[0].status).not.toBe('needs_you')
+  })
+
+  it('accepts a later pending snapshot for the exact previously disproved key', async () => {
+    const f = await pending()
+    f.card('old')
+    await f.finish()
+    await f.reading()
+    f.card('fresh', 'approval')
+    f.setSnapshot({
+      request_id: 'old',
+      questions: [{ qid: 'first', question: 'Confirmed again?' }]
+    })
+    await render().syncChat()
+    render().back()
+    f.event('approval.resolved', { ...f.context, request_id: 'fresh', choice: 'once' })
+    expect(render().bots[0].status).toBe('needs_you')
+    f.event('clarify.resolved', {
+      ...f.context,
+      request_id: 'old',
+      status: 'answered',
+      answers: { first: 'Yes' }
+    })
+    expect(render().bots[0].status).toBe('working')
+  })
+
+  it('does not renew an older sibling card when a local answer is submitted', async () => {
+    const f = await pending()
+    f.card('old')
+    await f.finish()
+    await f.reading()
+    f.card('fresh', 'approval')
+    const prior = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'approval.respond' ? { resolved: true, choice: 'once' } : prior(method, params)
+    await render().approval('fresh', 'once', f.sessionId)
+    expect(render().chat.questions.map(card => card.requestId)).toEqual(['old'])
+    render().back()
+    expect(render().bots[0].status).not.toBe('needs_you')
+  })
+
+  it('restores only confirmed cards when an archived turn has an older disproved sibling', async () => {
+    const f = await pending()
+    f.card('old')
+    await f.finish()
+    await f.reading()
+    f.card('fresh')
+    render().back()
+    const prior = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.sections.archive' || method === 'hexbot.sections.unarchive'
+        ? { section: { ...section(), archived_at: method.endsWith('.archive') ? 1 : null } }
+        : prior(method, params)
+    await render().rpc('hexbot.sections.archive', { id: 'section' })
+    expect(render().bots[0].status).toBe('idle')
+    await render().rpc('hexbot.sections.unarchive', { id: 'section' })
+    expect(render().bots[0].status).toBe('needs_you')
+    f.event('clarify.expire', { ...f.context, request_id: 'fresh' })
+    expect(render().bots[0].status).not.toBe('needs_you')
+  })
+
+  it.each(['foreign bot', 'foreign section', 'foreign room'] as const)(
+    'does not give an owned private turn a receipt from a %s',
+    async foreign => {
+      const f = await pending()
+      f.card('owned')
+      await f.finish()
+      render().back()
+      f.event('clarify.request', {
+        ...f.context,
+        ...(foreign === 'foreign bot' ? { bot: 'other' } : {}),
+        ...(foreign === 'foreign section' ? { section_id: 'other' } : {}),
+        ...(foreign === 'foreign room' ? { room_id: 'other' } : {}),
+        request_id: 'foreign',
+        question: 'Wrong owner?'
+      })
+      f.event('clarify.expire', { ...f.context, request_id: 'owned' })
+      expect(render().bots[0].status).not.toBe('needs_you')
+    }
+  )
+})
+
+describe('mobile cards included in a loading open snapshot', () => {
+  it.each(['fresh', 'duplicate', 'settled', 'unrelated'] as const)(
+    'tracks the exact %s receipt before the snapshot response',
+    async control => {
+      const idle = { ...namedWait, status: 'idle', status_detail: null } as Bot
+      await unopened(idle)
+      const held = deferred()
+      const prior = hooks.handler
+      let read = true
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.sections.open') return held.promise
+        if (method === 'hexbot.bots.get' && read) return { bot: idle }
+        if (method === 'hexbot.bots.get' || method === 'hexbot.bots.list')
+          throw new Error('Read unavailable')
+        return prior(method, params)
+      }
+      const opening = render().openSection(idle, section())
+      await flush()
+      const frame = wire('clarify.request', {
+        bot: 'alpha',
+        section_id: 'section',
+        request_id: 'snapshot',
+        question: 'Why?'
+      })
+      if (control === 'duplicate') hooks.clients[0].emit(frame)
+      hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: { name: 'alpha' } })
+      await flush()
+      read = false
+      hooks.clients[0].emit(control === 'unrelated' ? approval : frame)
+      if (control === 'settled' || control === 'unrelated')
+        hooks.clients[0].emit(
+          control === 'unrelated'
+            ? resolved
+            : wire('clarify.resolved', {
+                bot: 'alpha',
+                section_id: 'section',
+                request_id: 'snapshot',
+                status: 'answered',
+                answers: { snapshot: 'Yes' }
+              })
+        )
+      held.resolve({ section: section(), messages: [], pending_clarify: frame.payload })
+      await opening
+      expect(render().chat.questions).toHaveLength(control === 'settled' ? 0 : 1)
+      render().back()
+      expect(render().bots[0].status).toBe(
+        control === 'fresh' ? 'needs_you' : control === 'settled' ? 'working' : 'idle'
+      )
+    }
+  )
+})
+
+describe('mobile retained cards follow verified session rollover', () => {
+  it.each(
+    (['absent', 'stale'] as const).flatMap(row =>
+      (['start', 'open', 'list'] as const).map(source => [row, source] as const)
+    )
+  )('retires the old turn with a %s catalog row on accepted %s', async (row, source) => {
+    const idle = { ...namedWait, status: 'idle', status_detail: null } as Bot
+    const original = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.sections.list'
+        ? { sections: row === 'stale' ? [section('other', 's2')] : [] }
+        : original(method, params)
+    await unopened(idle)
+    await render().openSection(idle, section('other', 's2'))
+    const prior = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.get' || method === 'hexbot.bots.list')
+        throw new Error('Read unavailable')
+      return prior(method, params)
+    }
+    const emit = hooks.clients[0].emit
+    emit(
+      wire(
+        'clarify.request',
+        {
+          bot: 'alpha',
+          section_id: 'other',
+          request_id: 'old',
+          question: 'Old session?'
+        },
+        's2'
+      )
+    )
+    const cards = render().chat.questions
+    render().back()
+    expect(render().bots[0].status).toBe('needs_you')
+    if (source === 'start') {
+      emit(wire('message.start', { bot: 'alpha', section_id: 'other', room_id: null }, 's3'))
+      expect(render().bots[0].status).toBe(row === 'absent' ? 'working' : 'needs_you')
+      expect(render().chat.questions).toEqual(cards)
+      emit(wire('message.complete', { text: 'Finished' }, 's3'))
+      if (row === 'stale') {
+        // The catalog binding still guards starts until a later snapshot accepts the new SID.
+        const failed = hooks.handler
+        hooks.handler = async (method, params) =>
+          method === 'hexbot.sections.open'
+            ? { section: section('other', 's3'), messages: [] }
+            : failed(method, params)
+        await render().openSection(idle, section('other', 's3'))
+        render().back()
+      }
+    } else {
+      const failed = hooks.handler
+      const held = deferred()
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.sections.open')
+          return { section: section('other', 's3'), messages: [] }
+        if (method === 'hexbot.sections.list') return { sections: [section('other', 's3')] }
+        if (method === 'hexbot.bots.list') return held.promise
+        return failed(method, params)
+      }
+      if (source === 'open') await render().openSection(idle, section('other', 's3'))
+      else {
+        const reading = render().refresh()
+        emit(
+          wire(
+            'clarify.request',
+            {
+              bot: 'alpha',
+              section_id: 'other',
+              request_id: 'late-old',
+              question: 'Late old card?'
+            },
+            's2'
+          )
+        )
+        held.resolve({ bots: [idle] })
+        await reading
+      }
+      render().back()
+    }
+    expect(render().bots[0].status).toBe('idle')
+  })
 })
